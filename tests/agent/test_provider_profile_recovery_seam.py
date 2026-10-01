@@ -10,7 +10,7 @@ import pytest
 import providers
 from providers.base import ProviderProfile
 
-from agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_EXHAUSTED, CredentialPool, PooledCredential
+from auth.credential_pool import AUTH_TYPE_OAUTH, STATUS_EXHAUSTED, CredentialPool, PooledCredential
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -49,9 +49,10 @@ def test_profile_hook_reclassifies_only_its_own_provider(plugin_profiles):
 
 
 def test_plugin_refresh_returning_none_benches_instead_of_phantom_success(plugin_profiles, monkeypatch):
+    from hermes_cli.config_credentials import credential_pool_environment
     entry = PooledCredential(provider="example-oauth", id="abc123", label="acme", auth_type=AUTH_TYPE_OAUTH, priority=0,
                              source="manual:example_device", access_token="tok-1", refresh_token="rt-1", extra={})
-    pool = CredentialPool("example-oauth", [entry])
+    pool = CredentialPool("example-oauth", [entry], environment=credential_pool_environment())
     monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
     assert pool._refresh_entry_impl(entry, force=True) is None
     assert pool.entries()[0].last_status == STATUS_EXHAUSTED

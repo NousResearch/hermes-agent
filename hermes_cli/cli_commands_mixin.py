@@ -5,6 +5,8 @@ the helpers/handlers via ``from cli import ...`` — cli.py imports this module 
 """
 
 from __future__ import annotations
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import argparse
 import atexit
@@ -2097,7 +2099,7 @@ class CLICommandsMixin:
             """
             if state.kind != "completed" or not getattr(state, "model_changed", False):
                 return
-            if str(getattr(self, "model", "") or "") == anon_auth.GUEST_MODEL:
+            if str(getattr(self, "model", "") or "") == _auth_auth_providers_nous_guest.GUEST_MODEL:
                 # "" when the settle cleared the default: _ensure_runtime_credentials then applies
                 # the provider's silent default, which is what settle_after_upgrade documents.
                 self.model = state.model or ""

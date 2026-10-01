@@ -1,4 +1,12 @@
+
+import auth.providers.nous_status as _auth_auth_providers_nous_status
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.constants as _auth_auth_constants
+import auth.providers.nous as _auth_auth_providers_nous
 """Tests for the local-only Nous session classifier exposed on /api/status."""
+import auth.provider_state as auth_provider_state
 
 import base64
 import json
@@ -19,7 +27,7 @@ def _invoke_jwt(*, seconds: int = 3600) -> str:
             _encode(
                 {
                     "sub": "test-user",
-                    "scope": auth.DEFAULT_NOUS_SCOPE,
+                    "scope": _auth_auth_constants.DEFAULT_NOUS_SCOPE,
                     "exp": int(time.time() + seconds),
                 }
             ),
@@ -33,14 +41,14 @@ def _fail_if_live_auth_is_used(*args, **kwargs):
 
 
 def _block_live_auth(monkeypatch):
-    monkeypatch.setattr(auth, "get_nous_auth_status", _fail_if_live_auth_is_used)
+    monkeypatch.setattr(_auth_auth_providers_nous_status, "get_nous_auth_status", _fail_if_live_auth_is_used)
     monkeypatch.setattr(
-        auth,
+        _auth_auth_providers_nous,
         "resolve_nous_runtime_credentials",
         _fail_if_live_auth_is_used,
     )
     monkeypatch.setattr(
-        auth_nous,
+        _auth_auth_providers_nous,
         "resolve_nous_runtime_credentials",
         _fail_if_live_auth_is_used,
     )
@@ -55,7 +63,7 @@ def _block_live_auth(monkeypatch):
 
 def test_local_status_not_logged_in_after_terminal_quarantine(monkeypatch):
     monkeypatch.setattr(
-        auth,
+        auth_provider_state,
         "get_provider_auth_state",
         lambda provider: {
             "last_auth_error": {
@@ -66,7 +74,7 @@ def test_local_status_not_logged_in_after_terminal_quarantine(monkeypatch):
     )
     _block_live_auth(monkeypatch)
 
-    status = auth.get_nous_auth_status_local()
+    status = _auth_auth_providers_nous_status.get_nous_auth_status_local(environment=_phase6_auth_environment())
     assert status["logged_in"] is False
     assert status["relogin_required"] is True
     assert status["error_code"] == "invalid_grant"
@@ -74,16 +82,16 @@ def test_local_status_not_logged_in_after_terminal_quarantine(monkeypatch):
 
 def test_local_status_repeated_polling_never_uses_live_auth(monkeypatch):
     monkeypatch.setattr(
-        auth,
+        auth_provider_state,
         "get_provider_auth_state",
         lambda provider: {
             "access_token": _invoke_jwt(),
             "refresh_token": "rt",
-            "scope": auth.DEFAULT_NOUS_SCOPE,
+            "scope": _auth_auth_constants.DEFAULT_NOUS_SCOPE,
         },
     )
     _block_live_auth(monkeypatch)
 
     assert all(
-        auth.get_nous_auth_status_local()["logged_in"] for _ in range(10)
+        _auth_auth_providers_nous_status.get_nous_auth_status_local(environment=_phase6_auth_environment())["logged_in"] for _ in range(10)
     )

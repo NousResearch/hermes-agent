@@ -10,7 +10,8 @@ from types import SimpleNamespace
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.auth import AuthError, resolve_provider
+from auth.errors import AuthError
+from hermes_cli.auth import resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label

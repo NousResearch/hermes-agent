@@ -116,7 +116,7 @@ def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
     # Compress time: each sleep(0.5) advances a fake clock by 2.0s.
     clock = {"t": time.time()}
 
-    def fake_time():
+    def fake_time(**_auth_settings):
         return clock["t"]
 
     def fake_sleep(secs):

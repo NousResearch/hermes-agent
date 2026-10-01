@@ -1,3 +1,5 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
 """Provider setup wizard helpers: provider picker, custom-provider save/remove, auxiliary-model
 routing menu, API-key/reasoning prompts, Anthropic OAuth.
 
@@ -294,7 +296,7 @@ def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list
                              current_model: str = "", current_effort: str = "") -> None:
     """Prompt for a model under an already-authenticated provider (then its reasoning effort),
     save to aux."""
-    from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.auth_model_picker import _prompt_model_selection
     from hermes_cli.models_pricing import get_pricing_for_provider
     display_name = _aux_task_display_name(task)
     try:
@@ -674,7 +676,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "", existing_
     """API-key entry for ``hermes setup`` / ``hermes model``: first-time entry, or [K]eep / [R]eplace /
     [C]lear when a key exists (a malformed paste is recoverable without editing ``.env``).
     Returns ``(resolved_key, abort)``; ``abort=True`` means the caller must ``return`` at once."""
-    from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
+    from auth.constants import LMSTUDIO_NOAUTH_PLACEHOLDER
     from hermes_cli.config import save_env_value
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
@@ -738,18 +740,19 @@ def _infer_stepfun_region(base_url: str) -> str:
 
 
 def _stepfun_base_url_for_region(region: str) -> str:
-    from hermes_cli.auth import STEPFUN_STEP_PLAN_CN_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL
+    from auth.constants import STEPFUN_STEP_PLAN_CN_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL
     return STEPFUN_STEP_PLAN_CN_BASE_URL if region == "china" else STEPFUN_STEP_PLAN_INTL_BASE_URL
 
 
 def _run_anthropic_oauth_flow(save_env_value):
     """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
-    from agent.anthropic_credentials import run_oauth_setup_token, read_claude_code_credentials, is_claude_code_token_valid
+    from hermes_cli.auth_anthropic import run_oauth_setup_token
+    from auth.providers.anthropic import read_claude_code_credentials, is_claude_code_token_valid
     from hermes_cli.config import save_anthropic_oauth_token, use_anthropic_claude_code_credentials
 
     def _activate_claude_code_credentials_if_available() -> bool:
         try:
-            creds = read_claude_code_credentials()
+            creds = read_claude_code_credentials(environment=_phase6_auth_environment())
         except Exception:
             creds = None
         if creds and (is_claude_code_token_valid(creds) or bool(creds.get("refreshToken"))):

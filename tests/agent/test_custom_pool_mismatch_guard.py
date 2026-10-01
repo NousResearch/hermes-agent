@@ -62,7 +62,7 @@ class TestCustomPoolMismatchGuard:
         next_entry = SimpleNamespace(id="key-b", runtime_api_key="key-b")
         pool.mark_exhausted_and_rotate.return_value = next_entry
         with patch(
-            "agent.credential_pool._iter_custom_providers",
+            "auth.credential_pool._iter_custom_providers",
             return_value=self._gemini_config(),
         ):
             recovered, retried = recover_with_credential_pool(
@@ -85,7 +85,7 @@ class TestCustomPoolMismatchGuard:
         )
 
         with patch(
-            "agent.credential_pool._iter_custom_providers",
+            "auth.credential_pool._iter_custom_providers",
             return_value=self._gemini_config(),
         ):
             recovered, retried = recover_with_credential_pool(
@@ -114,7 +114,7 @@ class TestCustomPoolMismatchGuard:
         pool.mark_exhausted_and_rotate.return_value = next_entry
 
         with patch(
-            "agent.credential_pool._iter_custom_providers",
+            "auth.credential_pool._iter_custom_providers",
             return_value=self._gemini_config(),
         ):
             recovered, retried = recover_with_credential_pool(
@@ -136,7 +136,7 @@ class TestCustomPoolMismatchGuard:
             "custom", "https://other-endpoint.example/v1", "custom:fireworks"
         )
         with patch(
-            "agent.credential_pool.get_custom_provider_pool_key",
+            "auth.credential_pool.get_custom_provider_pool_key",
             return_value="custom:other",
         ):
             recovered, _ = recover_with_credential_pool(

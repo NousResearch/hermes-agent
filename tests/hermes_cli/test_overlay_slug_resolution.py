@@ -49,7 +49,7 @@ def test_mapped_provider_credential_pool_visibility(monkeypatch):
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {"google-ai-studio": {"env": ["GEMINI_API_KEY"]}})
     monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {"gemini": "google-ai-studio"})
     monkeypatch.setattr(
-        "hermes_cli.auth._load_auth_store",
+        'auth.store._load_auth_store',
         lambda: {"providers": {}, "credential_pool": {"gemini": {"token": "fake"}}},
     )
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)

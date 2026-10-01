@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.anthropic_credentials import anthropic_route_is_oauth
+from auth.providers.anthropic import anthropic_route_is_oauth
 
 OAUTH = "sk-ant-oat01-keycmd-token"
 CONSOLE = "sk-ant-api03-console-key"

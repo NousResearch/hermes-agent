@@ -36,12 +36,12 @@ def _ns(**kw):
 
 class TestFastFails:
     def test_not_logged_in_exits_1_with_setup_hint(self, capsys):
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         err = AuthError("not logged in", provider="nous", relogin_required=True)
         with patch.object(dr, "cmd_dashboard_register", dr.cmd_dashboard_register):
             with patch(
-                "hermes_cli.auth.resolve_nous_access_token", side_effect=err
+                'auth.providers.nous.resolve_nous_access_token', side_effect=err
             ), patch("hermes_cli.config.is_managed", return_value=False):
                 with pytest.raises(SystemExit) as exc:
                     dr.cmd_dashboard_register(_ns())
@@ -100,7 +100,7 @@ class TestHappyPath:
             return None
 
         with patch(
-            "hermes_cli.auth.resolve_nous_access_token", return_value=account_token
+            'auth.providers.nous.resolve_nous_access_token', return_value=account_token
         ), patch("hermes_cli.config.is_managed", return_value=False), patch.object(
             dr, "_resolve_portal_base_url", return_value=portal
         ), patch(
@@ -225,7 +225,7 @@ class TestCustomPortalPersistence:
             return None
 
         with patch(
-            "hermes_cli.auth.resolve_nous_access_token", return_value="tok"
+            'auth.providers.nous.resolve_nous_access_token', return_value="tok"
         ), patch("hermes_cli.config.is_managed", return_value=False), patch.dict(
             dr.os.environ, {}, clear=False
         ), patch.object(
@@ -297,7 +297,7 @@ class TestPublicUrlPersistence:
             return None
 
         with patch(
-            "hermes_cli.auth.resolve_nous_access_token", return_value="tok"
+            'auth.providers.nous.resolve_nous_access_token', return_value="tok"
         ), patch("hermes_cli.config.is_managed", return_value=False), patch.dict(
             dr.os.environ, {}, clear=False
         ), patch.object(
@@ -349,7 +349,7 @@ class TestPublicUrlPersistence:
             saved[key] = value
 
         with patch(
-            "hermes_cli.auth.resolve_nous_access_token", return_value="tok"
+            'auth.providers.nous.resolve_nous_access_token', return_value="tok"
         ), patch("hermes_cli.config.is_managed", return_value=False), patch.dict(
             dr.os.environ, {}, clear=False
         ), patch.object(
@@ -381,7 +381,7 @@ class TestPortalResolution:
 
     def test_falls_back_to_stored_login_portal(self):
         with patch(
-            "hermes_cli.auth.get_provider_auth_state",
+            'auth.provider_state.get_provider_auth_state',
             return_value={"portal_base_url": "https://portal.staging-nousresearch.com"},
         ):
             assert (
@@ -401,7 +401,7 @@ class TestPortalErrors:
         )
 
         with patch(
-            "hermes_cli.auth.resolve_nous_access_token", return_value="tok"
+            'auth.providers.nous.resolve_nous_access_token', return_value="tok"
         ), patch("hermes_cli.config.is_managed", return_value=False), patch.object(
             dr, "_resolve_portal_base_url", return_value="https://portal.nousresearch.com"
         ), patch.object(dr.urllib.request, "urlopen", side_effect=err):

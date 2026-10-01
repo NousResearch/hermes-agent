@@ -173,6 +173,7 @@ def test_put_api_env_materializes_credential_pool_entry(hermes_home):
     """
     # Start clean: empty auth.json so the only way a pool entry shows up is
     # via the PUT /api/env handler we're testing.
+    from hermes_cli.config_credentials import credential_pool_environment
     _write_auth(hermes_home, {})
 
     resp = client.put(
@@ -211,8 +212,8 @@ def test_put_api_env_materializes_credential_pool_entry(hermes_home):
     # And: a fresh load_pool() must surface the just-saved token to the
     # runtime. This is the actual end-to-end contract — anything weaker
     # means the OpenAI client will 401 because it never receives the new key.
-    from agent.credential_pool import load_pool
-    pool_obj = load_pool("opencode-go")
+    from auth.credential_pool import load_pool
+    pool_obj = load_pool("opencode-go", environment=credential_pool_environment())
     runtime_entries = pool_obj.entries()
     matched_runtime = [
         e for e in runtime_entries

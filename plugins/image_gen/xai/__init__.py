@@ -101,7 +101,7 @@ def _live_models() -> Dict[str, Dict[str, Any]]:
         _LIVE_CACHE = (_fetch_live_models_or_empty(None), time.monotonic())
         return _LIVE_CACHE[0]
 
-    from agent.credential_persistence import fingerprint_secret_value
+    from auth.persistence import fingerprint_secret_value
 
     try:
         creds = resolve_xai_http_credentials()

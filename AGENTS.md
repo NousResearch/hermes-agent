@@ -238,6 +238,14 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
 (12), `tools/browser_tool.py` (11), `cli.py` (12 `hermes_cli/cli_*_mixin.py`), `run_agent.py`
 (`agent/turn_*.py`, `agent_init.py`, `conversation_loop.py`).
 
+Authentication storage is an ownership exception to the old CLI facade pattern:
+`auth/store.py`, `auth/provider_state.py`, `auth/pool_persistence.py`,
+`auth/persistence.py`, `auth/sources.py` and `auth/source_removal.py` are canonical.
+Import them directly and patch the binding the canonical module reads. Never
+restore storage exports on `hermes_cli.auth` or import CLI configuration from auth.
+Application callers supply `CredentialEnvironment`; config-file writes still use
+`hermes_cli.config.atomic_config_write` through the configuration owner.
+
 - **Find code by topic, not by facade:** `grep -rn "def name" <dir>/<stem>_*.py`. Reading the
   facade first is the expensive way (`evals/codebase_navigability/`).
 - **Siblings may import each other and late-import the facade** inside functions. A facade
@@ -504,6 +512,44 @@ export function hiddenWindowsChildOptions(options = {}, isWindows = process.plat
 ```
 If the logic lives inline in a god-file and extraction feels disruptive, that is the signal to
 extract, not to regex around it.
+
+## Phase 6 authentication ownership
+
+Shared credential storage, provider state, source suppression/removal and durable pool
+persistence belong to `auth/`. Pool selection, rotation, administration, cooldowns,
+source ingestion and single-use grant hygiene also belong there. In-tree code imports
+`auth.credential_pool` and supplies an explicit `PoolEnvironment` from the application
+composition boundary in `hermes_cli.config_credentials`; auth must never import CLI
+configuration or command structures. Generic secret-scope infrastructure stays in agent.
+
+The documented external plugin imports `agent.credential_pool.load_pool`,
+`PooledCredential`, `AUTH_TYPE_OAUTH` and `hermes_cli.auth_constants.AuthError`
+remain supported only at their external boundary. Do not use them internally or add
+them to the September deprecated-import manifest: that manifest disables plugins after
+its deadline. The Phase 6 specification explicitly preserves demonstrated public plugin
+contracts. Structural import checks in `tests/auth/test_boundary.py` implement its
+required ownership gate and are the scoped exception to the source-reading test rule.
+Shared OAuth lifecycle and built-in runtime authentication now live in `auth/oauth.py`
+and `auth/providers/`. Supply explicit settings through the application environment
+factory; auth must never import CLI configuration. Prompts, browser launching and
+plugin `auth_handler(action, args)` remain at the CLI edge. Retired implementations
+`agent.anthropic_credentials` and `hermes_cli.auth_qwen` must not return.
+Runtime secret validation, quota classification, API-key source precedence and the Nous
+keepalive belong to `auth/secret_validation.py`, `auth/failure_policy.py`, `auth/api_keys.py`
+and `auth/keepalive.py`. Keepalive callers supply both the configuration factory and thread
+scope context. Runtime route materialization remains application policy in
+`hermes_cli/runtime_provider_credentials.py`; provider/model routing is outside Phase 6.
+Import canonical operations directly; never restore the retired CLI keepalive module or
+API-key source helper. Structural checks cover both runtime and CLI source consumers.
+OAuth status snapshots belong to `auth/provider_status.py` and take explicit scoped
+settings. Anthropic environment-key lookup belongs to `auth/api_keys.py`; error
+rendering belongs to `hermes_cli/auth_error_copy.py`. Genuine login/logout/auth
+commands and plugin `auth_handler(action, args)` dispatch stay at the presentation
+edge. CLI authentication modules must not implement auth-store write transactions.
+This independent baseline has no `nous_cli`: relocate genuine presentation only
+during CLI integration, without adding internal forwarding paths.
+See `PHASE6_AUTH_POOL.md`, `PHASE6_AUTH_OAUTH.md`, `PHASE6_AUTH_CONSUMERS.md`
+and `PHASE6_AUTH_PRESENTATION.md` for ownership and verification.
 
 ## Routing Table — working in X → read X/AGENTS.md
 

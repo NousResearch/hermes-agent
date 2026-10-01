@@ -6,6 +6,8 @@ inside each method (``from cli import ...``) — never at module load time (impo
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import contextlib
 import os
@@ -297,9 +299,9 @@ class CLISessionMixin:
         try:
             from agent.i18n import t
             from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
+            from auth.providers.nous_guest import guest_carries_inference
 
-            if resolve_provider("auto") == "nous" and guest_carries_inference():
+            if resolve_provider("auto") == "nous" and guest_carries_inference(environment=_phase6_auth_environment()):
                 lines.append(t("gateway.status.free_tier"))
         except Exception:
             pass

@@ -156,7 +156,7 @@
    "facade": "agent.anthropic_adapter",
    "name": "CredentialPersistError",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
@@ -186,7 +186,7 @@
    "facade": "agent.anthropic_adapter",
    "name": "claude_code_credentials_path",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
@@ -204,13 +204,13 @@
    "facade": "agent.anthropic_adapter",
    "name": "is_claude_code_token_valid",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
    "name": "is_rotation_consumed_uncommitted",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
@@ -222,7 +222,7 @@
    "facade": "agent.anthropic_adapter",
    "name": "mark_rotation_consumed_uncommitted",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
@@ -240,37 +240,37 @@
    "facade": "agent.anthropic_adapter",
    "name": "read_claude_code_credentials",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
    "name": "read_hermes_oauth_credentials",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
    "name": "refresh_anthropic_oauth_pure",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
    "name": "resolve_anthropic_token",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
    "name": "run_hermes_oauth_login_pure",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
    "name": "run_oauth_setup_token",
    "kind": "moved-lazy",
-   "target": "agent.anthropic_credentials"
+   "target": "auth.providers.anthropic"
   },
   {
    "facade": "agent.anthropic_adapter",
@@ -370,15 +370,15 @@
   },
   {
    "facade": "agent.bedrock_adapter",
-   "name": "is_context_overflow_error",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of classify_bedrock_error)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
    "name": "classify_bedrock_error",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "agent.bedrock_adapter",
+   "name": "is_context_overflow_error",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of classify_bedrock_error)"
   },
   {
    "facade": "agent.bedrock_adapter",
@@ -442,15 +442,15 @@
   },
   {
    "facade": "agent.coding_context",
-   "name": "coding_system_blocks",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.coding_context",
    "name": "_PROFILES",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of get_profile)"
+  },
+  {
+   "facade": "agent.coding_context",
+   "name": "coding_system_blocks",
+   "kind": "restored-def",
+   "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "agent.coding_context",
@@ -719,8 +719,8 @@
   {
    "facade": "agent.credential_sources",
    "name": "register",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
+   "kind": "moved",
+   "target": "auth.source_removal"
   },
   {
    "facade": "agent.display",
@@ -814,13 +814,13 @@
   },
   {
    "facade": "agent.lsp.eventlog",
-   "name": "_announced_no_server",
+   "name": "_announce_once",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of log_no_server_configured)"
   },
   {
    "facade": "agent.lsp.eventlog",
-   "name": "_announce_once",
+   "name": "_announced_no_server",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of log_no_server_configured)"
   },
@@ -916,15 +916,15 @@
   },
   {
    "facade": "agent.pet.generate.atlas",
-   "name": "io",
-   "kind": "restored-import",
-   "target": "io"
-  },
-  {
-   "facade": "agent.pet.generate.atlas",
    "name": "atlas_to_webp_bytes",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "agent.pet.generate.atlas",
+   "name": "io",
+   "kind": "restored-import",
+   "target": "io"
   },
   {
    "facade": "agent.pet.generate.atlas",
@@ -1066,12 +1066,6 @@
   },
   {
    "facade": "agent.secret_sources.command",
-   "name": "parse_secret_output",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of get_command_secret)"
-  },
-  {
-   "facade": "agent.secret_sources.command",
    "name": "get_command_secret",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
@@ -1087,6 +1081,12 @@
    "name": "list_command_secrets",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "agent.secret_sources.command",
+   "name": "parse_secret_output",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of get_command_secret)"
   },
   {
    "facade": "agent.secret_sources.command",
@@ -1744,15 +1744,15 @@
   },
   {
    "facade": "gateway.delivery_ledger",
-   "name": "json",
-   "kind": "restored-import",
-   "target": "json"
-  },
-  {
-   "facade": "gateway.delivery_ledger",
    "name": "debug_rows",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "gateway.delivery_ledger",
+   "name": "json",
+   "kind": "restored-import",
+   "target": "json"
   },
   {
    "facade": "gateway.delivery_ledger",
@@ -1822,13 +1822,13 @@
   },
   {
    "facade": "gateway.hosted_room_peer",
-   "name": "_LINK_PRIORITY",
+   "name": "RoomLinkProbe",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of select_room_link)"
   },
   {
    "facade": "gateway.hosted_room_peer",
-   "name": "RoomLinkProbe",
+   "name": "_LINK_PRIORITY",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of select_room_link)"
   },
@@ -1954,15 +1954,15 @@
   },
   {
    "facade": "gateway.platforms.helpers",
-   "name": "asyncio",
-   "kind": "restored-import",
-   "target": "asyncio"
-  },
-  {
-   "facade": "gateway.platforms.helpers",
    "name": "TextBatchAggregator",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "gateway.platforms.helpers",
+   "name": "asyncio",
+   "kind": "restored-import",
+   "target": "asyncio"
   },
   {
    "facade": "gateway.platforms.helpers",
@@ -2002,36 +2002,6 @@
   },
   {
    "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "logging",
-   "kind": "restored-import",
-   "target": "logging"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "Callable",
-   "kind": "restored-import",
-   "target": "typing"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "Awaitable",
-   "kind": "restored-import",
-   "target": "typing"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "logger",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of ApprovalSender)"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "PostMessageFn",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of ApprovalSender)"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
    "name": "ApprovalSender",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
@@ -2039,7 +2009,19 @@
   {
    "facade": "gateway.platforms.qqbot.keyboards",
    "name": "Awaitable",
+   "kind": "restored-import",
+   "target": "typing"
+  },
+  {
+   "facade": "gateway.platforms.qqbot.keyboards",
+   "name": "Awaitable",
    "kind": "import",
+   "target": "typing"
+  },
+  {
+   "facade": "gateway.platforms.qqbot.keyboards",
+   "name": "Callable",
+   "kind": "restored-import",
    "target": "typing"
   },
   {
@@ -2051,14 +2033,32 @@
   {
    "facade": "gateway.platforms.qqbot.keyboards",
    "name": "PostMessageFn",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of ApprovalSender)"
+  },
+  {
+   "facade": "gateway.platforms.qqbot.keyboards",
+   "name": "PostMessageFn",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "gateway.platforms.qqbot.keyboards",
    "name": "logger",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of ApprovalSender)"
+  },
+  {
+   "facade": "gateway.platforms.qqbot.keyboards",
+   "name": "logger",
    "kind": "moved-lazy",
    "target": "gateway.platforms.qqbot.adapter"
+  },
+  {
+   "facade": "gateway.platforms.qqbot.keyboards",
+   "name": "logging",
+   "kind": "restored-import",
+   "target": "logging"
   },
   {
    "facade": "gateway.platforms.qqbot.keyboards",
@@ -2146,7 +2146,7 @@
   },
   {
    "facade": "gateway.platforms.yuanbao_proto",
-   "name": "_encode_forward_multimedia",
+   "name": "_encode_forward_msg",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of encode_forward_msg_data)"
   },
@@ -2158,7 +2158,7 @@
   },
   {
    "facade": "gateway.platforms.yuanbao_proto",
-   "name": "_encode_forward_msg",
+   "name": "_encode_forward_multimedia",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of encode_forward_msg_data)"
   },
@@ -2224,19 +2224,13 @@
   },
   {
    "facade": "gateway.relay.auth",
-   "name": "_hmac_hex",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of verify_delivery_signature)"
-  },
-  {
-   "facade": "gateway.relay.auth",
-   "name": "verify_signature",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of verify_delivery_signature)"
-  },
-  {
-   "facade": "gateway.relay.auth",
    "name": "_delivery_payload",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of verify_delivery_signature)"
+  },
+  {
+   "facade": "gateway.relay.auth",
+   "name": "_hmac_hex",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of verify_delivery_signature)"
   },
@@ -2245,6 +2239,12 @@
    "name": "verify_delivery_signature",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "gateway.relay.auth",
+   "name": "verify_signature",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of verify_delivery_signature)"
   },
   {
    "facade": "gateway.relay.auth",
@@ -2703,6 +2703,12 @@
    "target": "agent.account_usage"
   },
   {
+   "facade": "gateway.startup_watchdog",
+   "name": "*",
+   "kind": "module-stub",
+   "target": "gateway.shutdown_watchdog"
+  },
+  {
    "facade": "gateway.status",
    "name": "clear_planned_stop_marker",
    "kind": "restored-def",
@@ -2772,25 +2778,25 @@
    "facade": "hermes_cli.auth",
    "name": "CODEX_OAUTH_USER_AGENT",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "hermes_cli.auth_codex"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_codex"
+   "target": "auth.providers.codex_quota"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "DEFAULT_SPOTIFY_REDIRECT_URI",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
@@ -2802,55 +2808,55 @@
    "facade": "hermes_cli.auth",
    "name": "MINIMAX_OAUTH_GRANT_TYPE",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "NOUS_INFERENCE_INVOKE_SCOPE",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "NOUS_SHARED_STORE_FILENAME",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_nous"
+   "target": "auth.providers.nous_store"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "OAUTH_OVER_SSH_DOCS_URL",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "QWEN_OAUTH_CLIENT_ID",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "QWEN_OAUTH_TOKEN_URL",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "SINGLE_USE_OAUTH_SINGLETON_FILES",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_oauth_grants"
+   "target": "auth.oauth_grants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "SPOTIFY_DASHBOARD_URL",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
@@ -2862,19 +2868,19 @@
    "facade": "hermes_cli.auth",
    "name": "XAI_OAUTH_DEVICE_CODE_URL",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "XAI_OAUTH_DISCOVERY_URL",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
    "name": "XAI_OAUTH_ISSUER",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
+   "target": "auth.constants"
   },
   {
    "facade": "hermes_cli.auth",
@@ -2898,7 +2904,7 @@
    "facade": "hermes_cli.auth",
    "name": "refresh_nous_oauth_pure",
    "kind": "moved-lazy",
-   "target": "hermes_cli.auth_nous"
+   "target": "auth.providers.nous"
   },
   {
    "facade": "hermes_cli.auth",
@@ -3016,12 +3022,6 @@
   },
   {
    "facade": "hermes_cli.commands",
-   "name": "_requires_argument",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of discord_skill_commands)"
-  },
-  {
-   "facade": "hermes_cli.commands",
    "name": "_CMD_NAME_LIMIT",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of discord_skill_commands)"
@@ -3035,6 +3035,12 @@
   {
    "facade": "hermes_cli.commands",
    "name": "_collect_gateway_skill_entries",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of discord_skill_commands)"
+  },
+  {
+   "facade": "hermes_cli.commands",
+   "name": "_requires_argument",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of discord_skill_commands)"
   },
@@ -3118,15 +3124,15 @@
   },
   {
    "facade": "hermes_cli.config",
-   "name": "normalize_route_base_url",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.route_identity"
-  },
-  {
-   "facade": "hermes_cli.config",
    "name": "_install_method_project_root",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of stamp_install_method)"
+  },
+  {
+   "facade": "hermes_cli.config",
+   "name": "normalize_route_base_url",
+   "kind": "moved-lazy",
+   "target": "hermes_cli.route_identity"
   },
   {
    "facade": "hermes_cli.config",
@@ -3844,15 +3850,15 @@
   },
   {
    "facade": "hermes_cli.moa_config",
-   "name": "encode_moa_turn",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of build_moa_turn_prompt)"
-  },
-  {
-   "facade": "hermes_cli.moa_config",
    "name": "build_moa_turn_prompt",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "hermes_cli.moa_config",
+   "name": "encode_moa_turn",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of build_moa_turn_prompt)"
   },
   {
    "facade": "hermes_cli.moa_config",
@@ -4189,6 +4195,12 @@
    "name": "managed_nous_tools_enabled",
    "kind": "moved-lazy",
    "target": "tools.tool_backend_helpers"
+  },
+  {
+   "facade": "hermes_cli.observability.relay_runtime",
+   "name": "*",
+   "kind": "module-stub",
+   "target": "agent.relay_runtime"
   },
   {
    "facade": "hermes_cli.observability.relay_shared_metrics",
@@ -4600,39 +4612,21 @@
   },
   {
    "facade": "hermes_cli.telegram_managed_bot",
-   "name": "auto_setup_telegram_bot",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "secrets",
-   "kind": "restored-import",
-   "target": "secrets"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
    "name": "_USERNAME_SLUG_ALPHABET",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of generate_bot_username)"
   },
   {
    "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_username_slug",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of generate_bot_username)"
+   "name": "auto_setup_telegram_bot",
+   "kind": "restored-def",
+   "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "hermes_cli.telegram_managed_bot",
    "name": "generate_bot_username",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "urllib",
-   "kind": "restored-import",
-   "target": "urllib.parse"
   },
   {
    "facade": "hermes_cli.telegram_managed_bot",
@@ -4645,6 +4639,12 @@
    "name": "generate_pairing_nonce",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "hermes_cli.telegram_managed_bot",
+   "name": "generate_username_slug",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of generate_bot_username)"
   },
   {
    "facade": "hermes_cli.telegram_managed_bot",
@@ -4667,8 +4667,20 @@
   {
    "facade": "hermes_cli.telegram_managed_bot",
    "name": "secrets",
+   "kind": "restored-import",
+   "target": "secrets"
+  },
+  {
+   "facade": "hermes_cli.telegram_managed_bot",
+   "name": "secrets",
    "kind": "import",
    "target": "secrets"
+  },
+  {
+   "facade": "hermes_cli.telegram_managed_bot",
+   "name": "urllib",
+   "kind": "restored-import",
+   "target": "urllib.parse"
   },
   {
    "facade": "hermes_cli.telegram_managed_bot",
@@ -8596,15 +8608,15 @@
   },
   {
    "facade": "plugins.spotify.client",
-   "name": "json",
-   "kind": "restored-import",
-   "target": "json"
-  },
-  {
-   "facade": "plugins.spotify.client",
    "name": "compact_json",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "plugins.spotify.client",
+   "name": "json",
+   "kind": "restored-import",
+   "target": "json"
   },
   {
    "facade": "plugins.spotify.client",
@@ -8668,9 +8680,9 @@
   },
   {
    "facade": "plugins.teams_pipeline.subscriptions",
-   "name": "resolve_teams_pipeline_store_path",
-   "kind": "restored-import",
-   "target": "plugins.teams_pipeline.store"
+   "name": "build_store",
+   "kind": "restored-def",
+   "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "plugins.teams_pipeline.subscriptions",
@@ -8680,15 +8692,15 @@
   },
   {
    "facade": "plugins.teams_pipeline.subscriptions",
-   "name": "build_store",
+   "name": "resolve_store_path",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "plugins.teams_pipeline.subscriptions",
-   "name": "resolve_store_path",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
+   "name": "resolve_teams_pipeline_store_path",
+   "kind": "restored-import",
+   "target": "plugins.teams_pipeline.store"
   },
   {
    "facade": "plugins.teams_pipeline.subscriptions",
@@ -9867,6 +9879,12 @@
    "target": "dataclasses"
   },
   {
+   "facade": "tools.environments.modal_utils",
+   "name": "*",
+   "kind": "module-stub",
+   "target": "(deleted)"
+  },
+  {
    "facade": "tools.environments.vercel_sandbox",
    "name": "dataclass",
    "kind": "import",
@@ -9994,21 +10012,9 @@
   },
   {
    "facade": "tools.file_operations",
-   "name": "build_write_denied_paths",
-   "kind": "restored-import",
-   "target": "agent.file_safety"
-  },
-  {
-   "facade": "tools.file_operations",
    "name": "WRITE_DENIED_PATHS",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.file_operations",
-   "name": "build_write_denied_prefixes",
-   "kind": "restored-import",
-   "target": "agent.file_safety"
   },
   {
    "facade": "tools.file_operations",
@@ -10019,7 +10025,19 @@
   {
    "facade": "tools.file_operations",
    "name": "build_write_denied_paths",
+   "kind": "restored-import",
+   "target": "agent.file_safety"
+  },
+  {
+   "facade": "tools.file_operations",
+   "name": "build_write_denied_paths",
    "kind": "moved-lazy",
+   "target": "agent.file_safety"
+  },
+  {
+   "facade": "tools.file_operations",
+   "name": "build_write_denied_prefixes",
+   "kind": "restored-import",
    "target": "agent.file_safety"
   },
   {
@@ -10138,25 +10156,7 @@
   },
   {
    "facade": "tools.managed_tool_gateway",
-   "name": "urlsplit",
-   "kind": "restored-import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "tools.managed_tool_gateway",
    "name": "_MANAGED_GATEWAY_VENDOR",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of build_managed_media_uploader)"
-  },
-  {
-   "facade": "tools.managed_tool_gateway",
-   "name": "is_managed_nous_gateway_url",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of build_managed_media_uploader)"
-  },
-  {
-   "facade": "tools.managed_tool_gateway",
-   "name": "managed_gateway_auth_headers",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of build_managed_media_uploader)"
   },
@@ -10193,8 +10193,20 @@
   {
    "facade": "tools.managed_tool_gateway",
    "name": "is_managed_nous_gateway_url",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of build_managed_media_uploader)"
+  },
+  {
+   "facade": "tools.managed_tool_gateway",
+   "name": "is_managed_nous_gateway_url",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "tools.managed_tool_gateway",
+   "name": "managed_gateway_auth_headers",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of build_managed_media_uploader)"
   },
   {
    "facade": "tools.managed_tool_gateway",
@@ -10210,12 +10222,6 @@
   },
   {
    "facade": "tools.managed_tool_gateway",
-   "name": "managed_vendor_upload_path",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of managed_vendor_endpoints)"
-  },
-  {
-   "facade": "tools.managed_tool_gateway",
    "name": "managed_vendor_endpoints",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
@@ -10223,8 +10229,20 @@
   {
    "facade": "tools.managed_tool_gateway",
    "name": "managed_vendor_upload_path",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of managed_vendor_endpoints)"
+  },
+  {
+   "facade": "tools.managed_tool_gateway",
+   "name": "managed_vendor_upload_path",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "tools.managed_tool_gateway",
+   "name": "urlsplit",
+   "kind": "restored-import",
+   "target": "urllib.parse"
   },
   {
    "facade": "tools.managed_tool_gateway",
@@ -10690,18 +10708,6 @@
   },
   {
    "facade": "tools.skill_usage",
-   "name": "os",
-   "kind": "restored-import",
-   "target": "os"
-  },
-  {
-   "facade": "tools.skill_usage",
-   "name": "tempfile",
-   "kind": "restored-import",
-   "target": "tempfile"
-  },
-  {
-   "facade": "tools.skill_usage",
    "name": "_suppressed_file",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of add_suppressed_name)"
@@ -10727,6 +10733,12 @@
   {
    "facade": "tools.skill_usage",
    "name": "os",
+   "kind": "restored-import",
+   "target": "os"
+  },
+  {
+   "facade": "tools.skill_usage",
+   "name": "os",
    "kind": "import",
    "target": "os"
   },
@@ -10735,6 +10747,12 @@
    "name": "remove_suppressed_name",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "tools.skill_usage",
+   "name": "tempfile",
+   "kind": "restored-import",
+   "target": "tempfile"
   },
   {
    "facade": "tools.skill_usage",
@@ -11908,6 +11926,12 @@
   },
   {
    "facade": "tools.tts_tool",
+   "name": "FALLBACK_MAX_TEXT_LENGTH",
+   "kind": "restored-helper",
+   "target": "(deleted; restored as a dependency of MAX_TEXT_LENGTH)"
+  },
+  {
+   "facade": "tools.tts_tool",
    "name": "Future",
    "kind": "import",
    "target": "concurrent.futures"
@@ -11947,12 +11971,6 @@
    "name": "MANAGED_OPENAI_TTS_MODELS",
    "kind": "moved-lazy",
    "target": "tools.tts_tool_openai"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "FALLBACK_MAX_TEXT_LENGTH",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of MAX_TEXT_LENGTH)"
   },
   {
    "facade": "tools.tts_tool",
@@ -12382,15 +12400,9 @@
   },
   {
    "facade": "tui_gateway.compute_host",
-   "name": "dataclass",
-   "kind": "restored-import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
-   "name": "field",
-   "kind": "restored-import",
-   "target": "dataclasses"
+   "name": "HostSession",
+   "kind": "restored-def",
+   "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "tui_gateway.compute_host",
@@ -12400,12 +12412,6 @@
   },
   {
    "facade": "tui_gateway.compute_host",
-   "name": "HostSession",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
    "name": "SpikeAgent",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
@@ -12413,7 +12419,19 @@
   {
    "facade": "tui_gateway.compute_host",
    "name": "dataclass",
+   "kind": "restored-import",
+   "target": "dataclasses"
+  },
+  {
+   "facade": "tui_gateway.compute_host",
+   "name": "dataclass",
    "kind": "import",
+   "target": "dataclasses"
+  },
+  {
+   "facade": "tui_gateway.compute_host",
+   "name": "field",
+   "kind": "restored-import",
    "target": "dataclasses"
   },
   {
@@ -12487,24 +12505,6 @@
    "name": "types",
    "kind": "import",
    "target": "types"
-  },
-  {
-   "facade": "gateway.startup_watchdog",
-   "name": "*",
-   "kind": "module-stub",
-   "target": "gateway.shutdown_watchdog"
-  },
-  {
-   "facade": "hermes_cli.observability.relay_runtime",
-   "name": "*",
-   "kind": "module-stub",
-   "target": "agent.relay_runtime"
-  },
-  {
-   "facade": "tools.environments.modal_utils",
-   "name": "*",
-   "kind": "module-stub",
-   "target": "(deleted)"
   }
  ]
 }

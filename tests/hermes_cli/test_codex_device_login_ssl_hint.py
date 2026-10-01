@@ -1,3 +1,8 @@
+
+import auth.providers.codex_device as _auth_auth_providers_codex_device
+import auth.providers.codex_http as _auth_auth_providers_codex_http
+
+import auth.providers.codex as _auth_auth_providers_codex
 """Codex device-login transport errors keep the underlying SSL detail and add a hint (#106384).
 
 OpenSSL 3.5+ advertises post-quantum hybrid groups; some middleboxes drop the resulting larger
@@ -13,7 +18,7 @@ import httpx
 import pytest
 
 from hermes_cli import auth_codex
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 
 
 _SSL_EOF_MESSAGE = (
@@ -37,13 +42,13 @@ class _RaisingClient:
 
 
 def _login_post():
-    return auth_codex._codex_login_post(
+    return _auth_auth_providers_codex_http._codex_login_post(
         "https://auth.openai.com/api/accounts/deviceauth/usercode",
         failure=("Failed to request device code", "device_code_request_failed"))
 
 
 def _poll():
-    return auth_codex._codex_poll_authorization_code(
+    return _auth_auth_providers_codex_device._codex_poll_authorization_code(
         "https://auth.openai.com", device_auth_id="da", user_code="uc", poll_interval=0)
 
 
@@ -53,7 +58,8 @@ def _poll():
     ids=["login_post", "poll"])
 def test_ssl_transport_error_keeps_detail_and_adds_hint(monkeypatch, call, code):
     exc = ssl.SSLEOFError(8, _SSL_EOF_MESSAGE)
-    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: _RaisingClient(exc))
+    monkeypatch.setattr(_auth_auth_providers_codex_http, "_codex_http_client", lambda **kw: _RaisingClient(exc))
+    monkeypatch.setattr(_auth_auth_providers_codex_device, "_codex_http_client", lambda **kw: _RaisingClient(exc))
     # The persistent-blip path retries before failing (see test_codex_device_login_transient_retry);
     # skip its backoff sleeps so this shape test stays instant.
     monkeypatch.setattr(auth_codex.time, "sleep", lambda *_: None)
@@ -70,7 +76,7 @@ def test_ssl_transport_error_keeps_detail_and_adds_hint(monkeypatch, call, code)
 
 def test_plain_timeout_has_no_ssl_hint(monkeypatch):
     exc = httpx.ConnectTimeout("timed out")
-    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: _RaisingClient(exc))
+    monkeypatch.setattr(_auth_auth_providers_codex_http, "_codex_http_client", lambda **kw: _RaisingClient(exc))
     monkeypatch.setattr(auth_codex.time, "sleep", lambda *_: None)  # skip retry backoff
 
     with pytest.raises(AuthError) as excinfo:

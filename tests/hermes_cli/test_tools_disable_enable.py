@@ -94,7 +94,7 @@ def test_tools_action_accepts_deferred_plugin_without_materializing(action, caps
     if action != "list":
         args.names = ["web"]
 
-    def discover_deferred_platform():
+    def discover_deferred_platform(**_auth_settings):
         platform_registry.register_deferred(platform, loader)
 
     try:

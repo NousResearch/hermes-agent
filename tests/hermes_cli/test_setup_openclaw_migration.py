@@ -243,7 +243,7 @@ class TestSetupWizardSkipsConfiguredSections:
             patch.object(setup_mod, "get_env_value", side_effect=env_side),
             patch.object(gateway_mod, "get_env_value", side_effect=env_side),
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch('auth.provider_state.get_active_provider', return_value=None),
             patch("builtins.input", return_value=""),
             patch.object(setup_mod, "prompt_choice", return_value=1),
             # Migration succeeds and flips the env_side flag

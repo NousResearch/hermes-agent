@@ -1,6 +1,11 @@
 """Tests for auth subcommands backed by the credential pool."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.anthropic as _auth_auth_providers_anthropic
+
 
 import base64
 import json
@@ -324,7 +329,7 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     token = _jwt_with_email("nous@example.com")
     monkeypatch.setattr(
-        "hermes_cli.auth._nous_device_code_login",
+        "hermes_cli.auth_nous._nous_device_code_login",
         lambda **kwargs: {
             "portal_base_url": "https://portal.example.com",
             "inference_base_url": "https://inference.example.com/v1",
@@ -401,7 +406,7 @@ def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     token = _jwt_with_email("nous@example.com")
     monkeypatch.setattr(
-        "hermes_cli.auth._nous_device_code_login",
+        "hermes_cli.auth_nous._nous_device_code_login",
         lambda **kwargs: {
             "portal_base_url": "https://portal.example.com",
             "inference_base_url": "https://inference.example.com/v1",
@@ -463,6 +468,7 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     second independent one. ``hermes auth list`` showed two labels sharing
     one token pair, and rotation silently always used the latest account.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     first_token = _jwt_with_email("first-codex@example.com")
@@ -487,10 +493,10 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
             },
         ]
     )
-    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", lambda: next(logins))
+    monkeypatch.setattr("hermes_cli.auth_codex._codex_device_code_login", lambda: next(logins))
 
     from hermes_cli.auth_commands import auth_add_command
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
     class _Args:
         provider = "openai-codex"
@@ -501,7 +507,7 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     auth_add_command(_Args())
     auth_add_command(_Args())
 
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     entries = pool.entries()
 
     assert [entry.source for entry in entries] == [
@@ -540,7 +546,7 @@ def _add_codex_twice(tmp_path, monkeypatch, capsys, second_token: str) -> str:
         {"tokens": {"access_token": _codex_jwt("me@example.com", "acct-A", "user-1"), "refresh_token": "rt-1"}, **codex_login},
         {"tokens": {"access_token": second_token, "refresh_token": "rt-2"}, **codex_login},
     ])
-    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", lambda: next(logins))
+    monkeypatch.setattr("hermes_cli.auth_codex._codex_device_code_login", lambda: next(logins))
     from hermes_cli.auth_commands import auth_add_command
 
     class _Args:
@@ -561,21 +567,22 @@ def test_auth_add_codex_warns_when_login_is_same_account_as_pooled_entry(tmp_pat
     the provider revokes the older one, so the extra entry buys no quota. Different accounts
     get no warning — they rotate independently.
     """
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("me@example.com", "acct-A", "user-1"))
     assert "me@example.com" in err
     # The warning informs; it never blocks the add.
-    assert len(load_pool("openai-codex").entries()) == 2
+    assert len(load_pool("openai-codex", environment=credential_pool_environment()).entries()) == 2
 
 
 def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, _codex_pool_only_store())
 
-    from hermes_cli.auth import get_codex_auth_status
+    from auth.provider_status import get_codex_auth_status
 
-    status = get_codex_auth_status()
+    status = get_codex_auth_status(environment=credential_pool_environment())
 
     assert status["logged_in"] is True
     assert status["source"] == "pool:codex@example.com"
@@ -585,10 +592,12 @@ def test_codex_runtime_pool_only_rate_limit_is_not_missing_auth(tmp_path, monkey
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, _codex_pool_only_store(exhausted=True))
 
-    from hermes_cli.auth import AuthError, CODEX_RATE_LIMITED_CODE, resolve_codex_runtime_credentials
+    from auth.errors import AuthError
+    from auth.constants import CODEX_RATE_LIMITED_CODE
+    from auth.providers.codex import resolve_codex_runtime_credentials
 
     with pytest.raises(AuthError) as exc_info:
-        resolve_codex_runtime_credentials()
+        resolve_codex_runtime_credentials(environment=_phase6_auth_environment())
 
     assert exc_info.value.code == CODEX_RATE_LIMITED_CODE
     assert exc_info.value.relogin_required is False
@@ -602,6 +611,7 @@ def test_auth_add_xai_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
     save, so the second login overwrote the first account's singleton-mirrored
     ``device_code`` entry instead of adding a second independent one.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     first_token = "xai-access-token-account-a"
@@ -637,12 +647,12 @@ def test_auth_add_xai_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        "hermes_cli.auth._xai_oauth_device_code_login",
+        "hermes_cli.auth_xai._xai_oauth_device_code_login",
         lambda **kwargs: next(logins),
     )
 
     from hermes_cli.auth_commands import auth_add_command
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
     class _Args:
         provider = "xai-oauth"
@@ -662,7 +672,7 @@ def test_auth_add_xai_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
     auth_add_command(_ArgsA())
     auth_add_command(_ArgsB())
 
-    pool = load_pool("xai-oauth")
+    pool = load_pool("xai-oauth", environment=credential_pool_environment())
     entries = pool.entries()
 
     assert [entry.source for entry in entries] == [
@@ -690,8 +700,8 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setattr(
-        "agent.credential_pool._seed_from_singletons",
-        lambda provider, entries: (False, set()),
+        "auth.pool_sources._seed_from_singletons",
+        lambda provider, entries, environment=None: (False, set()),
     )
     _write_auth_store(
         tmp_path,
@@ -737,6 +747,7 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
 
 def test_auth_remove_codex_migrates_legacy_dict_suppression(tmp_path, monkeypatch):
     """Removing a Codex credential must tolerate legacy dict suppression data."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     store = _codex_pool_only_store()
     primary = store["credential_pool"]["openai-codex"][0]
@@ -760,9 +771,9 @@ def test_auth_remove_codex_migrates_legacy_dict_suppression(tmp_path, monkeypatc
         "manual:device_code",
     ]
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    assert load_pool("openai-codex").peek() is None
+    assert load_pool("openai-codex", environment=credential_pool_environment()).peek() is None
 
 
 def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch):
@@ -800,7 +811,7 @@ def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch
         },
     )
 
-    from hermes_cli.auth import clear_provider_auth
+    from auth.provider_state import clear_provider_auth
 
     assert clear_provider_auth("anthropic") is True
 
@@ -829,7 +840,7 @@ def test_logout_resets_codex_config_when_auth_state_already_cleared(tmp_path, mo
     )
 
     from types import SimpleNamespace
-    from hermes_cli.auth import logout_command
+    from hermes_cli.auth_commands import logout_command
 
     logout_command(SimpleNamespace(provider="openai-codex"))
 
@@ -843,7 +854,7 @@ def test_unsuppress_credential_source_clears_marker(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1})
 
-    from hermes_cli.auth import suppress_credential_source, unsuppress_credential_source, is_source_suppressed
+    from auth.sources import suppress_credential_source, unsuppress_credential_source, is_source_suppressed
 
     suppress_credential_source("openai-codex", "device_code")
     assert is_source_suppressed("openai-codex", "device_code") is True
@@ -862,11 +873,7 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1})
 
-    from hermes_cli.auth import (
-        suppress_credential_source,
-        unsuppress_credential_source,
-        is_source_suppressed,
-    )
+    from auth.sources import suppress_credential_source, unsuppress_credential_source, is_source_suppressed
 
     suppress_credential_source("openai-codex", "device_code")
     suppress_credential_source("anthropic", "claude_code")
@@ -877,7 +884,7 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
 
 # =============================================================================
 # Unified credential-source stickiness — every source Hermes reads from has a
-# registered RemovalStep in agent.credential_sources, and every seeding path
+# registered RemovalStep in auth.source_policy, and every seeding path
 # gates on is_source_suppressed.  Below: one test per source proving remove
 # sticks across a fresh load_pool() call.
 # =============================================================================
@@ -885,6 +892,7 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
 
 def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeypatch):
     """anthropic hermes_pkce must not re-seed from ~/.hermes/.anthropic_oauth.json when suppressed."""
+    from hermes_cli.config_credentials import credential_pool_environment
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -898,15 +906,15 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
     }))
 
     # Stub the readers so only hermes_pkce is "available"; claude_code returns None
-    import agent.anthropic_credentials as aa
-    monkeypatch.setattr(aa, "read_hermes_oauth_credentials", lambda: {
+    import auth.providers.anthropic as aa
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "read_hermes_oauth_credentials", lambda: {
         "accessToken": "tok", "refreshToken": "r", "expiresAt": 9999999999000,
     })
-    monkeypatch.setattr(aa, "read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "read_claude_code_credentials", lambda**_auth_settings: None)
 
-    from agent.credential_pool import _seed_from_singletons
+    from auth.pool_sources import _seed_from_singletons
     entries = []
-    changed, active = _seed_from_singletons("anthropic", entries)
+    changed, active = _seed_from_singletons("anthropic", entries, environment=credential_pool_environment())
     # hermes_pkce suppressed, claude_code returns None → nothing should be seeded
     assert entries == []
     assert "hermes_pkce" not in active
@@ -934,14 +942,14 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     )
 
     from types import SimpleNamespace
-    from hermes_cli.auth import is_source_suppressed
+    from auth.sources import is_source_suppressed
     from hermes_cli.auth_commands import auth_remove_command
 
     with patch(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+        'auth.providers.copilot.resolve_copilot_token',
         return_value=("ghp_fake", "gh"),
     ), patch(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
+        'auth.providers.copilot.get_copilot_api_token',
         return_value=("ghu_fake_api", None),
     ):
         auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
@@ -1003,7 +1011,7 @@ def test_auth_add_openrouter_oauth_persists_pkce_key_without_touching_api_key_de
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    monkeypatch.setattr("hermes_cli.auth._openrouter_pkce_login", lambda **kw: {"api_key": "sk-or-v1-from-pkce"})
+    monkeypatch.setattr("hermes_cli.auth_openrouter._openrouter_pkce_login", lambda **kw: {"api_key": "sk-or-v1-from-pkce"})
 
     from hermes_cli.auth import resolve_provider
     from hermes_cli.auth_commands import auth_add_command

@@ -16,7 +16,7 @@ NOT in ``available`` until the refresh has run.
 
 import threading
 
-from agent.credential_pool import CredentialPool, PooledCredential
+from auth.credential_pool import CredentialPool, PooledCredential
 
 
 def _entry(entry_id: str) -> PooledCredential:
@@ -41,6 +41,9 @@ def _bare_pool(entries):
     pool._max_concurrent = 2
     pool._unmatched_rotation_streak = 0
     pool.provider = "anthropic"
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool.environment = credential_pool_environment()
+    pool._provider_hooks = pool.environment.provider_hooks(pool.provider)
     return pool
 
 

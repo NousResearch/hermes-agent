@@ -163,11 +163,11 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
 
     monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
     monkeypatch.setattr(
-        "hermes_cli.auth.get_codex_auth_status",
-        lambda: {"logged_in": True, "source": "hermes-auth-store"},
+        "auth.provider_status.get_codex_auth_status",
+        lambda **_kwargs: {"logged_in": True, "source": "hermes-auth-store"},
     )
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        'auth.providers.codex.resolve_codex_runtime_credentials',
         lambda *args, **kwargs: {"api_key": "fresh-codex-token"},
     )
 
@@ -175,13 +175,13 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
         captured["login_calls"] += 1
         captured["force_new_login"] = force_new_login
 
-    monkeypatch.setattr("hermes_cli.auth._login_openai_codex", _fake_login)
+    monkeypatch.setattr("hermes_cli.auth_codex._login_openai_codex", _fake_login)
     monkeypatch.setattr(
         "hermes_cli.codex_models.get_codex_model_ids",
         lambda access_token=None, **_kw: ["gpt-5.4", "gpt-5.5"],
     )
     monkeypatch.setattr(
-        "hermes_cli.auth._prompt_model_selection",
+        "hermes_cli.auth_model_picker._prompt_model_selection",
         lambda model_ids, current_model="", **_kwargs: None,
     )
 

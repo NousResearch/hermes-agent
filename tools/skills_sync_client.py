@@ -9,6 +9,8 @@ OPT-IN DEFAULT (provisional): local intent is the ``sync`` flag in ``.usage.json
 cross-device state is the ``sync-manifest`` blob in the plane. Only ~/.hermes/skills/ skills qualify."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import json
 import logging
@@ -40,8 +42,8 @@ def resolve_identity() -> Dict[str, Any]:
     ``owner`` is advisory (local ref naming; the server derives the real one). The JWT is decoded
     WITHOUT verification: safe, the claims only decide whether to attempt sync, never authz."""
     try:
-        from hermes_cli.auth import resolve_nous_runtime_credentials
-        creds = resolve_nous_runtime_credentials() or {}
+        from auth.providers.nous import resolve_nous_runtime_credentials
+        creds = resolve_nous_runtime_credentials(environment=_phase6_auth_environment()) or {}
     except Exception as e:
         raise SyncInertError(f"no Nous credentials: {e}") from e
     if not (api_key := creds.get("api_key")):

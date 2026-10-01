@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from utils import normalize_proxy_env_vars
 
-from agent.anthropic_credentials import _is_oauth_token
+from auth.providers.anthropic import _is_oauth_token
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
@@ -385,7 +385,7 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
-    from agent.anthropic_credentials import anthropic_route_is_oauth
+    from auth.providers.anthropic import anthropic_route_is_oauth
     if anthropic_route_is_oauth(base_url, token_provider):
         # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
         # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
@@ -865,20 +865,20 @@ from urllib.parse import urlparse  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'CredentialPersistError': ('agent.anthropic_credentials', 'CredentialPersistError'),
+    'CredentialPersistError': ('auth.providers.anthropic', 'CredentialPersistError'),
     'base_url_host_matches': ('utils', 'base_url_host_matches'),
     'base_url_hostname': ('utils', 'base_url_hostname'),
-    'claude_code_credentials_path': ('agent.anthropic_credentials', 'claude_code_credentials_path'),
+    'claude_code_credentials_path': ('auth.providers.anthropic', 'claude_code_credentials_path'),
     'get_hermes_home': ('hermes_constants', 'get_hermes_home'),
-    'is_claude_code_token_valid': ('agent.anthropic_credentials', 'is_claude_code_token_valid'),
-    'is_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'is_rotation_consumed_uncommitted'),
-    'mark_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'mark_rotation_consumed_uncommitted'),
-    'read_claude_code_credentials': ('agent.anthropic_credentials', 'read_claude_code_credentials'),
-    'read_hermes_oauth_credentials': ('agent.anthropic_credentials', 'read_hermes_oauth_credentials'),
-    'refresh_anthropic_oauth_pure': ('agent.anthropic_credentials', 'refresh_anthropic_oauth_pure'),
-    'resolve_anthropic_token': ('agent.anthropic_credentials', 'resolve_anthropic_token'),
-    'run_hermes_oauth_login_pure': ('agent.anthropic_credentials', 'run_hermes_oauth_login_pure'),
-    'run_oauth_setup_token': ('agent.anthropic_credentials', 'run_oauth_setup_token'),
+    'is_claude_code_token_valid': ('auth.providers.anthropic', 'is_claude_code_token_valid'),
+    'is_rotation_consumed_uncommitted': ('auth.providers.anthropic', 'is_rotation_consumed_uncommitted'),
+    'mark_rotation_consumed_uncommitted': ('auth.providers.anthropic', 'mark_rotation_consumed_uncommitted'),
+    'read_claude_code_credentials': ('auth.providers.anthropic', 'read_claude_code_credentials'),
+    'read_hermes_oauth_credentials': ('auth.providers.anthropic', 'read_hermes_oauth_credentials'),
+    'refresh_anthropic_oauth_pure': ('auth.providers.anthropic', 'refresh_anthropic_oauth_pure'),
+    'resolve_anthropic_token': ('auth.providers.anthropic', 'resolve_anthropic_token'),
+    'run_hermes_oauth_login_pure': ('hermes_cli.auth_anthropic', 'run_hermes_oauth_login_pure'),
+    'run_oauth_setup_token': ('hermes_cli.auth_anthropic', 'run_oauth_setup_token'),
 }
 
 

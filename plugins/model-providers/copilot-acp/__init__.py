@@ -31,7 +31,7 @@ class CopilotACPProfile(ProviderProfile):
         ``base_url`` are ignored: the subprocess owns auth. None when the CLI is missing, refuses
         ``--acp``, or the probe fails/times out — callers fall back to their next source.
         """
-        from hermes_cli.auth import resolve_external_process_provider_credentials
+        from hermes_cli.runtime_provider_credentials import resolve_external_process_provider_credentials
 
         try:
             creds = resolve_external_process_provider_credentials(self.name)

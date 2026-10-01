@@ -490,7 +490,7 @@ def _anthropic_oauth_credentials_present() -> bool:
     """True when the user explicitly authenticated Anthropic via OAuth (Hermes device flow or Claude Code
     login) — those leave no trace in active_provider / model.provider / API-key env vars."""
     try:
-        from agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
+        from auth.providers.anthropic import read_claude_code_credentials, read_hermes_oauth_credentials
 
         readers = (read_hermes_oauth_credentials, read_claude_code_credentials)
         if any((read() or {}).get("accessToken") for read in readers):
@@ -501,8 +501,8 @@ def _anthropic_oauth_credentials_present() -> bool:
     # accepts them via pool.has_credentials(), so the filter must too or those rows are built then
     # silently dropped. Read-only (no load_pool) so a picker open never mutates auth.json.
     try:
-        from agent.credential_pool import AUTH_TYPE_OAUTH
-        from hermes_cli.auth import read_credential_pool
+        from auth.credential_pool import AUTH_TYPE_OAUTH
+        from auth.pool_persistence import read_credential_pool
 
         for entry in read_credential_pool("anthropic"):
             if (isinstance(entry, dict) and entry.get("auth_type") == AUTH_TYPE_OAUTH

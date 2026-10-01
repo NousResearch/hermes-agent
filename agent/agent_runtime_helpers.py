@@ -5,6 +5,8 @@ Each function takes the parent ``AIAgent`` as ``agent`` except the stateless mes
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 import contextlib
 import copy
 import json
@@ -23,7 +25,7 @@ from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
-from agent.credential_pool import (
+from auth.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
     credential_pool_matches_provider, resolve_runtime_pool_key,
 )
@@ -867,6 +869,7 @@ def recover_with_credential_pool(
     Rate limits: retry once, then rotate. Billing: rotate immediately. Auth: refresh before
     rotating. ``classified_reason`` beats raw HTTP codes (e.g. Anthropic 400 "out of extra
     usage"); ``billing_unverified`` gives the entry a short cooldown, not the one-hour bench."""
+    from hermes_cli.config_credentials import credential_pool_environment
     pool = agent._credential_pool
     if pool is None:
         return False, has_retried_429
@@ -882,7 +885,7 @@ def recover_with_credential_pool(
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if pool_provider and not credential_pool_matches_provider(
         pool, current_provider, base_url=getattr(agent, "base_url", None)
-    ):
+    , environment=credential_pool_environment()):
         # Same fail-closed boundary predicate as runtime binding.
         _ra().logger.warning(
             "Credential pool provider mismatch: pool=%s, agent=%s — "
@@ -897,6 +900,7 @@ def recover_with_credential_pool(
 
     def _rotate_and_swap(default_status: int, label: str) -> bool:
         """Rotate away from the failed credential; True when a new entry was swapped in."""
+        from hermes_cli.config_credentials import credential_pool_environment
         rotate_status = status_code if status_code is not None else default_status
         kwargs = {
             "status_code": rotate_status,
@@ -911,7 +915,7 @@ def recover_with_credential_pool(
             failure_reason = effective_reason.value
             if effective_reason == FailoverReason.billing and billing_unverified:
                 # Ambiguous billing body: size the cooldown as transient, not a 1-hour bench.
-                from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+                from auth.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
                 failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
             kwargs["failure_reason"] = failure_reason
         model = getattr(agent, "model", None)
@@ -920,7 +924,7 @@ def recover_with_credential_pool(
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False
-        if not credential_pool_entry_serves_endpoint(next_entry, getattr(agent, "base_url", None)):
+        if not credential_pool_entry_serves_endpoint(next_entry, getattr(agent, "base_url", None), environment=credential_pool_environment()):
             # Mixed same-provider pool (#68237): the entry serves another endpoint and _swap_credential
             # would rebind this session to it. Treat as no recovery, like a rotation that yields nothing.
             _ra().logger.info(
@@ -1274,13 +1278,15 @@ def restore_primary_runtime(agent) -> bool:
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 
     def _matches_primary(candidate) -> bool:
-        return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url)
+        from hermes_cli.config_credentials import credential_pool_environment
+        return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url, environment=credential_pool_environment())
 
     def _load_primary_pool():
         """Load the primary provider's pool; None when absent or provider-mismatched."""
-        from agent.credential_pool import load_pool
-        key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
-        loaded = load_pool(key) if key else None
+        from hermes_cli.config_credentials import credential_pool_environment
+        from auth.credential_pool import load_pool
+        key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url, environment=credential_pool_environment())
+        loaded = load_pool(key, environment=credential_pool_environment()) if key else None
         return loaded if loaded is not None and _matches_primary(loaded) else None
     blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
         agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
@@ -2018,7 +2024,7 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     if is_actual_route(new_provider, effective_base_url):
         api_mode = "chat_completions"
         if effective_base_url:
-            from hermes_cli.auth import normalize_actual_base_url
+            from hermes_cli.route_identity import normalize_actual_base_url
             base_url = normalize_actual_base_url(effective_base_url)
     destination_capabilities = (
         dict(capabilities)
@@ -2057,18 +2063,18 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
+        from auth.providers.anthropic import resolve_anthropic_token, anthropic_route_is_oauth
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
         effective_key = api_key or agent.api_key or (
-            resolve_anthropic_token(model=getattr(agent, "model", None)) if is_native_anthropic else ""
+            resolve_anthropic_token(model=getattr(agent, "model", None), environment=_phase6_auth_environment()) if is_native_anthropic else ""
         ) or ""
         # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
         # agent_init.py).
         if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
             try:
-                from hermes_cli.auth import build_minimax_oauth_token_provider
+                from auth.providers.minimax import build_minimax_oauth_token_provider
                 effective_key = build_minimax_oauth_token_provider()
             except Exception as _mm_exc:  # noqa: BLE001
                 logger.warning(
@@ -2115,6 +2121,7 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
 def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm) -> None:
     """Swap identity/transport fields, reload the pool, rebuild the client (rolled back by the caller on error)."""
     # Clear the per-config override so the new model's context window is re-resolved.
+    from hermes_cli.config_credentials import credential_pool_environment
     agent._config_context_length = None
     agent.model = new_model
     agent.provider = agent.requested_provider = new_provider
@@ -2144,8 +2151,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
         agent._credential_pool = None
         agent._credential_pool_entry_id = None
         try:
-            from agent.credential_pool import load_pool
-            agent._credential_pool = load_pool(new_provider)
+            from auth.credential_pool import load_pool
+            agent._credential_pool = load_pool(new_provider, environment=credential_pool_environment())
         except Exception as _pool_exc:  # noqa: BLE001
             logger.warning(
                 "switch_model: credential pool reload failed for %s (%s); "

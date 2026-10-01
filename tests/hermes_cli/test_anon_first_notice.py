@@ -1,3 +1,5 @@
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
 """CLI one-time notice: an explicit-provider install learns once that the Nous free tier exists."""
 
 import base64
@@ -7,7 +9,7 @@ import time
 import pytest
 
 from hermes_cli import anon_auth
-from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+from auth.store import _auth_store_lock, _load_auth_store, _save_auth_store
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 
 
@@ -23,7 +25,7 @@ def _seed_guest() -> None:
     with _auth_store_lock():
         store = _load_auth_store()
         store.setdefault("providers", {})["nous"] = {
-            "auth_method": anon_auth.ANON_AUTH_METHOD, "account_tier": "anonymous", "anon_token": "anon_0001",
+            "auth_method": _auth_auth_providers_nous_guest.ANON_AUTH_METHOD, "account_tier": "anonymous", "anon_token": "anon_0001",
             "client_id": "nas-anonymous", "access_token": _jwt(), "expires_at": "2999-01-01T00:00:00+00:00",
             "inference_base_url": "https://welcome-api.nousresearch.com/v1"}
         _save_auth_store(store)

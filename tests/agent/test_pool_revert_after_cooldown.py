@@ -9,9 +9,9 @@ its whole life. Credential-only: it must not touch the model/base_url/compressor
 
 import time
 
-import agent.credential_pool as cp
+import auth.credential_pool as cp
 from agent.agent_runtime_helpers import recover_with_credential_pool, restore_primary_runtime
-from agent.credential_pool import EXHAUSTED_TTL_429_SECONDS, CredentialPool, PooledCredential
+from auth.credential_pool import EXHAUSTED_TTL_429_SECONDS, CredentialPool, PooledCredential
 
 _BASE = "https://api.anthropic.com"
 
@@ -58,11 +58,12 @@ def _expire_cooldowns(monkeypatch, real=None, windows=1):
 
 
 def test_live_session_reverts_to_quota_benched_credential_once_cooldown_lifts(monkeypatch):
+    from hermes_cli.config_credentials import credential_pool_environment
     real_time = time.time
     pool = CredentialPool(provider="anthropic", entries=[
         _entry("pref0000", "subscription-oauth", priority=0, auth_type="oauth", token="sk-ant-oat01-PREF"),
         _entry("fall0000", "paid-api-key", priority=1, auth_type="api_key", token="sk-ant-api03-FALL"),
-    ])
+    ], environment=credential_pool_environment())
     agent = _LiveAgent(pool)
     assert agent.api_key == "sk-ant-oat01-PREF"
 
@@ -90,7 +91,7 @@ def test_live_session_reverts_to_quota_benched_credential_once_cooldown_lifts(mo
     pool2 = CredentialPool(provider="anthropic", entries=[
         _entry("pref0000", "subscription-oauth", priority=0, auth_type="oauth", token="sk-ant-oat01-PREF"),
         _entry("fall0000", "paid-api-key", priority=1, auth_type="api_key", token="sk-ant-api03-FALL"),
-    ])
+    ], environment=credential_pool_environment())
     monkeypatch.setattr(cp.time, "time", real_time)
     pool2.mark_exhausted_and_rotate(  # the OTHER session benches the preferred entry
         status_code=429, credential_id="pref0000", failure_reason="rate_limit", error_context={"message": "Error"},
@@ -109,10 +110,11 @@ def test_live_session_reverts_to_quota_benched_credential_once_cooldown_lifts(mo
 
 def test_auth_bench_does_not_arm_a_revert(monkeypatch):
     """A 401 bench is not a quota window: the session keeps the credential it rotated to."""
+    from hermes_cli.config_credentials import credential_pool_environment
     pool = CredentialPool(provider="anthropic", entries=[
         _entry("pref0000", "primary-key", priority=0, auth_type="api_key", token="sk-ant-api03-PREF"),
         _entry("fall0000", "backup-key", priority=1, auth_type="api_key", token="sk-ant-api03-FALL"),
-    ])
+    ], environment=credential_pool_environment())
     agent = _LiveAgent(pool)
     recovered, _ = recover_with_credential_pool(agent, status_code=401, has_retried_429=False, error_context={"message": "invalid"})
     assert recovered and agent.api_key == "sk-ant-api03-FALL"

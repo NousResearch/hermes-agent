@@ -7,6 +7,8 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import contextvars
 import copy
@@ -405,7 +407,8 @@ def fetch_nous_recommended_models(
 def _resolve_nous_portal_url() -> str:
     """Best-effort lookup of the Portal base URL the user is authed against."""
     try:
-        from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL, get_provider_auth_state
+        from auth.store_migrations import DEFAULT_NOUS_PORTAL_URL
+        from auth.provider_state import get_provider_auth_state
 
         state = get_provider_auth_state("nous") or {}
         portal = str(state.get("portal_base_url") or "").strip()
@@ -470,7 +473,7 @@ def recommended_nous_default_model() -> dict[str, Any]:
     sign-in completion in ``hermes_cli.anon_auth`` so both land on the same model.
     """
     from hermes_cli import models_pricing as mp
-    from hermes_cli.auth import get_provider_auth_state
+    from auth.provider_state import get_provider_auth_state
 
     model_ids = get_curated_nous_model_ids()
     pricing = mp.get_pricing_for_provider("nous") or {}
@@ -737,7 +740,8 @@ def _configured_custom_provider_ids() -> set[str]:
 
 def _provider_has_credentials(pid: str) -> bool:
     try:
-        from hermes_cli.auth import get_auth_status, has_usable_secret
+        from hermes_cli.auth import get_auth_status
+        from auth.secret_validation import has_usable_secret
 
         if pid == "custom":
             return bool((_get_custom_base_url() or "").strip())
@@ -1202,7 +1206,7 @@ def resolve_fast_mode_overrides(
 def _first_exchangeable_copilot_token(raw_tokens) -> str:
     """Exchange stored GitHub tokens in order; the first that validates AND exchanges wins (every
     entry is tried so a later valid token survives an earlier malformed one)."""
-    from hermes_cli.copilot_auth import exchange_copilot_token, validate_copilot_token
+    from auth.providers.copilot import exchange_copilot_token, validate_copilot_token
 
     for raw in raw_tokens:
         raw = str(raw or "").strip()
@@ -1237,7 +1241,7 @@ def _resolve_copilot_catalog_api_key() -> str:
     ``~/.copilot/config.json`` ``copilotTokens`` (the ACP CLI's own store). Without the latter two,
     keyless users see the picker fall back to the stale curated list on a silent 401."""
     def _pool_token() -> str:
-        from hermes_cli.auth import read_credential_pool
+        from auth.pool_persistence import read_credential_pool
 
         return _first_exchangeable_copilot_token(
             entry.get("access_token") for entry in read_credential_pool("copilot") if isinstance(entry, dict))
@@ -1312,9 +1316,9 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     # gateway key is only ever sent to that gateway, never to the chatgpt.com default.
     base_url = None
     try:
-        from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+        from auth.providers.codex import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
 
-        creds = resolve_codex_runtime_credentials(read_only=True)
+        creds = resolve_codex_runtime_credentials(read_only=True, environment=_phase6_auth_environment())
         access_token, base_url = creds.get("api_key"), creds.get("base_url")
         if _codex_access_token_is_expiring(access_token, 0):
             access_token = None
@@ -1370,9 +1374,10 @@ def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
 
 def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     try:
-        from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
+        from hermes_cli.auth_nous import fetch_nous_models
+        from auth.providers.nous import resolve_nous_runtime_credentials
 
-        creds = resolve_nous_runtime_credentials()
+        creds = resolve_nous_runtime_credentials(environment=_phase6_auth_environment())
         if creds:
             live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
             if live:
@@ -1387,7 +1392,7 @@ def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
 def _api_key_credentials(normalized: str) -> tuple[str, str]:
     """``(api_key, base_url)`` from ``resolve_api_key_provider_credentials``; empty strings on any miss."""
     try:
-        from hermes_cli.auth import resolve_api_key_provider_credentials
+        from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials
 
         creds = resolve_api_key_provider_credentials(normalized)
         return str(creds.get("api_key") or "").strip(), str(creds.get("base_url") or "").strip()
@@ -2086,8 +2091,8 @@ def _resolve_anthropic_pool_catalog_credentials() -> tuple[str, str]:
     """Read-only API-key pool credential for model discovery (``resolve_anthropic_token()`` ignores
     ``api_key`` pool entries — its runtime contract is OAuth-oriented)."""
     try:
-        from agent.credential_pool import AUTH_TYPE_API_KEY
-        from hermes_cli.auth import read_credential_pool
+        from auth.credential_pool import AUTH_TYPE_API_KEY
+        from auth.pool_persistence import read_credential_pool
 
         for entry in read_credential_pool("anthropic"):
             if not isinstance(entry, dict) or entry.get("auth_type") != AUTH_TYPE_API_KEY:
@@ -2107,12 +2112,12 @@ def _fetch_anthropic_models(
     ``api_key``, else ``resolve_anthropic_token()`` (env / OAuth / Claude Code), else a read-only
     API-key credential_pool entry."""
     try:
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from auth.providers.anthropic import resolve_anthropic_token, _is_oauth_token
     except ImportError:
         return None
 
     resolved_base_url = base_url
-    token = (api_key or "").strip() or resolve_anthropic_token()
+    token = (api_key or "").strip() or resolve_anthropic_token(environment=_phase6_auth_environment())
     if not token:
         # A pool credential and its endpoint are one security boundary — never pair the pool key
         # with a caller-provided endpoint.
@@ -2172,7 +2177,7 @@ def _payload_items(payload: Any) -> list[dict[str, Any]]:
 def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
     """Standard headers for Copilot API requests."""
     try:
-        from hermes_cli.copilot_auth import copilot_request_headers
+        from auth.providers.copilot import copilot_request_headers
         return copilot_request_headers(is_agent_turn=is_agent_turn)
     except ImportError:
         return {
@@ -2282,7 +2287,7 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
 
     # Keyed on the credential like fetch_github_model_catalog: the catalog (and its limits) is
     # per-account, so another profile's token must not be served this entry.
-    from agent.credential_persistence import fingerprint_secret_value
+    from auth.persistence import fingerprint_secret_value
     key_fp = fingerprint_secret_value(api_key)
     if (_copilot_context_cache and _copilot_context_cache_key == key_fp
             and (time.time() - _copilot_context_cache_time < _COPILOT_CONTEXT_CACHE_TTL)):
@@ -2659,7 +2664,7 @@ def _deepinfra_catalog_url() -> tuple[str, str]:
     api-key fingerprint: the catalog is user-scoped (private fine-tunes), so two profiles with
     different keys must not share an entry."""
     base = (_deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL).rstrip("/")
-    from agent.credential_persistence import fingerprint_secret_value
+    from auth.persistence import fingerprint_secret_value
     fp = fingerprint_secret_value(_deepinfra_env("DEEPINFRA_API_KEY")) or "anon"
     return f"{base}#{fp}", f"{base}/models?{_DEEPINFRA_MODELS_QUERY}"
 

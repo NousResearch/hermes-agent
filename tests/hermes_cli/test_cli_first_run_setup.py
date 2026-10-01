@@ -18,7 +18,7 @@ import types
 
 import pytest
 
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 
 
 def _reset_modules(prefixes: tuple[str, ...]):
@@ -280,7 +280,7 @@ def test_empty_key_error_names_actual_provider(monkeypatch, capsys):
 
 def _bench_nous_pool(monkeypatch, **entry_fields):
     import time
-    from agent.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
+    from auth.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
 
     benched = PooledCredential(id="e1", provider="nous", auth_type="oauth", access_token="x",
                                refresh_token="r", label="portal", source="manual:device_code",
@@ -291,7 +291,7 @@ def _bench_nous_pool(monkeypatch, **entry_fields):
     monkeypatch.setattr(pool, "has_available", lambda **kw: False, raising=False)
     monkeypatch.setattr(pool, "next_available_at", lambda **kw: time.time() + 55, raising=False)
     monkeypatch.setattr(pool, "entries", lambda: [benched], raising=False)
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+    monkeypatch.setattr("auth.credential_pool.load_pool", lambda provider, environment=None: pool)
 
 
 def _forbid_wizard(monkeypatch, shell):

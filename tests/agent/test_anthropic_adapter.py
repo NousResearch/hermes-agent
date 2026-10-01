@@ -1,3 +1,5 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
 import json
@@ -10,8 +12,9 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import build_anthropic_client, build_anthropic_kwargs
-from agent.anthropic_credentials import _is_oauth_token, _refresh_oauth_token, _write_claude_code_credentials, is_claude_code_token_valid, read_claude_code_credentials, resolve_anthropic_token, run_oauth_setup_token
-from agent.credential_pool import PooledCredential
+from auth.providers.anthropic import _is_oauth_token, _refresh_oauth_token, _write_claude_code_credentials, is_claude_code_token_valid, read_claude_code_credentials, resolve_anthropic_token
+from hermes_cli.auth_anthropic import run_oauth_setup_token
+from auth.credential_pool import PooledCredential
 from agent.anthropic_message_convert import _to_plain_data, convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name
 from agent.transports import get_transport
 
@@ -156,7 +159,7 @@ class TestReadClaudeCodeCredentials:
     @pytest.fixture(autouse=True)
     def no_keychain(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.anthropic_credentials._read_claude_code_credentials_from_keychain",
+            'auth.providers.anthropic._read_claude_code_credentials_from_keychain',
             lambda: None,
         )
 
@@ -170,8 +173,8 @@ class TestReadClaudeCodeCredentials:
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
-        creds = read_claude_code_credentials()
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
+        creds = read_claude_code_credentials(environment=_phase6_auth_environment())
         assert creds is not None
         assert creds["accessToken"] == "sk-ant-oat01-token"
         assert creds["refreshToken"] == "sk-ant-oat01-refresh"
@@ -180,9 +183,9 @@ class TestReadClaudeCodeCredentials:
     def test_ignores_primary_api_key_for_native_anthropic_resolution(self, tmp_path, monkeypatch):
         claude_json = tmp_path / ".claude.json"
         claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
 
-        creds = read_claude_code_credentials()
+        creds = read_claude_code_credentials(environment=_phase6_auth_environment())
         assert creds is None
 
 
@@ -208,24 +211,24 @@ class TestResolveAnthropicToken:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
-        assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "sk-ant-oat01-mytoken"
 
     def test_does_not_resolve_primary_api_key_as_native_anthropic_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
 
-        assert resolve_anthropic_token() is None
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) is None
 
     def test_falls_back_to_api_key_when_no_oauth_sources_exist(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
-        assert resolve_anthropic_token() == "sk-ant...ykey"
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "sk-ant...ykey"
 
     def test_api_key_wins_over_auto_discovered_claude_code_credentials(
         self, monkeypatch, tmp_path
@@ -242,20 +245,20 @@ class TestResolveAnthropicToken:
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
 
-        assert resolve_anthropic_token() == "sk-ant...ykey"
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "sk-ant...ykey"
 
     def test_api_key_path_does_not_read_auto_discovered_credentials(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            'auth.providers.anthropic.read_claude_code_credentials',
             self._assert_not_called,
         )
 
-        assert resolve_anthropic_token() == "sk-ant...ykey"
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "sk-ant...ykey"
 
     def test_falls_back_to_claude_code_credentials(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -270,18 +273,18 @@ class TestResolveAnthropicToken:
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
-        assert resolve_anthropic_token() == "cc-auto-token"
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "cc-auto-token"
 
     def test_falls_back_to_anthropic_credential_pool_oauth(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
         # Isolate source #5 (credential_pool): ensure source #4 (Claude Code
         # creds, incl. the macOS keychain read which Path.home does not cover)
         # returns nothing, mirroring a Hermes-PKCE-only setup.
-        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None)
 
         pool_entry = PooledCredential.from_dict("anthropic", {
             "auth_type": "oauth", "access_token": "pool-oauth-token",
@@ -289,25 +292,25 @@ class TestResolveAnthropicToken:
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: ([pool_entry], []),
         )
-        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+        monkeypatch.setattr("auth.credential_pool.load_pool", lambda provider, environment=None: pool)
 
-        assert resolve_anthropic_token() == "pool-oauth-token"
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "pool-oauth-token"
 
     def test_api_key_wins_over_anthropic_credential_pool_oauth(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            'auth.providers.anthropic.read_claude_code_credentials',
             self._assert_not_called,
         )
         monkeypatch.setattr(
-            "agent.credential_pool.load_pool",
+            "auth.credential_pool.load_pool",
             self._assert_not_called,
         )
 
-        assert resolve_anthropic_token() == "sk-ant...ykey"
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "sk-ant...ykey"
 
     def test_pool_entry_with_null_access_token_does_not_crash(self, monkeypatch, tmp_path):
         """A persisted OAuth entry with access_token=None must not crash the
@@ -317,17 +320,17 @@ class TestResolveAnthropicToken:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
+        monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None)
 
         broken_entry = SimpleNamespace(auth_type="oauth", access_token=None)
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: ([broken_entry], []),
         )
-        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+        monkeypatch.setattr("auth.credential_pool.load_pool", lambda provider, environment=None: pool)
 
         # Must fall through to source #3 (ANTHROPIC_API_KEY), not raise.
-        assert resolve_anthropic_token() == "sk-ant...ykey"
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "sk-ant...ykey"
 
     def test_pool_api_key_only_entry_is_not_returned_as_token(self, monkeypatch, tmp_path):
         """resolve_anthropic_token() returns an OAuth bearer token; a pool entry
@@ -337,8 +340,8 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
+        monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None)
 
         api_key_entry = PooledCredential.from_dict("anthropic", {
             "auth_type": "api_key", "access_token": "sk-pool-apikey",
@@ -346,10 +349,10 @@ class TestResolveAnthropicToken:
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: ([api_key_entry], []),
         )
-        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+        monkeypatch.setattr("auth.credential_pool.load_pool", lambda provider, environment=None: pool)
 
         # No OAuth entry and no other source → None (the api_key entry is ignored here).
-        assert resolve_anthropic_token() is None
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) is None
 
 
     def test_pool_resolution_is_read_only(self, monkeypatch, tmp_path):
@@ -359,8 +362,8 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
+        monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None)
 
         captured = {}
         pool_entry = PooledCredential.from_dict("anthropic", {
@@ -372,9 +375,9 @@ class TestResolveAnthropicToken:
             return ([pool_entry], [])
 
         pool = SimpleNamespace(_available_entries=_available_entries)
-        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+        monkeypatch.setattr("auth.credential_pool.load_pool", lambda provider, environment=None: pool)
 
-        assert resolve_anthropic_token() == "pool-oauth-token"
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "pool-oauth-token"
         assert captured == {"clear_expired": False, "refresh": False}
 
     def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
@@ -390,27 +393,27 @@ class TestResolveAnthropicToken:
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
 
-        assert resolve_anthropic_token() == "cc-auto-token"
+        assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "cc-auto-token"
 
 
 class TestRefreshOauthToken:
     def test_returns_none_without_refresh_token(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
         # Neutralize live Claude Code sources (macOS Keychain + ~/.claude file)
         # so the adopt-already-refreshed branch can't short-circuit with a real
         # credential on a dev/CI machine that happens to have Claude Code creds.
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
+            'auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None
         )
         creds = {"accessToken": "expired", "refreshToken": "", "expiresAt": 0}
-        assert _refresh_oauth_token(creds) is None
+        assert _refresh_oauth_token(creds, environment=_phase6_auth_environment()) is None
 
     def test_successful_refresh(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
+            'auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None
         )
 
         creds = {
@@ -433,7 +436,7 @@ class TestRefreshOauthToken:
             mock_ctx.__exit__ = MagicMock(return_value=False)
             mock_urlopen.return_value = mock_ctx
 
-            result = _refresh_oauth_token(creds)
+            result = _refresh_oauth_token(creds, environment=_phase6_auth_environment())
 
         assert result == "new-token-abc"
         # Verify credentials were written back
@@ -444,9 +447,9 @@ class TestRefreshOauthToken:
         assert written["claudeAiOauth"]["refreshToken"] == "new-refresh-456"
 
     def test_failed_refresh_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
+            'auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None
         )
         creds = {
             "accessToken": "old",
@@ -455,12 +458,12 @@ class TestRefreshOauthToken:
         }
 
         with patch("urllib.request.urlopen", side_effect=Exception("network error")):
-            assert _refresh_oauth_token(creds) is None
+            assert _refresh_oauth_token(creds, environment=_phase6_auth_environment()) is None
 
 
 class TestWriteClaudeCodeCredentials:
     def test_writes_new_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
         _write_claude_code_credentials("tok", "ref", 12345)
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
@@ -470,7 +473,7 @@ class TestWriteClaudeCodeCredentials:
         assert data["claudeAiOauth"]["expiresAt"] == 12345
 
     def test_preserves_existing_fields(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
         cred_dir = tmp_path / ".claude"
         cred_dir.mkdir()
         cred_file = cred_dir / ".credentials.json"
@@ -490,7 +493,7 @@ class TestWriteClaudeCodeCredentials:
         the fix shipped in #19673 (google_oauth) and #21148 (mcp_oauth).
         """
         import stat as _stat
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
         _write_claude_code_credentials("tok", "ref", 12345)
 
         cred_file = tmp_path / ".claude" / ".credentials.json"
@@ -516,11 +519,11 @@ class TestResolveWithRefresh:
                 "expiresAt": int(time.time() * 1000) - 3600_000,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
 
         # Mock refresh to succeed
-        with patch("agent.anthropic_credentials._refresh_oauth_token", return_value="refreshed-token"):
-            result = resolve_anthropic_token()
+        with patch('auth.providers.anthropic._refresh_oauth_token', return_value="refreshed-token"):
+            result = resolve_anthropic_token(environment=_phase6_auth_environment())
 
         assert result == "refreshed-token"
 
@@ -538,10 +541,10 @@ class TestResolveWithRefresh:
                 "expiresAt": int(time.time() * 1000) - 3600_000,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_credentials._refresh_oauth_token", return_value="refreshed-token"):
-            result = resolve_anthropic_token()
+        with patch('auth.providers.anthropic._refresh_oauth_token', return_value="refreshed-token"):
+            result = resolve_anthropic_token(environment=_phase6_auth_environment())
 
         assert result == "refreshed-token"
 
@@ -564,7 +567,7 @@ class TestRunOauthSetupToken:
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
@@ -583,7 +586,7 @@ class TestRunOauthSetupToken:
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("auth.providers.anthropic.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)

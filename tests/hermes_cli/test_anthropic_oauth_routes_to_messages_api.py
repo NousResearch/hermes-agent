@@ -147,7 +147,7 @@ class TestCustomProviderUrlFallback:
                 return _Entry()
 
         monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda *a, **k: ["custom:my-claude"])
-        monkeypatch.setattr(rp, "load_pool", lambda key: _Pool())
+        monkeypatch.setattr(rp, "load_pool", lambda key, environment=None: _Pool())
 
         resolved = rp._try_resolve_from_custom_pool(
             "https://api.anthropic.com",

@@ -32,7 +32,7 @@ def test_nous_account_fetch_preserves_profile_home_in_timeout_worker(
         return observed_homes[-1]
 
     monkeypatch.setattr(
-        "hermes_cli.nous_account.get_nous_portal_account_info",
+        'hermes_cli.nous_account.get_nous_portal_account_info',
         fake_account_fetch,
     )
 

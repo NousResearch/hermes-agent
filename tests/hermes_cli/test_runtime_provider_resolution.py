@@ -1,3 +1,5 @@
+
+import auth.providers.minimax as _auth_auth_providers_minimax
 import base64
 import json
 import time
@@ -15,9 +17,9 @@ def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
         "_get_model_config",
         lambda: {"provider": "deepseek", "default": "deepseek-v4-pro"},
     )
-    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "load_pool", lambda _provider, environment=None: SimpleNamespace(has_credentials=lambda: False))
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        "hermes_cli.runtime_provider_credentials.resolve_api_key_provider_credentials",
         lambda _provider: {
             "provider": "deepseek",
             "api_key": "",
@@ -32,9 +34,9 @@ def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
 
 def test_noauth_lmstudio_still_resolves(monkeypatch):
     """The fail-closed key guard preserves LM Studio's no-auth contract."""
-    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "load_pool", lambda _provider, environment=None: SimpleNamespace(has_credentials=lambda: False))
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        "hermes_cli.runtime_provider_credentials.resolve_api_key_provider_credentials",
         lambda _provider: {
             "provider": "lmstudio",
             "api_key": "lmstudio-noauth",
@@ -75,8 +77,8 @@ def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeyp
     from hermes_cli import config as _cfg
     _cfg._LOAD_CONFIG_CACHE.clear()
     _cfg._RAW_CONFIG_CACHE.clear()
-    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("ghu_raw_gh_token", "gh auth token"))
-    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token",
+    monkeypatch.setattr('auth.providers.copilot.resolve_copilot_token', lambda: ("ghu_raw_gh_token", "gh auth token"))
+    monkeypatch.setattr('auth.providers.copilot.get_copilot_api_token',
                         lambda tok: ("tid=exchanged;exp=1", "https://api.enterprise.ghe.example"))
     monkeypatch.setattr(rp._models, "copilot_model_api_mode", lambda *a, **k: "chat_completions")
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
@@ -102,7 +104,7 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: _Pool())
 
     resolved = rp.resolve_runtime_provider(requested="openai-codex")
 
@@ -127,7 +129,7 @@ def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: _Pool())
     monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
 
     resolved = rp.resolve_runtime_provider(requested="openai-codex")
@@ -152,7 +154,7 @@ def test_codex_pool_honors_model_base_url(monkeypatch):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: _Pool())
     monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
     monkeypatch.setattr(rp, "_get_model_config", lambda: {
         "provider": "openai-codex", "default": "gpt-5.3-codex", "base_url": "http://127.0.0.1:8400/backend-api/codex/"})
@@ -183,7 +185,7 @@ def test_xai_pool_honors_model_base_url_when_row_is_registry_host(monkeypatch):
     """#121347: an env-seeded xAI row keeps https://api.x.ai/v1. model.base_url is the
     relay override, same as the other API-key providers, and must not be shadowed."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _xai_pool("https://api.x.ai/v1"))
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: _xai_pool("https://api.x.ai/v1"))
     monkeypatch.delenv("XAI_BASE_URL", raising=False)
     monkeypatch.setattr(rp, "_get_model_config", lambda: {
         "provider": "xai", "default": "grok-4", "base_url": "http://127.0.0.1:8765/v1/"})
@@ -199,7 +201,7 @@ def test_xai_pool_honors_model_base_url_when_row_is_registry_host(monkeypatch):
 def test_xai_pool_keeps_explicit_credential_endpoint(monkeypatch):
     """A pool row that is not the registry host is an explicit endpoint and wins over model.base_url."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _xai_pool("https://relay.example/v1"))
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: _xai_pool("https://relay.example/v1"))
     monkeypatch.delenv("XAI_BASE_URL", raising=False)
     monkeypatch.setattr(rp, "_get_model_config", lambda: {
         "provider": "xai", "default": "grok-4", "base_url": "http://127.0.0.1:8765/v1"})
@@ -213,7 +215,7 @@ def test_xai_pool_keeps_explicit_credential_endpoint(monkeypatch):
 def test_xai_pool_ignores_another_providers_base_url(monkeypatch):
     """A stale model.base_url saved for a different provider must not receive the xAI key."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _xai_pool("https://api.x.ai/v1"))
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: _xai_pool("https://api.x.ai/v1"))
     monkeypatch.delenv("XAI_BASE_URL", raising=False)
     monkeypatch.setattr(rp, "_get_model_config", lambda: {
         "provider": "deepseek", "default": "deepseek-v4-pro", "base_url": "http://127.0.0.1:8765/v1"})
@@ -252,8 +254,8 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
         ('123') for a local Ollama endpoint must resolve to the same
         "no-key-required" placeholder every other local no-auth path uses,
         not the raw unusable value."""
-        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None: ["custom:local-ollama"])
-        monkeypatch.setattr(rp, "load_pool", lambda pool_key: self._pool_with("123"))
+        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None, environment=None: ["custom:local-ollama"])
+        monkeypatch.setattr(rp, "load_pool", lambda pool_key, environment=None: self._pool_with("123"))
 
         result = rp._try_resolve_from_custom_pool("http://localhost:11434/v1", "custom", None)
 
@@ -261,8 +263,8 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
         assert result["api_key"] == "no-key-required"
 
     def test_single_char_placeholder_key_also_exempted(self, monkeypatch):
-        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None: ["custom:local"])
-        monkeypatch.setattr(rp, "load_pool", lambda pool_key: self._pool_with("m"))
+        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None, environment=None: ["custom:local"])
+        monkeypatch.setattr(rp, "load_pool", lambda pool_key, environment=None: self._pool_with("m"))
 
         result = rp._try_resolve_from_custom_pool("http://127.0.0.1:11434/v1", "custom", None)
 
@@ -273,8 +275,8 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
         remote endpoint with a genuinely-too-short key must NOT get a
         free pass. The short value passes through unchanged, so the
         downstream has_usable_secret() gate still catches it."""
-        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None: ["custom:remote"])
-        monkeypatch.setattr(rp, "load_pool", lambda pool_key: self._pool_with("xy"))
+        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None, environment=None: ["custom:remote"])
+        monkeypatch.setattr(rp, "load_pool", lambda pool_key, environment=None: self._pool_with("xy"))
 
         result = rp._try_resolve_from_custom_pool("https://api.remote-vendor.example/v1", "custom", None)
 
@@ -284,8 +286,8 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
         """Sanity: a genuinely usable key for a loopback endpoint (a real
         API key happens to be configured for a local proxy, say) must not
         be silently overwritten."""
-        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None: ["custom:local"])
-        monkeypatch.setattr(rp, "load_pool", lambda pool_key: self._pool_with("sk-genuinely-long-real-key-12345"))
+        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None, environment=None: ["custom:local"])
+        monkeypatch.setattr(rp, "load_pool", lambda pool_key, environment=None: self._pool_with("sk-genuinely-long-real-key-12345"))
 
         result = rp._try_resolve_from_custom_pool("http://localhost:11434/v1", "custom", None)
 
@@ -294,7 +296,7 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
 
 def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     """When requested_provider is 'auto' and Qwen creds fail, fall through."""
-    from hermes_cli.auth import AuthError
+    from auth.errors import AuthError
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(
@@ -339,7 +341,7 @@ def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
     monkeypatch.setattr(
         rp,
         "load_pool",
-        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+        lambda provider, environment=None: type("Pool", (), {"has_credentials": lambda self: False})(),
     )
     monkeypatch.setattr(
         rp,
@@ -385,7 +387,7 @@ def test_resolve_runtime_provider_lmstudio_honors_saved_base_url(monkeypatch):
     monkeypatch.setattr(
         rp,
         "load_pool",
-        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+        lambda provider, environment=None: type("Pool", (), {"has_credentials": lambda self: False})(),
     )
     # Don't mock resolve_api_key_provider_credentials — exercise the real
     # function so we test the end-to-end precedence between model_cfg and
@@ -424,7 +426,7 @@ def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypa
     monkeypatch.setattr(
         rp,
         "load_pool",
-        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+        lambda provider, environment=None: type("Pool", (), {"has_credentials": lambda self: False})(),
     )
 
     resolved = rp.resolve_runtime_provider(requested="lmstudio")
@@ -561,7 +563,7 @@ def test_resolve_runtime_provider_auto_uses_openrouter_pool(monkeypatch):
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: _Pool())
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -591,7 +593,7 @@ def test_resolve_runtime_provider_openrouter_explicit_api_key_skips_pool(monkeyp
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: _Pool())
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -985,7 +987,7 @@ def test_local_alias_without_any_endpoint_never_reaches_openrouter(monkeypatch, 
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-cloud-key")
     monkeypatch.setattr(rp, "load_config", lambda: {"model": {"provider": alias}})
-    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "load_pool", lambda _provider, environment=None: SimpleNamespace(has_credentials=lambda: False))
 
     with pytest.raises(rp.AuthError, match=rf"provider '{alias}' has no endpoint.*providers\.{alias}\.base_url") as error:
         rp.resolve_runtime_provider(requested=alias)
@@ -1012,7 +1014,7 @@ def test_local_alias_with_an_endpoint_anywhere_still_resolves_to_it(monkeypatch,
         "explicit": {"model": {"provider": "ollama"}},
     }[configured]
     monkeypatch.setattr(rp, "load_config", lambda: config)
-    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "load_pool", lambda _provider, environment=None: SimpleNamespace(has_credentials=lambda: False))
 
     resolved = rp.resolve_runtime_provider(requested="ollama", explicit_base_url=url if configured == "explicit" else None)
 
@@ -1185,7 +1187,7 @@ def test_explicit_openrouter_honors_config_base_url_mirror(monkeypatch):
             "base_url": "https://openrouter-mirror.example.com/api/v1",
         },
     )
-    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "load_pool", lambda _provider, environment=None: SimpleNamespace(has_credentials=lambda: False))
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -1223,7 +1225,7 @@ def test_explicit_openrouter_config_mirror_bypasses_pool(monkeypatch):
             "base_url": "https://openrouter-mirror.example.com/api/v1",
         },
     )
-    monkeypatch.setattr(rp, "load_pool", lambda _provider: _Pool())
+    monkeypatch.setattr(rp, "load_pool", lambda _provider, environment=None: _Pool())
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -1242,7 +1244,7 @@ def test_explicit_openrouter_config_mirror_bypasses_pool(monkeypatch):
 
     # An unrelated CUSTOM_BASE_URL outranks the mirror and must not receive the OpenRouter key.
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openrouter", "base_url": "https://openrouter-mirror.example.com/api/v1"})
-    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "load_pool", lambda _provider, environment=None: SimpleNamespace(has_credentials=lambda: False))
     monkeypatch.setenv("CUSTOM_BASE_URL", "http://localhost:11434/v1")
     custom = rp.resolve_runtime_provider(requested="openrouter")
     assert custom["base_url"] == "http://localhost:11434/v1" and custom["api_key"] != "router-key"
@@ -1363,7 +1365,7 @@ def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model):
 
 def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch):
     """When auto-detect picks Nous but credentials are revoked, fall through to OpenRouter."""
-    from hermes_cli.auth import AuthError
+    from auth.errors import AuthError
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -1374,7 +1376,7 @@ def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch
     # resolve_provider returns "nous" (stale active_provider in auth.json)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
     # load_pool returns empty pool so we hit the direct credential resolution
-    monkeypatch.setattr(rp, "load_pool", lambda p: type("P", (), {
+    monkeypatch.setattr(rp, "load_pool", lambda p, environment=None: type("P", (), {
         "has_credentials": lambda self: False,
     })())
     # Nous credential resolution fails with revoked token
@@ -1426,7 +1428,7 @@ class TestOllamaUrlSubstringLeak:
         monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
             "http://127.0.0.1:9000/ollama.com/v1"
         ))
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
         monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
 
         resolved = rp.resolve_runtime_provider(requested="custom")
@@ -1447,7 +1449,7 @@ class TestOllamaUrlSubstringLeak:
         monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
             "http://ollama.com.attacker.test:9000/v1"
         ))
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
         monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
 
         resolved = rp.resolve_runtime_provider(requested="custom")
@@ -1465,7 +1467,7 @@ class TestOllamaUrlSubstringLeak:
         monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
             "https://ollama.com/v1"
         ))
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
         monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
 
         resolved = rp.resolve_runtime_provider(requested="custom")
@@ -1498,7 +1500,7 @@ class TestAzureFoundryResolution:
         monkeypatch.delenv("AZURE_FOUNDRY_BASE_URL", raising=False)
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
         monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
 
         with pytest.raises(rp.AuthError, match="base URL"):
             rp.resolve_runtime_provider(requested="azure-foundry")
@@ -1525,7 +1527,7 @@ class TestAzureFoundryResolution:
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
         monkeypatch.setattr(rp, "_get_model_config",
                             lambda: self._make_cfg_with_model("gpt-5.3-codex", "chat_completions"))
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
 
         resolved = rp.resolve_runtime_provider(requested="azure-foundry")
 
@@ -1538,7 +1540,7 @@ class TestAzureFoundryResolution:
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
         monkeypatch.setattr(rp, "_get_model_config",
                             lambda: self._make_cfg_with_model("o3-mini", "chat_completions"))
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
 
         resolved = rp.resolve_runtime_provider(requested="azure-foundry")
 
@@ -1579,7 +1581,7 @@ class TestAzureAnthropicEnvVarHint:
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
         monkeypatch.setattr(rp, "_get_model_config",
                             lambda: self._cfg(key_env="MY_CUSTOM_AZURE_KEY"))
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
 
         resolved = rp.resolve_runtime_provider(requested="anthropic")
 
@@ -1596,7 +1598,7 @@ class TestAzureAnthropicEnvVarHint:
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
         monkeypatch.setattr(rp, "_get_model_config",
                             lambda: self._cfg(key_env="UNSET_VAR"))
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
 
         resolved = rp.resolve_runtime_provider(requested="anthropic")
 
@@ -1613,13 +1615,13 @@ class TestAzureAnthropicEnvVarHint:
             "base_url": "https://api.anthropic.com",  # non-Azure
             "key_env": "MY_KEY",
         })
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
         called = {"resolve_anthropic_token": False}
         def _fake_resolve(**_kwargs):
             called["resolve_anthropic_token"] = True
             return "token-from-resolver"
         monkeypatch.setattr(
-            "agent.anthropic_credentials.resolve_anthropic_token",
+            'auth.providers.anthropic.resolve_anthropic_token',
             _fake_resolve,
         )
 
@@ -1683,11 +1685,11 @@ class TestProviderEntryApiKeyEnvAlias:
 
 def test_minimax_oauth_runtime_returns_anthropic_messages_mode(monkeypatch):
     """resolve_runtime_provider for minimax-oauth must return api_mode='anthropic_messages'."""
-    from hermes_cli.auth import MINIMAX_OAUTH_GLOBAL_INFERENCE
+    from auth.constants import MINIMAX_OAUTH_GLOBAL_INFERENCE
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-oauth")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "minimax-oauth"})
-    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: None)
     monkeypatch.setattr(
         rp,
         "_resolve_named_custom_runtime",
@@ -1707,7 +1709,7 @@ def test_minimax_oauth_runtime_returns_anthropic_messages_mode(monkeypatch):
     }
 
     import hermes_cli.auth as auth_mod
-    monkeypatch.setattr(auth_mod, "resolve_minimax_oauth_runtime_credentials",
+    monkeypatch.setattr(_auth_auth_providers_minimax, "resolve_minimax_oauth_runtime_credentials",
                         lambda **k: fake_creds)
 
     resolved = rp.resolve_runtime_provider(requested="minimax-oauth")
@@ -1742,7 +1744,7 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
             "api_mode": "chat_completions",
         },
     )
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "load_pool", lambda provider, environment=None: _Pool())
     monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
     monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
 
@@ -2140,7 +2142,8 @@ def test_removed_keyless_free_provider_points_at_its_replacements(name):
     """The keyless OpenCode free tier is gone (the relay 403s anonymous traffic), so a persisted
     ``model.provider`` — or ``--provider`` — still naming it must fail with the removal hint
     naming both surviving OpenCode providers, not a bare "Unknown provider"."""
-    from hermes_cli.auth import AuthError, resolve_provider
+    from auth.errors import AuthError
+    from hermes_cli.auth import resolve_provider
 
     with pytest.raises(AuthError) as excinfo:
         resolve_provider(name)
@@ -2201,14 +2204,14 @@ _CODEX_STORE_CREDS = {"base_url": "https://chatgpt.com/backend-api/codex", "api_
 
 def _codex_rung(monkeypatch, rung: str) -> dict:
     """Isolate one openai-codex ladder rung; returns the kwargs for resolve_runtime_provider."""
-    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", lambda: dict(_CODEX_STORE_CREDS))
+    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", lambda**_auth_settings: dict(_CODEX_STORE_CREDS))
     if rung == "pool":
         entry = SimpleNamespace(api_key="tok", runtime_api_key="tok", base_url="", source="pool")
-        monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(
+        monkeypatch.setattr(rp, "load_pool", lambda _p, environment=None: SimpleNamespace(
             has_credentials=lambda: True, select=lambda model=None: entry))
         monkeypatch.setattr(rp, "credential_pool_matches_provider", lambda *a, **k: True)
         return {}
-    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "load_pool", lambda _p, environment=None: SimpleNamespace(has_credentials=lambda: False))
     return {"explicit_api_key": "sk-explicit"} if rung == "explicit" else {}
 
 
@@ -2241,7 +2244,7 @@ def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runt
 def test_openai_runtime_codex_app_server_survives_the_openai_to_custom_alias_expansion(monkeypatch):
     """``provider: openai`` expands to the anonymous ``custom`` runtime (#116055) before the overlay runs;
     the overlay must judge the name the user configured, or the documented ``openai`` opt-in is a silent no-op."""
-    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "load_pool", lambda _p, environment=None: SimpleNamespace(has_credentials=lambda: False))
     monkeypatch.setattr(rp, "_get_model_config", lambda: {
         "provider": "openai", "default": "gpt-5.5-codex", "openai_runtime": "codex_app_server"})
 

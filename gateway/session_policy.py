@@ -182,7 +182,7 @@ def _extract_config_secrets(value, private, path=()):
     # Reuse the configuration owner's structural classification; opaque keys need
     # not match a vendor prefix. Only the authority keeps their original values.
     from hermes_cli.config import _SECRET_CONFIG_KEYS
-    from agent.credential_persistence import _is_secret_payload_key
+    from auth.persistence import _is_secret_payload_key
     containers = {'env', 'headers', 'extra_headers', 'docker_env', 'docker_extra_args',
                   'terminal_docker_env', 'terminal_docker_extra_args'}
     items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()

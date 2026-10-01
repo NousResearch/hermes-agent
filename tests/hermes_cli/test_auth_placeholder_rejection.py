@@ -12,7 +12,8 @@ Regression for the placeholder shapes; the pooled-key case covers the sibling re
 
 import pytest
 
-from hermes_cli.auth import has_usable_secret, AuthError
+from auth.secret_validation import has_usable_secret
+from auth.errors import AuthError
 
 
 @pytest.mark.parametrize("value, usable", [
@@ -43,6 +44,7 @@ def test_shipped_placeholders_are_not_usable_secrets(value, usable):
 def test_placeholder_keys_resolve_as_unconfigured(tmp_path, monkeypatch):
     """Production entry point: a placeholder in the env fails loud at the read point, and a pooled
     placeholder (the sibling resolution path) behaves exactly like no credential at all."""
+    from hermes_cli.config_credentials import credential_pool_environment
     import uuid
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -50,13 +52,13 @@ def test_placeholder_keys_resolve_as_unconfigured(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("XAI_API_KEY", "your_key_here")
 
-    from agent.credential_pool import AUTH_TYPE_API_KEY, SOURCE_MANUAL, PooledCredential, load_pool
+    from auth.credential_pool import AUTH_TYPE_API_KEY, SOURCE_MANUAL, PooledCredential, load_pool
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     with pytest.raises(AuthError, match="No usable credentials found for provider 'xai'"):
         resolve_runtime_provider(requested="xai")
 
-    pool = load_pool("openrouter")
+    pool = load_pool("openrouter", environment=credential_pool_environment())
     pool.add_entry(PooledCredential(
         provider="openrouter", id=uuid.uuid4().hex[:6], label="pasted-example",
         auth_type=AUTH_TYPE_API_KEY, priority=0, source=SOURCE_MANUAL,

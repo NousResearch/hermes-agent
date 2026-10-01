@@ -1,3 +1,5 @@
+
+import auth.providers.nous as _auth_auth_providers_nous
 """Tests for tools/skills_sync_client.py — the Skill Sync client.
 
 Covers, against the frozen contract (~/src/specs/collective-wisdom/
@@ -300,9 +302,9 @@ class TestDevGate:
         # patch the lazily-imported symbol used inside resolve_identity
         import hermes_cli.auth as auth_mod
         import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         ident = ssc.resolve_identity()
         assert ident["nous_admin"] is True
@@ -312,9 +314,9 @@ class TestDevGate:
         token = _jwt({"sub": "user1"})  # no tool_gateway_admin
         import hermes_cli.auth as auth_mod
         import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         ident = ssc.resolve_identity()
         assert ident["nous_admin"] is False
@@ -323,9 +325,9 @@ class TestDevGate:
         token = _jwt({"sub": "u", "tool_gateway_admin": False})
         import hermes_cli.auth as auth_mod
         import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         assert ssc.resolve_identity()["nous_admin"] is False
 
@@ -333,9 +335,9 @@ class TestDevGate:
         token = _jwt({"sub": "u"})
         import hermes_cli.auth as auth_mod
         import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token})
         monkeypatch.setattr(ssc, "resolve_sync_base_url", lambda: "http://x")
         # gate closed -> None (inert), never attempts a push
@@ -348,8 +350,8 @@ class TestDevGate:
         def _raise(**kw):
             raise RuntimeError("not logged in")
 
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _raise)
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials", _raise)
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials", _raise)
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials", _raise)
         assert ssc.maybe_pull_skills() is None
 
 
@@ -879,9 +881,9 @@ class TestOrgIdentityGate:
         token = _jwt({"sub": "u", "org_id": "org-1"})
         import hermes_cli.auth as auth_mod
         import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         with pytest.raises(ssc.SyncInertError):
             ssc.resolve_org_identity()
@@ -890,9 +892,9 @@ class TestOrgIdentityGate:
         token = _jwt({"sub": "u", "org_id": "org-9", "org_role": "MEMBER"})
         import hermes_cli.auth as auth_mod
         import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         ident = ssc.resolve_org_identity()
         assert ident["org_id"] == "org-9"
@@ -1011,9 +1013,9 @@ class TestOrgEndToEnd:
         token = _jwt({"sub": "u", "org_id": "org-1"})
         import hermes_cli.auth as auth_mod
         import hermes_cli.auth_nous as auth_nous
-        monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token})
-        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+        monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token})
         assert org.maybe_pull_org_skills() is None
 

@@ -74,7 +74,7 @@ def _enable_managed_nous_tools(monkeypatch):
     hermes_cli.nous_account — so the function body returns True.
     """
     monkeypatch.setattr(
-        "hermes_cli.nous_account.get_nous_portal_account_info",
+        'hermes_cli.nous_account.get_nous_portal_account_info',
         lambda: NousPortalAccountInfo(
             logged_in=True,
             source="jwt",
@@ -108,7 +108,7 @@ def _install_fake_tools_package():
     sys.modules["agent.redact"] = types.SimpleNamespace(
         redact_cdp_url=lambda value: str(value),
     )
-    sys.modules["agent.credential_persistence"] = types.SimpleNamespace(
+    sys.modules['auth.persistence'] = types.SimpleNamespace(
         sanitize_borrowed_credential_payload=lambda entry, provider_id=None: entry,
     )
 

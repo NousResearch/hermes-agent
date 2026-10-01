@@ -8,6 +8,8 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import logging
 import locale
@@ -331,7 +333,7 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     if _body_text:
         _plines(agent, f"   Response: {_body_text}")
     try:
-        from hermes_cli.anon_auth import is_anonymous_agent
+        from auth.providers.nous_guest import is_anonymous_agent
         if is_anonymous_agent(agent):
             # The free tier has no credits, no agent key and no auth.json to inspect: its session
             # ended and could not be replaced. The two doors are a sign-in or another provider.
@@ -354,7 +356,7 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
 
 def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
     """Anthropic 401 that survived a credential refresh: show auth method + fixes."""
-    from agent.anthropic_credentials import _is_oauth_token
+    from auth.providers.anthropic import _is_oauth_token
     from agent.azure_identity_adapter import is_token_provider
     from hermes_constants import display_hermes_home
     _plines(agent, "🔐 Anthropic 401 — authentication failed.")
@@ -809,7 +811,7 @@ def _with_delivered_partial(final_response: str, error_summary: str, delivered: 
 def limit_reset_epoch(agent: Any, api_error: Exception) -> Optional[float]:
     """Epoch seconds when the provider says its limit lifts (Retry-After header, ``resets_at`` /
     ``retry_after`` body fields, "try again in N" text) — the same datum the backoff honours."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from auth.credential_pool import _parse_absolute_timestamp
 
     try:
         return _parse_absolute_timestamp(agent._extract_api_error_context(api_error).get("reset_at"))
@@ -934,7 +936,8 @@ def _welcome_outage_copy(base_url: Any, classified: Any, *, anonymous: bool = Fa
     plain sentence (the free model is having trouble) rather than the technical summary. Empty
     for every other route and for rate limits / billing, which have their own copy."""
     try:
-        from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, route_is_welcome_host
+        from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY
+        from auth.providers.nous_guest import route_is_welcome_host
         # Both: an anonymous JWT sent to a user-overridden paid host never reached the free model.
         if not anonymous or not route_is_welcome_host(base_url):
             return ""
@@ -1115,7 +1118,7 @@ def max_retries_exhausted_result(
     guidance (the latter wins), persist, build the result with ``failure_reason`` /
     ``failure_retryable`` / ``billing_block``."""
     # Result/guidance helpers stay in the loop module (tests import + patch them there).
-    from hermes_cli.anon_auth import is_anonymous_agent
+    from auth.providers.nous_guest import is_anonymous_agent
     from agent.conversation_loop import (
         _billing_block_dict, _billing_or_entitlement_message, _billing_terminal_label,
         _print_billing_or_entitlement_guidance,
@@ -1372,7 +1375,7 @@ def reset_hint(api_error: Exception) -> str:
     A bare "Rate limited. Waiting 60s" hides the one fact that decides whether to wait or switch
     models (#26889): a per-minute throttle and a 13-minute plan window look identical without it."""
     from agent.agent_runtime_helpers import extract_api_error_context
-    from agent.credential_pool import _parse_absolute_timestamp
+    from auth.credential_pool import _parse_absolute_timestamp
     from agent.usage_pricing import format_duration_compact
     reset_at = extract_api_error_context(api_error).get("reset_at")
     if reset_at is None:
@@ -1728,7 +1731,7 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
             is_genuine_nous_rate_limit, is_long_welcome_rate_limit, record_nous_rate_limit)
         _err_resp = getattr(api_error, "response", None)
         _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
-        from hermes_cli.anon_auth import is_anonymous_agent
+        from auth.providers.nous_guest import is_anonymous_agent
         anonymous = is_anonymous_agent(agent)
         _classified_ctx = getattr(classified, "error_context", None) or {}
         # Only an anonymous request's fairshare body is an allowance verdict; named

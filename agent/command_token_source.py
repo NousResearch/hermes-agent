@@ -91,7 +91,7 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
                 return token, float(ttl)
             # CLI helpers often print an absolute ISO 8601 deadline instead of OAuth's relative
             # lifetime; honour it or the token 401s once past. Lazy import: hermes_cli.auth imports agent.*.
-            from hermes_cli.auth import _parse_iso_timestamp
+            from auth.token_validation import _parse_iso_timestamp
 
             for field in ("expiry", "expiresOn"):
                 deadline = _parse_iso_timestamp(payload.get(field))

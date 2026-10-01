@@ -1,3 +1,7 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
 """Home-channel startup notice names the free tier only when a guest carries the gateway's inference."""
 
 import base64
@@ -11,7 +15,7 @@ import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import SendResult
 from hermes_cli import anon_auth
-from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+from auth.store import _auth_store_lock, _load_auth_store, _save_auth_store
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
@@ -33,7 +37,7 @@ def _seed_nous(state: dict) -> None:
 
 
 def _guest_state() -> dict:
-    return {"auth_method": anon_auth.ANON_AUTH_METHOD, "account_tier": "anonymous", "anon_token": "anon_0001",
+    return {"auth_method": _auth_auth_providers_nous_guest.ANON_AUTH_METHOD, "account_tier": "anonymous", "anon_token": "anon_0001",
             "client_id": "nas-anonymous", "access_token": _jwt(), "expires_at": "2999-01-01T00:00:00+00:00",
             "inference_base_url": "https://welcome-api.nousresearch.com/v1"}
 
@@ -69,7 +73,7 @@ async def _startup_message(runner, adapter) -> str:
 async def test_guest_inference_adds_exactly_one_free_tier_line(nous_runner):
     runner, adapter = nous_runner
     _seed_nous(_guest_state())
-    assert anon_auth.guest_carries_inference()
+    assert _auth_auth_providers_nous_guest.guest_carries_inference(environment=_phase6_auth_environment())
 
     message = await _startup_message(runner, adapter)
 
@@ -82,7 +86,7 @@ async def test_guest_inference_adds_exactly_one_free_tier_line(nous_runner):
 async def test_signed_in_account_keeps_the_plain_online_notice(nous_runner):
     runner, adapter = nous_runner
     _seed_nous(_account_state())
-    assert not anon_auth.guest_carries_inference()
+    assert not _auth_auth_providers_nous_guest.guest_carries_inference(environment=_phase6_auth_environment())
 
     message = await _startup_message(runner, adapter)
 

@@ -7,6 +7,10 @@ boundary with genuine single-use semantics (a refresh token redeems once;
 a second POST returns ``invalid_grant``).
 """
 from __future__ import annotations
+import auth.oauth_grants as _auth_auth_oauth_grants
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.store as auth_storage
 
 import io
 import json
@@ -95,13 +99,13 @@ def fleet(tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(home))
         hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
         import hermes_cli.auth as auth_mod
-        auth_mod._global_auth_store_cache = None
-        auth_mod._oauth_heal_clean_marks.clear()
+        auth_storage._global_auth_store_cache = None
+        _auth_auth_oauth_grants._oauth_heal_clean_marks.clear()
 
     # Process-wide notice buffer: start each test clean.
     import hermes_cli.auth as _auth_mod
-    _auth_mod._oauth_heal_notices.clear()
-    _auth_mod._oauth_heal_clean_marks.clear()
+    _auth_auth_oauth_grants._oauth_heal_notices.clear()
+    _auth_auth_oauth_grants._oauth_heal_clean_marks.clear()
 
     def pool_rows(home):
         p = home / "auth.json"
@@ -132,7 +136,7 @@ def test_clone_all_strips_oauth_grant_but_keeps_api_keys(fleet):
 
 
 def test_strip_helper_drops_device_code_blocks_and_reports(tmp_path):
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from auth.oauth_grants import strip_cloned_single_use_oauth_grants
     pdir = tmp_path / "p"
     pdir.mkdir()
     (pdir / "auth.json").write_text(json.dumps({
@@ -160,8 +164,9 @@ def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
 
     agent_key-only nous rows carry no single-use grant and must survive both strip and heal.
     """
-    from agent.credential_pool import load_pool
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants, strip_cloned_single_use_oauth_grants
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
+    from auth.oauth_grants import heal_forked_single_use_oauth_grants, strip_cloned_single_use_oauth_grants
     grant = {"access_token": "AT1", "refresh_token": "RT1", "agent_key": "AK"}
     root_store = json.loads((fleet["root"] / "auth.json").read_text())
     root_store["providers"]["nous"] = dict(grant)
@@ -180,7 +185,7 @@ def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
     # Mixed shape: the surviving ak row keeps the profile "owning" nous, so the next load must
     # not re-seed root's single-use RT from the global-root providers fallback (fork again).
     fleet["use"](pdir)
-    load_pool("nous")
+    load_pool("nous", environment=credential_pool_environment())
     rows = json.loads((pdir / "auth.json").read_text())["credential_pool"]["nous"]
     assert all(row.get("refresh_token") != "RT1" for row in rows), rows
 
@@ -209,7 +214,7 @@ def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
 
 
 def test_strip_helper_is_a_noop_without_credentials(tmp_path):
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from auth.oauth_grants import strip_cloned_single_use_oauth_grants
     assert strip_cloned_single_use_oauth_grants(tmp_path) == {"pool": [], "providers": [], "files": []}
 
 
@@ -223,7 +228,7 @@ def test_strip_helper_is_a_noop_without_credentials(tmp_path):
 )
 def test_strip_helper_leaves_shared_root_auth_store_unchanged(fleet, link):
     """A shared auth store is one grant, not a cloned credential copy."""
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from auth.oauth_grants import strip_cloned_single_use_oauth_grants
 
     root = fleet["root"]
     _seed_codex_grant(root)
@@ -238,7 +243,7 @@ def test_strip_helper_leaves_shared_root_auth_store_unchanged(fleet, link):
 
 def test_strip_helper_fails_closed_when_root_store_cannot_be_resolved(fleet, monkeypatch):
     """Credential hygiene must not mutate auth when store identity is unknown."""
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from auth.oauth_grants import strip_cloned_single_use_oauth_grants
     import hermes_constants
 
     root = fleet["root"]
@@ -258,7 +263,7 @@ def test_strip_helper_fails_closed_when_root_store_cannot_be_resolved(fleet, mon
 
 def test_strip_helper_fails_closed_when_store_identity_check_errors(fleet, monkeypatch):
     """A transient stat failure must not be interpreted as two stores."""
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from auth.oauth_grants import strip_cloned_single_use_oauth_grants
 
     root = fleet["root"]
     _seed_codex_grant(root)
@@ -276,13 +281,14 @@ def test_strip_helper_fails_closed_when_store_identity_check_errors(fleet, monke
 
 
 def test_first_profile_rotation_does_not_strand_root_or_siblings(fleet):
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     forge = _profile(fleet, "forge")
     atlas = _profile(fleet, "atlas")
 
     fleet["use"](forge)
-    sel = load_pool("anthropic").select()
+    sel = load_pool("anthropic", environment=credential_pool_environment()).select()
     assert sel is not None and sel.access_token == "sk-ant-oat01-AT1"
     # The rotated pair landed in ROOT; forge did not grow a local copy.
     assert fleet["rows"](forge) is None
@@ -290,30 +296,32 @@ def test_first_profile_rotation_does_not_strand_root_or_siblings(fleet):
 
     for home in (atlas, fleet["root"], forge):
         fleet["use"](home)
-        sel = load_pool("anthropic").select()
+        sel = load_pool("anthropic", environment=credential_pool_environment()).select()
         assert sel is not None and sel.access_token == "sk-ant-oat01-AT1", home
     assert [e[0] for e in fleet["server"]["log"]] == ["ROTATE"], fleet["server"]["log"]
     assert fleet["rows"](atlas) is None and fleet["rows"](forge) is None
 
 
 def test_agent_init_resolver_sees_sibling_rotation(fleet):
-    from agent.anthropic_credentials import resolve_anthropic_token
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.providers.anthropic import resolve_anthropic_token
+    from auth.credential_pool import load_pool
 
     forge = _profile(fleet, "forge")
     atlas = _profile(fleet, "atlas")
     fleet["use"](forge)
-    load_pool("anthropic").select()
+    load_pool("anthropic", environment=credential_pool_environment()).select()
     fleet["use"](atlas)
-    assert resolve_anthropic_token() == "sk-ant-oat01-AT1"
+    assert resolve_anthropic_token(environment=_phase6_auth_environment()) == "sk-ant-oat01-AT1"
 
 
 def test_borrowing_profile_load_pool_does_not_materialize_local_copy(fleet):
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     fresh = _profile(fleet, "fresh")
     fleet["use"](fresh)
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     assert [e.id for e in pool.entries()] == ["abc123"]
     assert pool._borrowed_root_ids == {"abc123"}
     assert fleet["rows"](fresh) is None
@@ -322,7 +330,8 @@ def test_borrowing_profile_load_pool_does_not_materialize_local_copy(fleet):
 def test_borrower_prune_never_deletes_root_singleton_grant(fleet, tmp_path):
     """Root's hermes_pkce row is seeded from ROOT's .anthropic_oauth.json; a
     profile without that file must not prune (and write-through-delete) it."""
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     root = fleet["root"]
     (root / ".anthropic_oauth.json").write_text(json.dumps({
@@ -334,12 +343,12 @@ def test_borrower_prune_never_deletes_root_singleton_grant(fleet, tmp_path):
     del store["credential_pool"]["anthropic"]
     (root / "auth.json").write_text(json.dumps(store))
     fleet["use"](root)
-    root_rows = [e for e in load_pool("anthropic").entries()]
+    root_rows = [e for e in load_pool("anthropic", environment=credential_pool_environment()).entries()]
     assert [e.source for e in root_rows] == ["hermes_pkce"]
 
     kid = _profile(fleet, "kid")
     fleet["use"](kid)
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     assert [e.source for e in pool.entries()] == ["hermes_pkce"], "borrowed root grant was pruned"
     assert fleet["rows"](root) and fleet["rows"](root)[0]["source"] == "hermes_pkce"
     assert fleet["rows"](kid) is None
@@ -353,11 +362,12 @@ def test_borrower_prune_never_deletes_root_singleton_grant(fleet, tmp_path):
 
 
 def test_profile_auth_add_owns_only_its_own_rows(fleet):
-    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
 
     kid = _profile(fleet, "kid")
     fleet["use"](kid)
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     pool.add_entry(PooledCredential(
         provider="anthropic", id="own001", label="mine", auth_type=AUTH_TYPE_OAUTH,
         priority=0, source="manual:hermes_pkce", access_token="sk-ant-oat01-MINE",
@@ -368,10 +378,11 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
 
 
 def test_classic_mode_persist_is_unchanged(fleet):
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     fleet["use"](fleet["root"])
-    sel = load_pool("anthropic").select()
+    sel = load_pool("anthropic", environment=credential_pool_environment()).select()
     assert sel is not None and sel.access_token == "sk-ant-oat01-AT1"
     assert fleet["rows"](fleet["root"])[0]["refresh_token"] == "sk-ant-ort-RT1"
 
@@ -408,8 +419,9 @@ def _fork(fleet, name, *, rotated_to=None):
 
 def test_heal_consolidates_existing_forks_to_the_live_copy(fleet, caplog):
     """root + atlas hold spent RT0; forge already rotated to RT1 on old code."""
+    from hermes_cli.config_credentials import credential_pool_environment
     import logging
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
     forge = _fork(fleet, "forge", rotated_to=1)
     atlas = _fork(fleet, "atlas")
@@ -418,7 +430,7 @@ def test_heal_consolidates_existing_forks_to_the_live_copy(fleet, caplog):
 
     with caplog.at_level(logging.INFO, logger="hermes_cli.auth"):
         fleet["use"](forge)
-        sel = load_pool("anthropic").select()
+        sel = load_pool("anthropic", environment=credential_pool_environment()).select()
     assert sel is not None and sel.access_token == "sk-ant-oat01-AT2"
     # forge's live pair was adopted by ROOT, then rotated there; forge holds nothing.
     assert fleet["rows"](forge) is None
@@ -429,7 +441,7 @@ def test_heal_consolidates_existing_forks_to_the_live_copy(fleet, caplog):
 
     for home in (atlas, fleet["root"], forge):
         fleet["use"](home)
-        sel = load_pool("anthropic").select()
+        sel = load_pool("anthropic", environment=credential_pool_environment()).select()
         assert sel is not None and sel.access_token == "sk-ant-oat01-AT2", home
     assert fleet["rows"](atlas) is None and fleet["rows"](forge) is None
     # Exactly one rotation by us (RT1 -> RT2); the spent RT0 was never replayed.
@@ -441,21 +453,22 @@ def test_heal_consolidates_existing_forks_to_the_live_copy(fleet, caplog):
 
 
 def test_heal_is_idempotent_and_logs_once(fleet, caplog):
+    from hermes_cli.config_credentials import credential_pool_environment
     import logging
-    from agent.credential_pool import load_pool
-    from hermes_cli.auth import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
+    from auth.credential_pool import load_pool
+    from auth.oauth_grants import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
 
     kid = _fork(fleet, "kid")
     fleet["use"](kid)
     with caplog.at_level(logging.INFO, logger="hermes_cli.auth"):
-        load_pool("anthropic")
+        load_pool("anthropic", environment=credential_pool_environment())
         assert fleet["rows"](kid) is None
         notices = consume_oauth_heal_notices()
         assert len(notices) == 1 and "profile kid" in notices[0]
         root_before = (fleet["root"] / "auth.json").read_text()
         # Second and third loads: nothing to do, nothing written, nothing logged.
         assert heal_forked_single_use_oauth_grants("anthropic") is None
-        load_pool("anthropic")
+        load_pool("anthropic", environment=credential_pool_environment())
     assert consume_oauth_heal_notices() == []
     assert (fleet["root"] / "auth.json").read_text() == root_before
     assert sum("consolidated forked" in r.message for r in caplog.records) == 1
@@ -464,7 +477,8 @@ def test_heal_is_idempotent_and_logs_once(fleet, caplog):
 def test_heal_never_deletes_the_only_surviving_copy(fleet):
     """Root lost its grant (user ran `hermes auth remove` at root); the profile's
     copy is the only one left — and an independent second account stays put."""
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     kid = _fork(fleet, "kid", rotated_to=1)
     store = json.loads((fleet["root"] / "auth.json").read_text())
@@ -472,7 +486,7 @@ def test_heal_never_deletes_the_only_surviving_copy(fleet):
     (fleet["root"] / "auth.json").write_text(json.dumps(store))
 
     fleet["use"](kid)
-    sel = load_pool("anthropic").select()
+    sel = load_pool("anthropic", environment=credential_pool_environment()).select()
     assert sel is not None and sel.access_token == "sk-ant-oat01-AT2"
     assert fleet["rows"](kid) and fleet["rows"](kid)[0]["refresh_token"] == "sk-ant-ort-RT2"
     assert "anthropic" not in (json.loads((fleet["root"] / "auth.json").read_text())["credential_pool"])
@@ -482,8 +496,9 @@ def test_heal_never_deletes_the_only_surviving_copy(fleet):
 @pytest.mark.parametrize("claims", [True, False])
 def test_heal_preserves_independent_grants_for_same_account(fleet, shape, claims):
     """An account can have independent device logins; identity is not lineage."""
+    from hermes_cli.config_credentials import credential_pool_environment
     import base64
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from auth.oauth_grants import heal_forked_single_use_oauth_grants
 
     def pair(tag):
         payload = base64.urlsafe_b64encode(json.dumps({
@@ -511,9 +526,9 @@ def test_heal_preserves_independent_grants_for_same_account(fleet, shape, claims
     assert heal_forked_single_use_oauth_grants("openai-codex") is None
     assert (root.read_bytes(), profile.read_bytes()) == before
     if claims:
-        from agent.credential_pool import load_pool
+        from auth.credential_pool import load_pool
         for _ in range(3):
-            selected = load_pool("openai-codex").select()
+            selected = load_pool("openai-codex", environment=credential_pool_environment()).select()
             assert selected is not None
             assert selected.refresh_token == "independent-profile-grant"
         assert root.read_bytes() == before[0]
@@ -525,8 +540,9 @@ def test_heal_rotated_fork_moves_provider_block_with_the_pool_row(fleet):
     Root's load_pool() re-seeds its device_code row FROM providers.<id>.tokens, so root's block
     must carry the fresher pair too or the next root load resurrects the spent one.
     """
-    from agent.credential_pool import load_pool
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
+    from auth.oauth_grants import heal_forked_single_use_oauth_grants
 
     def store(tag, exp_off):
         tokens = {"access_token": "at-" + tag, "refresh_token": "rt-" + tag}
@@ -550,13 +566,14 @@ def test_heal_rotated_fork_moves_provider_block_with_the_pool_row(fleet):
     assert "openai-codex" not in p["providers"]
     assert "openai-codex" not in p.get("credential_pool", {})
     fleet["use"](fleet["root"])
-    assert {e.refresh_token for e in load_pool("openai-codex").entries()} == {"rt-new"}
+    assert {e.refresh_token for e in load_pool("openai-codex", environment=credential_pool_environment()).entries()} == {"rt-new"}
 
 
 def test_heal_leaves_a_different_account_alone(fleet):
     """A profile row whose JWT identity names ANOTHER account is not root's grant."""
+    from hermes_cli.config_credentials import credential_pool_environment
     import base64
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
     def jwt(sub):
         payload = base64.urlsafe_b64encode(json.dumps({"sub": sub, "exp": int(time.time()) + 3600}).encode()).rstrip(b"=")
@@ -580,7 +597,7 @@ def test_heal_leaves_a_different_account_alone(fleet):
         ]},
     }))
     fleet["use"](kid)
-    load_pool("xai-oauth")
+    load_pool("xai-oauth", environment=credential_pool_environment())
     rows = (json.loads((kid / "auth.json").read_text())["credential_pool"])["xai-oauth"]
     assert [r["id"] for r in rows] == ["kidx", "kidk"]
     assert json.loads((fleet["root"] / "auth.json").read_text())["credential_pool"]["xai-oauth"][0]["refresh_token"] == "xr-alice"
@@ -589,7 +606,8 @@ def test_heal_leaves_a_different_account_alone(fleet):
 def test_heal_pkce_singleton_shape_commits_live_pair_to_root_singleton(fleet):
     """`hermes auth` PKCE shape: root + profile each have .anthropic_oauth.json +
     a hermes_pkce-seeded row; the profile's copy is the rotated (live) one."""
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     root = fleet["root"]
     store = json.loads((root / "auth.json").read_text())
@@ -601,7 +619,7 @@ def test_heal_pkce_singleton_shape_commits_live_pair_to_root_singleton(fleet):
         "expiresAt": int((time.time() - 3600) * 1000),
     }))
     fleet["use"](root)
-    load_pool("anthropic")  # seeds root's hermes_pkce row from the singleton
+    load_pool("anthropic", environment=credential_pool_environment())  # seeds root's hermes_pkce row from the singleton
 
     kid = _profile(fleet, "kid")
     kid.mkdir(parents=True, exist_ok=True)
@@ -621,19 +639,19 @@ def test_heal_pkce_singleton_shape_commits_live_pair_to_root_singleton(fleet):
     srv["spent"].add("sk-ant-ort-RT0"); srv["valid"] = {"sk-ant-ort-RT1"}; srv["n"] = 1
 
     fleet["use"](kid)
-    sel = load_pool("anthropic").select()
+    sel = load_pool("anthropic", environment=credential_pool_environment()).select()
     assert sel is not None and sel.access_token == "sk-ant-oat01-AT2"
     assert not (kid / ".anthropic_oauth.json").exists()
     assert fleet["rows"](kid) is None
     assert json.loads((root / ".anthropic_oauth.json").read_text())["refreshToken"] == "sk-ant-ort-RT2"
     fleet["use"](root)
-    sel = load_pool("anthropic").select()
+    sel = load_pool("anthropic", environment=credential_pool_environment()).select()
     assert sel is not None and sel.access_token == "sk-ant-oat01-AT2"
     assert [e[0] for e in srv["log"]] == ["ROTATE"], srv["log"]
 
 
 def test_heal_is_a_noop_in_classic_mode(fleet):
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from auth.oauth_grants import heal_forked_single_use_oauth_grants
     fleet["use"](fleet["root"])
     before = (fleet["root"] / "auth.json").read_text()
     assert heal_forked_single_use_oauth_grants("anthropic") is None
@@ -687,7 +705,7 @@ def test_heal_skips_profile_auth_json_symlinked_to_the_root_store(fleet):
     """#101356: `ln -s ~/.hermes/auth.json <profile>/auth.json` shares ONE store.
     Both sides of the consolidation read the same file, so every row looks like
     a fork of itself — healing would strip the shared grant through the link."""
-    from hermes_cli.auth import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
+    from auth.oauth_grants import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
 
     root = fleet["root"]
     _seed_codex_grant(root)
@@ -708,7 +726,7 @@ def test_heal_skips_profile_auth_json_symlinked_to_the_root_store(fleet):
 def test_heal_skips_profile_auth_json_hardlinked_to_the_root_store(fleet):
     """Same class as the symlink: a hardlink resolves to a different name but
     is the same inode, so it is still one store, not a forked copy."""
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from auth.oauth_grants import heal_forked_single_use_oauth_grants
 
     root = fleet["root"]
     _seed_codex_grant(root)
@@ -726,7 +744,7 @@ def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
     """Separate auth.jsons but a profile `.anthropic_oauth.json` symlinked to
     root's: one shared grant, not a fork. The heal must not self-compare it
     or unlink the alias (#101356 sibling site)."""
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from auth.oauth_grants import heal_forked_single_use_oauth_grants
 
     root = fleet["root"]
     (root / ".anthropic_oauth.json").write_text(json.dumps({
@@ -758,8 +776,8 @@ def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
 
 def _new_process(auth_mod):
     """Simulate a fresh `hermes` invocation: in-memory state gone, disk kept."""
-    auth_mod._oauth_heal_clean_marks.clear()
-    auth_mod._global_auth_store_cache = None
+    _auth_auth_oauth_grants._oauth_heal_clean_marks.clear()
+    auth_storage._global_auth_store_cache = None
 
 
 
@@ -786,7 +804,7 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
     a row the heal deliberately KEPT into a fork it must strip -- with the
     profile's own files untouched, so only root's stamp can catch it."""
     import hermes_cli.auth as auth_mod
-    from hermes_cli import auth_oauth_grants as grants
+    from auth import oauth_grants as grants
 
     root = fleet["root"]
     store = json.loads((root / "auth.json").read_text())
@@ -806,14 +824,14 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
     (kid / "auth.json").write_text(json.dumps(kid_store))
 
     fleet["use"](kid)
-    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
+    assert _auth_auth_oauth_grants.heal_forked_single_use_oauth_grants("anthropic") is None
     assert fleet["rows"](kid), "the only surviving copy must not be stripped"
     marked = grants._oauth_heal_clean_mark_path().read_text()
 
     store["credential_pool"]["anthropic"] = [dict(fork)]
     (root / "auth.json").write_text(json.dumps(store))
     _new_process(auth_mod)
-    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is not None, (
+    assert _auth_auth_oauth_grants.heal_forked_single_use_oauth_grants("anthropic") is not None, (
         "the persisted mark skipped a heal that had become necessary")
     assert not fleet["rows"](kid), "the fork survived in the profile store"
 
@@ -821,7 +839,7 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
     # stale -- it describes the pre-heal files and can no longer match. The
     # next process re-checks, finds the store clean, and re-stamps.
     _new_process(auth_mod)
-    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
+    assert _auth_auth_oauth_grants.heal_forked_single_use_oauth_grants("anthropic") is None
     assert grants._oauth_heal_clean_mark_path().read_text() != marked
 
 
@@ -830,11 +848,12 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
 
 @pytest.mark.parametrize("borrowed", [False, True], ids=["owned-rows", "borrowed-root-rows"])
 def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowed):
-    from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
 
     fleet["use"](_profile(fleet, "stale-dead") if borrowed else fleet["root"])
-    stale, stale_billing, peer = load_pool("anthropic"), load_pool("anthropic"), load_pool("anthropic")
-    stale_adopter = load_pool("anthropic")
+    stale, stale_billing, peer = load_pool("anthropic", environment=credential_pool_environment()), load_pool("anthropic", environment=credential_pool_environment()), load_pool("anthropic", environment=credential_pool_environment())
+    stale_adopter = load_pool("anthropic", environment=credential_pool_environment())
     assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
     # An ordinary flush whose pair already matches disk must not re-hydrate the live object.
     live = peer._entries[0]
@@ -864,10 +883,11 @@ def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowe
 
 
 def test_terminal_verdict_for_current_token_generation_still_persists(fleet):
-    from agent.credential_pool import STATUS_DEAD, load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import STATUS_DEAD, load_pool
 
     fleet["use"](fleet["root"])
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     pool.mark_exhausted_and_rotate(
         status_code=401, credential_id="abc123",
         error_context={"reason": "invalid_grant", "message": "refresh token already used"},

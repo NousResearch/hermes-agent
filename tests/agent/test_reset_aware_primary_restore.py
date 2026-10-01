@@ -18,7 +18,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
-from agent.credential_pool import (
+from auth.credential_pool import (
     STATUS_DEAD,
     STATUS_EXHAUSTED,
     STATUS_OK,
@@ -131,6 +131,7 @@ def _activate_fallback(agent):
 
 class TestNextAvailableAt:
     def test_all_exhausted_returns_earliest_reset(self):
+        from hermes_cli.config_credentials import credential_pool_environment
         now = time.time()
         pool = CredentialPool(
             "openrouter",
@@ -138,10 +139,11 @@ class TestNextAvailableAt:
                 _entry(id="a", status=STATUS_EXHAUSTED, reset_at=now + 7200, error_code=429),
                 _entry(id="b", status=STATUS_EXHAUSTED, reset_at=now + 3600, error_code=429),
             ],
-        )
+        environment=credential_pool_environment())
         assert pool.next_available_at() == now + 3600
 
     def test_available_entry_returns_none(self):
+        from hermes_cli.config_credentials import credential_pool_environment
         now = time.time()
         pool = CredentialPool(
             "openrouter",
@@ -149,55 +151,61 @@ class TestNextAvailableAt:
                 _entry(id="a", status=STATUS_OK),
                 _entry(id="b", status=STATUS_EXHAUSTED, reset_at=now + 3600, error_code=429),
             ],
-        )
+        environment=credential_pool_environment())
         assert pool.next_available_at() is None
 
     def test_elapsed_cooldown_counts_as_available(self):
         """An exhausted entry whose reset time has passed re-enters rotation,
         so the pool reports available (None) even without clear_expired."""
+        from hermes_cli.config_credentials import credential_pool_environment
         now = time.time()
         pool = CredentialPool(
             "openrouter",
             [_entry(id="a", status=STATUS_EXHAUSTED, reset_at=now - 10, error_code=429)],
-        )
+        environment=credential_pool_environment())
         assert pool.next_available_at() is None
 
     def test_exhausted_without_timestamps_returns_none(self):
         """No reset info at all -> None (fail open), not a guess."""
+        from hermes_cli.config_credentials import credential_pool_environment
         pool = CredentialPool(
             "openrouter",
             [_entry(id="a", status=STATUS_EXHAUSTED, reset_at=None, status_at=None)],
-        )
+        environment=credential_pool_environment())
         assert pool.next_available_at() is None
 
     def test_exhausted_with_status_at_uses_ttl(self):
         """Without an explicit reset_at, last_status_at + TTL is the estimate."""
+        from hermes_cli.config_credentials import credential_pool_environment
         now = time.time()
         pool = CredentialPool(
             "openrouter",
             [_entry(id="a", status=STATUS_EXHAUSTED, status_at=now, error_code=429)],
-        )
+        environment=credential_pool_environment())
         result = pool.next_available_at()
         assert result is not None
         assert result > now
 
     def test_dead_only_returns_none(self):
         """DEAD entries never re-enter via TTL; report no wait info."""
+        from hermes_cli.config_credentials import credential_pool_environment
         pool = CredentialPool(
             "openrouter",
             [_entry(id="a", status=STATUS_DEAD, status_at=time.time())],
-        )
+        environment=credential_pool_environment())
         assert pool.next_available_at() is None
 
     def test_empty_pool_returns_none(self):
-        pool = CredentialPool("openrouter", [])
+        from hermes_cli.config_credentials import credential_pool_environment
+        pool = CredentialPool("openrouter", [], environment=credential_pool_environment())
         assert pool.next_available_at() is None
 
     def test_runs_under_the_pool_lock(self):
         """next_available_at must hold self._lock like every other
         _available_entries caller — a concurrent select()/rotation can
         otherwise tear self._entries mid-iteration (see has_available)."""
-        pool = CredentialPool("openrouter", [])
+        from hermes_cli.config_credentials import credential_pool_environment
+        pool = CredentialPool("openrouter", [], environment=credential_pool_environment())
         held = {}
 
         original = pool._available_entries
@@ -296,7 +304,7 @@ class TestResetAwareRestoreGate:
         agent._credential_pool = _FakePool("openrouter", next_at=None)
         primary_pool = _FakePool("custom", next_at=time.time() + 3600)
 
-        with patch("agent.credential_pool.load_pool", return_value=primary_pool) as lp:
+        with patch("auth.credential_pool.load_pool", return_value=primary_pool) as lp:
             assert agent._restore_primary_runtime() is False
         assert any(c.args == ("custom",) for c in lp.call_args_list)
         assert primary_pool.next_available_calls == 1

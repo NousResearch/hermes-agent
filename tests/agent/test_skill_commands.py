@@ -76,7 +76,7 @@ class TestScanSkillCommands:
         import agent.skill_commands as sc_mod
         from agent.skill_commands import get_skill_commands
 
-        def _disabled_skills():
+        def _disabled_skills(**_auth_settings):
             platform = os.getenv("HERMES_PLATFORM")
             if platform == "telegram":
                 return {"telegram-only"}
@@ -137,7 +137,7 @@ class TestScanSkillCommands:
             set_session_vars,
         )
 
-        def _disabled_skills():
+        def _disabled_skills(**_auth_settings):
             platform = (
                 os.getenv("HERMES_PLATFORM")
                 or get_session_env("HERMES_SESSION_PLATFORM")
@@ -283,7 +283,7 @@ class TestScanSkillCommands:
         import agent.skill_commands as sc_mod
         from agent.skill_commands import get_skill_commands
 
-        def _disabled_skills():
+        def _disabled_skills(**_auth_settings):
             if os.getenv("HERMES_PLATFORM") == "telegram":
                 return {"telegram-only"}
             return set()

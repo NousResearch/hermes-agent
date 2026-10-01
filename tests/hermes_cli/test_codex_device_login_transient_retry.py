@@ -1,3 +1,8 @@
+
+import auth.providers.codex_device as _auth_auth_providers_codex_device
+import auth.providers.codex_http as _auth_auth_providers_codex_http
+
+import auth.providers.codex as _auth_auth_providers_codex
 """Codex device-login survives transient transport blips.
 
 A single dropped connection (e.g. an SSL EOF between polls) used to abort the whole
@@ -14,7 +19,7 @@ import httpx
 import pytest
 
 from hermes_cli import auth_codex
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 
 
 _SSL_EOF_MESSAGE = (
@@ -53,18 +58,19 @@ class _Response:
 
 
 def _install(monkeypatch, client):
-    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: client)
+    monkeypatch.setattr(_auth_auth_providers_codex_http, "_codex_http_client", lambda **kw: client)
+    monkeypatch.setattr(_auth_auth_providers_codex_device, "_codex_http_client", lambda **kw: client)
     monkeypatch.setattr(auth_codex.time, "sleep", lambda *_: None)
 
 
 def _login_post():
-    return auth_codex._codex_login_post(
+    return _auth_auth_providers_codex_http._codex_login_post(
         "https://auth.openai.com/api/accounts/deviceauth/usercode",
         failure=("Failed to request device code", "device_code_request_failed"))
 
 
 def _poll():
-    return auth_codex._codex_poll_authorization_code(
+    return _auth_auth_providers_codex_device._codex_poll_authorization_code(
         "https://auth.openai.com", device_auth_id="da", user_code="uc", poll_interval=0)
 
 

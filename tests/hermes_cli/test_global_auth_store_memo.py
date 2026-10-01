@@ -10,6 +10,7 @@ the memo freshness-correct.
 """
 
 from __future__ import annotations
+import auth.store as auth_storage
 
 import json
 import os
@@ -25,11 +26,11 @@ def _reset_cache(monkeypatch):
     # IS the fix); the reset is a no-op there so the measured-work assertions
     # fail genuinely instead of erroring.
     monkeypatch.setattr(
-        auth_mod, "_global_auth_store_cache", None, raising=False
+        auth_storage, "_global_auth_store_cache", None, raising=False
     )
     yield
     monkeypatch.setattr(
-        auth_mod, "_global_auth_store_cache", None, raising=False
+        auth_storage, "_global_auth_store_cache", None, raising=False
     )
 
 
@@ -62,30 +63,30 @@ class TestLoadGlobalAuthStoreMemo:
         """A store file change on disk invalidates the memo."""
         global_path = _make_global_store(tmp_path)
         monkeypatch.setattr(
-            auth_mod, "_global_auth_file_path", lambda: global_path
+            auth_storage, "_global_auth_file_path", lambda: global_path
         )
         reads = {"n": 0}
-        orig = auth_mod._load_auth_store
+        orig = auth_storage._load_auth_store
 
         def counting_load(store_path=None):
             reads["n"] += 1
             return orig(store_path)
 
-        monkeypatch.setattr(auth_mod, "_load_auth_store", counting_load)
+        monkeypatch.setattr(auth_storage, "_load_auth_store", counting_load)
 
-        auth_mod._load_global_auth_store()
+        auth_storage._load_global_auth_store()
         assert reads["n"] == 1
 
         # Bump the file mtime -> memo invalidates -> re-read once.
         os.utime(global_path, (1_700_000_000, 1_700_000_000))
-        auth_mod._load_global_auth_store()
+        auth_storage._load_global_auth_store()
         assert reads["n"] == 2, "mtime change must force exactly one re-read"
 
     def test_absent_global_store_returns_empty_without_error(self, tmp_path, monkeypatch):
         """No global fallback (classic mode) returns {} and stays cheap."""
         missing = tmp_path / "no-such" / "auth.json"
         monkeypatch.setattr(
-            auth_mod, "_global_auth_file_path", lambda: missing
+            auth_storage, "_global_auth_file_path", lambda: missing
         )
-        assert auth_mod._load_global_auth_store() == {}
-        assert auth_mod._global_auth_store_cache is None
+        assert auth_storage._load_global_auth_store() == {}
+        assert auth_storage._global_auth_store_cache is None

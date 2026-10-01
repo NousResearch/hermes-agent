@@ -63,7 +63,7 @@ def _install_metadata_lock():
     """Serialize read-modify-write of the sidecar across threads and processes. Installs overlap (the
     Desktop install card runs its rows a second apart); each held a snapshot read before its clone, so
     the later write dropped the earlier plugin's record."""
-    from hermes_cli.auth import _file_lock
+    from auth.store import _file_lock
 
     path = _install_metadata_path()
     with _file_lock(path.with_name(f"{path.name}.lock"), _INSTALL_METADATA_LOCK_HOLDER, 10.0,

@@ -23,7 +23,7 @@ class TestPickerMergeAliasDedup:
         Exactly one k3-family row must survive (the curated slug leads)."""
         with (
             patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_cli.runtime_provider_credentials.resolve_api_key_provider_credentials",
                 return_value={
                     "api_key": "sk-kimi-x",
                     "base_url": "https://api.kimi.com/coding",

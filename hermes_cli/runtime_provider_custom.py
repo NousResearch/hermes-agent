@@ -370,16 +370,18 @@ def _try_resolve_from_custom_pool(
     base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """Runtime dict from the first credential pool that owns this custom endpoint, else None."""
+    from hermes_cli.config_credentials import credential_pool_environment
     rp = _rp()
+    environment = credential_pool_environment()
     try:
-        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name))
+        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name, environment=environment))
     except Exception:
         raw_keys = []
     # Order-preserving dedupe of normalized keys.
     candidates = list(dict.fromkeys(k for k in (str(key or "").strip().lower() for key in raw_keys) if k))
     for pool_key in candidates:
         try:
-            pool = rp.load_pool(pool_key)
+            pool = rp.load_pool(pool_key, environment=environment)
             entry = pool.select() if pool.has_credentials() else None
             pool_api_key = rp._pool_entry_api_key(entry) if entry is not None else ""
             if not pool_api_key:

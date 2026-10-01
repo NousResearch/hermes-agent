@@ -160,7 +160,7 @@ def test_load_project_credentials_env_override(
 # vice versa).
 
 def _hold_auth_lock_then_release(hold_event: threading.Event, release_event: threading.Event) -> None:
-    from hermes_cli.auth import _auth_store_lock
+    from auth.store import _auth_store_lock
 
     with _auth_store_lock():
         hold_event.set()

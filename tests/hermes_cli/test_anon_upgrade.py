@@ -6,6 +6,11 @@ persisted over the guest singleton) is exercised rather than mocked away.
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous as _auth_auth_providers_nous
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import base64
 import json
@@ -17,7 +22,7 @@ import httpx
 import pytest
 
 from hermes_cli import anon_auth
-from hermes_cli.auth import _auth_file_path, _load_auth_store
+from auth.store import _auth_file_path, _load_auth_store
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
 INFERENCE = "https://inference-api.nousresearch.com/v1"
@@ -106,7 +111,7 @@ def portal(monkeypatch, tmp_path):
 
     def _client(timeout_seconds, verify):
         return httpx.Client(transport=httpx.MockTransport(fake.handler), base_url=PORTAL)
-    monkeypatch.setattr(auth_nous, "_nous_http_client", _client)
+    monkeypatch.setattr(_auth_auth_providers_nous, "_nous_http_client", _client)
     real_client = httpx.Client
 
     class _RoutedClient(real_client):
@@ -115,7 +120,7 @@ def portal(monkeypatch, tmp_path):
             kw["transport"] = httpx.MockTransport(fake.handler)
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
-    anon_auth.reset_mint_memo_for_tests()
+    _auth_auth_providers_nous_guest.reset_mint_memo_for_tests()
     return fake
 
 
@@ -130,7 +135,7 @@ def _args():
 
 class TestUpgrade:
     def test_intent_carries_both_device_codes_from_the_code_request(self, portal):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         anon_auth.upgrade_guest(_args())
         assert len(portal.intent_bodies) == 1
         body = portal.intent_bodies[0]
@@ -142,7 +147,7 @@ class TestUpgrade:
         assert paths.index("/api/anonymous/promotion-intent") < paths.index("/api/oauth/token")
 
     def test_declined_in_browser_prints_copy_and_leaves_auth_store_untouched(self, portal, capsys, tmp_path):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         before = _auth_file_path().read_bytes()
         shared_before = _shared_store(tmp_path)
         portal.status_sequence = [{"status": "voided", "reason": "user_declined"}]
@@ -155,7 +160,7 @@ class TestUpgrade:
         assert _shared_store(tmp_path) == shared_before
 
     def test_completed_promotion_signs_in_and_keeps_no_free_tier_fields(self, portal, capsys, tmp_path):
-        guest = anon_auth.ensure_portal_identity(explicit=True)
+        guest = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         assert _shared_store(tmp_path).get("anon_token") == guest["anon_token"]
         code = anon_auth.upgrade_guest(_args())
         out = capsys.readouterr().out
@@ -168,8 +173,8 @@ class TestUpgrade:
         state = store["providers"]["nous"]
         assert store["active_provider"] == "nous"
         assert "anon_token" not in state
-        assert state.get("auth_method") != anon_auth.ANON_AUTH_METHOD
-        assert not anon_auth.is_guest_state(state)
+        assert state.get("auth_method") != _auth_auth_providers_nous_guest.ANON_AUTH_METHOD
+        assert not _auth_auth_providers_nous_guest.is_guest_state(state)
         assert state["refresh_token"] == REFRESH_TOKEN
         shared = _shared_store(tmp_path)
         assert shared.get("refresh_token") == REFRESH_TOKEN
@@ -207,18 +212,18 @@ def _model_config() -> dict:
 class TestSignInCompletionSettlesTheModel:
     def test_config_on_the_free_tier_route_moves_to_the_account_host_and_the_recommended_free_model(
             self, portal, free_account, capsys):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         # What picking the free-tier row leaves behind: the welcome model pinned to the welcome host.
-        _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
+        _write_model_config({"provider": "nous", "default": _auth_auth_providers_nous_guest.GUEST_MODEL, "base_url": WELCOME})
         assert anon_auth.upgrade_guest(_args()) == 0
         model_cfg = _model_config()
         assert model_cfg["default"] == FREE_PICK
         assert model_cfg["base_url"] == INFERENCE.rstrip("/")
-        assert not anon_auth.route_is_welcome_host(model_cfg["base_url"])
+        assert not _auth_auth_providers_nous_guest.route_is_welcome_host(model_cfg["base_url"])
         assert f"Default model is now {FREE_PICK}." in capsys.readouterr().out
 
     def test_config_on_the_users_own_model_is_left_alone(self, portal, free_account, capsys):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         own = {"provider": "openrouter", "default": "anthropic/claude-sonnet-4"}
         _write_model_config(own)
         assert anon_auth.upgrade_guest(_args()) == 0
@@ -228,8 +233,8 @@ class TestSignInCompletionSettlesTheModel:
     def test_no_eligible_recommendation_leaves_no_default_rather_than_a_model_the_account_may_not_use(
             self, portal, free_account, monkeypatch, capsys):
         from hermes_cli import models as m
-        anon_auth.ensure_portal_identity(explicit=True)
-        _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+        _write_model_config({"provider": "nous", "default": _auth_auth_providers_nous_guest.GUEST_MODEL, "base_url": WELCOME})
         def _portal_down():
             raise RuntimeError("recommended models unavailable")
         monkeypatch.setattr(m, "recommended_nous_default_model", _portal_down)

@@ -1,3 +1,5 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
 """Welcome banner, ASCII art, skills summary, and update check for the CLI."""
 import json
 import logging
@@ -602,8 +604,8 @@ def _route_model_for_banner(provider: Any) -> str:
     no network. Empty when nothing resolves, so the caller keeps its "no model configured" line."""
     if (provider or "auto").strip().lower() not in ("auto", "nous"):
         return ""
-    from hermes_cli.anon_auth import GUEST_MODEL, guest_carries_inference
-    return GUEST_MODEL if guest_carries_inference() else ""
+    from auth.providers.nous_guest import GUEST_MODEL, guest_carries_inference
+    return GUEST_MODEL if guest_carries_inference(environment=_phase6_auth_environment()) else ""
 
 
 def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str,

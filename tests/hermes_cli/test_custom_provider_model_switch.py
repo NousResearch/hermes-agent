@@ -38,9 +38,10 @@ class TestCustomProviderModelSwitch:
     ):
         """Switching custom endpoints must not leave the old model.api_key
         credential selectable from the previous endpoint's pool."""
+        from hermes_cli.config_credentials import credential_pool_environment
         import hermes_yaml as yaml
-        from agent.credential_pool import load_pool
-        from hermes_cli.auth import read_credential_pool, write_credential_pool
+        from auth.credential_pool import load_pool
+        from auth.pool_persistence import read_credential_pool, write_credential_pool
         from hermes_cli.model_setup_flows import _model_flow_custom
 
         config_path = config_home / "config.yaml"
@@ -108,7 +109,7 @@ class TestCustomProviderModelSwitch:
         ]
         assert old_sources == ["manual"]
 
-        new_pool = load_pool("custom:new-endpoint")
+        new_pool = load_pool("custom:new-endpoint", environment=credential_pool_environment())
         selected = new_pool.select()
         assert selected is not None
         assert selected.access_token == "sk-new"

@@ -59,7 +59,7 @@ def _write_exhausted_codex_pool(home, *, count: int, reset_at: float):
     import json
     import time
 
-    from agent.credential_pool import PooledCredential
+    from auth.credential_pool import PooledCredential
 
     entries = [PooledCredential(
         provider="openai-codex", id=f"codex-{i}", label=f"acct{i}", auth_type="oauth", priority=i,

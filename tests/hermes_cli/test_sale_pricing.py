@@ -101,7 +101,7 @@ def test_fetch_models_with_pricing_copies_billing_mode_for_nous_only(monkeypatch
 def test_resolve_nous_pricing_credentials_normalizes_either_suffix(monkeypatch):
     """``/v1`` on the override is optional and must not change the result."""
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_runtime_credentials", lambda: None
+        'auth.providers.nous.resolve_nous_runtime_credentials', lambda**_auth_settings: None
     )
     for override in (
         "https://stg-inference-api.nousresearch.com",

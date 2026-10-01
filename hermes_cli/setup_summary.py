@@ -174,7 +174,7 @@ def _home_assistant_row(config, feats):
 def _spotify_row(config, feats):
     # OAuth via hermes auth spotify — check auth.json, not env vars
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from auth.provider_state import get_provider_auth_state
         state = get_provider_auth_state("spotify") or {}
         if state.get("access_token") or state.get("refresh_token"):
             return ("Spotify (PKCE OAuth)", True, None)

@@ -15,6 +15,7 @@ Derived from #97058 by @astraltrekkin, re-homed after the ``auth_codex.py`` spli
 """
 
 from __future__ import annotations
+import hermes_cli.auth_codex as _auth_hermes_cli_auth_codex
 
 import hmac
 import logging
@@ -23,15 +24,14 @@ import webbrowser
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
-from hermes_cli.auth_constants import AuthError, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL, _codex_err
-from hermes_cli.auth_device_flow import (
-    _bind_loopback_callback_server, _can_open_graphical_browser, _make_loopback_callback_handler,
-    _pkce_code_challenge, _pkce_code_verifier, _print_loopback_ssh_hint, _serve_loopback_callback)
+from auth.errors import AuthError
+from auth.constants import CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL, _codex_err
+from auth.oauth import _bind_loopback_callback_server, _make_loopback_callback_handler, _pkce_code_challenge, _pkce_code_verifier, _serve_loopback_callback
+from hermes_cli.auth_device_flow import _can_open_graphical_browser, _print_loopback_ssh_hint
 
 logger = logging.getLogger("hermes_cli.auth")
 
-CODEX_OAUTH_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
-CODEX_OAUTH_BROWSER_SCOPE = "openid profile email offline_access"
+
 # Registered with the Codex client: ``http://localhost:1455/auth/callback``. The listener binds
 # 127.0.0.1 explicitly; only the redirect URI string says ``localhost``.
 CODEX_BROWSER_CALLBACK_PORT = 1455
@@ -75,36 +75,7 @@ def codex_oauth_login(args: Any) -> Dict[str, Any]:
     print("Signing in to OpenAI Codex...")
     print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
     print()
-    return auth_mod._codex_device_code_login()
-
-
-def _codex_browser_authorize_url(*, redirect_uri: str, state: str, code_challenge: str) -> str:
-    return f"{CODEX_OAUTH_AUTHORIZE_URL}?" + urlencode({
-        "response_type": "code", "client_id": CODEX_OAUTH_CLIENT_ID, "redirect_uri": redirect_uri,
-        "scope": CODEX_OAUTH_BROWSER_SCOPE, "code_challenge": code_challenge,
-        "code_challenge_method": "S256", "id_token_add_organizations": "true", "state": state})
-
-
-def _codex_browser_exchange_code(code: str, *, redirect_uri: str, code_verifier: str) -> Dict[str, Any]:
-    """Swap the authorization code for tokens at the token endpoint the device flow also uses."""
-    from hermes_cli.auth_codex import _codex_login_post, _codex_login_rate_limited_error
-    token_resp = _codex_login_post(
-        CODEX_OAUTH_TOKEN_URL,
-        data={
-            "grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
-            "client_id": CODEX_OAUTH_CLIENT_ID, "code_verifier": code_verifier},
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        failure=("Token exchange failed", "token_exchange_failed"))
-    if token_resp.status_code == 429:
-        raise _codex_login_rate_limited_error(token_resp, during=" during token exchange")
-    if token_resp.status_code != 200:
-        raise _codex_err(
-            f"Token exchange returned status {token_resp.status_code}.", "token_exchange_error")
-    tokens = token_resp.json()
-    if not tokens.get("access_token", ""):
-        raise _codex_err(
-            "Token exchange did not return an access_token.", "token_exchange_no_access_token")
-    return tokens
+    return _auth_hermes_cli_auth_codex._codex_device_code_login()
 
 
 def _codex_browser_login(
@@ -114,8 +85,9 @@ def _codex_browser_login(
     Raises ``AuthError(code=CODEX_BROWSER_PORT_BUSY_CODE)`` when :1455 cannot be bound so the caller
     can fall back to the device-code flow instead of failing the login.
     """
-    from hermes_cli.auth import _utc_now_z
-    from hermes_cli.auth_codex import _codex_base_url
+    from auth.providers.codex_browser import _codex_browser_authorize_url, _codex_browser_exchange_code
+    from auth.oauth import _utc_now_z
+    from auth.providers.codex import _codex_base_url
     code_verifier = _pkce_code_verifier()
     state = secrets.token_urlsafe(32)
     handler_cls, result = _make_loopback_callback_handler(CODEX_BROWSER_CALLBACK_PATH, display_name="OpenAI Codex")

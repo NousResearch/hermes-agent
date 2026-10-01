@@ -29,15 +29,16 @@ def _entry(idx: int, *, token: str, refresh: str) -> dict:
 
 
 def _load(tmp_path, monkeypatch, entries: list[dict]):
+    from hermes_cli.config_credentials import credential_pool_environment
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(
         json.dumps({"version": 1, "credential_pool": {"openai-codex": entries}})
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    return load_pool("openai-codex")
+    return load_pool("openai-codex", environment=credential_pool_environment())
 
 
 def _revive_entry(pool, entry):

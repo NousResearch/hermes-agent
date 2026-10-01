@@ -107,9 +107,9 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     )
     pool = SimpleNamespace(select=lambda: pool_entry)
 
-    import agent.credential_pool as credential_pool
+    import auth.credential_pool as credential_pool
 
-    monkeypatch.setattr(credential_pool, "load_pool", lambda provider: pool)
+    monkeypatch.setattr(credential_pool, "load_pool", lambda provider, environment=None: pool)
 
     snapshot = account_usage.fetch_account_usage("openai-codex")
 
@@ -204,12 +204,12 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
         ),
     )
 
-    import agent.credential_pool as credential_pool
+    import auth.credential_pool as credential_pool
 
     monkeypatch.setattr(
         credential_pool,
         "load_pool",
-        lambda provider: (_ for _ in ()).throw(AssertionError("pool must not be consulted")),
+        lambda provider, environment=None: (_ for _ in ()).throw(AssertionError("pool must not be consulted")),
     )
 
     snapshot = account_usage.fetch_account_usage("openai-codex")
@@ -226,6 +226,8 @@ def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_pa
     responses = [_FakeResponse({}, status_code=401), _FakeResponse(codex_usage_payload)]
 
     def resolve(**kwargs):
+        settings = kwargs.pop("environment")
+        settings.require_current_scope()
         credential_calls.append(kwargs)
         token = "fresh-token" if kwargs.get("force_refresh") else "revoked-token"
         return {"api_key": token, "base_url": "https://chatgpt.com/backend-api/codex"}
@@ -314,7 +316,7 @@ def test_redeem_retries_401_with_forced_refresh(monkeypatch):
     client_count = 0
     payload = _usage_payload_with_resets(100, 40, 1)
 
-    def resolve(base_url, api_key, *, force_refresh=False):
+    def resolve(base_url, api_key, *, force_refresh=False, **_auth_settings):
         credential_calls.append(force_refresh)
         token = "fresh-token" if force_refresh else "revoked-token"
         return token, "https://chatgpt.com/backend-api/codex", None
@@ -389,7 +391,7 @@ def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_acc
     monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials",
                         lambda **kwargs: pytest.fail("must not re-resolve another account's credential"))
     monkeypatch.setattr(account_usage, "_read_codex_tokens", lambda: {"tokens": {"access_token": "singleton-A"}})
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+    monkeypatch.setattr("auth.credential_pool.load_pool", lambda provider, environment=None: Pool())
     monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: Client())
 
     snapshot = account_usage.fetch_account_usage(

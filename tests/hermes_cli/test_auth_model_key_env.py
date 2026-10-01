@@ -38,7 +38,7 @@ def test_model_key_env_pointer_is_honored_for_registry_provider(hermes_home):
         "  key_env: HERMES_CUSTOM_LMSTUDIO_API_KEY\n",
         "HERMES_CUSTOM_LMSTUDIO_API_KEY=sk-lm-desktop-saved\n",
     )
-    from hermes_cli.auth import resolve_api_key_provider_credentials
+    from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials
 
     creds = resolve_api_key_provider_credentials("lmstudio")
     assert creds["api_key"] == "sk-lm-desktop-saved"
@@ -54,7 +54,8 @@ def test_model_key_env_does_not_leak_across_providers(hermes_home):
         "  key_env: HERMES_CUSTOM_LMSTUDIO_API_KEY\n",
         "HERMES_CUSTOM_LMSTUDIO_API_KEY=sk-lm-should-not-leak\n",
     )
-    from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER, resolve_api_key_provider_credentials
+    from auth.constants import LMSTUDIO_NOAUTH_PLACEHOLDER
+    from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials
 
     creds = resolve_api_key_provider_credentials("lmstudio")
     assert creds["api_key"] == LMSTUDIO_NOAUTH_PLACEHOLDER

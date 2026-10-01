@@ -41,7 +41,7 @@ def _fmt_usd(value: Optional[float]) -> str:
 def nous_logged_in() -> bool:
     """Cheap local auth-state check: a Nous access token is present. Fail-closed."""
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from auth.provider_state import get_provider_auth_state
         tok = (get_provider_auth_state("nous") or {}).get("access_token")
         return isinstance(tok, str) and bool(tok.strip())
     except Exception:

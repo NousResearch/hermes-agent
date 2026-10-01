@@ -107,7 +107,7 @@ class TestFallbackCredentialIsolation:
             "agent.auxiliary_client.resolve_provider_client",
             return_value=(fallback_client, "gpt-5.5"),
         ) as resolve_provider_client, patch(
-            "agent.credential_pool.load_pool",
+            "auth.credential_pool.load_pool",
             return_value=fallback_pool,
         ) as load_pool:
             assert try_activate_fallback(agent) is True
@@ -151,7 +151,7 @@ class TestFallbackCredentialIsolation:
         client = SimpleNamespace(api_key="k", base_url="https://openrouter.ai/api/v1", _custom_headers={})
 
         with patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, "m")) as resolve, \
-                patch("agent.credential_pool.load_pool", side_effect=lambda p: pools[p]):
+                patch("auth.credential_pool.load_pool", side_effect=lambda p, *, environment: pools[p]):
             assert try_activate_fallback(agent) is True
 
         assert resolve.call_count == 1 and resolve.call_args.args[0] == "openrouter"

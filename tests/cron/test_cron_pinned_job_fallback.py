@@ -22,7 +22,7 @@ import pytest
 
 from cron import scheduler
 from cron.scheduler import _CronJobConfig, _resolve_job_runtime
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 
 
 def _run_owned_job(job, tmp_path):
@@ -202,11 +202,12 @@ def test_pinned_job_same_provider_credential_pool_still_loads(tmp_path):
     """Credential-pool rotation stays on the pinned provider; it is not the fallback chain."""
     pool = MagicMock()
     pool.has_credentials.return_value = True
-    with patch("agent.credential_pool.load_pool", return_value=pool) as load_pool:
+    with patch("auth.credential_pool.load_pool", return_value=pool) as load_pool:
         success, error, _requested, agent_kwargs = _run(
             tmp_path, _job(provider="anthropic", model="claude-sonnet-5"))
     assert (success, error) == (True, None)
-    load_pool.assert_called_once_with("anthropic")
+    load_pool.assert_called_once_with("anthropic", environment=load_pool.call_args.kwargs["environment"])
+    assert load_pool.call_args.kwargs["environment"].scope.profile_home == tmp_path.resolve()
     assert agent_kwargs["credential_pool"] is pool
     assert agent_kwargs["fallback_model"] is None
 

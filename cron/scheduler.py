@@ -1730,7 +1730,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     (``_job_fallback_chain``): its resolve failure is the job's failure."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
-    from hermes_cli.auth import AuthError
+    from auth.errors import AuthError
 
     model = jc.model
     requested = job.get("provider") or jc.cron_default_provider or None
@@ -1795,12 +1795,13 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
 
 
 def _load_credential_pool(runtime: dict, job_id: str):
+    from hermes_cli.config_credentials import credential_pool_environment
     runtime_provider = str(runtime.get("provider") or "").strip().lower()
     if not runtime_provider:
         return None
     try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(runtime_provider)
+        from auth.credential_pool import load_pool
+        pool = load_pool(runtime_provider, environment=credential_pool_environment())
         if pool.has_credentials():
             logger.info(
                 "Job '%s': loaded credential pool for provider %s with %d entries",

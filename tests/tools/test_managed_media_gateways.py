@@ -51,7 +51,7 @@ def _enable_managed_nous_tools(monkeypatch):
     """Patch the source modules so managed_nous_tools_enabled() returns True
     even after tool modules are dynamically reloaded."""
     monkeypatch.setattr(
-        "hermes_cli.nous_account.get_nous_portal_account_info",
+        'hermes_cli.nous_account.get_nous_portal_account_info',
         lambda: NousPortalAccountInfo(
             logged_in=True,
             source="jwt",

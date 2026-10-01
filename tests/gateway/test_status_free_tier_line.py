@@ -1,3 +1,5 @@
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
 """The in-chat /status line identifies an active Nous free-tier route."""
 
 import base64
@@ -10,7 +12,7 @@ import pytest
 from gateway.config import Platform
 from gateway.session import SessionEntry, build_session_key
 from hermes_cli import anon_auth
-from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+from auth.store import _auth_store_lock, _load_auth_store, _save_auth_store
 from tests.gateway.test_status_command import _make_event, _make_runner, _make_source
 
 def _runner():
@@ -48,7 +50,7 @@ def _seed_nous(state: dict) -> None:
 
 def _free_tier_state() -> dict:
     return {
-        "auth_method": anon_auth.ANON_AUTH_METHOD,
+        "auth_method": _auth_auth_providers_nous_guest.ANON_AUTH_METHOD,
         "account_tier": "anonymous",
         "anon_token": "anon_status",
         "access_token": _jwt(),
@@ -92,13 +94,13 @@ async def test_status_omits_the_line_for_a_real_account():
 async def test_a_status_gate_failure_never_breaks_status(monkeypatch):
     runner = _runner()
     _seed_nous(_free_tier_state())
-    monkeypatch.setattr(anon_auth, "guest_carries_inference", lambda: False)
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "guest_carries_inference", lambda**_auth_settings: False)
     expected = await runner._handle_message(_make_event("/status"))
 
-    def broken_store():
+    def broken_store(**_auth_settings):
         raise RuntimeError("broken store")
 
-    monkeypatch.setattr(anon_auth, "guest_carries_inference", broken_store)
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "guest_carries_inference", broken_store)
 
     result = await runner._handle_message(_make_event("/status"))
 

@@ -36,8 +36,9 @@ def _quarantined_nous_error(exc: BaseException) -> BaseException:
     carries the message and code the user needs (#42177). ``format_auth_error`` appends the
     remediation sentence with a space, so an unterminated message reads "Invalid refresh token Run …".
     """
-    from hermes_cli.auth import AuthError, get_provider_auth_state
-    from hermes_cli.auth_nous import _terminal_quarantine_marker
+    from auth.errors import AuthError
+    from auth.provider_state import get_provider_auth_state
+    from auth.providers.nous import _terminal_quarantine_marker
 
     with contextlib.suppress(Exception):
         marker = _terminal_quarantine_marker(get_provider_auth_state("nous") or {})
@@ -65,8 +66,8 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
     the cooldown and its reset time instead; ``None`` when the pool is empty or a credential is
     usable (the caller keeps the missing-credential diagnostic).
     """
-    from agent.credential_pool import STATUS_DEAD, PooledCredential, _exhausted_until
-    from hermes_cli.auth import read_credential_pool
+    from auth.credential_pool import STATUS_DEAD, PooledCredential, _exhausted_until
+    from auth.pool_persistence import read_credential_pool
 
     entries = []
     with contextlib.suppress(Exception):
@@ -128,7 +129,7 @@ def pool_billing_message(
     ``pool_cooldown_message``). ``None`` when the pool is empty, a credential is usable, no entry is
     currently benched, or none carries a billing verdict.
     """
-    from agent.credential_pool import (
+    from auth.credential_pool import (
         FAILURE_REASON_BILLING,
         STATUS_DEAD,
         STATUS_EXHAUSTED,
@@ -141,7 +142,7 @@ def pool_billing_message(
         if pool is not None:
             entries = list(pool.entries())
         else:
-            from hermes_cli.auth import read_credential_pool
+            from auth.pool_persistence import read_credential_pool
 
             entries = [PooledCredential.from_dict(provider_id, e)
                        for e in read_credential_pool(provider_id) if isinstance(e, dict)]
@@ -216,7 +217,7 @@ def _nous_credential_present(exc: BaseException) -> bool:
     """
     if getattr(exc, "code", None):
         return True
-    from hermes_cli.auth import get_provider_auth_state
+    from auth.provider_state import get_provider_auth_state
 
     with contextlib.suppress(Exception):
         return bool(get_provider_auth_state("nous"))
@@ -229,7 +230,7 @@ def record_nous_credential_failure(exc: BaseException) -> str:
     Logged once per distinct message: WARNING when a real credential failed, DEBUG when Hermes was
     simply never logged into Nous.
     """
-    from hermes_cli.auth import format_auth_error
+    from hermes_cli.auth_error_copy import format_auth_error
 
     exc = _quarantined_nous_error(exc)
     message = format_auth_error(exc) if isinstance(exc, Exception) else str(exc)

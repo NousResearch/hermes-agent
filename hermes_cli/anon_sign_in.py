@@ -1,6 +1,10 @@
 """Shared sign-in states, copy, and connector-preserving account promotion flow."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import contextlib
 import math
@@ -8,7 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, ClassVar, ContextManager, Dict, Iterator, Optional
 
-from hermes_cli.auth_constants import httpx
+from auth.constants import httpx
 
 
 UPGRADE_START = "Sign in with a Nous account to unlock more models and tools."
@@ -201,7 +205,7 @@ class Failed(SignInState):
         from hermes_cli import anon_auth as _core
         if self.reason in RETRYABLE_SIGN_IN_REASONS:
             return True
-        return bool(self.reason.startswith("anon_") and self.reason not in _core.ANON_TERMINAL_CODES)
+        return bool(self.reason.startswith("anon_") and self.reason not in _auth_auth_providers_nous_guest.ANON_TERMINAL_CODES)
 
     @property
     def copy(self) -> str:
@@ -209,12 +213,12 @@ class Failed(SignInState):
         ruled = UPGRADE_REASON_COPY.get(self.reason)
         if ruled:
             return ruled
-        if self.reason in _core.ANON_UNREACHABLE_CODES:
+        if self.reason in _auth_auth_providers_nous_guest.ANON_UNREACHABLE_CODES:
             return UPGRADE_SERVICE_UNREACHABLE
-        if self.reason in (_core.ANON_RATE_LIMITED, _core.ANON_GATE_PAUSED):
-            return UPGRADE_SERVICE_BUSY.format(wait=_core.friendly_wait(self.retry_after or 60))
-        if self.reason in _core.ANON_FAILURE_COPY:
-            return _core.anon_failure_copy(self.reason, retry_after=self.retry_after)
+        if self.reason in (_auth_auth_providers_nous_guest.ANON_RATE_LIMITED, _auth_auth_providers_nous_guest.ANON_GATE_PAUSED):
+            return UPGRADE_SERVICE_BUSY.format(wait=_auth_auth_providers_nous_guest.friendly_wait(self.retry_after or 60))
+        if self.reason in _auth_auth_providers_nous_guest.ANON_FAILURE_COPY:
+            return _auth_auth_providers_nous_guest.anon_failure_copy(self.reason, retry_after=self.retry_after)
         return UPGRADE_NOT_COMPLETED
 
     @property
@@ -255,9 +259,9 @@ def _failed_from_exception(exc: BaseException) -> Failed:
     an ``AuthError`` carries, or the wire's shape for a transport error. The raw detail never
     reaches a chat; ``copy_terminal`` may show it when nothing better is known."""
     from hermes_cli import anon_auth as _core
-    err = _core.classify_mint_exception(exc)
+    err = _auth_auth_providers_nous_guest.classify_mint_exception(exc)
     reason = str(err.code or "")
-    if reason == _core.ANON_SERVER_ERROR and not isinstance(exc, _core.AuthError):
+    if reason == _auth_auth_providers_nous_guest.ANON_SERVER_ERROR and not isinstance(exc, _core.AuthError):
         # An unnamed local failure (a bad CA bundle, a lock timeout): keep today's generic copy
         # and its terminal detail rather than blaming the service.
         return Failed(reason="", detail=str(exc))
@@ -277,7 +281,7 @@ def _outcome_state(outcome: Dict[str, Any], anon_token: str) -> SignInState:
     if status == "timeout":
         return TimedOut()
     if reason in _RETIRED_REASONS:
-        _core.clear_dead_guest("retired", dead_token=anon_token or None)
+        _auth_auth_providers_nous_guest.clear_dead_guest("retired", dead_token=anon_token or None)
         return Retired()
     if reason == "user_declined":
         return Declined()
@@ -325,9 +329,10 @@ def run_sign_in(
     *client_factory* is the HTTP client seam, ``client_factory(timeout_seconds, verify)``.
     """
     from hermes_cli import anon_auth as _core
-    from hermes_cli.auth import PROVIDER_REGISTRY, _resolve_verify
-    from hermes_cli.auth_device_flow import _request_device_code
-    from hermes_cli.auth_nous import _nous_http_client
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from auth.oauth import _resolve_verify
+    from auth.oauth import _request_device_code
+    from auth.providers.nous import _nous_http_client
 
     is_cancelled = cancelled or (lambda: False)
     # Once the server says "completed" the transfer has happened; a cancel only undoes it where the
@@ -343,10 +348,10 @@ def run_sign_in(
     state: Optional[Dict[str, Any]] = None
     try:
         with open_scope():
-            state = _core.current_nous_state()
-            if state and not _core.is_guest_state(state):
+            state = _auth_auth_providers_nous_guest.current_nous_state()
+            if state and not _auth_auth_providers_nous_guest.is_guest_state(state):
                 precondition_state = AlreadySignedIn()
-            elif not state or not _core.guest_enabled():
+            elif not state or not _auth_auth_providers_nous_guest.guest_enabled(environment=_phase6_auth_environment()):
                 precondition_state = Unavailable()
     except Exception as exc:
         # An unreadable auth store means the same thing here: there is no free tier to sign in from.
@@ -358,7 +363,7 @@ def run_sign_in(
         return
 
     anon_token = str(state.get("anon_token") or "")
-    portal = (state.get("portal_base_url") or _core._portal_base_url()).rstrip("/")
+    portal = (state.get("portal_base_url") or _auth_auth_providers_nous_guest._portal_base_url()).rstrip("/")
 
     outcome: Dict[str, Any] = {}
     account_state: Optional[Dict[str, Any]] = None
@@ -416,13 +421,13 @@ def run_sign_in(
         account_state = _core._account_state_from_token(
             token_data, portal_base_url=portal, client_id=client_id, scope=scope_str,
             verify=verify, timeout_seconds=timeout_seconds)
-    except _core.AnonCredentialDead:
+    except _auth_auth_providers_nous_guest.AnonCredentialDead:
         # Best effort: the credential is provably dead at the account service, so the outcome is
         # Retired whatever the local write does. A clear that fails (locked or read-only store)
         # self-heals on the next rejection, and must not cost this run its terminal state.
         with contextlib.suppress(Exception):
             with open_scope():
-                _core.clear_dead_guest("retired", dead_token=anon_token or None)
+                _auth_auth_providers_nous_guest.clear_dead_guest("retired", dead_token=anon_token or None)
         yield Retired()
         return
     except TimeoutError as exc:

@@ -6,6 +6,11 @@ its payload depends on the Authorization header or URL so a leaked entry is obse
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous as _auth_auth_providers_nous
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import io
 import json
@@ -211,7 +216,7 @@ def test_failed_guest_mint_only_suppresses_that_profile(homes, monkeypatch, tmp_
     import hermes_cli.anon_auth as anon
     import hermes_cli.auth_nous as auth_nous
 
-    anon.reset_mint_memo_for_tests()
+    _auth_auth_providers_nous_guest.reset_mint_memo_for_tests()
     status = {"code": 429}
     attempts: list[str] = []
 
@@ -223,13 +228,13 @@ def test_failed_guest_mint_only_suppresses_that_profile(homes, monkeypatch, tmp_
             return httpx.Response(201, json={"token": "anon_b", "user_id": "u", "org_id": "o"})
         return httpx.Client(transport=httpx.MockTransport(handler))
 
-    monkeypatch.setattr(auth_nous, "_nous_http_client", client)
+    monkeypatch.setattr(_auth_auth_providers_nous, "_nous_http_client", client)
     with _Scoped(a), pytest.raises(Exception):
-        anon.ensure_portal_identity(explicit=True, timeout_seconds=1)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, timeout_seconds=1, environment=_phase6_auth_environment())
     assert attempts == [str(a)]
     status["code"] = 201
     with _Scoped(b):
-        assert anon.ensure_portal_identity(explicit=True, timeout_seconds=1) is not None
+        assert _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, timeout_seconds=1, environment=_phase6_auth_environment()) is not None
     assert attempts[-1] == str(b)
 
 

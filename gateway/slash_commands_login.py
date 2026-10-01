@@ -1,6 +1,8 @@
 """The off-turn, paired-DM-only ``/login`` command."""
 
 from __future__ import annotations
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import asyncio
 import concurrent.futures
@@ -88,8 +90,8 @@ class GatewayLoginCommandsMixin:
             if live is not None:
                 live.cancelled = True
 
-        state = await self._run_login_blocking(anon_auth.current_nous_state)
-        if state and not anon_auth.is_guest_state(state):
+        state = await self._run_login_blocking(_auth_auth_providers_nous_guest.current_nous_state)
+        if state and not _auth_auth_providers_nous_guest.is_guest_state(state):
             return anon_auth.UPGRADE_ALREADY_SIGNED_IN
 
         with lock:
@@ -183,13 +185,13 @@ class GatewayLoginCommandsMixin:
             key for key, entry in entries
             if (agent := _first_agent(entry)) is not None
             and str(getattr(agent, "provider", "")) == "nous"
-            and str(getattr(agent, "model", "")) == anon_auth.GUEST_MODEL
+            and str(getattr(agent, "model", "")) == _auth_auth_providers_nous_guest.GUEST_MODEL
         ]
         failed = 0
         for key in keys:
             overrides = self._session_model_overrides
             override = overrides.get(key) or {}
-            if str(override.get("model") or "") == anon_auth.GUEST_MODEL:
+            if str(override.get("model") or "") == _auth_auth_providers_nous_guest.GUEST_MODEL:
                 for attempt in range(2):
                     try:
                         await self.async_session_store.set_model_override(key, None)

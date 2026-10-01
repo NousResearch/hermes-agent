@@ -166,7 +166,7 @@ class _LivenessPatches:
 
         self._stack = ExitStack()
 
-        def _fake_provider_name():
+        def _fake_provider_name(**_auth_settings):
             if self._provider is None:
                 raise RuntimeError("probe failure")
             return self._provider

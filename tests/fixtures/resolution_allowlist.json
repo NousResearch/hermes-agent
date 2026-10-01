@@ -10,7 +10,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "agent/anthropic_credentials.py",
+    "path": "hermes_cli/auth_anthropic.py",
     "symbol": "run_oauth_setup_token",
     "kind": "bare_which"
   },

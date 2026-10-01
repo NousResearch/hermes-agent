@@ -32,7 +32,7 @@ def test_responses_upgrade_is_skipped_by_acp_scheme_not_vendor_slug(monkeypatch)
     OpenAI URL is upgraded whatever the slug — the vendor literal carried no behaviour of its own."""
     from agent.agent_init import _finalize_routing
 
-    monkeypatch.setattr("hermes_cli.anon_auth.pin_model_for_route", lambda provider, base_url, model: model)
+    monkeypatch.setattr('hermes_cli.anon_auth.pin_model_for_route', lambda provider, base_url, model: model)
     for provider, base_url in (("copilot-acp", "acp://copilot"), ("acme-acp", "acp://acme"),
                                ("acme-acp", "acp+tcp://127.0.0.1:9000")):
         agent = _routing_agent(provider, base_url)
@@ -52,7 +52,7 @@ def test_responses_upgrade_is_skipped_for_external_process_profile_on_any_base_u
 
     profile = ProviderProfile(name="copilot-acp", auth_type="external_process")
     monkeypatch.setattr("providers.get_provider_profile", lambda name: profile if name == "copilot-acp" else None)
-    monkeypatch.setattr("hermes_cli.anon_auth.pin_model_for_route", lambda provider, base_url, model: model)
+    monkeypatch.setattr('hermes_cli.anon_auth.pin_model_for_route', lambda provider, base_url, model: model)
 
     agent = _routing_agent("copilot-acp", "https://proxy.example.invalid/v1")
     agent._provider_model_requires_responses_api = lambda model, provider=None: True

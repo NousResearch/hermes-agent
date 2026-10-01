@@ -1,3 +1,5 @@
+
+import auth.providers.qwen as _auth_auth_providers_qwen
 """User-editable plugin/auth JSON survives a Windows-editor BOM.
 
 Notepad and PowerShell ``>`` prepend U+FEFF when saving; ``json.loads`` rejects it
@@ -52,5 +54,5 @@ def test_qwen_cli_tokens_tolerate_bom(tmp_path, monkeypatch):
     import hermes_cli.auth as auth_mod
 
     creds = _write_bom_json(tmp_path / "oauth_creds.json", {"access_token": "tok", "expiry_date": 4102444800000})
-    monkeypatch.setattr(auth_mod, "_qwen_cli_auth_path", lambda: creds)
-    assert auth_mod._read_qwen_cli_tokens()["access_token"] == "tok"
+    monkeypatch.setattr(_auth_auth_providers_qwen, "_qwen_cli_auth_path", lambda: creds)
+    assert _auth_auth_providers_qwen._read_qwen_cli_tokens()["access_token"] == "tok"

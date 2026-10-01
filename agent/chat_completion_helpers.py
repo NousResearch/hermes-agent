@@ -1790,7 +1790,7 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     if (fb.get("provider") or "").strip().lower() != "nous":
         return None
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from auth.provider_state import get_provider_auth_state
         state = get_provider_auth_state("nous") or {}
     except Exception as exc:
         return f"nous_auth_unreadable:{type(exc).__name__}"
@@ -1896,6 +1896,7 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
 def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> None:
     """Rebind the credential pool when the provider changes (else rate_limit/billing/auth recovery
     mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool: kept."""
+    from hermes_cli.config_credentials import credential_pool_environment
     existing_pool = getattr(agent, "_credential_pool", None)
     if existing_pool is not None:
         pool_provider = (getattr(existing_pool, "provider", "") or "").strip().lower()
@@ -1906,8 +1907,8 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             agent._credential_pool = agent._credential_pool_entry_id = None
     if getattr(agent, "_credential_pool", None) is None:
         try:
-            from agent.credential_pool import load_pool
-            fallback_pool = load_pool(fb_provider)
+            from auth.credential_pool import load_pool
+            fallback_pool = load_pool(fb_provider, environment=credential_pool_environment())
             if fallback_pool and fallback_pool.has_credentials():
                 agent._credential_pool = fallback_pool
                 logger.info("Fallback to %s/%s: attached fallback credential pool", fb_provider, fb_model)
@@ -1947,11 +1948,12 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     """True when every credential the candidate would use sits in an exhaustion cooldown longer
     than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
     turn the same way the primary just did (#89401). A short throttle still gets its chance."""
+    from hermes_cli.config_credentials import credential_pool_environment
     pool = getattr(agent, "_credential_pool", None)
     if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
         try:
-            from agent.credential_pool import load_pool
-            pool = load_pool(fb_provider)
+            from auth.credential_pool import load_pool
+            pool = load_pool(fb_provider, environment=credential_pool_environment())
         except Exception:
             return False
     if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):

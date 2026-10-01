@@ -2,10 +2,8 @@
 
 import pytest
 
-from hermes_cli.auth import (
-    resolve_provider,
-    resolve_api_key_provider_credentials,
-)
+from hermes_cli.auth import resolve_provider
+from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials
 
 # =============================================================================
 # Provider Registry

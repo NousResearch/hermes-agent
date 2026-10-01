@@ -49,7 +49,7 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]
 
 def _snapshot_auth_active_provider() -> Any:
     """Return the current ``active_provider`` in auth.json."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store
+    from auth.store import _auth_store_lock, _load_auth_store
 
     with _auth_store_lock():
         store = _load_auth_store()
@@ -58,7 +58,7 @@ def _snapshot_auth_active_provider() -> Any:
 
 def _restore_auth_active_provider(value: Any) -> None:
     """Write back a previously snapshotted ``active_provider`` value."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+    from auth.store import _auth_store_lock, _load_auth_store, _save_auth_store
 
     with _auth_store_lock():
         store = _load_auth_store()

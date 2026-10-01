@@ -215,22 +215,24 @@ def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surf
 
 def _loaded_pool(key: Any):
     """``load_pool(key)`` when it holds credentials, else None."""
-    from agent.credential_pool import load_pool
-    pool = load_pool(key)
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
+    pool = load_pool(key, environment=credential_pool_environment())
     return pool if pool is not None and pool.has_credentials() else None
 
 def _pool_serves_endpoint(pool: Any, provider: Optional[str], base_url: Optional[str]) -> bool:
     """Provider identity AND at least one entry for the child's endpoint; pools without entry metadata pass."""
-    from agent.credential_pool import (
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import (
         credential_pool_entry_serves_endpoint as _entry_serves_endpoint, credential_pool_matches_provider,
     )
-    if not credential_pool_matches_provider(pool, provider, base_url=base_url):
+    if not credential_pool_matches_provider(pool, provider, base_url=base_url, environment=credential_pool_environment()):
         return False
     entries_fn = getattr(pool, "entries", None)
     if not callable(entries_fn):
         return True
     entries = entries_fn()
-    return not isinstance(entries, list) or any(_entry_serves_endpoint(entry, base_url) for entry in entries)
+    return not isinstance(entries, list) or any(_entry_serves_endpoint(entry, base_url, environment=credential_pool_environment()) for entry in entries)
 
 def _resolve_child_credential_pool(
     effective_provider: Optional[str], parent_agent, effective_base_url: Optional[str] = None,
@@ -252,19 +254,20 @@ def _resolve_child_credential_pool(
     ``requested_provider`` identity takes precedence over URL-only matching (#45763): the child must not
     lease the first pool registered for the shared endpoint.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     parent_pool = getattr(parent_agent, "_credential_pool", None)
     if not effective_provider:
         return parent_pool
     parent_provider = getattr(parent_agent, "provider", None) or ""
     try:
         if effective_provider == "custom":
-            from agent.credential_pool import get_custom_provider_pool_key
-            child_key = get_custom_provider_pool_key(effective_base_url, provider_name=effective_requested_provider)
+            from auth.credential_pool import get_custom_provider_pool_key
+            child_key = get_custom_provider_pool_key(effective_base_url, provider_name=effective_requested_provider, environment=credential_pool_environment())
             if child_key is None:
                 return None
             parent_key = get_custom_provider_pool_key(
                 getattr(parent_agent, "base_url", None), provider_name=getattr(parent_agent, "requested_provider", None),
-            )
+            environment=credential_pool_environment())
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
             return _loaded_pool(child_key)

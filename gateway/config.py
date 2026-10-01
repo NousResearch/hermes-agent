@@ -554,7 +554,7 @@ def _has_usable_api_server_key(key: object) -> bool:
     if not key:
         return False
     try:
-        from hermes_cli.auth import has_usable_secret
+        from auth.secret_validation import has_usable_secret
         return has_usable_secret(key, min_length=16)
     except ImportError:
         return len(str(key).strip()) >= 16
@@ -861,7 +861,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         # Reject known-weak placeholder tokens. Ported from openclaw/openclaw#64586: users who copy
         # .env.example without changing placeholder values get a clear startup error instead of a confusing
         # "auth failed" from the platform API.
-        from hermes_cli.auth import has_usable_secret
+        from auth.secret_validation import has_usable_secret
     except ImportError:
         has_usable_secret = None
 

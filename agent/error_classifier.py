@@ -970,7 +970,7 @@ def classify_api_error(
     dark-tier 403 on it because that refusal carries no distinguishing message.
     ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
     The credential is never included in the returned context."""
-    from hermes_cli.anon_auth import is_anonymous_request
+    from auth.providers.nous_guest import is_anonymous_request
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":

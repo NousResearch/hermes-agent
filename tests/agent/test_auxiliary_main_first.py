@@ -408,14 +408,14 @@ class TestResolveVisionMainFirst:
         ), patch(
             "agent.auxiliary_client.OpenAI",
         ) as mock_openai, patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            "hermes_cli.runtime_provider_credentials.resolve_api_key_provider_credentials",
             return_value={
                 "provider": "copilot",
                 "api_key": "copilot-api-token",
                 "base_url": "https://api.githubcopilot.com",
             },
         ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
+            'auth.providers.copilot.copilot_request_headers',
             side_effect=fake_headers,
         ):
             mock_client = MagicMock()
@@ -445,14 +445,14 @@ class TestResolveVisionMainFirst:
         with patch(
             "agent.auxiliary_client.OpenAI",
         ) as mock_openai, patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            "hermes_cli.runtime_provider_credentials.resolve_api_key_provider_credentials",
             return_value={
                 "provider": "copilot",
                 "api_key": "copilot-api-token",
                 "base_url": "https://api.githubcopilot.com",
             },
         ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
+            'auth.providers.copilot.copilot_request_headers',
             side_effect=fake_headers,
         ):
             mock_client = MagicMock()

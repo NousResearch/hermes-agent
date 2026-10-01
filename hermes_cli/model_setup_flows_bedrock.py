@@ -6,6 +6,7 @@ Prompt strings and config write order are behavior.
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment
 
 from hermes_cli.model_setup_flows_common import (
     _ask, _ensure_dict_section, _finish_model, _pick_model_or_prompt, _say)
@@ -47,14 +48,15 @@ def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
 def _model_flow_bedrock_api_key(config, region, current_model=""):
     """Bedrock API Key mode on the OpenAI-compatible bedrock-mantle endpoint — for developers
     without an AWS account who received a Bedrock API Key from their AWS admin."""
-    from hermes_cli.auth import _resolve_api_key_provider_secret, ProviderConfig
+    from auth.api_keys import resolve_api_key_provider_secret
+    from hermes_cli.auth import ProviderConfig
     from hermes_cli.config import save_env_value
     from hermes_cli.models import _PROVIDER_MODELS
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
 
     # Check env var and credential pool (keys added via `hermes auth`)
     bedrock_pconfig = ProviderConfig(id="bedrock", name="Bedrock", auth_type="api_key", api_key_env_vars=("AWS_BEARER_TOKEN_BEDROCK",))
-    existing_key, existing_source = _resolve_api_key_provider_secret("bedrock", bedrock_pconfig)
+    existing_key, existing_source = resolve_api_key_provider_secret("bedrock", bedrock_pconfig, environment=credential_pool_environment())
     if existing_key:
         from hermes_cli.env_loader import format_secret_source_suffix
         source_suffix = format_secret_source_suffix(existing_source or "AWS_BEARER_TOKEN_BEDROCK")

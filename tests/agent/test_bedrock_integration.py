@@ -94,9 +94,9 @@ class TestResolveProvider:
 
         # The Nous free tier counts as a configured provider and sits above the Bedrock chain
         # (NS-829); this test's contract is the chain itself, so switch the free tier off.
-        monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: False)
+        monkeypatch.setattr('auth.providers.nous_guest.guest_enabled', lambda**_auth_settings: False)
         # Mock the auth store to have no active provider
-        with patch("hermes_cli.auth._load_auth_store", return_value={}):
+        with patch('auth.store._load_auth_store', return_value={}):
             result = resolve_provider("auto")
         assert result == "bedrock"
 
@@ -110,7 +110,7 @@ class TestRuntimeProvider:
         """When bedrock is auto-detected (not explicitly requested) and no
         credentials are found, runtime resolution should raise AuthError."""
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         # Clear all AWS env vars
         for var in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE",

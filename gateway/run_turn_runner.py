@@ -1093,7 +1093,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 return _unresolved(f"⚠️ This session's launch credentials are no longer available "
                                    f"({exc.reason}), so this message wasn't processed. Start a new "
                                    "session from the CLI to bind them again.")
-            from hermes_cli.auth import is_rate_limited_auth_error
+            from auth.failure_policy import is_rate_limited_auth_error
             if is_rate_limited_auth_error(exc.__cause__):
                 # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
                 from gateway.run import _gateway_provider_error_reply

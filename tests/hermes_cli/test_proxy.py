@@ -203,7 +203,7 @@ def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
     def _refresh_must_not_run(*args, **kwargs):
         raise AssertionError("refresh_xai_oauth_pure must not run on 429")
 
-    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _refresh_must_not_run)
+    monkeypatch.setattr('auth.providers.xai.refresh_xai_oauth_pure', _refresh_must_not_run)
 
     adapter = XAIGrokAdapter()
     failed = adapter.get_credential()

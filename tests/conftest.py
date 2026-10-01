@@ -554,7 +554,7 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
         return None
 
     try:
-        _mod = importlib.import_module("agent.anthropic_credentials")
+        _mod = importlib.import_module("auth.providers.anthropic")
     except Exception:
         return None
     monkeypatch.setattr(

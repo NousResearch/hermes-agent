@@ -55,7 +55,8 @@ def fake_cli(tmp_path, monkeypatch):
 
 
 def test_an_out_of_tree_external_process_provider_resolves_end_to_end(fake_cli, monkeypatch):
-    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_external_process_provider_credentials, resolve_provider
+    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+    from hermes_cli.runtime_provider_credentials import resolve_external_process_provider_credentials
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     assert PROVIDER_REGISTRY["acme"] is PROVIDER_REGISTRY["acme-acp"]
@@ -76,7 +77,7 @@ def test_an_out_of_tree_external_process_provider_resolves_end_to_end(fake_cli, 
 
 
 def test_copilot_acp_launch_details_are_unchanged(fake_cli, monkeypatch):
-    from hermes_cli.auth import resolve_external_process_provider_credentials
+    from hermes_cli.runtime_provider_credentials import resolve_external_process_provider_credentials
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     creds = resolve_external_process_provider_credentials("copilot-acp")

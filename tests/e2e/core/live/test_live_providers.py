@@ -86,7 +86,7 @@ def _live_listing(provider: str, runtime: dict) -> list[str]:
 
         return list(fetch_api_models(api_key, base_url, timeout=20.0) or [])
     if provider == "nous":
-        from hermes_cli.auth import fetch_nous_models
+        from hermes_cli.auth_nous import fetch_nous_models
 
         return list(fetch_nous_models(inference_base_url=base_url, api_key=api_key) or [])
     from providers import get_provider_profile

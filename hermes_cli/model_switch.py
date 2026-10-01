@@ -1391,7 +1391,7 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     if current_provider == "nous":
         # The welcome host serves nous/welcome only; a model outside it needs an account or a key.
         # Never hop to another provider on the user's behalf here (there is no key to hop to).
-        from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
+        from auth.providers.nous_guest import GUEST_MODEL, route_is_welcome_host
         if route_is_welcome_host(st.current_base_url) and st.new_model != GUEST_MODEL:
             return st.fail(
                 f"{st.new_model} needs a Nous account or an API key. "
@@ -1777,7 +1777,7 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     provider and base_url) — ``custom:a`` -> ``custom:b`` must not hand endpoint A's secret to B.
     The ``key_env`` / ``api_key_env`` credential POINTER (written by custom-endpoint activation
     and, for REGISTRY providers too, by the Desktop settings UI (#106336); resolved by
-    runtime_provider / auxiliary_client / ``auth._model_level_key_env``) clears only when the
+    runtime_provider / auxiliary_client / ``auth.api_keys._model_level_key_env``) clears only when the
     route changed: left behind it routes the NEW provider's requests to the OLD endpoint's env
     var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
@@ -1860,14 +1860,15 @@ def _scoped_key_env(name: str) -> str:
     chain ``client_lifecycle`` uses for the actual request — so a ``key_env`` that lives only in
     ``$HERMES_HOME/.env`` authenticates the ``/model`` verification probe (#109315) and a rotated
     ``.env`` beats a stale value inherited from the parent shell."""
+    from hermes_cli.config_credentials import credential_pool_environment
     if not name:
         return ""
     try:
         from agent.secret_scope import current_secret_scope, get_secret, is_multiplex_active
         if current_secret_scope() is not None or is_multiplex_active():
             return (get_secret(name, "") or "").strip()
-        from agent.credential_pool import get_env_prefer_dotenv
-        return (get_env_prefer_dotenv(name) or "").strip()
+        from auth.pool_sources import get_env_prefer_dotenv
+        return (get_env_prefer_dotenv(name, environment=credential_pool_environment()) or "").strip()
     except Exception:
         return ""
 

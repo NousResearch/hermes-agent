@@ -233,7 +233,8 @@ def test_dotenv_key_counts_when_shell_exports_the_var_empty(tmp_path, monkeypatc
     _write_config(tmp_path, {"model": {}})
     (tmp_path / "hermes" / ".env").write_text("DEEPSEEK_API_KEY=sk-dotenv-only-secret\n")
 
-    from hermes_cli.auth import is_provider_explicitly_configured, resolve_api_key_provider_credentials
+    from hermes_cli.auth import is_provider_explicitly_configured
+    from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials
     assert resolve_api_key_provider_credentials("deepseek").get("api_key") == "sk-dotenv-only-secret"
     assert is_provider_explicitly_configured("deepseek") is True
 

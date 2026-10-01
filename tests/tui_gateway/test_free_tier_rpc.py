@@ -2,6 +2,8 @@
 driven through the registered RPC handlers against a seeded free-tier identity."""
 
 from __future__ import annotations
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import base64
 import json
@@ -11,7 +13,7 @@ import pytest
 
 import tui_gateway.server as srv
 from hermes_cli import anon_auth
-from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+from auth.store import _auth_store_lock, _load_auth_store, _save_auth_store
 
 
 def _jwt(**claims) -> str:
@@ -35,7 +37,7 @@ def _fresh_process_memos():
 
     def _reset():
         free_tier_bootstrap.reset_for_tests()
-        anon_auth.reset_mint_memo_for_tests()
+        _auth_auth_providers_nous_guest.reset_mint_memo_for_tests()
     _reset()
     yield
     _reset()
@@ -48,7 +50,7 @@ def guest(tmp_path, monkeypatch):
     with _auth_store_lock():
         store = _load_auth_store()
         store.setdefault("providers", {})["nous"] = {
-            "auth_method": anon_auth.ANON_AUTH_METHOD, "account_tier": "anonymous", "anon_token": "anon_0001",
+            "auth_method": _auth_auth_providers_nous_guest.ANON_AUTH_METHOD, "account_tier": "anonymous", "anon_token": "anon_0001",
             "client_id": "nas-anonymous", "access_token": _jwt(), "expires_at": "2999-01-01T00:00:00+00:00",
             "inference_base_url": "https://welcome-api.nousresearch.com/v1"}
         store["active_provider"] = "nous"
@@ -57,14 +59,14 @@ def guest(tmp_path, monkeypatch):
 
 def _set_guest_off(monkeypatch):
     from hermes_cli import config as cfg_mod
-    monkeypatch.setattr(anon_auth, "guest_enabled", lambda: False)
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "guest_enabled", lambda**_auth_settings: False)
     return cfg_mod
 
 
 def test_status_is_pull_from_local_state_and_ack_persists_on_the_identity(guest, monkeypatch):
     status = _call("free_tier.status")
     assert status == {"has_guest": True, "enabled": True, "available": True, "notice_pending": True,
-                      "model": "nous/welcome", "label": anon_auth.FREE_TIER_LABEL}
+                      "model": "nous/welcome", "label": _auth_auth_providers_nous_guest.FREE_TIER_LABEL}
 
     assert _call("free_tier.ack_notice") == {"acked": True}
     assert _call("free_tier.status")["notice_pending"] is False
@@ -96,7 +98,7 @@ def test_status_without_an_identity_is_a_pure_read(tmp_path, monkeypatch):
     (that is the boot bootstrap's job)."""
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
     monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-    monkeypatch.setattr(anon_auth, "ensure_portal_identity",
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "ensure_portal_identity",
                         lambda **kw: (_ for _ in ()).throw(AssertionError("free_tier.status must not mint")))
     status = _call("free_tier.status")
     assert status["has_guest"] is False and status["available"] is False and status["enabled"] is True
@@ -108,18 +110,20 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
     monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     calls = []
-    real_ensure = anon_auth.ensure_portal_identity
+    real_ensure = _auth_auth_providers_nous_guest.ensure_portal_identity
 
     def fake_provision(**kw):
+        settings = kw.pop("environment")
+        settings.require_current_scope()
         calls.append(kw)
         with _auth_store_lock():
             store = _load_auth_store()
             store.setdefault("providers", {})["nous"] = {
-                "auth_method": anon_auth.ANON_AUTH_METHOD, "account_tier": "anonymous", "anon_token": "anon_0002"}
+                "auth_method": _auth_auth_providers_nous_guest.ANON_AUTH_METHOD, "account_tier": "anonymous", "anon_token": "anon_0002"}
             _save_auth_store(store)
         return store["providers"]["nous"]
 
-    monkeypatch.setattr(anon_auth, "ensure_portal_identity", fake_provision)
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "ensure_portal_identity", fake_provision)
     assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
     assert calls == [{"explicit": True, "force": True}]
     assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
@@ -131,13 +135,13 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
     with _auth_store_lock():
         store = _load_auth_store(); store["providers"].pop("nous"); _save_auth_store(store)
     # The real primitive memoises the refusal; the RPC reports that memo.
-    monkeypatch.setattr(anon_auth, "ensure_portal_identity", real_ensure)
-    monkeypatch.setattr(anon_auth, "_reconcile_and_provision", refused)
-    anon_auth.reset_mint_memo_for_tests()
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "ensure_portal_identity", real_ensure)
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "_reconcile_and_provision", refused)
+    _auth_auth_providers_nous_guest.reset_mint_memo_for_tests()
     result = _call("free_tier.provision")
     assert result["has_guest"] is False and "not open" in result["error"]
     assert result["error_code"] == "anon_gate_closed" and result["retryable"] is False
 
     _set_guest_off(monkeypatch)
-    monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "ensure_portal_identity", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))
     assert _call("free_tier.provision") == {"has_guest": False, "enabled": False}

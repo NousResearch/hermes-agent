@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hermes_cli import env_loader  # noqa: E402
-import agent.credential_pool as credential_pool  # noqa: E402
+import auth.credential_pool as credential_pool  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -86,8 +86,11 @@ def _seed_openrouter_token(monkeypatch, dotenv_value, environ_value):
     _get_env_prefer_dotenv('OPENROUTER_API_KEY') and stores the result as the
     pooled credential's access_token.
     """
+    from auth import pool_sources as credential_pool_sources
+    from hermes_cli import config as credential_config
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setattr(
-        credential_pool,
+        credential_config,
         "load_env",
         lambda: {"OPENROUTER_API_KEY": dotenv_value},
     )
@@ -97,11 +100,11 @@ def _seed_openrouter_token(monkeypatch, dotenv_value, environ_value):
         monkeypatch.setenv("OPENROUTER_API_KEY", environ_value)
     # Never treat the synthetic source as suppressed.
     monkeypatch.setattr(
-        "hermes_cli.auth.is_source_suppressed", lambda _p, _s: False
+        'auth.sources.is_source_suppressed', lambda _p, _s: False
     )
 
     entries: list = []
-    changed, sources = credential_pool._seed_from_env("openrouter", entries)
+    changed, sources = credential_pool_sources._seed_from_env("openrouter", entries, environment=credential_pool_environment())
     assert changed and entries, "expected a seeded openrouter credential"
     return entries[0].access_token
 

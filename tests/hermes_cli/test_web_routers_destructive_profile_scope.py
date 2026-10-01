@@ -120,8 +120,8 @@ def seams(monkeypatch):
     session-store open names, ``pool_home`` = the home the credential-pool body resolves.
     A route that reaches any of them after a 400 shows up as a non-empty list.
     """
-    import agent.credential_pool as credential_pool
-    import agent.credential_sources as credential_sources
+    import auth.credential_pool as credential_pool
+    import auth.source_removal as credential_sources
     from hermes_cli import web_server_gateway, web_server_sessions
     from hermes_cli.config import get_hermes_home
 
@@ -148,8 +148,8 @@ def seams(monkeypatch):
 
     monkeypatch.setattr(web_server_gateway, "_spawn_hermes_action", _spawn)
     monkeypatch.setattr(web_server_sessions, "_open_session_db_for_profile", _open_db)
-    monkeypatch.setattr(credential_pool, "load_pool", lambda _provider: _Pool())
-    monkeypatch.setattr(credential_sources, "find_removal_step", lambda *_a: None)
+    monkeypatch.setattr(credential_pool, "load_pool", lambda _provider, environment=None: _Pool())
+    monkeypatch.setattr(credential_sources, "find_removal_step", lambda *_a, **_kw: None)
     return record
 
 

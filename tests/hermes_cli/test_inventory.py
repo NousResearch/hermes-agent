@@ -260,15 +260,15 @@ def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
 
     with (
         patch(
-            "agent.anthropic_credentials.read_hermes_oauth_credentials",
+            'auth.providers.anthropic.read_hermes_oauth_credentials',
             return_value=None,
         ),
         patch(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            'auth.providers.anthropic.read_claude_code_credentials',
             return_value=None,
         ),
         patch(
-            "hermes_cli.auth.read_credential_pool",
+            'auth.pool_persistence.read_credential_pool',
             return_value=[
                 {"auth_type": "oauth", "access_token": "sk-ant-oat01-pool"}
             ],
@@ -280,15 +280,15 @@ def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
     # (they are handled by the explicit-config gate / env var paths).
     with (
         patch(
-            "agent.anthropic_credentials.read_hermes_oauth_credentials",
+            'auth.providers.anthropic.read_hermes_oauth_credentials',
             return_value=None,
         ),
         patch(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            'auth.providers.anthropic.read_claude_code_credentials',
             return_value=None,
         ),
         patch(
-            "hermes_cli.auth.read_credential_pool",
+            'auth.pool_persistence.read_credential_pool',
             return_value=[
                 {"auth_type": "api_key", "access_token": "sk-ant-api03-key"}
             ],

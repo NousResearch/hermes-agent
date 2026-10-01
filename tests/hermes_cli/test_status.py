@@ -1,3 +1,9 @@
+import auth.provider_status as _auth_auth_provider_status
+
+import auth.providers.nous_status as _auth_auth_providers_nous_status
+
+import auth.providers.nous as _auth_auth_providers_nous
+import auth.providers.qwen as _auth_auth_providers_qwen
 from types import SimpleNamespace
 
 from hermes_cli.status import show_status
@@ -41,9 +47,9 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
     monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
     monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
-    monkeypatch.setattr(auth_mod, "get_nous_auth_status_local", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_providers_nous_status, "get_nous_auth_status_local", lambda**_auth_settings: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_provider_status, "get_codex_auth_status", lambda **_auth_settings: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_provider_status, "get_xai_oauth_auth_status", lambda **_auth_settings: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
     def _unexpected_systemctl(*args, **kwargs):
@@ -69,10 +75,10 @@ def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_pa
     monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
     monkeypatch.setattr(status_mod.importlib.util, "find_spec", lambda name: object() if name == "vercel" else None)
     monkeypatch.setattr(status_mod, "load_config", lambda: {"terminal": {"backend": "vercel_sandbox"}}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_providers_nous_status, "get_nous_auth_status", lambda**_auth_settings: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_provider_status, "get_codex_auth_status", lambda **_auth_settings: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_providers_qwen, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_provider_status, "get_xai_oauth_auth_status", lambda **_auth_settings: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
@@ -100,10 +106,10 @@ def _base_xai_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
     monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
     monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
-    monkeypatch.setattr(auth_mod, "get_nous_auth_status_local", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_minimax_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_providers_nous_status, "get_nous_auth_status_local", lambda**_auth_settings: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_provider_status, "get_codex_auth_status", lambda **_auth_settings: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_providers_qwen, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_provider_status, "get_minimax_oauth_auth_status", lambda **_auth_settings: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
     return status_mod
 
@@ -119,8 +125,8 @@ class TestShowStatusXaiOAuth:
     def test_logged_in_shows_auth_store(self, monkeypatch, capsys, tmp_path):
         import hermes_cli.auth as auth_mod
         status_mod = _base_xai_mocks(monkeypatch, tmp_path)
-        monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status",
-                            lambda: {"logged_in": True, "auth_store": "/home/u/.hermes/auth.json"},
+        monkeypatch.setattr(_auth_auth_provider_status, "get_xai_oauth_auth_status",
+                            lambda **_auth_settings: {"logged_in": True, "auth_store": "/home/u/.hermes/auth.json"},
                             raising=False)
 
         status_mod.show_status(SimpleNamespace(all=False, deep=False))
@@ -146,9 +152,9 @@ class TestShowStatusXaiOAuth:
         """Nous/Codex/MiniMax rows must still appear when xAI import fails."""
         import hermes_cli.auth as auth_mod
         status_mod = _base_xai_mocks(monkeypatch, tmp_path)
-        monkeypatch.setattr(auth_mod, "get_nous_auth_status_local",
-                            lambda: {"logged_in": True}, raising=False)
-        monkeypatch.delattr(auth_mod, "get_xai_oauth_auth_status", raising=False)
+        monkeypatch.setattr(_auth_auth_providers_nous_status, "get_nous_auth_status_local",
+                            lambda**_auth_settings: {"logged_in": True}, raising=False)
+        monkeypatch.delattr(_auth_auth_provider_status, "get_xai_oauth_auth_status", raising=False)
 
         status_mod.show_status(SimpleNamespace(all=False, deep=False))
         out = capsys.readouterr().out
@@ -161,10 +167,10 @@ class TestShowStatusXaiOAuth:
         import hermes_cli.auth as auth_mod
         status_mod = _base_xai_mocks(monkeypatch, tmp_path)
 
-        def _raises():
+        def _raises(**_auth_settings):
             raise RuntimeError("backend unreachable")
 
-        monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", _raises, raising=False)
+        monkeypatch.setattr(_auth_auth_provider_status, "get_xai_oauth_auth_status", _raises, raising=False)
 
         status_mod.show_status(SimpleNamespace(all=False, deep=False))
         out = capsys.readouterr().out
@@ -175,8 +181,8 @@ class TestShowStatusXaiOAuth:
         """get_xai_oauth_auth_status returning None must be handled gracefully."""
         import hermes_cli.auth as auth_mod
         status_mod = _base_xai_mocks(monkeypatch, tmp_path)
-        monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status",
-                            lambda: None, raising=False)
+        monkeypatch.setattr(_auth_auth_provider_status, "get_xai_oauth_auth_status",
+                            lambda **_auth_settings: None, raising=False)
 
         status_mod.show_status(SimpleNamespace(all=False, deep=False))
         out = capsys.readouterr().out
@@ -199,10 +205,10 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
     monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
     monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
-    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_providers_nous_status, "get_nous_auth_status", lambda**_auth_settings: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_provider_status, "get_codex_auth_status", lambda **_auth_settings: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_providers_qwen, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_provider_status, "get_xai_oauth_auth_status", lambda **_auth_settings: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
     import sqlite3

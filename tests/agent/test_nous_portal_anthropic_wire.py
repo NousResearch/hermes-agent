@@ -92,7 +92,7 @@ class TestRuntimeResolution:
     def _stub_portal_credentials(self, monkeypatch):
         monkeypatch.setattr(rp, "load_config", lambda: {})
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
-        monkeypatch.setattr(rp, "load_pool", lambda p: SimpleNamespace(
+        monkeypatch.setattr(rp, "load_pool", lambda p, environment=None: SimpleNamespace(
             has_credentials=lambda: False,
         ))
         monkeypatch.setattr(
@@ -162,7 +162,7 @@ class TestPoolRuntimeResolution:
     def test_pool_entry_honors_the_model_derived_mode(self, monkeypatch, portal_entry):
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
         monkeypatch.setattr(rp, "_agent_key_is_usable", lambda *a, **k: True)
-        monkeypatch.setattr(rp, "load_pool", lambda p: self._pool(portal_entry))
+        monkeypatch.setattr(rp, "load_pool", lambda p, environment=None: self._pool(portal_entry))
         monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "nous"})
 
         resolved = rp.resolve_runtime_provider(

@@ -6,6 +6,8 @@ an external CLI's login command do not touch Hermes' own credentials. The token 
 instead of benching the dead grant as transient.
 """
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import io
 import logging
@@ -15,8 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from agent import anthropic_credentials as ac
-
+import auth.providers.anthropic as ac
 def test_dead_grant_is_classified_and_not_replayed_at_other_endpoints(monkeypatch):
     calls: list = []
 
@@ -40,7 +41,7 @@ def test_claude_code_refresher_reports_dead_grant_once_per_process(monkeypatch, 
     """Later attempts with the same dead refresh token neither replay it at the endpoint nor re-warn; a rotated
     (re-login) token is tried again."""
     monkeypatch.setattr(ac, "_DEAD_REFRESH_TOKEN_FINGERPRINTS", set())
-    monkeypatch.setattr(ac, "read_claude_code_credentials", lambda: {"accessToken": "old", "refreshToken": "rt-dead", "expiresAt": 1})
+    monkeypatch.setattr(ac, "read_claude_code_credentials", lambda**_auth_settings: {"accessToken": "old", "refreshToken": "rt-dead", "expiresAt": 1})
     posts = []
 
     def dead(refresh_token, *, use_json=False):
@@ -51,12 +52,12 @@ def test_claude_code_refresher_reports_dead_grant_once_per_process(monkeypatch, 
     creds = {"accessToken": "old", "refreshToken": "rt-dead"}
     with caplog.at_level(logging.DEBUG, logger=ac.logger.name):
         for _ in range(3):
-            assert ac._refresh_oauth_token(creds) is None
+            assert ac._refresh_oauth_token(creds, environment=_phase6_auth_environment()) is None
     assert posts == ["rt-dead"]
     assert sum(1 for r in caplog.records if r.levelno == logging.WARNING) == 1
     assert not any("claude setup-token" in r.getMessage() for r in caplog.records)
-    monkeypatch.setattr(ac, "read_claude_code_credentials", lambda: {"accessToken": "old", "refreshToken": "rt-new", "expiresAt": 1})
-    assert ac._refresh_oauth_token({"accessToken": "old", "refreshToken": "rt-new"}) is None
+    monkeypatch.setattr(ac, "read_claude_code_credentials", lambda**_auth_settings: {"accessToken": "old", "refreshToken": "rt-new", "expiresAt": 1})
+    assert ac._refresh_oauth_token({"accessToken": "old", "refreshToken": "rt-new"}, environment=_phase6_auth_environment()) is None
     assert posts == ["rt-dead", "rt-new"]
 
 def test_claude_code_credentials_path_honours_claude_config_dir(monkeypatch, tmp_path):

@@ -7,6 +7,7 @@ Interactive screens are driven by mocking `_prompt_text_input_modal`.
 """
 
 from __future__ import annotations
+import hermes_cli.auth_device_flow as _auth_hermes_cli_auth_device_flow
 
 from decimal import Decimal
 
@@ -132,7 +133,7 @@ def test_open_url_in_browser_refuses_remote_session(cli, monkeypatch):
     import hermes_cli.auth as auth
     import hermes_cli.auth_device_flow as auth_device_flow
 
-    monkeypatch.setattr(auth, "_is_remote_session", lambda: True, raising=False)
+    monkeypatch.setattr(_auth_hermes_cli_auth_device_flow, "_is_remote_session", lambda: True, raising=False)
     monkeypatch.setattr(auth_device_flow, "_is_remote_session", lambda: True, raising=False)
     called = {"n": 0}
     monkeypatch.setattr(webbrowser, "open", lambda url: called.update(n=called["n"] + 1) or True)

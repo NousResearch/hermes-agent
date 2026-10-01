@@ -1003,7 +1003,7 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
 
 
 def _endpoint_memo_key(normalized: str, api_key: object) -> Tuple[str, str]:
-    from agent.credential_persistence import fingerprint_secret_value
+    from auth.persistence import fingerprint_secret_value
     # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
     return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
 
@@ -1818,7 +1818,7 @@ def _codex_catalog_probe_allowed(access_token: str, base_url: str = "") -> bool:
     base = (base_url or "").strip() or CODEX_MODELS_CATALOG_ENDPOINT
     if not base_url_host_matches(base, "chatgpt.com"):
         return True
-    from hermes_cli.auth_constants import _decode_jwt_claims
+    from auth.token_validation import _decode_jwt_claims
     return bool(_decode_jwt_claims(access_token))
 
 

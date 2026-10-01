@@ -1,3 +1,5 @@
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
 import threading
 from io import StringIO
 from types import SimpleNamespace
@@ -61,10 +63,10 @@ def test_the_cli_handler_prints_the_code_then_drains_off_thread(monkeypatch):
 @pytest.mark.parametrize(
     "terminal,initial_model,expected_model",
     [
-        (anon_auth.Completed(model="model-1", model_changed=True), anon_auth.GUEST_MODEL, "model-1"),
+        (anon_auth.Completed(model="model-1", model_changed=True), _auth_auth_providers_nous_guest.GUEST_MODEL, "model-1"),
         (anon_auth.Completed(model="model-1", model_changed=True),
          "openrouter/some-model", "openrouter/some-model"),
-        (anon_auth.Declined(), anon_auth.GUEST_MODEL, anon_auth.GUEST_MODEL),
+        (anon_auth.Declined(), _auth_auth_providers_nous_guest.GUEST_MODEL, _auth_auth_providers_nous_guest.GUEST_MODEL),
     ],
 )
 def test_the_drain_only_moves_the_free_tier_model_on_completion(

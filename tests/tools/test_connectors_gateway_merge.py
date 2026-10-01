@@ -1,3 +1,5 @@
+
+import hermes_cli.nous_account as _auth_auth_providers_nous_account
 """Behavior tests for the pure connectors.gateway merge/partition/name logic.
 
 Pure functions, zero fakes, no I/O — matching the DI-callable test idiom
@@ -303,15 +305,15 @@ def test_account_gate_reads_the_portal_claim_not_entitlement(monkeypatch, claims
     mints. A token without it is not enabled however entitled it is."""
     import time
 
-    from hermes_cli import nous_account
+    import hermes_cli.nous_account as nous_account
     from tools.connectors.gateway.config import managed_tools_rolled_out
 
     monkeypatch.setattr(
-        "hermes_cli.auth._decode_jwt_claims", lambda token: {"exp": time.time() + 3600, **claims})
-    account = nous_account._info_from_valid_jwt("tok", {}, None, 60)
+        "auth.token_validation._decode_jwt_claims", lambda token: {"exp": time.time() + 3600, **claims})
+    account = _auth_auth_providers_nous_account._info_from_valid_jwt("tok", {}, None, 60)
     assert account is not None and account.logged_in
 
-    monkeypatch.setattr(nous_account, "get_nous_portal_account_info", lambda **kw: account)
+    monkeypatch.setattr(_auth_auth_providers_nous_account, "get_nous_portal_account_info", lambda **kw: account)
     assert managed_tools_rolled_out() is rolled_out
     assert connectors_available(config_loader=lambda: ConnectorConfig(enabled=True),
                                 entitlement_check=managed_tools_rolled_out) is rolled_out

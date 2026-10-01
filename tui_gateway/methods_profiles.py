@@ -542,7 +542,7 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
         if mirrored["auth"]:
             # Drop single-use OAuth grants (first refresh strands every sibling); they read from the
             # root grant via the pool fallback. API keys stay.
-            _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
+            _best_effort(lambda: _lazy("auth.oauth_grants", "strip_cloned_single_use_oauth_grants")(path))
     mirrored["voice"] = _mirror_voice_sections(path)
     return mirrored
 

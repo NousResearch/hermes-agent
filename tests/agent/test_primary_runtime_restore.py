@@ -10,7 +10,10 @@ Verifies that:
 """
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
+
+from auth.context import CredentialScope
+from hermes_constants import get_hermes_home
 
 
 from run_agent import AIAgent
@@ -296,7 +299,7 @@ class TestRestorePrimaryRuntime:
         primary_pool.has_available.return_value = False
         with (
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
-            patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
+            patch("auth.credential_pool.load_pool", return_value=primary_pool) as load_pool,
         ):
             result = agent._restore_primary_runtime()
 
@@ -305,7 +308,8 @@ class TestRestorePrimaryRuntime:
         assert agent.base_url == primary_base_url
         assert "deepseek" not in str(agent.base_url)
         assert agent._credential_pool is primary_pool
-        load_pool.assert_called_once_with(primary_provider)
+        load_pool.assert_called_once_with(primary_provider, environment=ANY)
+        assert load_pool.call_args.kwargs["environment"].scope == CredentialScope(get_hermes_home())
         agent._swap_credential.assert_not_called()
 
     def test_restore_clears_fallback_pool_when_primary_pool_reload_fails(self):
@@ -322,7 +326,7 @@ class TestRestorePrimaryRuntime:
         with (
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch(
-                "agent.credential_pool.load_pool",
+                "auth.credential_pool.load_pool",
                 side_effect=RuntimeError("auth store unavailable"),
             ),
         ):
@@ -360,7 +364,7 @@ class TestRestorePrimaryRuntime:
 
         with (
             patch(
-                "agent.credential_pool.get_custom_provider_pool_key",
+                "auth.credential_pool.get_custom_provider_pool_key",
                 return_value="custom:myllm",
             ),
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
@@ -408,15 +412,16 @@ class TestRestorePrimaryRuntime:
         }
 
         with (
-            patch("agent.credential_pool._load_config_safe", return_value=config),
-            patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
+            patch("auth.credential_pool._load_config_safe", return_value=config),
+            patch("auth.credential_pool.load_pool", return_value=primary_pool) as load_pool,
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
         ):
             result = agent._restore_primary_runtime()
 
         assert result is True
         assert agent._credential_pool is primary_pool
-        load_pool.assert_called_once_with("gemini-no-filter")
+        load_pool.assert_called_once_with("gemini-no-filter", environment=ANY)
+        assert load_pool.call_args.kwargs["environment"].scope == CredentialScope(get_hermes_home())
         agent._swap_credential.assert_called_once_with(primary_pool.select.return_value)
 
     def test_restore_named_custom_pool_wrong_endpoint_fails_closed(self):
@@ -439,15 +444,16 @@ class TestRestorePrimaryRuntime:
         )]
 
         with (
-            patch("agent.credential_pool._iter_custom_providers", return_value=configured),
-            patch("agent.credential_pool.load_pool", return_value=None) as load_pool,
+            patch("auth.credential_pool._iter_custom_providers", return_value=configured),
+            patch("auth.credential_pool.load_pool", return_value=None) as load_pool,
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
         ):
             result = agent._restore_primary_runtime()
 
         assert result is True
         assert agent._credential_pool is None
-        load_pool.assert_called_once_with("gemini-no-filter")
+        load_pool.assert_called_once_with("gemini-no-filter", environment=ANY)
+        assert load_pool.call_args.kwargs["environment"].scope == CredentialScope(get_hermes_home())
         agent._swap_credential.assert_not_called()
 
 

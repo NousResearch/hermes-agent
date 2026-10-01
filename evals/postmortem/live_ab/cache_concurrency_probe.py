@@ -29,6 +29,8 @@ Cost: ~$50 per 20x6 arm on Fable 5.1 at the 5m tier. Every run starts from the r
 path; the only patch is a read-only wrapper on the SDK stream that records usage and headers.
 """
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import argparse
 import collections
@@ -175,8 +177,8 @@ def creds():
     if PROVIDER == "anthropic":
         key = ARGS.api_key or os.environ.get("ANTHROPIC_API_KEY") or sys.exit("ANTHROPIC_API_KEY or --api-key required")
         return dict(api_key=key, base_url="https://api.anthropic.com", provider="anthropic")
-    from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-    c = resolve_nous_runtime_credentials()
+    from auth.providers.nous import resolve_nous_runtime_credentials
+    c = resolve_nous_runtime_credentials(environment=_phase6_auth_environment())
     return dict(api_key=c["api_key"], base_url=c.get("base_url") or "https://inference-api.nousresearch.com/v1", provider="nous")
 CRED = creds()
 WORKDIR = tempfile.mkdtemp(prefix="cacheprobe-")

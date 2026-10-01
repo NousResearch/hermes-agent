@@ -20,7 +20,7 @@ If the provider is just "another OpenAI-compatible base URL and API key", a name
 
 A built-in provider has to line up across a few layers:
 
-1. `hermes_cli/auth.py` decides how credentials are found.
+1. `providers/` supplies provider identity and registered hooks. `auth/` resolves credentials, manages pools and invokes runtime refresh. The independent baseline still mirrors routing metadata in `hermes_cli/auth.py`.
 2. `hermes_cli/runtime_provider.py` turns that into runtime data:
    - `provider`
    - `api_mode`
@@ -111,7 +111,7 @@ All you need is:
 
 When you add a plugin and it calls `register_provider()`, the following wire up automatically:
 
-1. `PROVIDER_REGISTRY` entry in `auth.py` (credential resolution, env-var lookup)
+1. `PROVIDER_REGISTRY` metadata entry in `hermes_cli/auth.py`, supplied explicitly to `auth/` for credential resolution and env-var lookup
 2. `api_mode` set to `chat_completions`
 3. `base_url` sourced from the config or the declared env var
 4. `env_vars` checked in priority order for the API key
@@ -187,7 +187,7 @@ Questions to answer here:
 - Does it need endpoint probing or token refresh?
 - What should the auth error say when credentials are missing?
 
-If the provider needs something more than "look up an API key", add a dedicated credential resolver instead of shoving logic into unrelated branches.
+Provider-specific runtime credential and refresh mechanics belong in `auth/providers/` or the registered plugin refresh hook. Keep interactive `auth_handler(action, args)` dispatch at the CLI edge, and supply configuration through `PoolEnvironment`; shared authentication must not import CLI configuration. Provider/model routing remains with its existing owners.
 
 ## Step 3: Add model catalog and aliases in `hermes_cli/models.py`
 

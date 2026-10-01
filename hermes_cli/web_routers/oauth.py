@@ -1,3 +1,7 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
 """OAuth provider dashboard routes: catalog/status, disconnect, and in-browser device-code login flows.
 
 Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
@@ -156,7 +160,7 @@ def _codex_client(httpx) -> Any:
     The helpers take the ``httpx`` module as a parameter (tests inject a scripted one), so the
     dashboard builds its own client here and only shares the response hook, not the client factory.
     """
-    from hermes_cli.auth_codex import _cap_codex_response_body
+    from auth.providers.codex_http import _cap_codex_response_body
 
     return httpx.Client(timeout=httpx.Timeout(15.0), event_hooks={"response": [_cap_codex_response_body]})
 
@@ -168,7 +172,7 @@ def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
     linear backoff before propagating: losing the token exchange to a single SSL EOF wastes a
     device-code approval the user already completed in the browser (#114610).
     """
-    from hermes_cli.auth_codex import _is_transient_transport_error
+    from auth.providers.codex_http import _is_transient_transport_error
 
     attempt, attempts = 1, 3
     while True:
@@ -184,7 +188,7 @@ def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
 
 def _codex_request_user_code(httpx) -> Dict[str, Any]:
     """Step 1: request device code; returns device_data with ``interval`` clamped (>= 3s)."""
-    from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID
+    from auth.constants import CODEX_OAUTH_CLIENT_ID
 
     resp = _codex_post(
         httpx, f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
@@ -201,7 +205,7 @@ def _codex_request_user_code(httpx) -> Dict[str, Any]:
 
 def _codex_poll_authorization(httpx, sess: Dict[str, Any], session_id: str) -> Any:
     """Step 2: poll until authorized. ``None`` = expired; ``_CANCELLED`` = user cancelled."""
-    from hermes_cli.auth_codex import _is_transient_transport_error
+    from auth.providers.codex_http import _is_transient_transport_error
 
     deadline = time.monotonic() + sess["expires_in"]
     payload = {"device_auth_id": sess["device_auth_id"], "user_code": sess["user_code"]}
@@ -238,7 +242,7 @@ def _codex_poll_authorization(httpx, sess: Dict[str, Any], session_id: str) -> A
 
 def _codex_exchange_tokens(httpx, code_resp: Dict[str, Any]) -> Dict[str, str]:
     """Step 3: exchange authorization_code for tokens."""
-    from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL
+    from auth.constants import CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL
 
     authorization_code = code_resp.get("authorization_code", "")
     code_verifier = code_resp.get("code_verifier", "")
@@ -291,7 +295,7 @@ def _codex_full_login_worker(session_id: str) -> None:
             return
 
         tokens = _codex_exchange_tokens(httpx, code_resp)
-        from hermes_cli.auth import _save_codex_tokens
+        from auth.providers.codex import _save_codex_tokens
 
         # The cancellation check and the save are one atomic critical section
         # under the lock cancel_oauth_session() uses; otherwise DELETE could
@@ -365,7 +369,15 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
         entry = _PROVIDER_STATUS.get(provider_id)
         if entry is not None:
             getter, shape = entry
-            return shape(getattr(hauth, getter)())
+            if provider_id == "nous":
+                from auth.providers.nous_status import get_nous_auth_status_local
+                from hermes_cli.config_credentials import credential_pool_environment
+                return shape(get_nous_auth_status_local(environment=credential_pool_environment()))
+            if provider_id == "qwen-oauth":
+                from auth.providers.qwen import get_qwen_auth_status
+                return shape(get_qwen_auth_status())
+            from auth import provider_status
+            return shape(getattr(provider_status, getter)(environment=_phase6_auth_environment()))
         # Catalog-derived providers (status_fn=None, no hand-written card) still
         # reflect real login state via the canonical slug-driven dispatcher, so
         # a new OAuth/account provider plugin never renders permanently logged-out.
@@ -391,16 +403,17 @@ async def _start_nous_device_code(profile: Optional[str]) -> Dict[str, Any]:
     (the transfer's consent link and code) and hands that to the UI, then the poller drains the rest.
     Without a free-tier identity it is the plain device-code flow."""
     from hermes_cli import anon_auth
-    from hermes_cli.auth import PROVIDER_REGISTRY, _request_device_code
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from auth.oauth import _request_device_code
     from hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
     pconfig = PROVIDER_REGISTRY["nous"]
     portal_base_url = (
         os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL") or pconfig.portal_base_url
     ).rstrip("/")
     with _profile_scope(_oauth_profile_name(profile)):
-        guest = anon_auth.current_nous_state() if anon_auth.guest_enabled() else None
+        guest = _auth_auth_providers_nous_guest.current_nous_state() if _auth_auth_providers_nous_guest.guest_enabled(environment=_phase6_auth_environment()) else None
 
-    if not anon_auth.is_guest_state(guest):
+    if not _auth_auth_providers_nous_guest.is_guest_state(guest):
         device_data = await _httpx_call(lambda client: _request_device_code(
             client=client, portal_base_url=portal_base_url, client_id=pconfig.client_id,
             scope=pconfig.scope))
@@ -496,9 +509,8 @@ async def _start_codex_device_code(profile: Optional[str]) -> Dict[str, Any]:
 async def _start_minimax_device_code(profile: Optional[str]) -> Dict[str, Any]:
     # Device-code flow with a PKCE extension: verifier + challenge from
     # _minimax_pkce_pair bind the token exchange to the original session.
-    from hermes_cli.auth import (
-        MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_GLOBAL_BASE, _minimax_pkce_pair, _minimax_request_user_code,
-    )
+    from auth.constants import MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_GLOBAL_BASE
+    from auth.providers.minimax import _minimax_pkce_pair, _minimax_request_user_code
     verifier, challenge, state = _minimax_pkce_pair()
     portal_base_url = (os.getenv("MINIMAX_PORTAL_BASE_URL") or MINIMAX_OAUTH_GLOBAL_BASE).rstrip("/")
     device_data = await _httpx_call(lambda client: _minimax_request_user_code(
@@ -531,7 +543,7 @@ async def _start_minimax_device_code(profile: Optional[str]) -> Dict[str, Any]:
 
 
 async def _start_xai_device_code(profile: Optional[str]) -> Dict[str, Any]:
-    from hermes_cli.auth import _xai_oauth_request_device_code
+    from auth.providers.xai import _xai_oauth_request_device_code
     device_data = await _httpx_call(_xai_oauth_request_device_code, timeout=20.0)
     return _device_session_started(
         "xai-oauth", profile, _xai_device_poller,
@@ -666,7 +678,7 @@ def _clear_anthropic_auth() -> bool:
     """Clear only the Hermes-managed PKCE file and auth-store entry (never ~/.claude/*)."""
     cleared = False
     try:
-        from agent.anthropic_credentials import _get_hermes_oauth_file
+        from auth.providers.anthropic import _get_hermes_oauth_file
         oauth_file = _get_hermes_oauth_file()
         if oauth_file.exists():
             oauth_file.unlink()
@@ -675,7 +687,7 @@ def _clear_anthropic_auth() -> bool:
         _log.exception("disconnect anthropic OAuth file failed")
         raise
     try:
-        from hermes_cli.auth import clear_provider_auth
+        from auth.provider_state import clear_provider_auth
         cleared = clear_provider_auth("anthropic") or cleared
     except Exception:
         _log.exception("disconnect anthropic auth store failed")
@@ -718,7 +730,8 @@ async def disconnect_oauth_provider(provider_id: str, request: Request, profile:
             _log.info("oauth/disconnect: %s", provider_id)
             return {"ok": True, "provider": provider_id}
         try:
-            from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
+            from auth.provider_state import clear_provider_auth
+            from auth.providers.nous_status import invalidate_nous_auth_status_cache
             cleared = clear_provider_auth(provider_id)
             if provider_id == "nous":
                 invalidate_nous_auth_status_cache()

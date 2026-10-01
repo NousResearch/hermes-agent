@@ -1,3 +1,8 @@
+import auth.provider_status as _auth_auth_provider_status
+
+import auth.providers.nous_status as _auth_auth_providers_nous_status
+
+import auth.providers.nous as _auth_auth_providers_nous
 """Tests for hermes_cli.status model/provider display."""
 
 from types import SimpleNamespace
@@ -19,11 +24,11 @@ def _patch_common_status_deps(monkeypatch, status_mod, tmp_path, *, openai_base_
         return ""
 
     monkeypatch.setattr(status_mod, "get_env_value", _get_env_value, raising=False)
-    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_providers_nous_status, "get_nous_auth_status", lambda**_auth_settings: {}, raising=False)
     monkeypatch.setattr(
-        auth_mod, "get_nous_auth_status_local", lambda: {}, raising=False
+        _auth_auth_providers_nous_status, "get_nous_auth_status_local", lambda**_auth_settings: {}, raising=False
     )
-    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(_auth_auth_provider_status, "get_codex_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(
         subprocess,
         "run",

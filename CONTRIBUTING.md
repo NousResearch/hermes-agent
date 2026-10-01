@@ -247,7 +247,7 @@ hermes-agent/
 │   ├── cli_*_mixin.py            # HermesCLI mixins (slash commands, display, session, ...)
 │   ├── config.py                 # Config management, migration, env var definitions
 │   ├── setup.py                  # Interactive setup wizard
-│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal (facade + auth_*.py siblings)
+│   ├── auth.py                   # Provider metadata/routing and CLI auth presentation; shared credentials/OAuth live in auth/
 │   ├── models.py                 # OpenRouter model selection lists
 │   ├── banner.py                 # Welcome banner, ASCII art
 │   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers

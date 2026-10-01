@@ -7,6 +7,7 @@ cycle) and tests patch ``hermes_cli.config.load_config`` etc. at call time.
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment
 
 import contextlib
 import subprocess
@@ -42,8 +43,8 @@ def _ask(prompt: str, *, secret: bool = False, raw: bool = False, cancel_msg: st
 
 def _existing_api_key_for_model_flow(provider_id: str, pconfig) -> tuple[str, str]:
     """Resolve an existing wizard credential without changing its storage."""
-    from hermes_cli.auth import _resolve_api_key_provider_secret
-    return _resolve_api_key_provider_secret(provider_id, pconfig)
+    from auth.api_keys import resolve_api_key_provider_secret
+    return resolve_api_key_provider_secret(provider_id, pconfig, environment=credential_pool_environment())
 
 
 def _ensure_flow_api_key(provider_id: str, pconfig, *, missing_hint=()) -> tuple[str, str, bool]:
@@ -75,7 +76,7 @@ def _load_config_model_section() -> tuple[dict, dict]:
 def _begin_model_config(selected: str, provider: str) -> tuple[dict, dict]:
     """Record *selected* as the model choice and open the config model section
     with ``provider`` set; callers set endpoint fields then ``_commit_model_config``."""
-    from hermes_cli.auth import _save_model_choice
+    from hermes_cli.auth_model_picker import _save_model_choice
     _save_model_choice(selected)
     cfg, model = _load_config_model_section()
     model["provider"] = provider
@@ -84,7 +85,7 @@ def _begin_model_config(selected: str, provider: str) -> tuple[dict, dict]:
 
 def _commit_model_config(cfg: dict) -> None:
     """Persist *cfg* and deactivate any OAuth provider."""
-    from hermes_cli.auth import deactivate_provider
+    from auth.provider_state import deactivate_provider
     from hermes_cli.config import save_config
     save_config(cfg)
     deactivate_provider()
@@ -129,7 +130,8 @@ def _activate_provider_model(selected, provider_id: str, base_url: str, done: st
                              no_change: str | None = "No change.") -> None:
     """OAuth-provider persist: model choice + ``_update_config_for_provider`` (which owns
     the auth-state bookkeeping), then *done*; *no_change* (``None`` = silent) otherwise."""
-    from hermes_cli.auth import _save_model_choice, _update_config_for_provider
+    from hermes_cli.auth_model_picker import _save_model_choice
+    from hermes_cli.auth import _update_config_for_provider
     if not selected:
         if no_change is not None:
             print(no_change)
@@ -151,7 +153,7 @@ def _ensure_dict_section(cfg: dict, key: str) -> dict:
 def _pick_model_or_prompt(model_list, prompt: str, **kwargs):
     """Radio picker when *model_list* is non-empty, else a free-text ``line_input``
     (None on Ctrl-C/EOF)."""
-    from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.auth_model_picker import _prompt_model_selection
     if model_list:
         return _prompt_model_selection(model_list, **kwargs)
     return _ask(prompt, cancel_msg=None)
@@ -248,9 +250,10 @@ def _prune_replaced_custom_model_config_credentials(base_url: str, *, provider_n
     """Drop stale ``model_config`` ("the credential under ``model.api_key``") entries from inactive
     custom pools: after an explicit custom-endpoint switch an old pool still carrying that source
     points at the previous endpoint and could be selected before the fresh config."""
+    from hermes_cli.config_credentials import credential_pool_environment
     try:
-        from agent.credential_pool import CUSTOM_POOL_PREFIX, custom_provider_pool_key_candidates
-        from hermes_cli.auth import read_credential_pool, write_credential_pool
+        from auth.credential_pool import CUSTOM_POOL_PREFIX, custom_provider_pool_key_candidates
+        from auth.pool_persistence import read_credential_pool, write_credential_pool
 
         # A keyed ``providers.<key>`` endpoint stores under the durable slug while
         # legacy pools keep ``custom:<display-name>``; every identity the active
@@ -258,7 +261,7 @@ def _prune_replaced_custom_model_config_credentials(base_url: str, *, provider_n
         # See #100413.
         active_pool_keys = {
             str(key).strip().lower()
-            for key in custom_provider_pool_key_candidates(base_url, provider_name=provider_name or None)}
+            for key in custom_provider_pool_key_candidates(base_url, provider_name=provider_name or None, environment=credential_pool_environment())}
         if not active_pool_keys:
             return
         pools = read_credential_pool(None)

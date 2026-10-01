@@ -222,6 +222,7 @@ def _effective_terminal_backend(config: dict) -> str:
 
 
 def _api_key_lines(show_keys: bool) -> list[str]:
+    from hermes_cli.config_credentials import credential_pool_environment
     dotenv_keys = _dotenv_key_names()
     lines = []
     for env_var, label in _API_KEYS:
@@ -237,8 +238,8 @@ def _api_key_lines(show_keys: bool) -> list[str]:
         # (#42130).
         if not val and label == "openrouter":
             try:
-                from agent.credential_pool import load_pool as _load_pool
-                if _load_pool("openrouter").has_credentials():
+                from auth.credential_pool import load_pool as _load_pool
+                if _load_pool("openrouter", environment=credential_pool_environment()).has_credentials():
                     display = "set (auth pool)"
             except Exception:
                 pass

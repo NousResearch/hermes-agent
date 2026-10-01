@@ -1108,7 +1108,7 @@ class _ProviderAuthResolutionError(RuntimeError):
     def user_text(self) -> str:
         """Raw-surface failure line. A quota/429 cap with valid credentials must not be labelled an
         authentication failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
-        from hermes_cli.auth import is_rate_limited_auth_error
+        from auth.failure_policy import is_rate_limited_auth_error
 
         cause = self.__cause__
         cause = getattr(cause, "__cause__", None) if isinstance(cause, RuntimeError) else cause
@@ -1537,7 +1537,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return self._api_key
         try:
             from agent.secret_scope import get_secret
-            from hermes_cli.auth import has_usable_secret
+            from auth.secret_validation import has_usable_secret
             key = get_secret("API_SERVER_KEY", "") or ""
             return key if has_usable_secret(key, min_length=16) else ""
         except Exception as exc:
@@ -4445,7 +4445,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 self.name, self._host)
             return False
         try:
-            from hermes_cli.auth import has_usable_secret
+            from auth.secret_validation import has_usable_secret
         except Exception as exc:
             # Fail CLOSED: "could not check" must not mean "start" on a terminal-capable endpoint.
             logger.error(

@@ -43,7 +43,7 @@ class NasCronClient:
 
     def _headers(self) -> Dict[str, str]:
         """Bearer auth with the agent's existing Nous Portal access token (refresh-aware)."""
-        from hermes_cli.auth import resolve_nous_access_token
+        from auth.providers.nous import resolve_nous_access_token
         return {"Authorization": f"Bearer {resolve_nous_access_token()}",
                 "Content-Type": "application/json"}
 

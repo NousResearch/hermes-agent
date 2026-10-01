@@ -605,7 +605,7 @@ def _device_login_available() -> bool:
 def _headless() -> tuple[bool, bool]:
     """(is_remote, can_open_browser) — degrades safely if hermes_cli internals move."""
     try:
-        from hermes_cli.auth import _can_open_graphical_browser, _is_remote_session
+        from hermes_cli.auth_device_flow import _can_open_graphical_browser, _is_remote_session
         return _is_remote_session(), _can_open_graphical_browser()
     except Exception:
         return False, True

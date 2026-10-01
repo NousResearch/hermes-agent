@@ -40,7 +40,7 @@ class TestSaveModelChoiceAlwaysDict:
     def test_string_model_becomes_dict(self, config_home):
         """When config.model is a plain string, _save_model_choice must
         convert it to a dict so provider can be set afterwards."""
-        from hermes_cli.auth import _save_model_choice
+        from hermes_cli.auth_model_picker import _save_model_choice
 
         _save_model_choice("kimi-k2.5")
 
@@ -96,8 +96,8 @@ class TestProviderPersistsAfterModelSave:
 
         # Mock the model selection prompt to return "kimi-k2.5"
         # Also mock input() for the base URL prompt and builtins.input
-        with patch("hermes_cli.auth._prompt_model_selection", return_value="kimi-k2.5"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
+        with patch("hermes_cli.auth_model_picker._prompt_model_selection", return_value="kimi-k2.5"), \
+             patch('auth.provider_state.deactivate_provider'), \
              patch("builtins.input", return_value=""):
             _model_flow_api_key_provider(load_config(), "kimi-coding", "old-model")
 
@@ -134,8 +134,8 @@ class TestBaseUrlValidation:
         from hermes_cli.model_setup_flows import _model_flow_api_key_provider
         from hermes_cli.config import load_config, get_env_value
 
-        with patch("hermes_cli.auth._prompt_model_selection", return_value="MiniMax-M2"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
+        with patch("hermes_cli.auth_model_picker._prompt_model_selection", return_value="MiniMax-M2"), \
+             patch('auth.provider_state.deactivate_provider'), \
              patch("builtins.input", return_value=""):
             _model_flow_api_key_provider(load_config(), "minimax", "old-model")
 
@@ -157,8 +157,8 @@ class TestZaiEndpointPicker:
         custom_idx = len(ZAI_ENDPOINTS)
 
         with patch("hermes_cli.main_provider_setup._prompt_provider_choice", return_value=custom_idx), \
-             patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("hermes_cli.auth_model_picker._prompt_model_selection", return_value="glm-5"), \
+             patch('auth.provider_state.deactivate_provider'), \
              patch("builtins.input", return_value="not-a-url"):
             _model_flow_api_key_provider(load_config(), "zai", "old-model")
 

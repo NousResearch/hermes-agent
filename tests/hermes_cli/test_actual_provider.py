@@ -11,15 +11,10 @@ import pytest
 
 from agent.auxiliary_client import _normalize_aux_provider
 from hermes_cli import runtime_provider as rp
-from hermes_cli.auth import (
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
-    DEFAULT_ACTUAL_BASE_URL,
-    DEFAULT_ACTUAL_LOCAL_BASE_URL,
-    get_api_key_provider_status,
-    normalize_actual_base_url,
-    resolve_api_key_provider_credentials,
-    resolve_provider,
-)
+from auth.constants import ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, DEFAULT_ACTUAL_BASE_URL, DEFAULT_ACTUAL_LOCAL_BASE_URL
+from hermes_cli.auth import get_api_key_provider_status, resolve_provider
+from hermes_cli.route_identity import normalize_actual_base_url
+from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials
 from hermes_cli.models import normalize_provider as normalize_model_provider
 from hermes_cli.models import provider_model_ids
 from hermes_cli.providers import determine_api_mode

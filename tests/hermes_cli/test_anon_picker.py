@@ -7,13 +7,17 @@ against a temp ``HERMES_HOME`` with the network catalog fetch stubbed.
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import os
 from pathlib import Path
 
 import pytest
 
-from hermes_cli.auth import _save_auth_store
+from auth.store import _save_auth_store
 
 GUEST_STATE = {
     "auth_method": "anonymous",
@@ -84,7 +88,7 @@ def test_guest_identity_shows_free_tier_row_with_only_welcome_model(guest_home, 
 def test_guest_identity_with_guest_off_hides_the_nous_row(guest_home, monkeypatch):
     _write_config(monkeypatch, guest_home, "nous:\n  guest: false\n")
     from hermes_cli import anon_auth
-    assert anon_auth.has_guest() and not anon_auth.guest_enabled()
+    assert _auth_auth_providers_nous_guest.has_guest() and not _auth_auth_providers_nous_guest.guest_enabled(environment=_phase6_auth_environment())
 
     from hermes_cli.model_switch_providers import list_picker_providers
     assert _nous_rows(list_picker_providers("nous", "", None, None, 50, "nous/welcome")) == []

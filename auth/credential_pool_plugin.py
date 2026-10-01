@@ -24,11 +24,11 @@ import logging
 from dataclasses import fields, replace
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Tuple
 
-from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
-from hermes_cli.auth_constants import AuthError
+from auth.errors import _OAUTH_GRANT_DEAD_CODES
+from auth.errors import AuthError
 
 if TYPE_CHECKING:  # pragma: no cover
-    from agent.credential_pool import CredentialPool, PooledCredential
+    from auth.credential_pool import CredentialPool, PooledCredential
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def recover_failed_plugin_refresh(
     transient failure. A peer process may have rotated the single-use token between our in-lock
     sync and the hook's POST — adopt that pair before classifying the failure.
     """
-    from agent.credential_pool import _MARK_OK
+    from auth.credential_pool import _MARK_OK
 
     synced = pool._sync_entry_from_pool_store(entry)
     if synced.refresh_token != entry.refresh_token and (synced.access_token or "").strip():

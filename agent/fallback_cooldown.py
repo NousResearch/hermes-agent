@@ -13,7 +13,7 @@ _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverRea
 
 def _provider_reset_delay(reset_at) -> float | None:
     """Seconds until the provider-declared reset, or None when missing/invalid/expired."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from auth.credential_pool import _parse_absolute_timestamp
     parsed = _parse_absolute_timestamp(reset_at)
     delay = parsed - time.time() if parsed is not None else None
     if delay is not None and math.isfinite(delay) and delay > 0:

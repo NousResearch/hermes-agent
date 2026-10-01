@@ -40,15 +40,16 @@ def _entry(
     return entry
 
 def _load(tmp_path, monkeypatch, entries: list[dict]):
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     _write_auth_store(
         tmp_path,
         {"version": 1, "credential_pool": {"openrouter": entries}},
     )
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    return load_pool("openrouter")
+    return load_pool("openrouter", environment=credential_pool_environment())
 
 def test_sole_credential_429_recovers_after_short_cooldown(tmp_path, monkeypatch):
     """A single 429-throttled key recovers within ~1 min, not 1 hour.
@@ -101,7 +102,7 @@ def test_sole_credential_next_available_at_uses_short_cooldown(tmp_path, monkeyp
     hour for a 60s cooldown, keeping the agent on a fallback provider far
     longer than necessary.
     """
-    from agent.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+    from auth.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
 
     pool = _load(tmp_path, monkeypatch, [_entry(429, age_seconds=10)])
     next_at = pool.next_available_at()
@@ -171,7 +172,7 @@ def test_multi_key_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch
 def test_unverified_billing_ttl_values(tmp_path, monkeypatch):
     """Direct TTL contract: unverified billing is transient-sized; confirmed
     billing keeps the full bench; a true 402 wins over a stray unverified tag."""
-    from agent.credential_pool import (
+    from auth.credential_pool import (
         EXHAUSTED_TTL_DEFAULT_SECONDS,
         EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS,
         _exhausted_ttl,

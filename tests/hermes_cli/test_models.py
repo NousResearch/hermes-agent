@@ -266,7 +266,7 @@ class TestCheckNousFreeTierCache:
     def teardown_method(self):
         _models_mod._free_tier_cache.clear()
 
-    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
+    @patch('hermes_cli.nous_account.get_nous_portal_account_info')
     def test_result_is_cached(self, mock_account):
         """Second call within TTL returns cached result without account lookup."""
         mock_account.return_value = NousPortalAccountInfo(
@@ -282,12 +282,12 @@ class TestCheckNousFreeTierCache:
         assert result2 is True
         assert mock_account.call_count == 1
 
-    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
+    @patch('hermes_cli.nous_account.get_nous_portal_account_info')
     def test_cache_only_cold_lookup_does_not_call_portal(self, mock_account):
         assert check_nous_free_tier(cached_only=True) is False
         mock_account.assert_not_called()
 
-    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
+    @patch('hermes_cli.nous_account.get_nous_portal_account_info')
     def test_entitlement_cache_is_profile_scoped(self, mock_account, tmp_path):
         from hermes_constants import (
             hermes_home_key,
@@ -319,7 +319,7 @@ class TestCheckNousFreeTierCache:
         assert mock_account.call_count == 2
 
 
-    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
+    @patch('hermes_cli.nous_account.get_nous_portal_account_info')
     def test_force_fresh_bypasses_cache(self, mock_account):
         mock_account.return_value = NousPortalAccountInfo(
             logged_in=True,
@@ -879,8 +879,8 @@ class TestLocalOllamaModelDiscovery:
         try:
             with patch("hermes_cli.config.load_config", return_value=config), patch(
                 "hermes_cli.config.save_config"
-            ), patch("hermes_cli.auth._save_model_choice"), patch(
-                "hermes_cli.auth.deactivate_provider"
+            ), patch("hermes_cli.auth_model_picker._save_model_choice"), patch(
+                'auth.provider_state.deactivate_provider'
             ), patch("hermes_cli.main_provider_setup._save_custom_provider"), patch(
                 "hermes_cli.curses_ui.curses_radiolist",
                 side_effect=cancel_after_capturing_models,

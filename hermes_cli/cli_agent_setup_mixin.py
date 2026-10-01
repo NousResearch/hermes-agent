@@ -66,10 +66,11 @@ def _credential_pool_notice(provider: str) -> tuple:
     """``(cooling, lines)`` on why *provider*'s pool has nothing selectable right now, for the
     startup notice. *cooling* is True when the first line is a live cooldown with its remaining
     time; a dead (quarantined) sign-in adds a line naming the re-login."""
+    from hermes_cli.config_credentials import credential_pool_environment
     import time
-    from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
+    from auth.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
     try:
-        pool = load_pool(provider)
+        pool = load_pool(provider, environment=credential_pool_environment())
         if not pool.has_credentials() or pool.has_available():
             return False, []
         next_at = pool.next_available_at()
@@ -249,7 +250,7 @@ class CLIAgentSetupMixin:
             if runtime is not None:
                 _primary_exc = None
         if runtime is None:
-            from hermes_cli.auth import is_rate_limited_auth_error
+            from auth.failure_policy import is_rate_limited_auth_error
             self._credentials_rate_limited = bool(_primary_exc) and is_rate_limited_auth_error(_primary_exc)
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
             if getattr(self, "tool_progress_mode", "full") == "off":
@@ -360,7 +361,8 @@ class CLIAgentSetupMixin:
         order and switch the CLI's requested_provider/model to the first that resolves.
         None when the error is not auth-related or no fallback resolves."""
         from cli import _cprint, logger
-        from hermes_cli.auth import AuthError, primary_failure_wording
+        from auth.errors import AuthError
+        from auth.failure_policy import primary_failure_wording
         from hermes_cli.runtime_provider import resolve_runtime_provider
         if not isinstance(primary_exc, AuthError):
             return None
@@ -444,7 +446,7 @@ class CLIAgentSetupMixin:
         True when the failure was explained; False when nothing is configured (the wizard's case).
         """
         from cli import _cprint
-        from hermes_cli.auth import format_auth_error
+        from hermes_cli.auth_error_copy import format_auth_error
         if error is None or getattr(error, "code", None) == "no_provider_configured":
             return False
         provider = getattr(error, "provider", None) or self.requested_provider

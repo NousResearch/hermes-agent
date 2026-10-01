@@ -1241,7 +1241,7 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     # (Anthropic / Codex / xAI): one credential with two owners, and the first profile to
     # refresh revokes the pair for every sibling. Drop the copies; the clone reads the root
     # grant through the credential-pool fallback.
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from auth.oauth_grants import strip_cloned_single_use_oauth_grants
     stripped = strip_cloned_single_use_oauth_grants(profile_dir)
     if any(stripped.values()):
         logger.info(

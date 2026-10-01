@@ -188,8 +188,8 @@ class TestMinimaxSwitchModelCredentialGuard:
             agent._fallback_chain = []
 
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
-             patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-leaked") as mock_resolve, \
-             patch("agent.anthropic_credentials._is_oauth_token", return_value=False):
+             patch('auth.providers.anthropic.resolve_anthropic_token', return_value="sk-ant-leaked") as mock_resolve, \
+             patch('auth.providers.anthropic._is_oauth_token', return_value=False):
 
             agent.switch_model(
                 new_model="MiniMax-M2.7",

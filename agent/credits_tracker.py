@@ -5,6 +5,8 @@ Header contract: see ``_HEADER_FIELDS``. Money is micros ints only; ``*_usd``
 strings are preserved verbatim (never re-parsed to float)."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import logging
 import os
@@ -123,7 +125,7 @@ def _is_nous_welcome_route(base_url: str) -> bool:
     False wherever the free tier is not built in. The host is the evidence, not the model name: the paid
     inference host can serve ``nous/welcome`` to a named account, and that account's depletion is real."""
     try:
-        from hermes_cli.anon_auth import route_is_welcome_host
+        from auth.providers.nous_guest import route_is_welcome_host
     except ImportError:
         return False
     return route_is_welcome_host(base_url)

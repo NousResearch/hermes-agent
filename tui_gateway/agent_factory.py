@@ -516,7 +516,7 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
 def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _RuntimeFallbackResolution:
     """Resolve the primary runtime or one complete provider/model fallback. Provider-only fallback entries
     are skipped so the unavailable primary model can never leak into a different runtime."""
-    from hermes_cli.auth import AuthError
+    from auth.errors import AuthError
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
         return _RuntimeFallbackResolution(resolve_runtime_provider(**(resolve_kwargs or {})), None, False)
@@ -536,7 +536,7 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
-                from hermes_cli.auth import primary_failure_wording
+                from auth.failure_policy import primary_failure_wording
                 logging.getLogger(__name__).warning(
                     "Primary %s (%s), falling back to %s model %s",
                     primary_failure_wording(primary_exc)[0], primary_exc, fb_provider, fb_model)

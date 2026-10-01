@@ -6,6 +6,12 @@ OpenRouter/bare-custom, Bedrock and external-process builders in
 ``hermes_cli.runtime_provider.<name>`` imports and test patches keep working."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.constants as _auth_auth_constants
+import auth.providers.minimax as _auth_auth_providers_minimax
+
+import auth.provider_state as auth_provider_state
 
 import logging
 import re
@@ -15,19 +21,22 @@ from typing import Any, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
+from auth.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
     CredentialPool, PooledCredential, credential_pool_matches_provider, custom_provider_pool_key_candidates,  # noqa: F401
     load_pool,
 )
 from agent.secret_scope import get_secret_str
-from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
-    PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
-    resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
-    resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
-    resolve_external_process_provider_credentials,  # noqa: F401
-    has_usable_secret, is_actual_local_base_url, looks_like_openrouter_key, normalize_actual_base_url,
-)
+from auth.constants import ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL
+from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+from hermes_cli.auth_error_copy import format_auth_error
+from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials, resolve_external_process_provider_credentials
+from hermes_cli.route_identity import is_actual_local_base_url, normalize_actual_base_url
+from auth.secret_validation import has_usable_secret, looks_like_openrouter_key
+from auth.providers.nous import _agent_key_is_usable, _nous_inference_env_override, resolve_nous_runtime_credentials
+from auth.providers.codex import resolve_codex_runtime_credentials
+from auth.providers.xai import resolve_xai_oauth_runtime_credentials
+from auth.providers.qwen import resolve_qwen_runtime_credentials
+from auth.errors import AuthError
 from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
@@ -349,12 +358,12 @@ def _anthropic_cfg_base_url(model_cfg: Dict[str, Any]) -> str:
 
 
 def _anthropic_token_or_raise(*, model: str | None = None) -> str:
-    from agent.anthropic_credentials import resolve_anthropic_token
-    token = resolve_anthropic_token(model=model)
+    from auth.providers.anthropic import resolve_anthropic_token
+    token = resolve_anthropic_token(model=model, environment=_phase6_auth_environment())
     if not token:
         # A key the pool benched for *this* model is not a missing credential; telling the
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
-        if model and resolve_anthropic_token():
+        if model and resolve_anthropic_token(environment=_phase6_auth_environment()):
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
                             "other Claude models remain available (see `hermes auth list`).")
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
@@ -411,7 +420,7 @@ def _nous_min_key_ttl() -> int:
 
 
 def _resolve_nous_creds() -> Dict[str, Any]:
-    return resolve_nous_runtime_credentials(timeout_seconds=float(get_secret_str("HERMES_NOUS_TIMEOUT_SECONDS", "15")))
+    return resolve_nous_runtime_credentials(timeout_seconds=float(get_secret_str("HERMES_NOUS_TIMEOUT_SECONDS", "15")), environment=_phase6_auth_environment())
 
 
 def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
@@ -618,12 +627,12 @@ def _exchange_copilot_pool_entry(entry: Any, pool_api_key: str) -> str:
     config); here copilot IS the runtime target (`/model copilot/… --session`, `--provider copilot`,
     delegation/cron overrides), and a raw token routes to the language-server integrator whose
     allowlist omits enterprise-only models (400 model_not_available_for_integrator)."""
-    from hermes_cli.copilot_auth import get_copilot_api_token, validate_copilot_token
+    from auth.providers.copilot import get_copilot_api_token, validate_copilot_token
     if not pool_api_key or not validate_copilot_token(pool_api_key)[0]:
         return pool_api_key  # already an exchanged API token
     api_token, enterprise_base_url = get_copilot_api_token(pool_api_key)
     if api_token == pool_api_key and not enterprise_base_url:
-        from agent.credential_pool import _warn_copilot_raw_degradation_once
+        from auth.pool_sources import _warn_copilot_raw_degradation_once
         _warn_copilot_raw_degradation_once(pool_api_key)
         return pool_api_key
     entry.access_token = api_token
@@ -635,10 +644,11 @@ def _exchange_copilot_pool_entry(entry: Any, pool_api_key: str) -> str:
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[Dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
+    from hermes_cli.config_credentials import credential_pool_environment
     should_use_pool = provider != "openrouter" or _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key,
                                                                              explicit_base_url)
     try:
-        pool = load_pool(provider) if should_use_pool else None
+        pool = load_pool(provider, environment=credential_pool_environment()) if should_use_pool else None
     except Exception:
         pool = None
     if not (pool and pool.has_credentials()):
@@ -653,7 +663,7 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
         pool_api_key = _exchange_copilot_pool_entry(entry, pool_api_key)
     if not has_usable_secret(pool_api_key):
         return None
-    if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
+    if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry), environment=credential_pool_environment()):
         return _resolve_runtime_from_pool_entry(provider=provider, entry=entry, requested_provider=requested_provider,
                                                 model_cfg=model_cfg, pool=pool, target_model=target_model)
     return None
@@ -685,9 +695,9 @@ def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, t
 
 
 def _explicit_nous(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
-    state = auth_mod.get_provider_auth_state("nous") or {}
+    state = auth_provider_state.get_provider_auth_state("nous") or {}
     base_url = (explicit_base_url or _nous_inference_env_override()
-                or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/"))
+                or str(state.get("inference_base_url") or _auth_auth_constants.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/"))
     # The agent_key compatibility field is used for inference only when it holds a NAS invoke JWT;
     # raw OAuth access_token fallback is handled by resolve_nous_runtime_credentials().
     api_key = api_key or (str(state.get("agent_key") or "").strip() if _agent_key_is_usable(state, _nous_min_key_ttl()) else "")
@@ -775,7 +785,7 @@ class _OAuthRuntimeSpec:
 _OAUTH_RUNTIME_PROVIDERS: Dict[str, _OAuthRuntimeSpec] = {
     "nous": _OAuthRuntimeSpec(_resolve_nous_creds, nous_api_mode, "portal", "expires_at",
                               "Auto-detected Nous provider but credentials failed"),
-    "openai-codex": _OAuthRuntimeSpec(lambda: resolve_codex_runtime_credentials(), "codex_responses", "hermes-auth-store",
+    "openai-codex": _OAuthRuntimeSpec(lambda: resolve_codex_runtime_credentials(environment=_phase6_auth_environment()), "codex_responses", "hermes-auth-store",
                                       "last_refresh", "Auto-detected Codex provider but credentials failed"),
     "xai-oauth": _OAuthRuntimeSpec(lambda: resolve_xai_oauth_runtime_credentials(), "codex_responses", "hermes-auth-store",
                                    "last_refresh", "Auto-detected xAI OAuth provider but credentials failed", DEFAULT_XAI_OAUTH_BASE_URL),
@@ -799,7 +809,7 @@ def _minimax_oauth_runtime(provider, requested_provider) -> Optional[Dict[str, A
     pconfig = PROVIDER_REGISTRY.get(provider)
     if not (pconfig and pconfig.auth_type == "oauth_minimax"):
         return None
-    creds = auth_mod.resolve_minimax_oauth_runtime_credentials()
+    creds = _auth_auth_providers_minimax.resolve_minimax_oauth_runtime_credentials()
     return _runtime(provider, "anthropic_messages", creds["base_url"], creds["api_key"], source=creds.get("source", "oauth"),
                     requested_provider=requested_provider)
 
@@ -1128,7 +1138,8 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
     ``model`` is the model the caller must send.
     """
-    from hermes_cli.auth import AuthError, primary_failure_wording
+    from auth.errors import AuthError
+    from auth.failure_policy import primary_failure_wording
     try:
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None

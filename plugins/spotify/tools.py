@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_cli.auth import get_auth_status
+from auth.providers.spotify import get_spotify_auth_status
 from plugins.spotify.client import (
     SpotifyClient, SpotifyError, normalize_spotify_id, normalize_spotify_uri, normalize_spotify_uris)
 from tools.registry import tool_error, tool_result
@@ -19,7 +19,7 @@ _Handler = Callable[[SpotifyClient, dict, str], str]
 
 def _check_spotify_available() -> bool:
     try:
-        return bool(get_auth_status("spotify").get("logged_in"))
+        return bool(get_spotify_auth_status().get("logged_in"))
     except Exception:
         return False
 

@@ -1,3 +1,5 @@
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
 """Tests for banner toolset name normalization and skin color usage."""
 
 from unittest.mock import patch
@@ -49,7 +51,7 @@ def test_empty_model_shows_the_free_tier_route_when_it_carries_inference(tmp_pat
             patch.object(banner, "get_available_skills", return_value={}),
             patch.object(banner, "get_update_result", return_value=None),
             patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
-            patch.object(anon_auth, "guest_carries_inference", return_value=carries),
+            patch.object(_auth_auth_providers_nous_guest, "guest_carries_inference", return_value=carries),
         ):
             console = Console(record=True, force_terminal=False, color_system=None, width=160)
             banner.build_welcome_banner(console=console, model="", cwd="/tmp/project", tools=[],

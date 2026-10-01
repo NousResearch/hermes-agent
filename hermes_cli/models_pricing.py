@@ -8,6 +8,8 @@ intercepting.
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import json
 import os
@@ -301,16 +303,16 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
     preview) → resolved credential ``base_url`` → production default. Without the override a
     staging profile's sale ``pricing.original`` would never reach the pickers."""
     try:
-        from hermes_cli.auth import _nous_inference_env_override
+        from auth.providers.nous import _nous_inference_env_override
 
         env_base = _nous_inference_env_override()
     except Exception:
         env_base = None
     api_key = creds_base = ""
     try:
-        from hermes_cli.auth import resolve_nous_runtime_credentials
+        from auth.providers.nous import resolve_nous_runtime_credentials
 
-        creds = resolve_nous_runtime_credentials()
+        creds = resolve_nous_runtime_credentials(environment=_phase6_auth_environment())
         if creds:
             api_key = creds.get("api_key", "") or ""
             creds_base = (creds.get("base_url", "") or "").strip()
@@ -436,9 +438,10 @@ def _novita_pricing_scope() -> str:
 def get_cached_nous_inference_base_url() -> str:
     """The profile's persisted Nous endpoint (bare origin, no ``/v1``) without refreshing auth."""
     try:
-        from hermes_cli.auth import (
-            _load_auth_store, _load_provider_state, _optional_base_url, _validate_nous_inference_url_from_network,
-        )
+        from auth.store import _load_auth_store
+        from auth.provider_state import _load_provider_state
+        from auth.oauth import _optional_base_url
+        from auth.providers.nous import _validate_nous_inference_url_from_network
 
         state = _load_provider_state(_load_auth_store(), "nous") or {}
         url = _validate_nous_inference_url_from_network(_optional_base_url(state.get("inference_base_url"))) or ""
@@ -469,7 +472,7 @@ def pricing_cache_scope(provider: str, *, current_provider: str = "", current_ba
         return _deepinfra_catalog_url()[0]
     if normalized == "nous":
         try:
-            from hermes_cli.auth import _nous_inference_env_override
+            from auth.providers.nous import _nous_inference_env_override
 
             env_base = _nous_inference_env_override()
         except Exception:

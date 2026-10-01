@@ -1,6 +1,6 @@
 """Credential-pool disk-boundary sanitization: strip raw secrets from *borrowed*
 pool entries before they reach ``auth.json``. Deliberately free of
-``hermes_cli.auth`` imports so the pool model and the auth-store write boundary
+``CLI`` imports so the pool model and the auth-store write boundary
 share one policy without import cycles."""
 
 from __future__ import annotations
@@ -23,26 +23,69 @@ _PERSISTABLE_PROVIDER_SOURCES = frozenset({
 
 # Metadata keys that look secret-ish by suffix but are safe to persist.
 _SAFE_SECRETISH_METADATA_KEYS = frozenset({
-    "secret_fingerprint", "secret_source", "token_type", "scope", "client_id",
-    "agent_key_id", "agent_key_expires_at", "agent_key_expires_in",
-    "agent_key_reused", "agent_key_obtained_at", "expires_at", "expires_at_ms",
-    "expires_in", "last_refresh", "last_status", "last_status_at",
-    "last_error_code", "last_error_reason", "last_error_message",
+    "secret_fingerprint",
+    "secret_source",
+    "token_type",
+    "scope",
+    "client_id",
+    "agent_key_id",
+    "agent_key_expires_at",
+    "agent_key_expires_in",
+    "agent_key_reused",
+    "agent_key_obtained_at",
+    "expires_at",
+    "expires_at_ms",
+    "expires_in",
+    "last_refresh",
+    "last_status",
+    "last_status_at",
+    "last_error_code",
+    "last_error_reason",
+    "last_error_message",
     "last_error_reset_at",
 })
 
 _SECRET_VALUE_KEYS = frozenset({
-    "access_token", "refresh_token", "agent_key", "api_key", "apikey",
-    "api_token", "auth_token", "authorization", "bearer_token", "client_secret",
-    "credential", "credentials", "id_token", "oauth_token", "private_key",
-    "secret_key", "session_token", "password", "secret", "token", "tokens",
+    "access_token",
+    "refresh_token",
+    "agent_key",
+    "api_key",
+    "apikey",
+    "api_token",
+    "auth_token",
+    "authorization",
+    "bearer_token",
+    "client_secret",
+    "credential",
+    "credentials",
+    "id_token",
+    "oauth_token",
+    "private_key",
+    "secret_key",
+    "session_token",
+    "password",
+    "secret",
+    "token",
+    "tokens",
 })
 
 _SECRET_VALUE_SUFFIXES = (
-    "_api_key", "_api_token", "_access_token", "_auth_token", "_refresh_token",
-    "_bearer_token", "_client_secret", "_id_token", "_oauth_token",
-    "_private_key", "_session_token", "_secret_key", "_password", "_secret",
-    "_token", "_key",
+    "_api_key",
+    "_api_token",
+    "_access_token",
+    "_auth_token",
+    "_refresh_token",
+    "_bearer_token",
+    "_client_secret",
+    "_id_token",
+    "_oauth_token",
+    "_private_key",
+    "_session_token",
+    "_secret_key",
+    "_password",
+    "_secret",
+    "_token",
+    "_key",
 )
 
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -56,7 +99,11 @@ def _normalize_key(key: Any) -> str:
 def is_borrowed_credential_source(source: Any, provider_id: Any = None) -> bool:
     """Return True when ``source`` points at a borrowed/reference-only secret."""
     normalized_source = str(source or "").strip().lower()
-    if not normalized_source or normalized_source == "manual" or normalized_source.startswith("manual:"):
+    if (
+        not normalized_source
+        or normalized_source == "manual"
+        or normalized_source.startswith("manual:")
+    ):
         return False
     normalized_provider = str(provider_id or "").strip().lower()
     return (normalized_provider, normalized_source) not in _PERSISTABLE_PROVIDER_SOURCES
@@ -66,7 +113,9 @@ def _is_secret_payload_key(key: Any) -> bool:
     normalized = _normalize_key(key)
     if not normalized or normalized in _SAFE_SECRETISH_METADATA_KEYS:
         return False
-    return normalized in _SECRET_VALUE_KEYS or normalized.endswith(_SECRET_VALUE_SUFFIXES)
+    return normalized in _SECRET_VALUE_KEYS or normalized.endswith(
+        _SECRET_VALUE_SUFFIXES
+    )
 
 
 def fingerprint_secret_value(value: Any) -> str | None:
@@ -83,7 +132,14 @@ def fingerprint_secret_value(value: Any) -> str | None:
 
 
 def _credential_secret_fingerprint(payload: Mapping[str, Any]) -> str | None:
-    preferred = ("agent_key", "access_token", "refresh_token", "api_key", "token", "secret")
+    preferred = (
+        "agent_key",
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "token",
+        "secret",
+    )
     candidates = [payload.get(k) for k in preferred]
     candidates += [v for k, v in payload.items() if _is_secret_payload_key(k)]
     for value in candidates:

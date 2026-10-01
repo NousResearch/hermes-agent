@@ -1,3 +1,5 @@
+
+import auth.providers.xai as _auth_auth_providers_xai
 import pytest
 
 
@@ -5,8 +7,8 @@ def _set_xai_oauth_unavailable(monkeypatch):
     from hermes_cli import auth
     import hermes_cli.auth_xai as auth_xai
 
-    monkeypatch.setattr(auth, "resolve_xai_oauth_runtime_credentials", lambda **_: {})
-    monkeypatch.setattr(auth_xai, "resolve_xai_oauth_runtime_credentials", lambda **_: {})
+    monkeypatch.setattr(_auth_auth_providers_xai, "resolve_xai_oauth_runtime_credentials", lambda **_: {})
+    monkeypatch.setattr(_auth_auth_providers_xai, "resolve_xai_oauth_runtime_credentials", lambda **_: {})
 
 
 def test_xai_credentials_fail_closed_without_profile_scope(tmp_path, monkeypatch):
@@ -82,12 +84,13 @@ def _install_fake_oauth_pool(monkeypatch, oauth_token: str) -> None:
         def try_refresh_matching(self, _hint):
             return entry
 
-    def _fake_load_pool(provider_id):
+    def _fake_load_pool(provider_id, *, environment):
+        environment.require_current_scope()
         if provider_id == "xai-oauth":
             return _FakePool()
         raise KeyError(provider_id)
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", _fake_load_pool)
+    monkeypatch.setattr("auth.credential_pool.load_pool", _fake_load_pool)
 
 
 def test_prefer_api_key_wins_over_available_oauth(monkeypatch):

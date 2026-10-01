@@ -42,10 +42,10 @@ class TestGeminiSetupFreeTierBlock:
             "agent.gemini_native_adapter.probe_gemini_tier",
             return_value="free",
         ), patch(
-            "hermes_cli.auth._prompt_model_selection",
+            "hermes_cli.auth_model_picker._prompt_model_selection",
             return_value="gemini-2.5-flash",
         ), patch(
-            "hermes_cli.auth.deactivate_provider",
+            'auth.provider_state.deactivate_provider',
         ), patch("builtins.input", return_value=""):
             _model_flow_api_key_provider(load_config(), "gemini", "old-model")
 
@@ -75,10 +75,10 @@ class TestGeminiSetupFreeTierBlock:
             "agent.gemini_native_adapter.probe_gemini_tier",
             return_value="paid",
         ), patch(
-            "hermes_cli.auth._prompt_model_selection",
+            "hermes_cli.auth_model_picker._prompt_model_selection",
             return_value="gemini-2.5-flash",
         ), patch(
-            "hermes_cli.auth.deactivate_provider",
+            'auth.provider_state.deactivate_provider',
         ), patch("builtins.input", return_value=""):
             _model_flow_api_key_provider(load_config(), "gemini", "old-model")
 
@@ -104,10 +104,10 @@ class TestGeminiSetupFreeTierBlock:
         with patch(
             "agent.gemini_native_adapter.probe_gemini_tier",
         ) as mock_probe, patch(
-            "hermes_cli.auth._prompt_model_selection",
+            "hermes_cli.auth_model_picker._prompt_model_selection",
             return_value="deepseek-chat",
         ), patch(
-            "hermes_cli.auth.deactivate_provider",
+            'auth.provider_state.deactivate_provider',
         ), patch("builtins.input", return_value=""):
             _model_flow_api_key_provider(load_config(), "deepseek", "old-model")
 

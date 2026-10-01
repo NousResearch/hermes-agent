@@ -1,9 +1,12 @@
+
+import auth.providers.xai as _auth_auth_providers_xai
 """Regression tests for xAI OAuth auth resolution in profile/cron contexts."""
+import auth.store as auth_storage
 
 import pytest
 
 from hermes_cli import auth
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 
 
 def test_read_xai_oauth_tokens_uses_credential_pool_when_provider_tokens_empty(monkeypatch):
@@ -27,10 +30,10 @@ def test_read_xai_oauth_tokens_uses_credential_pool_when_provider_tokens_empty(m
             ]
         },
     }
-    monkeypatch.setattr(auth, "_load_auth_store", lambda: store)
-    monkeypatch.setattr(auth, "_load_global_auth_store", lambda: {})
+    monkeypatch.setattr(auth_storage, "_load_auth_store", lambda: store)
+    monkeypatch.setattr(auth_storage, "_load_global_auth_store", lambda: {})
 
-    resolved = auth._read_xai_oauth_tokens(_lock=False)
+    resolved = _auth_auth_providers_xai._read_xai_oauth_tokens(_lock=False)
 
     assert resolved["tokens"]["access_token"] == "pool-access"
     assert resolved["tokens"]["refresh_token"] == "pool-refresh"

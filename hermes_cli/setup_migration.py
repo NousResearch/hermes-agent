@@ -26,7 +26,7 @@ def _model_section_has_credentials(config: dict) -> bool:
     OpenRouter aggregator env vars (``OPENAI_API_KEY`` / ``OPENROUTER_API_KEY``)."""
     from hermes_cli.setup import get_env_value
     try:
-        from hermes_cli.auth import get_active_provider
+        from auth.provider_state import get_active_provider
         if get_active_provider():
             return True
     except Exception:

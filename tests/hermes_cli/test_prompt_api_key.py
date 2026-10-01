@@ -95,7 +95,7 @@ def test_clear_wipes_env_and_aborts(profile_env):
 # LM Studio no-auth placeholder ────────────────────────────────────────────────
 
 def test_lmstudio_first_time_empty_uses_placeholder(profile_env):
-    from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
+    from auth.constants import LMSTUDIO_NOAUTH_PLACEHOLDER
     from hermes_cli.config import get_env_value
 
     key, abort = _run_prompt(

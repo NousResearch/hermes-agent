@@ -9,7 +9,7 @@ from urllib.parse import parse_qs
 import pytest
 
 from hermes_cli import auth_commands
-from hermes_cli.auth import read_credential_pool, write_credential_pool
+from auth.pool_persistence import read_credential_pool, write_credential_pool
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +31,7 @@ def _rows():
 
 @pytest.mark.parametrize("status", [200, 503, 401])
 def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, status):
-    from hermes_cli import auth_codex
+    from auth.providers import codex as auth_codex
     requests = []
 
     class Endpoint(BaseHTTPRequestHandler):
@@ -51,7 +51,7 @@ def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, status):
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     monkeypatch.setattr(auth_codex, "CODEX_OAUTH_TOKEN_URL", f"http://127.0.0.1:{server.server_port}/token")
-    from agent.credential_pool import PooledCredential
+    from auth.credential_pool import PooledCredential
     rows = [PooledCredential.from_dict("openai-codex", row).to_dict() for row in _rows()]
     write_credential_pool("openai-codex", rows)
     before = read_credential_pool("openai-codex")
@@ -89,8 +89,8 @@ def test_add_priority_places_reauthenticated_row_in_multi_entry_pool(monkeypatch
     rows = _rows()
     rows[1]["source"] = "device_code"
     write_credential_pool("nous", rows)
-    monkeypatch.setattr(auth_commands.auth_mod, "_read_shared_nous_state", lambda: None)
-    monkeypatch.setattr(auth_commands.auth_mod, "_nous_device_code_login", lambda **_kwargs: {
+    monkeypatch.setattr("auth.providers.nous_store._read_shared_nous_state", lambda: None)
+    monkeypatch.setattr("hermes_cli.auth_nous._nous_device_code_login", lambda **_kwargs: {
         "access_token": "fixture-renewed", "refresh_token": "fixture-renewed-refresh",
         "agent_key": "fixture-agent-key", "expires_at": time.time() + 3600,
     })

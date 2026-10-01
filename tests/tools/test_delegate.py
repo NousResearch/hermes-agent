@@ -1049,13 +1049,14 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         """#68237: an Azure child must not lease the parent's public-OpenAI ``openai`` pool — the lease swaps the
         child's base_url too, sending the pooled key to the wrong host. A pool with an entry for the child's endpoint
         is still shared."""
-        from agent.credential_pool import CredentialPool, PooledCredential
+        from auth.credential_pool import CredentialPool, PooledCredential
 
         azure = "https://res.cognitiveservices.azure.com/openai/v1"
         def _pool(url):
+            from hermes_cli.config_credentials import credential_pool_environment
             return CredentialPool("openai", [PooledCredential(
                 provider="openai", id=url, label=url, auth_type="api_key", priority=0, source="env:X",
-                access_token="k", base_url=url)])
+                access_token="k", base_url=url)], environment=credential_pool_environment())
         parent = _make_mock_parent()
         parent.provider, parent.base_url = "openai", azure
 
@@ -1169,14 +1170,15 @@ class TestChildCredentialLeasing(unittest.TestCase):
     def test_lease_binds_only_an_entry_for_the_child_endpoint(self):
         """#68237: on a mixed same-provider pool the least-leased pick may target another host; the child must end up
         bound to the entry for its own base_url, with the wrong-host lease released."""
-        from agent.credential_pool import CredentialPool, PooledCredential
+        from hermes_cli.config_credentials import credential_pool_environment
+        from auth.credential_pool import CredentialPool, PooledCredential
         from tools.delegate_tool_child_run import _lease_child_credential
 
         azure = "https://res.cognitiveservices.azure.com/openai/v1"
         def _entry(eid, url):
             return PooledCredential(provider="openai", id=eid, label=eid, auth_type="api_key", priority=0,
                                     source=f"env:{eid}", access_token=f"key-{eid}", base_url=url)
-        pool = CredentialPool("openai", [_entry("pub", "https://api.openai.com/v1"), _entry("az", azure)])
+        pool = CredentialPool("openai", [_entry("pub", "https://api.openai.com/v1"), _entry("az", azure)], environment=credential_pool_environment())
         pool.acquire_lease("az")  # tilt least-leased selection toward the public entry
         child = MagicMock(provider="openai", base_url=azure, _credential_pool=pool)
 

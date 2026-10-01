@@ -52,14 +52,7 @@ BOOTSTRAP_CLIENT_ID = "hermes-cli-vps"
 
 
 def _nous_entry_is_terminal(nous_state: Any) -> bool:
-    """True iff the on-disk Nous provider entry is in the terminal/quarantined
-    state AND holds no usable credential.
-
-    Mirrors the ``terminal`` predicate in ``hermes_cli.auth.get_nous_session_validity``:
-    a persisted ``last_auth_error.relogin_required`` with the token material
-    already cleared. Keeping this in lockstep is what guarantees we only re-seed
-    a session that is genuinely dead.
-    """
+    'True iff the on-disk Nous provider entry is in the terminal/quarantined\n    state AND holds no usable credential.\n\n    Mirrors the ``terminal`` predicate in ``auth.providers.nous_status.get_nous_session_validity``:\n    a persisted ``last_auth_error.relogin_required`` with the token material\n    already cleared. Keeping this in lockstep is what guarantees we only re-seed\n    a session that is genuinely dead.\n    '
     if not isinstance(nous_state, dict):
         return False
     last_err = nous_state.get("last_auth_error")

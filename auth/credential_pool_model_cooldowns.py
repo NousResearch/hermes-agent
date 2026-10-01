@@ -12,7 +12,7 @@ import time
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent.credential_pool import PooledCredential
+    from auth.credential_pool import PooledCredential
 
 # A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the
 # (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
@@ -52,6 +52,7 @@ class CredentialPoolModelCooldownMixin:
         selecting it from the pool (env / borrowed credentials). Tokens the
         pool does not know fail open: no row can attribute a cooldown to them.
         """
+        self.environment.require_current_scope()
         with self._lock:
             return any(
                 entry.runtime_api_key == token and model_cooldown_until(entry, model) is not None
@@ -63,7 +64,7 @@ class CredentialPoolModelCooldownMixin:
     ) -> bool:
         """Anthropic per-model 429s, and a Codex ChatGPT-account model entitlement 400: the
         account cannot use *model*, but the credential stays valid for every other model (#71970)."""
-        from agent.credential_pool import FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED
+        from auth.credential_pool import FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED
 
         if not model:
             return False
@@ -87,7 +88,7 @@ class CredentialPoolModelCooldownMixin:
         would otherwise be re-selected for the very model that just failed.
         Caller holds the lock.
         """
-        from agent.credential_pool import _exhausted_ttl, _normalize_error_context
+        from auth.credential_pool import _exhausted_ttl, _normalize_error_context
 
         if failure_reason == "model_entitlement":
             until = time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS

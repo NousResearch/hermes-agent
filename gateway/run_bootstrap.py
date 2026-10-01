@@ -423,7 +423,7 @@ async def _start_gateway_shutdown_tail(
             logger.debug("Control socket stop failed (non-fatal)", exc_info=True)
 
     def _stop_keepalive() -> None:
-        from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
+        from auth.keepalive import stop_nous_auth_keepalive
         stop_nous_auth_keepalive()
 
     _best_effort(_stop_keepalive)
@@ -674,8 +674,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             record_startup()
 
         def _start_keepalive() -> None:
-            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
-            start_nous_auth_keepalive()
+            from auth.keepalive import start_nous_auth_keepalive
+            from hermes_cli.config_credentials import credential_pool_environment
+            from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+            start_nous_auth_keepalive(environment_factory=credential_pool_environment, scope_context=launch_profile_scope_if_multiplexed)
 
         _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
         _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")

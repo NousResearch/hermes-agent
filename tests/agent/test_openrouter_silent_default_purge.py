@@ -45,13 +45,15 @@ class TestEnvIngestionWarning:
         return home
 
     def test_warns_on_new_openrouter_env_ingestion(self, tmp_path, monkeypatch, caplog):
+        from auth import pool_sources as credential_pool_sources
+        from hermes_cli.config_credentials import credential_pool_environment
         self._fresh_home(tmp_path, monkeypatch)
-        from agent import credential_pool as cp
+        from auth import credential_pool as cp
 
-        monkeypatch.setattr(cp, "_ENV_INGESTION_WARNED", set())
+        monkeypatch.setattr(credential_pool_sources, "_ENV_INGESTION_WARNED", set())
         entries = []
         with caplog.at_level(logging.WARNING, logger=cp.logger.name):
-            changed, sources = cp._seed_from_env("openrouter", entries)
+            changed, sources = credential_pool_sources._seed_from_env("openrouter", entries, environment=credential_pool_environment())
 
         assert changed is True
         assert "env:OPENROUTER_API_KEY" in sources
@@ -63,13 +65,14 @@ class TestEnvIngestionWarning:
         assert warnings, "expected a WARNING for env->pool openrouter ingestion"
 
     def test_warning_once_per_process(self, tmp_path, monkeypatch, caplog):
+        from auth import pool_sources as credential_pool_sources
         self._fresh_home(tmp_path, monkeypatch)
-        from agent import credential_pool as cp
+        from auth import credential_pool as cp
 
-        monkeypatch.setattr(cp, "_ENV_INGESTION_WARNED", set())
+        monkeypatch.setattr(credential_pool_sources, "_ENV_INGESTION_WARNED", set())
         with caplog.at_level(logging.WARNING, logger=cp.logger.name):
-            cp._warn_env_ingestion_once("openrouter", "OPENROUTER_API_KEY")
-            cp._warn_env_ingestion_once("openrouter", "OPENROUTER_API_KEY")
+            credential_pool_sources._warn_env_ingestion_once("openrouter", "OPENROUTER_API_KEY")
+            credential_pool_sources._warn_env_ingestion_once("openrouter", "OPENROUTER_API_KEY")
         warnings = [
             r
             for r in caplog.records
@@ -79,17 +82,19 @@ class TestEnvIngestionWarning:
 
     def test_no_warning_when_entry_unchanged(self, tmp_path, monkeypatch, caplog):
         """Re-seeding an already-present, identical credential stays silent."""
+        from auth import pool_sources as credential_pool_sources
+        from hermes_cli.config_credentials import credential_pool_environment
         self._fresh_home(tmp_path, monkeypatch)
-        from agent import credential_pool as cp
+        from auth import credential_pool as cp
 
         entries = []
-        changed, _ = cp._seed_from_env("openrouter", entries)
+        changed, _ = credential_pool_sources._seed_from_env("openrouter", entries, environment=credential_pool_environment())
         assert changed is True
 
-        monkeypatch.setattr(cp, "_ENV_INGESTION_WARNED", set())
+        monkeypatch.setattr(credential_pool_sources, "_ENV_INGESTION_WARNED", set())
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger=cp.logger.name):
-            changed_again, _ = cp._seed_from_env("openrouter", entries)
+            changed_again, _ = credential_pool_sources._seed_from_env("openrouter", entries, environment=credential_pool_environment())
         assert changed_again is False
         assert not [
             r for r in caplog.records if "Ingested OPENROUTER_API_KEY" in r.getMessage()

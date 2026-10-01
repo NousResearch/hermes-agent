@@ -1,3 +1,5 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
 #!/usr/bin/env python3
 """Hermes CLI - Main entry point.
 
@@ -1150,9 +1152,9 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     # configured — having Claude Code installed isn't consent to use its tokens.
     if _has_hermes_config and not strict_profile_scope:
         try:
-            from agent.anthropic_credentials import read_claude_code_credentials, is_claude_code_token_valid
+            from auth.providers.anthropic import read_claude_code_credentials, is_claude_code_token_valid
 
-            creds = read_claude_code_credentials()
+            creds = read_claude_code_credentials(environment=_phase6_auth_environment())
             if creds and (
                 is_claude_code_token_valid(creds) or creds.get("refreshToken")
             ):
@@ -1162,8 +1164,8 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
 
     # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
     try:
-        from hermes_cli.anon_auth import guest_enabled, has_guest
-        return guest_enabled() and has_guest()
+        from auth.providers.nous_guest import guest_enabled, has_guest
+        return guest_enabled(environment=_phase6_auth_environment()) and has_guest()
     except Exception as exc:
         logger.debug("free tier check on first run skipped: %s", exc)
     return False
@@ -1947,8 +1949,8 @@ def _forward_command(name: str, module: str, attr: str, *, forward_return: bool 
 
 
 cmd_setup = _forward_command("cmd_setup", "hermes_cli.setup", "run_setup_wizard", doc='Interactive setup wizard.')
-cmd_login = _forward_command("cmd_login", "hermes_cli.auth", "login_command", doc='Authenticate Hermes CLI with a provider.')
-cmd_logout = _forward_command("cmd_logout", "hermes_cli.auth", "logout_command", doc='Clear provider authentication.')
+cmd_login = _forward_command("cmd_login", "hermes_cli.auth_commands", "login_command", doc='Authenticate Hermes CLI with a provider.')
+cmd_logout = _forward_command("cmd_logout", "hermes_cli.auth_commands", "logout_command", doc='Clear provider authentication.')
 cmd_auth = _forward_command("cmd_auth", "hermes_cli.auth_commands", "auth_command", doc='Manage pooled credentials.')
 cmd_status = _forward_command("cmd_status", "hermes_cli.status", "show_status", doc='Show status of all components.')
 cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", "cron_command", forward_return=True, doc='Cron job management.')
@@ -2026,7 +2028,9 @@ def _resolve_active_provider(config, model_cfg, effective_provider, custom_provi
     the configured/env provider (named custom → canonical map key) → auto
     detection. Unknown/unauthenticated providers warn and fall back to auto.
     """
-    from hermes_cli.auth import AuthError, format_auth_error, resolve_provider
+    from auth.errors import AuthError
+    from hermes_cli.auth_error_copy import format_auth_error
+    from hermes_cli.auth import resolve_provider
     from hermes_cli.config import get_compatible_custom_providers, get_env_value
     from hermes_cli.providers import custom_provider_aliases, resolve_provider_full
 

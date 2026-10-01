@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.agent_runtime_helpers import recover_with_credential_pool
-from agent.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
+from auth.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
 from agent.turn_response_check import retry_invalid_response
 from agent.turn_retry_state import TurnRetryState
 
@@ -80,7 +80,8 @@ def _run(agent: _Agent, response: SimpleNamespace):
 
 
 def test_quota_soft_failure_rotates_pool_before_provider_fallback():
-    pool = CredentialPool("openai-codex", [_entry(0), _entry(1)])
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool = CredentialPool("openai-codex", [_entry(0), _entry(1)], environment=credential_pool_environment())
     agent = _Agent(pool)
 
     verdict = _run(agent, _soft_failure("usage_limit_reached", "You've hit your usage limit. Try again at 3:00 PM."))
@@ -93,7 +94,8 @@ def test_quota_soft_failure_rotates_pool_before_provider_fallback():
 
 
 def test_content_policy_soft_failure_leaves_pool_alone():
-    pool = CredentialPool("openai-codex", [_entry(0), _entry(1)])
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool = CredentialPool("openai-codex", [_entry(0), _entry(1)], environment=credential_pool_environment())
     agent = _Agent(pool)
 
     verdict = _run(agent, _soft_failure("content_policy_violation", "Your request was rejected by our safety system."))

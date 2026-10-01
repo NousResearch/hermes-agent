@@ -58,7 +58,7 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
 
         saved_cfg = {}
 
-        def fake_load_config():
+        def fake_load_config(**_auth_settings):
             return dict(existing_cfg)  # shallow copy
 
         def fake_save_config(cfg, **_kwargs):

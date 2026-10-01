@@ -1,16 +1,22 @@
 """Tests for the Phase 2b billing:manage scope step-up (auth.py)."""
 
 from __future__ import annotations
+import hermes_cli.auth_nous as _auth_hermes_cli_auth_nous
+import auth.providers.nous_store as _auth_auth_providers_nous_store
+
+import auth.oauth as _auth_auth_oauth
+import auth.providers.nous as _auth_auth_providers_nous
+
+import auth.provider_state as auth_provider_state
+import auth.store as auth_storage
 
 import pytest
 
 import hermes_cli.auth as auth
 import hermes_cli.auth_nous as auth_nous
-from hermes_cli.auth import (
-    NOUS_BILLING_MANAGE_SCOPE,
-    nous_token_has_billing_scope,
-    step_up_nous_billing_scope,
-)
+from auth.constants import NOUS_BILLING_MANAGE_SCOPE
+from hermes_cli.auth import nous_token_has_billing_scope
+from hermes_cli.auth_nous import step_up_nous_billing_scope
 
 
 # ---------------------------------------------------------------------------
@@ -21,24 +27,24 @@ from hermes_cli.auth import (
 class TestNousTokenHasBillingScope:
     def test_true_when_scope_string_contains_billing_manage(self, monkeypatch):
         monkeypatch.setattr(
-            auth, "get_provider_auth_state",
+            auth_provider_state, "get_provider_auth_state",
             lambda pid: {"scope": f"openid {NOUS_BILLING_MANAGE_SCOPE} inference"},
         )
         assert nous_token_has_billing_scope() is True
 
     def test_false_when_scope_missing_or_not_a_string(self, monkeypatch):
-        monkeypatch.setattr(auth, "get_provider_auth_state", lambda pid: {"scope": "openid inference"})
+        monkeypatch.setattr(auth_provider_state, "get_provider_auth_state", lambda pid: {"scope": "openid inference"})
         assert nous_token_has_billing_scope() is False
-        monkeypatch.setattr(auth, "get_provider_auth_state", lambda pid: {"scope": None})
+        monkeypatch.setattr(auth_provider_state, "get_provider_auth_state", lambda pid: {"scope": None})
         assert nous_token_has_billing_scope() is False
-        monkeypatch.setattr(auth, "get_provider_auth_state", lambda pid: None)
+        monkeypatch.setattr(auth_provider_state, "get_provider_auth_state", lambda pid: None)
         assert nous_token_has_billing_scope() is False
 
     def test_false_when_auth_state_lookup_raises(self, monkeypatch):
         def _boom(pid):
             raise RuntimeError("auth store unreadable")
 
-        monkeypatch.setattr(auth, "get_provider_auth_state", _boom)
+        monkeypatch.setattr(auth_provider_state, "get_provider_auth_state", _boom)
         assert nous_token_has_billing_scope() is False
 
 
@@ -50,14 +56,14 @@ class TestNousTokenHasBillingScope:
 @pytest.fixture
 def _stub_persist(monkeypatch):
     """Neutralize the persistence side-effects so step-up tests are pure."""
-    monkeypatch.setattr(auth, "_auth_store_lock", lambda: _NullCtx())
-    monkeypatch.setattr(auth, "_load_auth_store", lambda: {})
-    monkeypatch.setattr(auth, "_save_provider_state", lambda *a, **kw: None)
-    monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **kw: "auth.json")
-    monkeypatch.setattr(auth, "_write_shared_nous_state", lambda *a, **kw: None)
-    monkeypatch.setattr(auth_nous, "_write_shared_nous_state", lambda *a, **kw: None)
-    monkeypatch.setattr(auth, "_sync_nous_pool_from_auth_store", lambda: None)
-    monkeypatch.setattr(auth_nous, "_sync_nous_pool_from_auth_store", lambda: None)
+    monkeypatch.setattr(auth_storage, "_auth_store_lock", lambda: _NullCtx())
+    monkeypatch.setattr(auth_storage, "_load_auth_store", lambda: {})
+    monkeypatch.setattr(auth_provider_state, "_save_provider_state", lambda *a, **kw: None)
+    monkeypatch.setattr(auth_storage, "_save_auth_store", lambda *a, **kw: "auth.json")
+    monkeypatch.setattr(_auth_auth_providers_nous_store, "_write_shared_nous_state", lambda *a, **kw: None)
+    monkeypatch.setattr(_auth_auth_providers_nous_store, "_write_shared_nous_state", lambda *a, **kw: None)
+    monkeypatch.setattr(_auth_auth_providers_nous, "_sync_nous_pool_from_auth_store", lambda**_auth_settings: None)
+    monkeypatch.setattr(_auth_auth_providers_nous, "_sync_nous_pool_from_auth_store", lambda**_auth_settings: None)
 
 
 class _NullCtx:
@@ -70,7 +76,7 @@ class _NullCtx:
 
 def test_step_up_requests_billing_scope_and_reuses_prior_urls(monkeypatch, _stub_persist):
     monkeypatch.setattr(
-        auth,
+        auth_provider_state,
         "get_provider_auth_state",
         lambda p: {
             "scope": "inference:invoke",
@@ -86,7 +92,7 @@ def test_step_up_requests_billing_scope_and_reuses_prior_urls(monkeypatch, _stub
         # Simulate the admin ticking the box → token comes back WITH the scope.
         return {"scope": "inference:invoke billing:manage", "access_token": "t"}
 
-    monkeypatch.setattr(auth, "_nous_device_code_login", _fake_login)
+    monkeypatch.setattr(_auth_hermes_cli_auth_nous, "_nous_device_code_login", _fake_login)
     monkeypatch.setattr(auth_nous, "_nous_device_code_login", _fake_login)
 
     granted = step_up_nous_billing_scope()
@@ -111,7 +117,7 @@ def test_device_login_fires_on_verification_before_polling(monkeypatch):
     order: list[str] = []
 
     monkeypatch.setattr(
-        auth,
+        _auth_auth_oauth,
         "_request_device_code",
         lambda **kw: {
             "verification_uri_complete": "https://portal.example/device?code=ABCD",
@@ -126,7 +132,7 @@ def test_device_login_fires_on_verification_before_polling(monkeypatch):
         order.append("poll")
         return {"access_token": "t", "scope": "inference:invoke", "expires_in": 3600}
 
-    monkeypatch.setattr(auth, "_poll_for_token", _fake_poll)
+    monkeypatch.setattr(_auth_auth_oauth, "_poll_for_token", _fake_poll)
 
     seen = {}
 
@@ -139,7 +145,7 @@ def test_device_login_fires_on_verification_before_polling(monkeypatch):
     # validation (JWT usability checks) is out of scope and may raise on the
     # synthetic token — swallow it; the ordering assertion is what matters.
     try:
-        auth._nous_device_code_login(open_browser=False, on_verification=_cb)
+        _auth_hermes_cli_auth_nous._nous_device_code_login(open_browser=False, on_verification=_cb)
     except Exception:
         pass
 

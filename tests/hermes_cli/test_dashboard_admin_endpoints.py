@@ -156,14 +156,15 @@ class TestCredentialPoolEndpoints:
         The endpoint must mirror `hermes auth remove`: clean up the backing
         source and suppress (provider, source).
         """
-        from agent.credential_pool import load_pool
-        from hermes_cli.auth import is_source_suppressed
+        from hermes_cli.config_credentials import credential_pool_environment
+        from auth.credential_pool import load_pool
+        from auth.sources import is_source_suppressed
         from hermes_cli.config import save_env_value
 
         fake_key = "sk-or-" + "x" * 20  # constructed, never a real key shape
         save_env_value("OPENROUTER_API_KEY", fake_key)
 
-        entries = load_pool("openrouter").entries()
+        entries = load_pool("openrouter", environment=credential_pool_environment()).entries()
         assert [e.source for e in entries] == ["env:OPENROUTER_API_KEY"]
 
         r = self.client.delete("/api/credentials/pool/openrouter/1")
@@ -175,7 +176,7 @@ class TestCredentialPoolEndpoints:
         # Even if the backing var comes back (shell export, another process
         # rewriting .env), the removal must stay sticky.
         save_env_value("OPENROUTER_API_KEY", fake_key)
-        assert load_pool("openrouter").entries() == []
+        assert load_pool("openrouter", environment=credential_pool_environment()).entries() == []
         assert self.client.get("/api/credentials/pool").json()["providers"] == []
 
     def test_post_readd_lifts_suppression(self):
@@ -185,13 +186,14 @@ class TestCredentialPoolEndpoints:
         provider so a user who deleted a credential and re-adds one isn't
         silently blocked from env re-seeding.
         """
-        from agent.credential_pool import load_pool
-        from hermes_cli.auth import is_source_suppressed
+        from hermes_cli.config_credentials import credential_pool_environment
+        from auth.credential_pool import load_pool
+        from auth.sources import is_source_suppressed
         from hermes_cli.config import save_env_value
 
         fake_key = "sk-or-" + "y" * 20
         save_env_value("OPENROUTER_API_KEY", fake_key)
-        load_pool("openrouter")
+        load_pool("openrouter", environment=credential_pool_environment())
         assert self.client.delete("/api/credentials/pool/openrouter/1").status_code == 200
         assert is_source_suppressed("openrouter", "env:OPENROUTER_API_KEY")
 
@@ -205,7 +207,7 @@ class TestCredentialPoolEndpoints:
         # Key back in .env + suppression lifted → env entry seeds alongside
         # the manual one.
         save_env_value("OPENROUTER_API_KEY", fake_key)
-        sources = sorted(e.source for e in load_pool("openrouter").entries())
+        sources = sorted(e.source for e in load_pool("openrouter", environment=credential_pool_environment()).entries())
         assert sources == ["env:OPENROUTER_API_KEY", "manual"]
 
 

@@ -1,3 +1,8 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.constants as _auth_auth_constants
+import auth.providers.nous as _auth_auth_providers_nous
 """Concurrent Nous 401 recovery must not stampede the shared OAuth grant.
 
 Sep 2 2026 incident: ~120 subagent processes shared one Nous OAuth pool entry
@@ -21,7 +26,7 @@ import logging
 
 import hermes_cli.auth as auth_mod
 import hermes_cli.auth_nous as auth_nous
-from agent.credential_pool import CredentialPool, PooledCredential
+from auth.credential_pool import CredentialPool, PooledCredential
 
 from tests.hermes_cli.test_auth_nous_provider import _invoke_jwt, _setup_nous_auth
 
@@ -34,7 +39,7 @@ def test_forced_refresh_adopts_peer_rotation_instead_of_reposting(tmp_path, monk
         hermes_home,
         access_token=peer_token,
         refresh_token="rt-after-peer-rotation",
-        scope=auth_mod.DEFAULT_NOUS_SCOPE,
+        scope=_auth_auth_constants.DEFAULT_NOUS_SCOPE,
         expires_at=auth_mod.datetime.fromtimestamp(
             auth_mod.time.time() + 3600, tz=auth_mod.timezone.utc
         ).isoformat(),
@@ -51,21 +56,21 @@ def test_forced_refresh_adopts_peer_rotation_instead_of_reposting(tmp_path, monk
             "refresh_token": "rt-should-not-happen",
             "expires_in": 7200,
             "token_type": "Bearer",
-            "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+            "scope": _auth_auth_constants.DEFAULT_NOUS_SCOPE,
         }
 
-    monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
-    monkeypatch.setattr(auth_nous, "_refresh_access_token", _fake_refresh_access_token)
+    monkeypatch.setattr(_auth_auth_providers_nous, "_refresh_access_token", _fake_refresh_access_token)
+    monkeypatch.setattr(_auth_auth_providers_nous, "_refresh_access_token", _fake_refresh_access_token)
 
-    creds = auth_mod.resolve_nous_runtime_credentials(
+    creds = _auth_auth_providers_nous.resolve_nous_runtime_credentials(
         force_refresh=True, stale_access_token=failed_token
-    )
+    , environment=_phase6_auth_environment())
 
     assert posts == [], "peer already rotated — must not consume the refresh token again"
     assert creds["api_key"] == peer_token
 
     # Same call WITHOUT the hint keeps the pre-existing force semantics.
-    auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
+    _auth_auth_providers_nous.resolve_nous_runtime_credentials(force_refresh=True, environment=_phase6_auth_environment())
     assert posts == ["rt-after-peer-rotation"]
 
 
@@ -88,6 +93,9 @@ def test_lock_timeout_during_nous_refresh_does_not_bench_entry(monkeypatch, capl
     pool._max_concurrent = 2
     pool._unmatched_rotation_streak = 0
     pool.provider = "nous"
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool.environment = credential_pool_environment()
+    pool._provider_hooks = pool.environment.provider_hooks(pool.provider)
 
     monkeypatch.setattr(pool, "_sync_nous_entry_from_auth_store", lambda e: e)
     monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
@@ -95,8 +103,8 @@ def test_lock_timeout_during_nous_refresh_does_not_bench_entry(monkeypatch, capl
     def _busy(*a, **k):
         raise TimeoutError("Timed out waiting for auth store lock")
 
-    monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _busy)
-    monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials", _busy)
+    monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials", _busy)
+    monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials", _busy)
 
     result = pool._refresh_entry_impl(entry, force=True)
 
@@ -126,8 +134,8 @@ def test_agent_401_refresh_passes_failed_bearer_as_stale_hint(monkeypatch):
         seen.update(kwargs)
         return {"api_key": "fresh", "base_url": agent.base_url}
 
-    monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _fake_resolve)
-    monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials", _fake_resolve)
+    monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials", _fake_resolve)
+    monkeypatch.setattr(_auth_auth_providers_nous, "resolve_nous_runtime_credentials", _fake_resolve)
 
     assert agent._try_refresh_nous_client_credentials(force=True) is True
     assert seen["force_refresh"] is True

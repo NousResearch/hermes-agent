@@ -62,6 +62,8 @@ class GatewayACPAgent(acp.Agent):
         self._failure = None
         self._permissions = {}
         self._admissions = {}
+        self._submitting = set()
+        self._pending_cancels = set()
         self._tool_args = {}
         from hermes_cli.gateway_mutations import PreparedMutations
         self._mutations = PreparedMutations()
@@ -147,12 +149,7 @@ class GatewayACPAgent(acp.Agent):
         await self._resume(cwd, session_id, mcp_servers)
         return ResumeSessionResponse()
 
-    async def cancel(self, session_id, **kwargs):
-        if session_id not in self._snapshots:
-            raise GatewayClientError("not_found")
-        admission_id = self._admissions.get(session_id)
-        if admission_id is None:
-            return
+    async def _cancel_admission(self, session_id, admission_id):
         client = await self._client()
         # Cancel our own admission; another surface's running turn is not ours to
         # interrupt. Only when our admission is the one executing do we interrupt.
@@ -162,9 +159,31 @@ class GatewayACPAgent(acp.Agent):
             if str(exc) != "stale_generation":
                 raise
             receipt = await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id)
-            if receipt["status"] == "started":
+            if receipt["status"] != "started":
+                return
+            try:
                 await client.rpc("session.interrupt", session_id=session_id,
                                  execution_generation=receipt["execution_generation"])
+            except GatewayClientError as interrupt_exc:
+                if str(interrupt_exc) != "stale_generation":
+                    raise
+                # The exact admission may have settled between the receipt and interrupt.
+                # Re-read that admission only; never substitute the session's current
+                # generation, which could already belong to a successor.
+                settled = await client.rpc(
+                    "prompt.receipt", session_id=session_id, admission_id=admission_id)
+                if settled["status"] != "terminal":
+                    raise
+
+    async def cancel(self, session_id, **kwargs):
+        if session_id not in self._snapshots:
+            raise GatewayClientError("not_found")
+        admission_id = self._admissions.get(session_id)
+        if admission_id is None:
+            if session_id in self._submitting:
+                self._pending_cancels.add(session_id)
+            return
+        await self._cancel_admission(session_id, admission_id)
 
     async def fork_session(self, cwd, session_id, mcp_servers=None, **kwargs):
         from acp.schema import ForkSessionResponse
@@ -230,18 +249,31 @@ class GatewayACPAgent(acp.Agent):
         submit = {'text': text}
         if attachments:
             submit['attachments'] = attachments
-        receipt = await client.rpc("prompt.submit", session_id=session_id,
-                                   input_id=uuid.uuid4().hex, **submit)
+        self._submitting.add(session_id)
+        try:
+            receipt = await client.rpc("prompt.submit", session_id=session_id,
+                                       input_id=uuid.uuid4().hex, **submit)
+        except BaseException:
+            self._pending_cancels.discard(session_id)
+            raise
+        finally:
+            self._submitting.discard(session_id)
         admission_id = receipt["admission_id"]
         self._admissions[session_id] = admission_id
         try:
+            if session_id in self._pending_cancels:
+                self._pending_cancels.discard(session_id)
+                await self._cancel_admission(session_id, admission_id)
             async with self._changed:
                 await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None)
                 if self._failure:
                     raise self._failure
                 terminal = self._terminals.pop(admission_id)
         finally:
-            self._admissions.pop(session_id, None)
+            # Do not let one prompt tear down a newer mapping if the session has
+            # already advanced while this coroutine unwinds.
+            if self._admissions.get(session_id) == admission_id:
+                self._admissions.pop(session_id, None)
         outcome = terminal.get("outcome")
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
@@ -274,6 +306,8 @@ class GatewayACPAgent(acp.Agent):
     async def _project(self, event):
         sid, kind, payload = event["session_id"], event.get("type"), event.get("payload", {})
         aid = event.get("admission_id")
+        if kind == "session.replay_gap":
+            raise GatewayClientError("session_replay_gap")
         if kind == "approval.request":
             self._permission(sid, payload)
             return

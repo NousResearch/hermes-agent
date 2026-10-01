@@ -7,6 +7,17 @@ rendering. The keepalive has nothing to keep alive for the free tier and must no
 """
 
 from __future__ import annotations
+from auth import keepalive as nous_auth_keepalive
+from hermes_cli.config_credentials import credential_pool_environment
+from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+import auth.providers.nous_status as _auth_auth_providers_nous_status
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous as _auth_auth_providers_nous
+import hermes_cli.nous_account as _auth_auth_providers_nous_account
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import base64
 import dataclasses
@@ -23,11 +34,10 @@ from hermes_cli import (
     anon_auth,
     auth_commands,
     nous_account,
-    nous_auth_keepalive,
     portal_cli,
     status_auth,
 )
-from hermes_cli.auth import _load_auth_store  # noqa: F401  (store import name kept for parity with core tests)
+from auth.store import _load_auth_store  # noqa: F401  (store import name kept for parity with core tests)
 from hermes_constants import get_hermes_home
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
@@ -73,14 +83,14 @@ def isolated_store(monkeypatch, tmp_path):
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     # No network: the account lookup is derived from the JWT the store already holds.
-    monkeypatch.setattr(nous_account, "_fetch_nous_account_info",
+    monkeypatch.setattr(_auth_auth_providers_nous_account, "_fetch_nous_account_info",
                         lambda *a, **k: pytest.fail("portal fetch must not happen on a read-only surface"))
-    nous_account.reset_nous_portal_account_info_cache()
+    _auth_auth_providers_nous_account.reset_nous_portal_account_info_cache()
     import hermes_cli.auth as auth_mod
-    auth_mod.invalidate_nous_auth_status_cache()
+    _auth_auth_providers_nous_status.invalidate_nous_auth_status_cache()
     yield
-    nous_account.reset_nous_portal_account_info_cache()
-    auth_mod.invalidate_nous_auth_status_cache()
+    _auth_auth_providers_nous_account.reset_nous_portal_account_info_cache()
+    _auth_auth_providers_nous_status.invalidate_nous_auth_status_cache()
 
 
 def _render_all(capsys) -> dict[str, str]:
@@ -102,15 +112,15 @@ def test_free_tier_renders_free_tier_copy_on_every_surface(isolated_store, capsy
     rendered = _render_all(capsys)
     for surface, text in rendered.items():
         assert "free tier" in text.lower(), f"{surface} did not name the free tier:\n{text}"
-        assert anon_auth.FREE_TIER_LABEL in text and anon_auth.GUEST_MODEL in text, surface
-        assert anon_auth.UPGRADE_HINT in text, f"{surface} lacks the upgrade hint:\n{text}"
+        assert _auth_auth_providers_nous_guest.FREE_TIER_LABEL in text and _auth_auth_providers_nous_guest.GUEST_MODEL in text, surface
+        assert _auth_auth_providers_nous_guest.UPGRADE_HINT in text, f"{surface} lacks the upgrade hint:\n{text}"
         leaked = _FORBIDDEN.search(text)
         assert leaked is None, f"{surface} leaked {leaked.group(0)!r}:\n{text}"
     # Billing / entitlement copy for the free tier points at the upgrade path, never at billing.
-    info = nous_account.get_nous_portal_account_info()
+    info = _auth_auth_providers_nous_account.get_nous_portal_account_info()
     assert info.is_anonymous_tier
-    message = nous_account.format_nous_portal_entitlement_message(info, capability="managed web tools")
-    assert message == nous_account.FREE_TIER_NEEDS_ACCOUNT
+    message = _auth_auth_providers_nous_account.format_nous_portal_entitlement_message(info, capability="managed web tools")
+    assert message == _auth_auth_providers_nous_account.FREE_TIER_NEEDS_ACCOUNT
     assert "billing" not in message.lower() and _FORBIDDEN.search(message) is None
 
 
@@ -119,12 +129,12 @@ def test_real_account_keeps_account_rendering(isolated_store, capsys):
     rendered = _render_all(capsys)
     for surface, text in rendered.items():
         assert "free tier" not in text.lower(), f"{surface} mislabelled a real account:\n{text}"
-        assert anon_auth.UPGRADE_HINT not in text, surface
+        assert _auth_auth_providers_nous_guest.UPGRADE_HINT not in text, surface
     assert "logged in" in rendered["auth status"]
     assert "credentials" in rendered["auth list"]
-    info = nous_account.get_nous_portal_account_info()
+    info = _auth_auth_providers_nous_account.get_nous_portal_account_info()
     assert not info.is_anonymous_tier
-    assert nous_account.format_nous_portal_entitlement_message(info) is None  # paid_access claim entitles
+    assert _auth_auth_providers_nous_account.format_nous_portal_entitlement_message(info) is None  # paid_access claim entitles
 
 
 def test_keepalive_does_not_start_for_free_tier(isolated_store, monkeypatch):
@@ -143,11 +153,11 @@ def test_keepalive_does_not_start_for_free_tier(isolated_store, monkeypatch):
     monkeypatch.setattr(nous_auth_keepalive, "_keepalive_thread", None)
 
     _write_auth(_guest_state())
-    assert nous_auth_keepalive.start_nous_auth_keepalive(interval_seconds=900) is None
+    assert nous_auth_keepalive.start_nous_auth_keepalive(interval_seconds=900, environment_factory=credential_pool_environment, scope_context=launch_profile_scope_if_multiplexed) is None
     assert started == []
 
     _write_auth(_account_state())
-    thread = nous_auth_keepalive.start_nous_auth_keepalive(interval_seconds=900)
+    thread = nous_auth_keepalive.start_nous_auth_keepalive(interval_seconds=900, environment_factory=credential_pool_environment, scope_context=launch_profile_scope_if_multiplexed)
     assert thread is not None and started == ["nous-auth-keepalive"]
     monkeypatch.setattr(nous_auth_keepalive, "_keepalive_thread", None)
 
@@ -177,15 +187,15 @@ def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_
 
 
 def test_the_paid_tool_notice_switches_wording_inside_a_chat():
-    info = nous_account.NousPortalAccountInfo(
+    info = _auth_auth_providers_nous_account.NousPortalAccountInfo(
         logged_in=True, source="token", fresh=True, account_tier="anonymous"
     )
-    assert nous_account.format_nous_portal_entitlement_message(
+    assert _auth_auth_providers_nous_account.format_nous_portal_entitlement_message(
         info, in_chat=True
-    ) == nous_account.FREE_TIER_NEEDS_ACCOUNT_CHAT
-    assert nous_account.format_nous_portal_entitlement_message(
+    ) == _auth_auth_providers_nous_account.FREE_TIER_NEEDS_ACCOUNT_CHAT
+    assert _auth_auth_providers_nous_account.format_nous_portal_entitlement_message(
         info, in_chat=False
-    ) == nous_account.FREE_TIER_NEEDS_ACCOUNT
+    ) == _auth_auth_providers_nous_account.FREE_TIER_NEEDS_ACCOUNT
 
 
 def test_cli_chat_status_names_the_free_tier(isolated_store):
@@ -199,7 +209,7 @@ def test_cli_chat_status_names_the_free_tier(isolated_store):
         session_start=datetime.now(),
         agent=SimpleNamespace(session_total_tokens=0, reasoning_config=None),
         provider="nous",
-        model=anon_auth.GUEST_MODEL,
+        model=_auth_auth_providers_nous_guest.GUEST_MODEL,
         _agent_running=False,
         reasoning_config=None,
         show_reasoning=None,

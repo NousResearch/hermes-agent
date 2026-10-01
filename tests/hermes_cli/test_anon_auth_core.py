@@ -6,6 +6,14 @@ the wire contract is exercised, never mocked away.
 """
 
 from __future__ import annotations
+import auth.providers.nous_store as _auth_auth_providers_nous_store
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous as _auth_auth_providers_nous
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
+import auth.store as auth_storage
 
 import json
 import os
@@ -15,7 +23,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import anon_auth
-from hermes_cli.auth import _load_auth_store, resolve_provider
+from auth.store import _load_auth_store
+from hermes_cli.auth import resolve_provider
 from tests.hermes_cli.anon_portal import PORTAL, WELCOME, install_portal, make_jwt as _jwt  # noqa: F401
 
 
@@ -40,26 +49,26 @@ def _shared_store(tmp_path) -> dict:
 
 class TestIdentityLifecycle:
     def test_fresh_install_mints_once_and_is_the_active_provider(self, portal, tmp_path):
-        state = anon_auth.ensure_portal_identity(explicit=True)
-        assert anon_auth.is_guest_state(state)
+        state = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+        assert _auth_auth_providers_nous_guest.is_guest_state(state)
         assert "refresh_token" not in state
         store = _load_auth_store()
         assert store["active_provider"] == "nous"
-        assert anon_auth.is_guest_state(store["providers"]["nous"])
+        assert _auth_auth_providers_nous_guest.is_guest_state(store["providers"]["nous"])
         assert _shared_store(tmp_path).get("anon_token") == state["anon_token"]
         assert portal.minted == 1
         # Second call: identity exists, zero network.
         before = len(portal.calls)
-        assert anon_auth.ensure_portal_identity(explicit=True)["anon_token"] == state["anon_token"]
+        assert _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())["anon_token"] == state["anon_token"]
         assert len(portal.calls) == before
 
     def test_second_profile_under_same_root_adopts_from_shared_store(self, portal, tmp_path, monkeypatch):
-        first = anon_auth.ensure_portal_identity(explicit=True)
+        first = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         other_home = tmp_path / "profiles" / "two"
         other_home.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(other_home))
         before = len(portal.calls)
-        second = anon_auth.ensure_portal_identity(explicit=True)
+        second = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         assert second["anon_token"] == first["anon_token"]
         assert len(portal.calls) == before, "adoption must not touch the network"
         assert portal.minted == 1
@@ -67,18 +76,18 @@ class TestIdentityLifecycle:
     def test_gate_closed_persists_nothing_and_raises_gate_code(self, portal):
         portal.gate_closed = True
         with pytest.raises(anon_auth.AuthError) as exc:
-            anon_auth.ensure_portal_identity(explicit=True)
+            _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         assert exc.value.code == "anon_gate_closed"
         assert "nous" not in _load_auth_store().get("providers", {})
         # A process tries once: later bootstrap sites must not hit the portal again.
-        assert anon_auth.ensure_portal_identity(explicit=True) is None
+        assert _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment()) is None
         assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
 
     def test_opt_out_bool_disables_everything(self, portal, monkeypatch):
         _write_config(monkeypatch, guest=False)
         # A developer machine's ~/.aws would answer the Bedrock rung and hide the AuthError.
         monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
-        assert anon_auth.ensure_portal_identity(explicit=True) is None
+        assert _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment()) is None
         assert portal.calls == []
         with pytest.raises(anon_auth.AuthError):
             resolve_provider("auto")
@@ -90,13 +99,13 @@ class TestIdentityLifecycle:
         monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         for raw in ("", "0", "true", "yes", "new"):
             monkeypatch.setenv("HERMES_GUEST_ONBOARDING", raw)
-            assert anon_auth.guest_enabled() is False
-            assert anon_auth.ensure_portal_identity(explicit=True) is None
+            assert _auth_auth_providers_nous_guest.guest_enabled(environment=_phase6_auth_environment()) is False
+            assert _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment()) is None
         assert portal.calls == []
         with pytest.raises(anon_auth.AuthError):
             resolve_provider("auto")
         monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-        assert anon_auth.guest_enabled() is True
+        assert _auth_auth_providers_nous_guest.guest_enabled(environment=_phase6_auth_environment()) is True
 
 
 class TestExplicitProvision:
@@ -105,47 +114,47 @@ class TestExplicitProvision:
     so two boots never create two identities. ``nous.guest: false`` still wins."""
 
     def test_provision_mints_once_then_everything_adopts(self, portal, monkeypatch, tmp_path):
-        assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+        assert _auth_auth_providers_nous_guest.is_guest_state(_auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment()))
         assert portal.minted == 1
         token = _load_auth_store()["providers"]["nous"]["anon_token"]
         # A second provision is idempotent, and the runtime now serves nous/welcome on the welcome host.
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        runtime = resolve_runtime_provider(requested="nous", target_model=anon_auth.GUEST_MODEL)
+        runtime = resolve_runtime_provider(requested="nous", target_model=_auth_auth_providers_nous_guest.GUEST_MODEL)
         assert runtime["base_url"].rstrip("/") == WELCOME
         assert resolve_provider("auto") == "nous"
         # A sibling profile adopts the same identity implicitly; no second create call.
         sibling = tmp_path / "sibling-profile"
         sibling.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(sibling))
-        adopted = anon_auth.ensure_portal_identity(explicit=True)
+        adopted = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         assert adopted and adopted["anon_token"] == token
         assert portal.minted == 1
 
     def test_retired_identity_is_replaced(self, portal, monkeypatch):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         first = _load_auth_store()["providers"]["nous"]["anon_token"]
         portal.dead_tokens.add(first)
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-        assert resolve_nous_runtime_credentials(force_refresh=True)["api_key"]   # replaced, not refused
+        from auth.providers.nous import resolve_nous_runtime_credentials
+        assert resolve_nous_runtime_credentials(force_refresh=True, environment=_phase6_auth_environment())["api_key"]   # replaced, not refused
         assert _load_auth_store()["providers"]["nous"]["anon_token"] != first
         assert portal.minted == 2
 
     def test_guest_off_beats_an_explicit_provision(self, portal, monkeypatch):
         _write_config(monkeypatch, guest=False)
-        assert anon_auth.ensure_portal_identity(explicit=True) is None
+        assert _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment()) is None
         assert portal.minted == 0
 
 
 class TestResolverIsUnchanged:
     def test_guest_is_last_resort_and_explicit_key_wins(self, portal, monkeypatch):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         assert resolve_provider("auto") == "nous"
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
         assert resolve_provider("auto") == "openrouter"
 
     def test_runtime_routes_to_welcome_host(self, portal):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider()
         assert runtime["provider"] == "nous"
@@ -158,7 +167,7 @@ class TestRouteFallback:
 
     def test_exchange_without_inference_url_routes_to_welcome_literal(self, portal):
         portal.inference_base_url = None
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider()
         assert runtime["base_url"].rstrip("/") == WELCOME
@@ -167,13 +176,13 @@ class TestRouteFallback:
 
     def test_disallowed_inference_host_heals_to_welcome_literal(self, portal):
         portal.inference_base_url = "https://welcome-api.staging-nousresearch.com/v1"
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider()
         assert runtime["base_url"].rstrip("/") == WELCOME
 
     def test_guest_state_without_url_never_resolves_to_the_paid_host(self, portal):
-        from hermes_cli.auth_nous import _nous_effective_routing
+        from auth.providers.nous import _nous_effective_routing
         guest = {"auth_method": "anonymous", "anon_token": "anon_x"}
         _portal, stored, effective, _client = _nous_effective_routing(guest)
         assert stored.rstrip("/") == WELCOME and effective.rstrip("/") == WELCOME
@@ -181,23 +190,23 @@ class TestRouteFallback:
         assert stored.rstrip("/") == "https://inference-api.nousresearch.com/v1"
 
     def test_shared_store_shape_keeps_a_guest_on_the_welcome_host(self, portal):
-        from hermes_cli.auth_nous import _nous_shared_shape
+        from auth.providers.nous_store import _nous_shared_shape
         shape = _nous_shared_shape({"auth_method": "anonymous", "anon_token": "anon_x"})
         assert shape["inference_base_url"].rstrip("/") == WELCOME
 
 
 class TestTokenAcquisitionSeam:
     def test_expired_guest_jwt_reexchanges_and_never_hits_oauth_token(self, portal):
-        anon_auth.ensure_portal_identity(explicit=True)
-        from hermes_cli.auth import _auth_store_lock, _save_auth_store
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+        from auth.store import _auth_store_lock, _save_auth_store
         with _auth_store_lock():
             store = _load_auth_store()
             store["providers"]["nous"]["access_token"] = _jwt(exp=int(time.time()) - 10)
             store["providers"]["nous"]["expires_at"] = "2000-01-01T00:00:00+00:00"
             _save_auth_store(store)
         portal.calls.clear()
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-        creds = resolve_nous_runtime_credentials()
+        from auth.providers.nous import resolve_nous_runtime_credentials
+        creds = resolve_nous_runtime_credentials(environment=_phase6_auth_environment())
         paths = [p for _, p in portal.calls]
         assert paths == ["/api/anonymous/token"]
         assert "/api/oauth/token" not in paths
@@ -205,18 +214,19 @@ class TestTokenAcquisitionSeam:
         assert "quarantine" not in json.dumps(_load_auth_store())
 
     def test_dead_credential_is_replaced_by_a_fresh_identity(self, portal):
-        first = anon_auth.ensure_portal_identity(explicit=True)
+        first = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         portal.dead_tokens.add(first["anon_token"])
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-        creds = resolve_nous_runtime_credentials(force_refresh=True)
+        from auth.providers.nous import resolve_nous_runtime_credentials
+        creds = resolve_nous_runtime_credentials(force_refresh=True, environment=_phase6_auth_environment())
         assert creds["api_key"]
         state = _load_auth_store()["providers"]["nous"]
         assert state["anon_token"] != first["anon_token"]
         assert portal.minted == 2
 
     def test_tool_gateway_token_path_reexchanges(self, portal):
-        anon_auth.ensure_portal_identity(explicit=True)
-        from hermes_cli.auth import _auth_store_lock, _save_auth_store, resolve_nous_access_token
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+        from auth.store import _auth_store_lock, _save_auth_store
+        from auth.providers.nous import resolve_nous_access_token
         with _auth_store_lock():
             store = _load_auth_store()
             store["providers"]["nous"]["expires_at"] = "2000-01-01T00:00:00+00:00"
@@ -232,38 +242,39 @@ class TestModelPin:
     pool credential routed to the portal host keeps its model even beside a guest singleton."""
 
     def test_pin_keys_on_the_welcome_host_not_on_guest_state(self, portal):
-        anon_auth.ensure_portal_identity(explicit=True)  # guest singleton exists
-        assert anon_auth.route_is_welcome_host(WELCOME)
-        assert not anon_auth.route_is_welcome_host("https://inference-api.nousresearch.com/v1")
-        assert not anon_auth.route_is_welcome_host("")
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())  # guest singleton exists
+        assert _auth_auth_providers_nous_guest.route_is_welcome_host(WELCOME)
+        assert not _auth_auth_providers_nous_guest.route_is_welcome_host("https://inference-api.nousresearch.com/v1")
+        assert not _auth_auth_providers_nous_guest.route_is_welcome_host("")
 
     def test_agent_init_pins_only_on_welcome_route(self, portal):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         from run_agent import AIAgent
         welcome = AIAgent(provider="nous", base_url=WELCOME, api_key="k", model="openai/gpt-5",
                           quiet_mode=True, skip_context_files=True, skip_memory=True)
         paid = AIAgent(provider="nous", base_url="https://inference-api.nousresearch.com/v1", api_key="k",
                        model="nous/paid-model", quiet_mode=True, skip_context_files=True, skip_memory=True)
-        assert welcome.model == anon_auth.GUEST_MODEL
+        assert welcome.model == _auth_auth_providers_nous_guest.GUEST_MODEL
         assert paid.model == "nous/paid-model"
 
 
 class TestLogout:
     def test_logout_with_only_free_tier_is_a_true_noop(self, portal):
         from types import SimpleNamespace
-        from hermes_cli.auth import _auth_file_path, logout_command
-        anon_auth.ensure_portal_identity(explicit=True)
+        from auth.store import _auth_file_path
+        from hermes_cli.auth_commands import logout_command
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         before = _auth_file_path().read_bytes()
         logout_command(SimpleNamespace(provider=None))
         assert _auth_file_path().read_bytes() == before
 
     def test_logout_of_real_account_clears_shared_store(self, portal, tmp_path):
         from types import SimpleNamespace
-        from hermes_cli.auth import logout_command
-        from hermes_cli.auth_nous import persist_nous_credentials
+        from hermes_cli.auth_commands import logout_command
+        from auth.providers.nous import persist_nous_credentials
         persist_nous_credentials({"access_token": _jwt(client_id="hermes-cli", account_tier="free"),
                                   "refresh_token": "rt-1", "expires_at": "2030-01-01T00:00:00+00:00",
-                                  "auth_method": "oauth_device_code"})
+                                  "auth_method": "oauth_device_code"}, environment=_phase6_auth_environment())
         assert _shared_store(tmp_path).get("refresh_token") == "rt-1"
         logout_command(SimpleNamespace(provider="nous"))
         assert _shared_store(tmp_path) == {}
@@ -272,10 +283,10 @@ class TestLogout:
 
 class TestModelSwitchCopy:
     def test_switching_away_from_welcome_names_the_account_path_not_another_provider(self, portal, monkeypatch):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         from hermes_cli import model_switch
         monkeypatch.setattr(model_switch, "list_provider_models", lambda *a, **k: [], raising=False)
-        result = model_switch.switch_model("gpt-5", "nous", anon_auth.GUEST_MODEL, WELCOME)
+        result = model_switch.switch_model("gpt-5", "nous", _auth_auth_providers_nous_guest.GUEST_MODEL, WELCOME)
         assert not result.success
 
 
@@ -303,9 +314,9 @@ class TestRotationNeverRewritesTheConversationModel:
     def test_welcome_conversation_may_move_to_the_portal_host(self, portal):
         from types import SimpleNamespace
         from agent.client_lifecycle import ClientLifecycleMixin
-        agent = self._agent(model=anon_auth.GUEST_MODEL); agent.base_url = WELCOME
+        agent = self._agent(model=_auth_auth_providers_nous_guest.GUEST_MODEL); agent.base_url = WELCOME
         ok = ClientLifecycleMixin._swap_credential(agent, SimpleNamespace(id="p2", runtime_api_key="key", runtime_base_url="https://inference-api.nousresearch.com/v1"))
-        assert ok is True and agent.model == anon_auth.GUEST_MODEL
+        assert ok is True and agent.model == _auth_auth_providers_nous_guest.GUEST_MODEL
 
 
 class TestBootstrapIsTheOneCreator:
@@ -347,10 +358,10 @@ class TestBootstrapIsTheOneCreator:
             resolve_provider("auto")
         from hermes_cli.main import _has_any_provider_configured
         _has_any_provider_configured()
-        assert not anon_auth.has_guest()
+        assert not _auth_auth_providers_nous_guest.has_guest()
         assert portal.calls == [], "no read path may reach the portal"
         with pytest.raises(ValueError):
-            anon_auth.ensure_portal_identity(explicit=False)
+            _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=False, environment=_phase6_auth_environment())
 
     def test_bootstrap_with_the_gate_closed_records_the_refusal_and_stops(self, portal, monkeypatch):
         monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
@@ -360,47 +371,47 @@ class TestBootstrapIsTheOneCreator:
         assert record.has_identity is False and record.free_tier is False and record.error
         assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
         # The explicit retry (desktop free_tier.provision) is also memoised for the process.
-        assert anon_auth.ensure_portal_identity(explicit=True) is None
+        assert _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment()) is None
         assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
 
 
 class TestIdentityOfRecordIsTheSharedStore:
     def test_stale_profile_guest_adopts_a_newer_shared_account(self, portal, tmp_path):
-        anon_auth.ensure_portal_identity(explicit=True)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         # A sibling profile signed in: the shared store now holds a real account.
-        from hermes_cli.auth_nous import _write_shared_nous_state
+        from auth.providers.nous_store import _write_shared_nous_state
         _write_shared_nous_state({"access_token": _jwt(client_id="hermes-cli", account_tier="free"),
                                   "refresh_token": "rt-sibling", "expires_at": "2030-01-01T00:00:00+00:00",
                                   "auth_method": "oauth_device_code"})
-        state = anon_auth.ensure_portal_identity(explicit=True)
-        assert not anon_auth.is_guest_state(state)
+        state = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+        assert not _auth_auth_providers_nous_guest.is_guest_state(state)
         assert state["refresh_token"] == "rt-sibling"
         assert _load_auth_store()["providers"]["nous"]["refresh_token"] == "rt-sibling"
         assert _shared_store(tmp_path)["refresh_token"] == "rt-sibling", "the profile must never overwrite the shared account"
 
     def test_mint_persists_before_any_exchange_and_first_use_exchanges_once(self, portal):
-        first = anon_auth.ensure_portal_identity(explicit=True)
-        assert anon_auth.is_guest_state(first) and "access_token" not in first
+        first = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+        assert _auth_auth_providers_nous_guest.is_guest_state(first) and "access_token" not in first
         assert [p for _, p in portal.calls] == ["/api/anonymous/create"], "mint alone; exchange is lazy"
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-        creds = resolve_nous_runtime_credentials()
+        from auth.providers.nous import resolve_nous_runtime_credentials
+        creds = resolve_nous_runtime_credentials(environment=_phase6_auth_environment())
         assert creds["api_key"]
         assert portal.minted == 1, "a stored credential is exchanged, never re-minted"
         assert [p for _, p in portal.calls].count("/api/anonymous/token") == 1
 
     def test_clearing_a_dead_guest_leaves_a_sibling_identity_alone(self, portal, tmp_path):
-        anon_auth.ensure_portal_identity(explicit=True)
-        from hermes_cli.auth_nous import _write_shared_nous_state
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+        from auth.providers.nous_store import _write_shared_nous_state
         _write_shared_nous_state({"access_token": _jwt(client_id="hermes-cli"), "refresh_token": "rt-sibling",
                                   "expires_at": "2030-01-01T00:00:00+00:00", "auth_method": "oauth_device_code"})
-        anon_auth.clear_dead_guest("test")
+        _auth_auth_providers_nous_guest.clear_dead_guest("test")
         assert "nous" not in _load_auth_store().get("providers", {})
         assert _shared_store(tmp_path)["refresh_token"] == "rt-sibling"
 
     def test_lock_order_is_profile_then_shared(self, portal, monkeypatch):
         order = []
         from hermes_cli import auth as auth_mod, auth_nous
-        real_profile, real_shared = auth_mod._auth_store_lock, auth_nous._nous_shared_store_lock
+        real_profile, real_shared = auth_storage._auth_store_lock, _auth_auth_providers_nous_store._nous_shared_store_lock
         from contextlib import contextmanager
 
         @contextmanager
@@ -414,17 +425,17 @@ class TestIdentityOfRecordIsTheSharedStore:
             order.append("shared")
             with real_shared(*a, **k):
                 yield
-        monkeypatch.setattr(auth_mod, "_auth_store_lock", profile)
-        monkeypatch.setattr(auth_nous, "_nous_shared_store_lock", shared)
-        anon_auth.ensure_portal_identity(explicit=True)
+        monkeypatch.setattr(auth_storage, "_auth_store_lock", profile)
+        monkeypatch.setattr(_auth_auth_providers_nous_store, "_nous_shared_store_lock", shared)
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
         assert order[:2] == ["profile", "shared"]
 
 
 class TestConnectorTokenPath:
     def test_opt_out_hides_the_free_tier_from_connectors_including_cached_tokens(self, portal, monkeypatch):
-        anon_auth.ensure_portal_identity(explicit=True)
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-        resolve_nous_runtime_credentials()  # now a cached, valid JWT exists
+        _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+        from auth.providers.nous import resolve_nous_runtime_credentials
+        resolve_nous_runtime_credentials(environment=_phase6_auth_environment())  # now a cached, valid JWT exists
         from tools import managed_tool_gateway as mtg
         assert mtg.read_nous_access_token()
         _write_config(monkeypatch, guest=False)
@@ -432,8 +443,8 @@ class TestConnectorTokenPath:
         assert mtg.read_nous_access_token() is None
 
     def test_connector_path_replaces_a_dead_credential_once(self, portal):
-        first = anon_auth.ensure_portal_identity(explicit=True)
-        from hermes_cli.auth import _auth_store_lock, _save_auth_store
+        first = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+        from auth.store import _auth_store_lock, _save_auth_store
         with _auth_store_lock():
             store = _load_auth_store()
             store["providers"]["nous"]["expires_at"] = "2000-01-01T00:00:00+00:00"

@@ -8,6 +8,9 @@ so a networkless host froze the whole dashboard backend for 17 minutes.
 """
 
 from __future__ import annotations
+import auth.providers.copilot as _auth_auth_providers_copilot
+
+import auth.pool_persistence as auth_pool_persistence
 
 import threading
 import time
@@ -27,13 +30,13 @@ class TestUrlopenBounded:
     def test_reraises_worker_exception(self):
         with patch("urllib.request.urlopen", side_effect=OSError("boom")):
             with pytest.raises(OSError, match="boom"):
-                copilot_auth._urlopen_bounded("req", 1.0)
+                _auth_auth_providers_copilot._urlopen_bounded("req", 1.0)
 
     def test_hard_cap_fires_on_hung_resolver_and_closes_late_response(self, monkeypatch):
         """A urlopen that hangs past timeout + grace must raise TimeoutError
         promptly, and when the abandoned worker later *succeeds* it must close
         the response instead of leaking the socket."""
-        monkeypatch.setattr(copilot_auth, "_DNS_GRACE_SECONDS", 0.05)
+        monkeypatch.setattr(_auth_auth_providers_copilot, "_DNS_GRACE_SECONDS", 0.05)
         release = threading.Event()
         closed = threading.Event()
 
@@ -48,7 +51,7 @@ class TestUrlopenBounded:
         with patch("urllib.request.urlopen", side_effect=hung_urlopen):
             started = time.monotonic()
             with pytest.raises(TimeoutError, match="hard cap"):
-                copilot_auth._urlopen_bounded("req", 0.05)
+                _auth_auth_providers_copilot._urlopen_bounded("req", 0.05)
             elapsed = time.monotonic() - started
             assert elapsed < 2.0
             release.set()
@@ -62,19 +65,19 @@ class TestExchangeSingleFlight:
     @pytest.fixture(autouse=True)
     def _clean_caches(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        copilot_auth._jwt_cache.clear()
-        copilot_auth._exchange_failure_cache.clear()
-        copilot_auth._exchange_locks.clear()
+        _auth_auth_providers_copilot._jwt_cache.clear()
+        _auth_auth_providers_copilot._exchange_failure_cache.clear()
+        _auth_auth_providers_copilot._exchange_locks.clear()
         yield
-        copilot_auth._jwt_cache.clear()
-        copilot_auth._exchange_failure_cache.clear()
-        copilot_auth._exchange_locks.clear()
+        _auth_auth_providers_copilot._jwt_cache.clear()
+        _auth_auth_providers_copilot._exchange_failure_cache.clear()
+        _auth_auth_providers_copilot._exchange_locks.clear()
 
     def test_concurrent_callers_share_one_exchange(self, monkeypatch):
         """N concurrent callers for the same token must perform ONE network
         exchange; the rest wait on the lock and hit the populated cache."""
-        monkeypatch.setattr(copilot_auth, "_load_jwt_from_disk", lambda fp: None)
-        monkeypatch.setattr(copilot_auth, "_save_jwt_to_disk", lambda *a, **k: None)
+        monkeypatch.setattr(_auth_auth_providers_copilot, "_load_jwt_from_disk", lambda fp: None)
+        monkeypatch.setattr(_auth_auth_providers_copilot, "_save_jwt_to_disk", lambda *a, **k: None)
         calls = []
         gate = threading.Event()
 
@@ -93,11 +96,11 @@ class TestExchangeSingleFlight:
             gate.wait(timeout=5)  # hold the first exchange open while others queue
             return _Resp()
 
-        monkeypatch.setattr(copilot_auth, "_urlopen_bounded", fake_bounded)
+        monkeypatch.setattr(_auth_auth_providers_copilot, "_urlopen_bounded", fake_bounded)
 
         results = []
         threads = [
-            threading.Thread(target=lambda: results.append(copilot_auth.exchange_copilot_token("ghu_" + "x" * 30)))
+            threading.Thread(target=lambda: results.append(_auth_auth_providers_copilot.exchange_copilot_token("ghu_" + "x" * 30)))
             for _ in range(8)
         ]
         for t in threads:
@@ -115,8 +118,8 @@ class TestExchangeSingleFlight:
     def test_waiters_observe_negative_cache_after_failed_exchange(self, monkeypatch):
         """When the single in-flight exchange fails, queued callers must not
         each start their own exchange — they see the negative cache."""
-        monkeypatch.setattr(copilot_auth, "_load_jwt_from_disk", lambda fp: None)
-        monkeypatch.setattr(copilot_auth, "_EXCHANGE_MAX_ATTEMPTS", 1)
+        monkeypatch.setattr(_auth_auth_providers_copilot, "_load_jwt_from_disk", lambda fp: None)
+        monkeypatch.setattr(_auth_auth_providers_copilot, "_EXCHANGE_MAX_ATTEMPTS", 1)
         calls = []
         gate = threading.Event()
 
@@ -125,12 +128,12 @@ class TestExchangeSingleFlight:
             gate.wait(timeout=5)
             raise TimeoutError("hard cap")
 
-        monkeypatch.setattr(copilot_auth, "_urlopen_bounded", fake_bounded)
+        monkeypatch.setattr(_auth_auth_providers_copilot, "_urlopen_bounded", fake_bounded)
         errors = []
 
         def run():
             try:
-                copilot_auth.exchange_copilot_token("ghu_" + "y" * 30)
+                _auth_auth_providers_copilot.exchange_copilot_token("ghu_" + "y" * 30)
             except ValueError as exc:
                 errors.append(str(exc))
 
@@ -150,14 +153,14 @@ class TestExchangeSingleFlight:
         """While one exchange holds the lock, a caller whose fingerprint is
         already in the failure cache must raise immediately rather than park
         an executor thread behind the holder."""
-        fp = copilot_auth._token_fingerprint("ghu_" + "z" * 30)
-        copilot_auth._exchange_failure_cache[fp] = time.time() + 60
-        lock = copilot_auth._exchange_lock_for(fp)
+        fp = _auth_auth_providers_copilot._token_fingerprint("ghu_" + "z" * 30)
+        _auth_auth_providers_copilot._exchange_failure_cache[fp] = time.time() + 60
+        lock = _auth_auth_providers_copilot._exchange_lock_for(fp)
         lock.acquire()  # simulate an in-flight holder
         try:
             started = time.monotonic()
             with pytest.raises(ValueError, match="recently failed"):
-                copilot_auth.exchange_copilot_token("ghu_" + "z" * 30)
+                _auth_auth_providers_copilot.exchange_copilot_token("ghu_" + "z" * 30)
             assert time.monotonic() - started < 0.5
         finally:
             lock.release()
@@ -177,7 +180,7 @@ async def test_list_credential_pool_runs_off_event_loop(monkeypatch):
         seen["thread"] = threading.get_ident()
         return {}
 
-    monkeypatch.setattr(auth_mod, "read_credential_pool", fake_read_pool)
+    monkeypatch.setattr(auth_pool_persistence, "read_credential_pool", fake_read_pool)
     result = await _rt_ops.list_credential_pool()
 
     assert result == {"providers": []}

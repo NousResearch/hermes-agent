@@ -1,17 +1,10 @@
-"""Serve-start bootstrap for the Nous free tier: the ONE place a free-tier identity is created.
-
-Every Hermes process that may need the free tier runs this once at boot (``hermes serve`` on a
-daemon thread beside the other background boots; the CLI first-run guard synchronously). It
-inventories credentials cheap-first, creates the identity only when the launch gate is open
-(:func:`hermes_cli.anon_auth.guest_enabled`), resolves which provider carries inference, records
-the answer in process memory, and tells every connected client with one ``setup.ready`` event.
-
-Nothing else mints. ``free_tier.status`` and ``setup.status`` read the record; provider resolution
-never reaches the portal; a dead credential is replaced by the explicit re-mint in
-``auth_nous.resolve_nous_runtime_credentials``. Ruling: NS-845 Q1.2 (recorded on NS-847).
-"""
+'Serve-start bootstrap for the Nous free tier: the ONE place a free-tier identity is created.\n\nEvery Hermes process that may need the free tier runs this once at boot (``hermes serve`` on a\ndaemon thread beside the other background boots; the CLI first-run guard synchronously). It\ninventories credentials cheap-first, creates the identity only when the launch gate is open\n(:func:`auth.providers.nous_guest.guest_enabled`), resolves which provider carries inference, records\nthe answer in process memory, and tells every connected client with one ``setup.ready`` event.\n\nNothing else mints. ``free_tier.status`` and ``setup.status`` read the record; provider resolution\nnever reaches the portal; a dead credential is replaced by the explicit re-mint in\n``auth_nous.resolve_nous_runtime_credentials``. Ruling: NS-845 Q1.2 (recorded on NS-847).\n'
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import logging
 import threading
@@ -170,22 +163,22 @@ def _build_record(*, other: bool, force: bool) -> SetupRecord:
 
     error = ""
     failure: Dict[str, Any] = {}
-    state: Optional[Dict[str, Any]] = anon_auth.current_nous_state()
-    if anon_auth.guest_enabled():
+    state: Optional[Dict[str, Any]] = _auth_auth_providers_nous_guest.current_nous_state()
+    if _auth_auth_providers_nous_guest.guest_enabled(environment=_phase6_auth_environment()):
         try:
             # ``other`` decides whether the mint may also claim ``active_provider`` (NS-845 Q1.3).
-            state = anon_auth.ensure_portal_identity(explicit=True, carries_inference=not other, force=force)
+            state = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, carries_inference=not other, force=force, environment=_phase6_auth_environment())
         except Exception as exc:
             error = str(exc)
             logger.info("Nous free tier not set up at boot: %s", exc)
         if state is None:
             # Either this attempt failed (the memo now holds why) or an earlier one did and its
             # cooldown still runs: the record carries that verdict either way.
-            failure = anon_auth.last_mint_failure() or {}
+            failure = _auth_auth_providers_nous_guest.last_mint_failure() or {}
             error = error or str(failure.get("error") or "")
-    free_tier = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
+    free_tier = bool(state) and _auth_auth_providers_nous_guest.is_guest_state(state) and _auth_auth_providers_nous_guest.guest_enabled(environment=_phase6_auth_environment())
     return SetupRecord(
-        provider_configured=other or free_tier or (bool(state) and not anon_auth.is_guest_state(state)),
+        provider_configured=other or free_tier or (bool(state) and not _auth_auth_providers_nous_guest.is_guest_state(state)),
         inference_provider=_resolve_inference(),
         free_tier=free_tier,
         has_identity=bool(state),

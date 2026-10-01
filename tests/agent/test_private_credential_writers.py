@@ -9,6 +9,11 @@ with mode 0600 (``O_EXCL``) BEFORE any byte lands and the final file carries 060
 """
 
 from __future__ import annotations
+import auth.providers.anthropic as _auth_auth_providers_anthropic
+
+import auth.providers.copilot as _auth_auth_providers_copilot
+
+import auth.store as auth_storage
 
 import json
 import os
@@ -43,7 +48,7 @@ def opens_spy(monkeypatch):
 
 def _writers(home: Path, monkeypatch):
     """``(label, callable, target_path)`` for every private-credential writer."""
-    from agent import anthropic_credentials
+    import auth.providers.anthropic as anthropic_credentials
     from agent.secret_sources._cache import CachedFetch, DiskCache
     from agent.proxy_sources import iron_proxy
     from agent.vault_store import VaultStore
@@ -62,17 +67,17 @@ def _writers(home: Path, monkeypatch):
     vault = VaultStore(home / "vault")
     meet_node = NodeServer(token_path=home / "meetings" / "node_token.json")
     return [
-        ("auth.json", lambda: auth_mod._save_auth_store({"version": auth_mod.AUTH_STORE_VERSION, "providers": {}}),
-         auth_mod._auth_file_path()),
-        ("third-party credentials", lambda: anthropic_credentials._atomic_write_private_json(
+        ("auth.json", lambda: auth_storage._save_auth_store({"version": auth_storage.AUTH_STORE_VERSION, "providers": {}}),
+         auth_storage._auth_file_path()),
+        ("third-party credentials", lambda: _auth_auth_providers_anthropic._atomic_write_private_json(
             home / "cc" / ".credentials.json", {"tok": 1}), home / "cc" / ".credentials.json"),
         ("mcp oauth tokens", lambda: mcp_oauth._write_json(home / "mcp" / "probe.tokens.json", {"access_token": "x"}),
          home / "mcp" / "probe.tokens.json"),
         ("secret-source cache", lambda: cache.write("k", CachedFetch(secrets={"A": "b"}, fetched_at=1.0), 60, home),
          cache.path(home)),
         ("iron-proxy mappings", lambda: iron_proxy.write_mappings([]), home / "proxy" / "mappings.json"),
-        ("exchanged JWT store", lambda: copilot_auth._save_jwt_to_disk("fp", "jwt", 9e12, None),
-         copilot_auth._jwt_disk_path()),
+        ("exchanged JWT store", lambda: _auth_auth_providers_copilot._save_jwt_to_disk("fp", "jwt", 9e12, None),
+         _auth_auth_providers_copilot._jwt_disk_path()),
         ("photon sidecar record", lambda: photon_adapter._write_runtime_record(1, "tok", 2), photon_record),
         ("pairing", lambda: pairing._save_json_file(home / "pairing" / "p.json", {"a": 1}), home / "pairing" / "p.json"),
         ("vault blob", lambda: vault._write_all([]), vault._vault_path),

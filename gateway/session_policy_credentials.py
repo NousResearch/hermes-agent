@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from agent.credential_persistence import fingerprint_secret_value
+from auth.persistence import fingerprint_secret_value
 from hermes_state_runtime import RuntimeStoreError
 
 PREFIX = 'profile-config-v1:'

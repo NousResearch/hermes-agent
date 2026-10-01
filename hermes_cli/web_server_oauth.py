@@ -1,3 +1,5 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
 """Dashboard OAuth/login-status helpers: provider catalog, per-provider device pollers,
 Anthropic/Copilot/Claude-Code status probes.
 """
@@ -48,7 +50,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     ``claude-code`` entry, and counting it here would shadow a real ANTHROPIC_API_KEY.
     """
     try:
-        from agent.anthropic_credentials import read_hermes_oauth_credentials, _get_hermes_oauth_file
+        from auth.providers.anthropic import read_hermes_oauth_credentials, _get_hermes_oauth_file
         hermes_creds = read_hermes_oauth_credentials()
     except Exception:
         hermes_creds = None
@@ -80,11 +82,8 @@ def _claude_code_only_status() -> Dict[str, Any]:
     persisted access token that has already expired is not a usable login.
     """
     try:
-        from agent.anthropic_credentials import (
-            is_claude_code_token_valid,
-            read_claude_code_credentials,
-        )
-        creds = read_claude_code_credentials()
+        from auth.providers.anthropic import is_claude_code_token_valid, read_claude_code_credentials
+        creds = read_claude_code_credentials(environment=_phase6_auth_environment())
         if creds and is_claude_code_token_valid(creds):
             return _token_status("claude_code_cli", "~/.claude/.credentials.json", creds)
     except Exception:
@@ -307,7 +306,8 @@ def _nous_plain_poller(session_id: str, sess: Dict[str, Any]) -> None:
     ``_nous_promotion_poller`` instead; this is the "connect another Nous account" path.
     """
     from hermes_cli.web_server_profiles import _profile_scope
-    from hermes_cli.auth import _poll_for_token, persist_nous_credentials, refresh_nous_oauth_from_state
+    from auth.oauth import _poll_for_token
+    from auth.providers.nous import persist_nous_credentials, refresh_nous_oauth_from_state
     from hermes_cli import anon_auth
     import httpx
     portal_base_url, client_id = sess["portal_base_url"], sess["client_id"]
@@ -355,7 +355,7 @@ def _nous_plain_poller(session_id: str, sess: Dict[str, Any]) -> None:
             if sess.get("cancelled"):
                 sess["status"] = "cancelled"
                 return
-            persist_nous_credentials(full_state)
+            persist_nous_credentials(full_state, environment=_phase6_auth_environment())
         # A config left on the free tier's route by a retired identity still has to move.
         settled = anon_auth.settle_after_upgrade(full_state)
     with _oauth_sessions_lock:
@@ -370,10 +370,8 @@ def _minimax_poller(session_id: str, sess: Dict[str, Any]) -> None:
     via ``_minimax_save_auth_state`` so the system ends up as after ``hermes auth add minimax-oauth``.
     Region is fixed to "global" here; cn-region operators use the CLI's ``--region cn``."""
     from hermes_cli.web_server_profiles import _profile_scope
-    from hermes_cli.auth import (
-        _minimax_poll_token, _minimax_resolve_token_expiry_unix, _minimax_save_auth_state,
-        MINIMAX_OAUTH_GLOBAL_INFERENCE, MINIMAX_OAUTH_SCOPE,
-    )
+    from auth.providers.minimax import _minimax_poll_token, _minimax_resolve_token_expiry_unix, _minimax_save_auth_state
+    from auth.constants import MINIMAX_OAUTH_GLOBAL_INFERENCE, MINIMAX_OAUTH_SCOPE
     import httpx
     portal_base_url, client_id = sess["portal_base_url"], sess["client_id"]
     with httpx.Client(
@@ -410,10 +408,9 @@ def _xai_device_poller(session_id: str, sess: Dict[str, Any]) -> None:
     """Background poller for xAI's OAuth device-code flow."""
     from hermes_cli.web_server_profiles import _profile_scope
     import httpx
-    from hermes_cli.auth import (
-        _save_xai_oauth_tokens, _xai_oauth_discovery, _xai_oauth_poll_device_token,
-        mark_provider_active_if_unset, unsuppress_credential_source,
-    )
+    from auth.providers.xai import _save_xai_oauth_tokens, _xai_oauth_discovery, _xai_oauth_poll_device_token
+    from auth.provider_state import mark_provider_active_if_unset
+    from auth.sources import unsuppress_credential_source
 
     discovery = _xai_oauth_discovery(20.0)
     with httpx.Client(timeout=httpx.Timeout(20.0), headers={"Accept": "application/json"}) as client:

@@ -1,3 +1,8 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.codex as _auth_auth_providers_codex
+import auth.providers.xai as _auth_auth_providers_xai
 """Tool-resource teardown, wire-client lifecycle and credential refresh for ``AIAgent``.
 
 ``ClientLifecycleMixin`` owns task cleanup, the shared primary client, per-request client caches
@@ -77,9 +82,9 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     credential = key_provider if callable(key_provider) else fb_client.api_key
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
+        from auth.providers.anthropic import resolve_anthropic_token, anthropic_route_is_oauth
         is_anthropic = fb_provider == "anthropic"
-        effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
+        effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None), environment=_phase6_auth_environment()) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
         agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
@@ -451,7 +456,7 @@ class ClientLifecycleMixin:
         request_kwargs["max_retries"] = 0
         is_copilot = base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
         if is_copilot and self._api_kwargs_have_image_parts(api_kwargs or {}):
-            from hermes_cli.copilot_auth import copilot_request_headers
+            from auth.providers.copilot import copilot_request_headers
             request_kwargs["default_headers"] = copilot_request_headers(is_agent_turn=True, is_vision=True)
         cached, stale = self._checkout_request_slot(_OPENAI_SLOT, request_kwargs)
         if cached is not None:
@@ -499,7 +504,7 @@ class ClientLifecycleMixin:
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
         """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
-        from agent.anthropic_credentials import anthropic_route_is_oauth
+        from auth.providers.anthropic import anthropic_route_is_oauth
         return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
@@ -575,8 +580,8 @@ class ClientLifecycleMixin:
         try:
             from hermes_cli import auth as _auth
             resolve = (
-                _auth.resolve_codex_runtime_credentials if self.provider == "openai-codex"
-                else _auth.resolve_xai_oauth_runtime_credentials
+                _auth_auth_providers_codex.resolve_codex_runtime_credentials if self.provider == "openai-codex"
+                else _auth_auth_providers_xai.resolve_xai_oauth_runtime_credentials
             )
             singleton_now = resolve(refresh_if_expiring=False)
         except Exception as exc:
@@ -609,13 +614,13 @@ class ClientLifecycleMixin:
         if self.provider != "nous" or self.api_mode not in ("chat_completions", "anthropic_messages"):
             return False
         try:
-            from hermes_cli.auth import resolve_nous_runtime_credentials
+            from auth.providers.nous import resolve_nous_runtime_credentials
             timeout = env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15)
             # Pass the bearer that just 401'd so a refresh already done by a sibling process is
             # adopted instead of rotating the grant again.
             creds = resolve_nous_runtime_credentials(
                 timeout_seconds=timeout, force_refresh=force, stale_access_token=self.api_key or None,
-            )
+             environment=_phase6_auth_environment())
         except Exception as exc:
             logger.debug("Nous credential refresh failed: %s", exc)
             return False
@@ -627,7 +632,7 @@ class ClientLifecycleMixin:
             return False  # store holds the same key on the same route: nothing to adopt, no client rebuild
         if require_account is not None:
             try:
-                from hermes_cli.auth_constants import _decode_jwt_claims
+                from auth.token_validation import _decode_jwt_claims
                 new_account = _decode_jwt_claims(str(api_key)).get("sub")
             except Exception:
                 new_account = None
@@ -669,7 +674,7 @@ class ClientLifecycleMixin:
         if getattr(self, "provider", "") != "nous" or not getattr(self, "api_key", None):
             return False
         try:
-            from hermes_cli.auth_constants import _decode_jwt_claims
+            from auth.token_validation import _decode_jwt_claims
             claims = _decode_jwt_claims(self.api_key)
         except Exception:
             return False
@@ -684,23 +689,24 @@ class ClientLifecycleMixin:
 
         Covers registry api-key providers and named custom providers with ``key_env``.
         """
+        from hermes_cli.config_credentials import credential_pool_environment
         try:
-            from agent.credential_pool import get_env_prefer_dotenv
+            from auth.pool_sources import get_env_prefer_dotenv
             from hermes_cli.auth import PROVIDER_REGISTRY
         except ImportError:
             return None
         pconfig = PROVIDER_REGISTRY.get(self.provider)
         if pconfig and getattr(pconfig, "auth_type", "") == "api_key" and getattr(pconfig, "api_key_env_vars", ()):
             # First non-empty env var wins (lazy: later vars are not read).
-            api_key = next((k for k in (get_env_prefer_dotenv(v).strip() for v in pconfig.api_key_env_vars) if k), "")
+            api_key = next((k for k in (get_env_prefer_dotenv(v, environment=credential_pool_environment()).strip() for v in pconfig.api_key_env_vars) if k), "")
             if not api_key:
                 return None
             url_var = pconfig.base_url_env_var
-            env_url = get_env_prefer_dotenv(url_var).strip().rstrip("/") if url_var else ""
+            env_url = get_env_prefer_dotenv(url_var, environment=credential_pool_environment()).strip().rstrip("/") if url_var else ""
             default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
             base_url = env_url or default_base
             if self.provider == "actual":
-                from hermes_cli.auth import normalize_actual_base_url
+                from hermes_cli.route_identity import normalize_actual_base_url
                 from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
                 configured_base = _config_base_url_for_provider(_get_model_config(), "actual")
                 base_url = normalize_actual_base_url(configured_base or base_url)
@@ -716,7 +722,7 @@ class ClientLifecycleMixin:
                 return None
             custom_provider = _get_named_custom_provider(getattr(self, "requested_provider", "") or "")
             key_env = str((custom_provider or {}).get("key_env") or "").strip()
-            api_key = get_env_prefer_dotenv(key_env).strip() if key_env else ""
+            api_key = get_env_prefer_dotenv(key_env, environment=credential_pool_environment()).strip() if key_env else ""
             if not custom_provider or not api_key:
                 return None
             # Custom providers pin base_url in config, so only key edits are adopted here.
@@ -819,7 +825,7 @@ class ClientLifecycleMixin:
         if not self._is_copilot_provider():
             return False
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
+            from auth.providers.copilot import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
             new_token, token_source = resolve_copilot_token()
         except Exception as exc:
             logger.debug("Copilot credential refresh failed: %s", exc)
@@ -849,7 +855,7 @@ class ClientLifecycleMixin:
         if not self._is_copilot_provider():
             return False
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
+            from auth.providers.copilot import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
             raw_token, token_source = resolve_copilot_token()
             if not isinstance(raw_token, str) or not raw_token.strip():
                 return False
@@ -893,8 +899,8 @@ class ClientLifecycleMixin:
         if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
         try:
-            from agent.anthropic_credentials import resolve_anthropic_token
-            new_token = resolve_anthropic_token(model=self.model)
+            from auth.providers.anthropic import resolve_anthropic_token
+            new_token = resolve_anthropic_token(model=self.model, environment=_phase6_auth_environment())
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False
@@ -957,11 +963,11 @@ class ClientLifecycleMixin:
         from hermes_cli.providers import is_actual_route
         actual_route = is_actual_route(getattr(self, "provider", ""), runtime_base)
         if actual_route:
-            from hermes_cli.auth import normalize_actual_base_url
+            from hermes_cli.route_identity import normalize_actual_base_url
             runtime_base = normalize_actual_base_url(runtime_base)
         stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
         # Refuse BEFORE any state changes below: a refused swap must leave the agent exactly as it was.
-        from hermes_cli.anon_auth import route_can_serve_model
+        from auth.providers.nous_guest import route_can_serve_model
         if not route_can_serve_model(getattr(self, "provider", None), stripped_base, getattr(self, "model", None)):
             logger.info("Credential %s skipped: its route cannot serve model %s", getattr(entry, "id", "?"), self.model)
             return False

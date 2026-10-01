@@ -700,7 +700,7 @@ def _run_setup_wizard_impl(args):
         return
 
     # Existing installation == a provider is configured
-    from hermes_cli.auth import get_active_provider
+    from auth.provider_state import get_active_provider
     is_existing = bool(get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL")
                        or get_active_provider() is not None)
     _print_banner("│             ☤ Hermes Agent Setup Wizard                │",

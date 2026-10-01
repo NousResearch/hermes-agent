@@ -5,13 +5,16 @@ endpoint paths live with their tool handlers in ``tools.py``.
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlparse
 
 import httpx
 
-from hermes_cli.auth import AuthError, resolve_spotify_runtime_credentials
+from auth.errors import AuthError
+from auth.providers.spotify import resolve_spotify_runtime_credentials
 
 
 class SpotifyError(RuntimeError): """Base Spotify tool error."""
@@ -35,7 +38,7 @@ class SpotifyClient:
 
     def _resolve_runtime(self, *, force_refresh: bool = False, refresh_if_expiring: bool = True) -> Dict[str, Any]:
         try:
-            return resolve_spotify_runtime_credentials(force_refresh=force_refresh, refresh_if_expiring=refresh_if_expiring)
+            return resolve_spotify_runtime_credentials(force_refresh=force_refresh, refresh_if_expiring=refresh_if_expiring, environment=_phase6_auth_environment())
         except AuthError as exc:
             raise SpotifyAuthRequiredError(str(exc)) from exc
 
@@ -165,7 +168,6 @@ def normalize_spotify_uris(values: Iterable[str], expected_type: Optional[str] =
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
 import json  # noqa: F401,E402
 
 def compact_json(data: Any) -> str:

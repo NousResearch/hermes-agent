@@ -13,7 +13,8 @@ load-bearing assertion — that the raw refresh token never appears in that outp
 import hashlib
 import logging
 
-from hermes_cli.auth import AuthError, _quarantine_nous_oauth_state
+from auth.errors import AuthError
+from auth.providers.nous_store import _quarantine_nous_oauth_state
 
 
 # A distinctive, obviously-fake refresh token so the redaction assertion is

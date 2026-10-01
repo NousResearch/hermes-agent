@@ -76,7 +76,7 @@ def _serialize_billing_state(state, *, free_tier: bool = False) -> dict:
     Nous free tier: no account, no balance, nothing to pay; the renderer branches on it before
     ``logged_in``."""
     from agent.billing_view import format_money
-    from hermes_cli.anon_auth import GUEST_MODEL
+    from auth.providers.nous_guest import GUEST_MODEL
 
     card = mc = None
     if state.card is not None:

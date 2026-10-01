@@ -6,6 +6,8 @@ retries, fallbacks, compression, post-turn hooks). Symbols that callers patch on
 ``_ra`` so those patches keep working."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import inspect
 import json
@@ -484,10 +486,7 @@ def _ra():
 
 def _nous_entitlement_message(capability: str) -> str:
     try:
-        from hermes_cli.nous_account import (
-            format_nous_portal_entitlement_message,
-            get_nous_portal_account_info,
-        )
+        from hermes_cli.nous_account import format_nous_portal_entitlement_message, get_nous_portal_account_info
         account_info = get_nous_portal_account_info(force_fresh=True)
         return format_nous_portal_entitlement_message(
             account_info, capability=capability, in_chat=True

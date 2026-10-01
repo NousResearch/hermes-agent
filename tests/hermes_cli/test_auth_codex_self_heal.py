@@ -1,3 +1,7 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.codex as _auth_auth_providers_codex
 """Regression tests for Codex refresh_token self-heal (cross-store rotation).
 
 Hermes keeps its OWN copy of the Codex OAuth token (per profile + top-level),
@@ -18,7 +22,8 @@ import pytest
 
 import hermes_cli.auth as auth
 import hermes_cli.auth_codex as auth_codex
-from hermes_cli.auth import AuthError, _refresh_codex_auth_tokens, resolve_codex_runtime_credentials
+from auth.errors import AuthError
+from auth.providers.codex import _refresh_codex_auth_tokens, resolve_codex_runtime_credentials
 
 STALE = {"access_token": "stale-access", "refresh_token": "stale-refresh"}
 
@@ -40,14 +45,14 @@ def test_self_heals_on_stale_refresh_token(monkeypatch):
             relogin_required=True,
         )
 
-    monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rejected)
-    monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", _rejected)
-    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda: dict(fresh))
-    monkeypatch.setattr(auth_codex, "_import_codex_cli_tokens", lambda: dict(fresh))
-    monkeypatch.setattr(auth, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
-    monkeypatch.setattr(auth_codex, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
+    monkeypatch.setattr(_auth_auth_providers_codex, "refresh_codex_oauth_pure", _rejected)
+    monkeypatch.setattr(_auth_auth_providers_codex, "refresh_codex_oauth_pure", _rejected)
+    monkeypatch.setattr(_auth_auth_providers_codex, "_import_codex_cli_tokens", lambda: dict(fresh))
+    monkeypatch.setattr(_auth_auth_providers_codex, "_import_codex_cli_tokens", lambda: dict(fresh))
+    monkeypatch.setattr(_auth_auth_providers_codex, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
+    monkeypatch.setattr(_auth_auth_providers_codex, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
 
-    out = _refresh_codex_auth_tokens(STALE, 20.0)
+    out = _refresh_codex_auth_tokens(STALE, 20.0, environment=_phase6_auth_environment())
 
     assert out["access_token"] == "fresh-access"
     assert out["refresh_token"] == "fresh-refresh"
@@ -88,7 +93,7 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-    resolved = resolve_codex_runtime_credentials()
+    resolved = resolve_codex_runtime_credentials(environment=_phase6_auth_environment())
 
     assert resolved["api_key"] == "fresh-access"
     assert resolved["source"] == "hermes-auth-store"
@@ -118,15 +123,15 @@ def test_opt_out_never_adopts_codex_cli_login(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
     with pytest.raises(AuthError) as info:
-        resolve_codex_runtime_credentials()
+        resolve_codex_runtime_credentials(environment=_phase6_auth_environment())
     assert info.value.code == "codex_auth_missing_access_token"
 
     def _rejected(*_a, **_k):
         raise AuthError("bad", provider="openai-codex", code="invalid_grant", relogin_required=True)
 
-    monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", _rejected)
+    monkeypatch.setattr(_auth_auth_providers_codex, "refresh_codex_oauth_pure", _rejected)
     with pytest.raises(AuthError) as info:
-        _refresh_codex_auth_tokens(dict(STALE), 5.0)
+        _refresh_codex_auth_tokens(dict(STALE), 5.0, environment=_phase6_auth_environment())
     assert info.value.relogin_required  # surfaced, not papered over with the CLI pair
     assert json.loads((hermes_home / "auth.json").read_text()) == hermes_auth
 
@@ -160,7 +165,7 @@ def test_recovery_refuses_codex_cli_login_from_another_workspace(tmp_path, monke
     before = auth_file.read_bytes()
 
     with caplog.at_level("WARNING", logger="hermes_cli.auth"), pytest.raises(AuthError) as info:
-        resolve_codex_runtime_credentials(refresh_if_expiring=False)
+        resolve_codex_runtime_credentials(refresh_if_expiring=False, environment=_phase6_auth_environment())
 
     assert info.value.code == "codex_auth_missing_refresh_token"
     assert auth_file.read_bytes() == before
@@ -173,17 +178,17 @@ def test_recovery_does_not_overwrite_concurrent_reauth(tmp_path, monkeypatch):
     personal, reauthed = _codex_jwt("acct-personal"), _codex_jwt("acct-personal", sub="user-1-fresh")
     auth_file = _seed_homes(tmp_path, monkeypatch, {"access_token": personal},
                             {"access_token": _codex_jwt("acct-personal"), "refresh_token": "rt-cli"})
-    real_import = auth_codex._import_codex_cli_tokens
+    real_import = _auth_auth_providers_codex._import_codex_cli_tokens
 
     def _import_racing_with_reauth():
-        auth_codex._save_codex_tokens({"access_token": reauthed, "refresh_token": "rt-reauthed"})
+        _auth_auth_providers_codex._save_codex_tokens({"access_token": reauthed, "refresh_token": "rt-reauthed"})
         return real_import()
 
-    monkeypatch.setattr(auth, "_import_codex_cli_tokens", _import_racing_with_reauth)
-    monkeypatch.setattr(auth_codex, "_import_codex_cli_tokens", _import_racing_with_reauth)
+    monkeypatch.setattr(_auth_auth_providers_codex, "_import_codex_cli_tokens", _import_racing_with_reauth)
+    monkeypatch.setattr(_auth_auth_providers_codex, "_import_codex_cli_tokens", _import_racing_with_reauth)
 
     with pytest.raises(AuthError):
-        resolve_codex_runtime_credentials(refresh_if_expiring=False)
+        resolve_codex_runtime_credentials(refresh_if_expiring=False, environment=_phase6_auth_environment())
 
     tokens = json.loads(auth_file.read_text())["providers"]["openai-codex"]["tokens"]
     assert tokens == {"access_token": reauthed, "refresh_token": "rt-reauthed"}

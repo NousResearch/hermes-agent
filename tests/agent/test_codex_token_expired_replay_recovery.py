@@ -110,8 +110,9 @@ def test_token_expired_without_cached_reasoning_stays_on_auth_path(err, history)
 def test_pooled_token_expired_strips_cached_reasoning_before_benching_entries():
     """A stale blob is a session-state problem: the strip must run before the pool benches
     every healthy entry (STATUS_EXHAUSTED) over a 401 the credentials did not cause."""
+    from hermes_cli.config_credentials import credential_pool_environment
     from agent.agent_runtime_helpers import recover_with_credential_pool
-    from agent.credential_pool import CredentialPool, PooledCredential
+    from auth.credential_pool import CredentialPool, PooledCredential
 
     agent, retry, messages = _Agent(), TurnRetryState(), _cached_history()
     entries = [
@@ -119,7 +120,7 @@ def test_pooled_token_expired_strips_cached_reasoning_before_benching_entries():
                          priority=i, source=f"acct-{i}", access_token=token)
         for i, token in enumerate(["same-bearer", "other-bearer"])
     ]
-    pool = CredentialPool("openai-codex", entries)
+    pool = CredentialPool("openai-codex", entries, environment=credential_pool_environment())
     agent._credential_pool = pool
     agent._recover_with_credential_pool = lambda **kw: recover_with_credential_pool(agent, **kw)
 

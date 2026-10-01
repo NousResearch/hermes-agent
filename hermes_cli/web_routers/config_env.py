@@ -3,6 +3,7 @@
 Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
 ``web_server`` stay there and are late-bound (cycle-safe).
 """
+from hermes_cli.config_credentials import credential_environment
 
 import contextlib
 import logging
@@ -337,10 +338,10 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     if is_redacted_credential_preview(body.value):
         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
     with _env_write_errors("PUT /api/env failed", http_passthrough=False):
-        from hermes_cli.credential_lifecycle import save_provider_env_credential
+        from auth.sources import save_provider_env_credential
 
         return await scoped_to_thread(
-            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
+            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value, environment=credential_environment())
         )
 
 
@@ -999,10 +1000,10 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     # model-cache rows, and value-matched config.yaml api_key mirrors.
     # OAuth/device-code/manual pool entries for the same provider are preserved.
     with _env_write_errors("DELETE /api/env failed", http_passthrough=True):
-        from hermes_cli.credential_lifecycle import remove_provider_env_credential
+        from auth.sources import remove_provider_env_credential
 
         result = await scoped_to_thread(
-            body.profile or profile, lambda: remove_provider_env_credential(body.key)
+            body.profile or profile, lambda: remove_provider_env_credential(body.key, environment=credential_environment())
         )
         if not result.get("found"):
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")

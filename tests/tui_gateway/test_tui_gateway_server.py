@@ -9286,7 +9286,7 @@ def test_setup_runtime_check_agrees_with_session_fallback_chain(monkeypatch):
     """#111775: with the primary blocked and a complete fallback entry, the probe answers what
     ``_make_agent`` would build (fallback provider + model); an explicit ``provider`` stays strict
     so another provider's fallback cannot mask a failed connection."""
-    from hermes_cli.auth import AuthError
+    from auth.errors import AuthError
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("claude-sonnet-4-5", None))
     monkeypatch.setattr(server, "_load_fallback_model",
@@ -16991,7 +16991,7 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
     save_credential = Mock()
     monkeypatch.setattr(
-        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        'auth.sources.save_provider_env_credential',
         save_credential,
     )
     picker_context = Mock(return_value=picker_ctx)
@@ -17015,7 +17015,13 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
 
     assert "result" in resp, resp
     assert resp["result"]["provider"] == {**provider, "authenticated": True}
-    save_credential.assert_called_once_with(env_var, fake_key)
+    from auth.sources import CredentialEnvironment
+    save_credential.assert_called_once()
+    assert save_credential.call_args.args == (env_var, fake_key)
+    environment = save_credential.call_args.kwargs["environment"]
+    assert isinstance(environment, CredentialEnvironment)
+    from hermes_constants import get_hermes_home
+    assert environment.scope.profile_home == get_hermes_home().resolve()
 
 
 def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch, tmp_path):
@@ -17027,7 +17033,7 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
     monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", {"test-provider": types.SimpleNamespace(
         name="Test Provider", auth_type="api_key", api_key_env_vars=("TEST_PROVIDER_API_KEY",))})
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
-    monkeypatch.setattr("hermes_cli.credential_lifecycle.save_provider_env_credential", Mock())
+    monkeypatch.setattr('auth.sources.save_provider_env_credential', Mock())
     monkeypatch.setattr("hermes_cli.inventory.build_models_payload", Mock(return_value={"providers": []}))
     monkeypatch.setenv("TEST_PROVIDER_API_KEY", "previous-value")  # save_key exports the new key
     monkeypatch.setattr(fb, "_inventory_other_providers", lambda: True)
@@ -20325,7 +20331,7 @@ class TestResolveRuntimeWithFallback:
 
     def test_auth_error_tries_fallback_chain(self, monkeypatch):
         """On AuthError from primary, walk fallback_providers chain."""
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         fallback_runtime = {"provider": "deepseek", "api_key": "fb-tok"}
 
@@ -20353,7 +20359,7 @@ class TestResolveRuntimeWithFallback:
 
     def test_auth_error_skips_provider_only_fallback(self, monkeypatch):
         """Auth fallback requires one complete provider/model pair."""
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         requested = []
         fallback_runtime = {"provider": "openrouter", "api_key": "fb-tok"}
@@ -20389,7 +20395,7 @@ class TestResolveRuntimeWithFallback:
     def test_fallback_entry_key_env_resolves_api_key(self, monkeypatch):
         """A fallback entry naming its key via key_env passes the resolved
         env value as explicit_api_key (#43861, @VrtxOmega)."""
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         monkeypatch.setenv("FB_TEST_KEY", "env-resolved-key")
         captured = {}
@@ -20424,7 +20430,7 @@ class TestResolveRuntimeWithFallback:
 
     def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
         """When all fallbacks also fail, re-raise the original AuthError."""
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         def fake_resolve(**kwargs):
             raise AuthError("No credentials for " + str(kwargs.get("requested")))
@@ -20447,7 +20453,7 @@ class TestResolveRuntimeWithFallback:
 
     def test_auth_error_skips_non_dict_entries(self, monkeypatch):
         """Fallback chain entries that are not dicts are skipped."""
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         fallback_runtime = {"provider": "anthropic", "api_key": "ant-tok"}
 
@@ -20480,7 +20486,7 @@ class TestResolveRuntimeWithFallback:
         provider when the primary provider raises AuthError."""
         import types
 
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         captured = {}
         fallback_runtime = {

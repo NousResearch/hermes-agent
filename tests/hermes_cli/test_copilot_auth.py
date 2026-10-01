@@ -1,3 +1,5 @@
+
+import auth.providers.copilot as _auth_auth_providers_copilot
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
 import pytest
@@ -8,18 +10,18 @@ class TestTokenValidation:
     """Token type validation."""
 
     def test_classic_pat_rejected(self):
-        from hermes_cli.copilot_auth import validate_copilot_token
+        from auth.providers.copilot import validate_copilot_token
         valid, msg = validate_copilot_token("ghp_abcdefghijklmnop1234")
         assert valid is False
 
     @pytest.mark.parametrize("token", ["gho_abcdefghijklmnop1234", "github_pat_abcdefghijklmnop1234", "ghu_abcdefghijklmnop1234"])
     def test_supported_token_families_accepted(self, token):
-        from hermes_cli.copilot_auth import validate_copilot_token
+        from auth.providers.copilot import validate_copilot_token
         assert validate_copilot_token(token) == (True, "OK")
 
     def test_arbitrary_string_rejected(self):
         """A non-GitHub value in GITHUB_TOKEN must fail validation instead of reaching the API (#12650)."""
-        from hermes_cli.copilot_auth import validate_copilot_token
+        from auth.providers.copilot import validate_copilot_token
         valid, msg = validate_copilot_token("not_a_github_token")
         assert valid is False
 
@@ -29,7 +31,7 @@ class TestResolveToken:
 
 
     def test_gh_token_second_priority(self, monkeypatch):
-        from hermes_cli.copilot_auth import resolve_copilot_token
+        from auth.providers.copilot import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.setenv("GH_TOKEN", "gho_gh_second")
         monkeypatch.setenv("GITHUB_TOKEN", "gho_github_third")
@@ -39,11 +41,11 @@ class TestResolveToken:
 
 
     def test_gh_cli_classic_pat_raises(self, monkeypatch):
-        from hermes_cli.copilot_auth import resolve_copilot_token
+        from auth.providers.copilot import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="ghp_classic"):
+        with patch('auth.providers.copilot._try_gh_cli_token', return_value="ghp_classic"):
             with pytest.raises(ValueError):
                 resolve_copilot_token()
 
@@ -56,11 +58,11 @@ class TestResolveToken:
         call adds up to 5s of latency on Windows cold starts (#60800).
         Only fall back to the CLI when NO Copilot env var is set at all.
         """
-        from hermes_cli.copilot_auth import resolve_copilot_token
+        from auth.providers.copilot import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_classic_pat_nope")
-        with patch("hermes_cli.copilot_auth._try_gh_cli_token") as mock_cli:
+        with patch('auth.providers.copilot._try_gh_cli_token') as mock_cli:
             token, source = resolve_copilot_token()
         assert token == ""
         assert source == ""
@@ -68,11 +70,11 @@ class TestResolveToken:
 
     def test_all_env_vars_invalid_skips_gh_cli_fallback(self, monkeypatch):
         """All three env vars set to classic PATs → no gh CLI call."""
-        from hermes_cli.copilot_auth import resolve_copilot_token
+        from auth.providers.copilot import resolve_copilot_token
         monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghp_one")
         monkeypatch.setenv("GH_TOKEN", "ghp_two")
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_three")
-        with patch("hermes_cli.copilot_auth._try_gh_cli_token") as mock_cli:
+        with patch('auth.providers.copilot._try_gh_cli_token') as mock_cli:
             token, source = resolve_copilot_token()
         assert token == ""
         assert source == ""
@@ -89,16 +91,16 @@ class TestGhCliTokenCache:
     """
 
     def _reset(self):
-        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+        from auth.providers.copilot import _invalidate_gh_cli_token_cache
         _invalidate_gh_cli_token_cache()
 
     def test_miss_is_cached_and_probe_runs_once(self):
         from hermes_cli import copilot_auth
         self._reset()
-        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
-            assert copilot_auth._try_gh_cli_token() is None
-            assert copilot_auth._try_gh_cli_token() is None
-            assert copilot_auth._try_gh_cli_token() is None
+        with patch.object(_auth_auth_providers_copilot, "_probe_gh_cli_token", return_value=None) as probe:
+            assert _auth_auth_providers_copilot._try_gh_cli_token() is None
+            assert _auth_auth_providers_copilot._try_gh_cli_token() is None
+            assert _auth_auth_providers_copilot._try_gh_cli_token() is None
         assert probe.call_count == 1
         self._reset()
 
@@ -108,10 +110,10 @@ class TestGhCliTokenCache:
         self._reset()
         clock = {"now": 1000.0}
         monkeypatch.setattr(copilot_auth.time, "monotonic", lambda: clock["now"])
-        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
-            copilot_auth._try_gh_cli_token()
-            clock["now"] += copilot_auth._GH_CLI_TOKEN_CACHE_TTL_SECONDS + 1
-            copilot_auth._try_gh_cli_token()
+        with patch.object(_auth_auth_providers_copilot, "_probe_gh_cli_token", return_value=None) as probe:
+            _auth_auth_providers_copilot._try_gh_cli_token()
+            clock["now"] += _auth_auth_providers_copilot._GH_CLI_TOKEN_CACHE_TTL_SECONDS + 1
+            _auth_auth_providers_copilot._try_gh_cli_token()
         assert probe.call_count == 2
         self._reset()
 
@@ -120,7 +122,7 @@ class TestRequestHeaders:
     """Copilot API header generation."""
 
     def test_default_headers_include_openai_intent(self):
-        from hermes_cli.copilot_auth import copilot_request_headers
+        from auth.providers.copilot import copilot_request_headers
         headers = copilot_request_headers()
         assert headers["Openai-Intent"] == "conversation-edits"
         assert headers["User-Agent"] == "HermesAgent/1.0"
@@ -128,7 +130,7 @@ class TestRequestHeaders:
 
 
     def test_no_vision_header_by_default(self):
-        from hermes_cli.copilot_auth import copilot_request_headers
+        from auth.providers.copilot import copilot_request_headers
         headers = copilot_request_headers()
         assert "Copilot-Vision-Request" not in headers
 

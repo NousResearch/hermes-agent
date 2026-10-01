@@ -6,8 +6,8 @@ import logging
 import threading
 from typing import FrozenSet, Optional
 
-from agent.credential_pool import CredentialPool, PooledCredential, load_pool
-from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+from auth.credential_pool import CredentialPool, PooledCredential, load_pool
+from auth.constants import DEFAULT_XAI_OAUTH_BASE_URL
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 logger = logging.getLogger(__name__)
@@ -84,8 +84,9 @@ class XAIGrokAdapter(UpstreamAdapter):
             return retry_cred
 
     def _load_pool(self) -> Optional[CredentialPool]:
+        from hermes_cli.config_credentials import credential_pool_environment
         try:
-            return load_pool(_POOL_PROVIDER)
+            return load_pool(_POOL_PROVIDER, environment=credential_pool_environment())
         except Exception as exc:
             logger.warning("proxy: failed to load xAI OAuth credential pool: %s", exc)
             return None

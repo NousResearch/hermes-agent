@@ -1,3 +1,5 @@
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
 """Tests for agent/nous_rate_guard.py — cross-session Nous Portal rate limit guard."""
 
 import json
@@ -287,7 +289,7 @@ class TestWelcomeRouteCopy:
             "https://welcome-api.nousresearch.com/v1", monkeypatch
         )
 
-        expected = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset=anon_auth.friendly_wait(600))
+        expected = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset=_auth_auth_providers_nous_guest.friendly_wait(600))
         assert verdict.action == "return"
         assert statuses == [f"⏳ {expected}"]
         assert expected in verdict.result["final_response"]

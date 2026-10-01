@@ -1,21 +1,20 @@
 """Background keepalive for long-lived Nous Portal sessions."""
 
 from __future__ import annotations
+from typing import Callable, ContextManager
+from auth.pool_environment import PoolEnvironment
+
 
 import logging
 import os
 import threading
 from typing import Optional
 
-from hermes_cli.auth import (
-    ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
-    AuthError,
-    _agent_key_is_usable,
-    _is_expiring,
-    get_provider_auth_state,
-    resolve_nous_runtime_credentials,
-)
+from auth.constants import ACCESS_TOKEN_REFRESH_SKEW_SECONDS, NOUS_INVOKE_JWT_MIN_TTL_SECONDS
+from auth.providers.nous import _agent_key_is_usable, resolve_nous_runtime_credentials
+from auth.errors import AuthError
+from auth.token_validation import _is_expiring
+from auth.provider_state import get_provider_auth_state
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +46,17 @@ def _timeout_seconds(value: Optional[float]) -> float:
         return 15.0
 
 
-def _nous_config() -> dict:
+def _nous_config(environment: PoolEnvironment) -> dict:
     """The ``nous:`` section of config.yaml, or {} on any failure (config loader imported lazily)."""
     try:
-        from hermes_cli.config import load_config
-
-        section = load_config().get("nous")
+        environment.require_current_scope()
+        section = (environment.read_config() or {}).get("nous")
         return section if isinstance(section, dict) else {}
     except Exception:
         return {}
 
 
-def _interval_seconds(value: Optional[int]) -> int:
+def _interval_seconds(value: Optional[int], environment: PoolEnvironment) -> int:
     """Tick interval: explicit argument, then ``nous.keepalive_interval_seconds`` in config.yaml,
     then the module default. Non-positive disables the keepalive thread (the documented way off).
     """
@@ -67,7 +65,7 @@ def _interval_seconds(value: Optional[int]) -> int:
             return int(value)
         except (TypeError, ValueError):
             return NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
-    raw = _nous_config().get(NOUS_AUTH_KEEPALIVE_INTERVAL_CONFIG_KEY)
+    raw = _nous_config(environment).get(NOUS_AUTH_KEEPALIVE_INTERVAL_CONFIG_KEY)
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
     try:
@@ -115,14 +113,14 @@ def _entry_state(entry: object) -> dict:
     return {k: getattr(entry, k, None) for k in ("agent_key", "agent_key_expires_at", "scope")}
 
 
-def _refresh_selected_pool_entry(*, min_key_ttl_seconds: int, min_access_ttl_seconds: Optional[int] = None) -> Optional[bool]:
+def _refresh_selected_pool_entry(*, environment: PoolEnvironment, min_key_ttl_seconds: int, min_access_ttl_seconds: Optional[int] = None) -> Optional[bool]:
     """Refresh the current pool entry when stale. True = usable/refreshed; False = pool exists but
     no usable entry; None = no Nous pool.
     """
     try:
-        from agent.credential_pool import load_pool
+        from auth.credential_pool import load_pool
 
-        pool = load_pool("nous")
+        pool = load_pool("nous", environment=environment)
     except Exception as exc:
         logger.debug("Nous auth keepalive: credential pool unavailable: %s", exc)
         return None
@@ -147,17 +145,20 @@ def _refresh_selected_pool_entry(*, min_key_ttl_seconds: int, min_access_ttl_sec
 
 
 def refresh_nous_auth_keepalive_once(
-    *, min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
+    *, environment_factory: Callable[[], PoolEnvironment],
+    scope_context: Callable[[], ContextManager],
+    min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     min_access_ttl_seconds: Optional[int] = None, timeout_seconds: Optional[float] = None,
 ) -> bool:
     """Refresh Nous auth once if credentials are configured (pool entry first, then singleton state)."""
     # This runs in a bare daemon thread, so it does not inherit a request's ContextVars. Once a
     # gateway multiplexes profiles, even the launch profile must bind its own scope before a
     # credential read; otherwise the fail-closed routing reader warns on every tick.
-    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
-
-    with launch_profile_scope_if_multiplexed():
+    with scope_context():
+        environment = environment_factory()
+        environment.require_current_scope()
         pool_result = _refresh_selected_pool_entry(
+            environment=environment,
             min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
         )
         if pool_result is not None:
@@ -165,7 +166,7 @@ def refresh_nous_auth_keepalive_once(
         if not get_provider_auth_state("nous"):
             return False
         try:
-            resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
+            resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds), environment=environment)
             logger.debug("Nous auth keepalive: refreshed singleton auth state")
             return True
         except Exception as exc:
@@ -179,34 +180,45 @@ def refresh_nous_auth_keepalive_once(
 def _keepalive_loop(
     stop_event: threading.Event, *, interval_seconds: int, initial_delay_seconds: int,
     min_key_ttl_seconds: int, timeout_seconds: Optional[float],
+    environment_factory: Callable[[], PoolEnvironment], scope_context: Callable[[], ContextManager],
 ) -> None:
     if initial_delay_seconds > 0 and stop_event.wait(initial_delay_seconds):
         return
     while not stop_event.is_set():
         # Re-read each pass: the lifetime changes with account/plan/policy; caching it would go
         # stale in exactly the case the keepalive exists to cover.
-        tick = _tick_seconds(interval_seconds, _observed_lifetime_seconds())
+        with scope_context():
+            environment_factory().require_current_scope()
+            tick = _tick_seconds(interval_seconds, _observed_lifetime_seconds())
         horizon = _refresh_horizon_seconds(tick, min_key_ttl_seconds)
         refresh_nous_auth_keepalive_once(
+            environment_factory=environment_factory, scope_context=scope_context,
             min_key_ttl_seconds=horizon, min_access_ttl_seconds=horizon, timeout_seconds=timeout_seconds
         )
         stop_event.wait(tick)
 
 
 def start_nous_auth_keepalive(
-    *, interval_seconds: Optional[int] = None,
+    *, environment_factory: Callable[[], PoolEnvironment],
+    scope_context: Callable[[], ContextManager],
+    interval_seconds: Optional[int] = None,
     initial_delay_seconds: int = NOUS_AUTH_KEEPALIVE_INITIAL_DELAY_SECONDS,
     min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS, timeout_seconds: Optional[float] = None,
 ) -> Optional[threading.Thread]:
     """Start the process-wide Nous auth keepalive thread (idempotent; None when disabled)."""
-    interval_seconds = _interval_seconds(interval_seconds)
+    with scope_context():
+        environment = environment_factory()
+        environment.require_current_scope()
+        interval_seconds = _interval_seconds(interval_seconds, environment)
     if interval_seconds <= 0:
         return None
     # The free tier has no refresh token to keep alive: its access token is re-minted from the
     # anon credential on demand by the request path, so a background refresher has nothing to do.
-    from hermes_cli.anon_auth import is_guest_state
+    from auth.providers.nous_guest import is_guest_state
     try:
-        if is_guest_state(get_provider_auth_state("nous")):
+        with scope_context():
+            guest = is_guest_state(get_provider_auth_state("nous"))
+        if guest:
             logger.debug("Nous auth keepalive skipped: free tier has no refresh token")
             return None
     except Exception:
@@ -219,6 +231,8 @@ def start_nous_auth_keepalive(
         _keepalive_thread = threading.Thread(
             target=_keepalive_loop, args=(_keepalive_stop,), daemon=True, name="nous-auth-keepalive",
             kwargs={
+                "environment_factory": environment_factory,
+                "scope_context": scope_context,
                 "interval_seconds": int(interval_seconds),
                 "initial_delay_seconds": max(0, int(initial_delay_seconds)),
                 "min_key_ttl_seconds": max(60, int(min_key_ttl_seconds)),

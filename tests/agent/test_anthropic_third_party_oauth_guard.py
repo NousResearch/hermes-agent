@@ -60,7 +60,7 @@ class TestOAuthFlagOnRefresh:
         agent._is_anthropic_oauth = False
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch('auth.providers.anthropic.resolve_anthropic_token',
                   return_value=_OAUTH_LIKE_TOKEN),
             patch("agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
@@ -88,7 +88,7 @@ class TestOAuthFlagOnRefresh:
         agent._is_anthropic_oauth = False
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch('auth.providers.anthropic.resolve_anthropic_token',
                   return_value=_OAUTH_LIKE_TOKEN),
             patch("agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
@@ -115,7 +115,7 @@ class TestOAuthFlagOnRefresh:
         agent._is_anthropic_oauth = True
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+            patch('auth.providers.anthropic.resolve_anthropic_token', return_value=new),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             result = agent._try_refresh_anthropic_client_credentials()
@@ -155,7 +155,7 @@ class TestOAuthFlagOnConstruction:
                   return_value=MagicMock()),
             # Simulate a stale ANTHROPIC_TOKEN in the env — the init code
             # MUST NOT fall back to it when provider != anthropic.
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch('auth.providers.anthropic.resolve_anthropic_token',
                   return_value=_OAUTH_LIKE_TOKEN),
         ):
             agent = AIAgent(

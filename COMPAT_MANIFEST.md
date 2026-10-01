@@ -36,10 +36,10 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | kind | count | meaning |
 |---|---|---|
-| moved | 0 | name now defined in `new location`; re-exported from the old module |
+| moved | 1 | name now defined in `new location`; re-exported from the old module |
 | moved-lazy | 1148 | same, resolved lazily via `__getattr__` to avoid an import cycle |
 | import | 592 | a third-party/stdlib name the old module used to expose; original import restored |
-| restored-def | 290 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
+| restored-def | 289 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
 | restored-helper | 41 | private helper restored only because a restored-def above depends on it |
 | restored-import | 17 | import re-added only because a restored-def above depends on it |
 | module-stub | 3 | whole module deleted; stub re-exports from its replacement |
@@ -118,26 +118,26 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `CredentialPersistError` | moved-lazy | `agent.anthropic_credentials` |
+| `CredentialPersistError` | moved-lazy | `auth.providers.anthropic` |
 | `Path` | import | `pathlib` |
 | `Tuple` | import | `typing` |
 | `base_url_host_matches` | moved-lazy | `utils` |
 | `base_url_hostname` | moved-lazy | `utils` |
-| `claude_code_credentials_path` | moved-lazy | `agent.anthropic_credentials` |
+| `claude_code_credentials_path` | moved-lazy | `auth.providers.anthropic` |
 | `copy` | import | `copy` |
 | `get_hermes_home` | moved-lazy | `hermes_constants` |
-| `is_claude_code_token_valid` | moved-lazy | `agent.anthropic_credentials` |
-| `is_rotation_consumed_uncommitted` | moved-lazy | `agent.anthropic_credentials` |
+| `is_claude_code_token_valid` | moved-lazy | `auth.providers.anthropic` |
+| `is_rotation_consumed_uncommitted` | moved-lazy | `auth.providers.anthropic` |
 | `json` | import | `json` |
-| `mark_rotation_consumed_uncommitted` | moved-lazy | `agent.anthropic_credentials` |
+| `mark_rotation_consumed_uncommitted` | moved-lazy | `auth.providers.anthropic` |
 | `os` | import | `os` |
 | `platform` | import | `platform` |
-| `read_claude_code_credentials` | moved-lazy | `agent.anthropic_credentials` |
-| `read_hermes_oauth_credentials` | moved-lazy | `agent.anthropic_credentials` |
-| `refresh_anthropic_oauth_pure` | moved-lazy | `agent.anthropic_credentials` |
-| `resolve_anthropic_token` | moved-lazy | `agent.anthropic_credentials` |
-| `run_hermes_oauth_login_pure` | moved-lazy | `agent.anthropic_credentials` |
-| `run_oauth_setup_token` | moved-lazy | `agent.anthropic_credentials` |
+| `read_claude_code_credentials` | moved-lazy | `auth.providers.anthropic` |
+| `read_hermes_oauth_credentials` | moved-lazy | `auth.providers.anthropic` |
+| `refresh_anthropic_oauth_pure` | moved-lazy | `auth.providers.anthropic` |
+| `resolve_anthropic_token` | moved-lazy | `auth.providers.anthropic` |
+| `run_hermes_oauth_login_pure` | moved-lazy | `auth.providers.anthropic` |
+| `run_oauth_setup_token` | moved-lazy | `auth.providers.anthropic` |
 | `secrets` | import | `secrets` |
 | `stat` | import | `stat` |
 | `urlparse` | import | `urllib.parse` |
@@ -180,7 +180,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `THROTTLE_PATTERNS` | restored-def | `(deleted; BASE body restored)` |
 | `call_converse_stream` | restored-def | `(deleted; BASE body restored)` |
 | `classify_bedrock_error` | restored-def | `(deleted; BASE body restored)` |
-| `is_context_overflow_error` | restored-helper | `(deleted; restored as a dependency of classify_bedrock_error)` |
+| `is_context_overflow_error` | restored-helper | `(deleted; BASE body restored)` |
 | `is_context_overflow_error` | restored-def | `(deleted; BASE body restored)` |
 
 ### `agent.bounded_response`
@@ -282,7 +282,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `register` | restored-def | `(deleted; BASE body restored)` |
+| `register` | moved | `auth.source_removal` |
 
 ### `agent.display`
 
@@ -478,7 +478,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_command_secret` | restored-def | `(deleted; BASE body restored)` |
 | `get_source_environment` | moved-lazy | `agent.secret_sources.base` |
 | `list_command_secrets` | restored-def | `(deleted; BASE body restored)` |
-| `parse_secret_output` | restored-helper | `(deleted; restored as a dependency of get_command_secret)` |
+| `parse_secret_output` | restored-helper | `(deleted; BASE body restored)` |
 | `parse_secret_output` | restored-def | `(deleted; BASE body restored)` |
 
 ### `agent.secret_sources.onepassword`
@@ -771,7 +771,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `RoomLinkProbe` | restored-def | `(deleted; BASE body restored)` |
+| `RoomLinkProbe` | restored-def | `(deleted; restored as a dependency of select_room_link)` |
 | `RoomLinkProbe` | restored-helper | `(deleted; restored as a dependency of select_room_link)` |
 | `_LINK_PRIORITY` | restored-helper | `(deleted; restored as a dependency of select_room_link)` |
 | `select_room_link` | restored-def | `(deleted; BASE body restored)` |
@@ -853,9 +853,9 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Awaitable` | import | `typing` |
 | `Callable` | restored-import | `typing` |
 | `Callable` | import | `typing` |
-| `PostMessageFn` | restored-helper | `(deleted; restored as a dependency of ApprovalSender)` |
+| `PostMessageFn` | restored-helper | `(deleted; BASE body restored)` |
 | `PostMessageFn` | restored-def | `(deleted; BASE body restored)` |
-| `logger` | restored-helper | `(deleted; restored as a dependency of ApprovalSender)` |
+| `logger` | restored-helper | `gateway.platforms.qqbot.adapter` |
 | `logger` | moved-lazy | `gateway.platforms.qqbot.adapter` |
 | `logging` | restored-import | `logging` |
 | `logging` | import | `logging` |
@@ -928,7 +928,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `_delivery_payload` | restored-helper | `(deleted; restored as a dependency of verify_delivery_signature)` |
 | `_hmac_hex` | restored-helper | `(deleted; restored as a dependency of verify_delivery_signature)` |
 | `verify_delivery_signature` | restored-def | `(deleted; BASE body restored)` |
-| `verify_signature` | restored-helper | `(deleted; restored as a dependency of verify_delivery_signature)` |
+| `verify_signature` | restored-helper | `(deleted; BASE body restored)` |
 | `verify_signature` | restored-def | `(deleted; BASE body restored)` |
 | `verify_token` | restored-def | `(deleted; BASE body restored)` |
 
@@ -1087,28 +1087,28 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `BaseHTTPRequestHandler` | import | `http.server` |
-| `CODEX_OAUTH_USER_AGENT` | moved-lazy | `hermes_cli.auth_constants` |
-| `CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS` | moved-lazy | `hermes_cli.auth_codex` |
-| `DEFAULT_SPOTIFY_REDIRECT_URI` | moved-lazy | `hermes_cli.auth_constants` |
-| `DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS` | moved-lazy | `hermes_cli.auth_constants` |
+| `CODEX_OAUTH_USER_AGENT` | moved-lazy | `hermes_cli.auth_codex` |
+| `CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS` | moved-lazy | `auth.providers.codex_quota` |
+| `DEFAULT_SPOTIFY_REDIRECT_URI` | moved-lazy | `auth.constants` |
+| `DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS` | moved-lazy | `auth.constants` |
 | `HTTPServer` | import | `http.server` |
-| `MINIMAX_OAUTH_GRANT_TYPE` | moved-lazy | `hermes_cli.auth_constants` |
-| `NOUS_INFERENCE_INVOKE_SCOPE` | moved-lazy | `hermes_cli.auth_constants` |
-| `NOUS_SHARED_STORE_FILENAME` | moved-lazy | `hermes_cli.auth_nous` |
-| `OAUTH_OVER_SSH_DOCS_URL` | moved-lazy | `hermes_cli.auth_constants` |
-| `QWEN_OAUTH_CLIENT_ID` | moved-lazy | `hermes_cli.auth_constants` |
-| `QWEN_OAUTH_TOKEN_URL` | moved-lazy | `hermes_cli.auth_constants` |
-| `SINGLE_USE_OAUTH_SINGLETON_FILES` | moved-lazy | `hermes_cli.auth_oauth_grants` |
-| `SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS` | moved-lazy | `hermes_cli.auth_constants` |
-| `SPOTIFY_DASHBOARD_URL` | moved-lazy | `hermes_cli.auth_constants` |
+| `MINIMAX_OAUTH_GRANT_TYPE` | moved-lazy | `auth.constants` |
+| `NOUS_INFERENCE_INVOKE_SCOPE` | moved-lazy | `auth.constants` |
+| `NOUS_SHARED_STORE_FILENAME` | moved-lazy | `auth.providers.nous_store` |
+| `OAUTH_OVER_SSH_DOCS_URL` | moved-lazy | `auth.constants` |
+| `QWEN_OAUTH_CLIENT_ID` | moved-lazy | `auth.constants` |
+| `QWEN_OAUTH_TOKEN_URL` | moved-lazy | `auth.constants` |
+| `SINGLE_USE_OAUTH_SINGLETON_FILES` | moved-lazy | `auth.oauth_grants` |
+| `SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS` | moved-lazy | `auth.constants` |
+| `SPOTIFY_DASHBOARD_URL` | moved-lazy | `auth.constants` |
 | `TYPE_CHECKING` | import | `typing` |
-| `XAI_OAUTH_DEVICE_CODE_URL` | moved-lazy | `hermes_cli.auth_constants` |
-| `XAI_OAUTH_DISCOVERY_URL` | moved-lazy | `hermes_cli.auth_constants` |
-| `XAI_OAUTH_ISSUER` | moved-lazy | `hermes_cli.auth_constants` |
+| `XAI_OAUTH_DEVICE_CODE_URL` | moved-lazy | `auth.constants` |
+| `XAI_OAUTH_DISCOVERY_URL` | moved-lazy | `auth.constants` |
+| `XAI_OAUTH_ISSUER` | moved-lazy | `auth.constants` |
 | `base64` | import | `base64` |
 | `hashlib` | import | `hashlib` |
 | `parse_qs` | import | `urllib.parse` |
-| `refresh_nous_oauth_pure` | moved-lazy | `hermes_cli.auth_nous` |
+| `refresh_nous_oauth_pure` | moved-lazy | `auth.providers.nous` |
 | `ssl` | import | `ssl` |
 | `subprocess` | import | `subprocess` |
 | `sys` | import | `sys` |
@@ -1438,7 +1438,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `build_moa_turn_prompt` | restored-def | `(deleted; BASE body restored)` |
-| `encode_moa_turn` | restored-helper | `(deleted; restored as a dependency of build_moa_turn_prompt)` |
+| `encode_moa_turn` | restored-helper | `(deleted; BASE body restored)` |
 | `encode_moa_turn` | restored-def | `(deleted; BASE body restored)` |
 | `list_moa_presets` | restored-def | `(deleted; BASE body restored)` |
 | `set_active_moa_preset` | restored-def | `(deleted; BASE body restored)` |
@@ -1675,7 +1675,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `generate_bot_username` | restored-def | `(deleted; BASE body restored)` |
 | `generate_deep_link` | restored-def | `(deleted; BASE body restored)` |
 | `generate_pairing_nonce` | restored-def | `(deleted; BASE body restored)` |
-| `generate_username_slug` | restored-helper | `(deleted; restored as a dependency of generate_bot_username)` |
+| `generate_username_slug` | restored-helper | `(deleted; BASE body restored)` |
 | `generate_username_slug` | restored-def | `(deleted; BASE body restored)` |
 | `poll_for_token` | restored-def | `(deleted; BASE body restored)` |
 | `poll_pairing_once` | restored-def | `(deleted; BASE body restored)` |
@@ -2723,7 +2723,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `build_store` | restored-def | `(deleted; BASE body restored)` |
-| `resolve_store_path` | restored-helper | `(deleted; restored as a dependency of build_store)` |
+| `resolve_store_path` | restored-helper | `(deleted; BASE body restored)` |
 | `resolve_store_path` | restored-def | `(deleted; BASE body restored)` |
 | `resolve_teams_pipeline_store_path` | restored-import | `plugins.teams_pipeline.store` |
 | `resolve_teams_pipeline_store_path` | moved-lazy | `plugins.teams_pipeline.store` |
@@ -3229,13 +3229,13 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `_MEDIA_UPLOAD_PUT_WRITE_TIMEOUT_SECONDS` | restored-helper | `(deleted; restored as a dependency of build_managed_media_uploader)` |
 | `_describe_media_upload_refusal` | restored-helper | `(deleted; restored as a dependency of build_managed_media_uploader)` |
 | `build_managed_media_uploader` | restored-def | `(deleted; BASE body restored)` |
-| `is_managed_nous_gateway_url` | restored-helper | `(deleted; restored as a dependency of build_managed_media_uploader)` |
+| `is_managed_nous_gateway_url` | restored-helper | `(deleted; BASE body restored)` |
 | `is_managed_nous_gateway_url` | restored-def | `(deleted; BASE body restored)` |
-| `managed_gateway_auth_headers` | restored-helper | `(deleted; restored as a dependency of build_managed_media_uploader)` |
+| `managed_gateway_auth_headers` | restored-helper | `(deleted; BASE body restored)` |
 | `managed_gateway_auth_headers` | restored-def | `(deleted; BASE body restored)` |
 | `managed_vendor_base_path` | restored-def | `(deleted; BASE body restored)` |
 | `managed_vendor_endpoints` | restored-def | `(deleted; BASE body restored)` |
-| `managed_vendor_upload_path` | restored-helper | `(deleted; restored as a dependency of managed_vendor_endpoints)` |
+| `managed_vendor_upload_path` | restored-helper | `(deleted; BASE body restored)` |
 | `managed_vendor_upload_path` | restored-def | `(deleted; BASE body restored)` |
 | `urlsplit` | restored-import | `urllib.parse` |
 | `urlsplit` | import | `urllib.parse` |
@@ -3682,7 +3682,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `DEFAULT_XAI_TEXT_NORMALIZATION_DEFAULT` | moved-lazy | `tools.tts_tool_providers` |
 | `DEFAULT_XAI_VOICE_ID` | moved-lazy | `tools.tts_tool_providers` |
 | `ELEVENLABS_MODEL_MAX_TEXT_LENGTH` | moved-lazy | `tools.tts_tool_delivery` |
-| `FALLBACK_MAX_TEXT_LENGTH` | moved-lazy | `tools.tts_tool_delivery` |
+| `FALLBACK_MAX_TEXT_LENGTH` | moved-lazy | `(deleted; restored as a dependency of MAX_TEXT_LENGTH)` |
 | `FALLBACK_MAX_TEXT_LENGTH` | restored-helper | `(deleted; restored as a dependency of MAX_TEXT_LENGTH)` |
 | `Future` | import | `concurrent.futures` |
 | `GEMINI_AUDIO_TAG_REWRITE_TASK` | moved-lazy | `tools.tts_tool_providers` |
@@ -3813,7 +3813,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `HostSession` | restored-def | `(deleted; BASE body restored)` |
-| `SpikeAgent` | restored-helper | `(deleted; restored as a dependency of HostSession)` |
+| `SpikeAgent` | restored-helper | `(deleted; BASE body restored)` |
 | `SpikeAgent` | restored-def | `(deleted; BASE body restored)` |
 | `dataclass` | restored-import | `dataclasses` |
 | `dataclass` | import | `dataclasses` |

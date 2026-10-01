@@ -425,7 +425,7 @@ def _resolve_relay_identity_token() -> str:
     token_url, client_id, client_secret, scope = (env[k] for k in _IDP_KEYS)
 
     if not token_url:
-        from hermes_cli.auth import resolve_nous_access_token
+        from auth.providers.nous import resolve_nous_access_token
 
         return resolve_nous_access_token()
 

@@ -6,6 +6,10 @@ set, Hermes must neither read nor refresh ``~/.claude/.credentials.json``, must 
 earlier adopting process persisted, and must say so in ``hermes auth list``.
 """
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.anthropic as _auth_auth_providers_anthropic
+
 
 import io
 import json
@@ -16,9 +20,9 @@ from unittest import mock
 
 import urllib.request
 
-from agent import anthropic_credentials as ac
-from agent import credential_sources
-from agent.credential_pool import load_pool
+import auth.providers.anthropic as ac
+from auth import source_policy as credential_sources
+from auth.credential_pool import load_pool
 from hermes_cli.auth_commands import auth_list_command
 
 
@@ -30,6 +34,7 @@ def _write_config(hermes_home, adopt):
 
 
 def test_opt_out_never_reads_or_refreshes_claude_code_login(tmp_path, monkeypatch):
+    from hermes_cli.config_credentials import credential_pool_environment
     hermes_home, claude_dir = tmp_path / "hermes", tmp_path / "claude"
     hermes_home.mkdir()
     claude_dir.mkdir()
@@ -59,14 +64,14 @@ def test_opt_out_never_reads_or_refreshes_claude_code_login(tmp_path, monkeypatc
 
     # Arm A (default): today's behaviour — the borrowed login is seeded into the pool.
     _write_config(hermes_home, adopt=None)
-    assert [e.source for e in load_pool("anthropic").entries()] == ["claude_code"]
+    assert [e.source for e in load_pool("anthropic", environment=credential_pool_environment()).entries()] == ["claude_code"]
 
     # Arm B (opt-out): no read, no refresh POST, the persisted row is dropped, the status line explains why.
     _write_config(hermes_home, adopt=False)
-    assert ac.resolve_anthropic_token() is None
+    assert _auth_auth_providers_anthropic.resolve_anthropic_token(environment=_phase6_auth_environment()) is None
     assert posts == []
     assert cred_file.read_bytes() == original_bytes
-    assert [e.source for e in load_pool("anthropic").entries()] == []
+    assert [e.source for e in load_pool("anthropic", environment=credential_pool_environment()).entries()] == []
     out = io.StringIO()
     with redirect_stdout(out):
         auth_list_command(SimpleNamespace(provider=None))
@@ -74,7 +79,7 @@ def test_opt_out_never_reads_or_refreshes_claude_code_login(tmp_path, monkeypatc
 
     # Arm A again: flipping back adopts (and refreshes) exactly as before.
     _write_config(hermes_home, adopt=True)
-    assert ac.resolve_anthropic_token() == "sk-ant-oat01-fresh"
+    assert _auth_auth_providers_anthropic.resolve_anthropic_token(environment=_phase6_auth_environment()) == "sk-ant-oat01-fresh"
     assert len(posts) == 1
     out = io.StringIO()
     with redirect_stdout(out):

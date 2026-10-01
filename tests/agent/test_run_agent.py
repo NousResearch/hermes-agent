@@ -5397,7 +5397,7 @@ class TestNousCredentialRefresh:
             return _RebuiltClient()
 
         monkeypatch.setattr(
-            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
+            'auth.providers.nous.resolve_nous_runtime_credentials', _fake_resolve
         )
 
         existing = _ExistingClient()
@@ -5468,7 +5468,7 @@ class TestNousCredentialRefresh:
             agent._anthropic_client = _RebuiltAnthropic()
 
         monkeypatch.setattr(
-            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
+            'auth.providers.nous.resolve_nous_runtime_credentials', _fake_resolve
         )
         monkeypatch.setattr(agent, "_rebuild_anthropic_client", _fake_rebuild)
         monkeypatch.setattr(
@@ -5786,7 +5786,7 @@ class TestFallbackAnthropicProvider:
         with (
             patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=None),
+            patch('auth.providers.anthropic.resolve_anthropic_token', return_value=None),
         ):
             mock_build.return_value = MagicMock()
             result = agent._try_activate_fallback()
@@ -5809,7 +5809,7 @@ class TestFallbackAnthropicProvider:
         with (
             patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=None),
+            patch('auth.providers.anthropic.resolve_anthropic_token', return_value=None),
         ):
             agent._try_activate_fallback()
 
@@ -5932,7 +5932,7 @@ class TestAnthropicCredentialRefresh:
         agent.provider = "anthropic"
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-oat01-fresh-token"),
+            patch('auth.providers.anthropic.resolve_anthropic_token', return_value="sk-ant-oat01-fresh-token"),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild,
         ):
             assert agent._try_refresh_anthropic_client_credentials() is True
@@ -6907,7 +6907,7 @@ class TestOAuthFlagAfterCredentialRefresh:
         agent._is_anthropic_oauth = False
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch('auth.providers.anthropic.resolve_anthropic_token',
                   return_value="sk-ant-setup-oauth-token"),
             patch("agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
@@ -6926,7 +6926,7 @@ class TestOAuthFlagAfterCredentialRefresh:
         agent._is_anthropic_oauth = True
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch('auth.providers.anthropic.resolve_anthropic_token',
                   return_value="sk-ant-api03-new-key"),
             patch("agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
@@ -6955,7 +6955,7 @@ class TestFallbackSetsOAuthFlag:
                   return_value=(mock_client, None)),
             patch("agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch('auth.providers.anthropic.resolve_anthropic_token',
                   return_value=None),
         ):
             result = agent._try_activate_fallback()
@@ -6978,7 +6978,7 @@ class TestFallbackSetsOAuthFlag:
                   return_value=(mock_client, None)),
             patch("agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch('auth.providers.anthropic.resolve_anthropic_token',
                   return_value=None),
         ):
             result = agent._try_activate_fallback()

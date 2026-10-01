@@ -71,7 +71,7 @@ def _record_credential_chores(monkeypatch):
     import agent.curator as curator
     import tools.skills_sync_client as ssc
     import tools.skills_sync_client_org as sso
-    from hermes_cli.auth_nous import _nous_inference_env_override
+    from auth.providers.nous import _nous_inference_env_override
     from hermes_constants import get_hermes_home
 
     seen: dict = {"sync": [], "org": [], "curator": []}

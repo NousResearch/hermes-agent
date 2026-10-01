@@ -99,7 +99,8 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
         job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from auth.errors import AuthError
+    from auth.failure_policy import is_rate_limited_auth_error
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         kwargs = {"requested": requested, "target_model": model}

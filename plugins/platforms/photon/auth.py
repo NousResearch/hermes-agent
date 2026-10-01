@@ -103,7 +103,7 @@ def _pool_first(auth: Dict[str, Any], key: str) -> Any:
 
 def _store_pool_record(key: str, record: Dict[str, Any]) -> None:
     """Replace ``credential_pool.<key>`` with ``[record]`` under the cross-process lock."""
-    from hermes_cli.auth import _auth_store_lock
+    from auth.store import _auth_store_lock
     with _auth_store_lock():
         auth = _load_auth()
         auth.setdefault("credential_pool", {})[key] = [record]

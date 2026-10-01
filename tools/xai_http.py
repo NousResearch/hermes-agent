@@ -1,6 +1,9 @@
 """Shared helpers for direct xAI HTTP integrations."""
 
 from __future__ import annotations
+import auth.constants as _auth_auth_constants
+import auth.providers.xai as _auth_auth_providers_xai
+
 
 import datetime
 import json
@@ -196,16 +199,16 @@ def resolve_xai_http_credentials(
     scoping is identical to the fallback branch, and the base URL honors ``HERMES_XAI_BASE_URL`` /
     ``XAI_BASE_URL`` behind the same origin-pinning validation as the OAuth branch. See #87045, #88040.
     """
-    import hermes_cli.auth as auth_mod
+    from hermes_cli.config_credentials import credential_pool_environment
     if prefer_api_key and (explicit_key := str(_resolve_explicit_xai_api_key() or "").strip()):
         # Origin-pinned so a tampered env override can't exfiltrate the bearer; rejection -> default URL.
         override = _xai_base_url_override()
-        base_url = auth_mod._xai_validate_inference_base_url(override, fallback=DEFAULT_XAI_BASE_URL)
+        base_url = _auth_auth_providers_xai._xai_validate_inference_base_url(override, fallback=DEFAULT_XAI_BASE_URL)
         return {"provider": "xai", "api_key": explicit_key, "base_url": base_url}
 
     try:
-        from agent.credential_pool import load_pool
-        pool = load_pool("xai-oauth")
+        from auth.credential_pool import load_pool
+        pool = load_pool("xai-oauth", environment=credential_pool_environment())
         entry = pool.try_refresh_matching(api_key_hint) if force_refresh else pool.select()
         if force_refresh and entry is None:
             # A rejected refresh may quarantine the issuing entry; continue with
@@ -215,9 +218,9 @@ def resolve_xai_http_credentials(
         fallback_base_url = str(
             getattr(entry, "runtime_base_url", None)
             or getattr(entry, "base_url", "")
-            or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
+            or _auth_auth_constants.DEFAULT_XAI_OAUTH_BASE_URL
         ).strip().rstrip("/")
-        base_url = auth_mod._xai_validate_inference_base_url(_xai_base_url_override(), fallback=fallback_base_url)
+        base_url = _auth_auth_providers_xai._xai_validate_inference_base_url(_xai_base_url_override(), fallback=fallback_base_url)
         if str(access_token).strip():
             return {"provider": "xai-oauth", "api_key": str(access_token).strip(), "base_url": base_url}
     except Exception:

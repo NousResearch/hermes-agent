@@ -7,6 +7,8 @@ redirect ``_model_request_active`` bracket and the response-vs-redirect crossing
 """
 
 from __future__ import annotations
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -251,13 +253,13 @@ def nous_rate_limit_guard(
                 nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
             )
             from hermes_cli import anon_auth
-            _anonymous = anon_auth.is_anonymous_agent(agent)
+            _anonymous = _auth_auth_providers_nous_guest.is_anonymous_agent(agent)
             _nous_remaining = nous_rate_limit_remaining(anonymous=_anonymous)
             if _nous_remaining is not None and _nous_remaining > 0:
                 reset = _fmt_nous_remaining(_nous_remaining)
                 if _anonymous:
                     _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(
-                        reset=anon_auth.friendly_wait(_nous_remaining))
+                        reset=_auth_auth_providers_nous_guest.friendly_wait(_nous_remaining))
                 else:
                     _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
@@ -283,7 +285,7 @@ def nous_rate_limit_guard(
                     "error": _nous_msg,
                     # The free tier's card body and its sign-in door (agent/error_surface.py).
                     **({"free_tier": {"kind": "rate_limited", "message": anon_auth.FREE_TIER_RATE_LIMIT_CARD.format(
-                        reset=anon_auth.friendly_wait(_nous_remaining))}} if _anonymous else {}),
+                        reset=_auth_auth_providers_nous_guest.friendly_wait(_nous_remaining))}} if _anonymous else {}),
                 }, FailoverReason.rate_limit.value, True))
         except Exception:
             pass  # Never let rate guard break the agent loop

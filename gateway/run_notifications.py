@@ -6,6 +6,8 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import asyncio
 import contextlib
@@ -943,8 +945,8 @@ class GatewayNotificationsMixin:
             # (which may mint on a fresh install, NS-829) answers from that identity without a network
             # call. No token refresh at boot either way.
             from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
-            if not guest_carries_inference():
+            from auth.providers.nous_guest import guest_carries_inference
+            if not guest_carries_inference(environment=_phase6_auth_environment()):
                 return None
             if resolve_provider("auto") != "nous":
                 return None

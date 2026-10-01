@@ -178,6 +178,7 @@ def test_seed_custom_pool_matches_legacy_named_pool(tmp_path, monkeypatch):
     base_url, the pool key ``custom:b.ai`` no longer equals the preferred
     candidate (the slug ``b-ai``), silently skipping the model_config seed.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     config = {
         "model": {
             "default": "b-ai-model",
@@ -207,9 +208,9 @@ def test_seed_custom_pool_matches_legacy_named_pool(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("custom:b.ai")
+    pool = load_pool("custom:b.ai", environment=credential_pool_environment())
     entries = pool.entries() if hasattr(pool, "entries") else []
     seeded = [e for e in entries if getattr(e, "source", "") == "model_config"]
     assert seeded, "legacy-named pool must still seed model_config from model.api_key"

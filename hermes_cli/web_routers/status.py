@@ -1,3 +1,5 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
 """Status dashboard routes: health, /api/status, system stats, curator, learning graph,
 portal and diagnostics actions.
 
@@ -387,7 +389,7 @@ def _nous_session_validity() -> str:
     fails, and this is the ONLY signal that surfaces it (local auth-store state, no token
     needed). Best-effort: never let auth classification break the probe."""
     try:
-        from hermes_cli.auth import get_nous_session_validity
+        from auth.providers.nous_status import get_nous_session_validity
         return get_nous_session_validity()
     except Exception:
         return "unknown"
@@ -736,9 +738,9 @@ def _get_portal_status_sync():
     cfg = load_config() or {}
     auth: Dict[str, Any] = {}
     try:
-        from hermes_cli.auth import get_nous_auth_status_local
+        from auth.providers.nous_status import get_nous_auth_status_local
         # Refresh-free snapshot so polling never performs an OAuth refresh.
-        auth = get_nous_auth_status_local() or {}
+        auth = get_nous_auth_status_local(environment=_phase6_auth_environment()) or {}
     except Exception:
         auth = {}
 

@@ -226,6 +226,7 @@ class TestApiKeyHintRealPool:
     failed entry is marked exhausted (#43747, wrong-entry marking)."""
 
     def _seed_pool(self, tmp_path, monkeypatch):
+        from hermes_cli.config_credentials import credential_pool_environment
         import json
 
         hermes_home = tmp_path / "hermes"
@@ -259,9 +260,9 @@ class TestApiKeyHintRealPool:
             )
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from agent.credential_pool import load_pool
+        from auth.credential_pool import load_pool
 
-        return load_pool("openrouter")
+        return load_pool("openrouter", environment=credential_pool_environment())
 
     def test_hint_marks_failed_entry_not_current(self, tmp_path, monkeypatch):
         pool = self._seed_pool(tmp_path, monkeypatch)
@@ -309,6 +310,7 @@ class TestFailureAttribution:
     """
 
     def _make_pool(self, tmp_path, monkeypatch, entries):
+        from hermes_cli.config_credentials import credential_pool_environment
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -331,9 +333,9 @@ class TestFailureAttribution:
             json.dumps({"version": 1, "credential_pool": {"anthropic": entries}}),
             encoding="utf-8",
         )
-        from agent.credential_pool import load_pool
+        from auth.credential_pool import load_pool
 
-        pool = load_pool("anthropic")
+        pool = load_pool("anthropic", environment=credential_pool_environment())
         assert [entry.id for entry in pool.entries()] == [
             entry["id"] for entry in entries
         ], "pool fixture leaked host credentials into the test pool"

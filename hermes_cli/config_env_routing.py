@@ -1,19 +1,4 @@
-"""Which ``hermes config`` keys live in ``.env`` instead of ``config.yaml``, and their lifecycle.
-
-Platform setting keys such as ``FEISHU_HOME_CHANNEL`` had two writers: the platform setup flows and
-``/sethome`` persist them to ``.env`` through ``save_env_value``, while ``hermes config set`` only
-routed credential-shaped names there and wrote every other bare name to the top level of
-``config.yaml``. The gateway bridges top-level scalars into the environment only when ``.env`` lacks
-the name and one-shot CLI readers never bridge, so the two copies diverged silently (#111848).
-
-The routing rule is the key's SHAPE, not a registry: a bare ``UPPER_SNAKE`` name is an environment
-setting and goes to ``.env`` — the file every runtime reader (``os.getenv``, the gateway's
-``platform_gate_env``) resolves against — whether or not Hermes enumerates it anywhere. Roughly 290
-of the ~700 documented variables (``TELEGRAM_GROUP_ALLOWED_USERS``, ``HERMES_TIMEZONE``, ...) are
-read straight from the environment without being registered in ``OPTIONAL_ENV_VARS``, so a registry
-check alone kept landing them in ``config.yaml``. Provider credentials keep their own rotation
-lifecycle in ``hermes_cli.credential_lifecycle``.
-"""
+"Which ``hermes config`` keys live in ``.env`` instead of ``config.yaml``, and their lifecycle.\n\nPlatform setting keys such as ``FEISHU_HOME_CHANNEL`` had two writers: the platform setup flows and\n``/sethome`` persist them to ``.env`` through ``save_env_value``, while ``hermes config set`` only\nrouted credential-shaped names there and wrote every other bare name to the top level of\n``config.yaml``. The gateway bridges top-level scalars into the environment only when ``.env`` lacks\nthe name and one-shot CLI readers never bridge, so the two copies diverged silently (#111848).\n\nThe routing rule is the key's SHAPE, not a registry: a bare ``UPPER_SNAKE`` name is an environment\nsetting and goes to ``.env`` — the file every runtime reader (``os.getenv``, the gateway's\n``platform_gate_env``) resolves against — whether or not Hermes enumerates it anywhere. Roughly 290\nof the ~700 documented variables (``TELEGRAM_GROUP_ALLOWED_USERS``, ``HERMES_TIMEZONE``, ...) are\nread straight from the environment without being registered in ``OPTIONAL_ENV_VARS``, so a registry\ncheck alone kept landing them in ``config.yaml``. Provider credentials keep their own rotation\nlifecycle in ``auth.sources``.\n"
 
 import re
 import sys

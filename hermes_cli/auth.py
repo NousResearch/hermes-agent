@@ -1,15 +1,23 @@
-"""Multi-provider authentication system for Hermes Agent.
+"""CLI authentication orchestration and provider/model presentation.
 
-- ``ProviderConfig`` / ``PROVIDER_REGISTRY`` describe every known inference provider.
-- The auth store (``~/.hermes/auth.json``) holds per-provider state, the credential pool and
-  suppression markers; ``_auth_store_lock`` / ``_load_auth_store`` / ``_save_auth_store`` are the
-  only I/O primitives (cross-process flock, atomic 0o600 writes).
-- ``resolve_provider()`` picks the active provider via the documented priority chain.
-- ``OAUTH_PROVIDER_FLOWS`` maps each OAuth provider to its resolver/status builder; the flows live in
-  ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_spotify``/``auth_openrouter`` and are
-  re-imported here so ``hermes_cli.auth.<name>`` stays the public/patchable surface."""
+Shared credential storage, OAuth protocols and refresh policy belong to auth.
+Application dispatch supplies scoped settings through config_credentials.
+Provider and model routing remain with their existing Phase 5 owners.
+"""
 
 from __future__ import annotations
+from hermes_cli.route_identity import is_actual_local_base_url, normalize_actual_base_url
+from auth.api_keys import resolve_api_key_provider_secret
+from auth.secret_validation import has_usable_secret, looks_like_openrouter_key
+from auth.oauth import _is_terminal_refresh_error
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.pool_persistence as auth_pool_persistence
+import auth.provider_state as auth_provider_state
+import auth.store as auth_storage
+import auth.store_migrations as auth_store_migrations
+import auth.provider_status as auth_provider_status
 
 from pm import install_hint
 import json
@@ -30,116 +38,15 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tup
 from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
-from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
+from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: auth.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
-from hermes_cli.auth_model_picker import (  # noqa: F401  re-exported
-    _prompt_model_selection, _save_model_choice)
-from hermes_cli.auth_device_flow import (  # noqa: F401  re-exported
-    _can_open_graphical_browser, _default_verify, _is_remote_session,
-    _nous_device_auth_timeout_message, _offer_existing_oauth_credentials,
-    _poll_device_token_generic, _poll_for_token, _print_device_code_instructions,
-    _print_login_success, _print_loopback_ssh_hint, _prompt_yes_no, _request_device_code,
-    _resolve_verify, _ssh_user_at_host)
-from hermes_cli.auth_oauth_grants import (  # noqa: F401  re-exported
-    SINGLE_USE_REFRESH_POOL_PROVIDERS, _oauth_heal_clean_marks, _oauth_heal_notices,
-    consume_oauth_heal_notices, heal_forked_single_use_oauth_grants,
-    strip_cloned_single_use_oauth_grants)
-from hermes_cli.auth_nous import (  # noqa: F401  re-exported
-    NOUS_SESSION_TERMINAL, NOUS_SESSION_UNKNOWN, NOUS_SESSION_VALID, _ALLOWED_NOUS_INFERENCE_HOSTS,
-    _agent_key_is_usable, _apply_nous_refreshed_tokens, _assert_nous_inference_jwt_usable,
-    _compute_nous_auth_status, _format_nous_entitlement_auth_error, _healed_nous_inference_url,
-    _login_nous, _merge_shared_nous_oauth_state, _migrate_stale_nous_portal_url,
-    _nous_device_code_login, _nous_inference_env_override, _nous_invoke_jwt_is_usable,
-    _nous_invoke_jwt_status, _nous_portal_env_override, _nous_shared_store_lock,
-    _nous_shared_store_path, _pool_first_oauth_status, _quarantine_nous_oauth_state,
-    _quarantine_nous_pool_entries, _read_shared_nous_state, _refresh_access_token,
-    _refresh_nous_or_quarantine, _select_nous_invoke_jwt, _sync_nous_pool_from_auth_store,
-    _token_fingerprint, _try_import_shared_nous_state, _validate_nous_inference_url_from_network,
-    _write_shared_nous_state, fetch_nous_models, get_nous_auth_status_local,
-    get_nous_session_validity, persist_nous_credentials, refresh_nous_oauth_from_state,
-    resolve_nous_runtime_credentials, step_up_nous_billing_scope)
-from hermes_cli.auth_minimax import (  # noqa: F401  re-exported
-    _MINIMAX_OAUTH_ERROR_BODY_LIMIT, _login_minimax_oauth, _minimax_oauth_login, _minimax_pkce_pair,
-    _minimax_poll_token, _minimax_post_form, _minimax_request_user_code,
-    _minimax_resolve_token_expiry_unix, _minimax_response_error_text, _minimax_save_auth_state,
-    _refresh_minimax_oauth_state, build_minimax_oauth_token_provider,
-    resolve_minimax_oauth_runtime_credentials)
-from hermes_cli.auth_xai import (  # noqa: F401  re-exported
-    _login_xai_oauth, _read_xai_oauth_tokens, _refresh_xai_oauth_tokens, _save_xai_oauth_tokens,
-    _write_through_xai_oauth_to_global_root, _xai_access_token_is_expiring,
-    _xai_oauth_device_code_login, _xai_oauth_discovery, _xai_oauth_poll_device_token,
-    _xai_oauth_request_device_code, _xai_proactive_refresh_skew_seconds,
-    _xai_validate_inference_base_url, refresh_xai_oauth_pure, resolve_xai_oauth_runtime_credentials)
-from hermes_cli.auth_codex import (  # noqa: F401  re-exported
-    _codex_access_token_is_expiring, _codex_device_code_login, _codex_http_client,
-    _codex_pool_rate_limit_status, _codex_quota_probe_cache, _codex_usage_probe_url,
-    _import_codex_cli_tokens, _is_codex_rate_limit_shaped, _login_openai_codex,
-    _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens,
-    _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
-    refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
-from hermes_cli.auth_spotify import (  # noqa: F401  re-exported
-    _refresh_spotify_oauth_state, get_spotify_auth_status, login_spotify_command,
-    resolve_spotify_runtime_credentials)
-from hermes_cli.auth_openrouter import _openrouter_pkce_login  # noqa: F401  re-exported
-from hermes_cli.auth_qwen import (  # noqa: F401  re-exported
-    _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
-    _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
-    resolve_qwen_runtime_credentials)
-from hermes_cli.auth_constants import (  # noqa: F401  re-exported
-    _decode_jwt_claims, AUTH_STORE_VERSION, AUTH_LOCK_TIMEOUT_SECONDS, DEFAULT_NOUS_PORTAL_URL,
-    DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_CLIENT_ID, NOUS_BILLING_MANAGE_SCOPE,
-    DEFAULT_NOUS_SCOPE, NOUS_DEVICE_CODE_SOURCE, NOUS_AUTH_PATH_INVOKE_JWT,
-    ACCESS_TOKEN_REFRESH_SKEW_SECONDS, NOUS_INVOKE_JWT_MIN_TTL_SECONDS, DEFAULT_CODEX_BASE_URL,
-    DEFAULT_XAI_OAUTH_BASE_URL, MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_SCOPE,
-    MINIMAX_OAUTH_GLOBAL_BASE, MINIMAX_OAUTH_CN_BASE, MINIMAX_OAUTH_GLOBAL_INFERENCE,
-    MINIMAX_OAUTH_CN_INFERENCE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, DEFAULT_QWEN_BASE_URL,
-    DEFAULT_GITHUB_MODELS_BASE_URL, DEFAULT_COPILOT_ACP_BASE_URL, DEFAULT_OLLAMA_CLOUD_BASE_URL,
-    DEFAULT_ACTUAL_BASE_URL, DEFAULT_ACTUAL_LOCAL_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL,
-    STEPFUN_STEP_PLAN_CN_BASE_URL, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
-    CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPE,
-    XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL, DEFAULT_SPOTIFY_API_BASE_URL, SPOTIFY_DOCS_URL,
-    DEFAULT_SPOTIFY_SCOPE, SERVICE_PROVIDER_NAMES, LMSTUDIO_NOAUTH_PLACEHOLDER,
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, CODEX_RATE_LIMITED_CODE, AuthError, _nous_err, httpx)
+from auth.providers.spotify import get_spotify_auth_status
+from auth.constants import DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_CLIENT_ID, NOUS_BILLING_MANAGE_SCOPE, DEFAULT_NOUS_SCOPE, DEFAULT_CODEX_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL, MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_SCOPE, MINIMAX_OAUTH_GLOBAL_BASE, MINIMAX_OAUTH_CN_BASE, MINIMAX_OAUTH_GLOBAL_INFERENCE, MINIMAX_OAUTH_CN_INFERENCE, DEFAULT_QWEN_BASE_URL, DEFAULT_GITHUB_MODELS_BASE_URL, DEFAULT_COPILOT_ACP_BASE_URL, DEFAULT_OLLAMA_CLOUD_BASE_URL, DEFAULT_ACTUAL_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL, SERVICE_PROVIDER_NAMES
+from auth.errors import AuthError
 
 logger = logging.getLogger(__name__)
-
-try:
-    import fcntl
-except Exception:
-    fcntl = None
-try:
-    import msvcrt
-except Exception:
-    msvcrt = None
-
-def is_actual_local_base_url(base_url: str) -> bool:
-    """Return True for Actual's loopback local API endpoint."""
-    try:
-        host = (urlparse(base_url or "").hostname or "").lower().rstrip(".")
-    except Exception:
-        return False
-    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
-
-
-def normalize_actual_base_url(base_url: str) -> str:
-    """Return Actual's OpenAI-compatible base URL (hosted api.actual.inc or the loopback local server;
-    both expose a /v1 surface for the selected OpenAI-compatible transport)."""
-    url = str(base_url or "").strip().rstrip("/")
-    if not url:
-        return DEFAULT_ACTUAL_BASE_URL
-    try:
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        path = parsed.path.rstrip("/")
-    except Exception:
-        return url
-    if path in {"", "/"} and (host == "api.actual.inc" or is_actual_local_base_url(url)):
-        return url + "/v1"
-    return url
 
 
 # ── Provider Registry ───────────────────────────────────────────────────────────────────────────────
@@ -173,7 +80,7 @@ def _api_key_provider(
 # [, auth_type]])``; OAuth / bespoke rows are full ``ProviderConfig`` objects.
 _REGISTRY_ROWS: Tuple[Any, ...] = (
     ProviderConfig(
-        "nous", "Nous Portal", "oauth_device_code", portal_base_url=DEFAULT_NOUS_PORTAL_URL,
+        "nous", "Nous Portal", "oauth_device_code", portal_base_url=auth_store_migrations.DEFAULT_NOUS_PORTAL_URL,
         inference_base_url=DEFAULT_NOUS_INFERENCE_URL, client_id=DEFAULT_NOUS_CLIENT_ID,
         scope=DEFAULT_NOUS_SCOPE),
     ProviderConfig("openai-codex", "OpenAI Codex", "oauth_external", inference_base_url=DEFAULT_CODEX_BASE_URL),
@@ -262,596 +169,36 @@ from hermes_cli.config import (  # noqa: E402
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
 from hermes_cli.auth_plugin_providers import (  # noqa: E402
-    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
+    registry_lookup as _registry_lookup, sync_plugin_provider_registry)
+import hermes_cli.auth_plugin_providers as auth_plugin_providers
 
 sync_plugin_provider_registry()
 
 
-def get_anthropic_key() -> str:
-    """First usable Anthropic credential (``.env`` preferred over a stale shell export), or ``""``.
-
-    Order mirrors ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars``.
-
-    Checks both the ``.env`` file and the process environment, preferring ``~/.hermes/.env`` so a deliberate
-    key rotation isn't shadowed by a stale shell export (matches the api-key resolution path — see #20591).
-    """
-    from hermes_cli.config import get_env_value_prefer_dotenv
-    env_vars = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
-    return next((v for v in (get_env_value_prefer_dotenv(var) or "" for var in env_vars) if v), "")
 
 
 # ── Secret validation ───────────────────────────────────────────────────────────────────────────────
-
-_PLACEHOLDER_SECRET_VALUES = {
-    "*", "**", "***", "changeme", "your_api_key", "your_api_key_here", "your-api-key",
-    "placeholder", "example", "dummy", "null", "none"}
 
 
 # The two placeholder shapes this repo ships itself, in ``.env.example`` (four providers) and in
 # the quickstart / MCP / skill references (``ghp_xxx``, ``hf_xxx``, ``sk-xxxxxxxx``). Both are
 # copied verbatim by users, so both must read as "not configured" rather than as a credential.
-_PLACEHOLDER_KEY_PREFIXES = ("sk-", "ghp_", "hf_")
-
-
-def _is_placeholder_shape(value: str) -> bool:
-    """True for the placeholder shapes shipped in .env.example and the docs."""
-    lowered = value.lower()
-    if lowered.startswith("your_") and lowered.endswith("_here"):
-        return True
-    for prefix in _PLACEHOLDER_KEY_PREFIXES:
-        if lowered.startswith(prefix):
-            tail = lowered[len(prefix):]
-            if tail and all(c == "x" for c in tail):
-                return True
-    stripped = lowered.replace(" ", "").replace("-", "").replace("_", "")
-    return bool(stripped) and all(c == "x" for c in stripped)
-
-
-def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
-    """Return True when a configured secret looks usable, not empty/placeholder."""
-    if not isinstance(value, str):
-        return False
-    cleaned = value.strip()
-    return (len(cleaned) >= min_length
-            and cleaned.lower() not in _PLACEHOLDER_SECRET_VALUES
-            and not _is_placeholder_shape(cleaned))
 
 
 # Known API-key prefixes per provider. Only listed providers get prefix validation; everyone else
 # is fail-open. Keeps an obviously malformed key in .env (truncated paste, wrong provider's key)
 # from silently shadowing a valid credential-pool entry and producing opaque 401s.
 # See #93593.
-KNOWN_PROVIDER_KEY_PREFIXES: Dict[str, tuple] = {
-    "openrouter": ("sk-or-",),  # all OpenRouter keys are sk-or-... (currently sk-or-v1-)
-}
-
-
-def _matches_key_prefix(provider_id: str, val: str) -> bool:
-    """True when *val* starts with one of *provider_id*'s declared key prefixes (False when the
-    provider declares none)."""
-    return val.startswith(KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id, ()))
-
-
-def looks_like_openrouter_key(value: Any) -> bool:
-    """True when *value* carries an OpenRouter key prefix. OPENAI_API_KEY is a legacy home for an
-    OpenRouter key, so only a value shaped like one may be read as an OpenRouter credential: a real
-    OpenAI key must never be auto-routed to, or sent to, openrouter.ai."""
-    return _matches_key_prefix("openrouter", str(value or "").strip())
-
-
-def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Optional[str]:
-    """*value* stripped when it is a usable, prefix-valid secret; None (after warning on a provable
-    prefix mismatch, so it never shadows a later credential source) otherwise. Providers without a
-    declared prefix are fail-open."""
-    val = str(value or "").strip()
-    if not has_usable_secret(val):
-        return None
-    prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id)
-    if prefixes and not _matches_key_prefix(provider_id, val):
-        logger.warning(
-            "Ignoring %s for provider %r: value does not match the expected key "
-            "prefix (%s). Falling back to the next credential source. Fix or "
-            "remove the malformed key to silence this warning.",
-            source, provider_id, " or ".join(prefixes))
-        return None
-    return val
-
-
-def _model_level_key_env(provider_id: str) -> str:
-    """``model.key_env`` when config.yaml's main model targets *provider_id*, else ``""``.
-
-    The Desktop settings UI saves registry-provider keys as a credential pointer
-    (``model.key_env`` → ``$HERMES_HOME/.env``) instead of the registry's canonical env var,
-    so credential resolution must consult it (#106336).
-    """
-    try:
-        from hermes_cli.config import load_config
-        model_cfg = (load_config() or {}).get("model")
-    except Exception:
-        return ""
-    if not isinstance(model_cfg, dict):
-        return ""
-    if str(model_cfg.get("provider") or "").strip().lower() != provider_id:
-        return ""
-    return str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
-
-
-def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
-    """Resolve an API-key provider's token and indicate where it came from."""
-    if provider_id == "copilot":
-        # The dedicated copilot auth module does proper token validation/exchange.
-        try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
-            token, source = resolve_copilot_token()
-            if token:
-                api_token, _base_url = get_copilot_api_token(token)
-                return api_token, source
-        except ValueError as exc:
-            logger.warning("Copilot token validation failed: %s", exc)
-        except Exception:
-            pass
-        return "", ""
-
-    # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation in .env isn't shadowed by
-    # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).
-    from hermes_cli.config import get_env_value_prefer_dotenv
-
-    # Desktop-saved credential pointer: the settings UI persists registry-provider keys as
-    # model.key_env → $HERMES_HOME/.env (e.g. HERMES_CUSTOM_LMSTUDIO_API_KEY) while keeping
-    # model.provider on the registry id, so the pointer must be honored here or the UI-saved
-    # key is silently ignored and lmstudio falls through to its no-auth placeholder (#106336).
-    key_env = _model_level_key_env(provider_id)
-    if key_env:
-        val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(key_env), key_env)
-        if val:
-            return val, key_env
-
-    for env_var in pconfig.api_key_env_vars:
-        val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(env_var), env_var)
-        if val:
-            # A provably malformed key (declared prefix mismatch) must not shadow a valid credential-pool
-            # entry (#93593). Warn and keep looking instead of returning it.
-            return val, env_var
-
-    # Fallback: credential pool (e.g. zai key stored via auth.json). Prefer the pool's own
-    # selection (peek) but try the rest too so one malformed entry doesn't block a valid one.
-    pool_source = f"credential_pool:{provider_id}"
-    try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(provider_id)
-        if pool and pool.has_credentials():
-            entry = pool.peek()
-            candidates = [entry] if entry is not None else []
-            try:
-                for extra in pool.entries():
-                    if extra is not None and all(extra is not c for c in candidates):
-                        candidates.append(extra)
-            except Exception:
-                pass
-            for entry in candidates:
-                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
-                val = _usable_declared_secret(provider_id, key, pool_source)
-                if val:
-                    return val, pool_source
-    except Exception:
-        pass
-    return "", ""
 
 
 # ── Error formatting (AuthError itself lives in auth_constants) ─────────────────────────────────────
 
-def is_rate_limited_auth_error(error: Exception) -> bool:
-    """True when an :class:`AuthError` is upstream rate-limiting / quota: transient, and
-    re-authenticating cannot fix it, so callers should say "retry later", not ``hermes auth``."""
-    return (isinstance(error, AuthError) and not error.relogin_required
-            and error.code == CODEX_RATE_LIMITED_CODE)
-
-
-def primary_failure_wording(error: Exception) -> tuple[str, str]:
-    """``(log_phrase, user_phrase)`` for a primary-provider failure that triggers the fallback
-    chain. A 429/quota AuthError leaves the credentials valid; labelling it "auth failed" sends
-    operators hunting for an expired token (#117482), so it reads as quota at every surface."""
-    if is_rate_limited_auth_error(error):
-        return "rate-limited (429)", "Primary provider quota exhausted"
-    return "auth failed", "Primary auth failed"
-
 
 # Entitlement failures: Nous gets a Portal-aware message; other providers a fixed generic one (or
 # the raw error when no generic text exists for the code).
-_GENERIC_ENTITLEMENT_MESSAGES = {
-    "subscription_required": "No active paid subscription found. Please purchase/activate a subscription, then retry.",
-    "insufficient_credits": "Subscription credits are exhausted. Top up/renew credits, then retry."}
-_ENTITLEMENT_ERROR_CODES = frozenset(_GENERIC_ENTITLEMENT_MESSAGES) | {
-    "subscription_expired", "no_usable_credits", "account_missing", "member_spend_cap_exceeded"}
-
-
-def format_auth_error(error: Exception) -> str:
-    """Map auth failures to concise user-facing guidance."""
-    if not isinstance(error, AuthError) or is_rate_limited_auth_error(error):
-        # Rate-limit / quota errors are not credential problems: never append "re-authenticate".
-        return str(error)
-    if error.relogin_required:
-        # Profile-aware: a bare `hermes model` from a named profile re-signs the ROOT store (#114012).
-        from hermes_constants import profile_cli_selector
-
-        return f"{error} Run `hermes {profile_cli_selector()}model` to re-authenticate."
-    if error.code in _ENTITLEMENT_ERROR_CODES:
-        if error.provider == "nous":
-            return _format_nous_entitlement_auth_error(error)
-        generic = _GENERIC_ENTITLEMENT_MESSAGES.get(error.code)
-        if generic:
-            return generic
-    if error.code == "temporarily_unavailable":
-        return f"{error} Please retry in a few seconds."
-    return str(error)
-
-
-def _nonempty_str(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
 
 
 # ── Auth Store — persistence layer for ~/.hermes/auth.json ──────────────────────────────────────────
-
-def _auth_file_path() -> Path:
-    path = get_hermes_home() / "auth.json"
-    # Seat belt: under pytest, refuse to touch the real user's auth store (tests that forgot to
-    # monkeypatch HERMES_HOME or escaped the hermetic conftest). In production: one dict lookup.
-    if (os.environ.get("PYTEST_CURRENT_TEST")
-            and _same_path(path, Path.home() / ".hermes" / "auth.json")):
-        raise RuntimeError(
-            f"Refusing to touch real user auth store during test run: {path}. "
-            "Set HERMES_HOME to a tmp_path in your test fixture, or run "
-            "via scripts/run_tests.sh for hermetic CI-parity env.")
-    return path
-
-
-def _global_auth_file_path() -> Optional[Path]:
-    """Global-root auth.json in profile mode; None when profile and global root are the same dir.
-
-    Read-only fallback path, so no pytest seat belt here (it lives on ``_auth_file_path()``)."""
-    try:
-        from hermes_constants import get_default_hermes_root
-        global_root = get_default_hermes_root()
-    except Exception:
-        return None
-    return None if _same_path(get_hermes_home(), global_root) else global_root / "auth.json"
-
-
-def _load_global_auth_store() -> Dict[str, Any]:
-    """Load the global-root auth store (read-only fallback, mtime-memoised); ``{}`` when absent or
-    unreadable — a malformed global store must never break profile reads."""
-    global _global_auth_store_cache
-    global_path = _global_auth_file_path()
-    if global_path is None or not global_path.exists():
-        _global_auth_store_cache = None
-        return {}
-    try:
-        cache_key: Optional[Tuple[str, Tuple[int, int, int, int]]] = (
-            str(global_path.resolve(strict=False)), file_signature(global_path.stat()))
-    except Exception:
-        cache_key = None
-    cached = _global_auth_store_cache
-    if cache_key is not None and cached is not None and cached[:2] == cache_key:
-        return cached[2]
-    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("HOME"):
-        real_root = Path(os.environ["HOME"]) / ".hermes" / "auth.json"
-        try:
-            if os.path.normcase(os.path.abspath(global_path)) == os.path.normcase(os.path.abspath(real_root)):
-                _global_auth_store_cache = None
-                return {}
-        except Exception:
-            pass
-    try:
-        store = _load_auth_store(global_path)
-    except Exception:
-        _global_auth_store_cache = None
-        return {}
-    if cache_key is not None:
-        _global_auth_store_cache = (*cache_key, store)
-    return store
-
-
-_auth_target_lock_holders: Dict[str, threading.local] = {}
-_auth_target_lock_holders_guard = threading.Lock()
-
-
-def _same_path(left: Path, right: Path) -> bool:
-    try:
-        return left.resolve(strict=False) == right.resolve(strict=False)
-    except Exception:
-        return left == right
-
-
-def _is_same_auth_store(left: Path, right: Path) -> bool:
-    """True when two auth paths name ONE store rather than two copies.
-    ``_same_path`` resolves symlinks and ``..``; ``samefile`` adds hardlinks and bind-mounts
-    (same inode under two resolved names). Used by the forked-grant heal: a shared store has
-    no "other side" to consolidate.
-
-    See #101356.
-    """
-    if _same_path(left, right):
-        return True
-    try:
-        return left.samefile(right)
-    except OSError:
-        return False
-
-
-def _resolved_key(path: Path) -> str:
-    """Canonical string for *path* (resolved when possible) used as a cache / lock-holder key."""
-    try:
-        return str(path.resolve(strict=False))
-    except Exception:
-        return str(path)
-
-
-def _auth_lock_holder_for(target_path: Path) -> threading.local:
-    """Return a reentrancy tracker keyed to one canonical auth-store path."""
-    with _auth_target_lock_holders_guard:
-        return _auth_target_lock_holders.setdefault(_resolved_key(target_path), threading.local())
-
-
-def _kernel_lock(lock_file: Any, acquire: bool) -> None:
-    """Non-blocking exclusive flock (fcntl) or 1-byte msvcrt lock at offset 0; ``acquire=False`` releases."""
-    if fcntl:
-        fcntl.flock(lock_file.fileno(), (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN)
-    else:
-        lock_file.seek(0)
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1)
-
-
-@contextmanager
-def _file_lock(
-    lock_path: Path, holder: threading.local, timeout_seconds: float, timeout_message: str):
-    """Cross-process advisory flock helper, reentrant per-thread via ``holder.depth``.
-
-    Falls back to a depth-only guard when neither ``fcntl`` nor ``msvcrt`` is available. Callers
-    supply their own ``threading.local`` so independent locks (profile store vs global root vs the
-    shared Nous store) track reentrancy separately."""
-    if getattr(holder, "depth", 0) > 0:
-        holder.depth += 1
-        try:
-            yield
-        finally:
-            holder.depth -= 1
-        return
-
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with ExitStack() as stack:
-        lock_file = None
-        if fcntl is not None or msvcrt is not None:
-            # msvcrt.locking needs a non-empty file with the pointer at 0. This convenience write can
-            # race another holder's byte-range lock and raise PermissionError (reproduced with 20
-            # concurrent processes on Windows); losing the race just means the file already has
-            # content, so swallow it.
-            if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-                try:
-                    lock_path.write_text(" ", encoding="utf-8")
-                except (OSError, PermissionError):
-                    pass
-            lock_file = stack.enter_context(lock_path.open("r+" if msvcrt else "a+", encoding="utf-8"))
-            deadline = time.monotonic() + max(1.0, timeout_seconds)
-            while True:
-                try:
-                    _kernel_lock(lock_file, True)
-                    break
-                except (BlockingIOError, OSError, PermissionError):
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(timeout_message)
-                    time.sleep(0.05)
-
-        holder.depth = 1
-        try:
-            yield
-        finally:
-            holder.depth = 0
-            if lock_file is not None:
-                try:
-                    _kernel_lock(lock_file, False)
-                except (OSError, IOError):
-                    pass
-
-
-@contextmanager
-def _auth_store_lock(
-    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS, *, target_path: Optional[Path] = None):
-    """Cross-process advisory lock for one auth.json read/write transaction.
-
-    ``target_path`` is required for profile-to-global write-throughs: each path has its own
-    reentrancy tracker and kernel lock. Lock ordering invariant: ``_auth_store_lock`` FIRST (outer),
-    ``_nous_shared_store_lock`` SECOND (inner), else deadlock against a concurrent shared import."""
-    auth_path = target_path if target_path is not None else _auth_file_path()
-    with _file_lock(
-        auth_path.with_suffix(".lock"), _auth_lock_holder_for(auth_path), timeout_seconds,
-        "Timed out waiting for auth store lock"):
-        yield
-
-
-def _empty_auth_store() -> Dict[str, Any]:
-    return {"version": AUTH_STORE_VERSION, "providers": {}}
-
-
-def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
-    auth_file = auth_file or _auth_file_path()
-    if not auth_file.exists():
-        return _empty_auth_store()
-    try:
-        raw = json.loads(auth_file.read_text(encoding="utf-8-sig"))
-    except OSError:
-        # Exists but unreadable (EMFILE, EACCES, EIO, stalled mount): contents are not bad, and this
-        # module read-modify-writes everywhere, so an empty store here is one _save_auth_store()
-        # away from erasing every credential. Fail loudly.
-        logger.warning(
-            "auth: could not read %s, leaving the store on disk untouched "
-            "rather than degrading to an empty one",
-            auth_file, exc_info=True)
-        raise
-    except Exception as exc:
-        # Genuine corruption: unparseable JSON or non-UTF-8 bytes. Preserve a copy, but never
-        # advertise a backup that was not written.
-        corrupt_path = auth_file.with_suffix(".json.corrupt")
-        try:
-            shutil.copy2(auth_file, corrupt_path)
-            preserved = True
-        except Exception:
-            preserved = False
-            logger.debug("auth: could not preserve a copy of the corrupt store at %s", corrupt_path,
-                         exc_info=True)
-        logger.warning(
-            "auth: failed to parse %s (%s), starting with empty store. %s %s",
-            auth_file, exc,
-            "Corrupt file preserved at" if preserved else "A copy could NOT be preserved at",
-            corrupt_path)
-        return _empty_auth_store()
-
-    if isinstance(raw, dict) and (
-        isinstance(raw.get("providers"), dict) or isinstance(raw.get("credential_pool"), dict)):
-        raw.setdefault("providers", {})
-        if isinstance(raw.get("providers"), dict):
-            _migrate_stale_nous_portal_url(raw["providers"])
-        return raw
-
-    if isinstance(raw, dict) and isinstance(raw.get("systems"), dict):  # legacy "systems" format
-        systems = raw["systems"]
-        providers = {"nous": systems["nous_portal"]} if "nous_portal" in systems else {}
-        return {**_empty_auth_store(), "providers": providers,
-                "active_provider": "nous" if providers else None}
-    return _empty_auth_store()
-
-
-def _save_private_json(target: Path, data: Any, *, fsync_dir: bool = False, **dump_kwargs: Any) -> None:
-    """0600 credential JSON under a 0700 parent (``secure_parent_dir`` refuses ``/``, top-level dirs
-    and the install tree). ``atomic_json_write`` creates the temp file 0600 before any byte lands."""
-    from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(target.parent)
-    secure_parent_dir(target)
-    atomic_json_write(target, data, mode=0o600, fsync_dir=fsync_dir, **dump_kwargs)
-
-
-def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
-    """Atomically persist *auth_store* (0o600, parent tightened to 0o700) to the active store, or to
-    an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
-    auth_file = target_path if target_path is not None else _auth_file_path()
-    auth_store["version"] = AUTH_STORE_VERSION
-    auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _save_private_json(auth_file, auth_store, fsync_dir=True)
-    if target_path is not None:
-        # A write-through to the global root must not be masked by the mtime memo: on coarse-mtime
-        # filesystems a read-after-write in the same tick would keep serving the pre-write store.
-        global _global_auth_store_cache
-        _global_auth_store_cache = None
-    return auth_file
-
-
-def _store_section(auth_store: Dict[str, Any], key: str) -> Dict[str, Any]:
-    """Return ``auth_store[key]`` as a dict, replacing a missing/non-dict value in place."""
-    section = auth_store.get(key)
-    if not isinstance(section, dict):
-        section = auth_store[key] = {}
-    return section
-
-
-def _provider_state_in(store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
-    """Shallow copy of ``store["providers"][provider_id]`` when it is a dict, else None."""
-    providers = store.get("providers") if store else None
-    state = providers.get(provider_id) if isinstance(providers, dict) else None
-    return dict(state) if isinstance(state, dict) else None
-
-
-def _load_provider_state_with_source(
-    auth_store: Dict[str, Any], provider_id: str,
-) -> tuple[Optional[Dict[str, Any]], Optional[Path]]:
-    """Provider state plus the auth.json path it came from (profile first, then the global root).
-
-    Refresh paths that rotate single-use OAuth refresh tokens must write the updated chain back to
-    the same store they read."""
-    state = _provider_state_in(auth_store, provider_id)
-    if state is not None:
-        return state, _auth_file_path()
-    global_state = _provider_state_in(_load_global_auth_store(), provider_id)
-    return (global_state, _global_auth_file_path()) if global_state is not None else (None, None)
-
-
-def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
-    """Provider state; in profile mode falls back to the global-root ``auth.json`` per provider (same
-    shadowing as ``read_credential_pool``), so profile workers see globally-authed providers."""
-    return _load_provider_state_with_source(auth_store, provider_id)[0]
-
-
-@contextmanager
-def _provider_state_transaction(
-        provider_id: str, timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
-    """Lock the active auth store and any global fallback source, in that order.
-
-    Re-reading the source after its lock is acquired prevents stale refreshes and whole-file lost
-    updates without inverting the documented auth -> shared lock order. ``timeout_seconds`` applies
-    to BOTH locks: a transaction that spans a network call must let waiters outlive that call."""
-    with _auth_store_lock(timeout_seconds):
-        auth_store = _load_auth_store()
-        state, source_path = _load_provider_state_with_source(auth_store, provider_id)
-        if source_path is None or _same_path(source_path, _auth_file_path()):
-            yield auth_store, state, source_path
-            return
-        with _auth_store_lock(timeout_seconds, target_path=source_path):
-            yield auth_store, _provider_state_in(_load_auth_store(source_path), provider_id), source_path
-
-
-def _store_provider_state(
-    auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any], *, set_active: bool = True,
-) -> None:
-    _store_section(auth_store, "providers")[provider_id] = state
-    if set_active:
-        auth_store["active_provider"] = provider_id
-
-
-def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any]) -> None:
-    """Write *state* under ``providers`` and make *provider_id* the active provider."""
-    _store_provider_state(auth_store, provider_id, state, set_active=True)
-
-
-def _save_active_provider_state(provider_id: str, state: Dict[str, Any]) -> Path:
-    """Lock, load, write *state* as the active provider, save. Returns the auth store path."""
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        _save_provider_state(auth_store, provider_id, state)
-        return _save_auth_store(auth_store)
-
-
-def _persist_provider_state_to_store(
-    provider_id: str, state: Dict[str, Any], target_path: Path, *, set_active: bool = False,
-) -> Path:
-    """Merge one provider into a specific auth store under that store's lock."""
-    with _auth_store_lock(target_path=target_path):
-        auth_store = _load_auth_store(target_path)
-        _store_provider_state(auth_store, provider_id, dict(state), set_active=set_active)
-        return _save_auth_store(auth_store, target_path=target_path)
-
-
-def _save_provider_state_to_source(
-    auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any], source_path: Optional[Path],
-) -> None:
-    """Persist provider state back to the auth store it was read from.
-
-    A token refresh rewrites credentials, not the user's choice of provider: ``active_provider`` is
-    left as it is (a Nous free-tier identity refreshed for a connector call must not become the
-    inference provider of an install that has its own key)."""
-    if source_path is None or _same_path(source_path, _auth_file_path()):
-        _store_provider_state(auth_store, provider_id, state, set_active=False)
-        _save_auth_store(auth_store)
-    else:
-        _persist_provider_state_to_store(provider_id, state, source_path, set_active=False)
-
-
-def mark_provider_active_if_unset(provider_id: str) -> None:
-    """Set ``active_provider`` only when none is set yet: the first ``hermes auth add`` credential must
-    make its provider active (else setup reports "No inference provider configured"); later adds
-    leave the user's choice untouched."""
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        if not (auth_store.get("active_provider") or "").strip():
-            auth_store["active_provider"] = provider_id
-            _save_auth_store(auth_store)
 
 
 def is_known_auth_provider(provider_id: str) -> bool:
@@ -881,254 +228,6 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
-    """Return the persisted credential pool, or one provider slice.
-
-    In profile mode the global-root ``auth.json`` is a read-only fallback applied per provider ONLY
-    when the profile has zero entries for it (``hermes auth add`` in the profile shadows global)."""
-    pool = _load_auth_store().get("credential_pool")
-    pool = pool if isinstance(pool, dict) else {}
-    global_pool = _load_global_auth_store().get("credential_pool")
-    global_pool = global_pool if isinstance(global_pool, dict) else {}
-
-    if provider_id is None:
-        merged = dict(pool)
-        for gp_key, gp_entries in global_pool.items():
-            existing = merged.get(gp_key)
-            if not (isinstance(gp_entries, list) and gp_entries):
-                continue
-            if not (isinstance(existing, list) and existing):  # profile wins when it has ANY entries
-                merged[gp_key] = list(gp_entries)
-        return merged
-
-    provider_entries = pool.get(provider_id)
-    if isinstance(provider_entries, list) and provider_entries:
-        return list(provider_entries)
-    global_entries = global_pool.get(provider_id)
-    return list(global_entries) if isinstance(global_entries, list) else []
-
-
-_POOL_STATUS_FIELDS = (
-    "last_status", "last_status_at", "last_error_code", "last_error_reason", "last_error_message",
-    "last_error_reset_at", "status_cleared_at")
-_POOL_TOKEN_GENERATION_FIELDS = (
-    "access_token", "refresh_token", "expires_at", "expires_at_ms", "expires_in", "obtained_at",
-    "last_refresh", "agent_key", "agent_key_expires_at", "agent_key_expires_in", "agent_key_id",
-    "agent_key_obtained_at", "agent_key_reused",
-    # Refresh-coupled metadata: a Nous refresh rewrites scope and the validated
-    # inference route together with the new pair, so they travel with it.
-    "scope", "inference_base_url",
-)
-
-
-def _credential_token_pair(row: Any) -> Tuple[Any, Any]:
-    if not isinstance(row, dict):
-        return (None, None)
-    return row.get("access_token"), row.get("refresh_token")
-
-
-def _token_pairs_by_id(rows: Iterable[Any]) -> Dict[str, Tuple[Any, Any]]:
-    """Token-generation base per row id, INCLUDING ``(None, None)`` for token-less rows.
-
-    A blank base is a known generation ("no pair when we last looked"), so a peer that
-    later lands a pair on that row is kept by ``_merge_pool_row_generation`` on every
-    flush alike; dropping blank bases would make the first and later flushes disagree."""
-    return {row_id: _credential_token_pair(row) for row_id, row in _entry_ids(rows).items()}
-
-
-def _merge_pool_row_generation(
-    entry: Dict[str, Any],
-    disk_entry: Optional[Dict[str, Any]],
-    provider_id: str,
-    *,
-    base_pair: Optional[Tuple[Any, Any]] = None,
-    status_cleared: bool = False,
-) -> Dict[str, Any]:
-    """Keep a newer on-disk token generation authoritative during stale writes.
-
-    Only a terminal auth verdict (``last_status == dead``) is scoped to the token pair
-    it was observed on; account-wide cooldowns (402 billing, 429 throttle) from the
-    stale writer still apply to the rotated pair and go through the ordinary recency
-    merge in ``_merge_disk_cooldown_state``."""
-    from agent.credential_pool import STATUS_DEAD
-
-    merge_disk = None if status_cleared else disk_entry
-    disk_pair = _credential_token_pair(disk_entry)
-    if base_pair is None or not any(disk_pair) or disk_pair == base_pair:
-        return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
-
-    merged = dict(entry)
-
-    def _take_from_disk(fields: Iterable[str]) -> None:
-        # Absent-on-disk fields are popped, not set to None: a None would make the
-        # UPDATE-only root merge see a changed row and force a spurious save.
-        for field in fields:
-            if field in disk_entry:
-                merged[field] = disk_entry[field]
-            else:
-                merged.pop(field, None)
-
-    _take_from_disk(_POOL_TOKEN_GENERATION_FIELDS)
-    if not status_cleared and entry.get("last_status") == STATUS_DEAD:
-        _take_from_disk((*_POOL_STATUS_FIELDS, "failure_reason"))
-    return _merge_disk_cooldown_state(merged, merge_disk, provider_id)
-
-
-def _merge_disk_cooldown_state(
-    entry: Dict[str, Any], disk_entry: Optional[Dict[str, Any]], provider_id: str,
-) -> Dict[str, Any]:
-    """Keep a newer on-disk cooldown/quarantine over a stale in-memory one.
-
-    ``write_credential_pool`` persists an in-memory snapshot that may predate another process
-    marking the same credential exhausted/dead; without this merge the later rewrite resurrects a
-    rate-limited key as healthy and both processes resume hammering it. The mirror image is a
-    ``hermes auth reset`` that postdates the snapshot's cooldown (``status_cleared_at`` newer than
-    its ``last_status_at``): the disk row wins there too, or a live session's next ordinary flush
-    would write the reset cooldown straight back (#89415)."""
-    if not isinstance(disk_entry, dict):
-        return entry
-    try:
-        from agent.credential_pool import (
-            PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED, _exhausted_until, _parse_absolute_timestamp,
-        )
-
-        # Model cooldowns are independent observations: keep the latest reset per model so a
-        # writer that just cooled one model cannot erase another process's cooldown for another.
-        from agent.credential_pool_model_cooldowns import merge_model_cooldowns
-        merged_cooldowns = merge_model_cooldowns(disk_entry.get("model_cooldowns"), entry.get("model_cooldowns"))
-        merged = {**entry, "model_cooldowns": merged_cooldowns} if merged_cooldowns else entry
-        disk_status_fields = {f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}
-
-        mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
-        cleared_ts = _parse_absolute_timestamp(disk_entry.get("status_cleared_at")) or 0.0
-        if entry.get("last_status") in (STATUS_DEAD, STATUS_EXHAUSTED) and cleared_ts > mem_ts:
-            return {**merged, **disk_status_fields}
-        disk_status = disk_entry.get("last_status")
-        if disk_status not in (STATUS_DEAD, STATUS_EXHAUSTED):
-            return merged
-        # A token change means the caller re-authed this entry and intentionally cleared its status:
-        # never resurrect the old cooldown onto fresh credentials.
-        mem_access = entry.get("access_token") or ""
-        disk_access = disk_entry.get("access_token") or ""
-        if mem_access and disk_access and mem_access != disk_access:
-            return entry
-        disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
-        if disk_ts <= mem_ts:
-            return merged
-        if disk_status == STATUS_EXHAUSTED:
-            until = _exhausted_until(PooledCredential.from_dict(provider_id, disk_entry))
-            if until is None or until <= time.time():
-                return merged
-        return {**merged, **disk_status_fields}
-    except Exception:  # pragma: no cover - best-effort merge
-        return entry
-
-
-def _entry_ids(entries: Iterable[Any]) -> Dict[str, Dict[str, Any]]:
-    return {e.get("id"): e for e in entries if isinstance(e, dict) and e.get("id")}
-
-
-def write_credential_pool(
-    provider_id: str, entries: List[Dict[str, Any]], *,
-    removed_ids: Optional[Iterable[str]] = None,
-    status_cleared_ids: Optional[Iterable[str]] = None,
-    token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
-) -> List[Dict[str, Any]]:
-    """Persist one provider's credential pool under auth.json.
-
-    Final disk-boundary sanitizer for borrowed credentials (callers may pass raw dicts). Entries on
-    disk but missing from *entries* (added concurrently) are merged back unless in *removed_ids*,
-    so a rotation/exhaustion rewrite never drops a concurrent credential. Entries in
-    *status_cleared_ids* were cleared deliberately (``hermes auth reset``) and skip the
-    recency merge, which would otherwise read their cleared ``last_status_at`` (None ->
-    epoch 0) as a stale snapshot and copy a still-binding cooldown back."""
-    removed = {rid for rid in (removed_ids or ()) if rid}
-    bases = token_bases or {}
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        pool = _store_section(auth_store, "credential_pool")
-        sanitized = [
-            sanitize_borrowed_credential_payload(e, provider_id) if isinstance(e, dict) else e
-            for e in entries]
-        existing_list = pool.get(provider_id)
-        existing_list = existing_list if isinstance(existing_list, list) else []
-        existing_by_id = _entry_ids(existing_list)
-        new_ids = set(_entry_ids(sanitized))
-        status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
-        merged: List[Dict[str, Any]] = [
-            _merge_pool_row_generation(
-                e, existing_by_id.get(e.get("id")), provider_id,
-                base_pair=bases.get(e.get("id")),
-                status_cleared=e.get("id") in status_cleared,
-            )
-            if isinstance(e, dict) else e
-            for e in sanitized]
-        for disk_entry in existing_list:
-            disk_id = disk_entry.get("id") if isinstance(disk_entry, dict) else None
-            if disk_id and disk_id not in new_ids and disk_id not in removed:
-                merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
-        pool[provider_id] = merged
-        _save_auth_store(auth_store)
-        return merged
-
-
-def _suppressed_source_list(suppressed: Dict[str, Any], provider_id: str) -> Optional[List[str]]:
-    """Canonical (list-form) suppressed sources for *provider_id*; a legacy mapping (keys = source
-    names) is migrated to the list form in place."""
-    raw_sources = suppressed.get(provider_id)
-    if isinstance(raw_sources, list):
-        return raw_sources
-    if isinstance(raw_sources, dict):
-        suppressed[provider_id] = [str(name) for name in raw_sources]
-        return suppressed[provider_id]
-    return None
-
-
-def suppress_credential_source(provider_id: str, source: str) -> None:
-    """Mark a credential source as suppressed so it won't be re-seeded."""
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        suppressed = _store_section(auth_store, "suppressed_sources")
-        provider_list = _suppressed_source_list(suppressed, provider_id)
-        if provider_list is None:
-            provider_list = suppressed[provider_id] = []
-        if source not in provider_list:
-            provider_list.append(source)
-        _save_auth_store(auth_store)
-
-
-def is_source_suppressed(provider_id: str, source: str) -> bool:
-    """Check if a credential source has been suppressed by the user."""
-    try:
-        return source in _load_auth_store().get("suppressed_sources", {}).get(provider_id, [])
-    except Exception:
-        return False
-
-
-def unsuppress_credential_source(provider_id: str, source: str) -> bool:
-    """Clear a suppression marker so the source will be re-seeded on the next load."""
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        suppressed = auth_store.get("suppressed_sources")
-        if not isinstance(suppressed, dict):
-            return False
-        provider_list = _suppressed_source_list(suppressed, provider_id)
-        if provider_list is None or source not in provider_list:
-            return False
-        provider_list.remove(source)
-        if not provider_list:
-            suppressed.pop(provider_id, None)
-        if not suppressed:
-            auth_store.pop("suppressed_sources", None)
-        _save_auth_store(auth_store)
-        return True
-
-
-def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
-    """Persisted auth state for a provider (profile first, global-root fallback), or None."""
-    return _load_provider_state(_load_auth_store(), provider_id)
-
-
 def nous_token_has_billing_scope() -> bool:
     """Return True if the currently-held Nous token carries ``billing:manage``.
 
@@ -1138,7 +237,7 @@ def nous_token_has_billing_scope() -> bool:
     anyway, but checking up front lets a surface skip a doomed round-trip.
     """
     try:
-        state = get_provider_auth_state("nous") or {}
+        state = auth_provider_state.get_provider_auth_state("nous") or {}
     except Exception:
         return False
     scope = state.get("scope")
@@ -1147,13 +246,8 @@ def nous_token_has_billing_scope() -> bool:
     return NOUS_BILLING_MANAGE_SCOPE in scope.split()
 
 
-def get_active_provider() -> Optional[str]:
-    """Return the currently active provider ID from auth store."""
-    return _load_auth_store().get("active_provider")
-
-
 def _active_provider_is(normalized: str) -> bool:
-    active = (_load_auth_store().get("active_provider") or "").strip().lower()
+    active = (auth_storage._load_auth_store().get("active_provider") or "").strip().lower()
     return bool(active) and active == normalized
 
 
@@ -1194,7 +288,7 @@ def _config_selects_provider(normalized: str) -> bool:
 def _explicit_pool_entry_present(normalized: str) -> bool:
     """Pool rows from EXPLICIT Hermes flows (manual add / device-code / PKCE) or live env keys;
     ambient borrowed sources (gh_cli / claude_code / qwen-cli) are deliberately excluded."""
-    return any(_pool_entry_is_explicit(entry) for entry in read_credential_pool(normalized))
+    return any(_pool_entry_is_explicit(entry) for entry in auth_pool_persistence.read_credential_pool(normalized))
 
 
 # Set by Claude Code itself, not by the user explicitly configuring anthropic in Hermes.
@@ -1294,37 +388,6 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
                 raise
             logger.debug("explicit-config check %s failed for %s: %s", check.__name__, provider_id, exc)
     return False
-
-
-def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
-    """Clear auth state for a provider (the active one when *provider_id* is None). Used by
-    ``hermes logout``. Returns True if something was cleared."""
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        target = provider_id or auth_store.get("active_provider")
-        if not target:
-            return False
-        cleared = False
-        for section in ("providers", "credential_pool"):
-            entries = _store_section(auth_store, section)
-            if target in entries:
-                del entries[target]
-                cleared = True
-        if auth_store.get("active_provider") == target:
-            auth_store["active_provider"] = None
-            cleared = True
-        if cleared:
-            _save_auth_store(auth_store)
-        return cleared
-
-
-def deactivate_provider() -> None:
-    """Clear active_provider without deleting credentials: used when the user switches to a non-OAuth
-    provider (OpenRouter, custom) so auto-resolution doesn't keep picking the OAuth provider."""
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        auth_store["active_provider"] = None
-        _save_auth_store(auth_store)
 
 
 # ── Provider Resolution — picks which provider to use ───────────────────────────────────────────────
@@ -1455,6 +518,7 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
     """True when an OpenRouter credential exists via env key or the credential pool (a key added via
     `hermes auth add openrouter` has no env var; without the pool check it is invisible to
     auto-detection and requests go out with no Authorization header)."""
+    from hermes_cli.config_credentials import credential_pool_environment
     if has_usable_secret(scoped_key_env("OPENROUTER_API_KEY")):
         return True
     # OPENAI_API_KEY counts only when it holds an OpenRouter-shaped key (legacy home); a real OpenAI
@@ -1468,8 +532,8 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
         # auto-detection — the user sees `hermes auth list` showing the credential while requests go out
         # with no Authorization header ("HTTP 401: Missing Authentication header"). The env-var check above
         # only covers OPENROUTER_API_KEY and an sk-or- key in OPENAI_API_KEY. See issue #42130.
-        from agent.credential_pool import load_pool as _load_pool
-        return bool(_load_pool("openrouter").has_credentials())
+        from auth.credential_pool import load_pool as _load_pool
+        return bool(_load_pool("openrouter", environment=credential_pool_environment()).has_credentials())
     except Exception as e:
         logger.debug("Could not check OpenRouter credential pool: %s", e)
         return False
@@ -1478,10 +542,10 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
 def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optional[str]:
     """auth.json ``active_provider`` when it is a registry provider that reports logged in."""
     try:
-        _maybe = _load_auth_store().get("active_provider")
+        _maybe = auth_storage._load_auth_store().get("active_provider")
         if _maybe == "nous":
-            from hermes_cli.anon_auth import guest_enabled, has_guest
-            if has_guest() and (skip_free_tier or not guest_enabled()):
+            from auth.providers.nous_guest import guest_enabled, has_guest
+            if has_guest() and (skip_free_tier or not guest_enabled(environment=_phase6_auth_environment())):
                 return None  # the free tier is off (or being discounted), so a guest is not a login
         if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
             return _maybe
@@ -1634,8 +698,8 @@ def resolve_provider(
     # network and a fresh install without the bootstrap resolves exactly as upstream does.
     if not skip_free_tier:
         try:
-            from hermes_cli.anon_auth import guest_enabled, has_guest
-            if guest_enabled() and has_guest():
+            from auth.providers.nous_guest import guest_enabled, has_guest
+            if guest_enabled(environment=_phase6_auth_environment()) and has_guest():
                 return "nous"
         except Exception as exc:
             logger.debug("free tier check during provider resolution skipped: %s", exc)
@@ -1658,74 +722,10 @@ def resolve_provider(
 
 # ── Timestamp / TTL helpers ─────────────────────────────────────────────────────────────────────────
 
-def _utc_now_z() -> str:
-    """Current UTC time as an ISO-8601 string with a ``Z`` suffix (last_refresh format)."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _parse_iso_timestamp(value: Any) -> Optional[float]:
-    text = value.strip() if isinstance(value, str) else ""
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except Exception:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
-
-
-def _is_expiring(expires_at_iso: Any, skew_seconds: int) -> bool:
-    expires_epoch = _parse_iso_timestamp(expires_at_iso)
-    return expires_epoch is None or expires_epoch <= (time.time() + skew_seconds)
-
-
-def _tls_state_from_verify(verify: Any) -> Dict[str, Any]:
-    """Persistable ``tls`` block derived from an httpx ``verify`` value."""
-    return {"insecure": verify is False, "ca_bundle": verify if isinstance(verify, str) else None}
-
-
-def _last_auth_error_marker(
-    provider: str, error: "AuthError", *, reason: str, default_code: Optional[str] = None,
-) -> Dict[str, Any]:
-    """The ``last_auth_error`` record persisted when dead OAuth material is quarantined."""
-    return {
-        "provider": provider, "message": str(error), "reason": reason, "relogin_required": True,
-        "code": error.code if default_code is None else (error.code or default_code),
-        "at": datetime.now(timezone.utc).isoformat()}
-
-
-_FLAT_OAUTH_TOKEN_KEYS = ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at")
-
-
-def _quarantine_flat_oauth_state(state: Dict[str, Any], provider: str, exc: "AuthError") -> None:
-    """Strip dead tokens from a flat OAuth state after a terminal runtime refresh failure so
-    subsequent calls fail fast without a network retry (mirrors the Nous / xAI / Codex pattern)."""
-    for _k in _FLAT_OAUTH_TOKEN_KEYS:
-        state.pop(_k, None)
-    state["last_auth_error"] = _last_auth_error_marker(
-        provider, exc, reason="runtime_refresh_failure", default_code="refresh_failed")
-
-
-def _coerce_ttl_seconds(expires_in: Any) -> int:
-    try:
-        return max(0, int(expires_in))
-    except Exception:
-        return 0
-
-
-def _optional_base_url(value: Any) -> Optional[str]:
-    cleaned = value.strip().rstrip("/") if isinstance(value, str) else ""
-    return cleaned or None
-
 
 # Valid Nous Portal hosts; a stored portal_base_url outside this set is a misconfiguration and falls
 # back to the default. localhost / 127.0.0.1 are for local development and testing.
-_NOUS_PORTAL_ALLOWED_HOSTS: FrozenSet[str] = frozenset({
-    "portal.nousresearch.com", "localhost", "127.0.0.1"})
+
 
 # Per-process memo for resolve_nous_access_token: startup runs one check_fn per managed tool and
 # each would trigger its own ~15s blocking refresh of an expired token; a short-TTL memo collapses
@@ -1733,111 +733,6 @@ _NOUS_PORTAL_ALLOWED_HOSTS: FrozenSet[str] = frozenset({
 # Keyed by hermes_home_key(): the resolution itself is profile-scoped (_auth_file_path reads the
 # per-turn HERMES_HOME override a multiplex gateway sets), so a single slot would hand profile A's
 # Portal bearer to profile B for up to the TTL.
-_RESOLVE_TOKEN_CACHE_LOCK = threading.Lock()
-_RESOLVE_TOKEN_CACHE: "dict[str, tuple[float, str]]" = {}
-_RESOLVE_TOKEN_CACHE_TTL_S = 5.0
-
-
-def _nous_portal_base_url(state: Dict[str, Any]) -> str:
-    """HERMES_PORTAL_BASE_URL / NOUS_PORTAL_BASE_URL is the trusted operator override and wins
-    OUTRIGHT, bypassing the host allowlist (which exists to reject an untrusted network-provided
-    value, not one the operator configured). Otherwise the stored/default value, allowlist-gated."""
-    env_portal_override = _nous_portal_env_override()
-    if env_portal_override:
-        return env_portal_override.rstrip("/")
-    portal_base_url = _optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL
-    portal_base_url = portal_base_url.rstrip("/")
-    host = urlparse(portal_base_url).hostname
-    if host and host not in _NOUS_PORTAL_ALLOWED_HOSTS:
-        logger.warning(
-            "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
-            portal_base_url, host)
-        return DEFAULT_NOUS_PORTAL_URL
-    return portal_base_url
-
-
-def resolve_nous_access_token(
-    *,
-    timeout_seconds: float = 15.0,
-    insecure: Optional[bool] = None,
-    ca_bundle: Optional[str] = None,
-    refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> str:
-    """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
-    # Only a default-TLS resolution is memoised; error paths never populate the memo.
-    memoable = not insecure and ca_bundle is None
-    cache_key = hermes_home_key()
-    if memoable:
-        with _RESOLVE_TOKEN_CACHE_LOCK:
-            cached = _RESOLVE_TOKEN_CACHE.get(cache_key)
-        if cached is not None and (time.monotonic() - cached[0]) < _RESOLVE_TOKEN_CACHE_TTL_S:
-            return cached[1]
-
-    def _memo(token: str) -> str:
-        if memoable:
-            with _RESOLVE_TOKEN_CACHE_LOCK:
-                _RESOLVE_TOKEN_CACHE[cache_key] = (time.monotonic(), token)
-        return token
-
-    with _provider_state_transaction("nous") as (auth_store, state, state_source_path):
-        if not state:
-            raise _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing", relogin=True)
-        portal_base_url = _nous_portal_base_url(state)
-        client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
-        verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
-        persist = lambda: _save_provider_state_to_source(  # noqa: E731
-            auth_store, "nous", state, state_source_path)
-
-        lock_timeout = max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
-        with _nous_shared_store_lock(timeout_seconds=lock_timeout):
-            from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
-            if is_guest_state(state):
-                # Guest seam: the anon_ credential is the identity; a first use has no access token
-                # yet and an expired one is re-exchanged. No refresh token, no quarantine.
-                access_token = state.get("access_token")
-                if isinstance(access_token, str) and access_token and not _is_expiring(
-                        state.get("expires_at"), refresh_skew_seconds):
-                    return _memo(access_token)
-                with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
-                                  headers={"Accept": "application/json"}, verify=verify) as client:
-                    refresh_guest_state(state, client)
-                persist()
-                _write_shared_nous_state(state)
-                return _memo(state["access_token"])
-
-            merged_shared = _merge_shared_nous_oauth_state(state)
-            access_token = state.get("access_token")
-            refresh_token = state.get("refresh_token")
-            if not isinstance(access_token, str) or not access_token:
-                raise _nous_err(
-                    "No access token found for Nous Portal login.", "nous_auth_missing_access_token", relogin=True)
-
-            if not _is_expiring(state.get("expires_at"), refresh_skew_seconds):
-                if merged_shared:
-                    persist()
-                # Memoise the valid-token fast path too: each check_fn otherwise pays two
-                # cross-process file locks to get here. The token has >= refresh_skew_seconds (>=
-                # 120s) of life, so a 5s memo can never serve an expired token.
-                return _memo(access_token)
-
-            if not isinstance(refresh_token, str) or not refresh_token:
-                raise _nous_err(
-                    "Session expired and no refresh token is available.", "nous_auth_missing_refresh_token",
-                    relogin=True)
-
-            with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
-                              headers={"Accept": "application/json"}, verify=verify) as client:
-                refreshed = _refresh_nous_or_quarantine(
-                    client=client, auth_store=auth_store, state=state, portal_base_url=portal_base_url,
-                    client_id=client_id, refresh_token=refresh_token,
-                    reason="managed_access_token_refresh_failure", persist=persist)
-
-            _apply_nous_refreshed_tokens(state, refreshed, refresh_token)
-            state["portal_base_url"] = portal_base_url
-            state["client_id"] = client_id
-            state["tls"] = _tls_state_from_verify(verify)
-            persist()
-            _write_shared_nous_state(state)
-            return _memo(state["access_token"])
 
 
 # ── Status helpers ──────────────────────────────────────────────────────────────────────────────────
@@ -1846,143 +741,67 @@ def resolve_nous_access_token(
 # (~350ms) and read-only UI surfaces call it many times per render (~31x per menu paint), burning
 # single-use refresh tokens. Keyed on auth.json path + mtime so profile switches don't share a memo
 # and login/logout/add/remove invalidate naturally.
-_NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
+  # seconds
+
 
 # mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store); same invalidation rule.
-_global_auth_store_cache: Optional[Tuple[str, int, Dict[str, Any]]] = None
-
-
-def _auth_file_cache_key() -> Tuple[str, Optional[float]]:
-    auth_file = _auth_file_path()
-    try:
-        return _resolved_key(auth_file), auth_file.stat().st_mtime
-    except Exception:  # missing file included: key without an mtime
-        return _resolved_key(auth_file), None
-
-
-def invalidate_nous_auth_status_cache() -> None:
-    """Clear the get_nous_auth_status() memo (for code paths that mutate Nous auth state without
-    touching auth.json, e.g. tests; login/logout invalidate via the mtime check automatically)."""
-    global _nous_auth_status_cache
-    _nous_auth_status_cache = None
-
-
-def get_nous_auth_status() -> Dict[str, Any]:
-    """Status snapshot for Nous auth, memoised ~15s keyed on the auth.json mtime.
-
-    Prefers the auth-store provider state (the live source of truth for refresh) and validates it by
-    resolving runtime credentials so revoked refresh sessions do not show up as a healthy login."""
-    global _nous_auth_status_cache
-    now = time.monotonic()
-    auth_file_key, mtime = _auth_file_cache_key()
-    cached = _nous_auth_status_cache
-    if (cached is not None and cached[1:3] == (auth_file_key, mtime)
-            and (now - cached[0]) < _NOUS_AUTH_STATUS_CACHE_TTL):
-        return dict(cached[3])
-    status = _compute_nous_auth_status()
-    _nous_auth_status_cache = (now, auth_file_key, mtime, dict(status))
-    return status
 
 
 @dataclass(frozen=True)
 class OAuthProviderFlow:
-    """Per-provider OAuth plumbing, keyed by provider id in ``OAUTH_PROVIDER_FLOWS``.
-
-    Callables are named (strings) and looked up in this module at call time so
-    ``monkeypatch.setattr("hermes_cli.auth.resolve_codex_runtime_credentials", ...)`` applies."""
+    """Application OAuth dispatch into canonical authentication and status owners."""
     provider_id: str
     resolve_fn: str
     status_fn: str
-    terminal_refresh_codes: FrozenSet[str] = frozenset()  # retrying the same refresh token cannot succeed
+    resolver_uses_environment: bool = False
+    status_uses_environment: bool = False
     # ``hermes logout`` with no active provider falls back to config.yaml ``model.provider`` only
     # for providers whose credentials live in auth.json.
     logout_from_config: bool = False
 
     def resolve(self, **kwargs: Any) -> Dict[str, Any]:
-        return globals()[self.resolve_fn](**kwargs)
+        import importlib
+        module, name = self.resolve_fn.rsplit('.', 1)
+        resolver = getattr(importlib.import_module(module), name)
+        from hermes_cli.config_credentials import credential_pool_environment
+        if self.resolver_uses_environment:
+            kwargs.setdefault("environment", credential_pool_environment())
+        return resolver(**kwargs)
 
     def status(self) -> Dict[str, Any]:
-        return globals()[self.status_fn]()
+        import importlib
+        module, name = self.status_fn.rsplit('.', 1)
+        status = getattr(importlib.import_module(module), name)
+        from hermes_cli.config_credentials import credential_pool_environment
+        if self.status_uses_environment:
+            return status(environment=credential_pool_environment())
+        return status()
 
     def is_terminal_refresh_error(self, exc: Exception) -> bool:
-        return (
-            isinstance(exc, AuthError) and exc.provider == self.provider_id
-            and exc.code in self.terminal_refresh_codes and bool(exc.relogin_required))
+        return _is_terminal_refresh_error(exc, self.provider_id)
 
-
-_OAUTH_GRANT_DEAD_CODES = frozenset({"invalid_grant", "invalid_token", "refresh_token_reused"})
 
 # Nous state-shape failures raised BEFORE any refresh POST (no login, no token pair): retrying
 # cannot succeed either, so the pool must not bench them as a transient outage (#113718).
-_NOUS_AUTH_MISSING_CODES = frozenset({
-    "nous_auth_missing", "nous_auth_missing_access_token", "nous_auth_missing_refresh_token"})
+
 
 OAUTH_PROVIDER_FLOWS: Dict[str, OAuthProviderFlow] = {
     "nous": OAuthProviderFlow(
-        "nous", "resolve_nous_runtime_credentials", "get_nous_auth_status",
-        terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES | _NOUS_AUTH_MISSING_CODES, logout_from_config=True),
+        "nous", 'auth.providers.nous.resolve_nous_runtime_credentials', 'auth.providers.nous_status.get_nous_auth_status',
+        resolver_uses_environment=True, status_uses_environment=True, logout_from_config=True),
     "openai-codex": OAuthProviderFlow(
-        "openai-codex", "resolve_codex_runtime_credentials", "get_codex_auth_status",
-        terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES | {"codex_refresh_failed", "codex_auth_missing_refresh_token"},
+        "openai-codex", 'auth.providers.codex.resolve_codex_runtime_credentials', 'auth.provider_status.get_codex_auth_status',
+        resolver_uses_environment=True, status_uses_environment=True,
         logout_from_config=True),
     "xai-oauth": OAuthProviderFlow(
-        "xai-oauth", "resolve_xai_oauth_runtime_credentials", "get_xai_oauth_auth_status",
-        terminal_refresh_codes=frozenset({"xai_refresh_failed", "xai_auth_missing_refresh_token"}),
+        "xai-oauth", 'auth.providers.xai.resolve_xai_oauth_runtime_credentials', 'auth.provider_status.get_xai_oauth_auth_status',
+        resolver_uses_environment=False, status_uses_environment=True,
         logout_from_config=True),
     "qwen-oauth": OAuthProviderFlow(
-        "qwen-oauth", "resolve_qwen_runtime_credentials", "get_qwen_auth_status"),
+        "qwen-oauth", 'auth.providers.qwen.resolve_qwen_runtime_credentials', 'auth.providers.qwen.get_qwen_auth_status'),
     "minimax-oauth": OAuthProviderFlow(
-        "minimax-oauth", "resolve_minimax_oauth_runtime_credentials", "get_minimax_oauth_auth_status"),
+        "minimax-oauth", 'auth.providers.minimax.resolve_minimax_oauth_runtime_credentials', 'auth.provider_status.get_minimax_oauth_auth_status', status_uses_environment=True),
 }
-
-
-def _is_terminal_refresh_error(exc: Exception, provider: str) -> bool:
-    """True when retrying the same *provider* refresh token cannot succeed."""
-    return OAUTH_PROVIDER_FLOWS[provider].is_terminal_refresh_error(exc)
-
-
-_is_terminal_nous_refresh_error = partial(_is_terminal_refresh_error, provider="nous")
-_is_terminal_xai_oauth_refresh_error = partial(_is_terminal_refresh_error, provider="xai-oauth")
-_is_terminal_codex_oauth_refresh_error = partial(
-    _is_terminal_refresh_error, provider="openai-codex")
-
-
-def _codex_pool_rate_limited_status() -> Optional[Dict[str, Any]]:
-    rate_limit = _codex_pool_rate_limit_status()
-    if not rate_limit:
-        return None
-    return {
-        "logged_in": True, "auth_store": str(_auth_file_path()),
-        "last_refresh": rate_limit.get("last_refresh"), "auth_mode": "chatgpt",
-        "source": f"pool:{rate_limit.get('label') or 'unknown'}", "rate_limited": True,
-        "error_code": CODEX_RATE_LIMITED_CODE,
-        "error": (rate_limit.get("message")
-                  or "Codex provider quota exhausted; retry after the usage limit resets."),
-        "reset_at": rate_limit.get("reset_at")}
-
-
-def get_codex_auth_status() -> Dict[str, Any]:
-    """Status snapshot for Codex auth (pool first, then legacy provider state).
-
-    Read-only by contract: status/doctor must never adopt, refresh or persist a credential (#68004)."""
-    status = _pool_first_oauth_status(
-        "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
-        resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
-        on_pool_miss=_codex_pool_rate_limited_status)
-    if str(status.get("source") or "").startswith("pool:"):
-        # Pool rows keep the canonical URL; the chat route may send this key to model.base_url.
-        from hermes_cli.auth_codex import _codex_pool_route_base_url
-        status["base_url"] = _codex_pool_route_base_url(status.get("base_url"))
-    return status
-
-
-def get_xai_oauth_auth_status() -> Dict[str, Any]:
-    # auth_mode is display/telemetry only; device-code is the only xAI OAuth flow, so report it
-    # unconditionally (auth.json may still carry a legacy ``oauth_pkce`` label).
-    return _pool_first_oauth_status(
-        "xai-oauth", is_expiring=_xai_access_token_is_expiring, auth_mode="oauth_device_code",
-        resolve=lambda: resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False))
 
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:
@@ -2002,7 +821,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    api_key, key_source = resolve_api_key_provider_secret(provider_id, pconfig, environment=_phase6_auth_environment())
     env_url = _provider_env_base_url(pconfig)
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -2036,7 +855,7 @@ def _copilot_acp_auth_evidence() -> tuple[bool, Optional[str]]:
     """Copilot CLI token stores readable without spawning it (env tokens, plaintext config, hosts.json)."""
     # 1. Supported env tokens — the same vars the Copilot CLI itself honors.
     try:
-        from hermes_cli.copilot_auth import COPILOT_ENV_VARS, validate_copilot_token
+        from auth.providers.copilot import COPILOT_ENV_VARS, validate_copilot_token
         for env_var in COPILOT_ENV_VARS:
             val = os.getenv(env_var, "").strip()
             if val and validate_copilot_token(val)[0]:
@@ -2120,13 +939,26 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     Azure Foundry) first, then the registry ``auth_type`` so a whole provider class (e.g. every
     external-process ACP backend) gets a real status. Builders are looked up by NAME at call time so
     tests that patch ``hermes_cli.auth.get_*_auth_status`` still apply."""
-    target = (provider_id or get_active_provider() or "").strip().lower()
+    target = (provider_id or auth_provider_state.get_active_provider() or "").strip().lower()
     if not target:
         return {"logged_in": False}
+    if target in OAUTH_PROVIDER_FLOWS:
+        status = OAUTH_PROVIDER_FLOWS[target].status()
+        if target == "openai-codex" and str(status.get("source") or "").startswith("pool:"):
+            from hermes_cli.auth_codex import _codex_pool_route_base_url
+            status["base_url"] = _codex_pool_route_base_url(status.get("base_url"))
+        return status
     status_fn_name = _BESPOKE_STATUS_FUNCTIONS.get(target)
     if status_fn_name:
         return globals()[status_fn_name]()
     pconfig = _registry_lookup(target)
+    if pconfig and pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
+        if target not in auth_plugin_providers.PLUGIN_MIRRORED_PROVIDERS:
+            return {"logged_in": False}
+        status = auth_provider_status.get_plugin_oauth_auth_status(
+            target, environment=_phase6_auth_environment())
+        status["hint"] = "" if status["logged_in"] else f"Run `hermes auth add {target}` to sign in."
+        return status
     if pconfig and pconfig.auth_type in _STATUS_BY_AUTH_TYPE:
         return globals()[_STATUS_BY_AUTH_TYPE[pconfig.auth_type]](target)
     return {"logged_in": False}
@@ -2135,16 +967,12 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
 # Bespoke status builders (name -> looked up in this module at call time) win over the
 # auth_type-keyed fallbacks below.
 _BESPOKE_STATUS_FUNCTIONS: Dict[str, str] = {
-    **{pid: flow.status_fn for pid, flow in OAUTH_PROVIDER_FLOWS.items()},
     "spotify": "get_spotify_auth_status",
     "azure-foundry": "_get_azure_foundry_auth_status"}
 _STATUS_BY_AUTH_TYPE: Dict[str, str] = {
     "external_process": "get_external_process_provider_status",
     "api_key": "get_api_key_provider_status",
-    "aws_sdk": "_get_aws_sdk_auth_status",
-    # OAuth-shaped plugin providers (their login lives in the plugin's auth_handler, tokens in the pool).
-    "oauth_device_code": "get_plugin_oauth_auth_status",
-    "oauth_external": "get_plugin_oauth_auth_status"}
+    "aws_sdk": "_get_aws_sdk_auth_status"}
 
 
 def _get_azure_foundry_auth_status() -> Dict[str, Any]:
@@ -2196,90 +1024,8 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
     return info
 
 
-def _default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
-    return env_url.rstrip("/") if env_url else default
-
-
-def _copilot_runtime_base_url(api_key: str, default: str, env_url: str) -> str:
-    """Copilot's API base comes from the token-exchange response (endpoints.api, proxy-ep fallback),
-    authoritative for Enterprise / proxied accounts; falls back to the registry default."""
-    base_url = _default_api_key_base_url(api_key, default, env_url)
-    try:
-        from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
-        raw_token, _ = resolve_copilot_token()
-        if raw_token:
-            resolved = (get_copilot_api_token(raw_token)[1] or "").strip()
-            if resolved:
-                base_url = resolved
-    except Exception as exc:
-        logger.debug("Copilot base URL resolution fell back to default: %s", exc)
-    return base_url
-
-
 # Providers whose runtime base URL is not simply env-override-or-registry-default:
 # ``(api_key, registry_default, env_override) -> base_url``.
-_API_KEY_BASE_URL_RESOLVERS: Dict[str, Callable[[str, str, str], str]] = {
-    "kimi-coding": _resolve_kimi_base_url,
-    "kimi-coding-cn": _resolve_kimi_base_url,
-    "zai": _resolve_zai_base_url,
-    "copilot": _copilot_runtime_base_url,
-    "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(_default_api_key_base_url(*a)),
-    "actual": lambda *a: normalize_actual_base_url(_default_api_key_base_url(*a))}
-
-
-def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
-    """Resolve API key and base URL for an API-key provider."""
-    pconfig = _registry_lookup(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
-        raise AuthError(
-            f"Provider '{provider_id}' is not an API-key provider.",
-            provider=provider_id, code="invalid_provider")
-
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-    # No-auth LM Studio: a placeholder so runtime / auxiliary_client see the local server as
-    # configured. doctor still reports unconfigured because the status path uses the raw secret.
-    if not api_key and provider_id == "lmstudio":
-        api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
-        key_source = key_source or "default"
-
-    env_url = _provider_env_base_url(pconfig)
-    resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, _default_api_key_base_url)
-    base_url = resolve_url(api_key, pconfig.inference_base_url, env_url)
-    # An API-key provider must never hand back an empty base URL (a set-but-empty
-    # COPILOT_API_BASE_URL or similar env override otherwise wedges chat inference).
-    if not _nonempty_str(base_url):
-        base_url = pconfig.inference_base_url
-
-    if not api_key and provider_id == "actual" and is_actual_local_base_url(base_url):
-        api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
-        key_source = key_source or "local-offline"
-    return {
-        "provider": provider_id, "api_key": api_key, "base_url": base_url.rstrip("/"),
-        "source": key_source or "default"}
-
-
-def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
-    """Resolve runtime details for local subprocess-backed providers."""
-    pconfig = _registry_lookup(provider_id)
-    if not pconfig or pconfig.auth_type != "external_process":
-        raise AuthError(
-            f"Provider '{provider_id}' is not an external-process provider.",
-            provider=provider_id, code="invalid_provider")
-
-    command, args, base_url, resolved_command, command_env_vars = _external_process_spec(pconfig)
-    if not resolved_command and not base_url.startswith("acp+tcp://"):
-        _hint = " or set " + "/".join(command_env_vars) if command_env_vars else ""
-        raise AuthError(
-            f"Could not find the '{provider_id}' CLI command "
-            f"'{command or '(none configured)'}'. Install it{_hint}.",
-            provider=provider_id,
-            code="missing_external_process_cli")
-    # api_key is a placeholder: the subprocess owns real auth. Keyed on the provider id so each
-    # external-process provider gets a distinct value.
-    return {
-        "provider": provider_id, "api_key": pconfig.id or provider_id,
-        "base_url": base_url.rstrip("/"), "command": resolved_command or command, "args": args,
-        "source": "process"}
 
 
 # ── CLI Commands — login / logout ───────────────────────────────────────────────────────────────────
@@ -2294,10 +1040,7 @@ def _update_config_for_provider(
     finishes and send an OpenRouter-style ``vendor/model`` name to a direct API. *clear_default*
     removes ``model.default`` in that same write, for a caller that has no model to offer and must
     not leave the previous provider's model paired with the new host."""
-    with _auth_store_lock():  # so auto-resolution picks this provider
-        auth_store = _load_auth_store()
-        auth_store["active_provider"] = provider_id
-        _save_auth_store(auth_store)
+    auth_provider_state.mark_provider_active(provider_id)
 
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2376,63 +1119,6 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
-def login_command(args) -> None:
-    """Deprecated: use 'hermes model' or 'hermes setup' instead."""
-    print("The 'hermes login' command has been removed.\nUse 'hermes auth' to manage credentials,\n"
-          "'hermes model' to select a provider, or 'hermes setup' for full setup.")
-    raise SystemExit(0)
-
-
-def get_minimax_oauth_auth_status() -> Dict[str, Any]:
-    """Return auth status dict for MiniMax OAuth provider."""
-    state = get_provider_auth_state("minimax-oauth")
-    if not state or not state.get("access_token"):
-        return {"logged_in": False, "provider": "minimax-oauth"}
-    try:
-        token_valid = datetime.fromisoformat(state.get("expires_at", "")).timestamp() > time.time()
-    except Exception:
-        token_valid = True  # access_token is known non-empty here
-    return {
-        "logged_in": token_valid, "provider": "minimax-oauth",
-        "region": state.get("region", "global"), "expires_at": state.get("expires_at")}
-
-
-def logout_command(args) -> None:
-    """Clear auth state for a provider."""
-    provider_id = getattr(args, "provider", None)
-    if provider_id and not is_known_auth_provider(provider_id):
-        print(f"Unknown provider: {provider_id}")
-        raise SystemExit(1)
-    target = provider_id or get_active_provider() or _logout_default_provider_from_config()
-    if not target:
-        print("No provider is currently logged in.")
-        return
-    if target == "nous":
-        from hermes_cli.anon_auth import FREE_TIER_NOT_SIGNED_IN, is_guest_state
-        if is_guest_state(get_provider_auth_state("nous")):
-            # Free tier is not a login; there is nothing to log out of and nothing is cleared.
-            print(FREE_TIER_NOT_SIGNED_IN)
-            return
-    should_reset_config = _should_reset_config_provider_on_logout(target)
-    provider_name = get_auth_provider_display_name(target)
-    if not (clear_provider_auth(target) or should_reset_config):
-        print(f"No auth state found for {provider_name}.")
-        return
-    if target == "nous":
-        # A profile logout must not be re-adopted from the cross-profile store on the next boot.
-        from hermes_cli.auth_nous import _clear_shared_nous_state
-        _clear_shared_nous_state("logout")
-    if should_reset_config:
-        _reset_config_provider()
-    print(f"Logged out of {provider_name}.")
-    if not should_reset_config:
-        print("Model provider configuration was unchanged.")
-    elif os.getenv("OPENROUTER_API_KEY"):
-        print("Hermes will use OpenRouter for inference.")
-    else:
-        print("Run `hermes model` or configure an API key to use Hermes.")
-
-
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
@@ -2450,23 +1136,23 @@ from urllib.parse import urlencode  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'CODEX_OAUTH_USER_AGENT': ('hermes_cli.auth_constants', 'CODEX_OAUTH_USER_AGENT'),
-    'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS': ('hermes_cli.auth_codex', 'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS'),
-    'DEFAULT_SPOTIFY_REDIRECT_URI': ('hermes_cli.auth_constants', 'DEFAULT_SPOTIFY_REDIRECT_URI'),
-    'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS': ('hermes_cli.auth_constants', 'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS'),
-    'MINIMAX_OAUTH_GRANT_TYPE': ('hermes_cli.auth_constants', 'MINIMAX_OAUTH_GRANT_TYPE'),
-    'NOUS_INFERENCE_INVOKE_SCOPE': ('hermes_cli.auth_constants', 'NOUS_INFERENCE_INVOKE_SCOPE'),
-    'NOUS_SHARED_STORE_FILENAME': ('hermes_cli.auth_nous', 'NOUS_SHARED_STORE_FILENAME'),
-    'OAUTH_OVER_SSH_DOCS_URL': ('hermes_cli.auth_constants', 'OAUTH_OVER_SSH_DOCS_URL'),
-    'QWEN_OAUTH_CLIENT_ID': ('hermes_cli.auth_constants', 'QWEN_OAUTH_CLIENT_ID'),
-    'QWEN_OAUTH_TOKEN_URL': ('hermes_cli.auth_constants', 'QWEN_OAUTH_TOKEN_URL'),
-    'SINGLE_USE_OAUTH_SINGLETON_FILES': ('hermes_cli.auth_oauth_grants', 'SINGLE_USE_OAUTH_SINGLETON_FILES'),
-    'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS': ('hermes_cli.auth_constants', 'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS'),
-    'SPOTIFY_DASHBOARD_URL': ('hermes_cli.auth_constants', 'SPOTIFY_DASHBOARD_URL'),
-    'XAI_OAUTH_DEVICE_CODE_URL': ('hermes_cli.auth_constants', 'XAI_OAUTH_DEVICE_CODE_URL'),
-    'XAI_OAUTH_DISCOVERY_URL': ('hermes_cli.auth_constants', 'XAI_OAUTH_DISCOVERY_URL'),
-    'XAI_OAUTH_ISSUER': ('hermes_cli.auth_constants', 'XAI_OAUTH_ISSUER'),
-    'refresh_nous_oauth_pure': ('hermes_cli.auth_nous', 'refresh_nous_oauth_pure'),
+    'CODEX_OAUTH_USER_AGENT': ('hermes_cli.auth_codex', 'CODEX_OAUTH_USER_AGENT'),
+    'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS': ('auth.providers.codex_quota', 'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS'),
+    'DEFAULT_SPOTIFY_REDIRECT_URI': ('auth.constants', 'DEFAULT_SPOTIFY_REDIRECT_URI'),
+    'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS': ('auth.constants', 'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS'),
+    'MINIMAX_OAUTH_GRANT_TYPE': ('auth.constants', 'MINIMAX_OAUTH_GRANT_TYPE'),
+    'NOUS_INFERENCE_INVOKE_SCOPE': ('auth.constants', 'NOUS_INFERENCE_INVOKE_SCOPE'),
+    'NOUS_SHARED_STORE_FILENAME': ('auth.providers.nous_store', 'NOUS_SHARED_STORE_FILENAME'),
+    'OAUTH_OVER_SSH_DOCS_URL': ('auth.constants', 'OAUTH_OVER_SSH_DOCS_URL'),
+    'QWEN_OAUTH_CLIENT_ID': ('auth.constants', 'QWEN_OAUTH_CLIENT_ID'),
+    'QWEN_OAUTH_TOKEN_URL': ('auth.constants', 'QWEN_OAUTH_TOKEN_URL'),
+    'SINGLE_USE_OAUTH_SINGLETON_FILES': ('auth.oauth_grants', 'SINGLE_USE_OAUTH_SINGLETON_FILES'),
+    'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS': ('auth.constants', 'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS'),
+    'SPOTIFY_DASHBOARD_URL': ('auth.constants', 'SPOTIFY_DASHBOARD_URL'),
+    'XAI_OAUTH_DEVICE_CODE_URL': ('auth.constants', 'XAI_OAUTH_DEVICE_CODE_URL'),
+    'XAI_OAUTH_DISCOVERY_URL': ('auth.constants', 'XAI_OAUTH_DISCOVERY_URL'),
+    'XAI_OAUTH_ISSUER': ('auth.constants', 'XAI_OAUTH_ISSUER'),
+    'refresh_nous_oauth_pure': ('auth.providers.nous', 'refresh_nous_oauth_pure'),
 }
 
 
@@ -2479,3 +1165,5 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+from auth.token_validation import _nonempty_str

@@ -315,10 +315,11 @@ def _(rid, params: dict) -> dict:
     # Save the key to ~/.hermes/.env via the unified credential lifecycle so any stale config.yaml mirror of
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
     env_var = pconfig.api_key_env_vars[0]
-    from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
+    from auth.sources import save_provider_env_credential  # also rotates stale config.yaml mirrors
+    from hermes_cli.config_credentials import credential_environment
     # Under the profile scope the save publishes into the addressed profile's secret scope (and the
     # shared os.environ only for the launch profile), so the refreshed inventory below sees it.
-    save_provider_env_credential(env_var, api_key)
+    save_provider_env_credential(env_var, api_key, environment=credential_environment())
     # The launch profile's boot record may still say "nothing configured"; the gated picker's own chat
     # waits on setup.status, so the fresh key must move the record (+ setup.ready). reconcile_record
     # leaves it alone when the bound home is another profile's.
@@ -339,14 +340,16 @@ def _(rid, params: dict) -> dict:
 @_catch(5035)
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
-    from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
-    from hermes_cli.credential_lifecycle import remove_provider_env_credential
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from auth.provider_state import clear_provider_auth
+    from auth.sources import remove_provider_env_credential
+    from hermes_cli.config_credentials import credential_environment
     if not (slug := (params.get("slug") or "").strip()):
         return _err(rid, 4001, "slug is required")
     pconfig = PROVIDER_REGISTRY.get(slug)
     # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
     env_vars = (pconfig.api_key_env_vars if pconfig else None) or ()
-    cleared_env = any([remove_provider_env_credential(ev).get("found") for ev in env_vars])
+    cleared_env = any([remove_provider_env_credential(ev, environment=credential_environment()).get("found") for ev in env_vars])
     cleared_auth = clear_provider_auth(slug)  # full disconnect: OAuth grants go too
     if not cleared_env and not cleared_auth:
         return _err(rid, 4005, f"no credentials found for {slug}")

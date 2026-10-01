@@ -6,6 +6,7 @@ authenticated -- otherwise an aggregator whose quota is spent gets matched
 during no-provider ``/model`` resolution, wins the model name, and sticks as
 the session provider (the "sticky provider fallback pollution" bug).
 """
+import auth.store as auth_storage
 
 import pytest
 
@@ -27,10 +28,10 @@ def _patch_opencode_pool(monkeypatch, *, available: bool):
     """Make the opencode-go aggregator look configured but with a pool whose
     only credential is (un)available, depending on ``available``."""
     import hermes_cli.auth as auth
-    import agent.credential_pool as cp
+    import auth.credential_pool as cp
 
     monkeypatch.setattr(
-        auth,
+        auth_storage,
         "_load_auth_store",
         lambda: {
             "version": 1,
@@ -42,7 +43,7 @@ def _patch_opencode_pool(monkeypatch, *, available: bool):
     monkeypatch.setattr(
         cp,
         "load_pool",
-        lambda provider: _FakePool(available if provider == "opencode-go" else True),
+        lambda provider, environment=None: _FakePool(available if provider == "opencode-go" else True),
     )
 
 
@@ -72,8 +73,8 @@ def test_opaque_legacy_pool_value_stays_visible(monkeypatch):
     from hermes_cli.model_switch_providers import _credential_pool_is_usable
 
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool",
-        lambda _provider: type(
+        "auth.credential_pool.load_pool",
+        lambda _provider, environment=None: type(
             "EmptyPool",
             (),
             {

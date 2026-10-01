@@ -4,7 +4,7 @@ otherwise live only in the scheduler log. Drives the real ``run_job`` path with 
 ``resolve_runtime_provider`` mocked."""
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 from tests.cron.test_scheduler import _run_owned_job
 
 _JOB = {"id": "fb-test", "name": "fb test", "prompt": "hello", "model": None, "provider": None,

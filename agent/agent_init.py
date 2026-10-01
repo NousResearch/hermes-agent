@@ -8,6 +8,8 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import logging
 import os
@@ -423,6 +425,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
 
 
 def _finalize_routing(agent, api_mode, credential_pool):
+    from hermes_cli.config_credentials import credential_pool_environment
     from hermes_cli.providers import is_actual_route
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
@@ -430,10 +433,10 @@ def _finalize_routing(agent, api_mode, credential_pool):
     # #63425).
     if credential_pool is not None:
         try:
-            from agent.credential_pool import credential_pool_matches_provider
+            from auth.credential_pool import credential_pool_matches_provider
             if not credential_pool_matches_provider(
                 credential_pool, agent.provider, base_url=agent.base_url,
-            ):
+            environment=credential_pool_environment()):
                 agent._credential_pool = None
         except Exception:
             agent._credential_pool = None
@@ -450,8 +453,10 @@ def _finalize_routing(agent, api_mode, credential_pool):
     # process-wide, daemon.
     if agent.provider == "nous":
         with suppress(Exception):
-            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
-            start_nous_auth_keepalive()
+            from auth.keepalive import start_nous_auth_keepalive
+            from hermes_cli.config_credentials import credential_pool_environment
+            from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+            start_nous_auth_keepalive(environment_factory=credential_pool_environment, scope_context=launch_profile_scope_if_multiplexed)
 
     with suppress(Exception):
         from hermes_cli.model_normalize import (
@@ -724,7 +729,7 @@ def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     """anthropic_messages: native Anthropic SDK (or AnthropicBedrock for Bedrock+Claude)."""
     from agent.anthropic_adapter import build_anthropic_client
-    from agent.anthropic_credentials import resolve_anthropic_token
+    from auth.providers.anthropic import resolve_anthropic_token
     agent.client = None
     agent._client_kwargs = {}
     agent._anthropic_base_url = base_url
@@ -739,14 +744,14 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
     _is_native_anthropic = agent.provider == "anthropic"
-    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
+    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None), environment=_phase6_auth_environment()) if _is_native_anthropic else None) or ""
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
     # auth.json, so other processes' refreshes are seen).
     if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
         try:
-            from hermes_cli.auth import build_minimax_oauth_token_provider
+            from auth.providers.minimax import build_minimax_oauth_token_provider
             effective_key = build_minimax_oauth_token_provider()
         except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
             logging.getLogger(__name__).warning(
@@ -762,7 +767,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must never
     # trip OAuth code paths — doing so injects Claude-Code identity headers and system prompts that
     # cause 401/403 on their endpoints. See #1739.
-    from agent.anthropic_credentials import anthropic_route_is_oauth
+    from auth.providers.anthropic import anthropic_route_is_oauth
     agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
     agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
     if not agent.quiet_mode:
@@ -834,6 +839,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
     already bound and there is no OpenAI client to construct.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     from agent.auxiliary_client import resolve_provider_client
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
@@ -890,8 +896,8 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     _pool = None
     if _explicit and _explicit != "auto":
         with suppress(Exception):
-            from agent.credential_pool import load_pool
-            _pool = load_pool(_explicit)
+            from auth.credential_pool import load_pool
+            _pool = load_pool(_explicit, environment=credential_pool_environment())
             _pool_exhausted = _pool.has_credentials() and not _pool.has_available(model=agent.model)
     if _refused_entries or _pool_exhausted:
         # Neutral wording: the explicit-provider branch below raises the provider-specific
@@ -2438,7 +2444,7 @@ def init_agent(
     # Effective base URL for feature detection (prompt caching, reasoning, etc.)
     from hermes_cli.providers import is_actual_route
     if is_actual_route(provider, base_url):
-        from hermes_cli.auth import normalize_actual_base_url
+        from hermes_cli.route_identity import normalize_actual_base_url
         base_url = normalize_actual_base_url(base_url)
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None

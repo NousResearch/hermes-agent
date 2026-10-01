@@ -119,7 +119,7 @@ def _xai_credentials_present() -> bool:
     """Cheap offline check for xAI credentials (auth store + env only); the runtime ``check_fn`` still gates
     schema registration if creds expire. Also used by ``provider_readiness_status`` for ``xai_grok`` rows."""
     try:
-        from hermes_cli.auth import _read_xai_oauth_tokens
+        from auth.providers.xai import _read_xai_oauth_tokens
         _read_xai_oauth_tokens()
         return True
     except Exception:

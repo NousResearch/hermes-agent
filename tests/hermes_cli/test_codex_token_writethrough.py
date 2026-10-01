@@ -1,3 +1,9 @@
+
+import auth.providers.codex_http as _auth_auth_providers_codex_http
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.codex as _auth_auth_providers_codex
 """Codex OAuth refresh writes back to the store the grant was resolved FROM (#87503).
 
 Codex refresh tokens are single-use with rotation-family reuse detection: a profile that refreshed
@@ -5,6 +11,7 @@ a root-borrowed grant must land the rotated chain in root — singleton AND ``cr
 or root keeps the consumed refresh token and the next reader gets the whole family revoked.
 Token values are synthetic placeholders.
 """
+import auth.store as auth_storage
 
 import json
 import threading
@@ -52,7 +59,7 @@ def test_profile_refresh_of_root_grant_writes_through_to_root(profile_env):
     _write(profile_path, {"version": 1, "providers": {}})
 
     rotated = _pair("new")
-    auth._save_codex_tokens(rotated, last_refresh="2026-08-16T00:00:00Z", write_through=True)
+    _auth_auth_providers_codex._save_codex_tokens(rotated, last_refresh="2026-08-16T00:00:00Z", write_through=True)
 
     root = _read(root_path)
     assert root["providers"]["openai-codex"]["tokens"] == rotated
@@ -71,7 +78,7 @@ def test_profile_owned_grant_stays_local(profile_env):
     _write(root_path, {"version": 1, "providers": {}})
 
     rotated = _pair("next")
-    auth._save_codex_tokens(rotated, last_refresh="2026-08-16T00:00:00Z", write_through=True)
+    _auth_auth_providers_codex._save_codex_tokens(rotated, last_refresh="2026-08-16T00:00:00Z", write_through=True)
 
     assert _read(profile_path)["providers"]["openai-codex"]["tokens"] == rotated
     assert "openai-codex" not in _read(root_path).get("providers", {})
@@ -80,7 +87,7 @@ def test_profile_owned_grant_stays_local(profile_env):
     # never a rewrite of root's.
     _write(profile_path, {"version": 1, "providers": {}})
     _write(root_path, {"version": 1, "providers": {"openai-codex": {"auth_mode": "chatgpt", "tokens": _pair("root")}}})
-    auth._save_codex_tokens(_pair("login"))
+    _auth_auth_providers_codex._save_codex_tokens(_pair("login"))
     assert _read(profile_path)["providers"]["openai-codex"]["tokens"] == _pair("login")
     assert _read(root_path)["providers"]["openai-codex"]["tokens"] == _pair("root")
 
@@ -120,17 +127,17 @@ def test_concurrent_refreshes_of_shared_root_grant_submit_old_token_once(profile
     })
     _write(profile_path, {"version": 1, "providers": {}})
     endpoint = _RotatingEndpoint(hold_seconds=1.5)  # longer than the lock floor (1 s)
-    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: endpoint)
+    monkeypatch.setattr(_auth_auth_providers_codex_http, "_codex_http_client", lambda **kw: endpoint)
     # The waiter must outlive the peer's endpoint call on BOTH locks: with the default lock
     # timeout shorter than the POST, the second profile would raise TimeoutError instead of adopt.
-    monkeypatch.setattr(auth._auth_store_lock.__wrapped__, "__defaults__", (1.0,))
+    monkeypatch.setattr(auth_storage._auth_store_lock.__wrapped__, "__defaults__", (1.0,))
     monkeypatch.setattr(auth_codex, "AUTH_LOCK_TIMEOUT_SECONDS", 1.0)
 
     results, errors = {}, {}
 
     def _refresh(name):
         try:
-            results[name] = auth._refresh_codex_auth_tokens(_pair("old"), timeout_seconds=1.0)
+            results[name] = _auth_auth_providers_codex._refresh_codex_auth_tokens(_pair("old"), timeout_seconds=1.0, environment=_phase6_auth_environment())
         except Exception as exc:  # pragma: no cover - surfaced via the assertion below
             errors[name] = exc
 

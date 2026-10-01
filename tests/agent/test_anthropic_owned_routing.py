@@ -1,4 +1,6 @@
 """Owned OAuth must win without rotating an unrelated borrowed grant."""
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 import json
 import time
 from types import SimpleNamespace
@@ -7,7 +9,7 @@ import httpx
 import pytest
 from openai import AuthenticationError
 
-from agent import anthropic_credentials as ac
+import auth.providers.anthropic as ac
 from agent import auxiliary_client as aux
 
 
@@ -34,7 +36,7 @@ def test_owned_pool_precedes_expired_borrowed_login(tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("Borrowed refresh was consumed despite owned grant")
     monkeypatch.setattr(ac, "_refresh_oauth_token", forbidden)
-    assert ac.resolve_anthropic_token() == "owned-token"
+    assert ac.resolve_anthropic_token(environment=_phase6_auth_environment()) == "owned-token"
     assert borrowed.read_bytes() == before
 
 

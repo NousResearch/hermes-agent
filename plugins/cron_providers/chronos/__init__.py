@@ -55,7 +55,7 @@ class ChronosCronScheduler(CronScheduler):
             return False
         # Stored-token presence only (no refresh); refresh-aware token resolved at provision time.
         try:
-            from hermes_cli.auth import get_provider_auth_state
+            from auth.provider_state import get_provider_auth_state
             return bool((get_provider_auth_state("nous") or {}).get("access_token"))
         except Exception:
             return False

@@ -16,6 +16,12 @@ enforcement does not exist on Windows.
 """
 
 from __future__ import annotations
+import auth.providers.nous_store as _auth_auth_providers_nous_store
+
+import auth.providers.nous as _auth_auth_providers_nous
+import auth.providers.qwen as _auth_auth_providers_qwen
+
+import auth.store as auth_storage
 
 import json
 import os
@@ -41,11 +47,11 @@ def test_save_auth_store_writes_0o600_with_0o700_parent(tmp_path, monkeypatch):
         from hermes_cli import auth as auth_mod
 
         auth_store = {
-            "version": auth_mod.AUTH_STORE_VERSION,
+            "version": auth_storage.AUTH_STORE_VERSION,
             "providers": {"openai-codex": {"tokens": {"access_token": "secret-x"}}},
             "active_provider": "openai-codex",
         }
-        auth_path = auth_mod._save_auth_store(auth_store)
+        auth_path = auth_storage._save_auth_store(auth_store)
     finally:
         os.umask(old_umask)
 
@@ -84,7 +90,7 @@ def test_save_qwen_cli_tokens_writes_0o600_with_0o700_parent(tmp_path, monkeypat
             "token_type": "Bearer",
             "expiry_date": 123,
         }
-        auth_path = auth_mod._save_qwen_cli_tokens(tokens)
+        auth_path = _auth_auth_providers_qwen._save_qwen_cli_tokens(tokens)
     finally:
         os.umask(old_umask)
 
@@ -130,8 +136,8 @@ def test_shared_nous_store_writes_0o600_with_0o700_parent(tmp_path, monkeypatch)
             "obtained_at": "2026-01-01T00:00:00Z",
             "expires_at": "2026-01-01T01:00:00Z",
         }
-        auth_mod._write_shared_nous_state(state)
-        path = auth_mod._nous_shared_store_path()
+        _auth_auth_providers_nous_store._write_shared_nous_state(state)
+        path = _auth_auth_providers_nous_store._nous_shared_store_path()
     finally:
         os.umask(old_umask)
 

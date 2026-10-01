@@ -1,4 +1,6 @@
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import logging
 import math
@@ -8,8 +10,9 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
 
-from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from auth.providers.anthropic import _is_oauth_token, resolve_anthropic_token
+from auth.errors import AuthError
+from auth.providers.codex import _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_time import safe_strftime
@@ -181,7 +184,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
 def _nous_logged_in() -> bool:
     """Cheap local auth-state check: a Nous access token is present. Fail-open False."""
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from auth.provider_state import get_provider_auth_state
         tok = (get_provider_auth_state("nous") or {}).get("access_token")
         return isinstance(tok, str) and bool(tok.strip())
     except Exception:
@@ -319,6 +322,7 @@ def _resolve_codex_usage_credentials(
 ) -> tuple[str, str, Optional[str]]:
     """Codex quota credentials: explicit live-agent creds → native runtime resolver (itself pool-aware) → direct
     pool select. Native OAuth stores device-code logins in the pool, so the singleton store alone is not enough."""
+    from hermes_cli.config_credentials import credential_pool_environment
     explicit_key = str(api_key or "").strip()
     if explicit_key and not force_refresh:
         return explicit_key, str(base_url or "").strip(), None
@@ -330,8 +334,8 @@ def _resolve_codex_usage_credentials(
         except AuthError:
             singleton_key = ""
         if singleton_key != explicit_key:
-            from agent.credential_pool import load_pool
-            entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
+            from auth.credential_pool import load_pool
+            entry = load_pool("openai-codex", environment=credential_pool_environment()).try_refresh_matching(api_key_hint=explicit_key)
             if entry is None:
                 raise RuntimeError("Could not refresh the Codex credential this session runs on")
             return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
@@ -347,7 +351,7 @@ def _resolve_codex_usage_credentials(
         resolve_kwargs = {"refresh_if_expiring": True}
         if force_refresh:
             resolve_kwargs["force_refresh"] = True
-        creds = resolve_codex_runtime_credentials(**resolve_kwargs)
+        creds = resolve_codex_runtime_credentials(**resolve_kwargs, environment=_phase6_auth_environment())
         account_id: Optional[str] = None
         try:
             tokens = _read_codex_tokens().get("tokens") or {}
@@ -359,8 +363,8 @@ def _resolve_codex_usage_credentials(
     except AuthError:
         logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
     # Tier 3: pool credentials have no account_id concept → header omitted.
-    from agent.credential_pool import load_pool
-    entry = load_pool("openai-codex").select()
+    from auth.credential_pool import load_pool
+    entry = load_pool("openai-codex", environment=credential_pool_environment()).select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
     # Pool rows keep the canonical URL; a gateway key must go to its route host, not chatgpt.com (#121486).
@@ -522,7 +526,7 @@ def _codex_reset_outcome(body: dict, available: int) -> CodexResetRedeemResult:
         # Quota is restored upstream — lift persisted pool cooldowns so the credential isn't frozen behind a
         # stale ``last_error_reset_at``.
         try:
-            from hermes_cli.auth import clear_codex_pool_quota_cooldowns
+            from auth.providers.codex_quota import clear_codex_pool_quota_cooldowns
             clear_codex_pool_quota_cooldowns()
         except Exception:
             logger.debug("Failed to clear Codex pool cooldowns after reset redemption", exc_info=True)
@@ -589,7 +593,7 @@ def redeem_codex_reset_credit(
 def _fetch_anthropic_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[AccountUsageSnapshot]:
-    token = (resolve_anthropic_token() or "").strip()
+    token = (resolve_anthropic_token(environment=_phase6_auth_environment()) or "").strip()
     if not token:
         return None
     if not _is_oauth_token(token):

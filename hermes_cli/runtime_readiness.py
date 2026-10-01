@@ -12,7 +12,7 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resol
     without another provider's fallback masking a failed connection. Both branches report the model.
     """
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    from hermes_cli.auth import has_usable_secret
+    from auth.secret_validation import has_usable_secret
     from hermes_cli.main import _has_any_provider_configured
 
     if resolve is not None:
@@ -32,7 +32,7 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resol
     if not (callable(api_key) or api_key_text in {'aws-sdk', 'no-key-required'}
             or has_usable_secret(api_key_text) or bool(runtime.get('command'))):
         return {**result, 'ok': False, 'error': f'No usable credentials found for {provider}.'}
-    from hermes_cli.anon_auth import route_is_welcome_host
+    from auth.providers.nous_guest import route_is_welcome_host
     # free_tier is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
     # on profile state: a paid Nous key beside a free-tier identity must not read as free.
     result['free_tier'] = provider == 'nous' and route_is_welcome_host(runtime.get('base_url'))

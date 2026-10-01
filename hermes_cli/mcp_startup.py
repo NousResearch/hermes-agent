@@ -74,24 +74,27 @@ def _server_filter_excludes_all_configured(logger) -> bool:
 
     ``-t vision`` (any built-in-only list) is a deliberately MCP-free session: discovery spawns
     nothing by design, so reporting "zero connected servers" and re-running discovery on every
-    agent build was noise, not a failure. Plugin-provided servers are not enumerable from raw
-    config, so their presence keeps discovery on (conservative). Re-read on every call so a
-    matching server added to config.yaml later is still picked up.
+    agent build was noise, not a failure. Plugin-provided servers are not enumerable from config,
+    so their presence keeps discovery on (conservative). Re-read on every call so a matching
+    server added to config.yaml later is still picked up. Reads the effective config (user file +
+    Managed Scope overlay), the same server set discovery spawns from: a server published only by
+    an administrator must not be skipped, and a torn user yaml serves its last-known-good copy
+    instead of reading as "nothing configured".
     """
     global _mcp_filter_skip_logged
     if _mcp_server_filter is None:
         return False
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_cli.config_effective import load_user_config_effective
 
-        raw_config = read_raw_config() or {}
-        servers = raw_config.get("mcp_servers")
+        config = load_user_config_effective()
+        servers = config.get("mcp_servers")
         names = set(servers) if isinstance(servers, dict) else set()
         if names & set(_mcp_server_filter):
             return False
         from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
 
-        if has_enabled_agent_plugin_mcp(raw_config):
+        if has_enabled_agent_plugin_mcp(config):
             return False
     except Exception:
         return False

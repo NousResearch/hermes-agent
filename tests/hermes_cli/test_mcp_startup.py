@@ -518,6 +518,11 @@ def test_filter_excluding_every_server_skips_discovery_quietly(
     )
     monkeypatch.setitem(
         sys.modules,
+        "hermes_cli.config_effective",
+        types.SimpleNamespace(load_user_config_effective=lambda: {"mcp_servers": {"demo": {}, "other": {}}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
         "hermes_cli.agent_plugins",
         types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _raw: False),
     )
@@ -569,6 +574,11 @@ def test_filter_skip_picks_up_a_matching_server_added_later(monkeypatch, _reset_
         sys.modules,
         "hermes_cli.config",
         types.SimpleNamespace(read_raw_config=lambda: {"mcp_servers": dict(servers)}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config_effective",
+        types.SimpleNamespace(load_user_config_effective=lambda: {"mcp_servers": dict(servers)}),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -646,3 +656,38 @@ def test_no_configured_servers_never_warns_or_retries(monkeypatch):
         thread.join(timeout=5.0)
     assert calls["mcp"] == 1
     assert not any("retrying discovery thread" in w for w in warnings)
+
+
+def test_filter_gate_sees_servers_published_only_by_managed_scope(
+    monkeypatch, tmp_path, _reset_mcp_server_filter
+):
+    """The gate must read the server set discovery spawns from. A server published only in the
+    Managed Scope layer (``$HERMES_MANAGED_DIR/config.yaml``) and named by ``-t`` is not in the
+    raw user yaml; a raw-config gate skipped it and told the user to edit their own yaml."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  default: demo-model\n", encoding="utf-8")
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(
+        "mcp_servers:\n  corp:\n    command: corp-mcp\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _cfg: False),
+    )
+    infos: list = []
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None,
+                                   info=lambda msg, *a, **_k: infos.append(msg % a if a else msg),
+                                   warning=lambda *_a, **_k: None)
+
+    mcp_startup.set_mcp_server_filter("corp")
+    assert mcp_startup._server_filter_excludes_all_configured(logger) is False
+    assert infos == []
+
+    mcp_startup.set_mcp_server_filter("vision")
+    assert mcp_startup._server_filter_excludes_all_configured(logger) is True
+    assert len(infos) == 1 and "1 configured" in infos[0]

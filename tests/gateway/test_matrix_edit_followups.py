@@ -505,3 +505,40 @@ async def test_text_between_two_corrections_runs_before_the_second(monkeypatch):
     await correct(adapter, "$edit2", "$original2")
 
     assert await drain(adapter, runner) == [("$edit1", ALICE), ("$text", ALICE), ("$edit2", ALICE)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["admission", "validation", "persistence"])
+@pytest.mark.parametrize("change", ["unchanged", "sender", "original", "opt_out"])
+async def test_correction_policy_is_current_after_context_reads(monkeypatch, phase, change):
+    adapter = adapter_for(monkeypatch, {ROOM: True})
+    adapter.handle_message = AsyncMock()
+    incoming = edit_event()
+    adapter._client.events["$edit"] = {"room_id": ROOM, "sender": ALICE, "event_id": "$edit",
+        "type": "m.room.message", "content": incoming.content}
+    if phase == "validation":
+        await adapter._on_room_message(incoming)
+        assert adapter.handle_message.await_args is not None
+        pending = adapter.handle_message.await_args.args[0]
+    async def changed_name(*args):
+        if change == "sender":
+            adapter.set_authorization_check(lambda *args, **kwargs: False)
+        elif change == "original":
+            adapter._event_context_cache.redact(ROOM, "$original")
+        elif change == "opt_out":
+            adapter._process_edits = frozenset()
+        return "Alice"
+    if phase == "persistence":
+        mark = adapter._threads.mark_async
+        async def changed_mark(thread_id):
+            await mark(thread_id)
+            await changed_name()
+        adapter._threads.mark_async = changed_mark
+    else:
+        adapter._get_display_name.side_effect = changed_name
+    if phase == "validation":
+        accepted = await adapter.validate_inbound_event(pending)
+    else:
+        await adapter._on_room_message(incoming)
+        accepted = bool(adapter.handle_message.await_args_list)
+    assert accepted is (change == "unchanged")

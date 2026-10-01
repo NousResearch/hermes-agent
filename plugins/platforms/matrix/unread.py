@@ -7,13 +7,14 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from plugins.platforms.matrix.client_events import Method, UndecryptableEvent, decrypt_history_event, raw_event
 from plugins.platforms.matrix.effective_event import event_content
 from plugins.platforms.matrix.read_context import _read_access
 from plugins.platforms.matrix.relations import MatrixRelation
+from tools.matrix_tool_runtime import MatrixOwner
 
 
 SYNC_FILTER = '{"room":{"timeline":{"unread_thread_notifications":true}}}'
@@ -191,7 +192,7 @@ class ReadTarget:
         return cls(room_id, event_id, thread_id, visibility, requester)
 
 
-async def _validate_target(adapter: Any, client: Any, target: ReadTarget, chat_type: str | None) -> dict[str, Any] | None:
+async def _validate_target(adapter: Any, client: Any, target: ReadTarget, chat_type: str | None) -> str | dict[str, Any]:
     try:
         membership = await asyncio.wait_for(
             client.get_state_event(target.room_id, "m.room.member", target.requester), timeout=10,
@@ -232,26 +233,79 @@ async def _validate_target(adapter: Any, client: Any, target: ReadTarget, chat_t
         return {"error": "Matrix event does not belong to the selected thread"}
     if target.event_id == target.thread_id and root is not None:
         return {"error": "Matrix thread root is itself a reply in another thread"}
+    return sender
+
+
+@dataclass
+class ReadProgress:
+    result: dict[str, Any] | None = None
+    operation: Literal["receipt", "marked_unread"] = "receipt"
+    dispatched: bool = False
+
+    def interrupted_result(self, error: str) -> dict[str, Any]:
+        if self.result is None:
+            return {"error": error}
+        result = {**self.result, "errors": [*self.result["errors"], {"operation": self.operation, "error": error}]}
+        if self.dispatched:
+            result["receipt_sent" if self.operation == "receipt" else "marked_unread_reset"] = None
+            if self.operation == "receipt":
+                result["counts"] = "unknown"
+        return result
+
+
+async def _write_access(
+    adapter: Any, client: Any, target: ReadTarget, owner: MatrixOwner,
+    interrupted: Callable[[], bool], sender: str,
+) -> dict[str, Any] | None:
+    current_client, chat_type, error = await _read_access(adapter, target.room_id, target.requester)
+    if error is not None:
+        return error
+    if current_client is not client or adapter._closing:
+        return {"error": "Matrix transport changed before the receipt was sent"}
+    try:
+        membership = await asyncio.wait_for(
+            client.get_state_event(target.room_id, "m.room.member", target.requester), timeout=10,
+        )
+    except Exception as exc:
+        return {"error": "Matrix membership could not be verified", "errors": [_operation_error("membership", exc)]}
+    if interrupted():
+        return {"error": "Matrix read acknowledgement interrupted"}
+    if not owner.matches():
+        return {"error": "Matrix session or client ownership changed"}
+    if (adapter._closing or target.room_id not in adapter._joined_rooms
+            or not adapter._is_allowed_matrix_room(target.room_id, chat_type)
+            or adapter._is_sender_authorized(target.requester, chat_type=chat_type, chat_id=target.room_id) is not True):
+        return {"error": "Matrix access changed before the receipt was sent"}
+    if sender != adapter._user_id and adapter._is_sender_authorized(
+        sender, chat_type=chat_type, chat_id=target.room_id,
+    ) is not True:
+        return {"error": "Matrix event sender is not authorized for this room"}
+    content = raw_event(membership)
+    if content.get("content", content).get("membership") != "join":
+        return {"error": "Matrix requester is not a joined room member"}
     return None
 
 
 async def mark_matrix_read(
     adapter: Any, room_id: str, event_id: object, thread_id: object, visibility: object, *, requester: str,
+    interrupt_check: Callable[[], bool] = lambda: False,
+    before_write: Callable[[], None] = lambda: None,
+    progress: ReadProgress | None = None,
 ) -> dict[str, Any]:
+    progress = progress or ReadProgress()
+    owner = MatrixOwner.capture()
     target = ReadTarget.parse(room_id, event_id, thread_id, visibility, requester)
     if isinstance(target, dict):
         return target
     client, chat_type, error = await _read_access(adapter, target.room_id, target.requester)
     if error is not None:
         return error
-    error = await _validate_target(adapter, client, target, chat_type)
+    sender = await _validate_target(adapter, client, target, chat_type)
+    if isinstance(sender, dict):
+        return sender
+    error = await _write_access(adapter, client, target, owner, interrupt_check, sender)
     if error is not None:
         return error
-    current_client, _chat_type, error = await _read_access(adapter, target.room_id, target.requester)
-    if error is not None:
-        return error
-    if current_client is not client or adapter._closing:
-        return {"error": "Matrix transport changed before the receipt was sent"}
 
     result: dict[str, Any] = {
         "room_id": target.room_id, "account_user_id": adapter._user_id,
@@ -259,12 +313,17 @@ async def mark_matrix_read(
         "receipt_sent": False, "marked_unread_reset": False,
         "fully_read_marker_changed": False, "counts": "await_sync", "errors": [],
     }
+    progress.result = result
     receipt_type = "m.read.private" if target.visibility == "private" else "m.read"
     path = f"/_matrix/client/v3/rooms/{quote(target.room_id, safe='')}/receipt/{receipt_type}/{quote(target.event_id, safe='')}"
     body = {} if target.thread_id == "room" else {"thread_id": target.thread_id}
     try:
+        before_write()
+        progress.dispatched = True
         await asyncio.wait_for(client.api.request(Method.POST, path, body, retry_count=0), timeout=20)
         result["receipt_sent"] = True
+        progress.dispatched = False
+        progress.operation = "marked_unread"
         adapter._unread.receipt_sent(client, target.room_id, target.thread_id)
     except Exception as exc:
         if not getattr(exc, "errcode", None):
@@ -274,15 +333,19 @@ async def mark_matrix_read(
         return result
     if target.thread_id != "room":
         return result
-    current_client, _chat_type, error = await _read_access(adapter, target.room_id, target.requester)
-    if error is not None or current_client is not client or adapter._closing:
-        result["errors"].append({"operation": "marked_unread", "error": "Matrix access changed after the receipt was sent"})
+    error = await _write_access(adapter, client, target, owner, interrupt_check, sender)
+    if error is not None:
+        reason = error["error"] if error["error"] == "Matrix read acknowledgement interrupted" else "Matrix access changed after the receipt was sent"
+        result["errors"].append({"operation": "marked_unread", "error": reason})
         return result
     try:
+        before_write()
+        progress.dispatched = True
         await asyncio.wait_for(
             client.set_account_data("m.marked_unread", {"unread": False}, room_id=target.room_id), timeout=20,
         )
         result["marked_unread_reset"] = True
+        progress.dispatched = False
     except Exception as exc:
         if not getattr(exc, "errcode", None):
             result["marked_unread_reset"] = None
@@ -298,5 +361,11 @@ class MatrixUnreadMixin:
 
     async def mark_matrix_read(
         self, room_id: str, event_id: object, thread_id: object, visibility: object, *, requester: str,
+        interrupt_check: Callable[[], bool] = lambda: False,
+        before_write: Callable[[], None] = lambda: None,
+        progress: ReadProgress | None = None,
     ) -> dict[str, Any]:
-        return await mark_matrix_read(self, room_id, event_id, thread_id, visibility, requester=requester)
+        return await mark_matrix_read(
+            self, room_id, event_id, thread_id, visibility, requester=requester,
+            interrupt_check=interrupt_check, before_write=before_write, progress=progress,
+        )

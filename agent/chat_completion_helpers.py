@@ -50,7 +50,7 @@ from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
     streamed_reasoning_detail_text,
 )
-from agent.repetition_guard import is_repetition_dominated
+from agent.repetition_guard import is_repetition_dominated, is_runaway_repetition
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -2877,6 +2877,9 @@ class _StreamingCall(StreamingWaitMonitor):
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        # Live repetition-loop guard state: last visible-char count at which the
+        # O(n·window) scan ran (throttled; see ``_check_repetition_loop``).
+        self._rep_check_chars = 0
         # The route ``api_kwargs`` was assembled for; a retry must not replay it on another one.
         self._request_route = self._live_route()
 
@@ -2974,6 +2977,36 @@ class _StreamingCall(StreamingWaitMonitor):
         self._fire_first_delta()
         self.agent._fire_stream_delta(text)
         self.deltas_were_sent["yes"] = True
+        self._check_repetition_loop()
+
+    def _check_repetition_loop(self) -> None:
+        """Abort the stream as soon as visible text is repetition-dominated.
+
+        The model entering a degenerate loop burns its ENTIRE output budget echoing one
+        fragment (a 219k-token / 436k-char incident on 2026-09-27 reached the user only
+        because the turn ended with ``finish_reason=stop`` — a path the existing
+        repetition guard never inspects; it only protects interrupted/truncated
+        continuations). Raising ``InterruptedError`` here routes through
+        ``handle_api_interrupt``, which already maps runaway-repetition partials to
+        ``REPETITION_LOOP_INTERRUPTED`` and hides the looped bytes from the transcript.
+
+        Throttled: the scan is O(n·window), so only re-run it after ~512 new visible
+        chars, and never below the guard's own 400-char minimum.
+        """
+        if self.agent._interrupt_requested:
+            return
+        acc = self.agent._current_streamed_assistant_text
+        if not acc or len(acc) < 400:
+            return
+        if len(acc) - self._rep_check_chars < 512:
+            return
+        self._rep_check_chars = len(acc)
+        if is_runaway_repetition(acc):
+            logger.error(
+                "Repetition loop detected in stream after %d visible chars; aborting turn.",
+                len(acc))
+            self.agent._interrupt_requested = True
+            raise InterruptedError("Repetition loop detected during streaming")
 
     def _visible_text_delivered(self) -> bool:
         """True when visible assistant text actually reached a stream consumer this attempt

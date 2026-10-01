@@ -15,6 +15,7 @@ from typing import Any, Callable, List, Optional, Tuple
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.interrupt_control import interrupted_during_api_call_reason
+from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_repetition_dominated
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
@@ -667,6 +668,19 @@ def finalize_turn(
     # the conversation loop, so every delivery surface receives valid Unicode.
     if isinstance(final_response, str):
         final_response = _sanitize_surrogates(final_response)
+
+    # Repetition-loop exit gate: a degenerate reply that somehow completed with
+    # ``finish_reason=stop`` bypasses the stream-level guard (which only runs on
+    # interrupted/truncated paths) AND the post-loop transforms below; replace it so
+    # looped bytes never reach a platform. `is_repetition_dominated` is the
+    # conservative 60+-char-repeat detector from repetition_guard; the loop-formed
+    # incident text dominates it by construction.
+    if isinstance(final_response, str) and is_repetition_dominated(final_response):
+        logger.error(
+            "%sFinal response suppressed: repetition loop detected (%d chars); "
+            "replacing with interruption notice.",
+            getattr(agent, "log_prefix", ""), len(final_response))
+        final_response = REPETITION_LOOP_INTERRUPTED
 
     result = {
         "final_response": final_response,

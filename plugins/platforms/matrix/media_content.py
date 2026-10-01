@@ -12,6 +12,8 @@ _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif", ".avif"})
 _MATRIX_MEDIA_FILENAME_EXTS = frozenset({
     ".ogg", ".oga", ".opus", ".m4a", ".mp3", ".wav", ".flac", ".aac", ".amr", ".mp4", ".webm", ".mov", ".mkv"})
+
+
 def _looks_like_matrix_image_filename(text: str) -> bool:
     return _looks_like_transport_filename(text, "image/", _MATRIX_IMAGE_FILENAME_EXTS)
 
@@ -49,5 +51,3 @@ def _inbound_media_caption(msgtype: str, body: str, source_content: dict[str, An
     if declared_filename:
         return "" if wire_body.strip() == declared_filename else body
     return "" if _is_bare_media_filename(msgtype, wire_body) else body
-
-

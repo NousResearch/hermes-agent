@@ -45,6 +45,30 @@ def bot_author_id(profile: str, origin: Optional[str] = None) -> str:
     return f"bot:{origin}/{profile}" if origin else f"bot:{profile}"
 
 
+def plugin_author_id(plugin_id: str) -> str:
+    """``plugin:<id>`` for a turn a plugin queued through ``PluginContext.inject_message``.
+
+    Deliberately not a ``bot:`` author: a peer DM relayed from another install and a local
+    plugin are different senders and must not share one a2a session.
+    """
+    return f"plugin:{(plugin_id or '').strip()}"
+
+
+def plugin_turn_author(plugin_id: str, name: str = "") -> Optional[Dict[str, Any]]:
+    """The author of a plugin-injected turn.
+
+    A plugin writes its own words — usually an instruction TO the agent — so the turn is never
+    the human's. Without an author a memory provider that derives facts from user messages
+    stores the plugin's text as durable facts about the user; with ``is_bot`` the turn is routed
+    to the plugin's own a2a session and profile writes are refused for its duration. None when
+    the caller named no plugin, which leaves the turn unattributed exactly as before.
+    """
+    clean_id = _clean_text(plugin_id)
+    if not clean_id:
+        return None
+    return {"id": plugin_author_id(clean_id), "name": _clean_text(name) or clean_id, "is_bot": True}
+
+
 def local_origin() -> str:
     """This machine's hostname as an author-id origin, cleaned like any author field. Empty when unknown."""
     try:
@@ -79,6 +103,22 @@ def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
         return author
     except Exception:
         return None
+
+
+def plugin_author_for_event(event: Any) -> Optional[Dict[str, Any]]:
+    """The author for a turn a plugin dispatched through the messaging gateway, else None.
+
+    The dispatch stamps ``hermes_plugin_injection`` on the event; the restored source is the
+    human's, so without this the plugin's instruction is indistinguishable from something the
+    user typed. Keyed on the injection marker alone, so an event that merely names a plugin in
+    its metadata is not re-attributed. A plugin that names its own ``author`` (a chat bridge
+    relaying a real person) keeps that author instead of the plugin default.
+    """
+    metadata = getattr(event, "metadata", None)
+    if not isinstance(metadata, Mapping) or not metadata.get("hermes_plugin_injection"):
+        return None
+    return parse_turn_author(metadata.get("hermes_plugin_author")) or plugin_turn_author(
+        str(metadata.get("hermes_plugin_id") or ""))
 
 
 def turn_author_from_env(environ: Mapping[str, str] = os.environ) -> Optional[Dict[str, Any]]:

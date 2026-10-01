@@ -18,6 +18,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
+from agent.turn_author import plugin_author_for_event
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
@@ -2041,6 +2042,7 @@ class GatewayTurnMixin:
         persistence_session_id: Optional[str] = None
         persistence_owner: Optional[str] = None
         title_user_message: Optional[str] = None
+        turn_author: Optional[dict] = None
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
@@ -2137,6 +2139,7 @@ class GatewayTurnMixin:
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
             persist_user_display_kind, session_entry.session_id, owner,
             title_user_message=title_user_message,
+            turn_author=plugin_author_for_event(event),
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
@@ -2203,6 +2206,7 @@ class GatewayTurnMixin:
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
+                turn_author_override=prepared.turn_author,
                 persist_user_display_metadata={
                     "gateway_input_owner": prepared.persistence_owner,
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
@@ -4233,6 +4237,7 @@ class GatewayTurnMixin:
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
+        turn_author_override: Optional[dict] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -4273,6 +4278,7 @@ class GatewayTurnMixin:
             persist_user_display_kind=persist_user_display_kind,
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata,
+            turn_author_override=turn_author_override,
             scheduled_heartbeat=scheduled_heartbeat,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(

@@ -431,11 +431,13 @@ def test_pool_selection_keeps_probe_rotated_tokens_when_quota_restored(tmp_path,
     http_calls = _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 0.0)))
     from agent.credential_pool import load_pool
 
-    selected = load_pool("openai-codex").select()
+    pool = load_pool("openai-codex")
+    selected = pool.select()
 
     assert refresh_calls == ["rf-old"]
     assert [c["headers"]["Authorization"] for c in http_calls] == [f"Bearer {fresh}"]
     assert (selected.access_token, selected.refresh_token, selected.last_status) == (fresh, "rf-new", "ok")
+    assert pool._entries[0].refresh_token == "rf-new"  # the pool's own row, not just the returned copy
     disk = json.loads((hermes_home / "auth.json").read_text())
     assert disk["credential_pool"]["openai-codex"][0]["refresh_token"] == "rf-new"
 
@@ -455,6 +457,7 @@ def test_pool_selection_throttles_failing_pre_probe_refresh(tmp_path, monkeypatc
         raise RuntimeError("invalid_grant")
 
     monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", _failing_refresh)
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _failing_refresh)
     http_calls = _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 0.0)))
     from agent.credential_pool import load_pool
 

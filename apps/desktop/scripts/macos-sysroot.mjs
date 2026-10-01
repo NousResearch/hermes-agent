@@ -49,6 +49,22 @@ export function macosSysroot(env = process.env) {
   return developerSysroot(env)
 }
 
+// Universal helpers require the macOS 11 SDK's arm64 headers, even on Intel
+// hosts. An unreadable version must not turn a working compiler into a failure.
+export function assertUniversalMacosSdk(sysroot, env = process.env) {
+  const selected = sysroot ?? 'macosx'
+  const version = read('xcrun', ['--sdk', selected, '--show-sdk-version'], env)
+  if (!/^\d+(?:\.\d+)*$/.test(version) || Number(version.split('.')[0]) >= 11) return
+  throw new Error(
+    `macOS SDK ${version} (${selected}) cannot build Hermes Desktop's arm64 + x86_64 helpers; `
+    + 'this requires macOS SDK 11 or newer.\n'
+    + 'Update Command Line Tools for Xcode through Software Update, or install a compatible package from '
+    + 'https://developer.apple.com/download/all/.\n'
+    + 'If SDKROOT or DEVELOPER_DIR selects an older SDK/toolchain, update or unset that override. '
+    + 'Then rerun `hermes update`.'
+  )
+}
+
 // Preserve xcrun's previous selection when no rung produced a sysroot.
 // `--sdk` must precede the tool name or xcrun passes it to clang.
 export function xcrunClangArgv(sysroot) {

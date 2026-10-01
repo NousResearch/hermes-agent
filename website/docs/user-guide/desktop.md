@@ -758,6 +758,23 @@ rm -f "$HOME/Library/Caches/electron"/electron-*.zip   # macOS
 rm -f "$HOME/.cache/electron"/electron-*.zip            # Linux
 ```
 
+### macOS update fails with an old SDK
+
+A source installation with Desktop installed also rebuilds Desktop during
+`hermes update`. Its native helpers contain both Intel and Apple Silicon code,
+so building them requires a macOS SDK **11 or newer**, including on Intel Macs.
+An older SDK can cause `architecture not supported` and unknown integer-type
+errors even when macOS itself is up to date. For a known old SDK, the build
+reports its version and path before compiling these helpers.
+
+Update **Command Line Tools for Xcode** through Software Update. If no developer
+tools update is offered, install a compatible package from
+[Apple's developer downloads](https://developer.apple.com/download/all/).
+Check `xcode-select -p` and any `SDKROOT` / `DEVELOPER_DIR` overrides: a newer SDK
+installed elsewhere does not replace an explicitly selected older toolchain.
+After updating the tools or correcting the selection, run `hermes update` again
+to finish the interrupted update.
+
 ## Building from source
 
 If you want to hack on the app itself, install workspace deps from the repo root once, then run the dev server from `apps/desktop`:

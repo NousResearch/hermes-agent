@@ -906,6 +906,7 @@ class TestMarkJobRun:
         monkeypatch.setattr(jobs_mod, "HAS_CRONITER", None)
         assert jobs_mod._ensure_croniter() is False
         assert jobs_mod.compute_next_run(job["schedule"]) is None
+        mark_job_run(job["id"], success=True)  # leaves state=error, next_run_at=None
 
         # Window over (import works again): WITHOUT resetting HAS_CRONITER — the probe's
         # cached outcome must be re-evaluated, not latched.
@@ -915,6 +916,8 @@ class TestMarkJobRun:
             "next_run_at=None until a gateway restart"
         )
         assert jobs_mod.compute_next_run(job["schedule"]) is not None
+        get_due_jobs()  # due-scan recovery re-arms the job
+        assert get_job(job["id"])["state"] == "scheduled"
 
 
 class TestAdvanceNextRun:

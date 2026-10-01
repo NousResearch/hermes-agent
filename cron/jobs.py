@@ -2950,8 +2950,9 @@ def _self_disable_half_paused(job: Dict[str, Any], scan: _DueScan) -> None:
 
 def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[str]:
     """Recompute and persist a missing ``next_run_at``; None when unrecoverable. One-shots use the
-    grace window; recurring jobs only get here after a direct jobs.json edit bypassed add_job(),
-    and would otherwise be silently skipped forever."""
+    grace window; recurring jobs get here after a direct jobs.json edit bypassed add_job() or a
+    transient croniter ImportError left them in state 'error' (#127182) — re-armed ones go back
+    to 'scheduled', otherwise they would be silently skipped forever."""
     schedule = job.get("schedule", {})
     kind = schedule.get("kind")
     recovered_next = _recoverable_oneshot_run_at(
@@ -2967,7 +2968,11 @@ def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[s
     logger.info(
         "Job '%s' had no next_run_at; recovering %s run at %s",
         job.get("name", job.get("id", "?")), recovery_kind, recovered_next)
-    scan.persist(job["id"], next_run_at=recovered_next)
+    fields: Dict[str, Any] = {"next_run_at": recovered_next}
+    if recovery_kind in {"cron", "interval"} and job.get("state") == "error":
+        fields["state"] = "scheduled"
+    job.update(fields)
+    scan.persist(job["id"], **fields)
     return recovered_next
 
 

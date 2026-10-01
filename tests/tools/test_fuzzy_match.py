@@ -3,6 +3,15 @@
 from tools.fuzzy_match import IDENTICAL_STRINGS_ERROR, fuzzy_find_and_replace
 
 
+class TestReadFileGutters:
+    def test_strips_line_number_gutters_before_fuzzy_matching(self):
+        content = "[server]\nport = 8080\nhost = localhost\n"
+        new, count, strategy, error = fuzzy_find_and_replace(
+            content, "2|port = 8080", "2|port = 9090")
+        assert (new, count, strategy, error) == (
+            "[server]\nport = 9090\nhost = localhost\n", 1, "exact", None)
+
+
 class TestExactMatch:
     def test_single_replacement(self):
         content = "hello world"

@@ -335,6 +335,25 @@ def _format_match_locations(content: str, matches: list[Span], cap: int = 5) -> 
     return "\n".join(rows)
 
 
+def _strip_read_file_gutters(content: str, old_string: str, new_string: str) -> tuple[str, str]:
+    """Remove read_file display gutters when the raw old text is absent.
+
+    A numbered line may be a legitimate file value, so only normalize when the
+    gutter-free old string is present in the file and the supplied old string is
+    not.
+    """
+    if old_string in content:
+        return old_string, new_string
+    lines = old_string.split("\n")
+    if not lines or any(not re.match(r"^\s*\d+\|", line) for line in lines if line.strip()):
+        return old_string, new_string
+    stripped_old = "\n".join(re.sub(r"^\s*\d+\|", "", line) for line in lines)
+    if stripped_old not in content:
+        return old_string, new_string
+    stripped_new = "\n".join(re.sub(r"^\s*\d+\|", "", line) for line in new_string.split("\n"))
+    return stripped_old, stripped_new
+
+
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                            replace_all: bool = False) -> tuple[str, int, Optional[str], Optional[str]]:
     """Find and replace via the strategy chain.
@@ -360,6 +379,8 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             "first if unsure). Do not re-send this call unchanged.")
     if old_string == new_string:
         return content, 0, None, IDENTICAL_STRINGS_ERROR
+
+    old_string, new_string = _strip_read_file_gutters(content, old_string, new_string)
 
     for strategy_name, strategy_fn in STRATEGIES:
         matches = strategy_fn(content, old_string)

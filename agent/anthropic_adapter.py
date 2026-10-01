@@ -34,20 +34,20 @@ from hermes_cli.version_info import get_version_info
 # ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
 # every usage site is a cold user-triggered path. ``...`` = not yet tried; None = tried, missing.
 _anthropic_sdk: Any = ...
+# Why the lazy install did not make the SDK importable. A completed install that needs a restart
+# (PM activates a new dependency environment only at boot) must not be reported as "install it".
+_anthropic_install_error: Optional[Exception] = None
 
 
 def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
-    global _anthropic_sdk
+    global _anthropic_sdk, _anthropic_install_error
     if _anthropic_sdk is ...:
         try:
             from pm import ensure_import
             ensure_import("anthropic")
-        except ImportError:
-            pass
-        except Exception:
-            # InstallError — fall through to ImportError handling below
-            pass
+        except Exception as exc:  # the import below decides; exc explains a miss
+            _anthropic_install_error = exc
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
@@ -59,6 +59,9 @@ def _get_anthropic_sdk():
 def _require_sdk(purpose: str, verb: str = "Install it with"):
     """``_get_anthropic_sdk()`` or ImportError naming the feature that needs it."""
     sdk = _get_anthropic_sdk()
+    if sdk is None and _anthropic_install_error is not None:
+        raise ImportError(f"The 'anthropic' package is required for {purpose}: "
+                          f"{_anthropic_install_error}") from _anthropic_install_error
     if sdk is None:
         raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: "
                           f"{install_hint('anthropic')}")
@@ -844,47 +847,3 @@ def create_anthropic_message(
                 "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
             )
     return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-import copy  # noqa: F401,E402
-import json  # noqa: F401,E402
-import os  # noqa: F401,E402
-import platform  # noqa: F401,E402
-import secrets  # noqa: F401,E402
-import stat  # noqa: F401,E402
-from urllib.parse import urlparse  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CredentialPersistError': ('agent.anthropic_credentials', 'CredentialPersistError'),
-    'base_url_host_matches': ('utils', 'base_url_host_matches'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'claude_code_credentials_path': ('agent.anthropic_credentials', 'claude_code_credentials_path'),
-    'get_hermes_home': ('hermes_constants', 'get_hermes_home'),
-    'is_claude_code_token_valid': ('agent.anthropic_credentials', 'is_claude_code_token_valid'),
-    'is_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'is_rotation_consumed_uncommitted'),
-    'mark_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'mark_rotation_consumed_uncommitted'),
-    'read_claude_code_credentials': ('agent.anthropic_credentials', 'read_claude_code_credentials'),
-    'read_hermes_oauth_credentials': ('agent.anthropic_credentials', 'read_hermes_oauth_credentials'),
-    'refresh_anthropic_oauth_pure': ('agent.anthropic_credentials', 'refresh_anthropic_oauth_pure'),
-    'resolve_anthropic_token': ('agent.anthropic_credentials', 'resolve_anthropic_token'),
-    'run_hermes_oauth_login_pure': ('agent.anthropic_credentials', 'run_hermes_oauth_login_pure'),
-    'run_oauth_setup_token': ('agent.anthropic_credentials', 'run_oauth_setup_token'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -25,7 +25,8 @@ const {
   artifactNamePascal,
   windowsExecutableName,
   channel,
-  msixAppIdWithOrg
+  msixAppIdWithOrg,
+  token
 } = require('./product-identity.cjs')
 
 // `storeMsix` is optional on the identity type but guaranteed present when
@@ -102,7 +103,8 @@ module.exports = {
     name: appNamePascal,
     // Electron bootstrap reads package.productName before main.ts. Keep the
     // shipped stable default, but isolate nonstable userData from first access.
-    ...(channelRequest || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
+    // A stable-branded channel has no token and keeps stable's userData.
+    ...((channelRequest && token) || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
     desktopName: appId
   },
   directories: {
@@ -163,7 +165,9 @@ module.exports = {
       NSRemindersFullAccessUsageDescription: `${displayName} needs full access to Reminders to read and manage reminders when explicitly requested.`,
       NSScreenCaptureUsageDescription: `${displayName} captures the screen when you ask the agent to screenshot or record it.`,
       NSLocalNetworkUsageDescription: `${displayName} connects to devices on your local network when a plugin or feature you enable requests it.`,
-      NSAppleMusicUsageDescription: `${displayName} accesses your music library when a plugin or feature you enable requests it.`
+      NSAppleMusicUsageDescription: `${displayName} accesses your music library when a plugin or feature you enable requests it.`,
+      NSContactsUsageDescription: `${displayName} uses Contacts access when you ask it to read or update your address book.`,
+      NSAppleEventsUsageDescription: `${displayName} uses Apple Events to automate apps you explicitly ask it to control.`
     },
     target: ['dmg', 'zip'],
     sign: createMacSigner({

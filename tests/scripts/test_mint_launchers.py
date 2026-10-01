@@ -84,6 +84,9 @@ def payload_tree(tmp_path: Path):
         encoding="utf-8",
     )
     (site / "stubdep.py").write_text("X = 1\n", encoding="utf-8")
+    # Real payloads ship this beside repo/ (scripts/build/agent.py); boot selects its venv from it.
+    (tmp_path / "stage" / "manifest.json").write_text(
+        json.dumps({"schema": 1, "repo": "repo", "venv": "venv", "store": "tools"}), encoding="utf-8")
 
     return {"bin": bin_dir, "root": tmp_path / "stage", "tmp": tmp_path, "site": site, "repo": repo}
 

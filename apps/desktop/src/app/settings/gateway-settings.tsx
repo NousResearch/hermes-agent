@@ -548,9 +548,15 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           remoteAuthMode: state.remoteAuthMode,
           remoteUrl: coerceRemoteUrlScheme(state.remoteUrl),
           sshHost: state.sshHost.trim(),
-          sshUser: state.sshUser.trim() || undefined,
+          // Send an explicit '' for cleared fields. Main merges with `??`, so
+          // `undefined` means "inherit the saved value" and a cleared Identity
+          // file (or User) could never be removed once saved: the form kept
+          // refilling the stale path, and the stale key path made the v1 SSH
+          // route's identity differ from the registered gateway's, leaving
+          // the window unscoped.
+          sshUser: state.sshUser.trim(),
           sshPort: state.sshPort,
-          sshKeyPath: state.sshKeyPath.trim() || undefined,
+          sshKeyPath: state.sshKeyPath.trim(),
           sshRemoteHermesPath: state.sshRemoteHermesPath.trim(),
           // A blank clears an existing remote-profile mapping.
           sshRemoteProfile: state.sshRemoteProfile.trim()
@@ -1314,7 +1320,14 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
               action={
                 <Select
                   onValueChange={selectHost}
-                  value={sshHostSuggestions.includes(state.sshHost) ? state.sshHost : SSH_HOST_CUSTOM}
+                  // Only report an actual host here. Leaving the value at the
+                  // empty string shows the placeholder; using SSH_HOST_CUSTOM
+                  // while the dropdown is still rendered would make the FIRST
+                  // "Custom" click a no-op (Radix suppresses onValueChange when
+                  // a controlled value doesn't change), so the custom-host
+                  // input would never mount without a round-trip through
+                  // another option.
+                  value={sshHostSuggestions.includes(state.sshHost) ? state.sshHost : ''}
                 >
                   <SelectTrigger className={cn('h-8', CONTROL_TEXT)}>
                     <SelectValue placeholder={g.sshHostPick} />

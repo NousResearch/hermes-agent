@@ -171,11 +171,6 @@
   },
   {
     "path": "hermes_cli/gateway.py",
-    "symbol": "_append_node_dir_for_service",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/gateway.py",
     "symbol": "_build_wsl_interop_paths",
     "kind": "bare_which"
   },
@@ -296,12 +291,12 @@
   },
   {
     "path": "hermes_cli/main_desktop.py",
-    "symbol": "cmd_gui",
+    "symbol": "_install_rebuilt_macos_bundles",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_install_repair.py",
-    "symbol": "_resolve_node_runtime_npm",
+    "path": "hermes_cli/main_desktop.py",
+    "symbol": "cmd_gui",
     "kind": "bare_which"
   },
   {
@@ -355,11 +350,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/setup.py",
-    "symbol": "_check_espeak_ng",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/setup_terminal.py",
     "symbol": "_setup_backend_singularity",
     "kind": "bare_which"
@@ -377,11 +367,6 @@
   {
     "path": "hermes_cli/source_build.py",
     "symbol": "run_source_script",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/source_build.py",
-    "symbol": "source_product_current",
     "kind": "bare_which"
   },
   {
@@ -422,6 +407,11 @@
   {
     "path": "hermes_cli/web_git.py",
     "symbol": "_gh",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/web_routers/audio.py",
+    "symbol": "_ffmpeg_s16le_mono",
     "kind": "bare_which"
   },
   {
@@ -545,6 +535,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "tools/mcp_tool_config.py",
+    "symbol": "_managed_launcher",
+    "kind": "bare_which"
+  },
+  {
     "path": "tools/process_registry.py",
     "symbol": "_build_systemd_scope_argv",
     "kind": "bare_which"
@@ -567,11 +562,6 @@
   {
     "path": "tools/skillevaluator_scan.py",
     "symbol": "run_tier1_scan",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/skillevaluator_scan.py",
-    "symbol": "scanner_available",
     "kind": "bare_which"
   },
   {
@@ -687,6 +677,11 @@
   {
     "path": "tools/bot_desktop/runtime.py",
     "symbol": "installable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/file_operations_lint.py",
+    "symbol": "LintMixin._run_managed_node_linter",
     "kind": "bare_which"
   }
 ]

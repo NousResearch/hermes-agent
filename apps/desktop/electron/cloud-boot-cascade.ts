@@ -38,7 +38,10 @@ export interface CloudBootCascadeCandidate {
  * the sign-in; without one the exchange cannot succeed and would only add a
  * delay in front of the same error.
  */
-export function shouldAttemptCloudBootCascade(remote: CloudBootCascadeCandidate | null | undefined, error: unknown): boolean {
+export function shouldAttemptCloudBootCascade(
+  remote: CloudBootCascadeCandidate | null | undefined,
+  error: unknown
+): boolean {
   if (!remote || typeof remote !== 'object') {
     return false
   }

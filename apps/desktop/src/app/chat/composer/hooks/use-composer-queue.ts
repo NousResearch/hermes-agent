@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment } from '@/store/composer'
@@ -9,6 +10,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  clearQueuedPromptDrainFailures,
   enqueueQueuedPrompt,
   getQueuedPrompts,
   isSteerableEntry,
@@ -19,7 +21,8 @@ import {
   removeQueuedPrompt,
   shouldAutoDrain,
   unparkQueuedPrompts,
-  updateQueuedPrompt
+  updateQueuedPrompt,
+  withQueueDrainClaim
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
@@ -168,6 +171,19 @@ export function useComposerQueue({
         return false
       }
 
+      // Editing a queued entry into a slash-command + attachment combo would
+      // produce an undrainable entry (submitText rejects it on every attempt).
+      // Refuse the save so the queue can never hold an entry that livelocks.
+      if (isSlashCommandText(text) && next.length) {
+        notify({
+          kind: 'warning',
+          title: t.desktop.slashCommandIgnoredTitle,
+          message: t.desktop.slashCommandIgnoredBody
+        })
+
+        return false
+      }
+
       const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
@@ -188,61 +204,82 @@ export function useComposerQueue({
       return false
     }
 
+    // Slash commands cannot ride alongside attachments — the drain path would
+    // reject the entry on every attempt (submitText warns + returns false) and
+    // the queue would livelock. Refuse to enqueue it in the first place.
+    if (isSlashCommandText(text) && attachments.length) {
+      notify({
+        kind: 'warning',
+        title: t.desktop.slashCommandIgnoredTitle,
+        message: t.desktop.slashCommandIgnoredBody
+      })
+
+      return false
+    }
+
     if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
       return false
     }
 
     clearDraft()
-    scope.attachments.clear()
+    // Queue entry retains blob: previews; revoke when the entry is discarded
+    // or drained into a submit that takes ownership (see composer-queue).
+    scope.attachments.clear({ retainPreviewUrls: true })
     triggerHaptic('selection')
 
     return true
   }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
 
   // All queue drain paths share one lock + send-then-remove sequence.
-  // `pickEntry` lets each caller choose head, by-id, or skip-edited.
+  // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the
+  // queue as it stands inside the cross-window claim. Resolves null when there
+  // is nothing to send: another window already sent the picked entry.
   const runDrain = useCallback(
-    async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean> => {
+    async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean | null> => {
       if (drainingQueueRef.current || !activeQueueSessionKey) {
         return false
       }
 
       const drainQueueSessionKey = activeQueueSessionKey
       const drainRuntimeSessionId = sessionId ?? null
-      const entry = pickEntry(getQueuedPrompts(drainQueueSessionKey))
-
-      if (!entry) {
-        return false
-      }
 
       drainingQueueRef.current = true
 
       try {
-        const accepted = await Promise.resolve(
-          onSubmit(entry.text, {
-            attachments: entry.attachments,
-            ...(entry.displayText ? { displayText: entry.displayText } : {}),
-            ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
-            fromQueue: true,
-            sessionId: drainRuntimeSessionId,
-            storedSessionId: drainQueueSessionKey
-          })
-        )
+        return await withQueueDrainClaim(drainQueueSessionKey, async queue => {
+          const entry = pickEntry(queue)
 
-        if (accepted === false) {
-          return false
-        }
+          if (!entry) {
+            return null
+          }
 
-        drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(drainQueueSessionKey, entry.id)
-        resetBrowseState(drainRuntimeSessionId)
-        // A successful drain means the queue is flowing again — lift any park
-        // so the remaining entries follow. Manual drains (Enter on an empty
-        // composer, the per-row send arrow) are exactly the resume gestures a
-        // parked queue waits for; the auto path only reaches here unparked.
-        unparkQueuedPrompts(drainQueueSessionKey)
+          const accepted = await Promise.resolve(
+            onSubmit(entry.text, {
+              attachments: entry.attachments,
+              ...(entry.displayText ? { displayText: entry.displayText } : {}),
+              ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
+              fromQueue: true,
+              sessionId: drainRuntimeSessionId,
+              storedSessionId: drainQueueSessionKey
+            })
+          )
 
-        return true
+          if (accepted === false) {
+            return false
+          }
+
+          drainFailuresRef.current.delete(entry.id)
+          // Submit now owns the blob: previews (optimistic bubble); do not revoke.
+          removeQueuedPrompt(drainQueueSessionKey, entry.id, { retainPreviewUrls: true })
+          resetBrowseState(drainRuntimeSessionId)
+          // A successful drain means the queue is flowing again — lift any park
+          // so the remaining entries follow. Manual drains (Enter on an empty
+          // composer, the per-row send arrow) are exactly the resume gestures a
+          // parked queue waits for; the auto path only reaches here unparked.
+          unparkQueuedPrompts(drainQueueSessionKey)
+
+          return true
+        })
       } finally {
         drainingQueueRef.current = false
       }
@@ -259,7 +296,7 @@ export function useComposerQueue({
     [queueEditRef] // reads the edit id off a ref so the lock-holder always sees the latest
   )
 
-  const drainNextQueued = useCallback(() => runDrain(pickDrainHead), [pickDrainHead, runDrain])
+  const drainNextQueued = useCallback(async () => (await runDrain(pickDrainHead)) === true, [pickDrainHead, runDrain])
 
   const sendQueuedNow = useCallback(
     (id: string) => {
@@ -284,6 +321,9 @@ export function useComposerQueue({
       // A manual send clears the auto-drain backoff so a stuck entry the user
       // taps gets a fresh attempt (and re-enables auto-retry on success).
       drainFailuresRef.current.delete(id)
+      // Same for the persisted budget the background drain keeps on the
+      // entry (#98015) — a user gesture is fresh intent, not a replay.
+      clearQueuedPromptDrainFailures(activeQueueSessionKey, id)
 
       return runDrain(entries => entries.find(e => e.id === id))
     },
@@ -330,6 +370,40 @@ export function useComposerQueue({
     [activeQueueSessionKey, busy, onSteer, queueEditRef]
   )
 
+  // Double-Enter while busy. The entry usually sits in the queue because the
+  // first Enter's steer didn't land, so retry that: the words join the live
+  // turn as a bubble, with no interrupt and no settle wait. A payload a steer
+  // can't carry (attachments, hidden notes, expanded skills) or a refused
+  // steer falls back to send-now's interrupt.
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+  const steeringIdsRef = useRef(new Set<string>())
+
+  const deliverQueuedNow = useCallback(
+    async (id: string) => {
+      const entry = activeQueueSessionKey ? getQueuedPrompts(activeQueueSessionKey).find(e => e.id === id) : undefined
+
+      if (!busy || !entry || entry.displayKind || entry.displayText || !isSteerableEntry(entry)) {
+        return sendQueuedNow(id)
+      }
+
+      // A repeat Enter mid-steer must not interrupt the turn about to take it.
+      if (steeringIdsRef.current.has(id)) {
+        return true
+      }
+
+      steeringIdsRef.current.add(id)
+      const steered = await steerQueuedNow(id).finally(() => steeringIdsRef.current.delete(id))
+
+      // Settled while we asked: the idle auto-drain already owns the entry.
+      return (
+        steered ||
+        (busyRef.current && getQueuedPrompts(activeQueueSessionKey!).some(e => e.id === id) && sendQueuedNow(id))
+      )
+    },
+    [activeQueueSessionKey, busy, sendQueuedNow, steerQueuedNow]
+  )
+
   // Edge-independent auto-drain: send the head whenever the session is idle and
   // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
   // a stale-session 404) can't strand the entry permanently nor spin-loop. The
@@ -368,9 +442,11 @@ export function useComposerQueue({
       }
     }
 
-    void runDrain(() => entry)
+    // By id: inside the claim the head may already be gone — sent by another
+    // window — which is not a failed send.
+    void runDrain(entries => entries.find(e => e.id === entry.id))
       .then(sent => {
-        if (!sent) {
+        if (sent === false) {
           onFail()
         }
       })
@@ -439,6 +515,7 @@ export function useComposerQueue({
 
   return {
     beginQueuedEdit,
+    deliverQueuedNow,
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,

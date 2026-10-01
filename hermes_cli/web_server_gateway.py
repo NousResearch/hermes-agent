@@ -319,6 +319,24 @@ def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
     return None
 
 
+def _is_host_gateway_spawn(subcommand: List[str]) -> bool:
+    """True when *subcommand* starts the host multiplexer, not a named profile's own gateway.
+
+    ``hermes gateway restart`` and ``hermes -p default gateway restart`` are the host.
+    ``hermes -p coder gateway stop`` is not.
+    """
+    profile = _named_profile_from_action(subcommand)
+    if profile not in (None, "default"):
+        return False
+    args = list(subcommand)
+    if profile is not None:
+        if args and args[0] in {"-p", "--profile"}:
+            args = args[2:]
+        elif args and str(args[0]).startswith("--profile="):
+            args = args[1:]
+    return bool(args) and args[0] == "gateway"
+
+
 def _profile_action_environment(
     subcommand: List[str], env_overrides: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
@@ -333,11 +351,16 @@ def _profile_action_environment(
     Named-profile actions therefore start from Hermes' standard scrubbed subprocess env, then drop
     the profile-managed keys plus every key declared by the dashboard/default profile dotenv files
     and their hydrated secret sources, and pin ``HERMES_HOME`` to the target profile. The child's
-    normal startup then loads that profile's own ``.env``. Actions without a profile selector keep
+    normal startup then loads that profile's own ``.env``. A host-gateway verb (bare ``gateway``
+    or ``-p default gateway``) starts from ``host_gateway_child_env`` so a named-profile dashboard
+    cannot donate its dotenv to the multiplexer. Other actions without a profile selector keep
     the historical environment exactly.
     """
     profile = _named_profile_from_action(subcommand)
-    if profile is None:
+    if _is_host_gateway_spawn(subcommand):
+        from tools.environments.local import host_gateway_child_env
+        action_env = host_gateway_child_env()
+    elif profile is None:
         action_env = dict(os.environ)
     else:
         from hermes_cli.env_loader import (
@@ -480,15 +503,17 @@ def _spawn_hermes_action(
 
 
 def _own_profile_selector(profile: Optional[str]) -> Optional[str]:
-    """The profile a lifecycle verb addresses: the explicit selector, else the process's own named
+    """The profile a lifecycle verb addresses: the explicit selector, else the process's own
     profile (a pooled Desktop ``hermes --profile X serve`` answers ``/api/gateway/*`` without
-    ``?profile=``; an unscoped verb there is about X, not about the default home)."""
+    ``?profile=``; an unscoped verb there is about X). The default home resolves to the literal
+    ``"default"`` selector, never to a bare argv: a selector-less child re-reads the sticky
+    ``active_profile`` and would act on another profile's gateway (and skips the named-target
+    env scrub). ``None`` is reserved for a home that is not a profile home at all."""
     requested = (profile or "").strip()
     if requested:
         return requested
     from hermes_constants import get_process_hermes_home, profile_name_for_home
-    own = profile_name_for_home(get_process_hermes_home())
-    return own if own and own != "default" else None
+    return profile_name_for_home(get_process_hermes_home()) or None
 
 
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
@@ -497,12 +522,14 @@ def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
     that actually serves X — a ``-p X gateway restart`` child only exits 78 into the action log while the
     UI reports "restarted"); ``start``/``stop`` are refused by the caller (``multiplexed_profile_refusal``).
     The multiplexer is addressed as ``-p default`` explicitly: a bare ``gateway restart`` spawned from a
-    pooled ``--profile X serve`` would inherit X's ``HERMES_HOME`` and hit the same exit-78 refusal."""
+    pooled ``--profile X serve`` would inherit X's ``HERMES_HOME`` and hit the same exit-78 refusal. The
+    selector is explicit for the default home too: a bare child re-reads the sticky ``active_profile``
+    and would restart another profile's gateway."""
     from hermes_cli.web_server_profiles import _profile_cli_args
     profile = _own_profile_selector(profile)
     args = _profile_cli_args(profile)
     if profile and verb == "restart" and multiplexed_profile_refusal(profile, verb) is not None:
-        # Always explicit, even from the default home: a bare child re-reads the sticky active_profile.
+        # A served profile's restart targets the multiplexer, addressed as ``-p default``.
         args = ["-p", "default"]
     return args + ["gateway", verb]
 

@@ -30,7 +30,16 @@
 import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
 
-import { clickAt, glideTo, pointerPlaced, pressKey, selectAll, typeText, wheelBy } from './preview-drive'
+import {
+  clearCharsBack,
+  clickAt,
+  glideTo,
+  pointerPlaced,
+  pressKey,
+  selectAll,
+  typeText,
+  wheelBy
+} from './preview-drive'
 import { activePreviewInput, type PreviewInputHandle } from './preview-input'
 import { activePreviewNav, type PreviewNavHandle } from './preview-nav'
 import { activePreviewScriptRunner, type PreviewScriptRunner } from './preview-script-runner'
@@ -44,6 +53,24 @@ const NAV_ACTIONS: readonly (keyof PreviewNavHandle)[] = ['back', 'forward', 're
  *  page anyway, so the cost of being early is a slightly stale inventory, not a
  *  wrong one. That trade is worth several hundred ms on every single step. */
 const SETTLE_MS = 220
+
+/** Let a focus/click-triggered re-render COMMIT before aiming a select-all at
+ *  the field. The whole bug is that select-all fired against the node the
+ *  re-render was about to replace, so its selection died and typing appended.
+ *  Short on purpose — the verify + backspace fallback below catches a render
+ *  that outlives this window. */
+const TYPE_RENDER_SETTLE_MS = 120
+
+/** How many deterministic backspace-clear passes before giving up instead of
+ *  typing into a field we could not empty. Bounded so a pathological page
+ *  cannot stall the turn. */
+const TYPE_CLEAR_ATTEMPTS = 2
+
+const TYPE_FAILED_CLEAR =
+  'The field kept refilling while it was being cleared, so nothing was typed — ' +
+  'typing would only append to its old value. Click it again and retype, or set the value directly.'
+
+const waitMs = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 /** Cap on one round trip into the guest page. A click that starts a navigation
  *  tears the document down mid-settle, so the injected promise dies with it and
@@ -171,6 +198,26 @@ ${preamble()}
 })()`
 }
 
+/** After the locate click: the located editable must itself be
+ *  document.activeElement. A click that only mounts the editor leaves focus
+ *  on body, and the characters that follow would be page input. */
+function buildFocusProbeScript(): string {
+  return `(function () {
+${preamble()}
+  // hermes-focus-probe
+  var aimed = holder.aimed;
+  var active = document.activeElement;
+  var tag = aimed && aimed.tagName ? aimed.tagName : '';
+  var editable = !!(aimed && (aimed.isContentEditable === true || tag === 'INPUT' || tag === 'TEXTAREA'));
+  var focused = editable && active === aimed;
+  return Promise.resolve(JSON.stringify({
+    focused: focused,
+    success: true,
+    tag: active && active.tagName ? active.tagName : ''
+  }));
+})()`
+}
+
 /** Put up a mark that outlives the action that made it. Every other cue on the
  *  overlay retires on a timer, which is right for narrating a click and no use
  *  at all for holding a finding on screen while the agent keeps working. */
@@ -286,6 +333,150 @@ ${preamble()}
 })()`
 }
 
+/** Report what is focused and would receive keystrokes: its text length and
+ *  whether it is a selection-bearing text control (real INPUT/TEXTAREA). Read
+ *  AFTER the click so it reflects the node the click's re-render actually left
+ *  in place, not the pre-render one. Standalone (no preamble/engine) because it
+ *  only reads `document.activeElement`, which is exactly who receives keys. */
+function buildFieldStateScript(): string {
+  return `(function () {
+    try {
+      var el = document.activeElement;
+      if (!el) { return JSON.stringify({ success: true, field: false, len: -1 }); }
+      var value = '';
+      var hasStart = false;
+      try {
+        if (el.value !== undefined) { value = String(el.value || ''); }
+        else if (el.isContentEditable) { value = el.textContent || ''; }
+      } catch (e) {}
+      try { hasStart = typeof el.selectionStart === 'number'; } catch (e) {}
+      return JSON.stringify({
+        success: true,
+        field: hasStart && value.length >= 0,
+        len: value.length
+      });
+    } catch (err) {
+      return JSON.stringify({ success: false });
+    }
+  })()`
+}
+
+/** True selection-bearing field state, or 'unknown' when it is not readable
+ *  (focus elsewhere, or a control with no value/selection API). */
+type FieldState = { ok: false } | { ok: true; field: false } | { ok: true; field: true; len: number }
+
+async function readField(run: PreviewScriptRunner): Promise<FieldState> {
+  const trip = await runJson(run, buildFieldStateScript())
+
+  if (trip.kind !== 'answered' || !trip.result.success) {
+    return { ok: false }
+  }
+
+  const r = trip.result as unknown as { field: boolean; len: number }
+
+  return r.field ? { ok: true, field: true, len: r.len } : { ok: true, field: false }
+}
+
+/** Replace the focused field's whole value with `text`. Returns an error string
+ *  if the field could not be cleared, so the caller can FAIL rather than let
+ *  typing append to stale content. */
+async function replaceExisting(
+  run: PreviewScriptRunner,
+  input: PreviewInputHandle,
+  text: string,
+  signal?: AbortSignal
+): Promise<{ error?: string; typed: number }> {
+  // (a) Settle after the focus click: let the controlled input's re-render
+  //     finish mounting/rebuilding its node before we try to select that node.
+  await waitMs(TYPE_RENDER_SETTLE_MS)
+
+  for (let backspaced = 0; backspaced <= TYPE_CLEAR_ATTEMPTS; backspaced++) {
+    await selectAll(input)
+
+    const state = await readField(run)
+
+    // Can't confirm the field (or it isn't a selection-bearing text control):
+    // trust select-all the way the pre-verification driver did and type.
+    if (!state.ok || !state.field) {
+      break
+    }
+
+    // selectAll worked — nothing is left to type over.
+    if (state.len === 0) {
+      break
+    }
+
+    // selectAll is confirmed NOT working (its selection was lost to a re-render
+    // that reset/replaced the node, or never landed). Give up only after every
+    // deterministic clear has also failed.
+    if (backspaced === TYPE_CLEAR_ATTEMPTS) {
+      return { error: TYPE_FAILED_CLEAR, typed: 0 }
+    }
+
+    // (b) Clear without relying on a selection: End parks the caret at the
+    //     tail, then one Backspace per remaining character.
+    await clearCharsBack(input, state.len)
+  }
+
+  return { typed: await typeText(input, text, signal) }
+}
+
+/** Set a focused field's value directly through its own DOM setter — no
+ *  keystrokes. This is the fallback for inputs a money/number/date mask makes
+ *  hostile to real typing: the mask keeps re-applying its own formatting, so
+ *  select-all and even End+Backspace never produce an empty field. Assigning
+ *  through the native prototype setter (as the scripted engine does) commits
+ *  the value in a way controlled React inputs accept, then dispatches input +
+ *  change so the page records it. */
+function buildDirectSetScript(text: string): string {
+  return `(function () {
+    try {
+      var el = document.activeElement;
+      if (!el) { return JSON.stringify({ success: false, error: 'no focused field' }); }
+      var setVal = null;
+      if (el.tagName === 'TEXTAREA') { setVal = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; }
+      else if (el.tagName === 'INPUT') { setVal = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; }
+      if (setVal) { setVal.call(el, ${JSON.stringify(text)}); }
+      else if ('value' in el) { el.value = ${JSON.stringify(text)}; }
+      else if (el.isContentEditable) { el.textContent = ${JSON.stringify(text)}; }
+      else { return JSON.stringify({ success: false, error: 'not a text field' }); }
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return JSON.stringify({ success: true });
+    } catch (err) {
+      return JSON.stringify({ success: false, error: String(err) });
+    }
+  })()`
+}
+
+/** Type into the focused field, and if real keystrokes could not clear a
+ *  masked/hostile input (money, date, number masks that keep re-formatting),
+ *  fall back to setting the value directly through the DOM. Returns null on
+ *  success or a clear error. */
+async function setFocusedField(
+  run: PreviewScriptRunner,
+  input: PreviewInputHandle,
+  text: string,
+  signal?: AbortSignal
+): Promise<{ error?: string; typed: number }> {
+  const cleared = await replaceExisting(run, input, text, signal)
+
+  // Real keystrokes cleared it and typed fine — no fallback needed.
+  if (!cleared.error) {
+    return { typed: cleared.typed }
+  }
+
+  // Real keystrokes could not empty the field (a mask keeps refilling it).
+  // Fall back to a direct DOM value-set, which bypasses the mask.
+  const trip = await runJson(run, buildDirectSetScript(text))
+
+  if (trip.kind !== 'answered') {
+    return { error: cleared.error, typed: 0 }
+  }
+
+  return trip.result.success ? { typed: 0 } : { error: cleared.error, typed: 0 }
+}
+
 /** The outcome of one round trip into the page. `silent` is its own case on
  *  purpose: a page that stops answering mid-action is navigating, whereas one
  *  that answers with nothing is broken, and the agent needs to hear the
@@ -316,6 +507,30 @@ async function runJson(run: PreviewScriptRunner, code: string): Promise<Trip> {
   return { kind: 'answered', result: JSON.parse(raw) as PreviewActResult }
 }
 
+/** A single character is text. Named keys (Enter, Escape, ArrowDown) are not. */
+function isPrintableKey(key: string): boolean {
+  return key.length === 1
+}
+
+/** body/html, or a tag we never learned — a printable key there is a page
+ *  shortcut, not text entry. */
+function isPageRoot(tag: string | undefined): boolean {
+  const normalized = (tag || '').toUpperCase()
+
+  return !normalized || normalized === 'BODY' || normalized === 'HTML'
+}
+
+/** The loop stopped because the tool timed out or the turn was interrupted.
+ *  Say how much landed so the agent does not assume the whole string did. */
+function stoppedType(signal: AbortSignal, typed: number, total: number): PreviewActResult {
+  const reason = signal.reason === 'timeout' ? 'timed out' : 'was interrupted'
+
+  return {
+    error: `Typing stopped after ${typed} of ${total} characters because the action ${reason}.`,
+    success: false
+  }
+}
+
 /** Past tense of the verb the agent asked for, against what it actually hit. */
 function describeDone(action: PreviewActAction, target: string): string {
   if (action.kind === 'type') {
@@ -337,7 +552,8 @@ function describeDone(action: PreviewActAction, target: string): string {
 async function driveAction(
   run: PreviewScriptRunner,
   input: PreviewInputHandle,
-  action: PreviewActAction
+  action: PreviewActAction,
+  signal?: AbortSignal
 ): Promise<PreviewActResult> {
   // A key press must not be preceded by a click — that would activate the
   // control rather than type into it — so the page hands it focus instead.
@@ -366,6 +582,8 @@ async function driveAction(
   if (action.kind === 'click') {
     await clickAt(input)
   } else if (action.kind === 'type') {
+    const text = action.text ?? ''
+
     if (found.typable === false) {
       return {
         error: `${String(found.acted || 'That').replace(/^looking at /, '')} is not a text field, so typing into it would only select the text under the pointer. Click it if it opens one, then type into that.`,
@@ -373,21 +591,69 @@ async function driveAction(
       }
     }
 
+    if (signal?.aborted) {
+      return stoppedType(signal, 0, text.length)
+    }
+
     input.focus()
     await clickAt(input)
-    // Select-all inside the now-focused field, so typing replaces what is there
-    // the way it would for a person. NOT a triple-click: that is a pointer
-    // gesture and selects the paragraph under the cursor whenever the target
-    // turns out not to be a field.
-    await selectAll(input)
-    await typeText(input, action.text ?? '')
+
+    if (signal?.aborted) {
+      return stoppedType(signal, 0, text.length)
+    }
+
+    // The click is what is supposed to move DOM focus. webContents focus is
+    // not that — refuse unless the located editable is now activeElement,
+    // before select-all or any character.
+    const probe = await runJson(run, buildFocusProbeScript())
+    const focused = probe.kind === 'answered' && (probe.result as { focused?: boolean }).focused === true
+
+    if (!focused) {
+      const active =
+        probe.kind === 'answered' ? String((probe.result as { tag?: string }).tag || 'the page') : 'the page'
+
+      return {
+        error: `target is not focused (${active}); nothing typed`,
+        success: false
+      }
+    }
+
+    if (signal?.aborted) {
+      return stoppedType(signal, 0, text.length)
+    }
+
+    // Select-and-replace the field's existing value. This is the one spot that
+    // survives a controlled React input re-rendering on focus/click: settle
+    // first, verify the select actually cleared the field, and if the page
+    // threw the selection away we empty it with End+Backspace instead of
+    // typing over — never append to stale content. If real keystrokes cannot
+    // clear a masked field at all (money/date/number masks keep refilling it),
+    // fall back to setting the value directly through the DOM.
+    const outcome = await setFocusedField(run, input, text, signal)
+
+    if (outcome.error) {
+      return { error: outcome.error, success: false }
+    }
+
+    if (signal?.aborted) {
+      return stoppedType(signal, outcome.typed, text.length)
+    }
 
     if (action.submit) {
       await pressKey(input, 'Enter')
     }
   } else if (action.kind === 'press') {
+    const key = action.key || 'Enter'
+
+    if (isPrintableKey(key) && action.allowShortcut !== true && isPageRoot(found.tag)) {
+      return {
+        error: `Refused to press a printable key on ${found.tag || 'body'}. That would be a page shortcut; pass allowShortcut to opt in.`,
+        success: false
+      }
+    }
+
     input.focus()
-    await pressKey(input, action.key || 'Enter')
+    await pressKey(input, key)
   }
   // hover is the glide and nothing else — the pointer is already sitting on the
   // target, which is the whole request.
@@ -488,7 +754,8 @@ async function driveScroll(
  *  string: the verb arrives off the wire, and the history ones never reach
  *  the in-page engine. */
 export async function actOnActivePreview(
-  action: Omit<PreviewActAction, 'kind'> & { kind: string }
+  action: Omit<PreviewActAction, 'kind'> & { kind: string },
+  signal?: AbortSignal
 ): Promise<PreviewActResult> {
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 
@@ -538,7 +805,7 @@ export async function actOnActivePreview(
   const input = activePreviewInput()
 
   if (input && DRIVEN.indexOf(typed.kind) !== -1) {
-    return driveAction(run, input, typed)
+    return driveAction(run, input, typed, signal)
   }
 
   // A plain page scroll is a wheel gesture. Jumping to an end is not — no hand

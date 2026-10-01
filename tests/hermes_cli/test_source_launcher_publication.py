@@ -146,9 +146,7 @@ def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, mo
     (repo / "install-stamp.json").write_text(json.dumps({
         "commit": "abcdef012345", "updateMechanism": "git", "runtimeDir": str(home / "tools"),
     }), encoding="utf-8")
-    site = site_packages(repo / "venv")
-    site.mkdir(parents=True)
-    (site / "selected_probe.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
+    select_generation(repo, "shared", "ready")
     out = tmp_path / ".local" / "bin"
     if publisher == "cmd":
         monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
@@ -191,6 +189,9 @@ def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, mo
     assert_home(profile, profile)
     other_home = tmp_path / "explicit custom home"
     other_home.mkdir()
+    # A custom home is its own dependency root: it sees only generations committed there.
+    monkeypatch.setenv("HERMES_HOME", str(other_home))
+    select_generation(repo, "shared", "ready")
     assert_home(other_home, other_home)
 
 
@@ -237,7 +238,8 @@ def test_materializer_cli_refuses_missing_store_without_publishing(tmp_path, mon
 
 
 @pytest.mark.platforms("posix")
-def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_hermes", ["venv-python", "venv-console-script"])
+def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeypatch, legacy_hermes):
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
@@ -245,11 +247,16 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
     out = home / ".local" / "bin"
     out.mkdir(parents=True)
     # Old venv and sibling-ACP wrappers, with an unrelated command sharing bin.
-    (out / "hermes").write_text(f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n', encoding="utf-8")
+    old_wrapper = (f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n'
+                   if legacy_hermes == "venv-python" else
+                   f'#!/usr/bin/env bash\nunset PYTHONPATH\nunset PYTHONHOME\n'
+                   f'exec "{repo}/venv/bin/hermes" "$@"\n')
+    (out / "hermes").write_text(old_wrapper, encoding="utf-8")
     (out / "hermes-acp").write_text(
         '#!/usr/bin/env bash\n# Hermes Agent — ACP launcher (written by `hermes update`).\n'
         f'exec "{out}/hermes" acp "$@"\n', encoding="utf-8")
-    foreign = f'#!/bin/sh\n# user note about {repo}\nexit 19\n'
+    # Mentions this install only in a comment and runs another checkout's venv.
+    foreign = f'#!/bin/sh\n# user note about {repo}/venv/bin/hermes\nexec "{tmp_path}/other/venv/bin/hermes" "$@"\n'
     (out / "hermes-agent").write_text(foreign, encoding="utf-8")
 
     result = _launchers.expose_cli()
@@ -316,8 +323,12 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
     assert collect_generations(repo, min_age_seconds=0) == [selected.parent.parent / "old"]
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 7, result.stderr
-    assert json.loads(result.stdout)["value"] == "new"
-    assert json.loads(result.stdout)["argv"] == args
+    receipt = result.stdout
+    if surface == "launchd":
+        # stderr_timestamp stamps the child's stdout lines ("YYYY-MM-DD HH:MM:SS,mmm ").
+        receipt = receipt.split(" ", 2)[2]
+    assert json.loads(receipt)["value"] == "new"
+    assert json.loads(receipt)["argv"] == args
 
 
 @pytest.mark.parametrize("surface", ["published", "systemd", "launchd", "ssh", "legacy"])
@@ -427,15 +438,13 @@ def test_dashboard_action_boots_selected_dependencies(tmp_path, monkeypatch):
             proc.wait(timeout=30)
 
 
-@pytest.mark.parametrize("layout", ["legacy", "payload"])
-def test_pre_pm_base_dependencies_activate_only_at_boot(tmp_path, monkeypatch, layout):
+def test_pre_pm_base_dependencies_activate_only_at_boot(tmp_path, monkeypatch):
+    # The in-tree pre-PM venv is never activated; only a sealed payload's own environment is.
     repo, home, _ = fixture_tree(tmp_path, monkeypatch)
-    environment = repo / "venv"
-    if layout == "payload":
-        environment = repo.parent / "payload-deps"
-        (repo.parent / "manifest.json").write_text(
-            json.dumps({"repo": repo.name, "venv": environment.name,
-                        "store": (home / "tools").relative_to(repo.parent).as_posix()}), encoding="utf-8")
+    environment = repo.parent / "payload-deps"
+    (repo.parent / "manifest.json").write_text(
+        json.dumps({"repo": repo.name, "venv": environment.name,
+                    "store": (home / "tools").relative_to(repo.parent).as_posix()}), encoding="utf-8")
     site = site_packages(environment)
     site.mkdir(parents=True)
     editable = tmp_path / "editable"
@@ -464,9 +473,7 @@ def test_service_survives_python_tool_replacement(tmp_path, monkeypatch):
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)
-    site = site_packages(repo / "venv")
-    site.mkdir(parents=True)
-    (site / "selected_probe.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
+    select_generation(repo, "shared", "ready")
     store = home / "tools"
     for version in ("python-A", "python-B"):
         python = store / version / "bin" / "python3"
@@ -493,9 +500,7 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: home)
-    site = site_packages(repo / "venv")
-    site.mkdir(parents=True)
-    (site / "selected_probe.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
+    select_generation(repo, "shared", "ready")
     out = home / ".local/bin"
     out.mkdir(parents=True)
     if not create:

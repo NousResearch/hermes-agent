@@ -345,7 +345,7 @@ async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
-        _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
+        _external_skill_names, _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
 
     def _run():
         with _profile_scope(profile):
@@ -354,17 +354,22 @@ async def get_skills(profile: Optional[str] = None):
             skills = _find_all_skills(skip_disabled=True)
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
-            # without a per-skill manifest read): hub > bundled > agent, where
-            # "agent" covers agent-authored AND local hand-made skills — the ones
-            # the user may edit/delete from the UI.
-            bundled_names = _read_bundled_manifest_names()
+            # without a per-skill manifest read): hub > bundled > external > agent.
+            # "external" is mounted from skills.external_dirs and absent locally —
+            # externally authored, NOT learned. "agent" covers agent-authored AND
+            # local hand-made skills — the ones the user may edit/delete from the
+            # UI; external skills keep their in-place foreground edit rights
+            # regardless of label (commit 8c8fc6c1ec).
+            bundled_names = _read_bundled_names()
             hub_names = _read_hub_installed_names()
+            external_names = _external_skill_names() - bundled_names - hub_names
         for s in skills:
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
             s["provenance"] = (
                 "hub" if s["name"] in hub_names
                 else "bundled" if s["name"] in bundled_names
+                else "external" if s["name"] in external_names
                 else "agent")
         return skills
 
@@ -436,26 +441,3 @@ async def update_skill_content(body: SkillContentUpdate):
         raise HTTPException(status_code=status, detail=err)
     _clear_skills_prompt_cache()
     return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import logging  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'LateState': ('hermes_cli.web_deps', 'LateState'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

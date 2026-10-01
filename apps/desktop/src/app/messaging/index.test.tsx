@@ -26,6 +26,7 @@ const watchGatewayRestartOutcome = vi.fn()
 const startTelegramOnboarding = vi.fn()
 const getTelegramOnboardingStatus = vi.fn()
 const applyTelegramOnboarding = vi.fn()
+const notify = vi.fn()
 
 vi.mock('@/hermes', () => ({
   approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
@@ -64,7 +65,7 @@ vi.mock('@/lib/external-link', () => ({
 }))
 
 vi.mock('@/store/notifications', () => ({
-  notify: vi.fn(),
+  notify: (notification: unknown) => notify(notification),
   notifyError: vi.fn()
 }))
 
@@ -137,6 +138,161 @@ describe('MessagingView profile scope', () => {
     // rather than left to the ambient fallback.
     await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith('default'))
     expect(getPairing).toHaveBeenCalledWith('default')
+  })
+})
+
+describe('MessagingView status filter', () => {
+  const rowNames = (container: HTMLElement) =>
+    [...container.querySelectorAll('ul > li > button')].map(row => row.querySelector('.truncate')?.textContent)
+
+  it('offers a tab only for tones some platform is in, and narrows the list to that tone', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({ enabled: true, id: 'discord', name: 'Discord', state: 'connected' }),
+        platform({ enabled: true, id: 'slack', name: 'Slack', state: 'retrying' }),
+        platform({ id: 'teams', name: 'Microsoft Teams' })
+      ]
+    })
+
+    const { container } = await renderMessaging()
+
+    await waitFor(() => expect(rowNames(container)).toHaveLength(3))
+    expect(screen.queryByRole('button', { name: 'Errors' })).toBeNull()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Needs attention' })[0])
+
+    expect(rowNames(container)).toEqual(['Slack'])
+  })
+})
+
+describe('MessagingView enable switch', () => {
+  it('labels the enable switch with the platform state', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ enabled: true })] })
+
+    await renderMessaging()
+
+    const toggle = await screen.findByRole('switch', { name: 'Disable Microsoft Teams' })
+    expect(toggle.closest('label')?.textContent).toBe('Enabled')
+  })
+
+  it("drops the previous profile's credential placeholders on the very first post-switch render", async () => {
+    // #96542: blanking the stale platforms state in a passive effect lets the
+    // "new scope + old data" frame paint first, so the new profile briefly
+    // showed the PREVIOUS profile's redacted Telegram token as the field
+    // placeholder. The reset must happen during render — after the scope
+    // switch returns from act(), the old value is already gone from the DOM
+    // with no waitFor() in between.
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    const oldToken = '123456:AAE-previous-profile-token'
+
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          env_vars: [
+            {
+              advanced: false,
+              description: 'Telegram bot token from @BotFather.',
+              is_password: true,
+              is_set: true,
+              key: 'TELEGRAM_TOKEN',
+              prompt: 'Token',
+              redacted_value: oldToken,
+              required: true,
+              url: null
+            }
+          ],
+          id: 'telegram',
+          name: 'Telegram'
+        })
+      ]
+    })
+
+    $settingsScopeOverride.set(null)
+    await renderMessaging()
+
+    // The previous profile's redacted token is visible as the placeholder.
+    expect(await screen.findByPlaceholderText(oldToken)).not.toBeNull()
+
+    // Switch the scope while B's fetch stays pending, so any stale rendering
+    // would still be showing A's data.
+    //
+    // Note on coverage: jsdom cannot observe the paint-order race itself
+    // (act() flushes passive effects synchronously, so an effect-based reset
+    // also clears before the assertion; outside act() the commit itself is
+    // deferred). This test therefore pins the reset *semantics* — after a
+    // scope switch the previous profile's credential placeholder must be gone
+    // from the DOM even while the new profile's fetch is still pending. The
+    // paint-order guarantee ("the stale frame never reaches the screen") is
+    // carried by resetting during render per the React docs pattern instead
+    // of in a passive effect, which fires after paint.
+    getMessagingPlatforms.mockReturnValue(new Promise(() => {}))
+
+    await act(async () => {
+      $settingsScopeOverride.set('profile-b')
+    })
+
+    // Synchronous assertion — no waitFor: the reset must have discarded the
+    // stale platforms state before the new profile's fetch resolves.
+    expect(screen.queryByPlaceholderText(oldToken)).toBeNull()
+
+    // Let pending work settle and restore the shared store.
+    await act(async () => {
+      $settingsScopeOverride.set(null)
+    })
+  })
+
+  it("drops profile A's late response after the scope switched to B", async () => {
+    // #96542 (second mechanism): A's in-flight getMessagingPlatforms resolves
+    // AFTER the switch to B and must not repaint A's redacted token under B.
+    const tokenA = '123456:AAE-profile-a-token'
+
+    let resolveA: (value: unknown) => void = () => {}
+
+    getMessagingPlatforms.mockImplementation((profile?: null | string) =>
+      profile === 'profile-b'
+        ? new Promise(() => {})
+        : new Promise(resolve => {
+            resolveA = resolve
+          })
+    )
+
+    $settingsScopeOverride.set(null)
+    await renderMessaging()
+
+    await act(async () => {
+      $settingsScopeOverride.set('profile-b')
+    })
+
+    await act(async () => {
+      resolveA({
+        platforms: [
+          platform({
+            env_vars: [
+              {
+                advanced: false,
+                description: 'Telegram bot token from @BotFather.',
+                is_password: true,
+                is_set: true,
+                key: 'TELEGRAM_TOKEN',
+                prompt: 'Token',
+                redacted_value: tokenA,
+                required: true,
+                url: null
+              }
+            ],
+            id: 'telegram',
+            name: 'Telegram'
+          })
+        ]
+      })
+    })
+
+    expect(screen.queryByPlaceholderText(tokenA)).toBeNull()
+
+    getMessagingPlatforms.mockReset()
+    await act(async () => {
+      $settingsScopeOverride.set(null)
+    })
   })
 })
 
@@ -324,6 +480,7 @@ describe('MessagingView Telegram quick setup', () => {
       status: 'ready'
     })
     applyTelegramOnboarding.mockResolvedValue({
+      bot_username: 'hermes_bot',
       needs_restart: false,
       ok: true,
       platform: 'telegram',
@@ -348,6 +505,15 @@ describe('MessagingView Telegram quick setup', () => {
 
       await waitFor(() => expect(applyTelegramOnboarding).toHaveBeenCalledWith('pair-1', ['8792111505'], 'worker'))
       await waitFor(() => expect(watchGatewayRestartOutcome).toHaveBeenCalled())
+      expect(notify).toHaveBeenCalledWith({
+        kind: 'success',
+        message: 'Connected: @hermes_bot · Telegram saved; gateway restarting…',
+        title: 'Telegram setup saved'
+      })
+      // The pairing UI is gone, but the card still names the bot that was just connected.
+      expect(screen.queryByRole('button', { name: /Save and restart/ })).toBeNull()
+      expect(screen.getByText('Connected')).toBeTruthy()
+      expect(screen.getByText('@hermes_bot')).toBeTruthy()
     } finally {
       $settingsScopeOverride.set(null)
     }

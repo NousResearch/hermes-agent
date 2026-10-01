@@ -821,3 +821,45 @@ class TestLineBufferPipedStdout:
         # setup_logging runs per AIAgent build: a second call must not re-flush/reconfigure.
         hermes_logging.setup_logging(hermes_home=tmp_path, force=True)
         stream.reconfigure.assert_called_once_with(line_buffering=True)
+
+
+class TestRolloverPreservesLogOwnership:
+    """#120151: the stdlib rollover opens a fresh ``agent.log`` owned by the rotating process; a root
+    gateway sharing a profile's log with a worker on another uid must hand the new file back."""
+
+    @staticmethod
+    def _rolled_handler(log_path: Path):
+        log_path.write_text("seed\n", encoding="utf-8")
+        os.chmod(log_path, 0o640)
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=1, backupCount=1, encoding="utf-8")
+        try:
+            handler.doRollover()
+        finally:
+            handler.close()
+
+    @pytest.mark.platforms("linux", "macos")
+    def test_rollover_hands_the_new_file_back_to_the_previous_owner(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "agent.log"
+        chowned = []
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        monkeypatch.setattr(os, "chown", lambda path, uid, gid: chowned.append((path, uid, gid)))
+        # The owner handed back is whatever the PREVIOUS file carried, which on macOS/BSD
+        # inherits the directory's group (tmp dirs are gid 0 there), not the process gid.
+        log_path.write_text("seed\n", encoding="utf-8")
+        before = os.stat(log_path)
+        self._rolled_handler(log_path)
+        assert chowned == [(str(log_path), before.st_uid, before.st_gid)]
+        assert stat.S_IMODE(os.stat(log_path).st_mode) == 0o640
+
+    @pytest.mark.platforms("linux", "macos")
+    def test_rollover_survives_a_refused_chown(self, tmp_path, monkeypatch):
+        """A log that cannot be chowned is still a working log: never raise out of a rollover."""
+        log_path = tmp_path / "agent.log"
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+
+        def _refuse(*_args):
+            raise OSError("operation not permitted")
+        monkeypatch.setattr(os, "chown", _refuse)
+        self._rolled_handler(log_path)
+        assert log_path.exists()

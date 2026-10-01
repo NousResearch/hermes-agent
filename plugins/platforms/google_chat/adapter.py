@@ -24,6 +24,7 @@ from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from agent.i18n import t
 from agent.secret_scope import is_multiplex_active
 from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
@@ -690,7 +691,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """Run streaming_pull with exponential backoff + full jitter; fatal after N attempts.
         ``subscribe()`` returns a Future that resolves when the stream dies."""
         pubsub_fatals = {
-            gax_exceptions.Unauthenticated: ("pubsub_auth", "Pub/Sub authentication failed (SA key invalid/revoked)"),
+            gax_exceptions.Unauthenticated: (
+                "pubsub_auth",
+                "Pub/Sub authentication failed; check service-account credentials and gateway logs",
+            ),
             gax_exceptions.PermissionDenied: ("pubsub_permission", "SA lacks pubsub.subscriber on the subscription"),
         }
         attempt = 0
@@ -1121,10 +1125,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
             choice_text = str(choice).strip()
             if choice_text:
                 buttons.append(_button(choice_text if len(choice_text) <= 80 else choice_text[:77] + "...", choice_text))
-        buttons.append(_button("Other / type answer", "__other__"))
+        buttons.append(_button(t("platform.google_chat.clarify.other_button"), "__other__"))
         card = card_spec_to_cards_v2({
-            "card_id": f"clarify-{clarify_id}", "header": {"title": "Question"},
-            "sections": [{"widgets": [{"type": "text", "text": f"❓ {question}"}, {"type": "buttons", "buttons": buttons}]}],
+            "card_id": f"clarify-{clarify_id}", "header": {"title": t("platform.google_chat.clarify.header")},
+            "sections": [{"widgets": [{"type": "text", "text": t("platform.google_chat.clarify.question", question=question)},
+                                      {"type": "buttons", "buttons": buttons}]}],
         })
         result = await self.send_card(chat_id, card, metadata=metadata)
         if result.success:
@@ -1278,7 +1283,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 await asyncio.wait_for(self._typing_card_inflight[chat_id].wait(), timeout=5.0)
             return
         thread_id = self._resolve_thread_id(reply_to=None, metadata=metadata, chat_id=chat_id)
-        body = _thread_body(getattr(self.config, "typing_status_text", None) or "Hermes is thinking…", thread_id)
+        body = _thread_body(getattr(self.config, "typing_status_text", None) or t("platform.google_chat.typing.thinking"), thread_id)
         self._typing_card_inflight[chat_id] = completed = asyncio.Event()
 
         async def _create_and_record() -> None:
@@ -1323,7 +1328,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         try:
             current = self._typing_messages.pop(chat_id, None)
             if current and current != _TYPING_CONSUMED_SENTINEL:
-                label = "(interrupted)" if outcome == ProcessingOutcome.CANCELLED else "(no reply)"
+                label = t("platform.google_chat.typing.interrupted" if outcome == ProcessingOutcome.CANCELLED
+                          else "platform.google_chat.typing.no_reply")
                 await self._patch_quietly(current, label, "[GoogleChat] on_processing_complete patch fallback failed")
             for orphan_id in self._orphan_typing_messages.pop(chat_id, []):
                 await self._patch_quietly(orphan_id, "·", "[GoogleChat] orphan typing-card patch failed: %s", orphan_id)
@@ -1518,11 +1524,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """Post the ``/setup-files`` notice (plus host path) when native delivery is
         unavailable. Always returns ``success=False``."""
         notice = "\n".join([
-            f"⚠️ No he podido adjuntar **{filename}**.",
-            "Google Chat sólo permite adjuntar archivos cuando el bot tiene permiso explícito tuyo (OAuth de usuario). "
-            "Es un consentimiento único que se hace desde este chat.",
-            "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
-            f"Mientras tanto el archivo está en el host: `{path}`",
+            t("platform.google_chat.attachment_fallback.header", filename=filename),
+            t("platform.google_chat.attachment_fallback.explain"),
+            t("platform.google_chat.attachment_fallback.activate"),
+            t("platform.google_chat.attachment_fallback.host_path", path=path),
         ])
         body = self.warning_text(f"{caption}\n{notice}" if caption else notice, caption or "")
         try:

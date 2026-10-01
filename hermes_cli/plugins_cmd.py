@@ -39,7 +39,7 @@ from hermes_cli.plugins_cmd_install import (  # noqa: F401
     _read_manifest_for_install, cmd_install, dashboard_install_plugin,
 )
 from hermes_cli.plugins_cmd_listing import (  # noqa: F401
-    _filter_plugin_entries, cmd_compat, cmd_list, cmd_show,
+    _filter_plugin_entries, cmd_list, cmd_show,
 )
 from hermes_cli.plugins_cmd_remove import (  # noqa: F401
     _remove_plugin_core, cmd_remove, dashboard_remove_user_plugin,
@@ -209,6 +209,33 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
             scan_result=result)
     logger.info("plugin scan passed for %s: %s", plugin_dir.name, reason)
     return result
+
+
+def _preserved_files_note(exc: PluginScanBlocked, merged: list[str]) -> str:
+    """Scan-block text for a tree that also holds user files preserved from the installed copy."""
+    preserved = set(merged)
+    findings = exc.scan_result.findings if exc.scan_result is not None else ()
+    hits = sorted({f.file for f in findings if f.file in preserved})
+    if hits:
+        note = ("These findings come from user files preserved from the installed copy: "
+                f"{', '.join(hits)}. Move or remove them and retry the update.")
+    else:
+        note = "The scanned tree included user files preserved from the installed copy."
+    return f"{exc}\n\n{note}"
+
+
+def _scan_merged_tree(plugin_dir: Path, identifier: str, merged: Optional[list[str]], **kwargs):
+    """:func:`_scan_plugin_tree` for a candidate that may hold carried user files (*merged*).
+
+    A block then names the findings that sit in those files, so user data does not read as a
+    malicious upstream revision; the original block stays chained as the cause.
+    """
+    try:
+        return _scan_plugin_tree(plugin_dir, identifier, **kwargs)
+    except PluginScanBlocked as exc:
+        if not merged:
+            raise
+        raise PluginScanBlocked(_preserved_files_note(exc, merged), scan_result=exc.scan_result) from exc
 
 
 def _plugins_dir() -> Path:
@@ -501,12 +528,13 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
     names.discard(key.split("/")[-1])
 
 
-def _plugin_aliases(key: str) -> set:
+def _plugin_aliases(key: str, entries: Optional[list] = None) -> set:
     """Every spelling a config list may hold for *key*: the key, its bare leaf and the manifest name.
     The loader matches BOTH the canonical key (``web/firecrawl``) and the manifest name
-    (``web-firecrawl``), so a stale entry under any form vetoes an enable ("explicit disable wins")."""
+    (``web-firecrawl``), so a stale entry under any form vetoes an enable ("explicit disable wins").
+    Pass *entries* to reuse one :func:`_discover_all_plugins` scan across several keys."""
     names = {key, key.split("/")[-1]}
-    names.update(e[0] for e in _discover_all_plugins() if e[5] == key)
+    names.update(e[0] for e in (_discover_all_plugins() if entries is None else entries) if e[5] == key)
     return names
 
 
@@ -566,13 +594,18 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
     plugins = config.get("plugins") or {}
     enabled = set(plugins.get("enabled") or ())
     disabled = set(plugins.get("disabled") or ())
-    removed = disabled if enable else enabled
-    _discard_key_and_leaf(removed, name)
-    removed.difference_update(aliases)
-    (enabled if enable else disabled).add(name)
+    _apply_activation(enabled, disabled, name, aliases, enable=enable)
     _admit_and_save_plugin_sets(enabled, disabled, console=console,
                                action=f"{'Enable' if enable else 'Disable'} '{name}'",
                                expected_config=expected_config, plugin=name if enable else None)
+
+
+def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:
+    """Add canonical *key* to the target list and purge it, its bare leaf and *aliases* from the other."""
+    removed = disabled if enable else enabled
+    _discard_key_and_leaf(removed, key)
+    removed.difference_update(aliases)
+    (enabled if enable else disabled).add(key)
 
 
 def _resolve_plugin_key(name: str) -> Optional[str]:
@@ -614,7 +647,8 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         if plugin in LEGACY_RELAY_PLUGIN_KEYS:
             _fail(console, (
                 f"[red]Plugin '{plugin}' was removed.[/red] Relay lifecycle is owned "
-                f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."))
+                "by Hermes core; configure a standard user or system Relay plugins.toml, or use "
+                f"{RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override."))
 
     _refuse_legacy_relay(name)
     resolved = _resolve_plugin_key_and_source(name)
@@ -956,7 +990,6 @@ _PLUGIN_ACTIONS = {
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),
-    "compat": lambda args: cmd_compat(args),
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
@@ -971,11 +1004,3 @@ def plugins_command(args) -> None:
     if handler is None:
         _fail(_console(), f"[red]Unknown plugins action: {action}[/red]")
     handler(args)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import importlib.metadata  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

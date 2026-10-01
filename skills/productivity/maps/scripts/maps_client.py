@@ -306,6 +306,8 @@ def haversine_m(lat1, lon1, lat2, lon2):
     dlam = math.radians(lon2 - lon1)
     a = (math.sin(dphi / 2) ** 2
          + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2)
+    # Roundoff near antipodes can push a outside the square roots' domain.
+    a = min(max(a, 0.0), 1.0)
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 

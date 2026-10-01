@@ -106,6 +106,7 @@ The **microphone** is dictation; hover it and the other voice toggles fan out ab
 - **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
 - **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
 - **Per-model effort/fast presets.** Each model remembers its own reasoning effort and fast-mode choice in the desktop app, re-applied to the session whenever you pick that model. These presets are a desktop convenience and don't change crons or subagents.
+- **Favorite models.** Click the star on the left of a model row (or shift-click the row, the same gesture that pins a chat in the sidebar; Shift+Enter from the search box) to lift it into a **Favorites** section at the top of the picker. Starring never selects the model or closes the menu, so the same gesture undoes it. The section only appears once something is starred. Favorites show in the composer, in session tiles, and anywhere else a model is picked, because they are one stored preference. They persist per device, keep the order you starred them, and ignore the **Edit models** shortlist (a star IS an explicit "always show me this one"); a favorite for a provider that is not connected is kept and reappears when it reconnects. Searching is unaffected — a query lists every match in its provider's place.
 - **Mid-chat switches reset the prompt cache.** Switching the model inside a live chat means the next message re-reads the whole conversation at full input price (provider prompt caches are keyed to the model). Fine occasionally; on a long chat, a fresh chat on the new model is often cheaper than bouncing back and forth.
 
 ### File browser
@@ -124,7 +125,7 @@ The **Artifacts** view collects what your sessions generate — **images, files,
 
 The app is built for working on several things at once:
 
-- **Tabs** — **Cmd/Ctrl+T** opens a new session tab; **Ctrl+Tab** / **Ctrl+Shift+Tab** cycle sessions, and **Ctrl+1…9** jump to a recent session by position. **Cmd/Ctrl+W** closes the focused tab and **Cmd/Ctrl+Shift+T** reopens the last closed one.
+- **Tabs** — **Cmd/Ctrl+T** opens a new session tab; **Ctrl+Tab** / **Ctrl+Shift+Tab** cycle sessions, and **Ctrl+1…9** jump to a recent session by position. **Cmd/Ctrl+W** closes the focused tab — except over an interactive terminal, where it keeps its shell meaning (word erase) — and **Cmd/Ctrl+Shift+T** reopens the last closed one.
 - **Multiple windows** — **Cmd/Ctrl+Shift+N** opens a new window, and any session can be popped out via its context menu (**New window**) or from the command palette. A popped-out window renders that single chat without the global sidebar — handy for parking a long-running session on another monitor. Live agent output streams into every window showing the session.
 - **Panes** — **Cmd/Ctrl+B** toggles the left sidebar, **Cmd/Ctrl+J** the right one, and **Cmd/Ctrl+\\** swaps which side the sidebars sit on.
 
@@ -167,8 +168,8 @@ While delegated workers are live, a **Subagents** frame appears above the compos
 
 For sessions running inside a Git repository, the app has a built-in source-control surface:
 
-- **Review pane** — **Cmd/Ctrl+G** toggles the working-tree review pane: branch and ahead/behind status, changed files (list or tree view), and diffs scoped to **Uncommitted**, **Branch**, or **Last turn** (just what the agent changed in its most recent turn). Stage/unstage files, revert changes, write a commit message (or **Generate commit message**), then **Commit** or **Commit & Push** — and **Create PR** via the GitHub CLI (`gh`), or hand the whole thing to the agent with **Ask Hermes to open PR**. You can also create and switch branches from here.
-- **Worktrees** — **Cmd/Ctrl+Shift+B** (or **New worktree** on a project in the sidebar) creates a Git worktree on a new branch so an agent can work on a parallel copy of the repo without touching your checkout. Worktrees show up as their own lanes under the project; removing one offers to delete the worktree directory (the branch stays) or just hide the lane and leave it on disk, with a force option when it has uncommitted changes.
+- **Review pane** — **Cmd/Ctrl+G** toggles the working-tree review pane: branch and ahead/behind status, changed files (list or tree view), and diffs scoped to **Uncommitted**, **Branch**, or **Last turn** (just what the agent changed in its most recent turn). Stage/unstage files, revert changes, write a commit message (or **Generate commit message**), then **Commit** or **Commit & Push** — and **Create PR** via the GitHub CLI (`gh`), or hand the whole thing to the agent with **Ask Hermes to open PR**. You can also create and switch branches from here. The **Last turn** scope shows everything changed since the most recent turn in this repo began (including any commits the agent made mid-turn); it is empty until a turn has run here. The **Branch** and **Last turn** scopes are read-only — stage, revert, and commit only apply to uncommitted changes.
+- **Worktrees** — **Cmd/Ctrl+Shift+B** (or **New worktree** on a project in the sidebar) creates a Git worktree on a new branch so an agent can work on a parallel copy of the repo without touching your checkout. Worktrees show up as their own lanes under the project; removing one offers to delete the worktree directory (the branch stays) or just hide the lane and leave it on disk, with a force option when it has uncommitted changes. A chat also **follows the agent**: when you ask it to make a worktree and work in it, the chat moves to that lane at the end of the turn and the sidebar re-scopes with it. Only a workspace you deliberately switched the chat to (the folder picker, or a project switch) stays put.
 
 ### Memory Graph
 
@@ -538,6 +539,19 @@ The remote gateway host is configured per [profile](./profiles.md), so each prof
 
 ### Troubleshooting
 
+### Window context unavailable on Windows ARM64
+
+Check that the installed `get-windows` package includes a working
+`win32-arm64` native binding. Without one, `read_window_below` and HUD window
+context cannot enumerate other apps' windows. The error and HUD log preserve
+the underlying failure reason alongside this troubleshooting guidance.
+
+If the binding is unavailable, use the x64 desktop build under Windows
+emulation, or a custom build with a matching native binding. Changing the agent
+backend or granting macOS screen permissions cannot fix a missing Windows
+binding; enumeration runs on the computer hosting the desktop app. This
+diagnostic does not add native ARM64 window enumeration support.
+
 - **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for an unknown user and a wrong password (no enumeration oracle), so double-check both. Confirm the gate is on with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
 - **No "Sign in" button — it asks for a session token instead** — the backend's username/password provider isn't active. `/api/status` won't list `"basic"` in `auth_providers`. Make sure both the username and a password (or password hash) are set in `~/.hermes/.env` and that the dashboard process actually loaded them.
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value. Without it the token-signing key is regenerated per boot, invalidating all sessions.
@@ -694,6 +708,17 @@ damaged application files, repair through the
 # Reset a stuck macOS microphone prompt
 tccutil reset Microphone com.nousresearch.hermes
 ```
+
+### Windows: the SSH client is missing or broken
+
+On Windows the app runs SSH through the built-in OpenSSH client (`%SystemRoot%\System32\OpenSSH\ssh.exe`). If that client is not installed, it falls back to Git for Windows' bundled `usr\bin\ssh.exe` and then to whatever `ssh` is on `PATH`. If the built-in client is installed but broken (for example, every `ssh.exe` exits with code 255 after a Windows update), boot stops on an error naming the client instead of retrying. To use a different client, set it in `config.yaml` and restart the app:
+
+```yaml
+desktop:
+  ssh_path: 'C:\Program Files\Git\usr\bin\ssh.exe'
+```
+
+Use single quotes or no quotes so the backslashes stay literal. The key goes two spaces under `desktop:`, like the launch keys above. It has no effect on macOS or Linux.
 
 ### "The host key has CHANGED since you last connected" (SSH remote)
 

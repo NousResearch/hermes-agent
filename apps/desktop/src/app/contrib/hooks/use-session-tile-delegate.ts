@@ -239,7 +239,22 @@ export function useSessionTileDelegate({
           return false
         }
 
-        updateSessionState(runtimeId, state => ({ ...state, awaitingResponse: false, busy: false }))
+        updateSessionState(runtimeId, state => ({
+          ...state,
+          awaitingResponse: false,
+          busy: false,
+          turnLive: false,
+          turnStartedAt: null
+        }))
+
+        return true
+      },
+      updateHeldSession: (runtimeId, updater) => {
+        if (!sessionStateByRuntimeIdRef.current.has(runtimeId)) {
+          return false
+        }
+
+        updateSessionState(runtimeId, updater)
 
         return true
       },
@@ -449,7 +464,7 @@ export function useSessionTileDelegate({
         if (isReadOnlyRuntimeId(runtimeId)) {
           notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
 
-          return
+          return { runtimeSessionId: runtimeId, storedSessionId: null }
         }
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
@@ -480,7 +495,12 @@ export function useSessionTileDelegate({
               title: translateNow('desktop.staleSessionTitle')
             })
 
-            return
+            // Nothing was dispatched: the transcript was stale, so the prompt
+            // never reached a backend. Report an unprovable binding rather than
+            // success — the accepted-identity contract has no "refused" case,
+            // and a null storedSessionId can never equal the requested session,
+            // so callers never report delivery for this refusal.
+            return { runtimeSessionId: runtimeId, storedSessionId: null }
           }
         }
 
@@ -490,13 +510,27 @@ export function useSessionTileDelegate({
           : requestGateway
 
         noteMessageSent($sessionTiles.get().find(tile => tile.runtimeId === runtimeId)?.workspaceMode ?? 'sessions')
+        let acceptedRuntimeId = runtimeId
 
         await withSessionNotFoundResume(
           runtimeId,
           storedSessionId,
           liveId => routedRequest('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
-          { requestGateway: routedRequest, onRecovered: rebindTileRuntime(runtimeId) }
+          {
+            requestGateway: routedRequest,
+            onRecovered: recoveredId => {
+              acceptedRuntimeId = recoveredId
+              rebindTileRuntime(runtimeId)(recoveredId)
+            }
+          }
         )
+
+        return {
+          runtimeSessionId: acceptedRuntimeId,
+          // The durable binding for the accepted runtime — the only proof the
+          // requested stored session is what actually took the prompt.
+          storedSessionId: storedSessionIdForRuntime(acceptedRuntimeId) ?? null
+        }
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
     })

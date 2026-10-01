@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -22,7 +23,14 @@ import { useDesktopIntegrations } from './use-desktop-integrations'
 // Mutable HUD-window flag so the restore tests can flip the window kind the
 // hook believes it runs in. Default false keeps the pre-existing restore
 // coverage exercising the real main-window path.
-const { hudWindowMock } = vi.hoisted(() => ({ hudWindowMock: vi.fn(() => false) }))
+const { hudWindowMock, peerWindowMock } = vi.hoisted(() => ({
+  hudWindowMock: vi.fn(() => false),
+  peerWindowMock: vi.fn(() => false)
+}))
+
+const closeActiveTab = vi.hoisted(() => vi.fn(() => true))
+
+vi.mock('@/app/chat/close-tab', () => ({ closeActiveTab }))
 
 vi.mock('@/store/mcp-deeplink-install', () => ({
   requestMcpInstallFromDeepLink: vi.fn()
@@ -41,7 +49,8 @@ vi.mock('@/store/windows', async importOriginal => {
 
   return {
     ...actual,
-    isHudWindow: () => hudWindowMock()
+    isHudWindow: () => hudWindowMock(),
+    isPeerInstanceWindow: () => peerWindowMock()
   }
 })
 
@@ -69,6 +78,7 @@ describe('useDesktopIntegrations', () => {
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
+    peerWindowMock.mockReturnValue(false)
 
     // Stub the desktop bridge so the hook's useEffect callbacks don't try to
     // reach real Electron IPC. The established desktop-test pattern assigns a
@@ -97,6 +107,7 @@ describe('useDesktopIntegrations', () => {
     }
 
     vi.restoreAllMocks()
+    document.body.replaceChildren()
   })
 
   function render({
@@ -220,6 +231,25 @@ describe('useDesktopIntegrations', () => {
       })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+  })
+
+  describe('peer instance windows (#74948)', () => {
+    it("does not restore the primary window's remembered session into a peer window", () => {
+      // Ctrl+Shift+N opens a peer that shares the profile's remembered
+      // navigation (the primary window writes it continuously), but the peer
+      // must boot into its own blank fresh-draft chat, not the session the
+      // primary window has open.
+      peerWindowMock.mockReturnValue(true)
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      expect(navigate).not.toHaveBeenCalled()
+      // The remembered values stay intact for the primary window's next boot.
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/remembered-session')
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('remembered-session')
     })
   })
 
@@ -480,6 +510,90 @@ describe('useDesktopIntegrations', () => {
 
       // And no navigation should happen (the per-profile keys were empty).
       expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('⌘W close-preview routing over a focused terminal (#65457)', () => {
+    let closeRequested: (() => void) | undefined
+
+    function mountWithCloseIpc() {
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onClosePreviewRequested: (cb: () => void) => {
+          closeRequested = cb
+
+          return () => undefined
+        }
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+    }
+
+    /** Mirror the production DOM shape: the handle is registered on the
+     * xterm host nested inside the [data-terminal] scope, which carries
+     * [data-interactive-terminal] only on the user PTY. */
+    function focusedTerminal(interactive: boolean): void {
+      const scope = document.createElement('div')
+      scope.dataset.terminal = ''
+
+      if (interactive) {
+        scope.dataset.interactiveTerminal = ''
+      }
+
+      const host = document.createElement('div')
+      scope.append(host)
+      document.body.append(scope)
+      scope.tabIndex = -1
+      ;(scope as HTMLElement).focus()
+      scopeCleanup.push(registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase: () => true
+      }))
+    }
+
+    const scopeCleanup: Array<() => void> = []
+
+    afterEach(() => {
+      for (const cleanup of scopeCleanup.splice(0)) {
+        cleanup()
+      }
+
+      document.body.replaceChildren()
+      closeRequested = undefined
+      closeActiveTab.mockClear()
+    })
+
+    it('re-delivers the chord to a focused interactive terminal instead of closing', () => {
+      mountWithCloseIpc()
+      focusedTerminal(true)
+
+      closeRequested?.()
+
+      // The terminal's wordErase verb consumed the chord; the close path
+      // never ran.
+      expect(closeActiveTab).not.toHaveBeenCalled()
+    })
+
+    it('still closes tabs when focus is on a read-only agent terminal', () => {
+      mountWithCloseIpc()
+      focusedTerminal(false)
+
+      closeRequested?.()
+
+      // The mirror's wordErase is null, so the rung falls through to
+      // closeActiveTab — its tab stays closeable.
+      expect(closeActiveTab).toHaveBeenCalledOnce()
+    })
+
+    it('still closes tabs when focus is outside any terminal', () => {
+      mountWithCloseIpc()
+
+      closeRequested?.()
+
+      expect(closeActiveTab).toHaveBeenCalledOnce()
     })
   })
 

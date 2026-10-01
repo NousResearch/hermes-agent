@@ -19,7 +19,7 @@ from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
-    _shape_preview,
+    _shape_preview, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
@@ -514,6 +514,18 @@ class SessionSessionsMixin:
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
         reopened and re-ended later still owns reset children from its earlier boundaries."""
         def _do(conn):
+            # Retire busy-queue accept rows that never drained (#125577): a restart discarded the
+            # in-memory queue, so nothing re-placed/deactivated the row written at accept time and
+            # alternation repair would glue the never-run prompt into the previous turn's user
+            # message. The drain's replacement row carries no marker, so still-marked == never
+            # drained; a dispatched-then-interrupted turn's row is never marked (its discard is
+            # handled in-process, #123532). Deactivated, never deleted — the row stays as history.
+            conn.execute(
+                "UPDATE messages SET active = 0 "
+                f"WHERE session_id = ? AND role = 'user' AND active = 1 "
+                f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
+                (session_id,),
+            )
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "

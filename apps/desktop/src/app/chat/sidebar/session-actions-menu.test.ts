@@ -1,7 +1,8 @@
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $sessions } from '@/store/session'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
 
 import { renameSessionPreferringRpc } from './session-actions-menu'
 
@@ -53,6 +54,9 @@ afterEach(() => {
   activeGateway.mockReturnValue({ request })
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
+  $sessionTiles.set([])
+  $sessionStates.set({})
+  $sessions.set([])
 })
 
 describe('renameSessionPreferringRpc', () => {
@@ -65,6 +69,17 @@ describe('renameSessionPreferringRpc', () => {
     expect(request).toHaveBeenCalledWith('session.title', { session_id: RUNTIME_ID, title: 'My branch' })
     expect(renameSession).not.toHaveBeenCalled()
     expect(result.title).toBe('rpc-title')
+  })
+
+  it('resolves the owning profile from $sessions when profile argument is omitted', async () => {
+    $selectedStoredSessionId.set('some-other-active-session')
+    $sessions.set([
+      { id: STORED_ID, profile: 'personal', title: 'Own Google Docs document' } as never
+    ])
+
+    await renameSessionPreferringRpc(STORED_ID, 'Prep Butler')
+
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Prep Butler', 'personal')
   })
 
   it('falls back to REST when the RPC fails (e.g. socket mid-reconnect)', async () => {
@@ -82,6 +97,44 @@ describe('renameSessionPreferringRpc', () => {
   it('uses REST for a non-active row (background/persisted session)', async () => {
     $selectedStoredSessionId.set('some-other-active-session')
     $activeSessionId.set(RUNTIME_ID)
+
+    await renameSessionPreferringRpc(STORED_ID, 'My branch', 'work')
+
+    expect(request).not.toHaveBeenCalled()
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'My branch', 'work')
+  })
+
+  it('renames a branched-draft TILE via RPC even when it is not the selected row (#70317)', async () => {
+    // Branch opens as its own tab: NOT the selected primary row, and no DB row
+    // yet — but the tile carries the bound runtime id. REST would 404 here.
+    $selectedStoredSessionId.set('some-other-active-session')
+    $activeSessionId.set('rt-other')
+    $sessionTiles.set([{ storedSessionId: STORED_ID, runtimeId: RUNTIME_ID }])
+
+    const result = await renameSessionPreferringRpc(STORED_ID, 'My branch')
+
+    expect(request).toHaveBeenCalledWith('session.title', { session_id: RUNTIME_ID, title: 'My branch' })
+    expect(renameSession).not.toHaveBeenCalled()
+    expect(result.title).toBe('rpc-title')
+  })
+
+  it('resolves the runtime id from $sessionStates when no tile holds it (#70317)', async () => {
+    $selectedStoredSessionId.set('some-other-active-session')
+    $activeSessionId.set('rt-other')
+    $sessionStates.set({
+      [RUNTIME_ID]: { storedSessionId: STORED_ID } as never
+    })
+
+    await renameSessionPreferringRpc(STORED_ID, 'My branch')
+
+    expect(request).toHaveBeenCalledWith('session.title', { session_id: RUNTIME_ID, title: 'My branch' })
+    expect(renameSession).not.toHaveBeenCalled()
+  })
+
+  it('still uses REST when no surface holds a runtime id (persisted, not open)', async () => {
+    // Nothing selected, no tile, no live state → genuinely a persisted-only
+    // row; REST is correct (and resolves, because it has a DB row).
+    $selectedStoredSessionId.set('some-other-active-session')
 
     await renameSessionPreferringRpc(STORED_ID, 'My branch', 'work')
 

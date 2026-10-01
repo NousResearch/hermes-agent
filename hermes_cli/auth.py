@@ -879,17 +879,73 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
 
 
 def _save_active_provider_state(provider_id: str, state: Dict[str, Any]) -> Path:
-    """Lock, load, write *state* as the active provider, save. Returns the auth store path."""
+    """Lock, load, write *state* as the active provider, save. Returns the auth store path.
+
+    A fresh login (device code, or the billing step-up) in a named profile that has been reading its
+    single-use refresh chain through the global-root fallback must land in that ROOT store, not
+    materialize a profile-local copy. Otherwise the profile and the root each hold their own grant
+    for the same account and the next rotation on either side revokes the other
+    (``refresh_token_reused``, #48415 class).
+    """
     with _auth_store_lock():
         auth_store = _load_auth_store()
         _save_provider_state(auth_store, provider_id, state)
+        target_path = _auth_file_path()
+        if provider_id in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+            root_path = _global_auth_file_path()
+            if (root_path is not None and _inherits_global_provider_state(provider_id, target_path)):
+                logger.debug(
+                    "auth: %s login in a read-through profile written to the global root store "
+                    "(profile copy suppressed)", provider_id)
+                _save_auth_store(auth_store, target_path=root_path)
+                return root_path
         return _save_auth_store(auth_store)
+
+
+def _inherits_global_provider_state(provider_id: str, target_path: Optional[Path]) -> bool:
+    """True when *target_path* has no local ``providers.<provider_id>`` but the global root does.
+
+    A named profile that never logged in reads its credentials through the global-root fallback
+    (``_load_provider_state_with_source``). Persisting a rotation into such a profile store creates a
+    SECOND physical copy of a single-use refresh-token chain: the profile's copy goes stale the
+    moment any peer rotates, and its next refresh redeems an already-spent token — which the Portal
+    answers with ``refresh_token_reused`` and a full session revocation (#48415 class).
+
+    Read-through profiles must therefore keep writing rotations back to the root store they read
+    from, never materialize a local copy.
+
+    ``target_path`` may BE the active profile store (the common case) or the root store; in both
+    cases the question is only "does the root own a grant this store does not own itself?".
+    """
+    if target_path is None:
+        return False
+    try:
+        root_path = _global_auth_file_path()
+        if root_path is None:
+            return False  # classic mode: no root fallback exists, the active store owns everything
+        if _same_path(target_path, root_path):
+            return False  # the target IS the root store: it owns its state
+        if _provider_state_in(_load_auth_store(target_path), provider_id) is not None:
+            return False  # the target owns a local grant already: normal in-place rotation
+        return _provider_state_in(_load_global_auth_store(), provider_id) is not None
+    except Exception:
+        return False  # never block a persistence on this check failing
 
 
 def _persist_provider_state_to_store(
     provider_id: str, state: Dict[str, Any], target_path: Path, *, set_active: bool = False,
 ) -> Path:
     """Merge one provider into a specific auth store under that store's lock."""
+    # A read-through profile must not acquire a local copy of a single-use refresh chain; route the
+    # rotation to the root store it was read from instead (see _inherits_global_provider_state).
+    if provider_id in SINGLE_USE_REFRESH_POOL_PROVIDERS and _inherits_global_provider_state(
+            provider_id, target_path):
+        root_path = _global_auth_file_path()
+        if root_path is not None:
+            logger.debug(
+                "auth: %s rotation for a read-through profile routed to the global root store "
+                "(profile copy suppressed)", provider_id)
+            target_path = root_path
     with _auth_store_lock(target_path=target_path):
         auth_store = _load_auth_store(target_path)
         _store_provider_state(auth_store, provider_id, dict(state), set_active=set_active)

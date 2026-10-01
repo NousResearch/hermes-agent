@@ -3284,6 +3284,7 @@ cli:
     shallow_clone_keeping: "⚠ 얕은 클론 — 푸시 상태를 확인할 수 없어 유지해요: {path}"
     next_session_deepens: "다음 `hermes -w` 세션에서 클론을 깊게 만들고 병합된 워크트리를 자동으로 정리해요."
     unpushed_keeping: "⚠ 워크트리에 푸시되지 않은 커밋이 있어 유지해요: {path}"
+    uncommitted_keeping: "⚠ 워크트리에 커밋되지 않은 변경 사항이 있어 유지해요: {path}"
     clean_up_manually: "직접 정리하려면: git worktree remove --force {path}"
     cleaned_up: "✓ 워크트리를 정리했어요: {path}"
 display:

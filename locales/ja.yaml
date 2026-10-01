@@ -3284,6 +3284,7 @@ cli:
     shallow_clone_keeping: "⚠ シャロークローン — プッシュ状態を確認できないため保持します: {path}"
     next_session_deepens: "次回の `hermes -w` セッションでクローンを深化し、マージ済みのワークツリーを自動的に削除します。"
     unpushed_keeping: "⚠ ワークツリーに未プッシュのコミットがあるため保持します: {path}"
+    uncommitted_keeping: "⚠ ワークツリーに未コミットの変更があるため保持します: {path}"
     clean_up_manually: "手動でクリーンアップするには: git worktree remove --force {path}"
     cleaned_up: "✓ ワークツリーをクリーンアップしました: {path}"
 display:

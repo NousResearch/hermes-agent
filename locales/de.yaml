@@ -3284,6 +3284,7 @@ cli:
     shallow_clone_keeping: "⚠ Flacher Klon — Push-Status kann nicht geprüft werden, wird behalten: {path}"
     next_session_deepens: "Die nächste `hermes -w`-Sitzung vertieft den Klon und entfernt gemergte Worktrees automatisch."
     unpushed_keeping: "⚠ Worktree hat nicht gepushte Commits, wird behalten: {path}"
+    uncommitted_keeping: "⚠ Worktree hat nicht committete Änderungen, wird behalten: {path}"
     clean_up_manually: "Manuell aufräumen mit: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree aufgeräumt: {path}"
 display:

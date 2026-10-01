@@ -3284,6 +3284,7 @@ cli:
     shallow_clone_keeping: "⚠ 淺層複製 — 無法確認推送狀態，保留：{path}"
     next_session_deepens: "下一次 `hermes -w` 工作階段會加深複製並自動清理已合併的工作樹。"
     unpushed_keeping: "⚠ 工作樹有未推送的提交，保留：{path}"
+    uncommitted_keeping: "⚠ 工作樹有未提交的變更，保留：{path}"
     clean_up_manually: "手動清理方式：git worktree remove --force {path}"
     cleaned_up: "✓ 工作樹已清理：{path}"
 display:

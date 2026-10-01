@@ -3284,6 +3284,7 @@ cli:
     shallow_clone_keeping: "⚠ Clón éadomhain — ní féidir staid an bhrú a fhíorú, á choinneáil: {path}"
     next_session_deepens: "Déanann an chéad seisiún `hermes -w` eile an clón a dhoimhniú agus bearrann sé worktrees cumaiscthe go huathoibríoch."
     unpushed_keeping: "⚠ Tá tiomantais gan bhrú sa worktree, á choinneáil: {path}"
+    uncommitted_keeping: "⚠ Tá athruithe gan tiomantas sa worktree, á choinneáil: {path}"
     clean_up_manually: "Chun glanadh de láimh: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree glanta: {path}"
 display:

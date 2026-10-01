@@ -587,7 +587,13 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     if not Path(wt_path).exists():
         return
 
-    if _worktree_has_unpushed_commits(wt_path, timeout=10) or _worktree_is_dirty(wt_path, timeout=10):
+    if _worktree_is_dirty(wt_path, timeout=10):
+        # Uncommitted work: say so, and don't hint at `remove --force`, which would destroy it.
+        _cprint(f"\n\033[33m{_t('cli.worktree.uncommitted_keeping', path=wt_path)}\033[0m")
+        _active_worktree = None
+        return
+
+    if _worktree_has_unpushed_commits(wt_path, timeout=10):
         if _repo_is_shallow(repo_root):
             # Shallow boundary makes the unpushed verdict unreliable; the startup pruner reaps later.
             _cprint(f"\n\033[33m{_t('cli.worktree.shallow_clone_keeping', path=wt_path)}\033[0m")

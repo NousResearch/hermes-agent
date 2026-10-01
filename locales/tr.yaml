@@ -3284,6 +3284,7 @@ cli:
     shallow_clone_keeping: "⚠ Sığ klon — push durumu doğrulanamıyor, korunuyor: {path}"
     next_session_deepens: "Bir sonraki `hermes -w` oturumu klonu derinleştirir ve birleştirilmiş worktree'leri otomatik olarak temizler."
     unpushed_keeping: "⚠ Worktree'de push edilmemiş commit'ler var, korunuyor: {path}"
+    uncommitted_keeping: "⚠ Worktree'de commit edilmemiş değişiklikler var, korunuyor: {path}"
     clean_up_manually: "Elle temizlemek için: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree temizlendi: {path}"
 display:

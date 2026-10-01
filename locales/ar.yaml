@@ -3284,6 +3284,7 @@ cli:
     shallow_clone_keeping: "⚠ استنساخ سطحي — لا يمكن التحقق من حالة الدفع، سيُحتفظ به: {path}"
     next_session_deepens: "جلسة `hermes -w` التالية تعمّق الاستنساخ وتحذف worktrees المدمجة تلقائيًا."
     unpushed_keeping: "⚠ يحتوي worktree على إيداعات غير مدفوعة، سيُحتفظ به: {path}"
+    uncommitted_keeping: "⚠ يحتوي worktree على تغييرات غير مودعة، سيُحتفظ به: {path}"
     clean_up_manually: "للتنظيف يدويًا: git worktree remove --force {path}"
     cleaned_up: "✓ تم تنظيف worktree: {path}"
 display:

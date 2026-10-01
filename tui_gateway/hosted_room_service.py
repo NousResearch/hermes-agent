@@ -179,9 +179,10 @@ class HostedRoomService:
         for status in statuses:
             yield from driver.list_tasks(self.db_path, room_id=room_id, status=status)
 
-    def _save_link(self, **link: Any) -> None:
-        """Persist one stored link (``make_stored_link`` keyword fields)."""
-        hosted_room_links.save_room_link(self.db_path, hosted_room_links.make_stored_link(**link))
+    def _save_link(self, *, authorize=None, **link: Any) -> None:
+        """Persist one stored link (``make_stored_link`` keyword fields); ``authorize`` runs in its write."""
+        hosted_room_links.save_room_link(
+            self.db_path, hosted_room_links.make_stored_link(**link), authorize=authorize)
 
     def register_peer_route(
         self, *, room_id: str, member_id: str, route: PeerMemberRoute,
@@ -257,19 +258,24 @@ class HostedRoomService:
             and execution_generation > 0):
             bind_observation(task_id=identity.task_id, execution_generation=execution_generation)
 
-        def set_status(status: str):
-            return lambda: self._set_route_status(*key, status)
-        tracked_client = _RouteStatusPeerClient(
-            client, on_ready=set_status("ready"),
-            on_reauthorization=set_status("needs_reauthorization"),
-            on_unavailable=set_status("unavailable"),
-            on_refreshed=lambda grant, catalog=None: self._rotate_route_grant(
-                *key, grant, catalog))
+        tracked_client = self._track_peer_client(binding, key, route, client)
         self._recover_peer_admission(binding, task, route, tracked_client)
         return PeerHostedRoomTransport(
             binding=binding, route=route, client=tracked_client,
             source_event_seq=int(payload.get("source_event_seq") or 0),
             task_id=getattr(identity, "task_id", None), execution_generation=execution_generation)
+
+    def _track_peer_client(
+        self, binding: HostedRoomBinding, key: tuple[str, str], route: PeerMemberRoute, client: Any) -> Any:
+        """The client one attempt uses: it keeps the route's health and grant current."""
+        def set_status(status: str):
+            return lambda: self._set_route_status(*key, status)
+        return _RouteStatusPeerClient(
+            client, on_ready=set_status("ready"),
+            on_reauthorization=set_status("needs_reauthorization"),
+            on_unavailable=set_status("unavailable"),
+            on_refreshed=lambda grant, catalog=None: self._rotate_route_grant(
+                *key, grant, catalog))
 
     def _recover_peer_admission(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], route: PeerMemberRoute,

@@ -459,6 +459,10 @@ class PeerRunsHTTPClient:
     def _poll_receipt(self, record: Mapping[str, Any], *, grant: str) -> dict[str, Any]:
         run_id, now = str(record["run_id"]), self.clock()
         cached = self._status_cache.get(run_id)
+        fingerprint = hashlib.sha256(grant.encode()).hexdigest()
+        if (cached is not None and getattr(cached.get("error"), "needs_reauthorization", False)
+                and cached.get("grant_sha256") != fingerprint):
+            cached = None  # a retired grant's refusal must not answer for its replacement
         if cached is not None:
             status = cached["status"]
             if status.get("status") in _TERMINAL_RUN_STATES:
@@ -469,7 +473,7 @@ class PeerRunsHTTPClient:
                     raise error
                 return status
         delay = self._next_poll_delay(cached)
-        entry = {"delay": delay, "next_poll_at": now + delay}
+        entry = {"delay": delay, "next_poll_at": now + delay, "grant_sha256": fingerprint}
         try:
             full = self._request(_run_path(record), room_grant=self._require_room_grant(grant))
             status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
@@ -593,7 +597,17 @@ class PeerRunsHTTPClient:
 
     def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
         """Revoke this grant's exact room/home/target/profile scope."""
-        return self._scoped_post("/v1/room-members/grants/revoke", grant, body={})
+        return self._acknowledged(self._scoped_post("/v1/room-members/grants/revoke", grant, body={}))
+
+    def revoke_grant_exact(self, *, grant: str) -> Mapping[str, Any]:
+        """Retire this one grant, never the replacement that shares its scope."""
+        return self._acknowledged(self._scoped_post("/v1/room-members/grants/revoke-exact", grant, body={}))
+
+    @staticmethod
+    def _acknowledged(result: Mapping[str, Any]) -> Mapping[str, Any]:
+        if result.get("revoked") is not True:
+            raise PeerRunsHTTPError("peer did not acknowledge the grant revocation", retryable=True)
+        return result
 
     def probe(self, *, grant: str) -> Mapping[str, Any]:
         """Verify gateway reachability and the live scoped capability catalog."""

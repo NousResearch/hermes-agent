@@ -454,8 +454,16 @@ def verify_room_grant(
     return payload
 
 
-def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float | None = None) -> dict[str, Any]:
-    """Verify grant signature, lifetime and operation without a dispatch."""
+def decode_room_grant(
+    secret: bytes, token: str, *, permission: str, now: float | None = None,
+    allow_expired_for_revocation: bool = False) -> dict[str, Any]:
+    """Verify grant signature, lifetime and operation without a dispatch.
+
+    ``allow_expired_for_revocation`` skips only the lifetime window, and only for ``status``: it
+    lets a signed grant be retired idempotently, never restores what it authorized.
+    """
+    if allow_expired_for_revocation and permission != "status":
+        raise HostedRoomGrantError("an expired grant is valid only for its own revocation")
     if not isinstance(token, str) or len(token.encode("utf-8")) > MAX_TOKEN_BYTES:
         raise HostedRoomGrantError("room grant is invalid")
     encoded, supplied_signature = _split_token(token)
@@ -479,11 +487,17 @@ def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float 
     if not (all(map(math.isfinite, lifetimes)) and issued_at < expires_at <= status_expires_at):
         raise HostedRoomGrantError("room grant lifetime is invalid")
     operation_expires_at = status_expires_at if permission in {"approve", "status", "stop"} else expires_at
-    if checked_now < issued_at - 30 or checked_now >= operation_expires_at:
+    if not allow_expired_for_revocation and (checked_now < issued_at - 30 or checked_now >= operation_expires_at):
         raise HostedRoomGrantError("room grant is expired or not active")
     if not isinstance(permissions := payload.get("permissions"), list) or permission not in permissions:
         raise HostedRoomGrantError("room grant does not allow this operation")
     return payload
+
+
+def room_grant_token_digest(token: str) -> str:
+    """The identity of one signed grant for exact revocation, whatever base64 spelling carries it."""
+    encoded, signature = _split_token(token)
+    return hashlib.sha256(encoded + b"." + signature).hexdigest()
 
 
 def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, leeway_seconds: float = 5 * 60) -> bool:

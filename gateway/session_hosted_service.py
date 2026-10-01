@@ -17,14 +17,26 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
-        # Serializes a peer route's publication with Disband (session_group_peers.register).
-        self.peer_route_lock = threading.Lock()
+        # Serializes every peer route publication (registration, renewal) with Disband.
+        self.peer_route_lock = threading.RLock()
         super().__init__(None, db_path=authority.db.db_path)
 
     def _make_rpc(self, server):
         # Member-specific canonical transports retain exact durable history. They
         # intentionally use the runtime's receipt-capable (non-legacy) recovery path.
         return self
+
+    def register_peer_route(self, *, room_id, member_id, route, client, target_url=None, catalog=None,
+                            expected_grant=None, authorize=None):
+        # Persisted, then published; the grant it replaces is retired (session_group_peer_routes).
+        from gateway.session_group_peer_routes import publish_route
+        publish_route(self, room_id=room_id, member_id=member_id, route=route, client=client,
+                      target_url=target_url, catalog=catalog, expected_grant=expected_grant,
+                      authorize=authorize)
+
+    def _track_peer_client(self, binding, key, route, client):
+        from gateway.session_group_peer_routes import CanonicalPeerClient
+        return CanonicalPeerClient(self, binding, key, route, client)
 
     def _runtime_options(self):
         # A peer turn its gateway never received is deferred with that proof, so the room's

@@ -1,0 +1,7 @@
+name: vault-retrieval
+version: 1.0.0
+description: "Token-efficient read-only retrieval against the configured Obsidian Vault. Filename-first, range-only reads, per-turn character budgets, large-file refusal, metadata-only query log. Enforces the locked contract in '99 System/Hermes Token-Efficient Vault Retrieval Architecture - 2026-10-01.md'."
+author: "tech-cto, software-eng"
+hooks:
+  - pre_tool_call
+kind: general

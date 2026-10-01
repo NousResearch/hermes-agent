@@ -60,9 +60,20 @@ def _preflight_request_tokens(
             "using generic transcript estimate",
             exc_info=True,
         )
+    charge_stale_thinking = _agent_stale_thinking_on_wire(agent)
+    estimate_messages = messages
+    if charge_stale_thinking and getattr(agent, "api_mode", "") == "anthropic_messages":
+        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+        if native_anthropic_preserves_prior_thinking(
+            getattr(agent, "base_url", ""), getattr(agent, "model", "")
+        ):
+            from agent.message_sanitization import native_anthropic_accounting_projection
+
+            estimate_messages = native_anthropic_accounting_projection(messages)
     return estimate_request_tokens_rough(
-        messages, system_prompt=system_prompt or "", tools=tools,
-        charge_stale_thinking=_agent_stale_thinking_on_wire(agent),
+        estimate_messages, system_prompt=system_prompt or "", tools=tools,
+        charge_stale_thinking=charge_stale_thinking,
     )
 
 

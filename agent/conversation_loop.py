@@ -1422,6 +1422,10 @@ class _LoopState:
     # turn so a runaway interrupt/redirect that keeps re-arming a restart flag cannot
     # refund the iteration budget forever and hold the turn lease indefinitely.
     restart_count: int = 0
+    # Separate accumulator for the rebuilt-for-fallback restart only: its ceiling is sized
+    # off the fallback-chain depth, independent of `restart_count`'s `max_retries` ceiling
+    # (see apply_retry_restarts). Redirect/interrupt restarts keep using `restart_count`.
+    rebuilt_restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
     truncated_response_parts: List[tuple[str, bool]] = field(default_factory=list)

@@ -410,6 +410,7 @@ class RetryRestartVerdict:
     final_response: Any
     retry_count: Any
     restart_count: Any
+    rebuilt_restart_count: Any
     api_call_count: Any
     _preflight_compression_blocked: Any
     _turn_exit_reason: Any
@@ -421,6 +422,7 @@ def apply_retry_restarts(
     final_response: Any, retry_count: Any, max_retries: Any, api_call_count: Any,
     restart_count: Any, length_continue_retries: Any,
     _preflight_compression_blocked: Any, _turn_exit_reason: Any,
+    rebuilt_restart_count: Any = 0,
 ) -> RetryRestartVerdict:
     """Consume the ``TurnRetryState`` restart flags after the retry loop, in the original
     priority order. Refunds the iteration budget/count for restarts that produced no valid
@@ -440,6 +442,7 @@ def apply_retry_restarts(
         return RetryRestartVerdict(
             action=action, current_turn_user_idx=current_turn_user_idx,
             final_response=final_response, retry_count=retry_count, restart_count=restart_count,
+            rebuilt_restart_count=rebuilt_restart_count,
             api_call_count=api_call_count,
             _preflight_compression_blocked=_preflight_compression_blocked,
             _turn_exit_reason=_turn_exit_reason,
@@ -504,8 +507,17 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if _retry.restart_with_rebuilt_messages:
-        restart_count += 1
-        if restart_count > max_retries:
+        rebuilt_restart_count += 1
+        # This restart fires once per fallback-chain hop, NOT once per same-provider retry
+        # — reusing `max_retries` (tuned for "retries before fallback engages") as its
+        # ceiling kills a deep fallback chain after its first hop when api_max_retries is
+        # set low for fast failover (#<incident 2026-09-30>: a 4-provider chain died after
+        # 1 hop, never reaching the 3rd/4th provider). Size the ceiling off the actual
+        # configured chain length instead, with headroom for a skipped (unavailable/cooldown)
+        # candidate that doesn't consume a "real" attempt; never regress below max_retries.
+        _fallback_chain = getattr(agent, "_fallback_chain", None) or []
+        _rebuilt_ceiling = max(max_retries, len(_fallback_chain) + 2)
+        if rebuilt_restart_count > _rebuilt_ceiling:
             # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
             # iteration budget and re-issuing, or a runaway turn holds the turn lease
             # indefinitely (rebuilt restarts previously had no bound).
@@ -513,7 +525,7 @@ def apply_retry_restarts(
             logger.warning(
                 "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
                 "refunding the iteration budget indefinitely.",
-                max_retries,
+                _rebuilt_ceiling,
             )
             return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the

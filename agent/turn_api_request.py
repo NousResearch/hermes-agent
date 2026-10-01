@@ -50,6 +50,8 @@ def _fire_pre_api_request_hook(
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("pre_api_request"):
+            import copy
+            omitted = getattr(agent, "_files_request_expanded", False) is True
             request_messages = api_kwargs.get("messages")
             if not isinstance(request_messages, list):
                 request_messages = api_kwargs.get("input")
@@ -66,7 +68,7 @@ def _fire_pre_api_request_hook(
                 api_request_id=api_request_id,
                 session_id=agent.session_id or "",
                 user_message=original_user_message,
-                conversation_history=list(messages),
+                conversation_history=copy.deepcopy(messages) if omitted else list(messages),
                 platform=agent.platform or "",
                 model=agent.model,
                 provider=agent.provider,
@@ -74,16 +76,17 @@ def _fire_pre_api_request_hook(
                 api_mode=agent.api_mode,
                 api_call_count=api_call_count,
                 retry_count=retry_count,
-                request_messages=list(request_messages) if isinstance(request_messages, list) else [],
-                system_prompt=_system_prompt_for_hooks(api_kwargs, request_messages),
+                request_messages=[] if omitted else list(request_messages) if isinstance(request_messages, list) else [],
+                system_prompt="" if omitted else _system_prompt_for_hooks(api_kwargs, request_messages),
                 message_count=len(api_messages),
                 tool_count=len(agent.tools or []),
                 approx_input_tokens=approx_tokens,
                 request_char_count=total_chars,
                 max_tokens=agent.max_tokens,
                 started_at=api_start_time,
-                middleware_trace=list(_llm_middleware_trace),
-                request=agent._api_request_payload_for_hook(api_kwargs),
+                middleware_trace=[] if omitted else list(_llm_middleware_trace),
+                request={} if omitted else agent._api_request_payload_for_hook(api_kwargs),
+                **({"files_payload_omitted": True} if omitted else {}),
             )
     except Exception:
         pass

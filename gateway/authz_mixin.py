@@ -597,10 +597,26 @@ class GatewayAuthorizationMixin:
         platform = source.platform.value if source.platform else ""
         return (self._adapter_profile_for_source(source) or "", platform, str(source.chat_id or ""))
 
+    def _is_declared_bot_sender(self, source: SessionSource) -> bool:
+        """True when this sender is named in ``gateway.bot_loop_guard.bot_senders``.
+
+        Platforms that never mark bot authors (Matrix has no bot flag at all) deliver a peer bot as
+        an ordinary AUTHORIZED user: ``source.is_bot`` is False, so the guard below would return
+        early and two Hermes instances in one room could answer each other forever. Names listed
+        here are counted as bot-authored -- same window budget, same cooldown.
+        """
+        user_id = getattr(source, "user_id", None)
+        if not user_id:
+            return False
+        platform = getattr(getattr(source, "platform", None), "value", "") or ""
+        if not platform:
+            return False
+        return self._bot_loop_guard_instance().is_declared_bot(platform, str(user_id))
+
     def _admit_bot_message(self, source: SessionSource) -> bool:
         """Count one authorized bot-authored inbound message. False when it trips the budget or the chat is cooling down.
         The inbound handler calls this once per message; ``_is_user_authorized`` only peeks because it is asked several times."""
-        if not getattr(source, "is_bot", False):
+        if not (getattr(source, "is_bot", False) or self._is_declared_bot_sender(source)):
             return True
         allowed, state = self._bot_loop_guard_instance().admit(self._bot_loop_guard_conversation(source))
         if state == "tripped":
@@ -621,7 +637,7 @@ class GatewayAuthorizationMixin:
         """
         if not self._principal_authorized(source, allow_adapter_delegation=allow_adapter_delegation):
             return False
-        if not getattr(source, "is_bot", False):
+        if not (getattr(source, "is_bot", False) or self._is_declared_bot_sender(source)):
             return True
         # The guard judges the final verdict: a chat allowlist admits a bot before the ALLOW_BOTS block runs.
         return not self._bot_loop_guard_instance().blocked(self._bot_loop_guard_conversation(source))

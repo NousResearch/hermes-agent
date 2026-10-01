@@ -2128,7 +2128,15 @@ DEFAULT_CONFIG = {
         # Allow all users without allowlists (security opt-in).
         "allow_all_users": False,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
-        "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
+        "bot_loop_guard": {
+            "enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600,
+            # Platform -> user ids to COUNT AS BOTS even though the platform does not mark them
+            # (``source.is_bot`` stays False, so without this the guard never counts them). Needed
+            # on platforms with no bot flag at all, e.g. Matrix: two Hermes instances in one room
+            # otherwise answer each other's automatic notices without a bound. Shapes accepted:
+            # {"matrix": ["@peer:example.org"]} or ["matrix:@peer:example.org"].
+            "bot_senders": {},
+        },
         # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that
         # hard-exits 75 if the loop isn't live within the deadline. Armed before config loads, so
         # run_gateway() bridges these to HERMES_STARTUP_WATCHDOG / HERMES_STARTUP_WATCHDOG_TIMEOUT_S

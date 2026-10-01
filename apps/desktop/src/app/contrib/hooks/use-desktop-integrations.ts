@@ -114,6 +114,23 @@ export function useDesktopIntegrations({
   }, [])
 
   const restoredRef = useRef(false)
+  // A restore probe can outlive its restore: the hook may unmount (window
+  // close, controller remount) while the probe is still in flight. A
+  // settlement arriving after that must not write or navigate — the restore
+  // lifecycle it served is dead. Set ONLY on true unmount: the restore
+  // effect's own cleanup would also run on every session-list re-render and
+  // cancel a probe that is still live.
+  const restoreProbeInvalidatedRef = useRef(false)
+
+  // This ref is a lifecycle latch, not a mirror of reactive atom state: it
+  // flips exactly once, on true unmount.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    return () => {
+      restoreProbeInvalidatedRef.current = true
+    }
+  }, [])
+
   const diskPluginsScanPending = useStore($diskPluginsScanPending)
 
   // Wait until boot has adopted the primary profile, then restore that profile's
@@ -225,30 +242,41 @@ export function useDesktopIntegrations({
           // opens a fresh chat instead of re-404ing a ghost. An
           // inconclusive probe (5xx, network failure, bare proxy 404)
           // keeps the remembered value for the next launch.
-          void probeStoredSession(last)
-            .then(result => {
-              if (result.status === 'gone') {
-                setRememberedSessionId(null, activeProfile)
+          void probeStoredSession(last).then(result => {
+            // The restore this probe served may be superseded by the time it
+            // settles: the hook unmounted, or the store already moved on
+            // (the user opened another chat while the probe was pending and
+            // the persistence effect wrote its id). A stale settlement must
+            // not clobber the newer remembered id or yank the user off the
+            // chat they chose in the meantime. The id check reads the live
+            // store, so a superseding write from another window invalidates
+            // this settlement too.
+            if (restoreProbeInvalidatedRef.current || getRememberedSessionId(activeProfile) !== last) {
+              return
+            }
 
-                return
-              }
+            if (result.status === 'gone') {
+              setRememberedSessionId(null, activeProfile)
 
-              if (result.status !== 'found') {
-                return
-              }
+              return
+            }
 
-              const remembered = repairRememberedSession(result.session)
+            if (result.status !== 'found') {
+              return
+            }
 
-              if (!remembered || !sessionBelongsToProfile(sessions, remembered, activeProfile)) {
-                setRememberedSessionId(null, activeProfile)
+            const remembered = repairRememberedSession(result.session)
 
-                return
-              }
+            if (!remembered || !sessionBelongsToProfile(sessions, remembered, activeProfile)) {
+              setRememberedSessionId(null, activeProfile)
 
-              announceNewSessionDraftKey(resolveComposerSessionKey(remembered, sessions))
-              setRememberedSessionId(remembered, activeProfile)
-              navigate(sessionRoute(remembered), { replace: true })
-            })
+              return
+            }
+
+            announceNewSessionDraftKey(resolveComposerSessionKey(remembered, sessions))
+            setRememberedSessionId(remembered, activeProfile)
+            navigate(sessionRoute(remembered), { replace: true })
+          })
 
           return
         }

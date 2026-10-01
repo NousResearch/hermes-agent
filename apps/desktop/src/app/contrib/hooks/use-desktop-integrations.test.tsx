@@ -412,6 +412,80 @@ describe('useDesktopIntegrations', () => {
       expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('ghost-session')
       expect(navigate).not.toHaveBeenCalled()
     })
+
+    const stubDeferredSession404 = () => {
+      let settleProbe: (() => void) | undefined
+
+      vi.mocked(desktopWindow.hermesDesktop!.api as ReturnType<typeof vi.fn>).mockImplementation(
+        async (request: { path?: string }) => {
+          if (request.path?.startsWith('/api/sessions/')) {
+            await new Promise<void>(resolve => {
+              settleProbe = resolve
+            })
+
+            throw new Error('404: Session not found')
+          }
+
+          throw new Error(`unexpected api call: ${request.path}`)
+        }
+      )
+
+      return {
+        settle: async () => {
+          await act(async () => {
+            settleProbe?.()
+          })
+        }
+      }
+    }
+
+    it('leaves a newer remembered selection alone when a superseded probe settles gone', async () => {
+      // Cold start: ghost remembered, probe deferred. While it is pending the
+      // user opens a listed chat — the rerender's persistence effect writes the
+      // new selection. The old probe must not then clear it.
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'ghost-session')
+      $profiles.set([profileInfo('default')])
+      const probe = stubDeferredSession404()
+
+      const result = render({ profileReady: true, sessions: [session({ id: 'live-session', profile: 'default' })] })
+
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/fresh-session',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        resumeLastSession: true,
+        routedSessionId: 'fresh-session',
+        sessions: [
+          session({ id: 'live-session', profile: 'default' }),
+          session({ id: 'fresh-session', profile: 'default' })
+        ]
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('fresh-session')
+
+      await probe.settle()
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('fresh-session')
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('does not write a settled probe after the hook has unmounted', async () => {
+      // The restore lifecycle ended (window closed, controller remounted)
+      // before the probe settled: the settlement must not reach the store.
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'ghost-session')
+      $profiles.set([profileInfo('default')])
+      const probe = stubDeferredSession404()
+
+      const result = render({ profileReady: true, sessions: [session({ id: 'live-session', profile: 'default' })] })
+
+      result.unmount()
+
+      await probe.settle()
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('ghost-session')
+      expect(navigate).not.toHaveBeenCalled()
+    })
   })
 
   describe('resume-exhausted write barrier (#98467)', () => {

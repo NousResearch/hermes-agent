@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import pytest
+import hermes_state
 
 from gateway.config import GatewayConfig, Platform
 from gateway.input_owner import gateway_input_owner
@@ -28,8 +29,11 @@ from hermes_constants import (
     "boundary", ["before-preparation", "after-preparation", "withdrawal", "alias"]
 )
 def test_prepared_input_ownership_survives_shutdown_capture(
-    tmp_path, message_id, boundary
+    tmp_path, monkeypatch, message_id, boundary
 ):
+    monkeypatch.setattr(
+        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
+    )
     homes = {profile: tmp_path / profile for profile in ("A", "B")}
     observations = []
     for index, profile in enumerate(("A", "B", "A")):
@@ -89,12 +93,17 @@ def test_prepared_input_ownership_survives_shutdown_capture(
             )
             observations.append((
                 profile,
+                db.db_path.parent == homes[profile],
                 replay_owner == owner,
                 store.has_input_owner(entry.session_id, replay_owner),
             ))
         finally:
             reset_hermes_home_override(token)
-    assert observations == [("A", True, True), ("B", True, True), ("A", True, True)]
+    assert observations == [
+        ("A", True, True, True),
+        ("B", True, True, True),
+        ("A", True, True, True),
+    ]
 
 
 @pytest.mark.parametrize(

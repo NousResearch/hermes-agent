@@ -33,20 +33,26 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import {
+  $projectTree,
+  applyRenamedSessionTitle,
+  moveSessionToProject,
+  projectIdForCwd,
+  projectRootCwd
+} from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  applySessionTitle,
   markSessionRead,
   sessionMatchesStoredId,
-  sessionPinId,
-  setSessions
+  sessionPinId
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -68,13 +74,52 @@ import type { SessionTitleResponse } from '../../types'
 // background profile) keeps the REST path, which handles profile scoping and a
 // non-empty title is required by the RPC (it rejects clears), so clears stay on
 // REST too.
+/** Resolve a live runtime id for a stored session id, from any surface that
+ *  currently holds one — not just the selected-primary row.
+ *
+ *  A branched session opens as its own TAB and deliberately does NOT become the
+ *  selected primary row, so `$selectedStoredSessionId`/`$activeSessionId` do not
+ *  see it. Until its first turn it also has no persisted DB row, so a REST
+ *  rename 404s "session not found". But the branch flow binds a runtime and
+ *  stores it on the tile (`patchSessionTile(..., { runtimeId })`), and
+ *  `$sessionStates` is keyed by runtime id with `storedSessionId` on each state.
+ *  Consulting those lets the working `session.title` RPC path fire for a
+ *  just-branched draft instead of falling through to a 404. (#70317) */
+function resolveRuntimeIdForStored(storedSessionId: string): null | string {
+  if (storedSessionId === $selectedStoredSessionId.get()) {
+    const active = $activeSessionId.get()
+
+    if (active) {
+      return active
+    }
+  }
+
+  const tileRuntimeId = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+
+  if (tileRuntimeId) {
+    return tileRuntimeId
+  }
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    if (state.storedSessionId === storedSessionId) {
+      return runtimeId
+    }
+  }
+
+  return null
+}
+
 export async function renameSessionPreferringRpc(
   storedSessionId: string,
   title: string,
   profile?: string
 ): Promise<{ title?: string }> {
-  const isActiveRow = storedSessionId === $selectedStoredSessionId.get()
-  const runtimeId = isActiveRow ? $activeSessionId.get() : null
+  const resolvedProfile =
+    (profile ?? '').trim() ||
+    $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
+    undefined
+
+  const runtimeId = resolveRuntimeIdForStored(storedSessionId)
   const gateway = activeGateway()
 
   if (title && runtimeId && gateway) {
@@ -94,7 +139,7 @@ export async function renameSessionPreferringRpc(
     }
   }
 
-  return renameSession(storedSessionId, title, profile)
+  return renameSession(storedSessionId, title, resolvedProfile)
 }
 
 interface SessionActions {
@@ -697,9 +742,17 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
     setSubmitting(true)
 
     try {
-      const result = await renameSessionPreferringRpc(sessionId, next, profile)
+      const targetProfile =
+        (profile ?? '').trim() || $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
+
+      const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
       const finalTitle = result.title || next || ''
-      setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+      // One write, every list: patch the main store AND the project surfaces.
+      // Bare-id patching only the recents slice left project-scoped rows
+      // (overview previews, entered-project lanes) on the stale title until a
+      // profile switch forced a refetch (#123337).
+      applySessionTitle(sessionId, finalTitle || null)
+      applyRenamedSessionTitle(sessionId, finalTitle || null)
       notify({ durationMs: 2_000, kind: 'success', message: r.renamed })
       onOpenChange(false)
     } catch (err) {

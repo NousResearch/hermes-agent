@@ -514,12 +514,7 @@ export function PluginActions({ profile }: { profile: ProfileScope }) {
 
   return (
     <>
-      <Button
-        className="underline"
-        onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
-        size="xs"
-        variant="text"
-      >
+      <Button onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="textStrong">
         {d.installModal.installFromGit}
       </Button>
       <Tip label={d.openFolder}>

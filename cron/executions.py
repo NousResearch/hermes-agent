@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
+from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
 
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
@@ -175,7 +176,8 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
         """DELETE FROM executions WHERE id IN (
              SELECT id FROM executions
              WHERE status IN ('completed','failed','unknown')
-             ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
+             ORDER BY julianday(finished_at) DESC, finished_at DESC,
+                      julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
            )""",
         (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
     )
@@ -302,6 +304,7 @@ def finish_execution(
         _prune_unlocked(conn)
         record = _fetch(conn, execution_id)
     _emit_execution_state(record, delivery_outcome=delivery_outcome)
+    record_cron_finish(record, delivery_outcome)
     return record
 
 
@@ -383,6 +386,61 @@ def recover_interrupted_executions() -> int:
     return changed
 
 
+def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
+    """Record one attempt as ``unknown`` with a cause this process actually observed.
+
+    ``recover_interrupted_executions`` sweeps every attempt whose owner is provably
+    dead, and knows nothing but that absence — so all it can write is
+    ``_OWNER_GONE_REASON``, which asserts a scheduler restart. A waiter that held the
+    worker's ``Popen`` knows more: the owner was that external worker, and it exited
+    with a known status. Without this, a manual run whose worker dies is filed as
+    "Scheduler restarted ..." (a restart that never happened) and, because the sweep
+    leaves the row terminal, the waiter reports success and never records the run —
+    the job's ``fire_claim`` then blocks the next manual fire for the whole lease
+    (#128509).
+
+    The attempt stays ``unknown``, not ``failed``: whether side effects ran is still
+    unknown. Only the CAUSE becomes truthful. Returns False — leaving the caller to
+    fall back to the generic sweep — when the row is absent, already terminal, owned by
+    this process, inside the handoff adoption grace, or owned by a live process: a
+    worker that is still running must never be terminalized out from under itself.
+    """
+    now = _hermes_now().isoformat()
+    with _transaction() as conn:
+        row = conn.execute(
+            """SELECT id, status, process_id, pid, process_started_at,
+                      handoff_pending, handoff_started_at
+               FROM executions WHERE id=?""",
+            (execution_id,),
+        ).fetchone()
+        if row is None or row["status"] not in ("claimed", "running"):
+            return False
+        if row["process_id"] == _PROCESS_ID:
+            return False
+        if _owner_is_live(int(row["pid"]), row["process_started_at"]):
+            return False
+        handoff_started_at = row["handoff_started_at"]
+        if (
+            row["handoff_pending"]
+            and handoff_started_at is not None
+            and time.time() - float(handoff_started_at) < HANDOFF_ADOPTION_GRACE_SECONDS
+        ):
+            return False
+        cur = conn.execute(
+            """UPDATE executions
+               SET status='unknown', finished_at=?, error=?,
+                   handoff_pending=0, handoff_started_at=NULL
+               WHERE id=? AND status=? AND process_id=? AND pid=?""",
+            (now, reason, row["id"], row["status"], row["process_id"], row["pid"]),
+        )
+        if cur.rowcount != 1:
+            return False
+        record = _fetch(conn, execution_id)
+        _prune_unlocked(conn)
+    _emit_execution_state(record)
+    return True
+
+
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50, before_claimed_at: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
@@ -393,14 +451,17 @@ def list_executions(
         clauses.append("job_id=?")
         params.append(str(job_id))
     if before_claimed_at is not None:
-        clauses.append("claimed_at < ?")
-        params.append(str(before_claimed_at))
+        # Same (instant, text) key as the ORDER BY, so a page never skips or repeats a row.
+        clauses.append("(julianday(claimed_at), claimed_at) < (julianday(?), ?)")
+        params.extend([str(before_claimed_at)] * 2)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(max(1, min(int(limit), 500)))
+    # Stamps carry the local offset, which changes at DST and on a timezone change, so text order
+    # is not time order. julianday() compares instants (ms); the text breaks same-ms ties.
     with _transaction() as conn:
         rows = conn.execute(
             "SELECT * FROM executions" + where
-            + " ORDER BY claimed_at DESC, id DESC LIMIT ?",
+            + " ORDER BY julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT ?",
             params,
         ).fetchall()
     return [dict(row) for row in rows]
@@ -422,18 +483,23 @@ def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Load latest execution for many jobs in one indexed query."""
+    """Load latest execution for many jobs in one query."""
     clean = [str(job_id) for job_id in dict.fromkeys(job_ids) if job_id]
     if not clean:
         return {}
     placeholders = ",".join("?" for _ in clean)
+    # One windowed sort: a per-row correlated ORDER BY julianday() cannot use the index and
+    # grows quadratically with history (~90 ms at 1000 rows).
     with _transaction() as conn:
         rows = conn.execute(
-            f"""SELECT e.* FROM executions e
-                WHERE e.job_id IN ({placeholders})
-                  AND e.id=(SELECT e2.id FROM executions e2
-                            WHERE e2.job_id=e.job_id
-                            ORDER BY e2.claimed_at DESC, e2.id DESC LIMIT 1)""",
+            f"""SELECT e.* FROM executions e WHERE e.id IN (
+                  SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                             PARTITION BY job_id
+                             ORDER BY julianday(claimed_at) DESC, claimed_at DESC, id DESC
+                           ) AS rn
+                    FROM executions WHERE job_id IN ({placeholders}))
+                  WHERE rn=1)""",
             clean,
         ).fetchall()
     return {row["job_id"]: dict(row) for row in rows}

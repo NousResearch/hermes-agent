@@ -476,6 +476,52 @@ def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, mo
     assert entry2.read_text(encoding="utf-8") == entry.read_text(encoding="utf-8")
 
 
+def test_exec_skips_managed_environment_cli_without_desktop(
+    tmp_path, xdg_home, monkeypatch
+):
+    """A PM-managed console script is outside the checkout but cannot launch Desktop.
+
+    Its generated workspace has no ``apps/desktop``. Treating it as the durable
+    external primary persists ``Exec=`` at that script, and the grid launcher
+    exits with "Desktop GUI source not found". The entry must keep the
+    checkout's installed wrapper instead.
+    """
+    from pm.environments import install_key
+
+    root = _make_project(tmp_path)
+    installs = tmp_path / "installs"
+    monkeypatch.setattr("pm.environments.installs_root", lambda: installs)
+    generation = installs / install_key(root) / "environments" / "gen"
+    workspace = generation / "workspace"
+    workspace.mkdir(parents=True)
+    managed = generation / "venv" / "bin" / "hermes"
+    managed.parent.mkdir(parents=True)
+    managed.write_text("#!/usr/bin/env bash\nexec true\n", encoding="utf-8")
+    managed.chmod(0o755)
+
+    known_wrapper = tmp_path / ".local" / "bin" / "hermes"
+    known_wrapper.parent.mkdir(parents=True)
+    known_wrapper.write_text(
+        f'#!/usr/bin/env bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        encoding="utf-8",
+    )
+    known_wrapper.chmod(0o755)
+
+    def fake_resolve():
+        return str(managed)
+
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", fake_resolve)
+    _argv0_context(monkeypatch, str(managed))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{known_wrapper} desktop"
+    assert str(managed) not in exec_line
+
+
 def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
     tmp_path, xdg_home, monkeypatch
 ):
@@ -653,8 +699,16 @@ def test_installed_entry_carries_the_window_app_id(tmp_path, xdg_home, monkeypat
     assert values["Name"] == "Hermes"  # the menu label is not part of the identity
 
 
-def test_install_retires_the_legacy_entry_name(tmp_path, xdg_home, monkeypatch):
-    """A leftover hermes.desktop would surface as a second Hermes in the app grid."""
+def test_install_keeps_the_legacy_entry_as_a_hidden_alias(tmp_path, xdg_home, monkeypatch):
+    """A pin resolves by the entry file name it was pinned against (#124492).
+
+    Deleting ``hermes.desktop`` silently kills existing taskbar pins (GNOME drops
+    the favourite, Plasma leaves an inert item) and the shell has no mechanism to
+    re-point the association for the user. The pre-rename entry must survive as a
+    ``NoDisplay=true`` alias of the app-id entry: out of the app grid, still
+    launchable, and window-matched through the same ``StartupWMClass`` and
+    ``Exec`` as the app-id entry.
+    """
     _stub_install(tmp_path, monkeypatch)
     root = _make_project(tmp_path)
     legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
@@ -667,11 +721,30 @@ def test_install_retires_the_legacy_entry_name(tmp_path, xdg_home, monkeypatch):
     entry = lde.install_desktop_entry(root)
 
     assert entry is not None and entry.is_file()
-    assert not legacy.exists()
+    assert legacy.is_file(), "an existing pin resolves through this file — it must survive"
+    alias = _parse(legacy.read_text(encoding="utf-8"))
+    assert alias["NoDisplay"] == "true"  # no second Hermes in the app grid
+    assert alias["StartupWMClass"] == lde.APP_ID  # still groups with the window
+    entry_values = _parse(entry.read_text(encoding="utf-8"))
+    assert alias["Exec"] == entry_values["Exec"]  # launches the same command
+    assert alias["Icon"] == entry_values["Icon"]
+
+
+def test_unchanged_entry_still_aliases_a_legacy_entry(tmp_path, xdg_home, monkeypatch):
+    """An up-to-date app-id entry must not skip converting a legacy file found beside it."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    assert lde.install_desktop_entry(root) is not None
+    legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    legacy.write_text("[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n", encoding="utf-8")
+
+    lde.install_desktop_entry(root)
+
+    assert _parse(legacy.read_text(encoding="utf-8"))["NoDisplay"] == "true"
 
 
 def test_install_keeps_foreign_files_at_the_legacy_path(tmp_path, xdg_home, monkeypatch):
-    """Only our own entry retires; another app's file at that name is not ours to delete."""
+    """Only our own entry is converted to an alias; another app's file is not ours to rewrite."""
     _stub_install(tmp_path, monkeypatch)
     root = _make_project(tmp_path)
     foreign = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
@@ -688,9 +761,9 @@ def test_install_keeps_foreign_files_at_the_legacy_path(tmp_path, xdg_home, monk
 
 
 def test_install_opt_out_preserves_the_legacy_entry(tmp_path, xdg_home, monkeypatch):
-    """The opt-out protects user edits, so it also stops the legacy retirement.
+    """The opt-out protects user edits, so it also stops the legacy alias conversion.
 
-    The missing-entry path still creates the app-id entry; the deletion is
+    The missing-entry path still creates the app-id entry; the rewrite is
     management too and must not run when the user asked to be left alone.
     """
     hermes_home = tmp_path / "hermes-home"
@@ -711,7 +784,9 @@ def test_install_opt_out_preserves_the_legacy_entry(tmp_path, xdg_home, monkeypa
     entry = lde.install_desktop_entry(root)
 
     assert entry == xdg_home / "applications" / lde.DESKTOP_ENTRY_NAME
-    assert legacy.is_file(), "the opt-out must keep the legacy entry in place"
+    assert legacy.read_text(encoding="utf-8") == (
+        "[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n"
+    ), "the opt-out must leave the legacy entry byte-for-byte untouched"
 
 
 def test_app_id_matches_the_desktop_build_identity():
@@ -1263,3 +1338,182 @@ def test_deferred_install_skips_heal_after_exit_without_reveal():
     deferred.finish()
     assert calls == []
     assert not deferred._thread.is_alive()
+
+
+# --- desktop-capability of the persisted Exec (managed runtime env launchers) ------------------
+
+
+def _write_script(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _env_shaped_tree(tmp_path: Path, name: str = "managed-env") -> Path:
+    """The runtime env layout: a code tree (workspace/hermes_cli) with no desktop app in it."""
+    tree = tmp_path / name
+    (tree / "workspace" / "hermes_cli").mkdir(parents=True)
+    (tree / "workspace" / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+    _write_script(tree / "venv" / "bin" / "hermes", "#!/bin/sh\nexit 0\n")
+    python_bin = tree / "venv" / "bin" / "python"
+    python_bin.write_bytes(b"\x7fELF fake")  # real interpreters are binaries, never scripts
+    python_bin.chmod(0o755)
+    return tree
+
+
+def _full_tree(tmp_path: Path, name: str = "install") -> Path:
+    """A checkout that carries the desktop app beside hermes_cli."""
+    tree = tmp_path / name
+    (tree / "hermes_cli").mkdir(parents=True)
+    (tree / "apps" / "desktop" / "assets").mkdir(parents=True)
+    (tree / "apps" / "desktop" / "package.json").write_text("{}", encoding="utf-8")
+    _write_script(tree / "venv" / "bin" / "hermes", "#!/bin/sh\nexit 0\n")
+    python_bin = tree / "venv" / "bin" / "python"
+    python_bin.write_bytes(b"\x7fELF fake")  # real interpreters are binaries, never scripts
+    python_bin.chmod(0o755)
+    return tree
+
+
+def test_capability_rejects_env_shaped_launcher_and_accepts_full_tree(tmp_path):
+    env_tree = _env_shaped_tree(tmp_path)
+    full_tree = _full_tree(tmp_path)
+    assert lde._can_serve_desktop(str(env_tree / "venv" / "bin" / "hermes")) is False
+    assert lde._can_serve_desktop(str(full_tree / "venv" / "bin" / "hermes")) is True
+    # Interpreters are not judged: a launcher execing one is followed to its own tree instead.
+    assert lde._can_serve_desktop(str(env_tree / "venv" / "bin" / "python")) is None
+    assert lde._can_serve_desktop(str(full_tree / "venv" / "bin" / "python")) is None
+
+
+def test_capability_unknown_shapes_pass(tmp_path):
+    missing = tmp_path / "nowhere" / "bin" / "hermes"
+    assert lde._can_serve_desktop(str(missing)) is None
+    native = _write_script(tmp_path / "opt" / "bin" / "hermes", "")
+    assert lde._can_serve_desktop(str(native)) is None
+
+
+def test_capability_follows_wrapper_to_its_target(tmp_path):
+    env_tree = _env_shaped_tree(tmp_path)
+    full_tree = _full_tree(tmp_path)
+    bad_wrapper = _write_script(
+        tmp_path / "shims" / "hermes",
+        f'#!/usr/bin/env bash\nexec "{env_tree}/venv/bin/hermes" "$@"\n',
+    )
+    good_wrapper = _write_script(
+        tmp_path / "shims" / "hermes-good",
+        f'#!/usr/bin/env bash\nexec "{full_tree}/venv/bin/hermes" "$@"\n',
+    )
+    assert lde._can_serve_desktop(str(bad_wrapper)) is False
+    assert lde._can_serve_desktop(str(good_wrapper)) is True
+
+
+def test_resolver_skips_incapable_primary_for_wrapper(tmp_path, xdg_home):
+    """A PATH-first launcher from an env-shaped tree must not win over the durable wrapper."""
+    env_tree = _env_shaped_tree(tmp_path)
+    checkout = _full_tree(tmp_path, "checkout")
+    wrapper = _write_script(
+        tmp_path / ".local" / "bin" / "hermes",
+        f'#!/usr/bin/env bash\nexec "{checkout}/venv/bin/hermes" "$@"\n',
+    )
+    resolution = lde._resolve_hermes_bin_for_desktop_entry(
+        resolve_fn=lambda: str(env_tree / "venv" / "bin" / "hermes"),
+        checkout_root=checkout,
+    )
+    assert resolution == str(wrapper)
+
+
+def test_install_skips_write_when_exec_provably_cannot_serve_desktop(tmp_path, xdg_home, monkeypatch):
+    """The fallback must not create a dead entry: no entry on disk stays that way."""
+    root = _make_project(tmp_path)
+    env_tree = _env_shaped_tree(tmp_path)
+    monkeypatch.setattr(lde, "_launcher_entry_management_enabled", lambda: True)
+    monkeypatch.setattr(
+        lde,
+        "resolve_exec_command",
+        lambda project_root=None: f"{env_tree / 'venv' / 'bin' / 'hermes'} desktop",
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    assert lde.install_desktop_entry(root) is None
+    assert not lde.desktop_entry_path().exists()
+
+
+def test_install_leaves_existing_entry_untouched_when_exec_incapable(tmp_path, xdg_home, monkeypatch):
+    """A provably dead Exec skips instead of churning an entry that is already on disk."""
+    root = _make_project(tmp_path)
+    env_tree = _env_shaped_tree(tmp_path)
+    entry_path = lde.desktop_entry_path()
+    entry_path.parent.mkdir(parents=True, exist_ok=True)
+    entry_path.write_text("hand-tuned\n", encoding="utf-8")
+    monkeypatch.setattr(lde, "_launcher_entry_management_enabled", lambda: True)
+    monkeypatch.setattr(
+        lde,
+        "resolve_exec_command",
+        lambda project_root=None: f"{env_tree / 'venv' / 'bin' / 'hermes'} desktop",
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    assert lde.install_desktop_entry(root) is None
+    assert entry_path.read_text(encoding="utf-8") == "hand-tuned\n"
+
+
+def test_module_form_passes_the_gate(tmp_path):
+    """The module fallback is not second-guessed: only a process that already passed the desktop
+    launch checks (or the bundled payload) ever writes it."""
+    env_tree = _env_shaped_tree(tmp_path)
+    module_form = f'"{env_tree / "venv" / "bin" / "python"}" -m hermes_cli.main desktop'
+    assert lde._persisted_exec_serves_desktop(module_form) is None
+
+
+def test_install_through_wrapper_when_primary_is_incapable(tmp_path, xdg_home, monkeypatch):
+    """End to end: the PATH-first env launcher is skipped and the wrapper's Exec is persisted."""
+    root = _full_tree(tmp_path, "checkout")
+    (root / "apps" / "desktop" / "assets" / "icon.png").write_bytes(b"\x89PNG fake")
+    env_tree = _env_shaped_tree(tmp_path)
+    wrapper = _write_script(
+        tmp_path / ".local" / "bin" / "hermes",
+        f'#!/usr/bin/env bash\nexec "{root}/venv/bin/hermes" "$@"\n',
+    )
+    monkeypatch.setattr(lde, "_launcher_entry_management_enabled", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin",
+        lambda: str(env_tree / "venv" / "bin" / "hermes"),
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry == lde.desktop_entry_path()
+    assert _parse(entry.read_text(encoding="utf-8"))["Exec"] == f"{wrapper} desktop"
+
+
+# #126009: the persisted launcher is a menu/taskbar click — a launch, not a
+# build request. With a packaged Electron app already present, the Exec line
+# must carry --skip-build (start the packaged app in seconds) instead of the
+# build-then-launch default, whose source-hash freshness check reports
+# "stale" on any locally modified tree and pays a 60s+ rebuild per click.
+def test_exec_appends_skip_build_when_packaged_app_exists(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    unpacked = root / "apps" / "desktop" / "release" / "linux-unpacked"
+    unpacked.mkdir(parents=True)
+    (unpacked / "hermes").write_text("", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line.endswith("desktop --skip-build")
+
+
+def test_exec_keeps_build_then_launch_when_no_packaged_app(tmp_path, xdg_home, monkeypatch):
+    # First install (nothing packaged yet): the click must still build and
+    # launch — --skip-build would exit with "no packaged desktop app found".
+    root = _make_project(tmp_path)
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line.endswith("desktop")
+    assert "--skip-build" not in exec_line

@@ -17,6 +17,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
+import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
@@ -55,7 +56,9 @@ const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
 const THEME_SCOPE_KEY = 'hermes-desktop-theme-scope-v1'
 // Skins that no longer exist. A profile still pointing at one falls back to
 // DEFAULT_SKIN_NAME rather than painting a name nothing resolves.
-const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
+// `default` is the live CLI classic skin (Classic Hermes gold) once registered
+// by backend-sync — not retired. `gold` remains a legacy alias (see use-skin-command).
+const RETIRED_SKINS = new Set(['nous-light', 'gold'])
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -597,12 +600,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)
+    recordFeatureUse('skins')
     setPreview(null)
     setThemeNameState(next)
     skinPref.assign(liveProfile(), next)
   }, [])
 
   const setMode = useCallback((next: ThemeMode) => {
+    recordFeatureUse('skins')
     setPreview(null)
     setModeState(next)
     modePref.assign(liveProfile(), next)

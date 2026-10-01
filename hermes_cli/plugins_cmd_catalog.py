@@ -867,3 +867,18 @@ def catalog_versions() -> Dict[str, str]:
         return {e.name: e.version for e in load_catalog_live() if e.version}
     except Exception:
         return {}
+
+
+def catalog_rows_maps() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """The pins/versions/titles maps from ONE live-catalog resolution. Listing callers (``_plugin_rows``)
+    need all three; taking them via :func:`catalog_pins`/:func:`catalog_versions`/:func:`catalog_titles`
+    would pay the whole ``load_catalog_live()`` pass — git probe, ~300 catalog YAMLs, prefer-in-tree
+    merges — three times per inventory request (#125683). Best effort like the per-map helpers: an
+    empty triple on failure."""
+    try:
+        entries = load_catalog_live()
+    except Exception:
+        return {}, {}, {}
+    return ({e.name: e.sha for e in entries},
+            {e.name: e.version for e in entries if e.version},
+            {e.name: e.title for e in entries if e.title})

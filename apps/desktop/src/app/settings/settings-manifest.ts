@@ -60,6 +60,7 @@ export const SETTINGS_MANIFEST = {
       copy: t => ({ label: t.language.label, description: t.language.description })
     },
     introSplash: appearanceSetting('general', ['splash', 'wordmark', 'empty chat', 'new chat'], 'introSplash'),
+    modelPricing: appearanceSetting('general', ['price', 'cost', 'tokens', 'model picker', 'cache'], 'modelPricing'),
     resumeLastSession: appearanceSetting(
       'general',
       ['resume', 'reopen', 'launch', 'startup', 'last chat', 'session'],
@@ -80,6 +81,7 @@ export const SETTINGS_MANIFEST = {
       })
     },
     uiScale: appearanceSetting('typography', ['zoom', 'size'], 'uiScale'),
+    chatTextScale: appearanceSetting('typography', ['chat', 'text', 'font', 'size', 'scale', 'zoom'], 'chatTextScale'),
     chatFont: appearanceSetting('typography', ['font', 'typeface', 'family', 'text'], 'chatFont'),
     terminalFont: appearanceSetting(
       'typography',

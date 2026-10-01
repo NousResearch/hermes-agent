@@ -8,8 +8,14 @@ import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
+  $currentUsage,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentModel,
+  setCurrentProvider,
+  setCurrentUsage,
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
@@ -144,6 +150,31 @@ describe('applyRuntimeInfo foreground scoping', () => {
     expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
   })
 
+  it('returns authoritative usage for a background runtime snapshot', () => {
+    const patch = applyRuntimeInfo(
+      { usage: { calls: 3, compressions: 4, input: 100, output: 20, total: 120 } },
+      { foreground: false }
+    )
+
+    expect(patch?.usage).toEqual({ calls: 3, compressions: 4, input: 100, output: 20, total: 120 })
+  })
+
+  it('clears a previous session compression count when the focused snapshot omits it', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyRuntimeInfo({ usage: { calls: 0, input: 0, output: 0, total: 0 } })
+
+    expect($currentUsage.get().compressions).toBeUndefined()
+  })
+
+  it('does not let a background runtime clear the focused compression count', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyRuntimeInfo({ usage: { calls: 0, input: 0, output: 0, total: 0 } }, { foreground: false })
+
+    expect($currentUsage.get().compressions).toBe(4)
+  })
+
   // #71254: `if (info.cwd)` treated '' as "no opinion", so a detached session
   // never released the previous project and the Files pane stayed on it forever.
   it('treats an empty runtime cwd as authoritative and releases ownership', () => {
@@ -190,6 +221,14 @@ describe('applyStoredSessionPreviewRuntimeInfo workspace paint', () => {
 
     expect($currentCwd.get()).toBe('/next-project')
     expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+
+  it('clears live-only compression usage as soon as a cold session switch starts', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
+
+    expect($currentUsage.get().compressions).toBeUndefined()
   })
 
   it('releases ownership when the selected session row reports no workspace', () => {
@@ -1249,6 +1288,35 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
   })
 
+  // #121613: a completed reply that settled onto a non-stream id (an interim
+  // id the completion settled onto, or an appended `assistant-<ts>` bubble)
+  // is invisible to the stream-id rule, but when the refreshed page has not
+  // committed it the local row is the only copy and must survive.
+  it('keeps a settled non-stream reply the authoritative history has not committed', () => {
+    const reply = msg('assistant-99', 'assistant', 'the completed reply', { pending: false, interim: false })
+    const previous = [msg('1-user', 'user', 'question'), reply]
+    const next = [msg('1-user', 'user', 'question')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      'assistant-99'
+    ])
+  })
+
+  it('does not re-append a settled non-stream reply the authoritative history already carries', () => {
+    const next = [msg('1-user-stored', 'user', 'question'), msg('2-assistant-stored', 'assistant', 'answer')]
+    const settledLocal = msg('assistant-99', 'assistant', 'answer', { pending: false, interim: false })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, settledLocal])).toBe(next)
+  })
+
+  it('does not resurrect a superseded interim bubble the refresh rewrote', () => {
+    const next = [msg('1-user', 'user', 'question'), msg('2-assistant', 'assistant', 'rewritten final')]
+    const interim = msg('assistant-interim-1', 'assistant', 'old interim', { pending: false, interim: true })
+
+    expect(preserveLocalPendingTurnMessages(next, [msg('1-user', 'user', 'question'), interim])).toBe(next)
+  })
+
   it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {
     const toolRound = {
       id: 'row-1-assistant',
@@ -2117,6 +2185,42 @@ describe('overlayConcurrentMessageChanges', () => {
 
     expect(overlayConcurrentMessageChanges(page, [page[0]], [page[0], errored]).at(-1)).toBe(errored)
   })
+
+  // The committed row and the settled live row capture the same reply at two
+  // moments while it kept streaming, so one is routinely a prefix of the
+  // other (#123993): accept either as a forward extension, as the sibling
+  // removeRepresentedLocalLiveProjection already does (2494b95929).
+  it('folds a settled live row that lags behind the committed row into one reply', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A2 finished while away', { rowId: 4 })
+    ]
+
+    const current = [page[0], msg('assistant-stream-1-2', 'assistant', 'A2 finished', { pending: false })]
+
+    const overlaid = overlayConcurrentMessageChanges(page, [], current)
+
+    expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'A2 finished while away']
+    ])
+  })
+
+  it('folds a settled live row that ran past the committed row into one reply', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A2 finished', { rowId: 4 })
+    ]
+
+    const current = [page[0], msg('assistant-stream-1-2', 'assistant', 'A2 finished while away', { pending: false })]
+
+    const overlaid = overlayConcurrentMessageChanges(page, [], current)
+
+    expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'A2 finished']
+    ])
+  })
 })
 
 describe('preserveEquivalentTranscript', () => {
@@ -2235,5 +2339,34 @@ describe('preserveLocalPendingTurnMessages attachment rewrites (#120978)', () =>
       '3-user-stored',
       'user-1790168309-ab12cd'
     ])
+  })
+})
+
+describe('applyStoredSessionPreviewRuntimeInfo does not persist the preview', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    setCurrentModel('user-pick')
+    setCurrentProvider('anthropic')
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  // The preview is provisional: it paints while session.resume is still in
+  // flight. An abandoned resume never repairs the selection afterwards, so a
+  // persisting paint strands a manual model with an EMPTY provider in
+  // localStorage — every later session.create pairs that model with the
+  // profile provider and fails the coherence gate.
+  it('moves the visible model/provider without persisting them', () => {
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '', model: 'claude-opus-5-5' }, 'session-next')
+
+    // Visible paint happened…
+    expect($currentModel.get()).toBe('claude-opus-5-5')
+    expect($currentProvider.get()).toBe('')
+
+    // …but nothing was persisted: the composer's sticky selection survives.
+    expect(localStorage.getItem('hermes.desktop.composer.model')).toBe('user-pick')
+    expect(localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
   })
 })

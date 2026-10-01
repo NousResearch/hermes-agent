@@ -71,22 +71,33 @@ Notes:
 
 ## 2. Install Hermes Inside the Shell
 
-Enter the environment and run the standard installer exactly as documented in
-the [installation guide](./installation.md):
+Enter the environment and run the canonical installer — a fresh container has
+no `hermes` binary yet, so start from the same command the
+[installation guide](./installation.md) gives for Linux:
 
 ```bash
 ~/bin/hermes-env
 # now inside the FHS container:
-hermes setup
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-`hermes setup` and the CLI behave identically to any Linux install from here.
-For updates, re-enter the environment and run `hermes update`.
+The installer clones the source under `~/.hermes/`, installs the pinned
+runtimes, drops the `hermes` launcher into `~/.local/bin/` (adding that
+directory to PATH in your shell rc files), and hands off to `hermes setup` to
+finish configuration. Everything lands in the shared home directory, so a
+fresh `~/bin/hermes-env` invocation finds the launcher on PATH through
+`bash --login`. If an already-open shell doesn't see it yet, run
+`exec bash --login` once.
+
+From here the CLI behaves identically to any Linux install. For updates,
+re-enter the environment and run `hermes update`.
 
 :::note
 Run installs, updates, and the gateway from the same wrapper. Each
 `hermes-env` invocation recreates the container, but the state under
 `~/.hermes/` (config, sessions, skills) survives in your real home directory.
+The installed binaries are built for the container's FHS layout — run them
+inside the wrapper, not from the host.
 :::
 
 ## 3. Run the Gateway as a User Shepherd Service

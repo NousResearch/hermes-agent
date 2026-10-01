@@ -74,12 +74,15 @@ import { BoardSwitcher } from './board-switcher'
 import { Card } from './card'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
+import { initialAssignee, laneCreateFields, PARKED, submittedAssignee } from './new-task-fields'
 import { OrchestrationPanel } from './orchestration'
 import { laneTitle, SwimlaneGrid } from './swimlane-grid'
 import {
   applyPatch,
   dropPatch,
   groupSwimlanes,
+  type LaneDimension,
+  laneKey,
   type LanePreset,
   lanePreset,
   normalizeSwimlaneBy,
@@ -297,7 +300,6 @@ function Column({
 // ── dialogs ──────────────────────────────────────────────────────────────────
 
 const NO_PARENT = '__none__'
-const PARKED = '__parked__'
 const WORKSPACE_KINDS = ['scratch', 'worktree', 'dir'] as const
 
 function Field({ children, label }: { children: ReactNode; label: string }) {
@@ -315,6 +317,8 @@ interface NewTaskTarget {
   status: string
   preset?: LanePreset
   laneTitle?: string
+  /** The lane the task is meant for, to say so if it lands elsewhere. */
+  lane?: { by: LaneDimension; key: string; title: (key: string) => string }
 }
 
 function NewTaskDialog({
@@ -385,9 +389,7 @@ function NewTaskDialog({
     if (request) {
       setTitle('')
       setBodyText('')
-      // A lane preset seeds the form; the default assignee already IS the
-      // "default" option, so it maps to that rather than a duplicate row.
-      setAssignee(preset?.assignee && preset.assignee !== resolvedDefault ? preset.assignee : '')
+      setAssignee(initialAssignee(preset, resolvedDefault))
       setPriority(String(preset?.priority ?? 0))
       setSkills('')
       setWorkspaceKind(boardDefaultKind)
@@ -420,7 +422,7 @@ function NewTaskDialog({
       // create() derives status (triage flag → 'triage', else 'ready'); move to
       // the requested column when they differ, so a per-column add lands right.
       const { task, warning } = await createTask({
-        assignee: assignee === PARKED ? undefined : assignee || resolvedDefault,
+        assignee: submittedAssignee(assignee, resolvedDefault),
         body: bodyText.trim() || undefined,
         goal_mode: goalMode,
         parents: parent ? [parent] : undefined,
@@ -428,9 +430,7 @@ function NewTaskDialog({
         skills: skillList.length ? skillList : undefined,
         title: trimmed,
         triage: isTriage,
-        // Lane identity the form doesn't edit (project, tenant) rides along.
-        project_id: preset?.project_id,
-        tenant: preset?.tenant,
+        ...laneCreateFields(preset),
         workspace_kind: workspaceKind,
         ...overrideCreateFields(modelOverride),
         // Empty → backend inherits the board's default project dir.
@@ -439,6 +439,15 @@ function NewTaskDialog({
 
       if (task && task.status !== target) {
         await patchTask(task.id, { status: target })
+      }
+
+      // The form (or a parent's inherited tenant) can put the task somewhere
+      // other than the lane it was started from — say where it went.
+      const lane = request?.lane
+      const landed = task && lane ? laneKey(lane.by, task) : null
+
+      if (lane && landed !== null && landed !== lane.key) {
+        host.notify({ kind: 'info', message: k.createdInOtherLane(lane.title(landed)) })
       }
 
       // Dispatcher-presence warning ("this ready task will sit idle") — not an
@@ -1038,7 +1047,13 @@ export function KanbanBoardPage() {
   const swimlanes = useMemo(
     () =>
       laneBy && filtered
-        ? groupSwimlanes(filtered.columns, laneBy, key => laneTitle(laneBy, key, k, projectNames))
+        ? groupSwimlanes(
+            filtered.columns,
+            laneBy,
+            key => laneTitle(laneBy, key, k, projectNames),
+            // Every live project gets a lane, so the first task can be created into it.
+            laneBy === 'project' ? [...projectNames.keys()] : []
+          )
         : null,
     [filtered, laneBy, k, projectNames]
   )
@@ -1277,7 +1292,8 @@ export function KanbanBoardPage() {
               setAdding({
                 status,
                 preset: lanePreset(laneBy, lane),
-                laneTitle: laneTitle(laneBy, lane, k, projectNames)
+                laneTitle: laneTitle(laneBy, lane, k, projectNames),
+                lane: { by: laneBy, key: lane, title: key => laneTitle(laneBy, key, k, projectNames) }
               })
             }
             onDelete={id => deleteMut.mutate(id)}

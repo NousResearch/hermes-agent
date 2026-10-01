@@ -17,6 +17,7 @@ network or auth state is required.
 
 import pytest
 from hermes_cli import model_switch
+import hermes_cli.models as models_mod
 import hermes_cli.model_switch_providers as hermes_cli_model_switch_providers
 from hermes_cli import model_switch_providers
 
@@ -240,3 +241,51 @@ def test_distinct_kimi_china_credential_still_listed(monkeypatch):
     assert slugs.count("kimi-coding") == 1
     assert "kimi" not in slugs          # alias collapsed into the canonical row
     assert "kimi-coding-cn" in slugs    # distinct China endpoint preserved
+
+
+def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
+    """#74003: ``non_blocking_catalogs=True`` must not run a single live catalog probe in the calling
+    thread — not the per-provider ``/models`` prefetch and not OpenRouter's curated-catalog GET —
+    even with several credentialed providers and an empty on-disk cache."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(models_mod, "_openrouter_catalog_cache", None)
+    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY",
+                "MISTRAL_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.setenv(key, "dummy")
+    (tmp_path / "provider_models_cache.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **k: {})
+
+    live: list[str] = []
+
+    def _live_probe(*args, **kwargs):
+        live.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(models_mod, "provider_model_ids", _live_probe)
+    monkeypatch.setattr(models_mod, "fetch_api_models", _live_probe)
+    monkeypatch.setattr(models_mod, "_fetch_live_catalog_index", _live_probe)
+    monkeypatch.setattr(models_mod, "_spawn_swr_refresh", lambda *a, **k: None)  # background warm is not "live"
+
+    rows = model_switch_providers.list_picker_providers(
+        max_models=50, include_moa=True, current_provider="openrouter", user_providers={},
+        custom_providers=[], excluded_providers=[], non_blocking_catalogs=True)
+
+    assert live == [], f"cache-only listing ran live probes in the request path: {live}"
+    assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
+
+
+def test_curated_openrouter_row_keeps_free_tail_past_max_models(monkeypatch):
+    """The OpenRouter row is already curated; its bottom "Free tier" block must survive the picker cap
+    while an ordinary provider row stays capped."""
+    curated = [(f"vendor/model-{i}", "") for i in range(55)] + [("stealth/free-model", "free, stealth model")]
+    other = [f"other-{i}" for i in range(60)]
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **_: [
+        _make_provider("openrouter", models=[mid for mid, _ in curated][:50]),
+        _make_provider("deepseek", models=other[:50]) | {"total_models": len(other)},
+    ])
+    monkeypatch.setattr(models_mod, "fetch_openrouter_models", lambda **_: curated)
+
+    rows = {r["slug"]: r for r in model_switch_providers.list_picker_providers(max_models=50)}
+
+    assert rows["openrouter"]["models"] == [mid for mid, _ in curated]
+    assert len(rows["deepseek"]["models"]) == 50

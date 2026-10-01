@@ -13,9 +13,11 @@ export async function requestSkillInstallFromDeepLink(identifier: string): Promi
   const scope: ProfileScope = { connectionId, profile }
   const name = identifier.split('/').filter(Boolean).at(-1) || identifier
 
-  const connectionLabel = !connectionId || connectionId === 'local'
-    ? translateNow('catalog.thisComputer')
-    : $connectionsRegistry.get()?.connections.find(connection => connection.id === connectionId)?.label || connectionId
+  const connectionLabel =
+    !connectionId || connectionId === 'local'
+      ? translateNow('catalog.thisComputer')
+      : $connectionsRegistry.get()?.connections.find(connection => connection.id === connectionId)?.label ||
+        connectionId
 
   const destination = `${connectionLabel} · ${profile || 'default'}`
 

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence, coalesce_tool_call_id
 from agent.turn_failure_copy import site_copy, stamp_failure
+from hermes_constants import FINISH_REASON_LENGTH
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -89,12 +90,18 @@ def validate_tool_calls(
     agent._uniquify_tool_call_ids(tool_calls)
 
     # Repair mismatched tool names before validating (model hallucinations).
+    repaired_ids = set()
     for tc in tool_calls:
         if tc.function.name not in valid_names:
             repaired = agent._repair_tool_call(tc.function.name)
             if repaired:
-                print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                agent._vprint(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'",
+                              force=True, diagnostic=True)
                 tc.function.name = repaired
+                repaired_ids.add(id(tc))
+    # Counted here, before any exit or normalization, so every emitted call is seen once as the model sent it.
+    from hermes_cli.observability.shared_metrics_model import record_tool_call_quality
+    record_tool_call_quality(agent, tool_calls, repaired_ids)
     invalid_tool_calls = [tc.function.name for tc in tool_calls if tc.function.name not in valid_names]
     # Mixed batch: error-result ONLY the invalid calls and run the valid
     # ones; voiding the turn discards real work. Strikes advance only when a
@@ -117,7 +124,7 @@ def validate_tool_calls(
 
         if agent._invalid_tool_retries >= 3:
             agent._flush_status_buffer()
-            agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True)
+            agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True, diagnostic=True)
             agent._invalid_tool_retries = 0
             return _verdict("return", _partial_exit(
                 agent, messages, conversation_history, api_call_count,
@@ -172,12 +179,18 @@ def validate_tool_calls(
             agent._vprint(
                 f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
                 f"(finish_reason={finish_reason!r}) — refusing to execute.",
-                force=True,
+                force=True, diagnostic=True,
             )
             agent._invalid_json_retries = 0
             agent._cleanup_task_resources(effective_task_id)
+            # Blame the output cap only when the model reported one; otherwise the args
+            # were cut by a stream break or a router rewriting finish_reason (#91717).
+            _copy = (
+                site_copy("truncated") if finish_reason == FINISH_REASON_LENGTH
+                else site_copy("truncated_unreported")
+            )
             return _verdict("return", _partial_exit(
-                agent, messages, conversation_history, api_call_count, site_copy("truncated"),
+                agent, messages, conversation_history, api_call_count, _copy,
             ))
 
         agent._invalid_json_retries += 1

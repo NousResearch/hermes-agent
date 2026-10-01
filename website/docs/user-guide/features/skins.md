@@ -107,6 +107,7 @@ Text strings used throughout the CLI interface.
 | `tool_emojis` | dict | Per-tool emoji overrides for spinners and progress (`{tool_name: emoji}`) | `{}` |
 | `banner_logo` | string | Rich-markup ASCII art logo (replaces the default HERMES_AGENT banner) | `""` |
 | `banner_hero` | string | Rich-markup hero art (replaces the default caduceus art) | `""` |
+| `customCSS` | string | Raw CSS injected into the desktop app and web dashboard while the skin is active (GUI surfaces only; ignored by the CLI/TUI). Capped at 32 KiB. | `""` |
 
 ## Custom skins
 
@@ -212,6 +213,24 @@ branding:
 tool_prefix: "▏"
 ```
 
+### Raw `customCSS`
+
+For selector-level styling that colors can't express — font sizes, spacing, pseudo-elements, animations — drop raw CSS into `customCSS`. The desktop app and web dashboard inject it as a `<style>` tag while the skin is active and remove it when you switch to a skin without it.
+
+```yaml
+name: myskin
+
+colors:
+  background: "#1a1030"
+  ui_accent: "#ff5fd2"
+
+customCSS: |
+  .chat-input { font-size: 16px; }
+  .status-bar { background: rgba(0, 0, 0, 0.5); }
+```
+
+The field is capped at 32 KiB and applies to GUI surfaces only — the CLI and TUI ignore it. Because it lives in your skin YAML under `~/.hermes/skins/`, it survives app updates (no more hacking `app.asar`).
+
 ## Hermes Mod — Visual Skin Editor
 
 [Hermes Mod](https://github.com/cocktailpeanut/hermes-mod) is a community-built web UI for creating and managing skins visually. Instead of writing YAML by hand, you get a point-and-click editor with live preview.
@@ -259,7 +278,7 @@ npm start
 6. Click **Save** to write the skin YAML to `~/.hermes/skins/`.
 7. Click **Activate** to set it as the current skin (updates `display.skin` in `config.yaml`).
 
-Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [profiles](/user-guide/profiles) too.
+Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [profiles](../profiles.md) too.
 
 ## Operational notes
 

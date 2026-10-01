@@ -32,6 +32,38 @@
   }
 }
 
+/* Blanket reduced-transparency gate: turn the CSS backdrop-filter frost OFF
+   everywhere when the OS accessibility signal asks for it (macOS: System
+   Settings → Accessibility → Display → Reduce transparency; Windows 11
+   respects the same query through contrast/transparency settings).
+
+   Why a media gate and not per-surface surgery: backdrop-filter is only cheap
+   on surfaces whose content AND geometry are static (what #69130 established
+   for the typing surface). The status-stack cards (composerDockCard →
+   composerSurfaceGlass) sit over a live braille spinner and a 1 Hz activity
+   timer, and menu/popover surfaces animate their own geometry while open —
+   each animation frame changes the filtered region and forces a full
+   backdrop re-sample. On a transparent window (plugin wallpaper themes) that
+   re-sample re-reads the wallpaper layer; when the filter pass is late for a
+   frame, the surfaces paint unblurred and the whole docked area strobes
+   (#121910). Dropping the filter on the OS signal removes the re-sample from
+   the frame budget entirely, for every frosted surface at once — present and
+   future. Legibility does not regress: every frosted surface already carries
+   its own alpha-mixed fill (--composer-fill at 88%, color-mix panels) that
+   stands alone; the frost is a texture, not the legibility layer.
+
+   Mirrors the blanket reduced-motion rule above; also mirrors what HUD mode
+   already does for its own reasons ([data-hud-shell] drops backdrop-filter
+   app-wide). */
+@media (prefers-reduced-transparency: reduce) {
+  *,
+  *::before,
+  *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
 /* Pause continuous animations only when the window is hidden/minimized, not
    merely unfocused. main.tsx owns this attribute for the primary window;
    wake/pet overlays retain their purpose-built visibility behavior. */
@@ -45,7 +77,8 @@
     .pet-wobble,
     .progress-slide,
     .kanban-arc,
-    .glyph-spinner__strip
+    .glyph-spinner__strip,
+    .decode-cursor-blink
   ),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused]
@@ -445,12 +478,16 @@
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-    /* Menlo/Monaco first — Apple's native monospace faces — so code/diff read
-       in the system mono on macOS, with SF Mono and bundled Courier Prime as
-       fallbacks. */
+    /* JetBrains Mono first — the face we bundle (@font-face above) and the
+       terminal's primary — so code/diff match the terminal on every platform
+       instead of drifting to a system Cascadia Code where it's installed. The
+       extra Linux mono fallbacks preserve Latin Extended glyphs (#61392:
+       Vietnamese and other non-Latin diacritics) as monospace when a theme
+       display font does not cover them. */
     --dt-font-mono:
-      Menlo, Monaco, 'SF Mono', 'Courier Prime', monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-      'Noto Color Emoji', emoji;
+      'JetBrains Mono', 'Cascadia Code', 'Cascadia Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono',
+      'Noto Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji', 'Segoe UI Emoji',
+      'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
@@ -471,11 +508,16 @@
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
-    --conversation-text-font-size: 0.8125rem;
-    --conversation-tool-font-size: 0.6875rem;
-    --conversation-caption-font-size: 0.75rem;
-    --conversation-line-height: 1.125rem;
-    --conversation-caption-line-height: 1rem;
+    --conversation-text-base-size: 0.8125rem;
+    --conversation-tool-base-size: 0.6875rem;
+    --conversation-caption-base-size: 0.75rem;
+    --conversation-base-line-height: 1.125rem;
+    --conversation-caption-base-line-height: 1rem;
+    --conversation-text-font-size: var(--conversation-text-base-size);
+    --conversation-tool-font-size: var(--conversation-tool-base-size);
+    --conversation-caption-font-size: var(--conversation-caption-base-size);
+    --conversation-line-height: var(--conversation-base-line-height);
+    --conversation-caption-line-height: var(--conversation-caption-base-line-height);
     --conversation-turn-gap: 0.375rem;
     /* Gap between top-level turn blocks (prose ↔ tools ↔ thinking) — enough air
        that scaffolding reads as separate from the reply, not crammed into it. */
@@ -821,7 +863,11 @@
      · things you point at (paths)          → neutral, they're the common case
      · things you fetch (links, media)      → secondary
      · things that act (commands, tools)    → accent
-     · things that change code (skills, git)→ warm */
+     · things that change code (skills, git)→ warm
+   The fallback is declared FIRST: it shares specificity with every kind rule
+   below, so source order alone decides the cascade — declared after them it
+   would repaint every kinded reference in the raw primary (#114612). */
+.ref,
 [data-ref] {
   --ref-color: var(--dt-primary);
 }
@@ -868,8 +914,6 @@
 }
 
 .ref {
-  --ref-color: var(--dt-primary);
-
   /* Prose links inherit the surrounding text's weight. `@tailwindcss/typography`
      sets `prose a { font-weight: 500 }`, which outranks a utility class on the
      anchor — so the override belongs here, on the shared class. */
@@ -1070,16 +1114,15 @@
 }
 
 @keyframes arc-border {
-  /* Compositor-only travel. The ::before layer is 300% × 300% of the host
-     (mirroring the old `background-size: 300%`), so translating it from
-     -10% → -50% of its own size reproduces the old
-     `background-position: 15% → 75%` exactly (offset = -2·W·p), while
-     `transform` animates on the compositor with zero per-frame style
-     recalc/paint. The old background-position version cost ~3,600
-     main-thread style recalcs per minute per arc, pinning idle renderers
-     (#53902, #73082). */
+  /* Transform travel (compositor-only), never background-position: the old
+     background-position version cost ~3,600 main-thread style recalcs per
+     minute per arc (#53902, #73082).
+
+     One cycle moves the ::before layer by 1.2 of the host (50% of the 240%
+     layer), which advances the gradient by exactly one period, so the loop
+     is seamless. */
   0% {
-    transform: translate(-10%, -10%);
+    transform: translate(0, 0);
   }
   100% {
     transform: translate(-50%, -50%);
@@ -1165,27 +1208,21 @@
   position: absolute;
   top: 0;
   left: 0;
-  /* The gradient layer IS 300% of the ring (the old version kept a host-sized
-     ::before and slid a 300%-sized background through it). Sizing the layer
-     itself lets the travel be a `transform` — composited, no main-thread
-     style/paint work — while the host's mask + overflow clip it to the ring. */
-  width: 300%;
-  height: 300%;
-  background: linear-gradient(
+  /* One period of the gradient, repeated, on a layer the host's mask and
+     overflow clip to the ring. Invariants: the period (50% of the layer's
+     gradient line) equals one cycle of travel; the layer still covers the
+     host at the end of the cycle (0.2 of the host to spare); the stops are
+     fractions of that period. Holds for --arc-angle in 90deg..180deg. */
+  width: 240%;
+  height: 240%;
+  background: repeating-linear-gradient(
     var(--arc-angle),
     transparent 0%,
-    var(--arc-c0) 15%,
-    var(--arc-c1) 20%,
-    var(--arc-c2) 25%,
-    transparent 35%,
-    transparent 40%,
-    var(--arc-c0) 55%,
-    var(--arc-c1) 60%,
-    var(--arc-c2) 65%,
-    transparent 75%,
-    transparent 80%,
-    var(--arc-c0) 95%,
-    var(--arc-c1) 100%
+    var(--arc-c0) 18.75%,
+    var(--arc-c1) 25%,
+    var(--arc-c2) 31.25%,
+    transparent 43.75%,
+    transparent 50%
   );
   will-change: transform;
   animation: arc-border var(--arc-duration) linear infinite;
@@ -1212,8 +1249,8 @@
 
    2. A visible tail. `--arc-c2` defaults to `--dt-background` — invisible
       against the sidebar. With c0 a transparent sentinel and c2 invisible, only
-      the bright c1 stop survives each pass, and the gradient has three of them:
-      three moving dots instead of an arc. Tying c2 to c1 gives each spike a
+      the bright c1 stop survives each pass, and it repeats along the ring:
+      moving dots instead of an arc. Tying c2 to c1 gives each spike a
       falloff. (`arc-nous` already overrides c2, so the hero is unaffected.) */
 .arc-border.arc-row,
 :root.dark .arc-border.arc-row {
@@ -1235,6 +1272,40 @@
 @media (prefers-reduced-motion: reduce) {
   .arc-border::before {
     animation: none;
+  }
+}
+
+/* Keyframes live here, not in per-instance <style> tags: inserting or removing an
+   @keyframes rule invalidates every animating element in the document (#99889). */
+@keyframes decode-cursor {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.decode-cursor-blink {
+  animation: decode-cursor 1s step-end infinite;
+}
+/* 0.001 start mirrors ZonesOverlay::GetAnimationAlpha's clamp(t / 200ms, 0.001, 1). */
+@keyframes hermes-zone-fade {
+  from {
+    opacity: 0.001;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes starmap-twinkle {
+  0%,
+  100% {
+    opacity: var(--o, 1);
+  }
+  50% {
+    opacity: calc(var(--o, 1) * 0.35);
   }
 }
 
@@ -1558,6 +1629,18 @@ body.guest-pointer-lock :is(webview, iframe) {
 /* Bottom clearance lives on [data-slot='aui_composer-clearance'] —
    virtualized items unmount, so :nth-last-child can't fire reliably. */
 
+/* Scope typography, not zoom: pane geometry and surrounding chrome stay put.
+   The editor owns its scope too, including inline edits and floating composers. */
+[data-slot='aui_thread-content'],
+[data-slot='composer-rich-input'] {
+  --conversation-text-scale: var(--chat-text-scale, 1);
+  --conversation-text-font-size: calc(var(--conversation-text-base-size) * var(--chat-text-scale, 1));
+  --conversation-tool-font-size: calc(var(--conversation-tool-base-size) * var(--chat-text-scale, 1));
+  --conversation-caption-font-size: calc(var(--conversation-caption-base-size) * var(--chat-text-scale, 1));
+  --conversation-line-height: calc(var(--conversation-base-line-height) * var(--chat-text-scale, 1));
+  --conversation-caption-line-height: calc(var(--conversation-caption-base-line-height) * var(--chat-text-scale, 1));
+}
+
 [data-slot='aui_assistant-message-content'] {
   padding-left: var(--message-text-indent);
   font-size: var(--conversation-text-font-size);
@@ -1603,6 +1686,16 @@ body.guest-pointer-lock :is(webview, iframe) {
   margin-block: var(--paragraph-gap) 0;
 }
 
+/* Same Typography trap for images: `.prose :where(img) { margin: 2em }` ties
+   `m-0` on specificity (0,1,0) and wins on source order. Inside the framed
+   markdown image the <img> sits in an absolutely-positioned `h-full` wrapper,
+   so a 2em top margin slides the whole image down and its bottom overhangs the
+   frame's reserved height — the image then paints over the first line of
+   whatever follows it (#122100, #122982). Zero it at higher specificity. */
+[data-slot='aui_assistant-message-content'] .aui-md [data-slot='aui_markdown-image'] :where(img) {
+  margin: 0;
+}
+
 /* Headings are section breaks, so they own a larger top gap than prose — a
    leading `# title` (common in re-entered/delegated turns) no longer butts
    against the block above. Top-owned + bottom snug; the first-child reset
@@ -1634,6 +1727,39 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='aui_user-inline-text'],
 [data-slot='composer-rich-input'] {
   unicode-bidi: plaintext;
+  text-align: start;
+}
+
+/* Keyed on the UI language, not installed fonts: PingFang/YaHei ship on every
+   Mac/Windows box and would restyle Latin text for everyone. CJK-first is what
+   makes shared codepoints (…—“”) render full-width. */
+[data-slot='composer-rich-input']:lang(zh) {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', var(--dt-font-sans);
+}
+
+[data-slot='composer-rich-input']:lang(zh-hant) {
+  font-family: 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', var(--dt-font-sans);
+}
+
+[data-slot='composer-rich-input']:lang(ja) {
+  font-family: 'Hiragino Sans', 'Yu Gothic UI', 'Noto Sans CJK JP', var(--dt-font-sans);
+}
+
+/* Appearance → Text direction. An explicit RTL/LTR choice stamps dir on the
+   markdown root, each user line block and both composers; the first-strong
+   plaintext vote is exactly what the reader overrode, so it steps aside and
+   every block takes the chosen direction (every line of a multi-line draft
+   included). Auto stamps no dir, so nothing here matches. Code and KaTeX keep
+   their isolated-LTR rules below. */
+[data-slot='aui_assistant-message-content'] .aui-md[dir] :where(p, h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_user-inline-text'][dir],
+[data-slot='composer-rich-input'][dir] {
+  unicode-bidi: normal;
+}
+
+/* Header cells pin text-left for the Auto (LTR-box) table; a chosen direction
+   aligns headers and cells to its own start edge instead. */
+[data-slot='aui_assistant-message-content'] .aui-md[dir] :where(th, td) {
   text-align: start;
 }
 
@@ -1888,7 +2014,7 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 [data-slot='composer-rich-input'] {
   color: var(--ui-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--conversation-text-font-size);
 }
 
 [data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
@@ -1897,22 +2023,18 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 /* ── Composer fill — ONE var painted by the surface AND anything docked to it
    (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
-   `background: var(--composer-fill)`, so every state matches by construction.
-   The :has() rule is last on purpose: while a completion drawer is open it
-   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
-   translucent glass can never match across the two layers because they sample
-   different backdrops. */
+   `background: var(--composer-fill)`, so every state matches by construction. */
 :root {
   /* Fallback for drawers outside the main composer (e.g. edit-message). */
   --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 [data-slot='composer-root'] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
 }
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -1995,7 +2117,11 @@ body.guest-pointer-lock :is(webview, iframe) {
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
 }
 
-[data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
+/* Themed at the renderer root so every `aui-md` consumer (assistant turns,
+   system-message reports, session-import previews) inherits it; the room
+   selector covers the plugin's raw-Streamdown fallback, which has no `.aui-md`. */
+.aui-md :not(pre) > code,
+[data-slot='group-chat-message-content'] :not(pre) > code {
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);
 }
@@ -2337,6 +2463,10 @@ button[data-slot='aui_msg-reactions'] svg {
 .tool-ticker {
   height: var(--conversation-line-height);
   overflow: hidden;
+  /* clip beats hidden when an ancestor opacity stacking context would
+     otherwise let the transformed reel paint old rows through the window. */
+  overflow: clip;
+  isolation: isolate;
 }
 
 .tool-ticker__reel {
@@ -3431,8 +3561,7 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* The composer surface paints TWO layers: the surface itself, plus an
-   `absolute inset-0 -z-10` fill+glass div behind it (composerFill /
-   composerSurfaceGlass). Two stacked fills read as a box inside a box, so the
+   `absolute inset-0 -z-10` fill div behind it (composerInputBacking). Two stacked fills read as a box inside a box, so the
    backing layer goes and the surface carries the single fill. */
 [data-hud-shell] [data-slot='composer-surface'] > .pointer-events-none.absolute.inset-0 {
   display: none !important;
@@ -3524,12 +3653,31 @@ button[data-slot='aui_msg-reactions'] svg {
 
    CanvasTTY grammar: four edge strips + four larger corner targets, each with
    its native resize cursor and each preserving the opposite edge. Deliberately
-   invisible chrome: no glyph or border over whatever app is below the HUD. */
+   invisible chrome: no glyph or border over whatever app is below the HUD.
+
+   Invisible chrome that is ALWAYS hit-testable is a dead zone: an idle HUD is
+   just the bar, the window hands every other point to the app underneath, and
+   the only thing left answering the cursor was this frame — a thin invisible
+   ring that swallowed clicks and drags aimed at the app behind it (#108793).
+   So the frame rides the band's engagement gates: while the HUD is being used
+   (caret in the composer — data-hud-typing, stamped live by useHudGlass — or a
+   held band waiting on an answer) its edges may be grabbed; an in-flight
+   resize keeps its own handle live via data-hud-grabbing, because pointer
+   capture routes the moves to the handle that started the drag. Solid-input
+   hosts (X11) never hand the window away in the first place, so their frame
+   stays live unconditionally. */
 [data-hud-shell] [data-hud-resize] {
   position: absolute;
   z-index: 20;
-  pointer-events: auto;
+  pointer-events: none;
   touch-action: none;
+}
+
+[data-hud-shell][data-hud-typing] [data-hud-resize],
+[data-hud-shell][data-hud-held] [data-hud-resize],
+[data-hud-shell][data-hud-input='solid'] [data-hud-resize],
+[data-hud-shell] [data-hud-resize][data-hud-grabbing] {
+  pointer-events: auto;
 }
 
 [data-hud-shell] [data-hud-resize='n'] {

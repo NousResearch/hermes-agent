@@ -1,11 +1,18 @@
+import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
+
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
+import {
+  abortPreviewTyping,
+  releasePreviewTyping,
+  trackPreviewTyping
+} from '@/app/chat/right-rail/preview-typing-abort'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
@@ -17,6 +24,8 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
+import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -45,7 +54,10 @@ const answerValue = (request: ScopedServerRequest, result: unknown) =>
   request.respond({ value: result ? JSON.stringify(result) : '' })
 
 export interface ServerRequestContext {
-  deps: Pick<GatewayEventDeps, 'activeSessionIdRef' | 'sessionInterrupted' | 'updateSessionState' | 'upsertToolCall'>
+  deps: Pick<
+    GatewayEventDeps,
+    'activeSessionIdRef' | 'sessionInterrupted' | 'sessionStateByRuntimeIdRef' | 'updateSessionState' | 'upsertToolCall'
+  >
   request: ScopedServerRequest
   /** The session the request names ('' when unscoped). */
   sessionId: string
@@ -55,10 +67,185 @@ export interface ServerRequestContext {
 
 type Handler = (ctx: ServerRequestContext) => void
 
+type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
+
+/**
+ * Bridges answered from THIS window's panes (preview tab, xterm buffer, the
+ * native window below, the tour overlay). Every attached window sees the
+ * request; one not hosting the session has no pane for it and its empty answer
+ * would win the race, so the tool reports "no preview tab / no terminal" while
+ * the owner's pane is open (#113348).
+ */
+const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
+
+/**
+ * A window not hosting the session declines instead of staying silent. The
+ * backend keeps the request open for the owner and only settles once every
+ * attached window declined, so when no window shows the chat the agent is told
+ * now rather than after its whole deadline (#119333). `decline` is a no-op
+ * against a backend that would take the first error as the answer.
+ */
+const declineNotShown = (request: ScopedServerRequest) => request.decline?.('This window is not showing the session.')
+
+/**
+ * Whether a request's `session_id` names the same conversation as the pane's
+ * active session. The two sides are not always the same identity class: the
+ * gateway stamps requests with the RUNTIME session id — which auto-compression
+ * rotates mid-conversation — while the pane may hold the durable/lineage id it
+ * navigated to, so plain equality refuses the very session on screen (#122062).
+ * Compare through the stored id each side resolves to (an unknown id passes
+ * through unchanged: it may already be a stored id), then through the lineage,
+ * so a compression-rotated tip and its root still read as one conversation.
+ * The lineage leg requires ONE session row to answer to both ids — branch
+ * siblings share a root but are distinct conversations.
+ */
+export function requestNamesActiveSession({
+  activeSessionId,
+  sessionId,
+  storedIdForRuntimeId = () => undefined
+}: {
+  activeSessionId: null | string
+  sessionId: string
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
+}): boolean {
+  if (!sessionId || !activeSessionId) {
+    return false
+  }
+
+  if (sessionId === activeSessionId) {
+    return true
+  }
+
+  const requestStoredId = storedIdForRuntimeId(sessionId) ?? sessionId
+  const activeStoredId = storedIdForRuntimeId(activeSessionId) ?? activeSessionId
+
+  if (requestStoredId === activeStoredId) {
+    return true
+  }
+
+  return $sessions
+    .get()
+    .some(
+      session => sessionMatchesStoredId(session, requestStoredId) && sessionMatchesStoredId(session, activeStoredId)
+    )
+}
+
+/** This window hosts the session: it is the primary view or an open session tile. */
+export function windowHostsSession(
+  sessionId: string,
+  activeSessionId: null | string,
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
+): boolean {
+  return (
+    requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId }) ||
+    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+  )
+}
+
+/**
+ * The window.read claim. window.read has no per-window pane, but its answer is
+ * keyed to the ANSWERING window's bounds — "below" is measured from them — so
+ * the only window that may answer is one showing the conversation. The strict
+ * host check strands real states (#121609): the HUD shows the conversation
+ * without holding it active (main holds the id on its behalf — hud-shell.tsx),
+ * and after the HUD hands the conversation back the app window's active id
+ * still names the pre-handoff runtime until a resume re-binds it (verified
+ * live: only an explicit session resume restored the answer). So beyond the
+ * strict checks, the asked id may resolve to a conversation this window
+ * SHOWS: the selected stored session or a tile's stored session, matched
+ * through lineageAliases (compression rotates the runtime tip under the
+ * stored identity) and the session-state cache, which records which stored id
+ * each runtime id maps to — an entry's stored id is what this window observed
+ * for that runtime, so a stale entry still maps within its own conversation.
+ * No shown conversation — nothing claimed, as before.
+ *
+ * Scoped to window.read only. preview.act and tour refuse unless
+ * isActiveSession (raw id equality), so a tolerated claim there would turn
+ * another window's silence into a false refusal that wins the multi-window
+ * race — and a tour refusal latches session["tour_bridge"] = "answered",
+ * converting every later tour action in the session into a full 45s wait.
+ * Pane-owned reads keep #113348's owner-waiting semantics.
+ */
+export function windowReadClaimsSession(sessionId: string, activeSessionId: null | string): boolean {
+  if (windowHostsSession(sessionId, activeSessionId)) {
+    return true
+  }
+
+  const sessions = $sessions.get()
+
+  const shown = [$selectedStoredSessionId.get(), ...$sessionTiles.get().map(tile => tile.storedSessionId)]
+
+  return shown.some(
+    stored =>
+      stored !== null &&
+      (stored === sessionId ||
+        lineageAliases(stored, sessions).includes(sessionId) ||
+        ($sessionStates.get()[sessionId]?.storedSessionId ?? null) === stored)
+  )
+}
+
+/**
+ * Panes are local to one desktop window, while gateway requests fan out
+ * to every connected window. A scoped request may only be answered by the
+ * window hosting its session (primary view or a tile). During reconnect,
+ * however, an open request can replay one event-loop turn before the resumed
+ * session becomes active; retry that one narrow race and otherwise leave the
+ * request for its owner.
+ */
+export function previewSessionRoute({
+  activeSessionId,
+  method,
+  replayed,
+  sessionId,
+  storedIdForRuntimeId
+}: {
+  activeSessionId: null | string
+  method?: string
+  replayed: boolean | undefined
+  sessionId: string
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
+}): PreviewSessionRoute {
+  if (!sessionId) {
+    return 'run'
+  }
+
+  // window.read routes through the tolerant claim (see windowReadClaimsSession);
+  // every other window-owned request keeps the strict host check.
+  if (
+    method === 'window.read'
+      ? windowReadClaimsSession(sessionId, activeSessionId)
+      : windowHostsSession(sessionId, activeSessionId, storedIdForRuntimeId)
+  ) {
+    return 'run'
+  }
+
+  return replayed && !activeSessionId ? 'retry' : 'ignore'
+}
+
 const markNeedsInput = (ctx: ServerRequestContext) => {
   if (ctx.sessionId) {
     ctx.deps.updateSessionState(ctx.sessionId, state => ({ ...state, needsInput: true }))
   }
+}
+
+/**
+ * A blocking-input card must not park for a session whose runtime is already
+ * interrupted — the user hit Stop, or `removeSession` marked the doomed runtime
+ * interrupted before it deletes the row. A frame still in flight would otherwise
+ * re-create an overlay (and native notification) for a turn that is gone
+ * (#75587). Answer it rather than drop it: the backend blocks on this frame, and
+ * an error reply is the same "unanswered" its own `request.cancel` produces, so
+ * the tool returns now instead of waiting out its deadline. Sessionless requests
+ * (app-level Bot Screen install) are never gated.
+ */
+const declineIfSessionStopped = (ctx: ServerRequestContext): boolean => {
+  if (!ctx.sessionId || !ctx.deps.sessionInterrupted(ctx.sessionId)) {
+    return false
+  }
+
+  ctx.request.fail(JSON_RPC_INTERNAL_ERROR, 'session interrupted')
+
+  return true
 }
 
 const notifyInput = (ctx: ServerRequestContext, body: string) => {
@@ -83,59 +270,37 @@ const clarify: Handler = ctx => {
   const p = request.params
 
   if (sessionId && deps.sessionInterrupted(sessionId)) {
-    request.respond({ answer: '' })
+    request.respond({})
 
     return
   }
 
-  const question = str(p.question)
-  const rawChoices = p.choices
-  const choices = normalizeChoices(rawChoices)
-  const multiSelect = p.multi_select === true
-  // Batch (multi-question) clarify: `questions` replaces question/choices on the
-  // wire. `answers` rides along only on a reconnect replay (locks the server
-  // already accepted).
   const questions = normalizeQuestions(p.questions)
 
+  // `answers` rides along only on a reconnect replay (locks the server
+  // already accepted).
   const lockedAnswers =
     typeof p.answers === 'object' && p.answers !== null
       ? Object.fromEntries(
           Object.entries(p.answers as Record<string, unknown>).filter(
-            (entry): entry is [string, string] => typeof entry[1] === 'string'
+            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
           )
         )
       : undefined
 
-  if (questions.length === 0 && !question) {
-    request.respond({ answer: '' })
+  if (questions.length === 0) {
+    request.respond({})
 
     return
   }
 
-  if (questions.length === 0 && rawChoices != null && choices.length === 0) {
-    warnDroppedChoices('gateway', question, rawChoices)
+  const clarifyRequest = {
+    lockedAnswers,
+    questions,
+    receivedAt: Date.now() / 1000,
+    requestId: request.id,
+    sessionId: sessionId || null
   }
-
-  const clarifyRequest =
-    questions.length > 0
-      ? {
-          choices: null,
-          lockedAnswers,
-          multiSelect: false,
-          question: '',
-          questions,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
-      : {
-          choices: choices.length > 0 ? choices : null,
-          multiSelect,
-          question,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
 
   rememberServerRequest(request)
   setClarifyRequest(clarifyRequest)
@@ -168,7 +333,7 @@ const clarify: Handler = ctx => {
     }
   }
 
-  notifyInput(ctx, questions.length > 0 ? questions.map(q => q.question).join(' · ') : question)
+  notifyInput(ctx, questions.map(q => q.question).join(' · '))
 }
 
 const approval: Handler = ctx => {
@@ -176,6 +341,10 @@ const approval: Handler = ctx => {
   const p = request.params
   const command = str(p.command)
   const description = str(p.description) || 'dangerous command'
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(request)
   void receiveApprovalRequest(null, {
@@ -215,6 +384,10 @@ const approval: Handler = ctx => {
 }
 
 const sudo: Handler = ctx => {
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setSudoRequest({
     command: str(ctx.request.params.command),
@@ -225,10 +398,27 @@ const sudo: Handler = ctx => {
   notifyInput(ctx, translateNow('notifications.native.inputBody'))
 }
 
+/** Bot Screen package install (`tui_gateway/methods_display.py`): the same masked card as `sudo`,
+ *  but app-level. The gateway sends it sessionless — it belongs to the connection that clicked
+ *  Install, not to a chat — so it is stored under the null session and survives a chat switch. */
+const displayInstallSudo: Handler = ctx => {
+  rememberServerRequest(ctx.request)
+  setSudoRequest({
+    description: translateNow('prompts.sudoInstallDesc'),
+    requestId: ctx.request.id,
+    sessionId: null
+  })
+  notifyInput(ctx, translateNow('prompts.sudoInstallDesc'))
+}
+
 const secret: Handler = ctx => {
   const p = ctx.request.params
   const envVar = str(p.env_var)
   const promptText = str(p.prompt)
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(ctx.request)
   setSecretRequest({ envVar, prompt: promptText, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
@@ -239,6 +429,10 @@ const secret: Handler = ctx => {
 const vaultCode: Handler = ctx => {
   const p = ctx.request.params
   const site = str(p.site)
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(ctx.request)
   setVaultCodeRequest({ hint: str(p.hint), requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
@@ -251,6 +445,10 @@ const vaultSaveLogin: Handler = ctx => {
   const origin = str(p.origin)
   const site = str(p.site) || origin
 
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setVaultSaveLoginRequest({ origin, requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
   markNeedsInput(ctx)
@@ -261,6 +459,10 @@ const vaultUnlockPrompt: Handler = ctx => {
   const p = ctx.request.params
   const backend = str(p.backend)
   const displayName = str(p.display_name) || backend
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(ctx.request)
   setVaultUnlockRequest({ backend, displayName, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
@@ -282,16 +484,12 @@ const previewRead: Handler = ({ request }) => {
   )
 }
 
-const previewAct: Handler = ({ isActiveSession, request, sessionId }) => {
+const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // drive_preview tool: click/type/scroll/press inside the guest page. Active
-  // session only: a background turn must never reach into the page the user is
-  // working in (desktop AGENTS.md: offer, don't hijack). Every mounted window can
-  // observe the same request; a scoped mismatch belongs to another window, so
-  // answering here would race the owner — stay silent.
-  if (sessionId && !isActiveSession) {
-    return
-  }
-
+  // session only: a background turn (including one in a tile this window hosts)
+  // must never reach into the page the user is working in (desktop AGENTS.md:
+  // offer, don't hijack). Window ownership is settled by WINDOW_OWNED_REQUESTS
+  // before this runs, so a refusal here reaches the tool instead of stalling it.
   const p = request.params
 
   if (!isActiveSession) {
@@ -303,24 +501,48 @@ const previewAct: Handler = ({ isActiveSession, request, sessionId }) => {
     return
   }
 
+  // The keystroke loop has to be able to stop when this request is withdrawn
+  // (tool timeout or turn interrupt). The local interrupted flag can flip
+  // before request.cancel arrives; poll it so Stop cuts the loop off too.
+  const signal = trackPreviewTyping(request.id)
+
+  const watch = sessionId
+    ? setInterval(() => {
+        if (deps.sessionInterrupted(sessionId)) {
+          abortPreviewTyping(request.id, 'interrupted')
+        }
+      }, 50)
+    : undefined
+
   void loadPreviewEngine()
     .then(run =>
-      run({
-        amount: p.amount as never,
-        key: p.key as never,
-        kind: (str(p.action) || '') as never,
-        max: p.max as never,
-        ref: p.ref as never,
-        selector: p.selector as never,
-        submit: p.submit as never,
-        text: p.text as never,
-        to: p.to as PreviewActAction['to']
-      })
+      run(
+        {
+          allowShortcut: p.allow_shortcut === true,
+          amount: p.amount as never,
+          key: p.key as never,
+          kind: (str(p.action) || '') as never,
+          max: p.max as never,
+          ref: p.ref as never,
+          selector: p.selector as never,
+          submit: p.submit as never,
+          text: p.text as never,
+          to: p.to as PreviewActAction['to']
+        },
+        signal
+      )
     )
     .then(
       result => answerValue(request, result),
       error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
     )
+    .finally(() => {
+      if (watch !== undefined) {
+        clearInterval(watch)
+      }
+
+      releasePreviewTyping(request.id, signal)
+    })
 }
 
 const windowRead: Handler = ({ request }) => {
@@ -335,13 +557,10 @@ const windowRead: Handler = ({ request }) => {
   )
 }
 
-const tour: Handler = ({ isActiveSession, request, sessionId }) => {
+const tour: Handler = ({ isActiveSession, request }) => {
   // tour tool: one guided-tour action via driver.js, app DOM or preview guest
-  // page. Active session only, same window-ownership rule as preview.act.
-  if (sessionId && !isActiveSession) {
-    return
-  }
-
+  // page. Active session only, same window-ownership rule as preview.act
+  // (WINDOW_OWNED_REQUESTS).
   const p = request.params
 
   if (!$toursEnabled.get()) {
@@ -383,6 +602,7 @@ const tour: Handler = ({ isActiveSession, request, sessionId }) => {
 export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   approval,
   clarify,
+  'display.install.sudo': displayInstallSudo,
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,
@@ -409,7 +629,68 @@ export function handleServerRequest(
 
   const sessionId = str(request.params.session_id)
 
-  handler({ deps, request, sessionId, isActiveSession: Boolean(sessionId) && sessionId === activeSessionId })
+  // Resolve a request's runtime session id to its stored id through the state
+  // cache the message stream maintains (rotation-aware: auto-compression
+  // re-stamps `storedSessionId` on the same runtime entry). Unknown ids fall
+  // through unchanged — they may already be stored ids.
+  const storedIdForRuntimeId = (runtimeId: string) =>
+    deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
+
+  if (WINDOW_OWNED_REQUESTS.has(request.method)) {
+    // Route window.read through the tolerant claim (see windowReadClaimsSession);
+    // every other window-owned request keeps the strict host check.
+    const route = previewSessionRoute({
+      activeSessionId,
+      method: request.method,
+      replayed: request.replayed,
+      sessionId,
+      storedIdForRuntimeId
+    })
+
+    if (route === 'ignore') {
+      // Silence alone lets the owner win the fanout race (#113348:
+      // resolve_response keeps the FIRST response, so a fast empty or
+      // wrong-geometry answer from a non-claiming window could beat the
+      // claimant's real answer), but a decline is not an answer: the backend
+      // counts it as that client's vote and keeps the request open for the
+      // owner, settling only once every attached window declined (#119333).
+      // So an unclaimed window.read — even in a tolerated state where no
+      // window claims it (#121609) — fails fast instead of stalling the tool
+      // for its whole deadline.
+      declineNotShown(request)
+
+      return true
+    }
+
+    if (route === 'retry') {
+      // Re-read the ref instead of capturing activeSessionId: session resume
+      // publishes its binding synchronously between this replay and the next
+      // turn. A second miss leaves the request to another window.
+      setTimeout(() => {
+        if (
+          previewSessionRoute({
+            activeSessionId: deps.activeSessionIdRef.current,
+            replayed: false,
+            sessionId,
+            storedIdForRuntimeId
+          }) === 'run'
+        ) {
+          handler({ deps, request, sessionId, isActiveSession: true })
+        } else {
+          declineNotShown(request)
+        }
+      }, 0)
+
+      return true
+    }
+  }
+
+  handler({
+    deps,
+    request,
+    sessionId,
+    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+  })
 
   return true
 }

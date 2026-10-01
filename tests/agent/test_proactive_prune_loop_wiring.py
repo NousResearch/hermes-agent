@@ -137,6 +137,30 @@ def _run_tool_loop(agent, n_tool_iterations: int, task_id=None):
 
 
 class TestProactivePruneLoopWiring:
+    def test_pending_checkpoint_waits_without_warning_or_pruning(self, agent):
+        from agent.turn_preflight import compress_after_tool_results
+
+        compressor = agent.context_compressor
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_prompt_tokens = 255_933
+        compressor.threshold_tokens = 231_200
+        compressor.should_compress.return_value = True
+        compressor.should_compress_info.return_value = (True, None)
+        compressor.prune_tool_results_only.side_effect = lambda messages, **kw: (messages, 0)
+        messages = [{"role": "user", "content": "continue"}]
+        with patch.object(agent, "_warn_context_overflow_blocked") as warn:
+            verdict = compress_after_tool_results(
+                agent, messages=messages, system_message="system", user_message="continue",
+                active_system_prompt="system", conversation_history=[],
+                compression_attempts=0, max_compression_attempts=3,
+                effective_task_id=None, final_response="", turn_exit_reason=None,
+                current_turn_user_idx=0,
+            )
+        assert verdict.messages is messages
+        assert not verdict.end_turn
+        warn.assert_not_called()
+        compressor.prune_tool_results_only.assert_not_called()
+
     def test_full_compression_preempts_proactive_prune(self, agent):
         agent.context_compressor.should_compress.return_value = True
 

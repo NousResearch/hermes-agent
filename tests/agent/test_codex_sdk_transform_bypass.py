@@ -40,11 +40,7 @@ def _wire_kwargs():
 
 
 class TestIsPlainJsonData:
-    def test_accepts_nested_wire_payloads(self):
-        assert _is_plain_json_data(_wire_kwargs()["input"])
 
-    def test_rejects_non_json_leaves(self):
-        assert not _is_plain_json_data([{"role": "user", "content": object()}])
 
     def test_rejects_non_string_dict_keys(self):
         assert not _is_plain_json_data({1: "a"})

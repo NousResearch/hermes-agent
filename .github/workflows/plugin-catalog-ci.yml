@@ -23,16 +23,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
-      - name: Install PyYAML
+      - name: Install ruamel.yaml
         uses: ./.github/actions/retry
         with:
-          command: pip install pyyaml==6.0.2
+          command: pip install ruamel.yaml==0.18.17
 
       - name: Validate catalog files (structural)
         run: |
@@ -45,13 +45,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           fetch-depth: 0 # need the merge-base to diff changed catalog files
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.11"
 
       - name: Find changed catalog entries
         id: changed
@@ -71,11 +67,12 @@ jobs:
             echo '__EOF__'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install hermes-agent from the PR's own checkout
+      - name: Prepare Hermes from the PR's own checkout
         if: steps.changed.outputs.files != ''
-        uses: ./.github/actions/retry
+        uses: ./.github/actions/setup-pm
         with:
-          command: pip install -e .
+          toolchain: python
+          extras: '[]'
 
       - name: Clone each entry at its pinned sha and validate
         if: steps.changed.outputs.files != ''
@@ -93,7 +90,7 @@ jobs:
           import shlex
           import sys
 
-          import yaml
+          import hermes_yaml as yaml
 
           with open(sys.argv[1], encoding="utf-8") as fh:
               data = yaml.safe_load(fh) or {}
@@ -126,7 +123,7 @@ jobs:
             fi
 
             # Manifest schema + declared-vs-registered capability check.
-            if ! hermes plugins validate "$PLUGIN_DIR"; then
+            if ! hermes plugins validate --install-deps "$PLUGIN_DIR"; then
               echo "::error file=$entry::hermes plugins validate failed"
               FAILED=1; echo "::endgroup::"; continue
             fi

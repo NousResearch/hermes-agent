@@ -43,7 +43,7 @@ def poller(monkeypatch):
     adapter = _HeartbeatAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     runner._run_in_executor_with_context = asyncio.to_thread
     watch = {key: (source, "heartbeat-session")}
     HeartbeatManager("heartbeat-session").set("check status", 60)
@@ -96,9 +96,9 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
     original = HeartbeatManager("heartbeat-session").state.to_json()
     user = MessageEvent(text="user follow-up", source=watch[key][0])
     # Missing adapter and missing handler must not consume a due tick.
-    runner._adapter_for_source = lambda source: None
+    runner._delivery_adapter_for = lambda source: None
     await runner._heartbeat_poll_once(watch)
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     await runner._heartbeat_poll_once(watch)
 
     async def handler(event):

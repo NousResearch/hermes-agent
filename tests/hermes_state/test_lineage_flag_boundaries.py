@@ -11,10 +11,11 @@ from hermes_state import SessionDB
     ("set_session_pinned", "pinned", True),
     ("set_session_read", "last_read_at", False),
 ])
-@pytest.mark.parametrize("child_kind", ["branch", "delegate", "tool"])
+@pytest.mark.parametrize("child_kind", ["branch", "delegate", "reset", "tool"])
 @pytest.mark.parametrize("target", ["root", "separate", "separate-tip"])
 def test_lineage_flags_do_not_cross_independent_child_edges(tmp_path, method, column, value, child_kind, target):
-    marker = {"branch": {"_branched_from": "root"}, "delegate": {"_delegate_from": "root"}, "tool": {}}[child_kind]
+    marker = {"branch": {"_branched_from": "root"}, "delegate": {"_delegate_from": "root"},
+              "reset": {"_reset_from": "root"}, "tool": {}}[child_kind]
     with closing(SessionDB(db_path=tmp_path / "state.db")) as db:
         assert db.import_sessions([
             {"id": "root", "source": "cli", "end_reason": "compression"},

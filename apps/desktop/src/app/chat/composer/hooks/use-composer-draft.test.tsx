@@ -3,7 +3,20 @@ import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
-import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
+import {
+  $freshDraftKey,
+  $restoredDraftNotice,
+  announceGoneSessionDraft,
+  announceNewSessionDraftKey,
+  clearSessionDraft,
+  type ComposerAttachment,
+  dismissRestoredDraftNotice,
+  mainComposerScope,
+  NEW_SESSION_DRAFT_KEY,
+  rotateFreshDraftKey,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
@@ -58,6 +71,14 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     mainComposerScope.clear()
     clearSessionDraft('session-A')
     clearSessionDraft('session-B')
+
+    // Fresh-draft lifecycles rotate per test; the afterEach must sweep the
+    // whole map or one test's abandoned bucket leaks into the next.
+    for (const scope of ['session-created', NEW_SESSION_DRAFT_KEY, $freshDraftKey.get()]) {
+      clearSessionDraft(scope)
+    }
+
+    rotateFreshDraftKey()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
     vi.unstubAllGlobals()
     $connection.set(null)
@@ -92,6 +113,160 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     // By the layout phase the scope must already be B's (empty) — a submit
     // fired the instant B renders must never ship session A's attachment.
     expect(snapshots[0]).toEqual([])
+  })
+
+  it('carries a pre-session draft onto the session the fresh chat is re-homed to, before its runtime id is known', () => {
+    const preSessionAttachment: ComposerAttachment = { id: 'file:new', kind: 'file', label: 'new.txt' }
+    stashSessionDraft(null, 'do not lose this draft', [preSessionAttachment])
+
+    const { rerender } = render(
+      <ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />
+    )
+
+    // Cold-start resume-last-session / first-send create: the route flips the
+    // composer scope while `session.resume` has not published a runtime id yet.
+    announceNewSessionDraftKey('session-created')
+    act(() => {
+      rerender(<ProbeHarness activeQueueSessionKey="session-created" onLayoutSnapshot={() => undefined} sessionId="" />)
+    })
+
+    expect(mainComposerScope.$attachments.get()).toEqual([preSessionAttachment])
+    expect(takeSessionDraft('session-created')).toEqual({
+      attachments: [preSessionAttachment],
+      text: 'do not lose this draft'
+    })
+    expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
+    clearSessionDraft('session-created')
+  })
+
+  it('carries the unsent draft of a GONE session into the fresh chat once, with an undoable notice (#111868)', () => {
+    stashSessionDraft('session-gone', 'typed into a session that no longer exists', [])
+
+    const { rerender } = render(
+      <ProbeHarness activeQueueSessionKey="session-gone" onLayoutSnapshot={() => undefined} sessionId="session-gone" />
+    )
+
+    // The resume's gone verdict announces the dead key, then drops the window
+    // to a fresh draft (route → /new, scope → the pre-session bucket).
+    announceGoneSessionDraft('session-gone')
+    act(() => {
+      rerender(<ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />)
+    })
+
+    expect(takeSessionDraft(null).text).toBe('typed into a session that no longer exists')
+    expect(takeSessionDraft('session-gone').text).toBe('')
+    expect($restoredDraftNotice.get()).toEqual({
+      fromKey: 'session-gone',
+      text: 'typed into a session that no longer exists'
+    })
+
+    // Fires once: a later trip through the fresh draft finds nothing to move
+    // and does not re-publish the notice the user already dismissed.
+    dismissRestoredDraftNotice()
+    act(() => {
+      rerender(
+        <ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={() => undefined} sessionId="session-A" />
+      )
+    })
+    act(() => {
+      rerender(<ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />)
+    })
+
+    expect($restoredDraftNotice.get()).toBeNull()
+    expect(takeSessionDraft(null).text).toBe('typed into a session that no longer exists')
+    clearSessionDraft(null)
+  })
+
+  it('leaves the pre-session draft in its bucket when the user opens another session from a fresh chat', () => {
+    stashSessionDraft(null, 'still composing a new chat', [])
+
+    const { rerender } = render(
+      <ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />
+    )
+
+    act(() => {
+      rerender(
+        <ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={() => undefined} sessionId="session-A" />
+      )
+    })
+
+    expect(takeSessionDraft('session-A')).toEqual({ attachments: [], text: '' })
+    expect(takeSessionDraft(null).text).toBe('still composing a new chat')
+    clearSessionDraft(null)
+  })
+
+  it("isolates two concurrent new-chat lifecycles: the second fresh draft never shows the first one's text (#66662)", () => {
+    const firstKey = rotateFreshDraftKey()
+    const secondKey = rotateFreshDraftKey()
+
+    expect(firstKey).not.toBe(secondKey)
+
+    // First new chat: type unsent text under its own lifecycle key.
+    stashSessionDraft(firstKey, 'first unsent chat', [])
+    expect(takeSessionDraft(firstKey).text).toBe('first unsent chat')
+
+    // A second New Chat rotated the key; its composer must restore empty —
+    // the first chat's text is invisible until the user goes back.
+    render(<ProbeHarness activeQueueSessionKey={secondKey} onLayoutSnapshot={() => undefined} sessionId="" />)
+
+    expect(takeSessionDraft(secondKey)).toEqual({ attachments: [], text: '' })
+
+    // The abandoned lifecycle keeps its text — no consumer of the second
+    // lifecycle's scope can see or clobber it.
+    expect(takeSessionDraft(firstKey).text).toBe('first unsent chat')
+
+    clearSessionDraft(firstKey)
+    clearSessionDraft(secondKey)
+  })
+
+  it("re-homes the ACTIVE lifecycle's draft onto the session its first send creates (#66662)", () => {
+    const key = rotateFreshDraftKey()
+
+    // The user typed in the current new chat; the swap cleanup stashed it
+    // under the lifecycle key (null scope resolves to it).
+    stashSessionDraft(null, 'typed before first send', [])
+
+    const { rerender } = render(
+      <ProbeHarness activeQueueSessionKey={key} onLayoutSnapshot={() => undefined} sessionId="" />
+    )
+
+    expect(takeSessionDraft(key).text).toBe('typed before first send')
+
+    // First send: session.create assigns the stored id; the composer's scope
+    // swap follows the announcement and moves THIS lifecycle's bucket.
+    announceNewSessionDraftKey('session-created')
+    act(() => {
+      rerender(
+        <ProbeHarness
+          activeQueueSessionKey="session-created"
+          onLayoutSnapshot={() => undefined}
+          sessionId="session-created"
+        />
+      )
+    })
+
+    expect(takeSessionDraft('session-created').text).toBe('typed before first send')
+    expect(takeSessionDraft(key).text).toBe('')
+
+    clearSessionDraft('session-created')
+  })
+
+  it("keys a fresh chat's live stash under its lifecycle key, not the shared bucket (#66662)", () => {
+    const key = rotateFreshDraftKey()
+
+    const { unmount } = render(
+      <ProbeHarness activeQueueSessionKey={key} onLayoutSnapshot={() => undefined} sessionId="" />
+    )
+
+    // Stash through the null scope the way the swap cleanup does when the
+    // user types and navigates away mid-debounce.
+    stashSessionDraft(null, 'typed in this lifecycle', [])
+
+    expect(takeSessionDraft(key).text).toBe('typed in this lifecycle')
+    expect(takeSessionDraft(NEW_SESSION_DRAFT_KEY).text).toBe('')
+
+    unmount()
+    clearSessionDraft(key)
   })
 
   it('applies a delayed image preview when it resolves while its attachment draft is inactive', async () => {
@@ -476,7 +651,9 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     act(() => {
       lateRestore('rejected draft', [])
 
-      if (hidden) {lateFocus()}
+      if (hidden) {
+        lateFocus()
+      }
     })
 
     expect(composerPlainText(draft.editorRef.current!)).toBe('rejected draft')

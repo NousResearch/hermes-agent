@@ -127,14 +127,13 @@ def _record_verification(job, unverified_targets):
     RECORDED_VERIFICATION.append((job["id"], list(unverified_targets)))
 
 
-class _InFlightFuture:
+class _InFlightFuture(Future):
     """A dispatched send whose confirmation does not arrive before the lane's timeout."""
 
     def result(self, timeout=None):
-        raise TimeoutError
-
-    def cancel(self):
-        return False
+        if timeout is not None:
+            raise TimeoutError
+        return super().result()
 
 
 def _run(job, content, send_result, relay=False, standalone_result=None, cron_cfg=None,
@@ -150,8 +149,9 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
 
     def fake_run_coro(coro, _loop):
         if in_flight:
-            coro.close()
-            return _InFlightFuture()
+            future = _InFlightFuture()
+            future.set_result(asyncio.run(coro))
+            return future
         future = Future()
         try:
             future.set_result(asyncio.run(coro))

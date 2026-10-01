@@ -206,6 +206,26 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
+def mkstemp_beside(target: Union[str, Path], **kw: Any) -> tuple[int, str]:
+    """``tempfile.mkstemp`` in the directory :func:`atomic_replace` will rename into.
+
+    A temp staged next to a symlink whose target lives on another filesystem turns the publish
+    rename into EXDEV, and atomic_replace's copy fallback then rewrites the file in place (torn on
+    a crash). Staging beside the resolved target keeps the rename atomic. If that directory is not
+    writable to us (the file itself may still be), stage beside the link instead: the save keeps
+    working through the non-atomic copy fallback, exactly as before.
+    """
+    target_str = str(target)
+    link_dir = str(Path(target_str).parent)
+    stage_dir = os.path.dirname(os.path.realpath(target_str)) if os.path.islink(target_str) else link_dir
+    try:
+        return tempfile.mkstemp(dir=stage_dir, **kw)
+    except PermissionError:
+        if stage_dir == link_dir:
+            raise
+        return tempfile.mkstemp(dir=link_dir, **kw)
+
+
 def fsync_directory(path: Union[str, Path]) -> None:
     """Best-effort fsync of a directory entry so a just-renamed file survives power loss.
 
@@ -286,9 +306,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
-    # Stage beside the RESOLVED target: a temp next to a symlink into another filesystem turns the
-    # rename into EXDEV and atomic_replace falls back to a tearable in-place copy.
-    fd, tmp_path = tempfile.mkstemp(dir=str(Path(os.path.realpath(path)).parent), prefix=prefix, suffix=".tmp")
+    fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):

@@ -15,7 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv  # noqa: F401
-from utils import atomic_replace, load_yaml_file_readonly
+from utils import atomic_replace, load_yaml_file_readonly, mkstemp_beside
 
 logger = logging.getLogger(__name__)
 
@@ -435,9 +435,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         stripped = [line.replace("\x00", "") for line in original]
         sanitized = _sanitize_env_lines(stripped)
         if sanitized != original or force_utf8_rewrite:
-            import tempfile
-            # Beside the resolved target so a symlinked .env still renames atomically (no EXDEV copy).
-            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.realpath(path)), suffix=".tmp", prefix=".env_")
+            fd, tmp = mkstemp_beside(path, suffix=".tmp", prefix=".env_")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.writelines(sanitized)

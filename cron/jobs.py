@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 import json
 import logging
 import shutil
-import tempfile
 import threading
 import time
 import os
@@ -37,7 +36,7 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
-from utils import atomic_replace, atomic_write_text, fsync_directory
+from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
@@ -1534,16 +1533,8 @@ def _unlink_quiet(path: Optional[str]) -> None:
 
 
 def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]]) -> str:
-    """Serialize the store payload to a fsynced temp file beside the RESOLVED *jobs_file*; return
-    its path. A temp next to a symlink whose target is on another filesystem makes the rename
-    EXDEV, and atomic_replace's copy fallback then rewrites the store in place (torn on crash)."""
-    try:
-        fd, tmp_path = tempfile.mkstemp(
-            dir=os.path.dirname(os.path.realpath(jobs_file)), suffix=".tmp", prefix=".jobs_")
-    except PermissionError:
-        # The link target's directory may be read-only to us while the file itself is writable;
-        # staging beside the link keeps saves working (non-atomic copy fallback, as before).
-        fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_")
+    """Serialize the store payload to a fsynced temp file beside the resolved *jobs_file*; return its path."""
+    fd, tmp_path = mkstemp_beside(jobs_file, suffix=".tmp", prefix=".jobs_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(

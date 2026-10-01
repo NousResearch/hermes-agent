@@ -280,6 +280,16 @@ def _get_task_no_progress_timeout(task: str) -> Optional[float]:
     return value
 
 
+def _stream_no_progress_timeout_seconds() -> float:
+    """Read the default through the facade so its established patch seam remains live."""
+    try:
+        from agent import auxiliary_client
+        value = auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
+    except (ImportError, AttributeError):
+        value = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
+    return float(value)
+
+
 class _CodexStreamGuard:
     """Progress-aware deadline + FD-safe timeout watchdog for one Codex aux stream attempt.
 
@@ -302,7 +312,7 @@ class _CodexStreamGuard:
         if isinstance(no_progress_timeout, (int, float)) and no_progress_timeout > 0:
             self.no_progress_timeout = float(no_progress_timeout)
         else:
-            self.no_progress_timeout = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
+            self.no_progress_timeout = _stream_no_progress_timeout_seconds()
         # Progress-aware stream deadlines (supersedes the old single absolute kill at ``total_timeout``).
         # Three regimes: 1. First token: the stream must produce its first substantive payload within
         # ``no_progress_timeout`` (60s default) or we fail fast and let the caller's normal retry/fallback

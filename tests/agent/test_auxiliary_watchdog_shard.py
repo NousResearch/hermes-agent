@@ -14,6 +14,7 @@ symbol inventories):
 
 import sys
 import types
+from unittest.mock import patch
 
 import pytest
 
@@ -77,3 +78,15 @@ def test_facade_reexports_moved_names(fresh_watchdog, name):
     from agent import auxiliary_watchdog as wd
 
     assert getattr(facade, name) is getattr(wd, name), f"{name} is not the same object"
+
+
+def test_facade_timeout_patch_reaches_moved_guard(fresh_watchdog):
+    """The facade's historical timeout patch seam still controls the moved consumer."""
+    _purge("agent.auxiliary_client")
+    import agent.auxiliary_client as facade
+    from agent.auxiliary_watchdog import _CodexStreamGuard
+
+    with patch.object(facade, "_AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3):
+        guard = _CodexStreamGuard(object(), total_timeout=None)
+
+    assert guard.no_progress_timeout == 0.3

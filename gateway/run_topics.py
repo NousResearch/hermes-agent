@@ -635,11 +635,27 @@ class GatewayTopicThreadsMixin:
         The string itself is built by :func:`gateway.title_compose.compose_group_title`; this lane
         never assembles one. Never raises: an unreadable store degrades to the fallback subject.
         """
+        from agent.title_placeholders import is_rejected_placeholder
         from gateway.title_compose import compose_group_title
 
         subject, model = await asyncio.to_thread(
             self._telegram_group_title_session_facts, source, session_id)
-        reasoning = self._resolve_session_reasoning_config(source=source, model=model or "")
+        # A rejected STT placeholder is not a subject (spec §4): the model can echo the bracket note
+        # back verbatim, and every one of those notes slips past _MACHINE_PREFIXES. Suppress it HERE,
+        # at the one chokepoint every path composes through, so no lane entry can name a group after
+        # an STT failure (criterion 5). Tag-only composition is legal and expected (§2.4 ex. 4), so
+        # this suppresses the subject, never the rename: a /model recompose still lands (§4.4).
+        # Both candidates are checked: the callback's fallback carries the same note, so testing
+        # only the stored title would let ``subject or fallback_subject`` resurrect it below.
+        subject = "" if is_rejected_placeholder(subject) else subject
+        if not subject:
+            fallback_subject = "" if is_rejected_placeholder(fallback_subject) else fallback_subject
+        # Off the loop for the same reason as the store read above: the resolver falls through to
+        # _load_reasoning_config -> _load_gateway_config -> load_user_config_effective, which stats
+        # config.yaml and the managed config dir on every call (the cache is keyed on those
+        # signatures). Sync file I/O on the gateway loop stalls every platform's dispatch.
+        reasoning = await asyncio.to_thread(
+            self._resolve_session_reasoning_config, source=source, model=model or "")
         effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
         return compose_group_title(subject or fallback_subject or "", model or "", effort)
 

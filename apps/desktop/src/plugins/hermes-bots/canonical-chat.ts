@@ -333,7 +333,9 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
   // last positive confirmation this profile HAD one — when that exists,
   // an empty lookup is unconfirmed absence, not confirmed absence, so fail
   // closed the same way a thrown RPC error already does instead of minting.
-  if (bot?.canonical_session?.id) {
+  // An older gateway may ignore the title filter and return a recency window;
+  // a full page cannot prove absence, even without a canonical roster hint.
+  if (bot?.canonical_session?.id || rows.length >= PROFILE_SESSION_LIST_LIMIT) {
     throw new Error(`Could not confirm ${name}'s Bot Chat registry — not starting a new chat`)
   }
 

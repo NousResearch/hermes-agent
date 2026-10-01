@@ -9,7 +9,7 @@ from gateway import hosted_rooms
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore
 from gateway.platforms import base
 from gateway.session_api_turn import admit_api_turn
-from gateway.session_hosted_attachments import submission_payload
+from gateway.hosted_room_input_preparation import resolve_inputs
 from gateway.session_ingress_media import _media_root, admit_attachments, release_admission_media, restore_native_media
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input, settle_session_input
 from tests.gateway.test_api_cutover_contract import api, owner  # noqa: F401
@@ -65,7 +65,7 @@ def test_hosted_batch_total_is_rejected_before_any_capture(tmp_path, monkeypatch
     rpc = SimpleNamespace(authority=SimpleNamespace(db=SimpleNamespace(db_path=db_path)), room_id='room', member_id='member')
     monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 3072)
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        submission_payload(rpc, 'read', bound)
+        resolve_inputs(rpc, bound)
     assert not _media_root().exists()
     monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 4096)
-    assert submission_payload(rpc, 'read', bound)['text'].count('[Shared attachment] file:') == 2
+    assert [data for _, data in resolve_inputs(rpc, bound)] == [b'A' * 2048, b'B' * 2048]

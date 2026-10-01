@@ -408,13 +408,13 @@ def _append_recovered_transcript(session_db, session_id: str, messages: list) ->
     return len(messages)
 
 
-def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
+def recover_pending_to_db(session_db=None, *, session_resolver=None, project_pending: bool = True) -> int:
     """Replay flush-dir ``*.json`` files into state.db; return the number of messages recovered.
     See :func:`recover_pending_spool`, which also reports the sessions it held back."""
-    return recover_pending_spool(session_db, session_resolver=session_resolver)[0]
+    return recover_pending_spool(session_db, session_resolver=session_resolver, project_pending=project_pending)[0]
 
 
-def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[int, set[str]]:
+def recover_pending_spool(session_db=None, *, session_resolver=None, project_pending: bool = True) -> tuple[int, set[str]]:
     """Replay shutdown spool files, deleting each only after its canonical write succeeds.
 
     Transcript envelopes are decoded and appended once per session, in their persisted ``(ts,
@@ -531,7 +531,8 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
             try:
                 from gateway.shutdown_pending import PENDING_SCHEMA, project_pending_snapshot
                 if payload.get("schema") == PENDING_SCHEMA:
-                    recovered += project_pending_snapshot(path, payload, session_resolver=session_resolver)
+                    if project_pending:
+                        recovered += project_pending_snapshot(path, payload, session_resolver=session_resolver)
                     continue
                 if _recover_one_payload(
                     session_db, path, payload,
@@ -631,8 +632,14 @@ def recover_gateway_pending(runner) -> int:
     from gateway.run import _multiplex_profile_homes
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
+    from gateway.shutdown_recovery import consume_executed_pending
+
     store = runner.session_store
-    recovered, held_back = recover_pending_spool(session_resolver=store.resolve_session_id_for_key)
+    consumed = consume_executed_pending(store)
+    recovered, held_back = recover_pending_spool(
+        session_resolver=store.resolve_session_id_for_key, project_pending=False,
+    )
+    recovered += consumed
     store.mark_spooled_drop_sessions(held_back)
     if not getattr(runner.config, "multiplex_profiles", False):
         return recovered
@@ -642,7 +649,11 @@ def recover_gateway_pending(runner) -> int:
             continue
         token = set_hermes_home_override(str(home))
         try:
-            count, held_back = recover_pending_spool(session_resolver=store.resolve_session_id_for_key)
+            consumed = consume_executed_pending(store)
+            count, held_back = recover_pending_spool(
+                session_resolver=store.resolve_session_id_for_key, project_pending=False,
+            )
+            count += consumed
         except Exception:  # one profile's unreadable spool must not strand the others'
             logger.warning("Pending-message recovery failed for profile %s", name, exc_info=True)
             continue

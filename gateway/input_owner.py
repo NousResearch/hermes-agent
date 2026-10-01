@@ -1,5 +1,7 @@
 """Stable transcript ownership for accepted gateway input."""
 
+from __future__ import annotations
+
 import json
 import uuid
 from dataclasses import dataclass, replace
@@ -25,6 +27,21 @@ class _InputOwner:
     @property
     def owner(self) -> str:
         return str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([*self.namespace, self.identifier])))
+
+    @classmethod
+    def restore(cls, source: SessionSource, uid: str, state: Any) -> _InputOwner:
+        if not isinstance(state, dict) or set(state) != {"namespace", "identifier", "pending_uid", "owner"}:
+            raise ValueError("pending input owner requires its complete scope")
+        namespace = _namespace(source)
+        identifier = state["identifier"]
+        if (state["namespace"] != list(namespace) or state["pending_uid"] != uid
+                or not isinstance(identifier, str) or not identifier
+                or identifier.startswith("pending:") and identifier != f"pending:{uid}"):
+            raise ValueError("pending input owner does not match its scope")
+        saved = cls(namespace, identifier, uid)
+        if state["owner"] != saved.owner:
+            raise ValueError("pending input owner receipt does not match its scope")
+        return saved
 
 
 def _event_owner(event: MessageEvent, source: SessionSource) -> _InputOwner:
@@ -58,16 +75,9 @@ def capture_gateway_input_owner(event: MessageEvent) -> dict[str, Any]:
 
 
 def restore_gateway_input_owner(event: MessageEvent, state: Any) -> None:
-    if not isinstance(state, dict) or set(state) != {"namespace", "identifier", "pending_uid", "owner"}:
-        raise ValueError("pending input owner requires its complete scope")
-    namespace = _namespace(event.source)
-    uid = getattr(event, "_pending_snapshot_uid")
-    identifier = state["identifier"]
-    if (state["namespace"] != list(namespace) or state["pending_uid"] != uid
-            or not isinstance(identifier, str) or not identifier
-            or identifier.startswith("pending:") and identifier != f"pending:{uid}"):
-        raise ValueError("pending input owner does not match its scope")
-    saved = _InputOwner(namespace, identifier, uid)
-    if state["owner"] != saved.owner:
-        raise ValueError("pending input owner receipt does not match its scope")
+    saved = _InputOwner.restore(event.source, getattr(event, "_pending_snapshot_uid"), state)
     setattr(event, "_gateway_input_owner", saved)
+
+
+def recorded_gateway_input_owner(source: SessionSource, uid: str, state: Any) -> str:
+    return _InputOwner.restore(source, uid, state).owner

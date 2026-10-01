@@ -100,16 +100,21 @@ def _decode_fields(body: dict[str, Any], cls: type[MessageEvent] | type[SessionS
     return body
 
 
-def decode_pending_event(record: dict[str, Any], *, adapter: Any = None) -> MessageEvent:
-    uid = record.get("uid")
-    if not isinstance(uid, str) or not uid:
-        raise ValueError("pending event requires its stable identity")
+def decode_pending_source(record: dict[str, Any]) -> SessionSource:
     body = record.get("event")
     if not isinstance(body, dict) or not isinstance(body.get("source"), dict):
         raise ValueError("pending event requires a source")
     source_body = dict(body["source"])
     source_body["platform"] = Platform(source_body["platform"])
-    source = SessionSource(**_decode_fields(source_body, SessionSource))
+    return SessionSource(**_decode_fields(source_body, SessionSource))
+
+
+def decode_pending_event(record: dict[str, Any], *, adapter: Any = None) -> MessageEvent:
+    uid = record.get("uid")
+    if not isinstance(uid, str) or not uid:
+        raise ValueError("pending event requires its stable identity")
+    source = decode_pending_source(record)
+    body = record["event"]
     event_body = {key: value for key, value in body.items() if key != "source"}
     event_body["message_type"] = MessageType(event_body["message_type"])
     event_body["timestamp"] = datetime.fromisoformat(event_body["timestamp"])

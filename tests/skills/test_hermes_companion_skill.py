@@ -10,6 +10,7 @@ SKILL = Path(__file__).resolve().parents[2] / "optional-skills/health/hermes-com
 def test_skill_states_the_iphone_app_is_required():
     text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
     assert "Hermes Companion iOS app" in text
+    assert "https://hermescompanion.funktional.dev" in text
     assert "no file exists" in text
     assert "Do not invent a place" in text
 

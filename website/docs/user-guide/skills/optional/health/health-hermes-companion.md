@@ -34,7 +34,7 @@ Read the user's live place, motion, sleep, workout, and recovery. The script pri
 
 ## Requires the iPhone app
 
-This skill works only with the Hermes Companion iOS app installed on the user's iPhone: [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The app writes `latest_location.json` and `latest_health.json` into the user's private iCloud container. This skill reads the copies macOS has already synced. It does not call a relay, open a port, or produce a coordinate on its own.
+This skill works only with the Hermes Companion iOS app installed on the user's iPhone. The app and this skill are documented at [hermescompanion.funktional.dev](https://hermescompanion.funktional.dev). Source: [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The app writes `latest_location.json` and `latest_health.json` into the user's private iCloud container. This skill reads the copies macOS has already synced. It does not call a relay, open a port, or produce a coordinate on its own.
 
 Until that app is installed, Location is set to Always, and iCloud has synced those two files, the script reports that no file exists. Say that the Hermes Companion iPhone app is required and has not synced yet. Do not invent a place, a motion state, or a health number.
 
@@ -49,7 +49,7 @@ Do not use this skill for a generic map, a route, or weather. Do not invent a pl
 
 ## Prerequisites
 
-- The Hermes Companion iPhone app, from [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The skill has no data source other than that app.
+- The Hermes Companion iPhone app. Product page: [hermescompanion.funktional.dev](https://hermescompanion.funktional.dev). Source: [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The skill has no data source other than that app.
 - macOS, signed into the same Apple ID as the iPhone.
 - Location set to Always, Motion & Fitness allowed, and Health access allowed.
 - iCloud Drive has finished downloading `latest_location.json` and `latest_health.json`.

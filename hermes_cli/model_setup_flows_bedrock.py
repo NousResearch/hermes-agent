@@ -44,18 +44,24 @@ def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
     return matched_geo == geo
 
 
-def _allowlisted_curated_bedrock_ids(model_list):
+def _allowlisted_curated_bedrock_ids(model_list, region=None):
     """(curated ids projected through ``bedrock.discovery.model_allowlist``, whether one is set).
     The curated table names the very ids an allowlist is usually written to hide, so neither
     wizard branch may offer it unfiltered while an allowlist is configured. The pool is the same
     one ``models_bedrock._bedrock_catalog`` projects (curated ids plus the Mantle ids the control
-    plane never lists), so the two surfaces cannot diverge for a Mantle-only allowlist."""
+    plane never lists), so the two surfaces cannot diverge for a Mantle-only allowlist. The
+    projection is then filtered through ``bedrock_model_routable_from_region`` (#104178 review):
+    an allowlist is account policy, not region routability, and a geo-prefixed profile id that
+    live discovery would never return for this region must not be offered from the fallback
+    either. *region* is the flow's selected region (defaults to the resolved runtime region)."""
     from agent.bedrock_adapter import (configured_bedrock_model_allowlist, filter_bedrock_model_ids,
                                        merge_bedrock_openai_model_ids)
+    from hermes_cli.models_bedrock import _routable_allowlisted_bedrock_ids
     allowlist = configured_bedrock_model_allowlist()
     if not allowlist:
         return list(model_list), False
-    return filter_bedrock_model_ids(merge_bedrock_openai_model_ids(list(model_list)), allowlist), True
+    projected = filter_bedrock_model_ids(merge_bedrock_openai_model_ids(list(model_list)), allowlist)
+    return _routable_allowlisted_bedrock_ids(projected, region), True
 
 
 def _model_flow_bedrock_api_key(config, region, current_model=""):
@@ -86,8 +92,9 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         print("  ✓ API key saved.")
     print()
 
-    # Static list — mantle doesn't need boto3 for discovery; the allowlist still applies to it.
-    model_list, _allowlist_in_force = _allowlisted_curated_bedrock_ids(_PROVIDER_MODELS.get("bedrock", []))
+    # Static list — mantle doesn't need boto3 for discovery; the allowlist still applies to it,
+    # and the curated projection is filtered to the selected region's routable ids.
+    model_list, _allowlist_in_force = _allowlisted_curated_bedrock_ids(_PROVIDER_MODELS.get("bedrock", []), region)
     if not model_list:
         print("  No models match bedrock.discovery.model_allowlist.")
         return
@@ -209,9 +216,9 @@ def _model_flow_bedrock(config, current_model=""):
     else:
         # An empty live catalog under an allowlist is usually the allowlist matching nothing
         # (discover_bedrock_models honors bedrock.discovery.model_allowlist). Substituting the
-        # whole curated list would re-admit the very ids it hides, so the fallback is intersected;
-        # with the allowlist unset the historical curated fallback is unchanged.
-        model_list, allowlist_in_force = _allowlisted_curated_bedrock_ids(_PROVIDER_MODELS.get("bedrock", []))
+        # whole curated list would re-admit the very ids it hides, so the fallback is intersected
+        # and region-filtered; with the allowlist unset the historical curated fallback is unchanged.
+        model_list, allowlist_in_force = _allowlisted_curated_bedrock_ids(_PROVIDER_MODELS.get("bedrock", []), region)
         if not model_list:
             print("  No models match bedrock.discovery.model_allowlist in this region." if allowlist_in_force
                   else "  No models found. Check IAM permissions for bedrock:ListFoundationModels.")

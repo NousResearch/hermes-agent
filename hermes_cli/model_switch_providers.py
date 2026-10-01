@@ -244,12 +244,17 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     import concurrent.futures
     def _fetch_one(slug: str) -> None:
         try:
+            # Capture the policy generation BEFORE the fetch (#104178 review): the producing
+            # generation travels with the ids, so the locked re-persist can refuse a row whose
+            # policy moved underneath the fetch instead of relabeling it.
+            from hermes_cli.models_bedrock import _bedrock_policy_fingerprint
+            policy_fp = _bedrock_policy_fingerprint() if slug == "bedrock" else None
             models = cached_provider_model_ids(slug, force_refresh=True)
             # cached_provider_model_ids persists via a non-locked read-modify-write; re-persist
             # through the locked path so no write is lost under concurrency.
             if models:
                 from hermes_cli.models import update_provider_cache_entry
-                update_provider_cache_entry(slug, models)
+                update_provider_cache_entry(slug, models, policy_fingerprint=policy_fp)
         except Exception:
             pass  # best-effort; picker falls back to curated list
 

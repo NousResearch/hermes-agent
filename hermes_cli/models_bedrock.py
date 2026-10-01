@@ -27,7 +27,9 @@ from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 __all__ = [
     "_StaticFallbackModelIds",
     "_bedrock_catalog",
+    "_bedrock_policy_fingerprint",
     "_bedrock_policy_fingerprint_part",
+    "_routable_allowlisted_bedrock_ids",
 ]
 
 
@@ -47,8 +49,17 @@ def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
         from agent.bedrock_adapter import (bedrock_model_ids_or_none, configured_bedrock_model_allowlist,
                                            filter_bedrock_model_ids, merge_bedrock_openai_model_ids)
 
+        # Capture the policy BEFORE discovery so the result can be stamped with the exact policy
+        # generation that produced it (#104178 review): a config edit while the fetch is in flight
+        # must not let the fetched ids be persisted under the later policy's fingerprint — on a
+        # narrowing that would hand a removed id the new policy's authority for a full TTL.
+        policy = _bedrock_policy_fingerprint()
         live = bedrock_model_ids_or_none()
         if live is not None:
+            if _bedrock_policy_fingerprint() != policy:
+                # The allowlist changed mid-flight: this generation's ids are not the configured
+                # policy's answer. Serve them for this open only; do not persist them.
+                return _StaticFallbackModelIds(live)
             return live
         allowlist = configured_bedrock_model_allowlist()
         if not allowlist:
@@ -59,9 +70,12 @@ def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
         # us.meta.llama4-*). The Mantle ids are merged into the pool first, so an allowlist naming
         # only a Mantle id does not depend on the curated table happening to carry it. An empty
         # projection is returned as-is (no Bedrock models); the tag keeps the stub out of the disk
-        # cache either way.
+        # cache either way. The projection is also region-filtered (#104178 review): an allowlist is
+        # account policy, not region routability — geo-prefixed profile ids the resolved region
+        # cannot invoke must not be offered, matching what live discovery itself returns.
         curated = merge_bedrock_openai_model_ids(list(_PROVIDER_MODELS.get("bedrock", [])))
-        return _StaticFallbackModelIds(filter_bedrock_model_ids(curated, allowlist))
+        projected = filter_bedrock_model_ids(curated, allowlist)
+        return _StaticFallbackModelIds(_routable_allowlisted_bedrock_ids(projected))
     except Exception:
         return None
 
@@ -80,3 +94,35 @@ def _bedrock_policy_fingerprint_part() -> str:
         return "bedrock.discovery.model_allowlist=" + "|".join(sorted(allowlist))
     except Exception:
         return "bedrock.discovery.model_allowlist=unreadable"
+
+
+def _bedrock_policy_fingerprint() -> str:
+    """Just the serialized policy half of ``_credential_fingerprint("bedrock")``.
+
+    Discovery captures this BEFORE fetching and the cache write re-reads it after, so a result is
+    only persisted when the policy generation that produced it is still the configured one
+    (#104178 review, blocker 1). Kept in lockstep with ``_bedrock_policy_fingerprint_part`` on
+    purpose: equality across the two is the whole generation check.
+    """
+    return _bedrock_policy_fingerprint_part()
+
+
+def _routable_allowlisted_bedrock_ids(model_ids: list[str], region: Optional[str] = None) -> list[str]:
+    """Project an already-allowlisted id list through the region-routability invariant.
+
+    ``bedrock_model_routable_from_region`` (hermes_cli.model_setup_flows_bedrock) defines it: a
+    geo-prefixed profile (``us.*``) cannot be invoked from an EU/AP endpoint, while bare ids and
+    ``global.*`` profiles route from anywhere (#104178 review, blocker 2). Live discovery is
+    region-filtered by construction; the curated fallback must be too, or the wizard offers an
+    entry known in advance to fail at invocation. *region* defaults to the resolved runtime
+    region, the same resolver live discovery uses; the wizard passes its own selected region.
+    """
+    try:
+        from hermes_cli.model_setup_flows_bedrock import bedrock_model_routable_from_region
+        if region is None:
+            from agent.bedrock_adapter import resolve_bedrock_runtime_region
+            region = resolve_bedrock_runtime_region()
+        return [m for m in model_ids if bedrock_model_routable_from_region(m, region)]
+    except Exception:
+        # No region resolvable: hide nothing (the helper's own unknown-region contract).
+        return list(model_ids)

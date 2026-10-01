@@ -167,7 +167,8 @@ export function ImageLightbox({
                 <ZoomIn className="size-4" />
               </button>
             </div>
-          )}
+          )
+        }
         className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent! shadow-none!"
         // The media-lightbox shell variant. styles.css paints every
         // [data-slot='dialog-content'] with the themed elevated background +

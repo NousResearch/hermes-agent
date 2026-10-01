@@ -407,6 +407,7 @@ function InlineHtmlFrame({
 
         if (!result || isReadFileErrorResult(result)) {
           setFailed(true)
+
           return
         }
 

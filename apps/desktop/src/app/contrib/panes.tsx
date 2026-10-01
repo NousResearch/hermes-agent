@@ -68,8 +68,7 @@ export function LogsPane() {
       return
     }
 
-    shouldStickRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight <= LOGS_BOTTOM_THRESHOLD
+    shouldStickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= LOGS_BOTTOM_THRESHOLD
   }
 
   if (error) {

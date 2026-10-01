@@ -135,15 +135,17 @@ export function decodePreviewTabs(raw: string): PreviewTab[] {
 }
 
 function parseTabList(parsed: unknown): PreviewTab[] {
-  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : [])
-    .map(tab =>
-      isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
-        ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
-        : tab
-    )
-    // Drop tombstoned file tabs (a previous session confirmed the file is
-    // gone). Keeping them would re-probe a known-dead path on every boot.
-    .filter(tab => !tab.target.missing)
+  return (
+    (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : [])
+      .map(tab =>
+        isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
+          ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
+          : tab
+      )
+      // Drop tombstoned file tabs (a previous session confirmed the file is
+      // gone). Keeping them would re-probe a known-dead path on every boot.
+      .filter(tab => !tab.target.missing)
+  )
 }
 
 /** The tabs a profile's rail is showing, keyed by profile. */
@@ -648,9 +650,7 @@ export function markPreviewTabMissing(targetUrl: string) {
     return
   }
 
-  $previewTabs.set(
-    current.map((tab, i) => (i === index ? { ...tab, target: { ...tab.target, missing: true } } : tab))
-  )
+  $previewTabs.set(current.map((tab, i) => (i === index ? { ...tab, target: { ...tab.target, missing: true } } : tab)))
 }
 
 /** Show the Browser — the surface, not a page. Keeps whatever it was last

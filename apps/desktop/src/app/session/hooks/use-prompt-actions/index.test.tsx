@@ -3150,6 +3150,7 @@ describe('usePromptActions restoreToMessage', () => {
     $messages.set(initialMessages as never)
 
     let submitAttempts = 0
+
     const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
         submitAttempts += 1
@@ -3695,7 +3696,6 @@ describe('usePromptActions file attachment sync', () => {
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
     })
   })
-
 })
 
 describe('usePromptActions eager-upload races', () => {
@@ -6356,11 +6356,7 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
 
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
     const ok = await handle!.submitText('/goal align with the handoff doc', {

@@ -17,10 +17,7 @@ interface QuickEntryBridgeParams {
     text: string,
     options?: { onAccepted?: (identity: QuickEntryAcceptedIdentity) => void }
   ) => Promise<boolean> | boolean
-  submitTextToNewSession: (
-    text: string,
-    owner?: string
-  ) => Promise<{ runtimeSessionId: string; sessionId: string }>
+  submitTextToNewSession: (text: string, owner?: string) => Promise<{ runtimeSessionId: string; sessionId: string }>
 }
 
 /** Exact session identity that accepted a prompt (runtime + durable stored id). */
@@ -89,10 +86,7 @@ function sessionOptions(): QuickEntrySessionOption[] {
  * secondary session window must not also claim the global capture channel, or
  * one keystroke would send N prompts.
  */
-export function useQuickEntryBridge({
-  submitText,
-  submitTextToNewSession
-}: QuickEntryBridgeParams): void {
+export function useQuickEntryBridge({ submitText, submitTextToNewSession }: QuickEntryBridgeParams): void {
   const submitTextRef = useRef(submitText)
   submitTextRef.current = submitText
   const submitNewRef = useRef(submitTextToNewSession)
@@ -122,7 +116,12 @@ export function useQuickEntryBridge({
           const created = await submitNewRef.current(text, correlationId)
           ack({ ok: true, runtimeSessionId: created.runtimeSessionId, sessionId: created.sessionId })
         } catch (error) {
-          ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })
+          ack({
+            code: 'submit-failed',
+            message: error instanceof Error ? error.message : String(error),
+            ok: false,
+            retryable: true
+          })
         }
 
         return
@@ -169,7 +168,12 @@ export function useQuickEntryBridge({
               return
             }
 
-            ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })
+            ack({
+              code: 'submit-failed',
+              message: error instanceof Error ? error.message : String(error),
+              ok: false,
+              retryable: true
+            })
           }
 
           return
@@ -181,6 +185,7 @@ export function useQuickEntryBridge({
           ok: false,
           retryable: true
         })
+
         return
       }
 
@@ -192,9 +197,15 @@ export function useQuickEntryBridge({
             acceptedIdentity = identity
           }
         })
+
         ack(quickEntrySubmitAck(submitted, acceptedIdentity))
       } catch (error) {
-        ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })
+        ack({
+          code: 'submit-failed',
+          message: error instanceof Error ? error.message : String(error),
+          ok: false,
+          retryable: true
+        })
       }
     })
 

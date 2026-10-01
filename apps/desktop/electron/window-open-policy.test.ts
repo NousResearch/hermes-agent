@@ -1,7 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 
-import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite, isHermesHubExternalUrl, isHermesHubOrigin } from './hub-iframe-policy'
+import {
+  HERMES_HUB_FALLBACK_ORIGIN,
+  HERMES_HUB_ORIGIN,
+  isHermesHubClipboardWrite,
+  isHermesHubExternalUrl,
+  isHermesHubOrigin
+} from './hub-iframe-policy'
 import { createWindowOpenHandler, describeDeniedUrl } from './window-open-policy'
 
 describe('hub-iframe-policy predicates', () => {
@@ -45,6 +51,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
 
   it('still denies artifact frames (opaque origin) with NO external open', () => {
     const openExternalUrl = vi.fn()
+
     const handler = createWindowOpenHandler(undefined, {
       getOpenerOrigin: () => 'null',
       openExternalUrl
@@ -56,6 +63,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
 
   it('delegates a hub-origin http(s) open but still denies the window', () => {
     const openExternalUrl = vi.fn()
+
     const handler = createWindowOpenHandler(undefined, {
       getOpenerOrigin: () => HERMES_HUB_ORIGIN,
       openExternalUrl
@@ -67,6 +75,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
 
   it('delegates from the fallback (GitHub Pages) hub origin too', () => {
     const openExternalUrl = vi.fn()
+
     const handler = createWindowOpenHandler(undefined, {
       getOpenerOrigin: () => HERMES_HUB_FALLBACK_ORIGIN,
       openExternalUrl
@@ -78,6 +87,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
 
   it('never delegates file:// or unknown schemes from a hub-origin opener', () => {
     const openExternalUrl = vi.fn()
+
     const handler = createWindowOpenHandler(undefined, {
       getOpenerOrigin: () => HERMES_HUB_ORIGIN,
       openExternalUrl
@@ -91,6 +101,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
 
   it('never delegates when the opener origin is not exactly the hub', () => {
     const openExternalUrl = vi.fn()
+
     const handler = createWindowOpenHandler(undefined, {
       getOpenerOrigin: () => 'https://hermes-agent.nousresearch.com.evil.example',
       openExternalUrl
@@ -104,6 +115,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
     const openExternalUrl = vi.fn(() => {
       throw new Error('boom')
     })
+
     const throwingProbe = createWindowOpenHandler(undefined, {
       getOpenerOrigin: () => {
         throw new Error('probe failed')
@@ -124,6 +136,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
 
   it('a throwing logging observer cannot change the decision or the delegation', () => {
     const openExternalUrl = vi.fn()
+
     const handler = createWindowOpenHandler(
       () => {
         throw new Error('log failed')

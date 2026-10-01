@@ -131,5 +131,5 @@ export const arCapabilities = {
     durationSeconds: seconds => `${seconds} ث`,
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
     tokens: value => `${value} رمز`
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'catalog' | 'skills' | 'agents'>

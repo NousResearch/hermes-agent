@@ -1176,10 +1176,7 @@ export function useBackgroundSync({
       // clicking) drops the visibility leg under a combined focused gate, and
       // the focus leg it would wait for never arrives — the return refresh is
       // lost for a window the user is reading.
-      const viewed =
-        event?.type === 'visibilitychange'
-          ? document.visibilityState === 'visible'
-          : document.hasFocus()
+      const viewed = event?.type === 'visibilitychange' ? document.visibilityState === 'visible' : document.hasFocus()
 
       if (!viewed) {
         return
@@ -1192,12 +1189,14 @@ export function useBackgroundSync({
       }
 
       lastRefreshAt = now
+
       // The main pane resolves only with a selected session; a workspace whose
       // pane shows just bot tiles has none, and the tile reconcile below still
       // owes those tiles their catch-up.
       if (activeSessionId && activeStoredSessionId) {
         requestActiveTranscriptRefresh(true)
       }
+
       // Workspace tiles share the zombie-socket blind spot: the sessions.changed
       // tick that would have reconciled them does not replay on wake, and bot
       // canonical chats never resolve through the main-pane path. The shared
@@ -1216,7 +1215,14 @@ export function useBackgroundSync({
       document.removeEventListener('visibilitychange', refreshOnReturn)
       window.removeEventListener('focus', refreshOnReturn)
     }
-  }, [activeIsMessaging, activeSessionId, activeStoredSessionId, gatewayState, requestActiveTranscriptRefresh, updateSessionState])
+  }, [
+    activeIsMessaging,
+    activeSessionId,
+    activeStoredSessionId,
+    gatewayState,
+    requestActiveTranscriptRefresh,
+    updateSessionState
+  ])
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session

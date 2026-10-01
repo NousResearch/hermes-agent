@@ -59,7 +59,8 @@ export function surplusIsCompetingView(
         !matchedLocalUsers.has(index) &&
         (local.id === message.id ||
           (message.rowId !== undefined && local.rowId === message.rowId) ||
-          (local.id === options?.optimisticMessageId && local.rowId === undefined &&
+          (local.id === options?.optimisticMessageId &&
+            local.rowId === undefined &&
             chatMessageText(local) === chatMessageText(message)))
     )
 
@@ -68,6 +69,7 @@ export function surplusIsCompetingView(
     }
 
     matchedLocalUsers.add(matchIndex)
+
     return false
   })
 }

@@ -297,5 +297,5 @@ export const arAssistant = {
         }
       }
     }
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'assistant'>

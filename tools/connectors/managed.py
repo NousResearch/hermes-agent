@@ -36,9 +36,10 @@ _ACCOUNT_OUTCOME: Dict[str, Tuple[TargetState, Actor]] = {
 }
 
 NOTE = (
-    "Settled once. connected → use the app now; skipped → the user chose Not now, do not connect it "
-    "or route around it; not_connected → ask the user what to do, never re-mint on your own. "
-    "A later request from the USER for that same app is not a re-ask — run it."
+    "Settled once. connected → use the app now. skipped or not_connected → the user moved on: do not "
+    "connect it again, do not ask about it again in this chat, and do not route around it; you may say "
+    "once that they can connect it later. A later request from the USER for that same app is not a "
+    "re-ask — run it."
 )
 
 

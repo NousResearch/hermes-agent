@@ -40,7 +40,7 @@ Runs the first chat after setup, the one `start_chat` opened. The top of this me
 
 ## Prerequisites
 
-The task chat's own tools: `manage_connections`, `manage_catalog`, `clarify`, `terminal`, the file tools, the browser, `tool_search`, `skill_view`, and `desktop_preview` in the desktop app. Use only tools that are in your tool list.
+The task chat's own tools: `manage_connections`, `manage_catalog`, `clarify`, `terminal`, the file tools, the browser, `tool_search`, `skill_view`, and `desktop_preview` in the desktop app. Use only tools that are in your tool list. A tool named here but missing from your list, often `manage_catalog`, is deferred: run it through `tool_call`, as in the Quick Reference, never by its bare name.
 
 ## How to Run
 
@@ -54,7 +54,7 @@ The "What setup learned" lines are your recon. Do not survey the machine first: 
 |---|---|---|
 | 1 | One line on what you start with | none |
 | 2 | Connect the picked apps | `manage_connections` connect, every id in `connect`, once |
-| 3 | Install the picked plugins | `manage_catalog` install, every id in `install`, once |
+| 3 | Install the picked plugins | `manage_catalog` install (through `tool_call` when deferred), every id in `install`, once |
 | 4 | Specific ask: start it. Vague ask: three options | `clarify`, three choices |
 | 5 | The first slice, finished in five minutes | the task's own tools |
 | 6 | Show the result, offer the next step | `clarify`: Looks right, Change something, Take it further |
@@ -62,6 +62,7 @@ The "What setup learned" lines are your recon. Do not survey the machine first: 
 ```
 manage_connections  {"action":"connect","connectors":["<id>", ...]}
 manage_catalog      {"action":"install","items":[{"kind":"plugin","id":"<id>"}, ...],"reason":"<one line>"}
+tool_call           {"calls":[{"name":"manage_catalog","arguments":{"action":"install","items":[{"kind":"plugin","id":"<id>"}],"reason":"<one line>"}}]}   (when manage_catalog is deferred)
 clarify             {"questions":[{"question":"<short question>","choices":["<option>","<option>","<option>"]}]}
 ```
 
@@ -70,6 +71,8 @@ clarify             {"questions":[{"question":"<short question>","choices":["<op
 ### 1. Connect first
 
 Your first reply is one short line on what you will start with, then steps 2 and 3 back to back, before any other work. Skip a step whose list is empty. A skipped or failed row never blocks: say in one line what it would have added, go on without it, and never offer it again in this chat.
+
+Each step runs once. When a later step fails, fix that step and go on; never go back and redo an earlier one. The connect card's answer is final for this chat: use the apps that connected, and do not connect or ask about the others again (an app left unconnected after Continue counts as skipped). Say once, when you close the first slice, that they can connect the rest later.
 
 ### 2. Ask only when vague
 
@@ -119,7 +122,9 @@ One short line on what you made and where it is, then a `clarify` card with "Loo
 - A survey of the machine before any work. The facts block is the survey.
 - A plan question when the ask was already specific.
 - A 30-minute job as the first slice.
-- Offering again an app they skipped.
+- Offering again an app they skipped or left unconnected.
+- Running connect again after a later step fails.
+- Calling a deferred tool by its bare name instead of through `tool_call`.
 - Reading the facts block back to them.
 - Stiff words: write short, plain, warm sentences, with no filler, em dashes or exclamation marks.
 

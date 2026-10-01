@@ -1,7 +1,9 @@
 """Public dispatch through real capture/token/input code; only the driver transport is fake."""
 
+import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,11 +24,16 @@ class Driver(_CuaDriverSession):
                          for i in (0, 3)]
         self.calls = []
         self.stale = False
+        self.strict = False
 
     def call_tool(self, name, args, timeout=30):
         self.calls.append((name, dict(args)))
         if name == "get_window_state":
             return {"isError": False, "data": {}, "structuredContent": {"elements": self.elements}}
+        if self.strict:
+            schema = self._tool_schemas[name]
+            if set(args) - schema["properties"].keys() or set(schema.get("required", [])) - args.keys():
+                return {"isError": True, "data": {}, "structuredContent": {"code": "invalid_arguments"}}
         if self.stale:
             return {"isError": True, "data": {}, "structuredContent": {"code": "stale_element"}}
         return {"isError": False, "data": {}, "structuredContent": {"effect": "confirmed"}}
@@ -63,18 +70,18 @@ def harness(monkeypatch, grant_computer_use_approvals):
 
 
 @pytest.mark.parametrize("element", [None, 0, 3])
-@pytest.mark.parametrize("negotiation", ["schema", "capability", "old"])
+@pytest.mark.parametrize("negotiation", ["schema", "capability", "old", "token_only"])
 @pytest.mark.parametrize("delivery_mode", [None, "foreground"])
 def test_public_type_preserves_selected_snapshot_or_refuses(harness, element, negotiation, delivery_mode):
     invoke, backends = harness
     backend = backends[0]
     driver = backend._session
     props = driver._tool_schemas["type_text"]["properties"]
-    if negotiation != "schema":
+    if negotiation in {"capability", "old"}:
         props.pop("element_token")
     if negotiation == "capability":
         driver._capabilities["type_text"].add("accessibility.element_tokens")
-    if negotiation == "old":
+    if negotiation in {"old", "token_only"}:
         props.pop("element_index")
     # Re-capture replaces all old tokens via production capture and parsing.
     driver.elements = [{**e, "element_token": f"opaque/fresh/{e['element_index']}"} for e in driver.elements]
@@ -90,7 +97,9 @@ def test_public_type_preserves_selected_snapshot_or_refuses(harness, element, ne
     assert result["ok"] is True
     expected = {"text": "Hello Привет", "pid": 42, "window_id": 7, "session": backend._session_id}
     if element is not None:
-        expected.update(element_index=element, element_token=f"opaque/fresh/{element}")
+        expected["element_token"] = f"opaque/fresh/{element}"
+        if negotiation != "token_only":
+            expected["element_index"] = element
     if delivery_mode:
         expected["delivery_mode"] = delivery_mode
     assert driver.calls == [("type_text", expected)]
@@ -158,7 +167,7 @@ def test_targeted_type_after_transport_restart_refuses_mismatched_target(harness
     "missing_index", "missing_token", "empty_token", "invalidated", "other_session",
     "negative", "boolean", "string", "pid", "window_id", "app", "coordinate",
     "from_element", "element_token", "snapshot_id", "old_backend", "kwargs_backend",
-    "blocked", "denied", "driver_stale", "index_only_schema", "token_only_schema",
+    "blocked", "denied", "driver_stale", "index_only_schema",
 ])
 def test_targeted_type_fails_closed_without_global_fallback(harness, case):
     invoke, backends = harness
@@ -212,9 +221,8 @@ def test_targeted_type_fails_closed_without_global_fallback(harness, case):
     elif case == "driver_stale":
         driver.stale = True
         expected = "stale_element"
-    elif case in {"index_only_schema", "token_only_schema"}:
-        prop = "element_token" if case == "index_only_schema" else "element_index"
-        driver._tool_schemas["type_text"]["properties"].pop(prop)
+    elif case == "index_only_schema":
+        driver._tool_schemas["type_text"]["properties"].pop("element_token")
         expected = "targeted_type_unsupported"
 
     if case not in {"blocked", "denied", "driver_stale"}:
@@ -233,3 +241,112 @@ def test_targeted_type_fails_closed_without_global_fallback(harness, case):
     if case in {"old_backend", "kwargs_backend"}:
         assert invoke("type", text="legacy")["ok"] is True
         assert driver.calls == [("legacy", "legacy")]
+
+
+# Selected input-property/required-field contract from the official Linux 0.31.0 reference:
+# https://github.com/trycua/cua/blob/cua-driver-rs-v0.31.0/docs/content/docs/reference/cua-driver/mcp-tools-linux.mdx
+# Output indices remain capture selectors; the strict input surface accepts tokens only.
+_ELEMENT_INPUTS = {
+    "type_text": ("coordinate_frame delivery_mode element_token pid scope session target text window_id x y", ["text"]),
+    "click": ("button capture_id coordinate_frame count cursor_id delivery_mode element_token from_zoom modifier "
+              "pid scope session target window_id x y", []),
+    "set_value": ("delivery_mode element_token pid session value window_id", ["pid", "value"]),
+    "scroll": ("amount by coordinate_frame cursor_id delivery_mode direction element_token pid scope session "
+               "target window_id x y", ["direction"]),
+}
+_PUBLIC_ELEMENT_ACTIONS = [
+    ("type", "type_text", {"text": "Hello Привет"}),
+    ("click", "click", {}),
+    ("set_value", "set_value", {"value": "selected field"}),
+    ("scroll", "scroll", {"direction": "down", "amount": 3}),
+]
+
+
+def _discover_strict_contract(driver, contract):
+    schemas = {
+        name: {"type": "object", "properties": dict.fromkeys(properties.split(), {}),
+               "required": required, "additionalProperties": False}
+        for name, (properties, required) in _ELEMENT_INPUTS.items()
+    }
+    schemas["bring_to_front"] = {"properties": dict.fromkeys(("pid", "window_id"), {}),
+                                 "additionalProperties": False}
+    for schema in schemas.values():
+        if contract == "legacy":
+            schema["properties"]["element_index"] = {}
+        if contract in {"unsupported", "index_only", "false_capability"}:
+            schema["properties"].pop("element_token", None)
+        if contract in {"index_only", "false_capability"}:
+            schema["properties"]["element_index"] = {}
+
+    class Transport:
+        async def list_tools(self):
+            return SimpleNamespace(tools=[SimpleNamespace(
+                name=name, inputSchema=schema,
+                capabilities=["accessibility.element_tokens"] if contract == "false_capability" else [],
+            ) for name, schema in schemas.items()])
+
+    asyncio.run(driver._populate_capabilities(Transport()))
+    driver.strict = True
+
+
+@pytest.mark.parametrize("action, native, payload", _PUBLIC_ELEMENT_ACTIONS)
+@pytest.mark.parametrize("contract", ["token_only", "legacy"])
+@pytest.mark.parametrize("element", [0, 3])
+def test_public_element_actions_normalize_to_strict_schema(harness, action, native, payload, contract, element):
+    invoke, backends = harness
+    backend = backends[0]
+    driver = backend._session
+    _discover_strict_contract(driver, contract)
+    driver.elements = [{**e, "element_token": f"opaque/fresh /Привет:{e['element_index']}"} for e in driver.elements]
+    invoke("capture", mode="ax", pid=42, window_id=7)
+    driver.calls.clear()
+
+    result = invoke(action, element=element, **payload)
+
+    assert result["ok"] is True, result
+    expected = {"pid": 42, "window_id": 7, "session": backend._session_id,
+                "element_token": f"opaque/fresh /Привет:{element}", **payload}
+    if native == "click":
+        expected["button"] = "left"
+    if contract == "legacy":
+        expected["element_index"] = element
+    assert driver.calls == [(native, expected)]
+
+
+@pytest.mark.parametrize("action, native, payload", _PUBLIC_ELEMENT_ACTIONS)
+@pytest.mark.parametrize("case", [
+    "missing_index", "missing_token", "empty_token", "recaptured", "reset", "no_window",
+    "negative", "boolean", "string", "unsupported", "index_only", "false_capability", "driver_stale",
+])
+def test_public_element_actions_refuse_without_unintended_send(harness, action, native, payload, case):
+    invoke, backends = harness
+    backend = backends[0]
+    driver = backend._session
+    _discover_strict_contract(driver, case)
+    element = {"missing_index": 99, "negative": -1, "boolean": True, "string": "0"}.get(case, 0)
+    if case in {"missing_token", "empty_token", "recaptured"}:
+        driver.elements = [{"element_index": 3, "element_token": "other/3"}] if case == "recaptured" else [
+            {"element_index": 0, **({"element_token": ""} if case == "empty_token" else {})}]
+        invoke("capture", mode="ax", pid=42, window_id=7)
+        driver.calls.clear()
+    if case == "reset":
+        backend._handle_transport_reset()
+        backend._set_active_target({"pid": 42, "window_id": 7})
+    if case == "no_window":
+        backend._active_window_id = None
+    driver.stale = case == "driver_stale"
+    # If an element was explicitly selected, neither coordinates nor focus may replace it.
+    extras = {"coordinate": [10, 20]} if action in {"click", "scroll"} and case != "no_window" else {}
+    if action != "set_value" and case not in {"driver_stale", "no_window"}:
+        extras.update(delivery_mode="foreground", bring_to_front=True)
+
+    result = invoke(action, element=element, **payload, **extras)
+
+    assert result["ok"] is False, result
+    if case == "driver_stale":
+        assert result["code"] == "stale_element"
+        assert driver.calls == [(native, {"pid": 42, "window_id": 7, "session": backend._session_id,
+            "element_token": "opaque/first/0", **payload, **({"button": "left"} if native == "click" else {})})]
+    else:
+        assert result.get("code") != "invalid_arguments", result
+        assert driver.calls == []

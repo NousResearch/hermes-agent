@@ -61,11 +61,41 @@ class _InputMixin:
         args["delivery_mode"] = "foreground"
         return None
 
+    def _normalize_element_args(self, action: str, args: Dict[str, Any]) -> Optional[ActionResult]:
+        """Resolve an explicit capture index before any send, including persistent focus."""
+        if "element_index" not in args:
+            return None
+        element = args["element_index"]
+        if not isinstance(element, int) or isinstance(element, bool) or element < 0:
+            return _refuse(action, "element must be a non-negative capture index.", code="invalid_element")
+        index_supported = self._session.supports_input_property(action, "element_index")
+        token_supported = self._session.supports_input_property(action, "element_token")
+        # Legacy capability vocabulary may establish token support only when a strict schema
+        # does not contradict it. In 0.31 the schema accepts the token but rejects the index.
+        schema = getattr(self._session, "_tool_schemas", {}).get(action, {})
+        if not token_supported and index_supported and schema.get("additionalProperties") is not False:
+            token_supported = self._session.supports_capability("accessibility.element_tokens", tool=action)
+        prefix = "targeted_type" if action == "type_text" else "element_target"
+        if not token_supported:
+            return _refuse(action, "The connected cua-driver cannot act with a captured element token.",
+                           code=f"{prefix}_unsupported")
+        token = self._snapshot_tokens.get(element)
+        if not isinstance(token, str) or not token:
+            return _refuse(action, "No fresh token for this element. Capture the target again before acting.",
+                           code=f"{prefix}_stale")
+        args["element_token"] = token
+        if not index_supported:
+            del args["element_index"]
+        return None
+
     def _run_input_action(self, action: str, args: Dict[str, Any], delivery_mode: Optional[str],
                           bring_to_front: bool) -> ActionResult:
         """Apply one delivery rung, optionally focusing via its own tool. ``bring_to_front`` is never an
         input-action property: when requested, the separately approved standalone focus action runs first,
         then the original foreground input runs unchanged."""
+        refusal = self._normalize_element_args(action, args)
+        if refusal is not None:
+            return refusal
         refusal = self._apply_delivery(action, args, delivery_mode)
         if refusal is not None:
             return refusal
@@ -132,15 +162,14 @@ class _InputMixin:
         if refusal is not None:
             return refusal
         args.update(direction=direction, amount=max(1, min(50, amount)))
-        # An element without a known window_id is not an addressing form here; scrolling then falls through
-        # to the coordinate form or the bare window. Some driver schemas reject x/y on scroll: only send
+        # An explicit element must never fall through to coordinates or the bare window.
+        # Some driver schemas reject x/y on scroll: only send
         # coordinates when the driver advertises support; otherwise it scrolls the targeted window
         # (window_id is still sent for routing).
         xy = lambda: ({"x": x, "y": y}  # noqa: E731
                       if self._session.supports_capability("input.scroll.coordinates", tool="scroll") else {})
         refusal = self._pointer_args("scroll", args, (
-            ("element scroll", {"element_index": element}
-             if element is not None and self._active_window_id is not None else None),
+            ("element scroll", {"element_index": element} if element is not None else None),
             ("coordinate scroll", xy if x is not None and y is not None else None),
         ), None)
         return refusal if refusal is not None else self._run_input_action("scroll", args, delivery_mode, bring_to_front)
@@ -151,19 +180,7 @@ class _InputMixin:
         if refusal is not None:
             return refusal
         if element is not None:
-            if not isinstance(element, int) or isinstance(element, bool) or element < 0:
-                return _refuse("type_text", "element must be a non-negative capture index.", code="invalid_element")
-            # An explicit selection must never become global typing, including on older drivers.
-            if not (self._session.supports_input_property("type_text", "element_index") and (
-                    self._session.supports_capability("accessibility.element_tokens", tool="type_text")
-                    or self._session.supports_input_property("type_text", "element_token"))):
-                return _refuse("type_text", "The connected cua-driver cannot type with a captured element token.",
-                               code="targeted_type_unsupported")
-            token = self._snapshot_tokens.get(element)
-            if not isinstance(token, str) or not token:
-                return _refuse("type_text", "No fresh token for this element. Capture the target again before typing.",
-                               code="targeted_type_stale")
-            args["element_index"] = element  # _action attaches the exact opaque token and session owner.
+            args["element_index"] = element
         return self._run_input_action("type_text", {**args, "text": text}, delivery_mode, bring_to_front)
 
     def key(self, keys: str, *, delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:

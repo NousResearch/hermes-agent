@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
+from hermes_state_errors import SessionActiveWriteGuardError
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -404,7 +405,7 @@ class SessionGatewayMixin:
         Rows under a live turn lease or compression lock are skipped (#123583): the
         never-active predicate reads committed state, so a keyed row whose first turn lease
         is already held — its messages not yet flushed — would otherwise be deleted
-        mid-turn. Each deleted row's routing entry is dropped per row, entry-then-row in
+        mid-turn. Each deleted row's routing entry is dropped per row, row-then-entry in
         the same failure domain: a stale entry outliving its target would have the gateway
         resume a nonexistent id, and an entry deleted ahead of a bulk sweep that later
         aborts mid-loop (any non-guard write error propagates out of ``_execute_write``)
@@ -413,7 +414,6 @@ class SessionGatewayMixin:
         if not candidates:
             return (0, 0)
         ids = {str(row["id"]) for row in candidates}
-        from hermes_state_errors import SessionActiveWriteGuardError
         deleted = routing_deleted = 0
         for sid in ids:
             try:

@@ -4594,12 +4594,10 @@ class TestMatrixReactions:
             sender=reactor, event_id="$reaction", room_id="!room:example.org",
             content={"m.relates_to": {"event_id": "$event-1", "key": key}}))
 
-        relations = [
-            {field: value for field, value in content["m.relates_to"].items() if field != "is_falling_back"}
-            for content in sent[feedback_start:]]
+        relations = [content["m.relates_to"] for content in sent[feedback_start:]]
         expected_relation = {"m.in_reply_to": {"event_id": "$event-1"}}
         if thread_id:
-            expected_relation.update(rel_type="m.thread", event_id=thread_id)
+            expected_relation.update(rel_type="m.thread", event_id=thread_id, is_falling_back=True)
         assert (relations, action.pending.events) == ([expected_relation], {})
 
         await adapter._on_reaction(types.SimpleNamespace(

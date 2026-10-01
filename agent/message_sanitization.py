@@ -703,6 +703,7 @@ def native_anthropic_accounting_projection(messages: Any) -> Any:
         projected.append(shadow)
     return projected
 
+
 def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:
     """Copy provider-facing reasoning fields onto an API replay message (mutates ``api_msg``).
     ``needs_thinking_pad`` is the require-side flag (``needs_reasoning_echo``)."""

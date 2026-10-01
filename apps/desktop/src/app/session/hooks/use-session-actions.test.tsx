@@ -1083,6 +1083,7 @@ describe('submitTextToNewSession pin release', () => {
 
       return {} as never
     })
+
     let handle: HarnessHandle | null = null
 
     render(
@@ -1104,12 +1105,15 @@ describe('submitTextToNewSession pin release', () => {
   it('concurrent new-session submissions keep distinct owner pins', async () => {
     const observations: Array<{ promptOwner: 'owner-a' | 'owner-b'; ownerA: string[]; ownerB: string[] }> = []
     const runtimeOwner = new Map<string, 'owner-a' | 'owner-b'>()
+
     const storedByOwner = {
       'owner-a': 'stored-owner-a',
       'owner-b': 'stored-owner-b'
     } as const
+
     let createCount = 0
     const releaseCreates = deferred<void>()
+
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.create') {
         createCount += 1
@@ -1139,6 +1143,7 @@ describe('submitTextToNewSession pin release', () => {
 
       return {} as never
     })
+
     let handle: HarnessHandle | null = null
 
     render(
@@ -1172,6 +1177,7 @@ describe('submitTextToNewSession pin release', () => {
 
     expect(observations).toHaveLength(2)
     expect(observations.map(({ promptOwner }) => promptOwner).sort()).toEqual(['owner-a', 'owner-b'])
+
     for (const observation of observations) {
       const ownPins = observation.promptOwner === 'owner-a' ? observation.ownerA : observation.ownerB
       const otherPins = observation[observation.promptOwner === 'owner-a' ? 'ownerB' : 'ownerA']
@@ -1182,6 +1188,7 @@ describe('submitTextToNewSession pin release', () => {
       )
       expect(otherPins).not.toContain(storedByOwner[observation.promptOwner])
     }
+
     expect(pinnedOwnerCount()).toBe(0)
   })
 
@@ -1197,6 +1204,7 @@ describe('submitTextToNewSession pin release', () => {
 
       return {} as never
     })
+
     let handle: HarnessHandle | null = null
 
     render(
@@ -1222,6 +1230,7 @@ describe('submitTextToNewSession pin release', () => {
     // settle is drift: the minted session must not receive the prompt and the
     // caller gets a retryable failure, not a silent misroute.
     const createPending = deferred<Record<string, string>>()
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create') {
         return (await createPending.promise) as never
@@ -1229,14 +1238,15 @@ describe('submitTextToNewSession pin release', () => {
 
       return {} as never
     })
+
     const selectedRef = { current: 'stored-original' as string | null }
     let routeToken = 'route:a'
     let handle: HarnessHandle | null = null
 
     render(
       <Harness
-        getRouteToken={() => routeToken}
         getRoutedStoredSessionId={() => 'stored-original'}
+        getRouteToken={() => routeToken}
         onReady={value => (handle = value)}
         requestGateway={requestGateway}
         selectedStoredSessionIdRef={selectedRef}

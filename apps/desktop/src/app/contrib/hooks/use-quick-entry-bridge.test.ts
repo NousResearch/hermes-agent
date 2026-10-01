@@ -1,8 +1,11 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useQuickEntryBridge, quickEntrySubmitAck } from './use-quick-entry-bridge'
+
+import type * as QuickEntryModule from '@/store/quick-entry'
 import { sessionTileDelegate } from '@/store/session-states'
+
+import { quickEntrySubmitAck, useQuickEntryBridge } from './use-quick-entry-bridge'
 
 const registeredSubmitHandler = vi.hoisted(() => ({
   current: null as ((payload: { correlationId: string; target: string; text: string }) => void) | null
@@ -12,7 +15,7 @@ type SubmitTextForBridge = Parameters<typeof useQuickEntryBridge>[0]['submitText
 type SubmitTextToNewSessionForBridge = Parameters<typeof useQuickEntryBridge>[0]['submitTextToNewSession']
 
 vi.mock('@/store/quick-entry', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/store/quick-entry')>()
+  const actual = await importOriginal<typeof QuickEntryModule>()
 
   return {
     ...actual,
@@ -97,8 +100,10 @@ describe('useQuickEntryBridge', () => {
     const submitText = vi.fn(async (text: string, options?: Parameters<SubmitTextForBridge>[1]) => {
       options?.onAccepted?.({ runtimeSessionId: 'rt-current-1', storedSessionId: 'st-current-1' })
       expect(text).toBe('Send to current chat')
+
       return true
     })
+
     const { container, submit } = await renderBridge(submitText)
 
     await act(async () => {
@@ -118,10 +123,12 @@ describe('useQuickEntryBridge', () => {
   it('passes the correlation id as the new-session pin owner', async () => {
     const correlationId = 'new-submit-correlation'
     const ackSubmit = vi.fn()
+
     const submitTextToNewSession = vi.fn(async () => ({
       runtimeSessionId: 'runtime-new',
       sessionId: 'stored-new'
     }))
+
     window.hermesDesktop = {
       quickEntry: {
         ackSubmit,
@@ -240,10 +247,12 @@ describe('useQuickEntryBridge', () => {
     } as unknown as typeof window.hermesDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-1')
+
     const submitToSession = vi.fn(async () => ({
       runtimeSessionId: 'runtime-session-1',
       storedSessionId: 'stored-session-1'
     }))
+
     vi.mocked(sessionTileDelegate).mockReturnValue({
       resumeTile,
       submitToSession
@@ -284,10 +293,12 @@ describe('useQuickEntryBridge', () => {
     } as unknown as typeof window.hermesDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-before-recovery')
+
     const submitToSession = vi.fn(async () => ({
       runtimeSessionId: 'runtime-session-recovered',
       storedSessionId: 'stored-session-1'
     }))
+
     vi.mocked(sessionTileDelegate).mockReturnValue({
       resumeTile,
       submitToSession
@@ -320,10 +331,12 @@ describe('useQuickEntryBridge', () => {
     } as unknown as typeof window.hermesDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-1')
+
     const submitToSession = vi.fn(async () => ({
       runtimeSessionId: 'runtime-session-1',
       storedSessionId: 'other-session'
     }))
+
     vi.mocked(sessionTileDelegate).mockReturnValue({
       resumeTile,
       submitToSession
@@ -357,10 +370,12 @@ describe('useQuickEntryBridge', () => {
     } as unknown as typeof window.hermesDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-1')
+
     const submitToSession = vi.fn(async () => ({
       runtimeSessionId: 'runtime-session-1',
       storedSessionId: null
     }))
+
     vi.mocked(sessionTileDelegate).mockReturnValue({
       resumeTile,
       submitToSession
@@ -394,9 +409,11 @@ describe('useQuickEntryBridge', () => {
     } as unknown as typeof window.hermesDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-1')
+
     const submitToSession = vi.fn(async () => {
       throw new Error('gateway down')
     })
+
     vi.mocked(sessionTileDelegate).mockReturnValue({
       resumeTile,
       submitToSession
@@ -432,10 +449,12 @@ describe('useQuickEntryBridge', () => {
     const resumeTile = vi.fn(async () => {
       throw new Error('resume failed')
     })
+
     const submitToSession = vi.fn(async () => ({
       runtimeSessionId: 'runtime-session-1',
       storedSessionId: 'stored-session-1'
     }))
+
     vi.mocked(sessionTileDelegate).mockReturnValue({
       resumeTile,
       submitToSession

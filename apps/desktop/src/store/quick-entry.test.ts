@@ -7,8 +7,8 @@ import {
   type QuickComposerEvent,
   quickComposerReducer,
   type QuickComposerState,
-  type QuickEntrySubmitPayload,
   quickEntryResultEvent,
+  type QuickEntrySubmitPayload,
   type QuickEntrySubmitResult
 } from './quick-entry'
 
@@ -72,6 +72,7 @@ describe('quickComposerReducer', () => {
 
   it('submit-error keeps the draft visible, records the error, and refocuses on retry', () => {
     const { state } = run([connect, { draft: '  keep me  ', type: 'edit' }, { submitId: 7, type: 'submit' }])
+
     const failed = quickComposerReducer(state, {
       message: 'Delivery failed',
       submitId: 7,
@@ -110,6 +111,7 @@ describe('quickComposerReducer', () => {
       { draft: 'resume here', type: 'edit' },
       { submitId: 1, type: 'submit' }
     ])
+
     const current = run([connect, { draft: 'current here', type: 'edit' }, { submitId: 2, type: 'submit' }])
 
     expect(resumed.sent).toEqual([{ target: 's2', text: 'resume here' }])
@@ -271,6 +273,7 @@ describe('quickComposerReducer', () => {
       { submitId: 7, type: 'submit' },
       { type: 'dismiss' }
     ]).state
+
     const state = quickComposerReducer(dismissed, { type: 'shown' }).state
 
     expect(state.draft).toBe('pending prompt')
@@ -287,6 +290,7 @@ describe('quickComposerReducer', () => {
       { submitId: 7, type: 'submit' },
       { type: 'dismiss' }
     ]).state
+
     const shown = quickComposerReducer(dismissed, { type: 'shown' }).state
     const state = quickComposerReducer(shown, { submitId: 7, type: 'submit-ok' }).state
 
@@ -317,6 +321,7 @@ describe('quickComposerReducer', () => {
       { submitId: 7, type: 'submit' },
       { message: 'may still be delivered', submitId: 7, type: 'submit-unknown' }
     ])
+
     const retried = run(
       [
         { draft: 'try again', type: 'edit' },
@@ -384,6 +389,7 @@ describe('quickComposerReducer', () => {
       { submitId: 7, type: 'submit' },
       { message: 'may still be delivered', submitId: 7, type: 'submit-unknown' }
     ]).state
+
     const state = quickComposerReducer(unknown, { submitId: 7, type: 'submit-ok' }).state
 
     expect(state.draft).toBe('')
@@ -398,6 +404,7 @@ describe('quickComposerReducer', () => {
       { submitId: 7, type: 'submit' },
       { message: 'may still be delivered', submitId: 7, type: 'submit-unknown' }
     ]).state
+
     const state = quickComposerReducer(unknown, { message: 'rejected', submitId: 7, type: 'submit-error' }).state
 
     expect(state.draft).toBe('pending prompt')

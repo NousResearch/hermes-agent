@@ -869,9 +869,11 @@ export function useSessionActions({
       const params = await desktopSessionCreateParams(resolveNewSessionCwd())
       const created = await requestGateway<SessionCreateResponse>('session.create', params)
       const stored = created.stored_session_id
+
       if (!stored) {
         throw new Error('The new session did not return a stored id.')
       }
+
       // Only a genuine user move to a DIFFERENT chat mid-create orphans the
       // minted session; our own re-home below names it, so it is not drift.
       const drift = sessionContextDrift({
@@ -891,6 +893,7 @@ export function useSessionActions({
       // it (quick entry); otherwise this call owns its own generation.
       const pinOwner = owner ?? `new-session-${created.session_id}`
       pinStoredSessionForOwner(pinOwner, stored)
+
       try {
         markSessionCreatedThisRun(stored)
         runtimeIdByStoredSessionIdRef.current.set(stored, created.session_id)
@@ -900,9 +903,8 @@ export function useSessionActions({
         // atomic path cannot fall back to a route token (#85590).
         await requestGateway('prompt.submit', { session_id: created.session_id, text })
         navigate(sessionRoute(stored), { replace: true })
+
         return { runtimeSessionId: created.session_id, sessionId: stored }
-      } catch (error) {
-        throw error
       } finally {
         // Terminal transition for this owner: accepted, failed, or cancelled.
         // Owner-scoped pins cannot strand another request, so no tick budget is

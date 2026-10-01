@@ -3,9 +3,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 
 import {
-  pinStoredSessionForOwner,
   pinnedOwnerCount,
   pinnedStoredSessionIdsForOwner,
+  pinStoredSessionForOwner,
   releaseStoredSessionPins,
   routeTargetFromToken,
   sessionContextDrift

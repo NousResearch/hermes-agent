@@ -830,6 +830,8 @@ def _active_image_capabilities() -> Dict[str, Any]:
                 info["supports_upscale"] = bool(caps.get("supports_upscale"))
                 if caps.get("creative_controls"):
                     info["creative_controls"] = list(caps["creative_controls"])
+                if caps.get("source_image_role") == "style":
+                    info["source_image_role"] = "style"
                 return info
         except Exception:  # noqa: BLE001
             pass
@@ -876,6 +878,15 @@ _CREATIVE_CONTROL_PARAMS = {
     },
 }
 
+_STYLE_IMAGE_URL_PARAM = {
+    "type": "string",
+    "description": (
+        "Style reference: its look is copied, the image itself is not edited. "
+        "A public URL or an absolute local file path. Describe the subject in "
+        "the prompt. Omit for text-to-image."
+    ),
+}
+
 _UPSCALE_PARAM = {
     "type": "boolean",
     "description": (
@@ -902,19 +913,26 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
     static_props = IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
     properties: Dict[str, Any] = {
         "prompt": static_props["prompt"], "aspect_ratio": static_props["aspect_ratio"]}
+    style_refs = info.get("source_image_role") == "style"
     if can_edit:
-        edit_clause = ", or edit / transform an existing image by passing image_url"
-        properties["image_url"] = _IMAGE_URL_PARAM
+        if style_refs:
+            edit_clause = ", or copy the look of reference images passed in image_url"
+            properties["image_url"] = _STYLE_IMAGE_URL_PARAM
+            refs_desc = f"Up to {max_refs} more style references. URLs or absolute local paths."
+        else:
+            edit_clause = ", or edit / transform an existing image by passing image_url"
+            properties["image_url"] = _IMAGE_URL_PARAM
+            refs_desc = (
+                f"Up to {max_refs} additional reference images (style, "
+                "character, or composition) guiding an edit. URLs or "
+                "absolute local paths."
+            )
         if max_refs > 1:
             properties["reference_image_urls"] = {
                 "type": "array",
                 "items": {"type": "string"},
                 "maxItems": max_refs,
-                "description": (
-                    f"Up to {max_refs} additional reference images (style, "
-                    "character, or composition) guiding an edit. URLs or "
-                    "absolute local paths."
-                ),
+                "description": refs_desc,
             }
     else:
         edit_clause = " (text-to-image only — the active model cannot edit existing images)"

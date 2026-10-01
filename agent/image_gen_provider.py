@@ -34,8 +34,9 @@ class ImageGenProvider(CatalogProviderBase):
 
     def capabilities(self) -> Dict[str, Any]:
         """``modalities`` (``"text"`` and/or ``"image"``) and ``max_reference_images``; optionally
-        ``supports_upscale`` (bool) and ``creative_controls`` (names from the tool's creative-control
-        vocabulary: ``creativity``, ``intensity``, ``complexity``, ``movement``). Surfaced in the
+        ``supports_upscale`` (bool), ``creative_controls`` (names from the tool's creative-control
+        vocabulary: ``creativity``, ``intensity``, ``complexity``, ``movement``) and
+        ``source_image_role`` (``"style"`` when image inputs set the look and are not edited). Surfaced in the
         dynamic tool schema so the model knows when ``image_url`` / ``upscale`` / each control is
         honored, and only declared controls are passed to :meth:`generate`; the text-only default
         keeps non-overriding providers backward compatible."""

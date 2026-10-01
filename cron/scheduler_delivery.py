@@ -1481,7 +1481,7 @@ def _live_send_text(
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
     Re-raises a real send error so the caller falls through to standalone."""
     from agent.async_utils import safe_schedule_threadsafe
-    from gateway.delivery import DeliveryRouter, DeliveryTarget
+    from gateway.delivery import DeliveryRouter, DeliveryTarget, PartialDeliveryError
     job = t.job
     router = DeliveryRouter(t.config, t.target_adapters)
     route_target = DeliveryTarget(
@@ -1529,6 +1529,13 @@ def _live_send_text(
             "to avoid duplicate)",
             job["id"], t.platform_name, t.chat_id)
         return True, True, None
+    except PartialDeliveryError as ex:
+        # The head of a split send is already on screen: a standalone resend would duplicate it.
+        raw = getattr(ex.result, "raw_response", None) or {}
+        _note_target_error(
+            job, f"live adapter send to {t.where} delivered {raw.get('delivered_chunks', '?')} of "
+            f"{raw.get('total_chunks', '?')} chunks, then failed: {ex}", delivery_errors)
+        return True, False, None
     except Exception as ex:
         # Real send error (not a slow confirmation): fall through to standalone. The router raises
         # a failed SendResult's error string, so this is where send_path_degraded arrives.

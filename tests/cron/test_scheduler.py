@@ -1842,6 +1842,40 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send.assert_awaited_once()
         adapter.send.assert_not_awaited()
 
+class TestDeliverResultPartialSplitDelivery:
+    def test_partial_split_delivery_is_not_resent_by_standalone(self):
+        """A split send that failed after delivering its head must not fall through to standalone,
+        which would deliver the whole payload again; the run reports the partial failure instead."""
+        import asyncio
+        import threading
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        adapter = MagicMock()
+        adapter.splits_long_messages = True
+        adapter.send = AsyncMock(return_value=SendResult(
+            success=False, error="Twilio 400: rejected",
+            raw_response={"partial_overflow": True, "delivered_chunks": 2, "total_chunks": 5}))
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        job = {"id": "partial-job", "deliver": "origin", "origin": {"platform": "telegram", "chat_id": "123"}}
+        standalone_send = AsyncMock(return_value={"success": True})
+        try:
+            with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+                 patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+                 patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+                result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+        adapter.send.assert_awaited_once()
+        standalone_send.assert_not_awaited()
+        assert result and "delivered 2 of 5 chunks" in result, result
+
+
 class TestDeliverResultLiveAdapterUnconfirmed:
     """Regression for #47056.
 

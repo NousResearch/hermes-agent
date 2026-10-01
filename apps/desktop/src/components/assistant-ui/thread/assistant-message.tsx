@@ -27,6 +27,7 @@ import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/messa
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
+import { threadMessageIndex } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
@@ -65,6 +66,7 @@ import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
@@ -95,6 +97,13 @@ interface MessageActionProps {
    *  streaming delta flush (the text changes ~30×/s), which profiling showed
    *  was a large slice of per-token script time on long transcripts. */
   getMessageText: () => string
+  /** Lazy accessor for the whole response group's blank-line-joined text — the
+   *  explicit full-response copy/read-aloud scope (#118864). Identical to
+   *  `getMessageText` on a solo reply. */
+  getFullResponseText: () => string
+  /** True when the response group carries more than one text-bearing reply, so
+   *  the current-reply and full-response scopes actually differ. */
+  fullResponseAvailable: boolean
   onBranchInNewChat?: (messageId: string) => void
 }
 
@@ -118,32 +127,26 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   const interAgentSender = useAuiState(s => {
     const messages = s.thread.messages
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].id !== s.message.id) {
-        continue
+    // Shared id->index map: a per-row scan for its own position was
+    // mounted-rows x transcript-length on every streamed chunk (#126486).
+    for (let j = threadMessageIndex(messages, s.message.id) - 1; j >= 0; j--) {
+      const prev = messages[j] as { content?: unknown; role?: string }
+
+      if (prev.role === 'assistant') {
+        return null
       }
 
-      for (let j = i - 1; j >= 0; j--) {
-        const prev = messages[j] as { content?: unknown; role?: string }
+      if (prev.role === 'user') {
+        const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
 
-        if (prev.role === 'assistant') {
+        if (!match) {
           return null
         }
 
-        if (prev.role === 'user') {
-          const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
+        const sender = (match[1] || match[3] || 'agent').trim()
 
-          if (!match) {
-            return null
-          }
-
-          const sender = (match[1] || match[3] || 'agent').trim()
-
-          return dispatchedTo(messages.slice(0, j), [match[1], match[2], match[3]]) ? null : sender
-        }
+        return dispatchedTo(messages.slice(0, j), [match[1], match[2], match[3]]) ? null : sender
       }
-
-      return null
     }
 
     return null
@@ -245,7 +248,16 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // stable across the 30 Hz delta stream, so this adds no per-token renders).
   const turnDurationS = useAuiState(s => s.message.metadata?.custom?.durationS as number | undefined)
 
-  const getMessageText = useCallback(
+  // Response-scope text accessors (#118864). The DEFAULT copy/read-aloud reads
+  // only THIS message's text: joining the whole response group mixed sealed
+  // interim narration and mid-turn commentary into the final reply's clipboard
+  // and speech. The whole-turn semantic survives as an explicit second scope
+  // (Copy full response / Shift-click Read aloud) — the live-view counterpart
+  // of the rehydrated single bubble for the background-continuation grouping
+  // 3bdd4cc5fd delivered.
+  const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
+
+  const getFullResponseText = useCallback(
     () =>
       responseIds.length
         ? responseIds
@@ -255,6 +267,8 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         : messageContentText(messageRuntime.getState().content),
     [messageRuntime, responseIds, threadRuntime]
   )
+
+  const fullResponseAvailable = responseIds.length > 1
 
   // useEnterAnimation consults `enabled` ONLY when its callback ref fires,
   // i.e. at mount: the hook parks the value in a ref and returns a
@@ -294,6 +308,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
           >
             {/* Todos render in the composer status stack now, not inline. */}
             {MESSAGE_PARTS}
+            <StoppedNotice />
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />
             <MessagePrimitive.Error>
@@ -321,14 +336,23 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             </MessagePrimitive.Error>
           </div>
           <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
-          {hasVisibleText && !isInterim && responseTail && (
-            <AssistantFooter
-              durationS={turnDurationS}
-              getMessageText={getMessageText}
-              messageId={messageId}
-              onBranchInNewChat={onBranchInNewChat}
-            />
-          )}
+          {/* Sealed interims skip the footer so a tool-heavy turn doesn't grow a
+              copy bar per paragraph (72dd01c553) — EXCEPT when the interim is the
+              group's last text-bearing row (the turn ended on a tool-only bubble):
+              without the bar that turn has no copy/branch affordance at all
+              (#118864). */}
+          {hasVisibleText &&
+            responseTail &&
+            (!isInterim || (responseIds.length > 0 && responseIds.at(-1) === messageId)) && (
+              <AssistantFooter
+                durationS={turnDurationS}
+                fullResponseAvailable={fullResponseAvailable}
+                getFullResponseText={getFullResponseText}
+                getMessageText={getMessageText}
+                messageId={messageId}
+                onBranchInNewChat={onBranchInNewChat}
+              />
+            )}
           {/* Last thing in the turn — under the action bar, the way Cursor ends a
           turn on its summary rather than burying it above the controls. */}
           <SettledChangedFiles />
@@ -336,6 +360,28 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         </>
       )}
     </MessagePrimitive.Root>
+  )
+}
+
+const StoppedNotice: FC = () => {
+  const { t } = useI18n()
+
+  const stopped = useAuiState(
+    s => s.message.status?.type !== 'running' && s.message.metadata?.custom?.interrupted === true
+  )
+
+  if (!stopped) {
+    return null
+  }
+
+  return (
+    <div
+      className="flex items-center gap-1 px-(--message-text-indent) pt-1 text-[0.72rem] text-(--ui-text-tertiary)"
+      data-slot="aui_assistant-message-stopped"
+    >
+      <Codicon className="size-3" name="debug-stop" />
+      {t.assistant.thread.responseStopped}
+    </div>
   )
 }
 
@@ -592,12 +638,12 @@ const SwitchProviderAction: FC<{ label: string }> = ({ label }) => {
   )
 }
 
-// Settings → Keys deep link for a rejected API key: `?tab=keys` plus
-// `&key=<ENV>` when the descriptor names the env var (keys-settings.tsx
-// scrolls to and expands that row). Older backends omit `api_key_env`; the
-// tab alone is still the right place.
+// Settings → Providers → API keys deep link for a rejected API key, plus
+// `&key=<ENV>` when the descriptor names the env var (providers-settings.tsx
+// scrolls to and expands that provider). Older backends omit `api_key_env`;
+// the API-keys list alone is still the right place.
 const updateApiKeyRoute = (surface: ErrorSurface | undefined) => {
-  const params = new URLSearchParams({ tab: 'keys' })
+  const params = new URLSearchParams({ tab: 'providers', pview: 'keys' })
 
   if (surface?.apiKeyEnv) {
     params.set('key', surface.apiKeyEnv)
@@ -667,7 +713,8 @@ const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
     }
 
     triggerHaptic('submit')
-    void delegate.executeSlash('/compress', sessionId).catch(error => {
+    // A button, not a typed command: kept out of the slash-command usage count.
+    void delegate.executeSlash('/compress', sessionId, { typed: false }).catch(error => {
       notifyError(error, t.assistant.thread.errorCompressFailed)
     })
   }, [sessionId, t.assistant.thread.errorCompressFailed])
@@ -808,26 +855,33 @@ const ErrorRecoveryActions: FC = () => {
 
   // Reveal a local folder through Electron; `logsRoot` is the profile's
   // HERMES_HOME/logs, and its parent is the Hermes data folder itself (what
-  // the user needs to see to free space after a disk-full failure).
-  const openLocalDir = useCallback(async (resolve: (logsRoot: string) => string, failedMessage: string) => {
-    try {
-      const root = await window.hermesDesktop?.logsRoot?.()
+  // the user needs to see to free space after a disk-full failure). Resolved
+  // for the profile that OWNS this session (a tile / Bot chat names it in its
+  // composer scope), not the pooled backend's launch profile (#119080).
+  const ownerProfile = useComposerScope().profile || gatewayProfile
 
-      if (!root) {
-        notifyError(new Error('logs root unavailable'), failedMessage)
+  const openLocalDir = useCallback(
+    async (resolve: (logsRoot: string) => string, failedMessage: string) => {
+      try {
+        const root = await window.hermesDesktop?.logsRoot?.(normalizeProfileKey(ownerProfile))
 
-        return
+        if (!root) {
+          notifyError(new Error('logs root unavailable'), failedMessage)
+
+          return
+        }
+
+        const result = await window.hermesDesktop?.openDir?.(resolve(root))
+
+        if (result && !result.ok) {
+          notifyError(new Error(result.error || 'open failed'), failedMessage)
+        }
+      } catch (error) {
+        notifyError(error, failedMessage)
       }
-
-      const result = await window.hermesDesktop?.openDir?.(resolve(root))
-
-      if (result && !result.ok) {
-        notifyError(new Error(result.error || 'open failed'), failedMessage)
-      }
-    } catch (error) {
-      notifyError(error, failedMessage)
-    }
-  }, [])
+    },
+    [ownerProfile]
+  )
 
   const openLogs = useCallback(
     () => openLocalDir(root => root, copy.errorOpenLogsFailed),
@@ -904,7 +958,14 @@ const ErrorRecoveryActions: FC = () => {
       )}
       {plan.retry && (
         <ActionBarPrimitive.Reload asChild>
-          <button className="aui-error-action" onClick={() => triggerHaptic('submit')} type="button">
+          <button
+            className="aui-error-action"
+            onClick={() => {
+              triggerHaptic('submit')
+              recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
+            }}
+            type="button"
+          >
             <RefreshCwIcon className="size-3" />
             {copy.errorRetry}
           </button>
@@ -938,6 +999,8 @@ const ErrorRecoveryActions: FC = () => {
 
 const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
   durationS,
+  fullResponseAvailable,
+  getFullResponseText,
   messageId,
   getMessageText,
   onBranchInNewChat
@@ -991,10 +1054,30 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             <GitForkIcon className="size-3.5" />
           </TooltipIconButton>
         )}
-        <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
-        <ReadAloudButton getText={getMessageText} messageId={messageId} />
+        <CopyButton
+          appearance="icon"
+          buttonSize="icon"
+          label={copy.copy}
+          onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
+          text={getMessageText}
+        />
+        {fullResponseAvailable && (
+          <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
+        )}
+        <ReadAloudButton
+          fullResponseAvailable={fullResponseAvailable}
+          getFullText={getFullResponseText}
+          getText={getMessageText}
+          messageId={messageId}
+        />
         <ActionBarPrimitive.Reload asChild>
-          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
+          <TooltipIconButton
+            onClick={() => {
+              triggerHaptic('submit')
+              recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
+            }}
+            tooltip={copy.refresh}
+          >
             <RefreshCwIcon className="size-3.5" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
@@ -1039,7 +1122,12 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
   )
 }
 
-const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ getText, messageId }) => {
+const ReadAloudButton: FC<{
+  fullResponseAvailable: boolean
+  getFullText: () => string
+  getText: () => string
+  messageId: string
+}> = ({ fullResponseAvailable, getFullText, getText, messageId }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const voicePlayback = useStore($voicePlayback)
@@ -1055,29 +1143,41 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   const isSpeaking = readAloudStatus === 'speaking'
   const anyPlaybackActive = voicePlayback.status !== 'idle'
   const Icon = isPreparing ? Loader2Icon : isSpeaking ? VolumeXIcon : AudioLines
-  const tooltip = isPreparing ? copy.preparingAudio : isSpeaking ? copy.stopReading : copy.readAloud
 
-  const read = useCallback(async () => {
-    const text = getText()
+  const tooltip = isPreparing
+    ? copy.preparingAudio
+    : isSpeaking
+      ? copy.stopReading
+      : fullResponseAvailable
+        ? `${copy.readAloud} (${copy.readAloudFullResponseHint})`
+        : copy.readAloud
 
-    if (!text || $voicePlayback.get().status !== 'idle') {
-      return
-    }
+  // Default reads the current reply only; Shift-click reads the whole response
+  // group — the read-aloud mirror of the two copy scopes (#118864).
+  const read = useCallback(
+    async (full: boolean) => {
+      const text = full ? getFullText() : getText()
 
-    try {
-      await playSpeechText(text, { connectionId, messageId, profile, source: 'read-aloud' })
-      markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
-    } catch (error) {
-      notifyError(error, copy.readAloudFailed)
-    }
-  }, [connectionId, copy.readAloudFailed, getText, messageId, profile, sessionId, view.$messages])
+      if (!text || $voicePlayback.get().status !== 'idle') {
+        return
+      }
+
+      try {
+        await playSpeechText(text, { connectionId, messageId, profile, source: 'read-aloud' })
+        markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
+      } catch (error) {
+        notifyError(error, copy.readAloudFailed)
+      }
+    },
+    [connectionId, copy.readAloudFailed, getFullText, getText, messageId, profile, sessionId, view.$messages]
+  )
 
   return (
     <TooltipIconButton
       disabled={isPreparing || (!isSpeaking && anyPlaybackActive)}
-      onClick={() => {
+      onClick={event => {
         triggerHaptic('selection')
-        void (isSpeaking ? stopVoicePlayback() : read())
+        void (isSpeaking ? stopVoicePlayback() : read(event.shiftKey))
       }}
       tooltip={tooltip}
     >

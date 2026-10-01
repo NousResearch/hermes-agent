@@ -313,3 +313,28 @@ def test_venv_layout_explicit_and_native(tmp_path, windows, folder, executable):
     assert venv_python(str(tmp_path), windows=windows) == tmp_path / folder / executable
     if windows == (os.name == "nt"):
         assert venv_python(tmp_path) == tmp_path / folder / executable
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize(("mechanism", "rebuilt"), [("self", True), ("electron-updater", False)])
+def test_installed_app_without_a_checkout_build_is_still_rebuilt(zip_update, monkeypatch, tmp_path, mechanism, rebuilt):
+    """#52339: an installed Hermes.app only ``hermes update`` refreshes needs a Desktop build even
+    when release/ is gone, or it never gets newer. A self-updating release is not ours to rebuild."""
+    installed = tmp_path / "Applications" / "Hermes.app"
+    (installed / "Contents" / "Resources").mkdir(parents=True)
+    (installed / "Contents" / "Resources" / "install-stamp.json").write_text(
+        json.dumps({"updateMechanism": mechanism}), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [installed])
+    # The checkout under the default Hermes home is the one an installed app runs.
+    (tmp_path / "default-home").mkdir()
+    (tmp_path / "default-home" / "hermes-agent").symlink_to(zip_update.root)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path / "default-home")
+    built = []
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products",
+                        lambda selected, *, desktop: built.append(desktop))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
+    monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
+
+    update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), False)
+
+    assert built == [rebuilt]

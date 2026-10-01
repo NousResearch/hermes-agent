@@ -168,6 +168,27 @@ describe('ModelPill per-surface model label', () => {
   })
 })
 
+// #49340: long model names ("DeepSeek V4 Flash · Med") were truncated with a
+// finite `max-w-*` cap even when the composer row had room to spare. The pill
+// now sizes to its content and only gives width back (shrink + min-w-0) under
+// real space pressure, so the label never clips unless the row is actually
+// out of room.
+describe('ModelPill width', () => {
+  it('imposes no finite width cap on the label', () => {
+    setCurrentModel('deepseek/deepseek-v4-flash')
+    $activeSessionId.set(null)
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
+
+    const pill = screen.getByRole('button')
+    expect(pill.className).not.toMatch(/\bmax-w-/)
+    // The squeeze path (collapse stages) still has to work: the pill must keep
+    // yielding width, not overflow the composer row.
+    expect(pill.className).toMatch(/\bmin-w-0\b/)
+    expect(pill.className).toMatch(/\bshrink\b/)
+  })
+})
+
 // The `composer.modelPill` slot: a provider may override the pill's LABEL
 // (compact reasoning label, custom naming) while the pill keeps its chrome,
 // pin dot, and menu. A declining provider leaves the core label untouched.

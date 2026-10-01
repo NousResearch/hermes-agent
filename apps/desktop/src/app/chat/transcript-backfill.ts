@@ -15,15 +15,59 @@
  * drift on the next page.
  */
 
-import { getOlderSessionMessages, type ProfileScope } from '@/hermes'
-import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
+import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
   recordTranscriptBackfillPage,
   tailStateFromPage,
   type TranscriptProfileScope,
   transcriptTailState
 } from '@/store/transcript-tail'
-import type { SessionMessagesResponse } from '@/types/hermes'
+import type { SessionMessage, SessionMessagesResponse } from '@/types/hermes'
+
+/**
+ * Compaction projection can stamp the session's opening USER row
+ * `display_kind: hidden` (#96875): the durable store holds the greeting but
+ * hydration drops the row, so paging to the very top of a compacted session
+ * renders only the first assistant reply. When an older page carries the
+ * opening user turn, clear the hidden stamp (keeping the content as the
+ * display projection) so `toChatMessages` keeps it on screen. Only the
+ * FIRST user row with content is unhidden — later hidden rows stay hidden
+ * (model scaffolding, muted turns), and an opening row with no content
+ * was never a greeting.
+ */
+export function unhideOpeningUserRows(messages: SessionMessage[]): SessionMessage[] {
+  const openingIndex = messages.findIndex(message => message.role === 'user')
+
+  if (openingIndex < 0) {
+    return messages
+  }
+
+  const opening = messages[openingIndex]
+
+  if (opening.display_kind !== 'hidden') {
+    return messages
+  }
+
+  const content = opening.display_content ?? opening.content
+
+  if (content == null || content === '') {
+    return messages
+  }
+
+  return messages.map((message, index) => {
+    if (index !== openingIndex) {
+      return message
+    }
+
+    const { display_kind: _hidden, ...rest } = message
+
+    return {
+      ...rest,
+      display_content: typeof content === 'string' ? content : String(content)
+    }
+  })
+}
 
 /** Older rows likely exist beyond what the in-memory store holds. */
 export function transcriptBackfillAvailable(
@@ -138,6 +182,72 @@ function durableRowIds(messages: ChatMessage[]): Set<number> {
   return new Set(messages.flatMap(message => (message.rowId === undefined ? [] : [message.rowId])))
 }
 
+/** A text-only refresh can omit the live tool bubble after the turn settles. */
+function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const previousFinalIndex = previous.findLastIndex(
+    message => message.role === 'assistant' && message.rowId !== undefined && Boolean(chatMessageText(message).trim())
+  )
+
+  if (previousFinalIndex < 0) {
+    return messages
+  }
+
+  const previousFinal = previous[previousFinalIndex]
+
+  const finalIndex = messages.findIndex(
+    message => message.role === 'assistant' && message.rowId === previousFinal.rowId
+  )
+
+  if (finalIndex < 0 || chatMessageText(messages[finalIndex]).trim() !== chatMessageText(previousFinal).trim()) {
+    return messages
+  }
+
+  const previousUserIndex = previous.findLastIndex(
+    (message, index) => index < previousFinalIndex && message.role === 'user'
+  )
+
+  const userIndex = messages.findLastIndex((message, index) => index < finalIndex && message.role === 'user')
+
+  if (
+    previousUserIndex < 0 ||
+    userIndex < 0 ||
+    previous[previousUserIndex].rowId === undefined ||
+    previous[previousUserIndex].rowId !== messages[userIndex].rowId
+  ) {
+    return messages
+  }
+
+  const existingIds = new Set(
+    messages
+      .slice(userIndex + 1, finalIndex + 1)
+      .flatMap(message => message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
+  )
+
+  const missing = previous.slice(previousUserIndex + 1, previousFinalIndex + 1).flatMap(message =>
+    message.parts.filter(part => {
+      if (part.type !== 'tool-call' || (part.result === undefined && part.completedAt === undefined)) {
+        return false
+      }
+
+      if (existingIds.has(part.toolCallId)) {
+        return false
+      }
+
+      existingIds.add(part.toolCallId)
+
+      return true
+    })
+  )
+
+  if (!missing.length) {
+    return messages
+  }
+
+  return messages.map((message, index) =>
+    index === finalIndex ? { ...message, parts: [...missing, ...message.parts] } : message
+  )
+}
+
 function sharesDurableRow(first: ChatMessage[], second: ChatMessage[]): boolean {
   const rowIds = durableRowIds(first)
 
@@ -231,11 +341,27 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
 
   if (anchor === 0) {
-    return refreshedTail
+    return retainCompletedTurnTools(refreshedTail, previous)
   }
 
   if (prefixIsEarlier) {
-    return [...previous.slice(0, anchor), ...refreshedTail]
+    // A page-local tool fold can sit in front of the anchor on BOTH sides: the
+    // window's copy was hydrated from the same page, and the refreshed page
+    // re-emits that row with the same id. Keeping both copies makes the graft
+    // non-idempotent — the refreshed window comes back one row longer than the
+    // local window on every read, so `messagesIfTranscriptBehind` reports
+    // "behind" forever: the send is refused before `prompt.submit` runs and a
+    // duplicate accumulates per retry. Drop only the prefix copies the page
+    // already carries. Every durable prefix row keeps travelling in front of
+    // the refreshed tail, and so does an unstored row the page has no copy of
+    // (it can only have come from an older page).
+    const refreshedIds = new Set(refreshedTail.map(message => message.id))
+
+    const prefix = previous
+      .slice(0, anchor)
+      .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
+
+    return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
@@ -244,10 +370,10 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   // tail really did cover. Take the page. This is what keeps a finished reply
   // through a long tool turn.
   if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
-    return refreshedTail
+    return retainCompletedTurnTools(refreshedTail, previous)
   }
 
-  return mergeOverlappingTail(previous, refreshedTail)
+  return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4
@@ -406,7 +532,34 @@ export function backfillOlderTranscriptPage(request: BackfillRequest): Promise<b
     // below prepends whatever prefix the store is missing, and the recorded
     // state marks the session fully loaded so the REST action retires.
     recordTranscriptBackfillPage(storedSessionId, page, profile)
-    request.applyOlderPage(toChatMessages(page.messages))
+    const olderRows = unhideOpeningUserRows(page.messages)
+    request.applyOlderPage(toChatMessages(olderRows))
+
+    // #96875: paging can reach the top while the opening USER turn is still
+    // missing — the durable row is compaction-projected to display_kind=hidden
+    // (dropped at hydration) or sits before the last reachable `latest` page.
+    // Once the tail bookkeeping reports the session fully loaded and the page
+    // that landed carries no user turn, fetch the oldest display rows once and
+    // prepend the opening user turn. Best-effort: a failure keeps the older
+    // page that already landed.
+    const openingTurnLoaded = olderRows.some(message => message.role === 'user' && message.display_kind !== 'hidden')
+
+    if (!openingTurnLoaded && !transcriptTailState(storedSessionId, profile)?.possiblyTruncated) {
+      try {
+        const origin = await getSessionMessages(storedSessionId, tail.profile, {
+          includeCompacted: true,
+          limit: 20,
+          offset: 0,
+          order: 'oldest'
+        })
+
+        if (request.isCurrent()) {
+          request.applyOlderPage(toChatMessages(unhideOpeningUserRows(origin.messages)))
+        }
+      } catch {
+        // Origin fetch is best-effort; the already-applied older page stays.
+      }
+    }
 
     return true
   })().finally(() => {

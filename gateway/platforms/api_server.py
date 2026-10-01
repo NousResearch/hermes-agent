@@ -144,6 +144,7 @@ from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -158,6 +159,7 @@ from gateway.browser_control_broker import (
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
+from hermes_state_errors import SessionActiveWriteGuardError
 
 
 logger = logging.getLogger(__name__)
@@ -1056,10 +1058,28 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     return hashlib.sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
-def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: str) -> str:
+def _names_launch_profile(profile: str) -> bool:
+    """True when a /p/<profile>/ prefix names the profile this process was LAUNCHED as: its
+    un-prefixed and prefixed requests are one profile and must key one session."""
+    try:
+        from hermes_cli.profiles import profile_matches_home
+        from hermes_constants import get_routing_process_hermes_home
+        return profile_matches_home(profile, home=get_routing_process_hermes_home())
+    except Exception:
+        return False
+
+
+def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: str,
+                            profile: Optional[str] = None) -> str:
     """Stable session id from the system prompt + first user message (constant across all
-    turns of an Open WebUI-style conversation), so one Hermes session/sandbox is reused."""
+    turns of an Open WebUI-style conversation), so one Hermes session/sandbox is reused.
+    A routed ``/p/<profile>/`` prefix namespaces the seed: the id keys process-wide state
+    (session store, per-session sandbox), so two profiles opening with identical text must not
+    collide (#123989). Default/standalone ids are unchanged so live conversations survive, and
+    the launch profile addressed through its own ``/p/<launch>/`` prefix keeps the un-prefixed id."""
     seed = f"{system_prompt or ''}\n{first_user_message}"
+    if profile and profile != "default" and not _names_launch_profile(profile):
+        seed = f"{profile}\0{seed}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"api-{digest}"
 
@@ -1098,19 +1118,31 @@ except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
 
 
+# English labels stay as constants: ``gateway.run._GATEWAY_AUTH_ERROR_RE`` / ``_GATEWAY_RATE_LIMIT_RE``
+# sniff these words in failure envelopes, so matchers and tests key off them regardless of the
+# display language. ``user_text()`` renders the human-facing line through ``t()``.
+PROVIDER_AUTH_FAILED_LABEL = "Provider authentication failed"
+PROVIDER_RATE_LIMITED_LABEL = "Provider rate-limited"
+
+
 class _ProviderAuthResolutionError(RuntimeError):
     """Provider credential resolution failed. Typed so callers never mislabel other
     RuntimeErrors from run_conversation() (e.g. a closed OpenAI client) as auth failures."""
 
-    def user_text(self) -> str:
-        """Raw-surface failure line. A quota/429 cap with valid credentials must not be labelled an
-        authentication failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
+    def is_rate_limited(self) -> bool:
+        """A quota/429 cap with valid credentials must not be labelled an authentication
+        failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
         from hermes_cli.auth import is_rate_limited_auth_error
 
         cause = self.__cause__
         cause = getattr(cause, "__cause__", None) if isinstance(cause, RuntimeError) else cause
-        label = "Provider rate-limited" if is_rate_limited_auth_error(cause) else "Provider authentication failed"
-        return f"⚠️ {label}: {self}"
+        return bool(is_rate_limited_auth_error(cause))
+
+    def user_text(self) -> str:
+        """Raw-surface failure line shown as the assistant reply in API-backed chat UIs."""
+        label = t("platform.api_server.provider_rate_limited" if self.is_rate_limited()
+                  else "platform.api_server.provider_auth_failed")
+        return t("platform.api_server.provider_error_line", label=label, error=self)
 
 
 class _SessionEventQueue:
@@ -1863,11 +1895,22 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         with self._session_db_cache_lock:
             if self._session_db_cache_closed:
                 return None
-            db = self._session_dbs.get(key)
+            db = self._cached_session_db_locked(key)
             if db is None:
                 db = acquire(home / "state.db")
                 self._session_dbs[key] = db
             return db
+
+    def _cached_session_db_locked(self, key: str) -> Optional[Any]:
+        """Caller holds ``_session_db_cache_lock``. A profile unserve/delete tears the home's
+        generation down through ``hermes_state_registry.close_all_under`` (clearing
+        ``_shared_registry_owned``) without telling this cache; serving that handle would keep
+        raising ``StateDbReplacedError`` after a recreate, so drop it and let the caller reopen."""
+        db = self._session_dbs.get(key)
+        if db is not None and getattr(db, "_shared_registry_owned", True) is False:
+            del self._session_dbs[key]
+            return None
+        return db
 
     def _close_cached_session_dbs(self) -> None:
         """Close SessionDB handles owned by this adapter's profile cache."""
@@ -1907,14 +1950,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             home = get_hermes_home()
             key = str(home)
             with self._session_db_cache_lock:
-                cached = self._session_dbs.get(key)
+                cached = self._cached_session_db_locked(key)
             if cached is not None:
                 return cached
             if self._session_db_lock is None:
                 self._session_db_lock = asyncio.Lock()
             async with self._session_db_lock:
                 with self._session_db_cache_lock:
-                    cached = self._session_dbs.get(key)
+                    cached = self._cached_session_db_locked(key)
                 if cached is not None:
                     return cached
                 return await asyncio.to_thread(self._open_and_cache_session_db, home)
@@ -2980,6 +3023,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Full system prompts / model_config never cross the client API; only their presence.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
         payload["has_model_config"] = bool(session.get("model_config"))
+        raw_model_config = session.get("model_config")
+        try:
+            model_config = (
+                json.loads(raw_model_config)
+                if isinstance(raw_model_config, str)
+                else raw_model_config
+            )
+        except (TypeError, json.JSONDecodeError):
+            model_config = None
+        # Exact-id consumers may inspect/resume delegate children even though
+        # list endpoints intentionally omit them. Project only the provenance
+        # bit the client needs so it cannot accidentally promote such a row
+        # into an ordinary session list; never expose the model snapshot.
+        payload["is_internal_child"] = bool(
+            isinstance(model_config, dict)
+            and model_config.get("_delegate_from") is not None
+        )
         return payload
 
     @staticmethod
@@ -3206,7 +3266,29 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
-        deleted = await asyncio.to_thread(db.delete_session, session_id)
+        if db is None:
+            return self._session_db_unavailable()
+        # Same profile home the DB was resolved from (the profile middleware scopes
+        # get_hermes_home() for this request) — without it the transcript/dump scrub is skipped.
+        sessions_dir = None
+        try:
+            from hermes_constants import get_hermes_home
+            sessions_dir = Path(get_hermes_home()) / "sessions"
+        except Exception:
+            logger.debug("sessions dir unavailable for delete of %s", session_id, exc_info=True)
+        try:
+            deleted = await asyncio.to_thread(
+                db.delete_session, session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+        except SessionActiveWriteGuardError as exc:
+            return _error_response(str(exc), 409, code="session_active_turn")
+        if deleted:
+            # A hard delete must also drop the gateway's durable channel→session routing entries
+            # for the id, or the next inbound message resolves the SAME id and run_agent's
+            # INSERT OR IGNORE resurrects the deleted row (#42422).
+            runner = self.gateway_runner or request.app.get("gateway_runner")
+            store = getattr(runner, "session_store", None)
+            if store is not None:
+                await asyncio.to_thread(store.remove_by_session_id, session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth
@@ -3232,8 +3314,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
+        include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
+        # Compression lineage: return root→tip messages, matching the REST router (#51058).
         messages = await asyncio.to_thread(
-            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page)
+            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
+            include_compacted=include_compacted, include_ancestors=True)
         return web.json_response({
             "object": "list", "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],

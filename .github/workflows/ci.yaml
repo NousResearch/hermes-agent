@@ -77,11 +77,15 @@ jobs:
       rust: ${{ steps.gate-lanes.outputs.rust }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       mcp_catalog: ${{ steps.gate-lanes.outputs.mcp_catalog }}
+      e2e: ${{ steps.gate-lanes.outputs.e2e }}
+      e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
+      e2e_desktop_core: ${{ steps.gate-lanes.outputs.e2e_desktop_core }}
+      e2e_desktop_update: ${{ steps.gate-lanes.outputs.e2e_desktop_update }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
       ci_review_files: ${{ steps.classify.outputs.ci_review_files }}
       event_name: ${{ github.event_name }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
@@ -110,12 +114,23 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
   # Skipped workflows (if condition is false) don't spin up runners.
+  #
+  # The E2E suites (e2e, e2e-upgrade, both Desktop suites, and the two
+  # Windows journeys in tests-os) take most of the larger-runner minutes.
+  # On a pull request each runs only when the diff touches that suite or the
+  # code it guards, or the PR carries the `run-e2e` label
+  # (scripts/ci/classify_changes.py::_E2E_LANES). Every push to main runs
+  # all of them, so a regression the path lists miss turns main red after
+  # the merge.
   # ─────────────────────────────────────────────────────────────────────
   tests:
     name: Python tests
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
+    with:
+      e2e: ${{ needs.detect.outputs.e2e == 'true' }}
+      e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
 
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the
@@ -131,6 +146,8 @@ jobs:
       # (tests/test_desktop_update_windows_*.py) only when that surface
       # changed; unit-level platforms("windows") tests always run.
       desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
+      e2e: ${{ needs.detect.outputs.e2e == 'true' }}
+      e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
 
   lint:
     name: Python lints
@@ -186,8 +203,18 @@ jobs:
     needs: detect
     # The deterministic core suite (apps/desktop/e2e/core): transcript
     # integrity, boot/respawn/orphans, clarify+approval. Required; retries 0.
-    if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
+    if: needs.detect.outputs.e2e_desktop_core == 'true'
     uses: ./.github/workflows/e2e-desktop-core.yml
+
+  e2e-desktop-update:
+    name: Desktop update E2E
+    needs: detect
+    # apps/desktop/e2e/update: a real install.sh install + packaged Desktop,
+    # first run, "Update now" hand-off/relaunch, concurrent-update refusal.
+    # Advisory until it has proven stable on CI: its shards run with continue-on-error, so a
+    # red shard shows on the PR but does not fail all-checks-pass.
+    if: needs.detect.outputs.e2e_desktop_update == 'true'
+    uses: ./.github/workflows/e2e-desktop-update.yml
 
   docs-site:
     name: Docs Site
@@ -304,6 +331,7 @@ jobs:
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core
+      - e2e-desktop-update
       - docs-site
       - history-check
       - contributor-check
@@ -331,7 +359,7 @@ jobs:
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - name: Evaluate job results
@@ -365,11 +393,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json
           # Prefix-match: exact key will never hit (run_id differs), so
@@ -391,7 +419,7 @@ jobs:
       - name: Upload HTML report
         # Advisory report — artifact-service blips must not fail the job.
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: ci-timings-html
         with:
           name: ci-timings-report
@@ -412,7 +440,7 @@ jobs:
       - name: Upload review status
         if: hashFiles('review-status.json') != ''
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: review-status-ci-timings
           path: review-status.json
@@ -441,7 +469,7 @@ jobs:
 
       - name: Upload baseline to cache (main only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('ci-timings-baseline.json') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json
           key: ci-timings-baseline-${{ github.run_id }}

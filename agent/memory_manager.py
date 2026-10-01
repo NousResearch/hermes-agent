@@ -649,11 +649,15 @@ class MemoryManager:
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
+        from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
-            return provider.handle_tool_call(tool_name, args, **kwargs)
+            result = provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
             logger.error("Memory provider '%s' handle_tool_call(%s) failed: %s", provider.name, tool_name, e)
+            record_provider_memory_call(provider.name, tool_name, args, raised=True)
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
+        record_provider_memory_call(provider.name, tool_name, args, result)
+        return result
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         def _tick(p: MemoryProvider) -> None:

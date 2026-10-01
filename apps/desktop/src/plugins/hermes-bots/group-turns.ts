@@ -6,7 +6,7 @@
  * Room-level sequencing lives in group-rounds.ts, which drives these.
  */
 
-import { host } from '@hermes/plugin-sdk'
+import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
@@ -155,9 +155,6 @@ function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], befo
 /** A clarify question blocking inside a member's session, as `session.resume`
  *  reports it. Older backends omit the field entirely. */
 interface GroupPendingClarify {
-  choices?: string[]
-  multi_select?: unknown
-  question?: unknown
   questions?: GroupPromptQuestion[]
   request_id?: string
 }
@@ -700,12 +697,9 @@ export function syncGroupClarify(
       ? {
           ...base,
           kind: 'clarify',
-          question: typeof clarify.question === 'string' ? clarify.question : '',
-          choices: Array.isArray(clarify.choices) ? clarify.choices.filter(c => typeof c === 'string' && c) : [],
-          multiSelect: Boolean(clarify.multi_select),
           // Batch clarifies carry `questions`; the room card answers them
           // one wire call per question, mirroring the 1:1 batch contract.
-          questions: Array.isArray(clarify.questions) ? clarify.questions : null
+          questions: Array.isArray(clarify.questions) ? clarify.questions : []
         }
       : {
           ...base,
@@ -717,9 +711,7 @@ export function syncGroupClarify(
           choices:
             Array.isArray(approval.choices) && approval.choices.length
               ? approval.choices.filter(c => typeof c === 'string' && c)
-              : ['once', 'deny'],
-          multiSelect: false,
-          questions: null
+              : ['once', 'deny']
         }
   })
 
@@ -799,14 +791,13 @@ export function renameGroupClarify(oldName: string, newName: string) {
  *  to the member's OWN source (requestForBot), so cross-connection members work.
  *  - clarify: `clarify.lock` per question, sequentially — the LAST lock
  *    resolves the blocked server request (same contract as the 1:1 batch
- *    card). A single question answers the open request by id through
- *    `request.answer` (the cross-socket proxy for a response frame).
+ *    card).
  *  - approval: `approval.respond` with the choice (once/session/always/deny),
  *    keyed by session + request_id — the queue-level wire every surface shares. */
 export async function answerGroupClarify(
   entry: GroupPrompt,
   member: GroupMember,
-  answers: Record<string, string> | string | undefined
+  answers: Record<string, null | string> | string | undefined
 ) {
   let group = entry.group
 
@@ -816,27 +807,26 @@ export async function answerGroupClarify(
 
   try {
     if (entry.kind === 'approval') {
-      await requestForBot(member, 'approval.respond', {
-        session_id: entry.sessionId || undefined,
-        request_id: entry.requestId,
-        choice: typeof answers === 'string' && answers ? answers : 'deny'
-      })
-    } else if (entry.questions && entry.questions.length) {
+      // A generous answer deadline, not the generic request timeout: a stalled
+      // socket must not reject an answer the backend still applies (#60654).
+      await requestForBot(
+        member,
+        'approval.respond',
+        {
+          session_id: entry.sessionId || undefined,
+          request_id: entry.requestId,
+          choice: typeof answers === 'string' && answers ? answers : 'deny'
+        },
+        { timeoutMs: APPROVAL_RESPOND_TIMEOUT_MS }
+      )
+    } else {
       for (const question of entry.questions) {
-        // Question ids are opaque on the wire (`GroupPrompt.questions` types
-        // them `unknown`); the batch card keys its answer bag by exactly them.
-        const qid = (question?.qid ?? question?.id) as string
         await requestForBot(member, 'clarify.lock', {
           request_id: entry.requestId,
-          question_id: qid,
-          answer: (answers as Record<string, string>)?.[qid] ?? ''
+          question_id: question.qid,
+          answer: (answers as Record<string, null | string>)?.[question.qid] ?? null
         })
       }
-    } else {
-      await requestForBot(member, 'request.answer', {
-        id: entry.requestId,
-        result: { answer: typeof answers === 'string' ? answers : '' }
-      })
     }
 
     if (!binding.isLive()) {
@@ -1031,6 +1021,13 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
   const { member, thread, dispatchEpoch, stored, liveRuntime, runtimeIds, before, binding } = context
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
+  // The hard cap guards against a runaway member, not a human deciding: time
+  // a member spends blocked on the user's clarify/approval answer pushes it
+  // out, so a prompt left open never expires under the room (the backend
+  // holds Desktop prompts until they are answered).
+  let hardCap = started + GROUP_TURN_HARD_CAP_MS
+  let lastPolled = started
+  let wasAwaitingUser = false
   // After the terminal frame fires, the gateway still has to flip
   // session.running off in its turn `finally` — re-check quickly for a few
   // beats instead of falling back to the slow backstop cadence.
@@ -1086,6 +1083,16 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     // hold the turn open: the member isn't stalling, it's waiting on us.
     const awaitingUser = syncGroupClarify(context.group, member, thread, state)
     const done = !busy && !awaitingUser
+    const polledAt = Date.now()
+
+    // Credit only intervals blocked on the user at both ends, not busy work
+    // that preceded the prompt.
+    if (awaitingUser && wasAwaitingUser) {
+      hardCap += polledAt - lastPolled
+    }
+
+    lastPolled = polledAt
+    wasAwaitingUser = awaitingUser
     // The gateway's retained error for THIS turn. A turn that dies before its
     // prompt is committed (agent-init failure, no-agent refusal) never grows
     // the transcript, so the tombstone — not the message count — is the only
@@ -1129,11 +1136,12 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
       return null
     }
 
-    // Still visibly working — or waiting on the user's answer to a clarify:
-    // extend the deadline (never past the hard cap). A pending question must
-    // outlive the base turn timeout or it dies unanswered at 3 minutes.
+    // Still visibly working — or waiting on the user's answer to a prompt:
+    // extend the deadline (never past the hard cap, which waiting on the user
+    // pushes out). A pending question must outlive the base turn timeout or
+    // it dies unanswered at 3 minutes.
     if (busy || awaitingUser) {
-      deadline = Math.min(started + GROUP_TURN_HARD_CAP_MS, Math.max(deadline, Date.now() + GROUP_TURN_TIMEOUT_MS))
+      deadline = Math.min(hardCap, Math.max(deadline, polledAt + GROUP_TURN_TIMEOUT_MS))
     }
   }
 
@@ -1141,10 +1149,10 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     return null
   }
 
-  // Timeout — clear any still-mirrored question card (the server-side
-  // clarify timeout runs its own course) and read as a pass. The marker written
-  // at submit stays, so the finished reply is posted late into the RIGHT thread
-  // instead of vanishing; it stops being "live" when this poll returns.
+  // Timeout — clear any still-mirrored question card and read as a pass. The
+  // marker written at submit stays, so the finished reply is posted late into
+  // the RIGHT thread instead of vanishing; it stops being "live" when this
+  // poll returns.
   recordGroupActivity(context.group, {
     kind: 'timed-out',
     member: groupMemberKey(member),

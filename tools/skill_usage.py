@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
@@ -608,6 +609,11 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
         except Exception as e:
             return False, f"failed to {action}: {e}"
     archiving = action == "archive"
+    if archiving:
+        # `curator purge` ages archives by mtime; a move keeps the skill's last-edit mtime, so an
+        # idle skill archived today would already look older than any TTL.
+        with suppress(OSError):
+            os.utime(dest)
     if not archiving or is_bundled(skill_name):  # pruning a built-in only sticks if the re-seeder skips it
         _toggle_suppressed_name(skill_name, add=archiving)
     set_state(skill_name, STATE_ARCHIVED if archiving else STATE_ACTIVE)
@@ -707,9 +713,39 @@ def curated_report() -> List[Dict[str, Any]]:
     return [_report_row(n, data.get(n), _persisted=n in data, provenance=provenance(n)) for n in sorted(names)]
 
 
+def is_external_only(skill_name: str) -> bool:
+    """Present under ``skills.external_dirs`` and NOT in the local store (the local copy wins on
+    name clashes, mirroring ``is_agent_created``'s external exclusion). An external-only skill is
+    externally authored: it was mounted, not learned."""
+    return (_find_skill_dir(skill_name) is None and _find_external_skill_dir(skill_name) is not None)
+
+
+def _external_skill_names() -> set:
+    """Frontmatter names of all skills under configured external dirs (one scan per call; the
+    router's set-based provenance uses this instead of a per-skill dir lookup)."""
+    from agent.skill_utils import get_all_skills_dirs
+    names: set = set()
+    for base in get_all_skills_dirs()[1:]:
+        if not base.exists():
+            continue
+        for skill_md in base.rglob("SKILL.md"):
+            if not is_excluded_skill_path(skill_md):
+                names.add(_read_skill_name(skill_md, fallback=skill_md.parent.name))
+    return names
+
+
 def provenance(skill_name: str) -> str:
-    """'hub' | 'bundled' | 'agent' (the latter also covers local manually-authored skills)."""
-    return "hub" if is_hub_installed(skill_name) else "bundled" if is_bundled(skill_name) else "agent"
+    """'hub' | 'bundled' | 'external' | 'agent'.
+
+    'external' covers skills mounted from ``skills.external_dirs`` and absent from the local
+    store — externally authored, not learned from the user (#108032). 'agent' keeps covering
+    agent-authored AND local hand-made skills — the ones the user may edit/delete from the UI
+    (external skills stay foreground-editable in place by design, commit 8c8fc6c1ec; the label
+    split is about origin, not mutability)."""
+    return ("hub" if is_hub_installed(skill_name)
+            else "bundled" if is_bundled(skill_name)
+            else "external" if is_external_only(skill_name)
+            else "agent")
 
 
 def usage_report() -> List[Dict[str, Any]]:
@@ -719,66 +755,3 @@ def usage_report() -> List[Dict[str, Any]]:
     data = load_usage()
     return [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data)
             for n in sorted({name for name, _md in _iter_skill_mds(base, local_only=False)})]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import tempfile  # noqa: F401,E402
-import os  # noqa: F401,E402
-import os  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-def _suppressed_file() -> Path:
-    return _skills_dir() / ".curator_suppressed"
-
-def _write_suppressed_names(names: Set[str]) -> None:
-    path = _suppressed_file()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = "\n".join(sorted(names)) + ("\n" if names else "")
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".curator_suppressed_", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-    except Exception as e:
-        logger.debug("Failed to write curator suppression list: %s", e, exc_info=True)
-
-def add_suppressed_name(skill_name: str) -> None:
-    """Record that a built-in skill was pruned, so sync won't restore it."""
-    if not skill_name:
-        return
-    names = read_suppressed_names()
-    if skill_name not in names:
-        names.add(skill_name)
-        _write_suppressed_names(names)
-
-def agent_created_report() -> List[Dict[str, Any]]:
-    """DEPRECATED — use :func:`curated_report` instead.
-
-    Used to return everything :func:`curated_report` returns (including bundled
-    skills when ``curator.prune_builtins`` is enabled), which made the
-    "agent-created" name misleading. Kept as a compatibility alias for
-    external callers; new code should call ``curated_report()``.
-    """
-    return curated_report()
-
-def remove_suppressed_name(skill_name: str) -> None:
-    """Clear a built-in's suppression entry (e.g. on restore)."""
-    if not skill_name:
-        return
-    names = read_suppressed_names()
-    if skill_name in names:
-        names.discard(skill_name)
-        _write_suppressed_names(names)
-# ---- END PLUGIN-COMPAT ----

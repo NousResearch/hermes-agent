@@ -426,6 +426,9 @@ _startup_fast.ensure_project_root_on_path()
 # HERMES_HOME set, and the flag stripped so argparse never sees it. Falls back
 # to ~/.hermes/active_profile for the sticky default.
 _PROFILE_NAME_RE = r"^[a-z0-9][a-z0-9_-]{0,63}$"  # mirrors hermes_cli.profiles._PROFILE_ID_RE
+# Set only when -p/--profile was on argv. Sticky active_profile must not count:
+# `hermes desktop` with no flag must not overwrite Desktop's stored profile.
+_explicit_cli_profile: str | None = None
 
 
 def _inside_mcp_add_args(argv: list, index: int) -> bool:
@@ -575,10 +578,22 @@ def _s6_supervised_gateway_run(argv: list) -> bool:
     return _s6_running()
 
 
+def explicit_cli_profile() -> str | None:
+    """Profile named by a consumed ``-p``/``--profile`` flag, else None.
+
+    Sticky ``active_profile`` is not explicit. Desktop launch must not overwrite
+    its stored profile when the user omitted the flag.
+    """
+    return _explicit_cli_profile
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    global _explicit_cli_profile
+    _explicit_cli_profile = None
     argv = sys.argv[1:]
     profile_name, consume, profile_index = _scan_profile_flag(argv)
+    from_sticky_profile = False
 
     # HERMES_HOME already set with no explicit flag: trust it only when it
     # points at a specific profile dir ("profiles" as immediate parent). If it
@@ -600,6 +615,7 @@ def _apply_profile_override() -> None:
                 name = active_path.read_text(encoding="utf-8-sig").strip()
                 if name and name != "default":
                     profile_name = name  # consume stays 0: nothing to strip
+                    from_sticky_profile = True
         except (UnicodeDecodeError, OSError):
             pass  # corrupted file, skip
 
@@ -611,8 +627,21 @@ def _apply_profile_override() -> None:
         hermes_home = resolve_profile_env(profile_name)
     except FileNotFoundError as exc:
         hermes_home = _resolve_sudo_user_profile_env(profile_name)
+        error = str(exc)
+        if not hermes_home and from_sticky_profile:
+            from hermes_cli.main_profile_recovery import is_stale_profile_recovery_command
+
+            if is_stale_profile_recovery_command(argv):
+                hermes_home = resolve_profile_env("default")
+                print(
+                    f"Warning: saved profile '{profile_name}' no longer exists; "
+                    "running this recovery command in the default profile.",
+                    file=sys.stderr,
+                )
+            else:
+                error = f"Saved profile '{profile_name}' no longer exists. Switch back with: hermes profile use default"
         if not hermes_home:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
             sys.exit(1)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -622,6 +651,8 @@ def _apply_profile_override() -> None:
         print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
         return
     os.environ["HERMES_HOME"] = hermes_home
+    if consume > 0:
+        _explicit_cli_profile = profile_name
     # Strip the flag from argv so argparse doesn't choke
     if consume > 0 and profile_index is not None:
         start = profile_index + 1  # +1 because argv is sys.argv[1:]
@@ -855,6 +886,7 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
     _desktop_macos_relaunchable_fixup,
     _desktop_packaged_executable,
     _install_rebuilt_desktop_app,
+    _installed_desktop_apps,
 )
 from hermes_cli.main_web_build import (
     _sweep_stale_bytecode_if_checkout_changed,
@@ -1834,6 +1866,9 @@ def cmd_chat(args):
         os.environ["HERMES_SESSION_SOURCE_EXPLICIT"] = "1"
 
     _pin_kanban_board_env()
+    from hermes_cli.observability.shared_metrics_consent import offer_consent_before_chat
+
+    offer_consent_before_chat(args)
     _confirm_startup_expensive_model_override(args)
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
@@ -1867,7 +1902,9 @@ def cmd_chat(args):
 
     try:
         from cli import main as cli_main
+        from hermes_cli.observability.shared_metrics_process import begin_process
 
+        begin_process("cli")
         cli_main(**kwargs)
     except ValueError as e:
         print(f"Error: {e}")
@@ -1958,13 +1995,13 @@ def cmd_model(args):
             print("  Cleared model picker cache.")
         except Exception:
             pass
+    from hermes_cli.observability.shared_metrics_setup import provider_setup_surface
     from hermes_cli.setup import run_setup_action_with_navigation
 
-    run_setup_action_with_navigation(
-        "Model & Provider",
-        lambda: select_provider_and_model(args=args),
-        cancelled_message="No change.",
-    )
+    with provider_setup_surface("cli_model"):
+        run_setup_action_with_navigation(
+            "Model & Provider", lambda: select_provider_and_model(args=args), cancelled_message="No change.",
+        )
 
 
 # Provider id -> flow(config, current_model, args). Lambdas resolve the
@@ -2134,31 +2171,33 @@ def select_provider_and_model(args=None):
     # Provider-specific setup + model selection. Flows resolve the
     # _model_flow_* names at call time so test monkeypatches on
     # hermes_cli.main keep intercepting.
-    flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
-    if flow is None and _is_profile_plugin_flow_provider(selected_provider):
-        # Registered plugin profile with no bespoke flow: the generic one, keyed by its auth_type.
-        flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)  # noqa: E731
-    if flow is not None:
-        flow(config, current_model, args)
-    elif (
-        selected_provider.startswith("custom:")
-        or selected_provider in _custom_provider_map
-    ):
-        provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
-        if provider_info is None:
-            print(
-                "Warning: the selected saved custom provider is no longer available. "
-                "It may have been removed from config.yaml. No change."
-            )
-            return
-        _model_flow_named_custom(config, provider_info)
-    elif selected_provider == "remove-custom":
-        _remove_custom_provider(config)
-    elif (
-        selected_provider in _GENERIC_API_KEY_PROVIDERS
-        or _is_profile_api_key_provider(selected_provider)
-    ):
-        _model_flow_api_key_provider(config, selected_provider, current_model)
+    from hermes_cli.observability.shared_metrics_setup import cli_provider_setup
+    with cli_provider_setup(selected_provider):
+        flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
+        if flow is None and _is_profile_plugin_flow_provider(selected_provider):
+            # Registered plugin profile with no bespoke flow: the generic one, keyed by its auth_type.
+            flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)  # noqa: E731
+        if flow is not None:
+            flow(config, current_model, args)
+        elif (
+            selected_provider.startswith("custom:")
+            or selected_provider in _custom_provider_map
+        ):
+            provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
+            if provider_info is None:
+                print(
+                    "Warning: the selected saved custom provider is no longer available. "
+                    "It may have been removed from config.yaml. No change."
+                )
+                return
+            _model_flow_named_custom(config, provider_info)
+        elif selected_provider == "remove-custom":
+            _remove_custom_provider(config)
+        elif (
+            selected_provider in _GENERIC_API_KEY_PROVIDERS
+            or _is_profile_api_key_provider(selected_provider)
+        ):
+            _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # Every flow persists through _save_model_choice; a changed model.default means a pick
     # landed, so offer its reasoning effort here once instead of inside each flow.
@@ -2451,6 +2490,10 @@ from hermes_cli.update_receipt import update_receipt_scope
 @update_receipt_scope()
 def cmd_update(args):
     """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
+    # Marks this frame as the CURRENT updater for
+    # _old_updater.in_historical_update(); historical on-disk updaters do not
+    # declare this local, so only they hand off through retired shims.
+    _hermes_current_updater_frame = True
     from hermes_cli.update_owning_install import retarget_to_owning_install
 
     retarget_to_owning_install(PROJECT_ROOT)
@@ -2779,6 +2822,9 @@ def cmd_dashboard(args):
     # (Docker/s6, CI, --no-open pipelines) fall through to start_server's
     # fail-closed SystemExit unchanged.
     _maybe_setup_dashboard_auth_interactively(args)
+    if _headless_backend:
+        from hermes_cli.observability.shared_metrics_process import begin_process
+        begin_process("serve")
 
     # The in-browser Chat tab (embedded TUI over PTY/WebSocket) is always
     # available — desktop and dashboard both rely on `/api/ws` + `/api/pty`.
@@ -3656,6 +3702,8 @@ def main():
     if getattr(args, "oneshot", None):
         _run_oneshot_from_args(args)
 
+    from hermes_cli.observability.shared_metrics_disabled import set_process_surface
+    set_process_surface(args.command)
     # No subcommand (optionally with top-level --resume / --continue) → chat.
     if args.command is None:
         _default_to_chat(args)
@@ -3672,31 +3720,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import hashlib  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import stat  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'line_input': ('hermes_cli.cli_output', 'line_input'),
-}
-
-_plugin_compat_prev_getattr = __getattr__
-
-
-def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        return _plugin_compat_prev_getattr(name)
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

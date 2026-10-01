@@ -476,19 +476,3 @@ def release_or_close(db: "SessionDB") -> None:
     plain ``db.close()``: read-only opens, CLI one-shots and test fakes fall back."""
     if not release(db):
         _close_quietly(db, "release_or_close fallback close failed")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def close_shared_session_dbs() -> int:
-    return close_all()
-
-def get_shared_session_db(db_path: Optional[Path] = None) -> "SessionDB":
-    return acquire(db_path)
-
-def release_shared_session_db(db: "SessionDB") -> bool:
-    return release(db)
-# ---- END PLUGIN-COMPAT ----

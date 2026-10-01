@@ -141,22 +141,17 @@ def test_rerun_follows_an_explicit_repo_url(tmp_path):
     assert _git(install, "remote", "get-url", "origin") == moved.as_posix()
 
 
-@pytest.mark.parametrize("reported, accepted", [("0.6.17", False), ("99.0.0", True)])
-def test_path_uv_is_used_only_when_at_least_the_pin(tmp_path, reported, accepted):
+def test_path_uv_is_never_used_even_when_newer_than_the_pin(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     fake = bindir / "uv"
-    fake.write_text(f"#!/bin/sh\necho 'uv {reported}'\n")
+    fake.write_text("#!/bin/sh\necho 'uv 99.0.0'\n")
     fake.chmod(0o755)
-    # No pinned target: rejecting the PATH uv must surface as a failure to stage one.
+    # No pinned target: with the PATH uv ignored, the install must fail rather than adopt it.
     body = 'uv_bootstrap_target() { return 1; }\nensure_uv\necho "UV_CMD=$UV_CMD"'
     result = _run(tmp_path, body, env={"PATH": f"{bindir}:{os.environ['PATH']}"})
-    if accepted:
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert f"UV_CMD={fake}" in result.stdout
-    else:
-        assert result.returncode != 0
-        assert "older than the pinned" in result.stdout + result.stderr
+    assert result.returncode != 0
+    assert f"UV_CMD={fake}" not in result.stdout
 
 
 def test_interactive_stages_skip_without_a_terminal(tmp_path):
@@ -172,3 +167,26 @@ def test_interactive_stages_skip_without_a_terminal(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert not marker.exists()
     assert "no terminal" in result.stdout + result.stderr
+
+
+def test_rerun_marks_partial_clone_packs_when_the_fetch_crashes(tmp_path):
+    """git 2.53+ aborts fetches into a partial clone with unmarked packs (#124272); the installer
+    rerun is the recovery for installs whose own updater cannot fetch, so it marks them first."""
+    origin = _origin(tmp_path / "origin")
+    assert _stage(tmp_path, origin).returncode == 0
+    install = tmp_path / "install"
+    _git(install, "config", "remote.origin.promisor", "true")
+    _git(install, "repack", "-adq")
+    packs = list((install / ".git" / "objects" / "pack").glob("pack-*.pack"))
+    assert packs and not any(p.with_suffix(".promisor").exists() for p in packs)
+    _commit(origin, "two")
+    # Stand-in for the git 2.53+ index-pack crash: any fetch while an unmarked pack exists dies.
+    crashing_fetch = (
+        'git() { if [ "${3:-}" = fetch ]; then for p in "$2"/.git/objects/pack/pack-*.pack; do '
+        '[ -e "${p%.pack}.promisor" ] || { echo "BUG: should_include_obj" >&2; return 128; }; done; fi; '
+        'command git "$@"; }'
+    )
+    result = _stage(tmp_path, origin, prelude=crashing_fetch)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (install / "README").read_text() == "two"
+    assert all(p.with_suffix(".promisor").exists() for p in packs)

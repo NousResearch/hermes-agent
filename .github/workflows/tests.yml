@@ -2,6 +2,20 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      # The E2E jobs below are slow lanes (scripts/ci/classify_changes.py).
+      # ci.yaml passes the classifier's answer; a caller that passes nothing
+      # gets every job.
+      e2e:
+        description: Run the e2e job (tests/e2e except the upgrade suite).
+        type: boolean
+        required: false
+        default: true
+      e2e_upgrade:
+        description: Run the e2e-upgrade shards (tests/e2e/core/upgrade).
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -14,18 +28,11 @@ concurrency:
 jobs:
   test:
     name: Run tests
-    # One 96-core runner for the whole suite. There is no slicing. Slicing
-    # existed to spread the suite over 4-core runners. It cost a matrix job, a
-    # duration cache, a per-slice artifact and a merge job to do it.
-    #
-    # 96 cores clear the floor that the slowest single test file sets (about
-    # 82s). A second slice divides work that is already at that floor, and
-    # adds a second setup.
-    runs-on: ubuntu-latest-96-core
+    runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -66,7 +73,7 @@ jobs:
         # file is absent on a fresh runner and the scaler is inert.
         # Exact key never matches (run_id differs); restore-keys picks the
         # most recent cache saved by a main push. PRs read, only main writes.
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
           key: test-durations-never-exact
@@ -84,30 +91,7 @@ jobs:
         run: |
           scripts/run_tests.sh
         env:
-          # This is the maximum number of test FILES that run together.
-          # run_tests_parallel.py starts one pytest subprocess for each file
-          # from a single ThreadPoolExecutor, so this value IS the limit. The
-          # default is cpu_count*2, which is 192 here.
-          #
-          # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
-          # two repetitions for each value. See run 32549672063:
-          #
-          #     workers   x cores   mean
-          #        48       0.5x    138s
-          #        96       1.0x    126s   <- fastest
-          #       144       1.5x    132s
-          #       192       2.0x    132s
-          #       240       2.5x    140s
-          #       288       3.0x    142s
-          #
-          # One worker for each core wins. The curve is shallow: 126s to 142s
-          # across a 6x range. The suite has sufficient concurrency at this
-          # size. The remaining time is the slowest files plus the setup.
-          # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
-          # A healthy 44-test compression file takes ~197s alone and can exceed
-          # the 300s default under 96-worker load before its duration is cached.
-          # Match the runner's 3x known-slow headroom on the first PR run too.
+          HERMES_TEST_WORKERS: 32
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
@@ -118,7 +102,7 @@ jobs:
         # Only green first-attempt durations are written by the runner, so
         # a hang on main cannot ratchet its own bound upward.
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('test_durations.json') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
           key: test-durations-${{ github.run_id }}
@@ -126,11 +110,12 @@ jobs:
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
     # writer processes per test; a 4-vCPU runner serialises them into timeouts.
+    if: inputs.e2e
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Set up locked Python, Node and test dependencies
         # toolchain: all puts PM's locked Node in the runner's PM store, not
@@ -143,7 +128,9 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          # `messaging`: tests/e2e/core/platforms runs the real Telegram/Discord/Slack
+          # adapters (their SDKs) against local stand-ins.
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "messaging"]'
           test-environment: 'true'
           prune-python-cache: true
 
@@ -203,16 +190,56 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+  e2e-upgrade-plan:
+    # One e2e-upgrade shard per suite directory: the files directly under
+    # tests/e2e/core/upgrade ("core") plus every subdirectory that holds
+    # test_*.py (pm, git, handoff, network, hosts, ...). A new suite
+    # directory gets its own shard without editing this file, and no shard
+    # carries the whole tree's wall time against the 60-minute timeout.
+    # Skipping this job skips every e2e-upgrade shard with it.
+    if: inputs.e2e_upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          sparse-checkout: tests/e2e/core/upgrade
+      - name: List suite directories
+        id: plan
+        run: |
+          set -euo pipefail
+          shards=$(python3 - <<'PY'
+          import json, pathlib
+          root = pathlib.Path("tests/e2e/core/upgrade")
+          shards = ["core"] if any(root.glob("test_*.py")) else []
+          shards += sorted(d.name for d in root.iterdir()
+                           if d.is_dir() and not d.name.startswith(("_", ".")) and any(d.rglob("test_*.py")))
+          print(json.dumps(shards))
+          PY
+          )
+          echo "shards=$shards" | tee -a "$GITHUB_OUTPUT"
+
   e2e-upgrade:
     # tests/e2e/core/upgrade: a real N-1 -> HEAD `hermes update` (clean,
     # autostash, killed mid-pull / mid-deps, offline), fresh-process import and
-    # entrypoint smoke, and the config round-trip property matrix. Its own job:
-    # it needs full history + tags, bubblewrap, and one file runs ~5-15 min.
+    # entrypoint smoke, the config round-trip property matrix, and the lane
+    # suites below it (pm: PM environment lifecycle across updates, ...).
+    # Its own job: it needs full history + tags, bubblewrap, and one file
+    # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
+    name: e2e-upgrade (${{ matrix.shard }})
+    needs: e2e-upgrade-plan
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.e2e-upgrade-plan.outputs.shards) }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # N-1 = `git describe --tags --abbrev=0 HEAD~1`.
           fetch-depth: 0
@@ -220,7 +247,7 @@ jobs:
 
       - name: Set up Node
         # `hermes update` builds the web UI / TUI workspaces.
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
           node-version: 26
 
@@ -296,14 +323,25 @@ jobs:
           source .venv/bin/activate
           python -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
 
-      - name: Run upgrade e2e tests
+      - name: Run upgrade e2e tests (${{ matrix.shard }})
         run: |
+          set -euo pipefail
           source .venv/bin/activate
-          scripts/run_tests.sh --include-integration tests/e2e/core/upgrade
+          if [ "$SHARD" = core ]; then
+            mapfile -t files < <(find tests/e2e/core/upgrade -maxdepth 1 -name 'test_*.py' | sort)
+          else
+            mapfile -t files < <(find "tests/e2e/core/upgrade/$SHARD" -name 'test_*.py' | sort)
+          fi
+          # A shard that collects nothing is a wiring bug, not a pass.
+          [ "${#files[@]}" -gt 0 ] || { echo "no test files for shard $SHARD" >&2; exit 1; }
+          printf 'shard %s: %s\n' "$SHARD" "${files[*]}"
+          scripts/run_tests.sh --include-integration "${files[@]}"
         env:
+          SHARD: ${{ matrix.shard }}
           # Each file drives real installs/updaters (process trees plus uv and
-          # git I/O); cpu_count of them at once starves their deadlines.
-          HERMES_TEST_WORKERS: "4"
+          # git I/O); cpu_count of them at once starves their deadlines. A
+          # shard holds at most ~7 files, so this runs each shard in one wave.
+          HERMES_TEST_WORKERS: "6"
           HERMES_TEST_FILE_TIMEOUT: "3000"
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

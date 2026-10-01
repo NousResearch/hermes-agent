@@ -1,6 +1,6 @@
 name: gmail
 repo: https://github.com/guberm/hermes-gmail-desktop-plugin
-sha: 1f7651d958618e7af4b4fcf46cfde2c8e9379672
+sha: cc8d4a2c9112976099d85ea5bc6ca501bde17079
 subdir: plugins/gmail
 title: Gmail
 description: >-
@@ -13,7 +13,7 @@ maintainer: guberm
 tier: community
 category: desktop
 docs_url: https://github.com/guberm/hermes-gmail-desktop-plugin#readme
-version: "1.0.6"
+version: "1.0.11"
 readme: false
 platforms: []
 capabilities:

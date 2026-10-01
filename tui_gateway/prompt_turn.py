@@ -128,12 +128,10 @@ def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
     display_metadata: dict | None, *, turn_claim: int | None) -> tuple[list[str], Any] | None:
-    """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
-    Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
-    bypass that once let a second backend run a duplicate turn.
+    """Admit any turn source while its claim is live; return ``(images, agent)`` or None.
 
-    The turn runs only while ``turn_claim`` is live. A replaced claim is refused without changing the session.
-    A cancelled current claim is released and its client receives a terminal error."""
+    A replaced claim is refused without changing the session. A cancelled current claim is released
+    and its client receives a terminal error."""
 
     with session["history_lock"]:
         if _cancel_pending_prompt_turn(sid, session, turn_claim) or not _holds_turn_claim(session, turn_claim):
@@ -153,8 +151,9 @@ def _admit_prompt_turn(
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
-        if session.get("_closing") and session.get("active_session_lease") is not held_lease:
-            # Close can finalize while admission claims a lease. Only that newly acquired lease is ours to release.
+        if (_owns_turn_claim(session, turn_claim) and session.get("_closing")
+                and session.get("active_session_lease") is not held_lease):
+            # A pre-existing lease belongs to close, which may defer release until its host exits.
             _release_active_session_slot(session)
         if _cancel_pending_prompt_turn(sid, session, turn_claim) or not _holds_turn_claim(session, turn_claim):
             return None

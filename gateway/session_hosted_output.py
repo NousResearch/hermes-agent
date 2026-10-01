@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 import logging
 import os
@@ -35,18 +35,25 @@ _OUTPUT = ContextVar("canonical_hosted_output", default=None)
 class HostedOutputBinding:
     """Output of one claimed admission, written to the executing profile's own outbox.
 
-    When this profile also owns the room (the default profile) the attempt's
-    driver row is checked in the outbox's write transaction.
+    ``room_local`` is true when this profile also owns the room (the default
+    profile); the attempt's driver row is then checked in the same transaction.
+    A named profile served through the owner transport checks its own
+    admission and the transport binding it was admitted under instead.
     """
 
     authority: object
     ref: object
     row: dict
     scope: RoomArtifactScope
-    cancel_generation: int
+    cancel_generation: int | None
     owner_pid: int
+    transport_json: str | None = None
     active: bool = True
     used: bool = False
+
+    @property
+    def room_local(self) -> bool:
+        return self.transport_json is None
 
     def check_write(self, conn, scope):
         if not self.active or os.getpid() != self.owner_pid or scope != self.scope:
@@ -70,12 +77,19 @@ class HostedOutputBinding:
                 "authority_epoch": authority.epoch, "execution_generation": row["generation"],
                 "admission_id": row["admission_id"]}:
             raise RoomArtifactError("Group Chat output admission changed")
-        from gateway.hosted_room_output_fence import require_output_task
-        require_output_task(conn, self.scope, self.cancel_generation, status="running")
-        from gateway.session_hosted_service import _OWNER
-        owner = conn.execute("SELECT value FROM state_meta WHERE key=?", (_OWNER + scope.room_id,)).fetchone()
-        if owner is None or owner[0] != row["principal_id"]:
-            raise RoomArtifactError("Group Chat output owner changed")
+        if self.room_local:
+            from gateway.hosted_room_output_fence import require_output_task
+            require_output_task(conn, self.scope, self.cancel_generation, status="running")
+            from gateway.session_hosted_service import _OWNER
+            owner = conn.execute("SELECT value FROM state_meta WHERE key=?", (_OWNER + scope.room_id,)).fetchone()
+            if owner is None or owner[0] != row["principal_id"]:
+                raise RoomArtifactError("Group Chat output owner changed")
+        else:
+            from gateway.session_hosted_transport import _BINDING
+            retained = conn.execute("SELECT value FROM state_meta WHERE key=?",
+                                    (_BINDING + self.ref.session_id,)).fetchone()
+            if retained is None or retained[0] != self.transport_json:
+                raise RoomArtifactError("Group Chat output owner changed")
 
     def _outbox(self, *, authorize=False):
         return RoomArtifactOutbox(self.authority.db.db_path,
@@ -173,6 +187,25 @@ def _room_local_binding(authority, ref, row, identity, generation):
     return HostedOutputBinding(authority, ref, dict(row), scope, task["cancel_generation"], os.getpid())
 
 
+def _transported_binding(authority, ref, row, identity, generation, transport):
+    """Named profile: the room owner confirms this exact attempt and its scope."""
+    from gateway.session_hosted_transport import _attest
+
+    raw, binding = transport
+    selector = binding["selector"]
+    if identity.room_id != selector["room_id"]:
+        raise RoomArtifactError("Group Chat output transport binding changed")
+    attested = _attest(binding, "output_scope", {
+        "task": asdict(identity), "execution_generation": generation})
+    scope = RoomArtifactScope.from_mapping(attested.get("scope") or {})
+    if (attested["owner"] != binding["owner"]
+            or (scope.room_id, scope.task_id, scope.execution_generation) != (
+                identity.room_id, identity.task_id, generation)
+            or (scope.member_id, scope.target_profile) != (selector["member_id"], selector["profile"])):
+        raise RoomArtifactError("Group Chat output scope changed")
+    return HostedOutputBinding(authority, ref, dict(row), scope, None, os.getpid(), transport_json=raw)
+
+
 def _binding(authority, ref, row):
     try:
         identity, generation = _hosted_identity(row)
@@ -183,9 +216,11 @@ def _binding(authority, ref, row):
     home = Path(authority.profile_id)
     if not home.is_absolute() or Path(authority.db.db_path).resolve().parent != home.resolve():
         return None
-    if _transport_binding(authority, ref, row) is not None:
-        return None  # a named profile's turn: its owner reaches its output over the owner transport
-    binding = _room_local_binding(authority, ref, row, identity, generation)
+    transport = _transport_binding(authority, ref, row)
+    if transport is not None:
+        binding = _transported_binding(authority, ref, row, identity, generation, transport)
+    else:
+        binding = _room_local_binding(authority, ref, row, identity, generation)
     if binding is not None:
         with authority.db._read_ctx() as conn:
             binding.check_write(conn, binding.scope)
@@ -195,8 +230,9 @@ def _binding(authority, ref, row):
 async def output_binding(authority, ref, row):
     """Bind output for a hosted Group Chat admission; other admissions get none.
 
-    Its reads run off the owner's event loop. A refusal leaves the turn
-    running without file sharing rather than failing it.
+    Reads (and, for a named profile, the room owner's confirmation) run off
+    the owner's event loop. A refusal leaves the turn running without file
+    sharing rather than failing it.
     """
     if not str(row.get("request_id") or "").startswith("hosted:"):
         return None

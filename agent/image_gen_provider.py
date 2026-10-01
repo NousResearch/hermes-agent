@@ -33,9 +33,12 @@ class ImageGenProvider(CatalogProviderBase):
     ``speed`` / ``strengths`` / ``price`` for the picker."""
 
     def capabilities(self) -> Dict[str, Any]:
-        """``modalities`` (``"text"`` and/or ``"image"``) and ``max_reference_images``.
-        Surfaced in the dynamic tool schema so the model knows when ``image_url`` is
-        honored; the text-only default keeps non-overriding providers backward compatible."""
+        """``modalities`` (``"text"`` and/or ``"image"``) and ``max_reference_images``; optionally
+        ``supports_upscale`` (bool) and ``creative_controls`` (names from the tool's creative-control
+        vocabulary: ``creativity``, ``intensity``, ``complexity``, ``movement``). Surfaced in the
+        dynamic tool schema so the model knows when ``image_url`` / ``upscale`` / each control is
+        honored, and only declared controls are passed to :meth:`generate`; the text-only default
+        keeps non-overriding providers backward compatible."""
         return {"modalities": ["text"], "max_reference_images": 0}
 
     @abc.abstractmethod
@@ -72,9 +75,12 @@ def normalize_reference_images(value: Any) -> Optional[List[str]]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()] or None
 
 
+_GENERATED_IMAGE_KIND = f"{provider_media.GENERATED_SUBDIR}/images"
+
+
 def save_b64_image(b64_data: str, *, prefix: str = "image", extension: str = "png") -> Path:
-    """Decode base64 image data into ``$HERMES_HOME/cache/images/``; return the path."""
-    return provider_media.save_b64("images", b64_data, prefix=prefix, extension=extension)
+    """Decode base64 image data into ``$HERMES_HOME/cache/generated/images/``; return the path."""
+    return provider_media.save_b64(_GENERATED_IMAGE_KIND, b64_data, prefix=prefix, extension=extension)
 
 
 _URL_IMAGE_CONTENT_TYPES = {
@@ -85,10 +91,10 @@ _URL_IMAGE_CONTENT_TYPES = {
 def save_url_image(
     url: str, *, prefix: str = "image", timeout: float = 60.0, max_bytes: int = 25 * 1024 * 1024,
 ) -> Path:
-    """Download an (often ephemeral) image URL into ``$HERMES_HOME/cache/images/``. Raises on
+    """Download an (often ephemeral) image URL into ``$HERMES_HOME/cache/generated/images/``. Raises on
     network / HTTP / oversize / empty errors so callers can fall back to the bare URL."""
     return provider_media.save_url(
-        "images", url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
+        _GENERATED_IMAGE_KIND, url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
         chunk_size=64 * 1024, content_types=_URL_IMAGE_CONTENT_TYPES,
         url_extensions=("png", "jpg", "jpeg", "webp", "gif"), default_extension="png",
         label="Image", empty_error="Image at {url} returned 0 bytes; refusing to cache.",

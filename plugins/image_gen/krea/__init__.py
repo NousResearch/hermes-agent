@@ -9,9 +9,12 @@ of our IDs) → :data:`DEFAULT_MODEL`. Docs: https://docs.krea.ai/developers/kre
 
 from __future__ import annotations
 
+import base64
 import logging
+import mimetypes
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
@@ -57,7 +60,13 @@ DEFAULT_RESOLUTION = "1K"  # only resolution Krea currently supports
 # Style refs are objects ({"url", "strength"}); bare URLs get Krea's recommended start (range -2..2).
 _DEFAULT_STYLE_REFERENCE_STRENGTH = 0.6
 _MAX_STYLE_REFERENCES = 10
+_REMOTE_REFERENCE_PREFIXES = ("http://", "https://", "data:")
+# Base64 grows a file by a third and the managed gateway rejects bodies over about 4.5 MB,
+# so all local references together stay under this.
+_MAX_LOCAL_REFERENCE_BYTES = 3 * 1024 * 1024
 _VALID_CREATIVITY = {"raw", "low", "medium", "high"}
+# Krea 2 generative sliders: integers from -100 to 100, 0 means the slider is off.
+_K2_SLIDERS = ("intensity", "complexity", "movement")
 
 # Polling: Krea recommends 2-5s; 2s backing off to 5s (Large ~1min); ceiling = Krea's 3 min tool timeout.
 _POLL_INITIAL_INTERVAL = 2.0
@@ -306,6 +315,43 @@ def _collect_style_refs(
     return deduped[:_MAX_STYLE_REFERENCES]
 
 
+def _inline_local_style_refs(
+    style_refs: List[Any], fail: ErrorFn
+) -> Tuple[List[Any], Optional[Dict[str, Any]]]:
+    """Embed local image files as data URIs; URLs and data URIs pass through unchanged."""
+    from agent.file_safety import raise_if_read_blocked
+
+    inlined: List[Any] = []
+    total_bytes = 0
+    for ref in style_refs:
+        source = ref.get("url") if isinstance(ref, dict) else None  # legacy non-dict refs pass through
+        if not isinstance(source, str) or source.lower().startswith(_REMOTE_REFERENCE_PREFIXES):
+            inlined.append(ref)
+            continue
+        path = Path(source).expanduser()
+        # Guard first: a denied path must not reveal whether it exists or how large it is.
+        try:
+            raise_if_read_blocked(str(path))
+        except ValueError as exc:
+            return [], fail(str(exc), "invalid_image_url")
+        if not path.is_file():
+            return [], fail(f"Style reference image not found: {source}", "invalid_image_url")
+        # Read at most one byte past the remaining budget: the cap bounds what is sent, not a stat.
+        try:
+            with path.open("rb") as fh:
+                data = fh.read(_MAX_LOCAL_REFERENCE_BYTES - total_bytes + 1)
+        except OSError as exc:  # removed or swapped after the is_file() check
+            return [], fail(f"Style reference image unreadable: {source} ({exc})", "invalid_image_url")
+        total_bytes += len(data)
+        if total_bytes > _MAX_LOCAL_REFERENCE_BYTES:
+            return [], fail(
+                f"Local style reference images total over {_MAX_LOCAL_REFERENCE_BYTES / 2**20:g} MB; "
+                "resize them or pass public URLs", "source_too_large")
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        inlined.append({**ref, "url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"})
+    return inlined, None
+
+
 def _build_payload(
     prompt: str, krea_ar: str, creativity: str, style_refs: List[Any], kwargs: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -314,6 +360,10 @@ def _build_payload(
     }
     if isinstance(kwargs.get("seed"), int):
         payload["seed"] = kwargs["seed"]
+    for slider in _K2_SLIDERS:
+        value = kwargs.get(slider)
+        if isinstance(value, int) and not isinstance(value, bool) and -100 <= value <= 100:
+            payload[slider] = value
     styles, moodboards = kwargs.get("styles"), kwargs.get("moodboards")
     if isinstance(styles, list) and styles:
         payload["styles"] = styles
@@ -409,7 +459,7 @@ class KreaImageGenProvider(StaticImageGenProvider):
     def capabilities(self) -> Dict[str, Any]:
         return {
             "modalities": ["text", "image"], "max_reference_images": _MAX_STYLE_REFERENCES,
-            "supports_upscale": True,
+            "supports_upscale": True, "creative_controls": ["creativity", *_K2_SLIDERS],
         }
 
     def generate(
@@ -456,6 +506,11 @@ class KreaImageGenProvider(StaticImageGenProvider):
                         f"Managed Krea (Nous Subscription) does not support {what}. "
                         f"Set KREA_API_KEY to use Krea directly, or omit `{arg}`.",
                         "unsupported_argument")
+        # After the fail-fast above, so a request about to be refused never reads local files.
+        if payload.get("image_style_references"):
+            payload["image_style_references"], err = _inline_local_style_refs(payload["image_style_references"], fail)
+            if err is not None:
+                return err
 
         # 1. Submit job.
         job_id, err = _submit_job(

@@ -6,7 +6,7 @@ import pytest
 
 
 @pytest.fixture
-def all_assignees_spawnable(monkeypatch):
+def all_assignees_spawnable(monkeypatch, request):
     """Pretend every assignee maps to a real Hermes profile.
 
     Most dispatcher tests use synthetic assignees ("alice", "bob") that
@@ -16,7 +16,23 @@ def all_assignees_spawnable(monkeypatch):
     would break tests that assert spawn behavior.
     """
     from hermes_cli import profiles
+    from hermes_cli import kanban_db_dispatch as kbd
     monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    # ...and that their profile can LOAD the skills the dispatcher force-loads.
+    # Tests run against an isolated (empty) HERMES_HOME, so the review lane's
+    # real skill probe resolves ``sdlc-review`` as missing and defers every
+    # review spawn; the probe itself is covered by
+    # test_kanban_review_forced_skill.py.
+    #
+    # Patch the module object the TEST calls ``dispatch_once`` on, not just the
+    # one imported here: a module that evicts ``hermes_cli.*`` from
+    # ``sys.modules`` (test_kanban_cli_dispatch_passthrough) leaves the already
+    # imported module the test holds as the only one whose globals matter.
+    unresolvable = lambda _task, board=None: set()
+    monkeypatch.setattr(kbd, "_unresolvable_worker_skills", unresolvable)
+    under_test = getattr(request.module, "kbd", None)
+    if under_test is not None and under_test is not kbd:
+        monkeypatch.setattr(under_test, "_unresolvable_worker_skills", unresolvable)
 
 
 @pytest.fixture(autouse=True)

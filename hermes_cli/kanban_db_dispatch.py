@@ -2041,6 +2041,11 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+# Skill the review lane force-loads into every reviewer worker. Named here so
+# the deferral check and the argv composition cannot drift apart.
+REVIEW_LANE_FORCED_SKILL = "sdlc-review"
+
+
 def _unresolvable_worker_skills(task: Task, board: Optional[str] = None) -> set:
     """Names in ``task.skills`` that will NOT load for the assignee's profile.
 
@@ -2170,15 +2175,22 @@ def _dispatch_lane_task(
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
-        # Force-load sdlc-review; the kanban lifecycle is already in every
+        # Force-load the review skill; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), REVIEW_LANE_FORCED_SKILL]))
         # A forced skill the assignee's profile cannot load kills the worker at
         # CLI init — no terminal call, no exit trailer, re-claimed forever. A
         # reviewer that never loads the review skill is not a review, and an
         # unplaceable spawn is host infrastructure, not the card's failure.
+        #
+        # Defer ONLY for the forced skill, or for a set that cannot load AT ALL
+        # (the CLI aborts only when EVERY requested skill is missing/disabled).
+        # A card that merely pins one stale/typo'd name alongside a loadable
+        # reviewer skill used to review fine — the CLI warns and continues — so
+        # parking it forever as ``spawn_failed`` would be a regression.
+        requested = {s for s in (claimed.skills or ()) if s}
         missing_skills = _unresolvable_worker_skills(claimed, board=board)
-        if missing_skills:
+        if REVIEW_LANE_FORCED_SKILL in missing_skills or (requested and requested <= missing_skills):
             reason = (
                 "review lane cannot load " + ", ".join(sorted(missing_skills))
                 + f" for profile {claimed.assignee or '<none>'}: missing or "

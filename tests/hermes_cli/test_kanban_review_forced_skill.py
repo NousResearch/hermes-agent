@@ -10,6 +10,7 @@ auto-blocked it.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -79,3 +80,102 @@ def test_worker_log_reads_are_scoped_to_the_current_run(kanban_home):
         f.write(f"{kbd._RUN_START_MARKER}8\n")
         f.write(f"done\n\n{KANBAN_WORKER_EXIT_TRAILER}0\n")
     assert kbd._worker_log_exit_code("t_scope") == 0
+
+
+# ---------------------------------------------------------------------------
+# Dispatch level: the review lane's deferral (and its boundary)
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+
+def _review_card(conn, *, assignee: str = "reviewer", skills=None) -> str:
+    """A card parked in the ``review`` column, ready for the review lane."""
+    tid = kb.create_task(
+        conn, title="domain review", assignee=assignee, skills=skills or [],
+    )
+    implementation = kb.claim_task(conn, tid)
+    assert implementation is not None
+    assert kb.request_review(
+        conn, tid, summary="ready", expected_run_id=implementation.current_run_id,
+    )
+    return tid
+
+
+def test_review_dispatch_defers_when_the_forced_skill_cannot_load(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The headline behavior: no spawn, infrastructure ``spawn_failed``, claim
+    released, card back in ``review``, reason on the board, retry budget intact.
+    """
+    from hermes_cli import kanban_db_connect as kbc
+
+    _dispatch_env(monkeypatch)
+    monkeypatch.setattr(
+        kbd, "_unresolvable_worker_skills", lambda _task, board=None: {"sdlc-review"},
+    )
+    spawned: list[str] = []
+
+    with kbc.connect() as conn:
+        tid = _review_card(conn)
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, _ws: spawned.append(task.id))
+        task = kb.get_task(conn, tid)
+        run = conn.execute(
+            "SELECT outcome, metadata, error FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id", (tid,),
+        ).fetchall()
+
+    assert spawned == []
+    assert tid not in [row[0] for row in result.spawned]
+    assert result.auto_blocked == []
+    # Claim released, card back in review, nothing charged to its budget.
+    assert task.status == "review"
+    assert task.claim_lock is None
+    assert task.consecutive_failures == 0
+    assert "sdlc-review" in (task.last_failure_error or "")
+    # Recorded as host infrastructure, not a card failure.
+    assert run["outcome"] == "spawn_failed"
+    assert json.loads(run["metadata"] or "{}").get("infrastructure") is True
+    assert "spawn_failed" in [event["kind"] for event in events]
+
+
+def test_review_dispatch_spawns_when_only_a_pinned_skill_is_unresolvable(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale pinned name alongside a loadable forced skill is NOT fatal: the
+    CLI warns and continues, so the lane must still spawn the reviewer."""
+    from hermes_cli import kanban_db_connect as kbc
+
+    _dispatch_env(monkeypatch)
+    monkeypatch.setattr(
+        kbd,
+        "_unresolvable_worker_skills",
+        lambda _task, board=None: {"domain-specific-review"},
+    )
+    captured: list[list[str]] = []
+
+    with kbc.connect() as conn:
+        tid = _review_card(conn, skills=["domain-specific-review"])
+        result = kbd.dispatch_once(
+            conn, spawn_fn=lambda task, _ws: captured.append(list(task.skills or [])) or None,
+        )
+        task = kb.get_task(conn, tid)
+
+    assert tid in [row[0] for row in result.spawned]
+    assert captured == [["domain-specific-review", "sdlc-review"]]
+    assert task.status == "running"
+    assert task.consecutive_failures == 0

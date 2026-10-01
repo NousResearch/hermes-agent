@@ -504,7 +504,7 @@ hermes skills trust ~/myproject # or explicitly
 hermes skills untrust           # revoke
 ```
 
-Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.yaml`. Set `skills.project_discovery: false` to turn the feature off entirely (no scanning, no notices).
+Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.yaml`. A registered Git worktree inherits trust from an explicitly trusted checkout of the same repository; separate clones and submodules remain separate trust decisions. Set `skills.project_discovery: false` to turn the feature off entirely (no scanning, no notices).
 
 ### Precedence
 

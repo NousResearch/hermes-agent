@@ -5,6 +5,7 @@ import ast
 import logging
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -482,12 +483,90 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
     return result
 
 
-def is_project_root_trusted(root: Path) -> bool:
-    """True when *root* is listed in ``skills.trusted_project_dirs``."""
+_GIT_TRUST_TIMEOUT = 1.5
+
+
+def _git_trust_output(root: Path, *args: str) -> Optional[str]:
+    """Git's machine-readable stdout for a directory, or None on any failure."""
     try:
-        return Path(root).resolve() in _project_trusted_dirs_from_config()
+        if not root.is_dir():
+            return None
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_GIT_TRUST_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _canonical_git_path(value: str) -> Optional[Path]:
+    """A single absolute Git path, resolved only when it still exists."""
+    if not value or "\x00" in value or "\n" in value or "\r" in value:
+        return None
+    try:
+        path = Path(value)
+        return path.resolve() if path.is_absolute() and path.is_dir() else None
+    except OSError:
+        return None
+
+
+def _registered_worktree_common_dir(root: Path) -> Optional[Path]:
+    """Canonical common Git directory when *root* is an exact registered worktree.
+
+    The worktree inventory check is necessary in addition to matching
+    ``--git-common-dir``: a hand-written ``.git`` file can point at another
+    checkout's common dir. Git's NUL-delimited porcelain inventory must name
+    this exact root, so only Git-registered worktrees participate in trust.
+    """
+    try:
+        candidate = root.resolve()
+    except OSError:
+        return None
+    toplevel = _git_trust_output(candidate, "rev-parse", "--path-format=absolute", "--show-toplevel")
+    if toplevel is None or _canonical_git_path(toplevel.removesuffix("\n")) != candidate:
+        return None
+    common_raw = _git_trust_output(candidate, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    common_dir = _canonical_git_path(common_raw.removesuffix("\n")) if common_raw is not None else None
+    if common_dir is None:
+        return None
+    inventory = _git_trust_output(candidate, "worktree", "list", "--porcelain", "-z")
+    if inventory is None:
+        return None
+    for field in inventory.split("\x00"):
+        if field.startswith("worktree ") and _canonical_git_path(field[9:]) == candidate:
+            return common_dir
+    return None
+
+
+def is_project_root_trusted(root: Path) -> bool:
+    """True for an explicit trusted root or a registered worktree sharing one.
+
+    Explicit roots retain their existing path-exact semantics. Inheritance
+    compares canonical Git common directories only after both roots prove their
+    own registered-worktree membership; clones, submodules and forged ``.git``
+    files therefore fail closed.
+    """
+    try:
+        candidate = Path(root).resolve()
     except OSError:
         return False
+    trusted_roots = _project_trusted_dirs_from_config()
+    if candidate in trusted_roots:
+        return True
+    candidate_common_dir = _registered_worktree_common_dir(candidate)
+    if candidate_common_dir is None:
+        return False
+    for trusted_root in trusted_roots:
+        trusted_common_dir = _registered_worktree_common_dir(trusted_root)
+        if trusted_common_dir == candidate_common_dir:
+            return True
+    return False
 
 
 def _candidate_project_skills_dirs(root: Path) -> List[Path]:

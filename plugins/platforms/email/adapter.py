@@ -227,7 +227,7 @@ def _decode_header_value(raw: str) -> str:
     return " ".join(_safe_decode(part, charset) if isinstance(part, bytes) else part for part, charset in parts)
 
 
-def _first_body_part(msg: email_lib.message.Message, content_type: str) -> str:
+def _first_body_part(msg: email_lib.message.Message, content_type: str, *, skip_blank: bool = False) -> str:
     """Decoded text of the first non-attachment part of *content_type*, or ''."""
     pending = [msg]
     while pending:
@@ -238,13 +238,15 @@ def _first_body_part(msg: email_lib.message.Message, content_type: str) -> str:
         if part.is_multipart():
             pending.extend(reversed(part.get_payload()))
         elif part.get_content_type() == content_type and (payload := part.get_payload(decode=True)):
-            return _safe_decode(payload, part.get_content_charset())
+            text = _safe_decode(payload, part.get_content_charset())
+            if not skip_blank or text.strip():
+                return text
     return ""
 
 
 def _extract_text_body(msg: email_lib.message.Message, *, preserve_html: bool = False) -> str:
     """Prefer decoded HTML when opted in; otherwise retain plain-text extraction."""
-    if preserve_html and (html := _first_body_part(msg, "text/html")).strip():
+    if preserve_html and (html := _first_body_part(msg, "text/html", skip_blank=True)):
         return html
     if msg.is_multipart():
         html = _first_body_part(msg, "text/html")

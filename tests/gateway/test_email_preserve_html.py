@@ -32,6 +32,8 @@ def _message(kind):
         msg.attach(attachment)
         alternatives = MIMEMultipart('alternative')
         alternatives.attach(MIMEText(PLAIN, 'plain', 'utf-8'))
+        if kind == 'blank_before_html':
+            alternatives.attach(MIMEText(' \n\t ', 'html', 'utf-8'))
         html = {'empty_html': '', 'blank_html': ' \n\t '}.get(kind, HTML)
         alternatives.attach(MIMEText(html, 'html', 'utf-8'))
         msg.attach(alternatives)
@@ -45,7 +47,7 @@ def _message(kind):
 
 @pytest.mark.parametrize('flag', [None, False, 'false', True, 'true'])
 @pytest.mark.parametrize('kind', ['single', 'multipart', 'plain', 'empty', 'empty_html', 'unknown_charset',
-                                 'mixed_disposition', 'nested_attachment', 'blank_html'])
+                                 'mixed_disposition', 'nested_attachment', 'blank_html', 'blank_before_html'])
 def test_received_body_preserves_formatting_only_when_enabled(flag, kind):
     from gateway.config import PlatformConfig
     from plugins.platforms.email.adapter import EmailAdapter

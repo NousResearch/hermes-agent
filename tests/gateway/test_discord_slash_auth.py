@@ -251,35 +251,28 @@ def _gateway_authorizes(source):
 
 
 @pytest.mark.asyncio
-async def test_role_member_slash_command_passes_gateway_authz(adapter):
-    """Regression for #118958: the adapter admits a role-only member, and the event it
-    dispatches must carry that verdict, or the gateway answers with a pairing code."""
+@pytest.mark.parametrize("builder", ["slash", "thread_starter"])
+@pytest.mark.parametrize("actor_roles,gateway_admits", [
+    ([1234], True),   # role-only member the slash gate admits
+    ([7], False),     # unrelated role: the builder must not mint a grant for this actor
+])
+async def test_native_event_carries_this_actors_role_grant(adapter, builder, actor_roles, gateway_admits):
+    """Regression for #118958: a role-only member passes the slash gate, and the event a native
+    builder dispatches must carry that verdict, or the gateway answers with a pairing code."""
     adapter._allowed_role_ids = {1234}
     interaction = _make_interaction("999999999")
-    interaction.user.roles = [SimpleNamespace(id=1234)]
-    interaction.user.display_name = "role member"
-    dispatched = []
-    adapter.handle_message = AsyncMock(side_effect=dispatched.append)
-
-    await adapter._run_simple_slash(interaction, "/reset")
-
-    assert [_gateway_authorizes(event.source) for event in dispatched] == [True]
-
-
-@pytest.mark.asyncio
-async def test_role_member_thread_starter_passes_gateway_authz(adapter):
-    """``/thread`` with a starter message dispatches its own event; it must carry the same verdict."""
-    adapter._allowed_role_ids = {1234}
-    interaction = _make_interaction("999999999")
-    interaction.user.roles = [SimpleNamespace(id=1234)]
-    interaction.user.display_name = "role member"
+    interaction.user.roles = [SimpleNamespace(id=r) for r in actor_roles]
+    interaction.user.display_name = "member"
     interaction.guild.name = "guild"
     dispatched = []
     adapter.handle_message = AsyncMock(side_effect=dispatched.append)
 
-    await adapter._dispatch_thread_session(interaction, "555", "topic", "hello")
+    if builder == "slash":
+        dispatched.append(adapter._build_slash_event(interaction, "/reset"))
+    else:
+        await adapter._dispatch_thread_session(interaction, "555", "topic", "hello")
 
-    assert [_gateway_authorizes(event.source) for event in dispatched] == [True]
+    assert [_gateway_authorizes(event.source) for event in dispatched] == [gateway_admits]
 
 
 # ---------------------------------------------------------------------------

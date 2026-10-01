@@ -4311,6 +4311,14 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             return (False, "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES")
         return (True, None)
 
+    def _slash_role_grant(self, interaction: "discord.Interaction") -> bool:
+        """``role_authorized`` for an event built from ``interaction``, with the message path's
+        meaning (_discord_message_admission): a role allowlist exists and THIS actor passes the gate.
+        Re-evaluated for the interaction instead of trusted from call order, so a builder can never
+        stamp the grant on an actor the slash gate would refuse."""
+        return bool(getattr(self, "_allowed_role_ids", set())) and self._evaluate_slash_authorization(
+            interaction)[0]
+
     async def _check_slash_authorization(
         self, interaction: "discord.Interaction", command_text: str,
     ) -> bool:
@@ -4945,16 +4953,13 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
         parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
-        # Callers build the event only after _check_slash_authorization passed. The flag means
-        # what it means on the message path (_discord_message_admission): this adapter has a role
-        # allowlist and the user passed its gate, not that the user matched a role. Without it the
-        # gateway denies role-only users.
+        # Without the role grant the gateway refuses a role-only member the slash gate admitted.
         source = self.build_source(
             chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
-            role_authorized=bool(getattr(self, "_allowed_role_ids", set())),
+            role_authorized=self._slash_role_grant(interaction),
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
@@ -5004,13 +5009,12 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # Name, topic and parent come from the thread, as for a message posted in it (same pinned prompt).
         thread_id = str(thread.id)
         _parent_id = self._get_parent_channel_id(thread) or ""
-        # Only reached from _handle_thread_create_slash after its authorization check.
         source = self.build_source(
             chat_id=thread_id, chat_name=self._format_thread_chat_name(thread), chat_type="thread",
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=self._get_effective_topic(thread, is_thread=True),
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=_parent_id or None,
-            role_authorized=bool(getattr(self, "_allowed_role_ids", set())),
+            role_authorized=self._slash_role_grant(interaction),
         )
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)

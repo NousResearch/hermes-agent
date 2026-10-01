@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -509,8 +510,13 @@ def relaunch_command(
         body = f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)"
     else:
         # distlib .exe launchers are executable zip files with __main__, not
-        # importable modules named '__main__'. run_path handles both shapes.
-        body = f"runpy.run_path({str(Path(argv[0]).absolute())!r}, run_name='__main__')"
+        # importable modules named '__main__'. A launcher shim can leave a bare
+        # command name in argv[0], so resolve it through PATH before treating it
+        # as a filesystem path.
+        launcher = argv[0]
+        if not Path(launcher).is_absolute() and len(Path(launcher).parts) == 1:
+            launcher = shutil.which(launcher) or launcher
+        body = f"runpy.run_path({str(Path(launcher).absolute())!r}, run_name='__main__')"
     return [str(python), *options, "-I", "-c", prefix + body]
 
 

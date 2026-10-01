@@ -43,7 +43,7 @@ import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { CatalogAlert } from '../catalog/catalog-alert'
 import { CatalogBrowser } from '../catalog/catalog-browser'
-import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
+import { type CatalogEntry, parseCatalog, useCatalog } from '../catalog/catalog-data'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
@@ -114,6 +114,48 @@ function installAgentHalfHere(record: PluginRecord, profile: null | string) {
     repo: origin.repo,
     sha: origin.sha
   })
+}
+
+/** Stable source identity for repo URLs and Git remotes. Keep a package subdirectory
+ *  in the identity because catalog entries can share a monorepo. */
+function repositoryIdentity(value: string, subdir = ''): null | string {
+  let repo = value.trim()
+
+  if (!repo) {
+    return null
+  }
+
+  const shorthand = /^([^/:?#\s]+)\/([^/:?#\s]+)$/.exec(repo)
+
+  if (shorthand) {
+    repo = `https://github.com/${repo}`
+  } else if (!repo.includes('://')) {
+    const scp = /^(?:([^@/:\s]+)@)?([^/:\s]+):(.+)$/.exec(repo)
+
+    if (scp && !scp[3].startsWith('/')) {
+      repo = `ssh://${scp[1] ? `${scp[1]}@` : ''}${scp[2]}/${scp[3]}`
+    }
+  }
+
+  const url = URL.parse(repo)
+
+  if (!url || !['git:', 'git+https:', 'git+ssh:', 'http:', 'https:', 'ssh:'].includes(url.protocol)) {
+    return null
+  }
+
+  const host = url.host.toLowerCase()
+  const path = url.pathname.replace(/\/+$/, '').replace(/\.git$/i, '')
+  const markerSubdir = url.hash.slice(1).replace(/^\/+|\/+$/g, '')
+  const catalogSubdir = subdir.trim().replace(/^\/+|\/+$/g, '')
+
+  if (!host || !path || path === '/' || (markerSubdir && catalogSubdir && markerSubdir !== catalogSubdir)) {
+    return null
+  }
+
+  const packageSubdir = catalogSubdir || markerSubdir
+  const repository = `${host}${host === 'github.com' ? path.toLowerCase() : path}`
+
+  return packageSubdir ? `${repository}#${packageSubdir}` : repository
 }
 
 const SERVER_TONE = {
@@ -559,6 +601,7 @@ export const PluginsTab = memo(function PluginsTab({
   const { t } = useI18n()
   const p = t.skills.plugins
   const { requestGateway } = useGatewayRequest()
+  const { data: catalogEntries } = useCatalog('plugins')
 
   const desktopRecords = useStore($pluginRecords)
   const agentRows = useStore($agentPlugins)
@@ -629,8 +672,23 @@ export const PluginsTab = memo(function PluginsTab({
 
   const packageById = useMemo(() => new Map(packages.map(pkg => [`installed:${pkg.key}`, pkg])), [packages])
 
-  const installedByCatalogName = useMemo(() => {
+  const catalogRepositoryCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+
+    for (const entry of catalogEntries ?? []) {
+      const repository = repositoryIdentity(entry.repo, entry.subdir)
+
+      if (repository) {
+        counts.set(repository, (counts.get(repository) ?? 0) + 1)
+      }
+    }
+
+    return counts
+  }, [catalogEntries])
+
+  const installedByCatalogIdentity = useMemo(() => {
     const byName = new Map<string, CatalogEntry>()
+    const byRepository = new Map<string, CatalogEntry | null>()
 
     for (const entry of installedEntries) {
       const pkg = packageById.get(entry.id)
@@ -639,14 +697,36 @@ export const PluginsTab = memo(function PluginsTab({
       if (name) {
         byName.set(name, entry)
       }
+
+      const repository = repositoryIdentity(entry.repo, entry.subdir)
+
+      if (repository) {
+        // A repository shared by multiple installed packages is not enough to
+        // decide which package a catalog entry represents.
+        byRepository.set(repository, byRepository.has(repository) ? null : entry)
+      }
     }
 
-    return byName
+    return { byName, byRepository }
   }, [installedEntries, packageById])
 
+  // Repository identity is a display-only fallback. Catalog provenance still
+  // comes only from the installer-recorded name above; matching never writes it.
   const matchInstalled = useCallback(
-    (entry: CatalogEntry) => installedByCatalogName.get(entry.name),
-    [installedByCatalogName]
+    (entry: CatalogEntry) => {
+      const named = installedByCatalogIdentity.byName.get(entry.name)
+
+      if (named) {
+        return named
+      }
+
+      const repository = repositoryIdentity(entry.repo, entry.subdir)
+
+      return repository && catalogRepositoryCounts.get(repository) === 1
+        ? (installedByCatalogIdentity.byRepository.get(repository) ?? undefined)
+        : undefined
+    },
+    [catalogRepositoryCounts, installedByCatalogIdentity]
   )
 
   const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id)

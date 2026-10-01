@@ -179,11 +179,13 @@ gateway:
     label_normal: "ЗВИЧАЙНИЙ"
     status_fast: "швидкий"
     status_normal: "звичайний"
-    picker_title: "⚡ **Priority Processing**\\n\\nПоточний режим: `{mode}`\\n\\nОберіть варіант:"
+    picker_title: "⚡ **Priority Processing**\n\nПоточний режим: `{mode}`\n\nОберіть варіант:"
     choice_fast: "fast — Priority Processing увімкнено"
     choice_normal: "normal — стандартна обробка"
     choice_auto: "auto — швидко в перші секунди кожного ходу"
     choice_cold: "cold — швидко лише на першому ході сесії"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, ціна ×6)"
+    ultrafast_not_supported: "⚡ Ultrafast доступний лише для GPT-6 Astra (поточна модель: `{model}`)."
   footer:
     status: "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Використання: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` не підтримується. Використовуйте `/reasoning <level> --global`, щоб змінити глобальне значення за замовчуванням."
     reset_done: "🧠 ✓ Перевизначення мислення для сеансу скинуто; повернення до глобальної конфігурації."
     unknown_arg: "⚠️ Невідомий аргумент: `{arg}`\n\n**Дійсні рівні:** none, minimal, low, medium, high, xhigh, max, ultra\n**Показ:** show, hide\n**Зберегти:** додайте `--global`, щоб зберегти поза цим сеансом"
-    picker_title: "🧠 **Налаштування мислення**\\n\\n**Зусилля:** `{level}`\\n**Область:** {scope}\\n**Показ:** {display}\\n\\nОберіть варіант:"
+    picker_title: "🧠 **Налаштування мислення**\n\n**Зусилля:** `{level}`\n**Область:** {scope}\n**Показ:** {display}\n\nОберіть варіант:"
     choice_none: "none — вимкнути мислення"
     choice_reset: "reset — скинути перевизначення сесії"
     choice_show: "показувати мислення у відповідях"
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "Керувати рівнем зусиль міркування та його показом"
   fast:
-    description: "Швидкий режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Швидкий режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Показати або змінити оформлення (тему) інтерфейсу"
   indicator:
@@ -2651,7 +2653,9 @@ cli:
       feature_generic: "Швидкий режим"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Використання: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast доступний лише для GPT-6 Astra (поточна модель: {model})."
+      usage: "Використання: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: встановлено {value} {scope}"
     hatch:
@@ -3283,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Неглибокий клон — неможливо перевірити стан push, залишаємо: {path}"
     next_session_deepens: "Наступний сеанс `hermes -w` поглибить клон і автоматично видалить злиті робочі дерева."
     unpushed_keeping: "⚠ У робочому дереві є невідправлені коміти, залишаємо: {path}"
+    uncommitted_keeping: "⚠ У робочому дереві є незафіксовані зміни, залишаємо: {path}"
     clean_up_manually: "Щоб очистити вручну: git worktree remove --force {path}"
     cleaned_up: "✓ Робоче дерево очищено: {path}"
 display:

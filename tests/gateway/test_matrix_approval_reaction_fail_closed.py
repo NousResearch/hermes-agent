@@ -133,3 +133,41 @@ class TestApprovalReactionFailClosed:
         assert _run(adapter, event) is False
 
 
+def _gateway_wired_adapter():
+    """Adapter with the real gateway auth callback, as ``GatewayRunner`` wires it."""
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.pairing import PairingStore
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.config.platforms = {Platform.MATRIX: PlatformConfig(enabled=True, extra={})}
+    runner.pairing_store = PairingStore(profile="default")
+    runner.pairing_stores = {"default": runner.pairing_store}
+    runner._primary_profile_name = "default"
+    adapter = _make_adapter(allowed_user_ids=None)
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    runner.adapters = {Platform.MATRIX: adapter}
+    adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.MATRIX))
+    return adapter, runner.pairing_store
+
+
+@pytest.mark.parametrize("grant, reactor, resolves", [
+    ("pairing", "@paired:matrix.org", True),
+    ("MATRIX_ALLOW_ALL_USERS", "@anyone:matrix.org", True),
+    ("none", "@stranger:matrix.org", False),
+])
+def test_prompt_reaction_follows_the_gateway_authorization(monkeypatch, grant, reactor, resolves):
+    """A user the gateway lets send commands can answer their prompt by reaction; others cannot."""
+    for key in ("MATRIX_ALLOWED_USERS", "MATRIX_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
+                "GATEWAY_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(key, raising=False)
+    adapter, pairing_store = _gateway_wired_adapter()
+    if grant == "pairing":
+        pairing_store.approve_code("matrix", pairing_store.generate_code("matrix", reactor))
+    elif grant == "MATRIX_ALLOW_ALL_USERS":
+        monkeypatch.setenv("MATRIX_ALLOW_ALL_USERS", "true")
+
+    assert _run(adapter, _make_event(reactor, "$prompt-event-1")) is resolves
+
+

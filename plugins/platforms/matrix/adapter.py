@@ -2583,9 +2583,21 @@ class MatrixAdapter(BasePlatformAdapter):
         return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
+    async def _is_prompt_reactor_authorized(self, room_id: str, sender: str) -> bool:
+        """The gateway's own verdict for this sender in this room (pairing approvals, platform and
+        global allowlists, allow-all, per profile under multiplex), so reaction controls admit
+        exactly who may send commands. Only without an injected check does the env gate decide."""
+        # getattr: object.__new__-built test doubles never ran BasePlatformAdapter.__init__.
+        if getattr(self, "_authorization_check", None) is not None:
+            chat_type = "dm" if await self._is_dm_room(room_id) else "group"
+            verdict = self._is_sender_authorized(sender, chat_type, room_id)
+            if verdict is not None:
+                return verdict
+        return self._is_authorized_user(sender)
+
     async def _validate_matrix_prompt_reactor(
         self, room_id: str, target_event_id: str, sender: str, prompt: Any, prompt_label: str) -> bool:
-        if not self._is_authorized_user(sender):
+        if not await self._is_prompt_reactor_authorized(room_id, sender):
             logger.info(
                 "Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
             await self._send_invalid_reaction_feedback(

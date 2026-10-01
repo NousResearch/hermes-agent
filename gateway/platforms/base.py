@@ -3420,7 +3420,7 @@ class BasePlatformAdapter(BaseTextBatchingMixin, BaseTextDebounceMixin, BaseProc
 
         The gateway calls this while it prepares every inbound turn. ``origin`` is the session's
         origin source, or ``None`` before the session exists. ``acknowledged_state`` is the
-        ``channel_state`` saved with the most recent user transcript row that has one.
+        ``channel_state`` saved with the most recent transcript row that has one.
         ``first_turn`` is true when the session transcript is empty. Return ``None`` to add no note
         and leave the saved state unchanged.
 

@@ -14,6 +14,7 @@ beforeEach(() => {
 
 it('hands only selected evidence to a reviewable chat draft and removes a card', async () => {
   const insert = vi.fn()
+
   const unsubscribe = onComposerInsertRequest(detail => {
     insert(detail.text)
     ackComposerInsert(detail.token, true)

@@ -19,6 +19,7 @@ export function captureLensPage(mode: 'page' | 'selection' | 'refresh', selector
     if (!selection || selection.isCollapsed || !selection.rangeCount) {
       return { error: 'selectText' }
     }
+
     const node = selection.getRangeAt(0).commonAncestorContainer
     element = node instanceof Element ? node : node.parentElement
     // Capture the enclosing block so refresh has an honest, stable unit to compare.
@@ -34,6 +35,7 @@ export function captureLensPage(mode: 'page' | 'selection' | 'refresh', selector
   if (!element || element.closest('input,textarea,[contenteditable="true"]')) {
     return { error: 'selectText' }
   }
+
   const text = (element as HTMLElement).innerText?.trim() ?? ''
 
   if (!text) {

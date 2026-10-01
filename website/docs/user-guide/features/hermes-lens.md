@@ -72,7 +72,7 @@ npx playwright test --config e2e/lens/playwright.config.ts
 ```
 
 The native integration test uses a disposable Electron user-data directory and
-a local fixture website. It exercises real selection, pinning, notes, relaunch
+a local fixture website. It exercises real selection, pinning, notes, reload
 persistence, source reload/change detection, and the composer insertion bus.
 No provider credentials or model calls are required. The Lens workflow runs
 these checks on Windows and macOS.

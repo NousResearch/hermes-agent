@@ -1168,6 +1168,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       if (epoch === setupRecoveryEpoch.current) {
         setSetupCleanup(!result.ok || Boolean(result.pending))
         setSetupStorageBlocked(result.reason === 'setup_journal_unreadable')
+
+        if (result.ok && !result.pending) {setCreateError('')}
       }
     } catch {if (epoch === setupRecoveryEpoch.current) {setSetupCleanup(true)}}
     finally {if (epoch === setupRecoveryEpoch.current) {setRecoveringSetup(false)}}
@@ -1357,7 +1359,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       }}
       open={open}
     >
-      <DialogContent className="max-w-md gap-5" onOpenAutoFocus={event => {event.preventDefault(); searchInput.current?.focus()}}>
+      <DialogContent className="max-w-md gap-5 bg-(--ui-chat-bubble-opaque-background)" onOpenAutoFocus={event => {event.preventDefault(); searchInput.current?.focus()}}>
         <DialogHeader>
           <DialogTitle>{b.group.newTitle}</DialogTitle>
           <DialogDescription>{b.canonical.createDescription}</DialogDescription>
@@ -1366,10 +1368,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         {(setupCleanup || createError) && <div className="grid gap-2 text-sm text-(--ui-text-secondary)" role="alert">
           <p>{setupCleanup ? (setupStorageBlocked ? b.canonical.peerSetupStorage : b.canonical.peerSetupCleanup) : createError}</p>
           {setupCleanup && <Button className="justify-self-start" disabled={recoveringSetup || createPending} onClick={() => void recoverSetup()} variant="secondary">{t.common.retry}</Button>}
-          {createRefused && <details>
-            <summary className="cursor-pointer">{b.canonical.setupDetails}</summary>
-            <a className="underline underline-offset-2" href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>
-          </details>}
+          {createRefused && <a className="underline underline-offset-2" href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>}
         </div>}
         <SearchField
           aria-label={b.group.searchToAdd}

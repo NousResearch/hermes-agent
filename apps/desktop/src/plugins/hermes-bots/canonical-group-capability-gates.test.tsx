@@ -5,7 +5,7 @@ import type { WritableAtom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
-import { $canonicalGroupBindings, CanonicalGroupList } from './canonical-group-registry'
+import { $canonicalGroupBindings, $canonicalGroupNames, CanonicalGroupList, forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CreateGroupChatDialog } from './create-dialog'
 import { $botMeta } from './data'
 import { $groupChats, $groupChatWorkspace, updateGroupChat } from './group-chat'
@@ -75,6 +75,7 @@ beforeEach(() => {
   state.profile.set('default')
   state.gateway.set('open')
   $canonicalGroupBindings.set({})
+  $canonicalGroupNames.set({})
   $groupChats.set({})
   $groupChatWorkspace.set(null)
   $botMeta.set({})
@@ -239,7 +240,6 @@ it('explains a hosted-profile create refusal in the dialog and room gate without
   })
   const { onCreated, onClose } = await submitDialog()
   expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.createRefused)
-  fireEvent.click(screen.getByText(CANONICAL_GROUP_LOCALES.en.setupDetails))
   expect(screen.getByRole('link').getAttribute('href')).toBe('https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners')
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
@@ -325,4 +325,80 @@ it('releases creation when its connection disappears immediately before the clic
   expect(request.mock.calls.some(call => call[1] === 'groups.create')).toBe(false)
   expect(screen.queryByRole('button', { name: CANONICAL_GROUP_LOCALES.en.creatingGroup })).toBeNull()
   expect(onCreated).not.toHaveBeenCalled()
+})
+
+it('clears a recovered setup error without losing the selected Bots or group name', async () => {
+  const desktop = window.hermesDesktop
+  const recover = vi.fn().mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ ok: false, pending: true, reason: 'setup_journal_unreadable' }).mockResolvedValue({ ok: true })
+  const create = vi.fn().mockResolvedValue({ ok: false, reason: 'setup_journal_write_failed' })
+  window.hermesDesktop = { roomSetup: { recover, create } } as unknown as typeof window.hermesDesktop
+  answer(CANONICAL_GROUP_CAPABILITIES)
+
+  try {
+    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={[
+      { name: 'default', handle: 'atlas', connectionId: 'local', display_name: 'Atlas Bot' },
+      { name: 'default', handle: 'mira', connectionId: 'remote', display_name: 'Mira Bot' }
+    ]} />)})
+
+    for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
+    fireEvent.change(screen.getByRole('textbox', { name: CANONICAL_GROUP_LOCALES.en.nameOptional }), { target: { value: 'Harbor launch' } })
+    await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
+    expect(create).toHaveBeenCalledOnce()
+    expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.peerSetupStorage)
+    await act(async () => {fireEvent.click(screen.getByRole('button', { name: 'Retry' }))})
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect((screen.getByRole('textbox', { name: CANONICAL_GROUP_LOCALES.en.nameOptional }) as HTMLInputElement).value).toBe('Harbor launch')
+    expect(screen.getAllByRole('checkbox').every(box => box.getAttribute('aria-checked') === 'true')).toBe(true)
+    expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }) as HTMLButtonElement).disabled).toBe(false)
+  } finally {window.hermesDesktop = desktop}
+})
+
+
+it('shows a newly created group in the mounted sidebar and follows its rename without discovering a foreign owner', async () => {
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? CANONICAL_GROUP_CAPABILITIES : { rooms: [], next_offset: null })
+  const onOpen = vi.fn()
+  await act(async () => {render(<CanonicalGroupList onOpen={onOpen} />)})
+  const room = { room_id: 'fresh-group', name: 'Harbor launch', members: [] }
+  const route = { connectionId: 'local', profile: 'default' }
+  let key = ''
+  act(() => {key = registerCanonicalGroup(route, room)})
+  fireEvent.click(screen.getByRole('button', { name: room.name }))
+  expect(onOpen).toHaveBeenCalledWith(key)
+  act(() => {registerCanonicalGroup(route, { ...room, name: 'Friday launch' })})
+  expect(screen.queryByRole('button', { name: room.name })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Friday launch' })).toBeTruthy()
+  act(() => {registerCanonicalGroup({ connectionId: 'another-owner', profile: 'default' }, { ...room, name: 'Private group' })})
+  expect(screen.queryByRole('button', { name: 'Private group' })).toBeNull()
+  act(() => {forgetCanonicalGroup({ ...route, roomId: room.room_id })})
+  expect(screen.queryByRole('button', { name: 'Friday launch' })).toBeNull()
+})
+
+it('reconciles a late discovery with creation, rename and retirement that happened while it was pending', async () => {
+  const route = { connectionId: 'local', profile: 'default' }
+  const renamed = { room_id: 'renamed', name: 'Old name', members: [] }
+  const ended = { room_id: 'ended', name: 'Ended group', members: [] }
+  const transient = { room_id: 'transient', name: 'Created then ended', members: [] }
+  registerCanonicalGroup(route, renamed)
+  const endedKey = registerCanonicalGroup(route, ended)
+  let resolveList!: (value: unknown) => void
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? CANONICAL_GROUP_CAPABILITIES
+    : new Promise(resolve => {resolveList = resolve}))
+  await act(async () => {render(<CanonicalGroupList onOpen={vi.fn()} />)})
+  let transientKey = ''
+  act(() => {
+    registerCanonicalGroup(route, { room_id: 'fresh', name: 'New group', members: [] })
+    registerCanonicalGroup(route, { ...renamed, name: 'Current name' })
+    transientKey = registerCanonicalGroup(route, transient)
+    forgetCanonicalGroup({ ...route, roomId: transient.room_id })
+    forgetCanonicalGroup({ ...route, roomId: ended.room_id })
+  })
+  await act(async () => {resolveList({ rooms: [renamed, ended, transient], next_offset: null })})
+  expect(screen.getByRole('button', { name: 'New group' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Current name' })).toBeTruthy()
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Old name' })).toBeNull()
+  expect(screen.queryByRole('button', { name: ended.name })).toBeNull()
+  expect(screen.queryByRole('button', { name: transient.name })).toBeNull()
+  expect($canonicalGroupBindings.get()[endedKey]).toBeUndefined()
+  expect($canonicalGroupBindings.get()[transientKey]).toBeUndefined()
 })

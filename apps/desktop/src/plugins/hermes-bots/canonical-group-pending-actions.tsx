@@ -98,7 +98,7 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, o
     <div className="flex flex-wrap items-center justify-end gap-2">
       {approval && <>
         {(!choices || choices.includes('deny')) && <Button disabled={disabled || !text(action.request_id)}
-          onClick={() => void invoke(() => onAction(snapshot(action), 'deny'))} size="sm" type="button" variant="text">{labels.deny}</Button>}
+          onClick={() => void invoke(() => onAction(snapshot(action), 'deny'))} size="sm" type="button" variant="secondary">{labels.deny}</Button>}
         {approval.reviewable && (!choices || choices.includes('once')) && <Button disabled={disabled}
           onClick={() => void invoke(() => onAction(snapshot(action), 'once'))} size="sm" type="button">{labels.allowOnce}</Button>}
         {!approval.reviewable && onRefresh && <Button disabled={busy || submitting}

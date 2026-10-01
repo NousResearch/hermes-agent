@@ -1485,9 +1485,13 @@ def _is_trusted_root_auth_alias(path: Path, home: Path) -> bool:
     if not path.is_symlink():
         return False
     try:
-        trusted = (get_default_hermes_root(home=home) / "auth.json").resolve(strict=False)
+        root = get_default_hermes_root(home=home).resolve(strict=False)
+        if home.resolve(strict=False) == root:
+            return False
+        trusted = (root / "auth.json").resolve(strict=False)
+        trusted.relative_to(root)
         return path.resolve(strict=False) == trusted
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return False
 
 
@@ -1498,7 +1502,8 @@ def restore_quick_snapshot(
     """Restore state from a quick snapshot.
 
     Overwrites current state files with the snapshot's copies.
-    Returns True if at least one file was restored.
+    Returns True if at least one file was restored and the listed auth.json
+    was not refused or skipped.
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
@@ -1537,6 +1542,8 @@ def restore_quick_snapshot(
             src.resolve().relative_to(snap_dir.resolve())
         except ValueError:
             logger.error("Manifest path traversal blocked: %s", rel)
+            if rel == "auth.json":
+                auth_restore_failed = True
             continue
 
         dst = home / rel
@@ -1548,9 +1555,14 @@ def restore_quick_snapshot(
             # every other manifest destination outside the profile remains a traversal.
             if rel != "auth.json" or not _is_trusted_root_auth_alias(dst, home):
                 logger.error("Manifest path traversal blocked: %s", rel)
+                if rel == "auth.json":
+                    auth_restore_failed = True
                 continue
 
         if not src.exists():
+            if rel == "auth.json":
+                logger.error("Snapshot auth.json listed in manifest is missing: %s", src)
+                auth_restore_failed = True
             continue
 
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1580,6 +1592,8 @@ def restore_quick_snapshot(
             restored += 1
         except (OSError, PermissionError) as exc:
             logger.error("Failed to restore %s: %s", rel, exc)
+            if rel == "auth.json":
+                auth_restore_failed = True
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
     return restored > 0 and not auth_restore_failed

@@ -556,3 +556,99 @@ def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypat
     assert live_path.read_bytes() == before
     assert (home / "config.yaml").read_text(encoding="utf-8") == "model: snapshot\n"
     assert result is False
+
+
+@pytest.mark.parametrize(
+    "refusal", ["missing-source", "source-alias", "untrusted-destination"]
+)
+def test_skipped_auth_member_is_not_hidden_by_restored_config(tmp_path, monkeypatch, refusal):
+    """A manifest's auth.json must count as failed when a guard skips it."""
+    from hermes_cli.backup import restore_quick_snapshot
+
+    root = tmp_path / "root"
+    home = root / "profiles" / "work"
+    snap_dir = home / "state-snapshots" / "partial"
+    snap_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    live_path = home / "auth.json"
+    live_path.write_text(
+        json.dumps({"providers": {}, "sentinel": "live"}), encoding="utf-8"
+    )
+    before = live_path.read_bytes()
+    snapshot_auth = snap_dir / "auth.json"
+    if refusal == "source-alias":
+        external = tmp_path / "outside" / "snapshot-auth.json"
+        external.parent.mkdir()
+        external.write_text(json.dumps({"providers": {}}), encoding="utf-8")
+        try:
+            snapshot_auth.symlink_to(external)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink unavailable: {exc}")
+    elif refusal == "untrusted-destination":
+        external = tmp_path / "outside" / "auth.json"
+        external.parent.mkdir()
+        external.write_bytes(before)
+        live_path.unlink()
+        try:
+            live_path.symlink_to(external)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink unavailable: {exc}")
+
+    (home / "config.yaml").write_text("model: live\n", encoding="utf-8")
+    (snap_dir / "config.yaml").write_text("model: snapshot\n", encoding="utf-8")
+    (snap_dir / "manifest.json").write_text(
+        json.dumps({"files": {"auth.json": 1, "config.yaml": 1}}),
+        encoding="utf-8",
+    )
+
+    assert restore_quick_snapshot("partial", hermes_home=home) is False
+    assert live_path.read_bytes() == before
+    assert (home / "config.yaml").read_text(encoding="utf-8") == "model: snapshot\n"
+
+
+@pytest.mark.parametrize("topology", ["default", "named-through-root"])
+def test_root_auth_alias_outside_home_is_never_a_trusted_restore_target(
+    tmp_path, monkeypatch, topology
+):
+    """The named-profile exception must not authorize a root link outside the root."""
+    from hermes_cli.backup import restore_quick_snapshot
+
+    root = tmp_path / "root"
+    root.mkdir()
+    external = tmp_path / "outside" / "auth.json"
+    external.parent.mkdir()
+    external.write_text(
+        json.dumps({"providers": {}, "sentinel": "external"}), encoding="utf-8"
+    )
+    before = external.read_bytes()
+    root_auth = root / "auth.json"
+    try:
+        root_auth.symlink_to(external)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    home = root
+    if topology == "named-through-root":
+        home = root / "profiles" / "work"
+        home.mkdir(parents=True)
+        try:
+            (home / "auth.json").symlink_to(root_auth)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink unavailable: {exc}")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    snap_dir = home / "state-snapshots" / "partial"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "auth.json").write_text(
+        json.dumps({"providers": {}, "sentinel": "snapshot"}), encoding="utf-8"
+    )
+    (snap_dir / "config.yaml").write_text("model: snapshot\n", encoding="utf-8")
+    (snap_dir / "manifest.json").write_text(
+        json.dumps({"files": {"auth.json": 1, "config.yaml": 1}}),
+        encoding="utf-8",
+    )
+
+    result = restore_quick_snapshot("partial", hermes_home=home)
+    assert external.read_bytes() == before
+    assert result is False

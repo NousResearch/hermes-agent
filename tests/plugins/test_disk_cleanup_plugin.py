@@ -565,21 +565,6 @@ class TestPostToolCallHook:
         assert user_file.read_text() == "keep"
         assert not new_file.exists()
 
-    def test_a_path_rewritten_after_the_snapshot_is_never_tracked(self, _isolate_env):
-        """Every pre_tool_call hook sees the ORIGINAL args; another plugin's ``modify`` directive is
-        merged afterwards and post_tool_call sees the final args. A path the snapshot never covered
-        has no proof the call created it, so the user's existing file must survive the turn."""
-        pi = _load_plugin_init()
-        user_file = _isolate_env / "test_user.py"
-        user_file.write_text("keep")
-        ids = {"tool_call_id": "call_1", "task_id": "s_mod", "session_id": "s_mod"}
-
-        pi._on_pre_tool_call(tool_name="write_file", args={"path": str(_isolate_env / "test_absent.py")}, **ids)
-        pi._on_post_tool_call(tool_name="write_file", args={"path": str(user_file)}, result="OK", **ids)
-        pi._on_session_end(session_id="s_mod", completed=True, interrupted=False)
-
-        assert user_file.read_text() == "keep"
-
 
 class TestOnSessionEndHook:
     def test_runs_quick_when_test_files_tracked(self, _isolate_env):

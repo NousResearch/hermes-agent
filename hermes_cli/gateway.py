@@ -3120,15 +3120,20 @@ def _service_project_root() -> Path:
     """Use the stable install tree when invoked from a managed environment copy."""
     root = PROJECT_ROOT.resolve()
     try:
-        install_root = Path(get_hermes_home()).resolve()
-        if install_root.name == "profiles" and install_root.parent.name == ".hermes":
-            install_root = install_root.parent
+        install_home = Path(get_hermes_home()).resolve()
+        from hermes_constants import named_profile_home
+        profile_home = named_profile_home(install_home)
+        install_root = profile_home.parent.parent if profile_home is not None else install_home
         relative = root.relative_to(install_root / "installs")
         parts = relative.parts
         if len(parts) >= 4 and parts[1] == "environments" and parts[3] == "workspace":
             canonical = install_root / "hermes-agent"
-            if (canonical / ".hermes" / "bin" / "hermes").is_file():
-                return canonical
+            if not (canonical / ".hermes" / "bin" / "hermes").is_file():
+                raise RuntimeError(
+                    f"Refusing service definition: canonical launcher is missing at {canonical}. "
+                    "Re-run the service command from a normal Hermes installation."
+                )
+            return canonical
     except (OSError, ValueError):
         pass
     return root

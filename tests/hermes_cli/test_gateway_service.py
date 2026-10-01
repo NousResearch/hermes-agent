@@ -337,6 +337,34 @@ class TestGeneratedSystemdUnits:
 
         assert gateway_cli._service_project_root() == canonical
 
+    def test_named_profile_workspace_uses_shared_install_root(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("profiles: {}\n", encoding="utf-8")
+        profile_home = hermes_home / "profiles" / "coder"
+        canonical = hermes_home / "hermes-agent"
+        launcher = canonical / ".hermes" / "bin" / "hermes"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+        workspace = hermes_home / "installs" / "pkg" / "environments" / "generation" / "workspace"
+        workspace.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", workspace)
+
+        assert gateway_cli._service_project_root() == canonical
+
+    def test_managed_workspace_refuses_missing_canonical_launcher(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        workspace = hermes_home / "installs" / "pkg" / "environments" / "generation" / "workspace"
+        workspace.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", workspace)
+
+        with pytest.raises(RuntimeError, match="canonical launcher is missing"):
+            gateway_cli._service_project_root()
+
 
     def test_timeout_stop_sec_keeps_the_floor_when_cron_drain_is_opted_out(
         self, monkeypatch

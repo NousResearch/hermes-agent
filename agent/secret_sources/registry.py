@@ -439,11 +439,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
         for value in result.secrets.values():
             if not isinstance(value, str) or not value:
                 continue
-            if "\n" in value or "\r" in value:
-                lines = [line for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n") if line]
-                register_vault_redaction_values((value, *lines))
-            else:
-                register_vault_redaction_values((value,))
+            register_vault_redaction_values((value,))
 
     applier = _Applier(env, report, protected, preserve)
     for source, cfg, result in fetches:

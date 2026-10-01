@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import threading
+from collections import OrderedDict
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 # output with profile A's passwords (which would also confirm to B that the bytes exist), and
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
-_VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {value: None}
+_VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {unit key: tuple of exact values}
 _VAULT_REDACTION_LOCK = threading.Lock()
 
 
@@ -66,25 +67,17 @@ def register_vault_redaction_values(values) -> None:
     if not normalized_values:
         return
     with _VAULT_REDACTION_LOCK:
-        bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(), {})
+        bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(), OrderedDict())
         candidates = []
         for value, normalized in normalized_values:
             lines = [line for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n") if line]
-            if len(lines) + 1 > _VAULT_REDACTION_MAX_PER_PROFILE:
-                slots = _VAULT_REDACTION_MAX_PER_PROFILE - 1
-                indices = {0, len(lines) // 2, len(lines) - 1}
-                step = (len(lines) - 1) / (slots - 1)
-                for i in range(slots):
-                    if len(indices) >= slots:
-                        break
-                    indices.add(round(i * step))
-                candidates = [value, *(lines[i] for i in sorted(indices))]
-                break
             candidates.extend(v for v in (value, normalized, *lines) if v)
-        for v in candidates:
-            if v:
-                bucket.pop(v, None)  # re-registering refreshes recency
-                bucket[v] = None
+        # One source application is one bounded unit. A multiline secret may
+        # contribute many exact fragments, but those fragments must be evicted
+        # together rather than evicting the secret's own early lines first.
+        unit_key = normalized_values[0][0]
+        bucket.pop(unit_key, None)  # re-registering refreshes recency
+        bucket[unit_key] = tuple(dict.fromkeys(candidates))
         while len(bucket) > _VAULT_REDACTION_MAX_PER_PROFILE:
             del bucket[next(iter(bucket))]
 
@@ -101,7 +94,11 @@ def redact_registered_vault_values(text: str) -> str:
         return text
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
-        values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first: a substring never shadows its superstring
+        values = sorted(
+            (value for unit in bucket.values() for value in unit),
+            key=len,
+            reverse=True,
+        ) if bucket else ()  # longest first: a substring never shadows its superstring
     for value in values:
         if value in text:
             text = text.replace(value, "«redacted-vault-secret»")

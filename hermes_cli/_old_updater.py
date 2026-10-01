@@ -17,6 +17,15 @@ from typing import Any, NoReturn
 
 _result: int | None = None
 
+
+def _configure_utf8_stdio() -> None:
+    """Keep updater handoff messages printable under legacy Windows codepages."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
 # The historical updater entrypoints. `_historical_context` reads capture data
 # from these frames; `tools.lazy_deps.install_specs` hands off only inside them.
 # Keep in sync with scripts/audit-old-updater-imports.py UPDATE_ENTRYPOINTS: the
@@ -109,6 +118,7 @@ def _historical_context() -> tuple[dict, list[dict], Any]:
 
 def _run_child(request: dict) -> tuple[int, dict]:
     """One JSON exchange; the old process never imports the updated graph."""
+    _configure_utf8_stdio()
     root = Path(__file__).resolve().parents[1]
     home = os.environ.get("HERMES_HOME")
     constants = sys.modules.get("hermes_constants")
@@ -146,6 +156,7 @@ def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
     The historical name is retained. A finally/atexit path can call another
     shim while unwinding; it must receive the same result, not start again.
     """
+    _configure_utf8_stdio()
     if incomplete:
         # A newly retired completion hook has no complete captured worklist.
         # It must not start another update or invent a successful receipt.
@@ -178,6 +189,7 @@ def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
 
 def relaunch_stopped_serves(token: dict) -> None:
     """A historical atexit token is separate work, not another whole update."""
+    _configure_utf8_stdio()
     if not token.get("pending"):
         return
     code = 1

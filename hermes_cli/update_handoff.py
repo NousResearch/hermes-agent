@@ -135,6 +135,14 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
     mirror the historical hand-off: wait for the child's cleanup instead of
     subprocess.run's kill-on-interrupt.
     """
+    # Windows may choose a legacy console codec that cannot encode the status
+    # arrow below. This compatibility entrypoint can run before the new
+    # completion module is available, so configure its own streams here.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
     from hermes_cli._old_updater import _run_child
 
     handoff_path = write_handoff(payload)

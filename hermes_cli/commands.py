@@ -161,7 +161,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("proactive",),
                args_hint="[interval] <prompt> [--times N] [--until <condition>] | status | pause | resume | stop",
                argument_mode="mixed", busy_policy="dispatch", busy_handler="loop"),
-    CommandDef("plan", "Write a markdown implementation plan to .hermes/plans/ without executing anything", "Session",
+    CommandDef("plan", "Write a markdown implementation plan to .hermes/plans/ without executing anything", "Tools & Skills",
                args_hint="[task]"),
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>", busy_policy="reject", busy_handler="moa"),

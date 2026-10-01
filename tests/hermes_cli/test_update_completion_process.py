@@ -67,6 +67,7 @@ def transition(tmp_path):
         "from pathlib import Path\n"
         "selected_venv = lambda root: Path(sys.executable).parent.parent\n"
         f"project_python = lambda root: Path({str(selected_python)!r})\n"
+        "store_root = lambda root: Path(root) / 'store'\n"
         "activation_environment = lambda root: {**os.environ, 'PYTHONPATH': str(root)}\n"
         "def activate_dependencies(root):\n"
         "    from hermes_cli.probe import event\n"
@@ -112,6 +113,10 @@ def transition(tmp_path):
                  package / "update_lock.py")
     shutil.copy2(Path(update_completion.__file__).with_name("_subprocess_compat.py"),
                  package / "_subprocess_compat.py")
+    shutil.copytree(Path(update_completion.__file__).resolve().parents[1] / "hermes_platform",
+                    root / "hermes_platform")
+    shutil.copy2(Path(update_completion.__file__).resolve().parents[1] / "pm" / "paths.py",
+                 pm_package / "paths.py")
     (package / "main.py").write_text("")
     (package / "update_cmd_config.py").write_text("_LAST_SIBLING_SNAPSHOTS = {}\n")
     (package / "update_inventory.py").write_text(

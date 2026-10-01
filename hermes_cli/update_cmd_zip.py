@@ -443,13 +443,8 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
     _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")
-    _sweep_bytecode_after_update(branch)
-    from dataclasses import replace as _replace
-    _hand_off_post_swap(
-        args, swap="zip", branch=branch, opts=_replace(opts, pre_update_version=pre_update_version),
-        gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update,
-        _windows_gateway_resume=_windows_gateway_resume)
-    return True  # unreachable: _hand_off_post_swap exits with the child's code
+    _complete_source_update(completion_request)
+    return True  # unreachable: completion exits with the child's code
 
 
 def _finish_zip_update(

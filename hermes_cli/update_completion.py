@@ -38,7 +38,9 @@ def _failed_result(request: dict, result_path: Path, code: int) -> int:
 def run_completion(request: dict) -> dict:
     """Wait for new code; zero exit without a correlated terminal result fails closed."""
     root = Path(request["source"])
-    env = dict(os.environ, HERMES_HOME=request["home"], PYTHONUNBUFFERED="1")
+    env = dict(
+        os.environ, HERMES_HOME=request["home"], PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8",
+    )
     for key in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
         env.pop(key, None)
     with tempfile.TemporaryDirectory(prefix="hermes-completion-") as directory:
@@ -163,7 +165,9 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
                str(request_path), str(result_path), "--prepared"]
     # A second interpreter is mandatory: PM may have selected a different Python
     # and dependency graph. No application maintenance runs in this bootstrap.
-    code = _exit_status(subprocess.call(command, cwd=root, env=activation_environment(root)))
+    child_env = dict(activation_environment(root))
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    code = _exit_status(subprocess.call(command, cwd=root, env=child_env))
     if not result_path.exists():
         return _failed_result(request, result_path, code)
     return code
@@ -283,6 +287,15 @@ def _finish(request: dict, result_path: Path) -> int:
 
 
 def main() -> int:
+    # ``-I`` ignores PYTHONIOENCODING, while Windows can select a legacy codec
+    # that cannot encode the status glyphs emitted by the completion process.
+    # Reconfigure only this short-lived child; importing the module in the
+    # parent updater must not change the parent's streams.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
     request_path, result_path = map(Path, sys.argv[1:3])
     request = json.loads(request_path.read_text(encoding="utf-8-sig"))
     if request["schema"] != 1:

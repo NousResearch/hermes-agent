@@ -22,7 +22,9 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
     shutil.copy2(source / "hermes_cli/_old_updater.py", package / "_old_updater.py")
+    (package / "_launchers.py").write_text("def _is_windows():\n    return True\n", encoding="utf-8")
     (package / "_update_takeover.py").write_text(
         "import json, os, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -57,7 +59,9 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     # sys.path (CI has no editable finder), so give it the one name the hand-off reads.
     (root / "hermes_constants.py").write_text(
         "import os\nfrom pathlib import Path\n"
-        "def get_hermes_home():\n    return Path(os.environ['HERMES_HOME'])\n", encoding="utf-8",
+        "def get_hermes_home():\n    return Path(os.environ['HERMES_HOME'])\n"
+        "def get_default_hermes_root(*args, **kwargs):\n    return Path(os.environ['HERMES_HOME'])\n"
+        "def project_venv_dir(root):\n    return None\n", encoding="utf-8",
     )
     program = root / "historical.py"
     program.write_text(

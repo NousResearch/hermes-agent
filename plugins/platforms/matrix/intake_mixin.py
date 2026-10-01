@@ -81,11 +81,15 @@ class MatrixIntakeMixin:
         if msg_event is None:
             return
         self._event_context_cache.store(room_id, event_id, MatrixEventContext(sender, msg_event.text))
-        if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
-            self._enqueue_text_event(msg_event)
-            pending = self._pending_text_batches.get(self._text_batch_key(msg_event))
+        return await self._admit_text_event(msg_event)
+
+    async def _admit_text_event(self, event: MessageEvent) -> asyncio.Future[bool] | bool:
+        if event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+            self._enqueue_text_event(event)
+            pending = self._pending_text_batches.get(self._text_batch_key(event))
             if pending is None:
                 return True
+            event_id = str(event.message_id or "")
             receipt: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self._text_batch_intakes.setdefault(id(pending), []).append((event_id, receipt))
             self._buffered_intakes[event_id] = receipt
@@ -93,7 +97,7 @@ class MatrixIntakeMixin:
             # The flush task reports a dispatch error; the receipt only marks the batch as failed.
             receipt.add_done_callback(lambda done: done.cancelled() or done.exception())
             return receipt
-        return await self._admit(msg_event)
+        return await self._admit(event)
 
 
     async def _dispatch_text_batch(self, event: MessageEvent) -> None:
@@ -118,4 +122,3 @@ class MatrixIntakeMixin:
                     receipt.set_result(consumed)
         finally:
             self._text_batch_intakes.pop(id(event), None)
-

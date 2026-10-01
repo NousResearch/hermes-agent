@@ -50,11 +50,23 @@ meaningful:
    no prototype patching (`X.prototype.y =`, `Object.defineProperty(...prototype`),
    no `eval`/`new Function`, no `import()` of anything but `@hermes/plugin-sdk`
    / `react` (app bundle chunks, blob or http URLs included), no script-tag
-   injection, no reaching into the app's internal stores. `hermes plugins
-   validate` refuses these at admission (`desktop surface` check); a plugin
-   that needs a capability the SDK lacks asks for an SDK hook instead of
-   patching around it.
-9. **Dependency security policy is the plugin's.** Hermes's 14-day
+   injection, no reaching into the app's internal stores or its own markup
+   (querying `data-slot` / `data-tour` / `data-sidebar` / `data-testid`
+   elements from `document`, or a `document.body` MutationObserver, to restyle,
+   hide, click or rewrite core UI). `hermes plugins validate` refuses these at
+   admission (`desktop surface` check); a plugin that needs a capability the
+   SDK lacks asks for an SDK hook instead of patching around it.
+9. **No runtime overrides of Hermes core.** A listed plugin extends Hermes only
+   through public surfaces: hooks, middleware, provider profiles and the
+   other `register_*` APIs, and Desktop SDK slots and routes. It must not
+   replace, wrap or rebind core functions, methods, module attributes or
+   private dicts in place (`AIAgent.<method> = ...`, `setattr(server, ...)`,
+   `sys.modules[...]`, writes into a core module's tables). Two plugins
+   patching the same seam silently break each other, and every core release
+   can break both. `hermes plugins validate` refuses these at admission (`no
+   core override` check). If the hook you need does not exist, open an issue
+   describing it: we would rather add the seam than list a patch.
+10. **Dependency security policy is the plugin's.** Hermes's 14-day
    `exclude-newer` quarantine covers Hermes's own dependencies only; a plugin's
    `python_dependencies` / `pyproject.toml` install under the plugin's policy
    (no quarantine, still inside Hermes's core constraints). Reviewers read the

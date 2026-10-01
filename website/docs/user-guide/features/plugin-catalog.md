@@ -116,6 +116,14 @@ The catalog is designed so you know exactly what you're installing:
   including one built from `new RegExp(...).source`, still fails. Treat the
   lint as a review aid, not a
   guarantee; give Desktop halves the same scrutiny you'd give a Python half.
+- **No runtime overrides of Hermes.** Listed plugins extend Hermes through
+  its public surfaces (hooks, middleware, provider profiles, Desktop SDK slots)
+  and never replace core functions, methods or Desktop UI in place: two plugins
+  patching the same seam would break each other, and a core release could break
+  both. Admission's `no core override` check refuses Python that rebinds Hermes
+  modules, classes or their tables at runtime, and the `desktop surface` lint
+  refuses `desktop/plugin.js` code that queries the app's own markup to restyle,
+  hide, click or rewrite core UI.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys
   etc.) it needs, so you can judge its blast radius before installing.

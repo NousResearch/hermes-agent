@@ -49,7 +49,7 @@ async def _visible_event(
     if not isinstance(body, str):
         body = ""
     body = body.strip()
-    text = _label_body(str(content.get("msgtype") or ""), _own_text(body))
+    text = _label_body(str(content.get("msgtype") or ""), _own_text(body, content))
     body = "[redacted]" if state.redacted else text[:1200]
     relation = MatrixRelation.from_content(state.original_content.get("m.relates_to"))
     sender = str(raw.get("sender") or "")

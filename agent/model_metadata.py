@@ -1708,8 +1708,9 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
     "gpt-5.4": 900_000, "gpt-daybreak-blue-latest": 900_000,
     "gpt-6-astra": 900_000,  # advertised 272K; 920,043 input OK, 1,000,043 rejected (live 2026-09-04)
-    # advertised 272K; 918,137 input OK, ~931K rejected (live 2026-09-29), in line with the model page's
-    # 922,000 max input. EXACT, not a prefix: the dotted slug is its own line and ``-pro`` is not routable.
+    # advertised 272K; 918,137 input OK, ~931K rejected (live 2026-09-29), consistent with the 922K left by
+    # the model page's 1.05M context minus 128K max output (derived, not a published input cap).
+    # EXACT, not a prefix: the dotted slug is its own line and ``-pro`` is not routable.
     "gpt-6.1-sol": 900_000,
 }
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override

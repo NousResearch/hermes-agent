@@ -634,14 +634,15 @@ class TestCodexOAuthContextLength:
                 )
             assert ctx == advertised, f"advertised {advertised} must be trusted"
 
+    @pytest.mark.parametrize("base", ["gpt-5.6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("catalog_max,expected", [(872_000, 872_000), (None, 900_000), (1_050_000, 900_000)])
-    def test_opted_in_variant_capped_at_live_catalog_max(self, catalog_max, expected):
+    def test_opted_in_variant_capped_at_live_catalog_max(self, base, catalog_max, expected):
         """An explicit ``-900k`` opt-in resolves to min(900K, catalog ``max_context_window``):
         gpt-5.6 advertises 272K with an 872K max (#105443); a catalog without the field or one
-        above the live-verified cap keeps 900K."""
+        above the live-verified cap keeps 900K. The 900K table entry is only the fallback."""
         from agent.model_metadata import get_model_context_length
 
-        item = {"slug": "gpt-5.6-luna", "context_window": 272_000}
+        item = {"slug": base, "context_window": 272_000}
         if catalog_max is not None:
             item["max_context_window"] = catalog_max
         fake_response = MagicMock()
@@ -651,7 +652,7 @@ class TestCodexOAuthContextLength:
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
-                model="gpt-5.6-luna-900k",
+                model=f"{base}-900k",
                 base_url="https://chatgpt.com/backend-api/codex",
                 api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",

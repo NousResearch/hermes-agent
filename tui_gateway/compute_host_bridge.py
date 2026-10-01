@@ -7,6 +7,13 @@ from __future__ import annotations
 import contextlib
 import threading
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .session_lifecycle import _holds_turn_claim, _owns_turn_claim
+    from .methods_prompt import _superseded_submit_error
+
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()

@@ -7,6 +7,12 @@ from __future__ import annotations
 import contextlib
 import os
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .session_lifecycle import _claim_session_turn, _holds_turn_claim, _owns_turn_claim, _release_session_turn
+
+
 from .method_ctx import bind_module
 
 # A concluded turn (success, handled error, interrupt) clears its durable marker (turn_marker.py) in _run_prompt_submit's

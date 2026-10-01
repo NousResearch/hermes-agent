@@ -47,6 +47,11 @@ def _tools_configure_request(rid, params: dict) -> dict:
         _release_build_profile_scopes(scopes)
 
 
+def _mcp_excluded_tools(config: dict) -> dict[str, frozenset[str]]:
+    return {name: frozenset((server.get("tools") or {}).get("exclude") or [])
+            for name, server in (config.get("mcp_servers") or {}).items()}
+
+
 def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     action = str(params.get("action", "") or "").strip().lower()
     targets = [str(name).strip() for name in params.get("names", []) or [] if str(name).strip()]
@@ -56,6 +61,8 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
         return _err(rid, 4018, "names required")
     hc, tc = _tools_mod("hermes_cli.config"), _tools_mod("hermes_cli.tools_config")
     cfg = hc.load_config()
+    enabled_before = tc._get_platform_tools(cfg, "cli", include_default_mcp_servers=False)
+    excluded_before = _mcp_excluded_tools(cfg)
     valid_toolsets = {ts_key for ts_key, _, _ in tc.CONFIGURABLE_TOOLSETS} | tc._get_plugin_toolset_keys()
     mcp_targets = [name for name in targets if ":" in name]
     unknown = [name for name in targets if ":" not in name and name not in valid_toolsets]
@@ -69,15 +76,16 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
             return err
     missing_servers = tc._apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
     hc.save_config(cfg)
-    info = _reset_session_agent(sid, session) if session else None
     enabled = sorted(tc._get_platform_tools(hc.load_config(), "cli", include_default_mcp_servers=False))
+    selection_changed = set(enabled) != enabled_before or _mcp_excluded_tools(cfg) != excluded_before
+    reset = bool(session) and selection_changed
+    info = _reset_session_agent(sid, session) if reset else None
     changed = [
         name for name in targets
         if name not in unknown and (":" not in name or name.split(":", 1)[0] not in missing_servers)]
     return _ok(rid, {
         "changed": changed, "enabled_toolsets": enabled, "info": info,
-        "missing_servers": sorted(missing_servers), "reset": bool(session), "unknown": unknown})
-
+        "missing_servers": sorted(missing_servers), "reset": reset, "unknown": unknown})
 
 
 def register(server) -> None:

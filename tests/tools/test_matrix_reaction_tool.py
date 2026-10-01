@@ -104,7 +104,7 @@ def test_matrix_reaction_is_only_in_matrix_default_toolset():
 @pytest.mark.asyncio
 async def test_matrix_reaction_requires_a_live_session_and_an_event():
     importlib.import_module("tools.matrix_reaction_tool")
-    adapter = SimpleNamespace(add_reaction=AsyncMock())
+    adapter = _matrix_adapter()
 
     wrong_platform = set_session_vars(
         platform="cli",
@@ -146,7 +146,7 @@ async def test_matrix_reaction_requires_a_live_session_and_an_event():
             "error": "message_id is required when the session has no current Matrix event"
         },
     )
-    adapter.add_reaction.assert_not_awaited()
+    adapter._send_reaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -224,3 +224,14 @@ async def test_timed_out_reaction_is_recorded_when_the_send_completes(monkeypatc
         [(ROOM, "$late")],
         {},
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relay", [False, True], ids=["missing", "relay-fronted"])
+async def test_matrix_reaction_requires_a_native_matrix_transport(relay):
+    from gateway.relay.adapter import RelayAdapter
+
+    adapter = object.__new__(RelayAdapter) if relay else None
+    result = await _dispatch_in_session(adapter, {"action": "react", "emoji": "👍"})
+
+    assert result == {"error": "Matrix reactions require a live Matrix session"}

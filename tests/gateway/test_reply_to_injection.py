@@ -218,3 +218,36 @@ async def test_deferred_expansion_keeps_reply_quote_literal_and_expands_typed_bo
     assert typed_ctx.persist_user_message.endswith("read @file:notes.txt\n\nEXPANDED-CONTEXT")
 
 
+
+
+@pytest.mark.asyncio
+async def test_run_agent_inner_forwards_authored_body_into_turn_context():
+    """The local branch must hand the authored body to the real TurnContext, not drop it."""
+    runner = object.__new__(GatewayRunner)
+    runner._get_proxy_url = lambda: None
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="review-chat")
+    disp = runner._RunAgentDisplay(
+        user_config={}, platform_key="telegram", needs_progress_queue=False,
+        resolve_display_setting=lambda *args: False,
+    )
+    runner._run_agent_display_settings = lambda source: disp
+    body = "Please summarize this."
+    decorated = "[Replying to earlier discussion]\n\n" + body
+    observed = []
+
+    class StopBeforeWorker(Exception):
+        pass
+
+    def capture(ctx, *args):
+        observed.append(ctx)
+        raise StopBeforeWorker
+
+    runner._run_agent_bind_turn_wiring = capture
+    with pytest.raises(StopBeforeWorker):
+        await runner._run_agent_inner(
+            decorated, "", [], source, "physical", session_key="review",
+            context_reference_message=body,
+        )
+    assert len(observed) == 1
+    assert observed[0].message == decorated
+    assert observed[0].context_reference_message == body

@@ -4286,6 +4286,7 @@ class GatewayTurnMixin(GatewayTurnRoutingMixin):
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
             internal=internal,
+            context_reference_message=context_reference_message,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

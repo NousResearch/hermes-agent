@@ -188,8 +188,19 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
             config["thinkingBudget"] = 0
         return config
     thinking_config: dict[str, Any] = {"includeThoughts": True}
-    # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.
+    # Gemini 2.5 otherwise allocates thinking dynamically from the entire prompt,
+    # which can consume the response budget when Hermes sends a large tool schema.
+    # Keep the existing effort vocabulary meaningful while bounding that allocation.
     if normalized_model.startswith("gemini-2.5-"):
+        thinking_config["thinkingBudget"] = {
+            "minimal": 512,
+            "low": 1024,
+            "medium": 2048,
+            "high": 4096,
+            "xhigh": 8192,
+            "max": 16384,
+            "ultra": 24576,
+        }.get(effort, 2048)
         return thinking_config
     if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"

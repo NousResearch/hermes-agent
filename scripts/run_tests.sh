@@ -170,8 +170,12 @@ done
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
+TEST_LOCALE=C.UTF-8
+if [ "$(uname -s)" = Darwin ]; then
+  TEST_LOCALE=en_US.UTF-8
+fi
 echo "▶ running per-file parallel test suite via run_tests_parallel.py"
-echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
+echo "  (TZ=UTC LANG=$TEST_LOCALE PYTHONHASHSEED=0; clean env)"
 
 cd "$REPO_ROOT"
 
@@ -190,8 +194,8 @@ exec env -i \
   ${WIN_ENV[@]+"${WIN_ENV[@]}"} \
   ${TEST_ENV[@]+"${TEST_ENV[@]}"} \
   TZ=UTC \
-  LANG=C.UTF-8 \
-  LC_ALL=C.UTF-8 \
+  LANG="$TEST_LOCALE" \
+  LC_ALL="$TEST_LOCALE" \
   PYTHONHASHSEED=0 \
   PYTHONUTF8=1 \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \

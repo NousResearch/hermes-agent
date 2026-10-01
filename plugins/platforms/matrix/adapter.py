@@ -2580,7 +2580,7 @@ class MatrixAdapter(BasePlatformAdapter):
     def _is_authorized_user(self, user_id: str, room_id: str | None = None) -> bool:
         """Resolve live gateway authorization, falling back to the startup snapshot when unwired."""
         if getattr(self, "_authorization_check", None) is not None:
-            return self._is_sender_authorized(user_id, "group", room_id) is True
+            return self._is_sender_authorized(user_id, chat_id=room_id) is True
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
         return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)

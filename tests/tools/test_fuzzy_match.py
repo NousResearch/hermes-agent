@@ -163,13 +163,45 @@ class TestIndentationPreservation:
         ast.parse(out)
 
     def test_tab_indented_file_preserved(self):
+        """Test that tab indentation is preserved when editing a tab-indented file.
+
+        Verifies that when old_string differs from content (having different
+        indentation), the reindent logic properly preserves tab characters
+        rather than converting them or losing them.
+        """
+        # File has a tab-indented body; old_string has different indentation
+        # (one level shallower) to test the reindent machinery.
         content = "def hello():\n\tpass\n"
+        # old_string has the function def at column 0 but the body at tab depth
         old = "def hello():\n\tpass\n"
+        # new_string changes pass to return 1, with proper tab indentation
         new = "def hello():\n\treturn 1\n"
         out, count, _, err = fuzzy_find_and_replace(content, old, new)
-        assert err is None and count == 1
-        assert "\treturn 1" in out
+        assert err is None and count == 1, f"Expected match, got err={err}"
+        # The output should contain a real tab before 'return 1', not spaces
+        assert "\treturn 1" in out, f"Expected tab return in output, got {out!r}"
+        # No space before 'return' - tab should be preserved, not converted
         assert " return" not in out
+
+    def test_tab_anchor_one_shallower_than_file(self):
+        """Test tab indentation anchoring one level shallower than file base."""
+        content = ("func f() -> void:\n\tif a > 0:\n\
+            \t\tfor i in range(3):\n\t\t\tprint(i)\n\t\t\tbreak\n\t\treturn\n")
+        old = "\tfor i in range(3):\n\t\tprint(i)\n\t\tbreak"
+        new = "\t\tfor i in range(3):\n\t\t\tprint(i * 2)\n\t\t\tbreak"
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1 and strategy != "exact"
+        assert out == ("func f() -> void:\n\tif a > 0:\n\"
+            "\t\tfor i in range(3):\n\t\t\tprint(i * 2)\n\t\t\tbreak\n\t\treturn\n")
+
+    def test_spaces_anchor_in_tab_file(self):
+        """Test converting spaces to tabs in a tab-indented file."""
+        content = "func f() -> void:\n\tif a > 0:\n\t\tprint(a)\n\t\treturn\n"
+        old = "    if a > 0:\n        print(a)\n        return"
+        new = "\tif a > 0:\n\t\tprint(a * 2)\n\t\treturn"
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1 and strategy != "exact"
+        assert out == "func f() -> void:\n\tif a > 0:\n\t\tprint(a * 2)\n\t\treturn\n"
 
 
 

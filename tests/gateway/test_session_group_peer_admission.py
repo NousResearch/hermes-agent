@@ -42,3 +42,27 @@ async def test_revoke_between_request_check_and_accepting_write_refuses_new_admi
     with gateway.db._read_ctx() as conn:
         assert conn.execute('SELECT request_id FROM session_admissions').fetchall()[0][0] == 'accepted'
         assert conn.execute('SELECT COUNT(*) FROM session_admissions').fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_api_turn_forwards_participant_fence_to_accepting_writer(gateway, monkeypatch):
+    from gateway import session_api_turn
+    from gateway.session_contract import SessionRef
+    monkeypatch.setenv('HERMES_ROOM_LINK_URL', 'http://127.0.0.1:9999')
+    gateway.authority._require_admission_open = lambda: None
+    gateway.adapter.gateway_runner = SimpleNamespace(session_authority=gateway.authority)
+    monkeypatch.setattr(gateway.adapter, '_ensure_session_db', lambda: gateway.db)
+    room = await linked_room(gateway, room_link(gateway.authority)['catalog'])
+    token = (await invite(gateway, room))['grant']
+    claims = decode_room_grant(gateway_room_grant_secret(), token, permission='status')
+    guard = authorize_room_admission(gateway.adapter, SimpleNamespace(headers={'Authorization': 'HermesRoom ' + token}))
+    gateway.db.create_session(session_id='writer-fence', source='api')
+    monkeypatch.setattr(session_api_turn, 'bind_api_session', lambda authority, sid, **kwargs: SessionRef(authority.profile_id, sid))
+    def revoke_after_preparation(*args):
+        hosted_rooms.revoke_room_grant_scope(gateway.db.db_path, claims=claims, expires_at=claims['status_expires_at'])
+    monkeypatch.setattr(session_api_turn, 'check_api_turn', revoke_after_preparation)
+    with pytest.raises(RuntimeStoreError, match='room_reauthorization_required'):
+        session_api_turn.admit_api_turn(gateway.adapter, session_id='writer-fence', request_id='race',
+            user_message='must not execute', conversation_history=[], _authorize_write=guard)
+    with gateway.db._read_ctx() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM session_admissions').fetchone()[0] == 0

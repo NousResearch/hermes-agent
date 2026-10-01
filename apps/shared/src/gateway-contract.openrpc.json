@@ -26822,6 +26822,18 @@
             ],
             "default": null,
             "title": "Peer Cleanup"
+          },
+          "retiring": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retiring"
           }
         },
         "required": [
@@ -27064,6 +27076,19 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "authentication": {
+            "anyOf": [
+              {
+                "const": "proof-v1",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Authentication"
           },
           "profile": {
             "anyOf": [

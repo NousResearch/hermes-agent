@@ -14,14 +14,16 @@ from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPEr
 _PREFIX = 'gateway.peer.cleanup.v1:'
 
 
-def obligation_key(grant, mode='exact'):
+def obligation_key(grant, mode='exact', issuance_id=None):
+    if mode == 'issuance':
+        return _PREFIX + 'issuance:' + hashlib.sha256(grant.encode()).hexdigest() + ':' + issuance_id
     return _PREFIX + hashlib.sha256((mode + '\0' + grant).encode()).hexdigest()
 
 
-def retain(db_path, link, *, mode='exact', conn=None):
+def retain(db_path, link, *, mode='exact', issuance_id=None, conn=None):
     """Journal before a route write or remote effect, optionally in its transaction."""
-    key = obligation_key(link.grant, mode)
-    value = json.dumps({'link': link.as_record(), 'mode': mode, 'attempts': 0, 'next_at': 0})
+    key = obligation_key(link.grant, mode, issuance_id)
+    value = json.dumps({'link': link.as_record(), 'mode': mode, 'issuance_id': issuance_id, 'attempts': 0, 'next_at': 0})
     def write(writer):
         writer.execute('INSERT OR IGNORE INTO hosted_room_peer_cleanup(key,value) VALUES (?,?)', (key, value))
     if conn is not None:
@@ -37,6 +39,11 @@ def release(conn, grant):
     conn.execute('DELETE FROM hosted_room_peer_cleanup WHERE key=?', (obligation_key(grant),))
 
 
+def release_issuances(conn, grant):
+    prefix = _PREFIX + 'issuance:' + hashlib.sha256(grant.encode()).hexdigest() + ':'
+    conn.execute('DELETE FROM hosted_room_peer_cleanup WHERE key LIKE ?', (prefix + '%',))
+
+
 def obligations(db_path):
     with hosted_rooms._transaction(db_path) as conn:
         rows = conn.execute('SELECT key,value FROM hosted_room_peer_cleanup WHERE key LIKE ?', (_PREFIX + '%',)).fetchall()
@@ -45,9 +52,13 @@ def obligations(db_path):
         try:
             value = json.loads(row['value'])
             links.StoredRoomLink.from_record(value['link'])
-            if value['mode'] not in {'exact', 'scope'} or type(value['attempts']) is not int:
+            if value['mode'] not in {'exact', 'scope', 'issuance'} or type(value['attempts']) is not int:
                 raise ValueError('invalid cleanup record')
             float(value['next_at'])
+            if value['mode'] == 'issuance' and (not isinstance(value.get('issuance_id'), str)
+                    or len(value['issuance_id']) != 64
+                    or any(c not in '0123456789abcdef' for c in value['issuance_id'])):
+                raise ValueError('invalid issuance cleanup identity')
         except Exception:
             value = {'corrupt': True}
         result.append((row['key'], value))
@@ -65,6 +76,19 @@ def status(db_path, room_id=None):
     return result
 
 
+def _awaiting_issuance_recovery(service, value):
+    if value['mode'] != 'issuance':
+        return False
+    from gateway.hosted_room_peer import room_grant_needs_dispatch_refresh
+    link = value['link']
+    try:
+        current = links.load_room_link(service.db_path, room_id=link['room_id'], member_id=link['member_id'])
+    except Exception:
+        return True  # unreadable current custody holds this issuance, without blocking other cleanup
+    return (current is not None and current.grant == link['grant'] and current.status == 'ready'
+            and not room_grant_needs_dispatch_refresh(link['grant'], leeway_seconds=0))
+
+
 def drain(service, *, force=False, room_id=None):
     """Retry a bounded batch even when no live room remains, including after restart."""
     from gateway.session_group_peer_routes import _retire
@@ -76,6 +100,8 @@ def drain(service, *, force=False, room_id=None):
     with service.peer_route_lock, room_grant_request_budget(2.0):
         due = [(key, value) for key, value in obligations(service.db_path)
                if not value.get('corrupt')
+               and key not in getattr(service, '_peer_cleanup_inflight', set())
+               and not _awaiting_issuance_recovery(service, value)
                and (room_id is None or value['link']['room_id'] == room_id)
                and (force or value['next_at'] <= now)]
         for key, value in sorted(due, key=lambda item: (item[1]['next_at'], item[0]))[:32]:
@@ -85,7 +111,9 @@ def drain(service, *, force=False, room_id=None):
                 link = links.StoredRoomLink.from_record(value['link'])
                 client = PeerRunsHTTPClient(base_url=link.target_url, api_key='', timeout_seconds=2,
                                             proof_install_id=link.catalog.installation_id)
-                if value['mode'] == 'exact':
+                if value['mode'] == 'issuance':
+                    client.cleanup_issuance(grant=link.grant, request_id=value['issuance_id'])
+                elif value['mode'] == 'exact':
                     _retire(client, link.grant)
                 else:
                     try:

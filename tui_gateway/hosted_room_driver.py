@@ -100,6 +100,7 @@ class HostedRoomRuntime:
         turn_lock: Callable[[str], ContextManager[Any]], rpc: InternalSessionRPC | None = None,
         transport_resolver: MemberTransportResolver | None = None,
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
+        maintain_service: Callable[[], None] | None = None,
         maintain_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
@@ -130,6 +131,7 @@ class HostedRoomRuntime:
         # Upkeep for the leased room (peer grant renewal): after Stop and new work, and between
         # polls of an active turn.
         self.maintain_leased_room = maintain_leased_room
+        self.maintain_service = maintain_service
         self.pending_action, self.clock = pending_action, clock
         # Off: a turn the member never received goes back to the queue (FIFO, bounded backoff).
         # On: a member turn is deferred with its proof instead, so the room's next turn can run.
@@ -374,7 +376,10 @@ class HostedRoomRuntime:
         if not _info_active(info):
             # History was checked just before this probe: an inactive exact session cannot
             # keep executing, and after a restart its process-local task marker is absent.
-            return True
+            return transport is self.rpc or (
+                info.get("status") in _STOP_ACK_STATUSES
+                and info.get("task_id") == task["identity"].task_id
+                and info.get("execution_generation") == task["execution_generation"])
         if not _info_is_active_for(info, task["identity"], require_exact=True):
             return False
         result = transport.interrupt(
@@ -409,6 +414,10 @@ class HostedRoomRuntime:
                 "execution_generation": int(task["execution_generation"]),
                 "run_id": info.get("run_id"), "session_id": session_id,
                 "request_id": safe_approval.get("request_id"), "approval": safe_approval}
+        if info.get("status") == "stopping":
+            action = {"kind": "stopping", "task_id": task["identity"].task_id,
+                      "execution_generation": int(task["execution_generation"]),
+                      "run_id": info.get("run_id"), "session_id": session_id}
         self.pending_action(task["identity"].room_id, _member_id(task), action)
 
     def _retry_stopping_tasks(self, binding: HostedRoomBinding, lease: state.DriverLease) -> bool:
@@ -449,6 +458,11 @@ class HostedRoomRuntime:
             self._release_idle_leases()
 
     def _run_cycle(self) -> None:
+        if self.maintain_service is not None:
+            try:
+                self.maintain_service()
+            except Exception as exc:
+                self._record_error(f"peer lifecycle maintenance pending: {exc}")
         with self._status_lock:
             supervisor = self._thread
         if threading.current_thread() is not supervisor:
@@ -742,6 +756,7 @@ class HostedRoomRuntime:
                 # Exact target evidence: cessation was observed, not inferred from sending Stop.
                 cancelled = state.begin_task_cancel(
                     self.db_path, task["identity"], clock=self.clock,
+                    expected_cancel_generation=task['cancel_generation'],
                     cancel_id=f"remote-cancel:{task['execution_generation']}")
                 self._complete_cancel(cancelled)
                 return None

@@ -26,15 +26,27 @@ _BOUND_HEADERS = ('idempotency-key', 'x-hermes-session-key', 'last-event-id', 'c
 
 
 def _headers(headers):
-    normalized = {key.lower(): value for key, value in (headers or {}).items()}
+    normalized, counts = {}, {}
+    for key, value in (headers or {}).items():
+        key = key.lower()
+        if key in (*_BOUND_HEADERS, 'authorization'):
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] != 1:
+                raise ValueError('duplicate room proof header')
+        normalized[key] = value
     return {key: normalized.get(key, '') for key in _BOUND_HEADERS}
+
+
+def issuance_request_id(grant, body):
+    payload, _ = _split_token(grant)
+    return hashlib.sha256(payload + b'\0refresh\0' + body).hexdigest()
 
 
 def request_proof(grant, *, installation_id, method, path, body, headers=None, now=None):
     payload, key = _split_token(grant)
     fingerprint = hashlib.sha256(body).hexdigest()
     # Retrying issuance for this old grant and frozen parameters retrieves one successor.
-    request_id = (hashlib.sha256(payload + b'\0refresh\0' + body).hexdigest()
+    request_id = (issuance_request_id(grant, body)
                   if method == 'POST' and path == '/v1/room-members/grants/refresh'
                   else uuid.uuid4().hex)
     envelope = dict(v=1, payload=_b64encode(payload), target_install_id=installation_id,

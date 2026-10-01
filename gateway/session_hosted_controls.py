@@ -100,4 +100,7 @@ class HostedControls:
                     continue
             actions.append({'kind': kind, 'member_id': member, 'task_id': task['identity'].task_id,
                             'execution_generation': task['execution_generation']})
+            if self._member_is_peer(room_id, member) and kind == 'retry':
+                actions.append({'kind': 'discard', 'member_id': member, 'task_id': task['identity'].task_id,
+                                'execution_generation': task['execution_generation']})
         return {**result, 'pending_actions': actions}

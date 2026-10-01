@@ -9,6 +9,8 @@ Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py`
 
 from __future__ import annotations
 
+from typing import Literal
+
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
 from .registry import method
@@ -132,6 +134,7 @@ class RoomLinkStatus(Result):
     """``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``."""
 
     enabled: bool
+    authentication: Literal['proof-v1'] | None = None
     profile: str | None = None
     catalog: RoomLinkCatalog | None = None
     endpoint: RoomLinkEndpoint | None = None
@@ -215,6 +218,7 @@ class RoomDriverStatus(Result):
     pending_actions: list[dict[str, JsonValue]]
     peer_routes: list[PeerRouteStatus]
     peer_cleanup: list[dict[str, JsonValue]] | None = None
+    retiring: bool | None = None
 
 
 class GroupsStateResult(Result):

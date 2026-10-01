@@ -29,6 +29,8 @@ def run_projection(adapter, run_id):
         return None
     authority, row = owned
     status = {'queued': 'queued', 'started': 'running', 'unknown': 'interrupted', 'terminal': row['outcome']}.get(row['status'])
+    if row['status'] == 'started' and run_id in adapter._stopping_run_ids:
+        status = 'stopping'
     saved = admission_result(authority.db, row['admission_id'])
     result = saved.get('result', {}) if saved else {}
     if row['status'] == 'terminal':

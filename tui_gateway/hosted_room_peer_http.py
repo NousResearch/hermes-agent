@@ -688,6 +688,7 @@ class PeerRunsHTTPClient:
     def refresh_grant(
         self, *, grant: str, ttl_seconds: float = 24 * 60 * 60,
         capability_digest: str | None = None, execution_policy_digest: str | None = None,
+        on_issued=None,
     ) -> Mapping[str, Any]:
         """Renew dispatch access only while its frozen authority is unchanged."""
         refreshed = self._scoped_post(
@@ -696,7 +697,9 @@ class PeerRunsHTTPClient:
         if not replacement:
             raise PeerRunsHTTPError("peer returned no refreshed room grant")
         try:
-            # Persist only after the target proves the replacement authorizes the scoped endpoint.
+            if on_issued is not None:
+                on_issued(replacement)
+            # Route publication still requires a live scoped probe; custody precedes it.
             probe = self.probe(grant=replacement)
             error = digest_reauthorization_error(
                 GatewayRoomCatalog.from_mapping(probe.get("catalog")),
@@ -711,6 +714,11 @@ class PeerRunsHTTPClient:
                 logger.warning("Could not retire an unused refreshed room grant")
             raise
         return {**refreshed, "catalog": probe.get("catalog")}
+
+    def cleanup_issuance(self, *, grant: str, request_id: str) -> Mapping[str, Any]:
+        """Retire one unredeemed refresh result without receiving its dispatch bearer."""
+        return self._acknowledged(self._scoped_post(
+            "/v1/room-members/grants/cleanup-issuance", grant, body={'request_id': request_id}))
 
     def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
         """Revoke this grant's exact room/home/target/profile scope."""

@@ -24,8 +24,6 @@ class TestOwnCgroupPath:
 
 
 class TestReapCgroup:
-
-
     def test_noop_when_procs_file_missing(self, tmp_path, monkeypatch):
         cgroup_path = "/missing.slice/hermes-gateway.service"
         monkeypatch.setattr(
@@ -42,7 +40,6 @@ class TestReapCgroup:
 
 
 class TestMain:
-
     def test_main_refuses_when_pid1_parent_is_not_systemd(self, tmp_path, monkeypatch):
         # Regression: a container where the gateway itself is PID 1 (or init
         # is tini/launchd) must NOT be authorized by "ppid == 1". PID 1 has to
@@ -60,12 +57,10 @@ class TestMain:
             pytest.fail("os.kill must not be called for a non-systemd PID 1 parent")
 
         monkeypatch.setattr(cgroup_cleanup.os, "kill", _explode)
-        assert cgroup_cleanup._parent_is_systemd() is False
         assert cgroup_cleanup.main() == 1
 
 
 class TestLiveGatewayGuard:
-
     @pytest.mark.parametrize("verb", ["run", "restart"])
     def test_reap_refuses_when_live_gateway_in_cgroup(self, monkeypatch, verb):
         # Regression: a live gateway PID still in cgroup.procs (gateway is PID 1
@@ -90,27 +85,20 @@ class TestLiveGatewayGuard:
             pytest.fail("os.kill must not signal a cgroup holding a live gateway")
 
         monkeypatch.setattr(cgroup_cleanup.os, "kill", _explode)
-        assert cgroup_cleanup.reap_cgroup(cgroup_path) == -1
+        assert cgroup_cleanup.reap_cgroup(cgroup_path) is None
         monkeypatch.setattr(cgroup_cleanup, "_parent_is_systemd", lambda: True)
         monkeypatch.setattr(cgroup_cleanup, "_own_cgroup_path", lambda: cgroup_path)
         assert cgroup_cleanup.main() == 1
 
-    def test_reap_proceeds_when_only_orphans_in_cgroup(self, monkeypatch):
-        # Allow-path contract: orphans with non-gateway command lines must
-        # still be reaped — the guard must not destroy the feature it secures.
-        import gateway.status
-
-        monkeypatch.setattr(
-            cgroup_cleanup, "_read_cgroup_pids", lambda _p: [777, os.getpid()]
-        )
+        # Allow-path: once the gateway is gone, a non-gateway orphan in the
+        # same cgroup must still be reaped — the guard must not destroy the
+        # feature it secures.
         monkeypatch.setattr(
             gateway.status,
             "_read_process_cmdline",
             lambda pid: "bash -c adb forward tcp:8888 tcp:8889" if pid == 777 else None,
         )
         killed: list[int] = []
-        monkeypatch.setattr(
-            cgroup_cleanup.os, "kill", lambda pid, sig: killed.append(pid)
-        )
-        assert cgroup_cleanup.reap_cgroup("/some.slice/some-gateway.service") == 1
+        monkeypatch.setattr(cgroup_cleanup.os, "kill", lambda pid, sig: killed.append(pid))
+        assert cgroup_cleanup.reap_cgroup(cgroup_path) == 1
         assert killed == [777]

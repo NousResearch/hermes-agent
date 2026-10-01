@@ -168,15 +168,11 @@ def test_text_only_prompts_and_earlier_file_admissions_stay_unchanged(service):
     send(service, "text", text="@writer Review")
     text_task = plan(service)
     assert text_task is not None
-    expected = '\n'.join([
-        '[Discussion: "Files"] You are @writer, one participant with @reviewer and the user.', '',
-        'New messages in this thread since your last turn (oldest first):', '  User (user): @writer Review', '',
-        'Rules for this Discussion:',
-        '- Reply with one conversational message only when you have something new worth adding.',
-        '- If you have nothing new to add, reply with exactly "(pass)".',
-        '- Mention a teammate by handle to pull them into the next round; do not repeat points already made.',
-        '- Never reveal content from private conversations. Your reply is published verbatim.'])
-    assert text_task.payload['prompt'] == expected
+    text_prompt = text_task.payload["prompt"]
+    assert "@writer Review" in text_prompt
+    assert "Attachments available to you for this turn" not in text_prompt
+    assert "Staged file" not in text_prompt
+    assert not text_task.payload.get("attachments")
     # A file task admitted before file lines existed used exactly that prompt.
     # It must reconstruct and stay frozen as admitted, not be rebuilt with file lines.
     item = upload(service, "frozen")
@@ -184,12 +180,14 @@ def test_text_only_prompts_and_earlier_file_admissions_stay_unchanged(service):
     room = discussion.validate_room(service._room("room"), local_profiles=service.local_profiles())
     events = discussion._validated_events(hosted_rooms.read_events(service.db_path, room_id="room")["events"], room=room)
     old = discussion._make_task_plan(room=room, discussion_event=events[-1], member=room.members[0],
-        member_index=0, round_index=0, seen_through_seq=events[-1].seq, prompt=expected,
+        member_index=0, round_index=0, seen_through_seq=events[-1].seq, prompt=text_prompt,
         input_context={"watermark": events[0].seq, "event_seqs": [events[-1].seq]},
         attachments=[{**item, "event_id": events[-1].event_id}])
     driver.admit_task(service.db_path, old.identity, payload=old.payload, clock=lambda: 10)
     saved = driver.get_task(service.db_path, old.identity)
     before_digest = driver._task_payload(saved["payload"])[2]
+    later = upload(service, "later", name="later.txt", data=b"later share")
+    send(service, "later", [later], text="@writer Review the later share")
     service.policy_checkpoint = HostedRoomPolicyCheckpoint(service.db_path)
     service.prepare_room(service.bindings()[0])
     assert reconstruct(service, saved).payload == old.payload

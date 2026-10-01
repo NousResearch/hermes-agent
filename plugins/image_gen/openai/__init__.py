@@ -146,7 +146,11 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
 
     def capabilities(self) -> Dict[str, Any]:
         # images.edit() accepts up to 16 source images.
-        return {"modalities": ["text", "image"], "max_reference_images": 16}
+        capabilities = {"modalities": ["text", "image"], "max_reference_images": 16}
+        model_id, _ = _resolve_model()
+        if model_id in MODELS:
+            capabilities["background_options"] = ["auto", "opaque", "transparent"]
+        return capabilities
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
@@ -181,6 +185,11 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         request: Dict[str, Any] = dict(model=meta["api_model"], prompt=prompt, size=size, n=1)
         if meta["quality"] is not None:
             request["quality"] = meta["quality"]
+        background = str(kwargs.get("background") or "").strip().lower()
+        if background in ("auto", "opaque", "transparent"):
+            request["background"] = background
+        if background == "transparent":
+            request["output_format"] = "png"
         if is_edit:
             try:
                 files = [_named_bytes_io(ref) for ref in sources]
@@ -208,6 +217,10 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         if err:
             return err
         extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        if "background" in request:
+            extra["background"] = request["background"]
+        if "output_format" in request:
+            extra["output_format"] = request["output_format"]
         if getattr(first, "revised_prompt", None):
             extra["revised_prompt"] = first.revised_prompt
         return success_response(

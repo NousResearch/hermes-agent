@@ -100,6 +100,31 @@ class TestDynamicParamGating(unittest.TestCase):
         self.assertEqual(sorted(props), ["aspect_ratio", "prompt"])
         self.assertNotIn("upscale", props)
 
+    def test_background_is_capability_gated_and_forwarded(self):
+        from unittest.mock import MagicMock
+
+        provider = MagicMock(display_name="OpenAI")
+        provider.default_model.return_value = "gpt-image-2"
+        provider.capabilities.return_value = {
+            "modalities": ["text", "image"], "max_reference_images": 16,
+            "background_options": ["auto", "opaque", "transparent"],
+        }
+        provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        with patch.object(ig, "_read_configured_image_provider", return_value="openai"), \
+             patch.object(ig, "_read_configured_image_model", return_value="gpt-image-2"), \
+             patch("agent.image_gen_registry.get_provider", return_value=provider), \
+             patch("hermes_cli.plugins._ensure_plugins_discovered"):
+            schema = _build_dynamic_image_schema()
+            raw = ig._dispatch_to_plugin_provider(
+                "isolated icon", "square", background="transparent")
+
+        self.assertEqual(
+            schema["parameters"]["properties"]["background"]["enum"],
+            ["auto", "opaque", "transparent"],
+        )
+        self.assertIsNotNone(raw)
+        self.assertEqual(provider.generate.call_args.kwargs["background"], "transparent")
+
     def test_managed_krea_model_advertises_krea_edit_args_and_upscale(self):
         """provider nous + a Krea model id is served by the Krea gateway, so the
         schema must advertise what the Krea plugin declares, not the FAL catalog."""

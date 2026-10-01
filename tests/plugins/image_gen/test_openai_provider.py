@@ -378,3 +378,49 @@ class TestGenerate:
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
 
+
+# ── Background control (transparency) ──────────────────────────────────────
+
+
+class TestBackground:
+    """OpenAI receives validated background modes and transparent output stays PNG."""
+
+    @pytest.mark.parametrize("editing", [False, True])
+    def test_transparent_background_requests_and_preserves_png(
+        self, provider, tmp_path, editing,
+    ):
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        fake_client = MagicMock()
+        call = fake_client.images.edit if editing else fake_client.images.generate
+        call.return_value = _fake_response(b64=_b64_png())
+
+        with patch.object(openai_plugin, "_build_client", return_value=fake_client):
+            result = provider.generate(
+                "raven sticker", background="  TRANSPARENT ",
+                image_url=str(source) if editing else None,
+            )
+
+        assert result["success"] is True
+        assert result["background"] == "transparent"
+        assert result["output_format"] == "png"
+        assert call.call_args.kwargs["background"] == "transparent"
+        assert call.call_args.kwargs["output_format"] == "png"
+        assert Path(result["image"]).read_bytes() == bytes.fromhex(_PNG_HEX)
+
+    @pytest.mark.parametrize("background", ["auto", "opaque"])
+    def test_nontransparent_background_does_not_force_format(self, provider, background):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with patch.object(openai_plugin, "_build_client", return_value=fake_client):
+            result = provider.generate("a cat", background=background)
+
+        assert result["success"] is True
+        call_kwargs = fake_client.images.generate.call_args.kwargs
+        assert call_kwargs["background"] == background
+        assert "output_format" not in call_kwargs
+
+    def test_capabilities_declare_background_support(self, provider):
+        caps = provider.capabilities()
+        assert caps["background_options"] == ["auto", "opaque", "transparent"]

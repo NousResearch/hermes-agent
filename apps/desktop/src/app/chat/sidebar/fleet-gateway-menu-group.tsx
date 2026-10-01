@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
+import { StatusDot } from '@/components/status-dot'
 import { Codicon } from '@/components/ui/codicon'
 import {
   DropdownMenuItem,
@@ -40,7 +41,7 @@ export function FleetGatewayMenuGroup({ group, onSelect, slot, wrapRow }: FleetG
       <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
         <ConnectionGlyph connection={group} />
         <span className="truncate">{group.label}</span>
-        {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
+        {!group.reachable && <StatusDot tone="warn" />}
       </DropdownMenuLabel>
       {[group.defaultAgent, ...group.named].map(agent => {
         const localDefault = agent.connectionKind === 'local' && agent.isDefault

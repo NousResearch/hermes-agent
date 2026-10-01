@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 
+import { STATUS_SHAPE_CLASS } from '@/components/status-dot'
 import { type Translations, useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -20,18 +21,20 @@ type DotVariant = {
 // Shared base for every active dot; idle is smaller and uses its own class.
 const DOT_BASE = 'size-1.5 rounded-full'
 
-// Three colors and one fill/hollow axis, none of it moving. Motion on a 6px
+// Three colors and one fill/hollow axis, none of it moving (needs-input alone
+// also changes shape, below). Motion on a 6px
 // circle can only say "something is happening" — which the row's arc already
 // says, better — while costing a repaint per frame on every row at once. What
 // the dot is for is telling states APART, and that is a job for color and fill:
 // filled means producing, hollow means open but quiet. The two states this
 // replaces differed by 30% opacity and were, in practice, the same dot.
 const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
-  // Amber — a clarify/approval is blocking the turn. The one "act now" color,
-  // and the only state the user is required to do something about.
+  // Amber diamond — a clarify/approval is blocking the turn. The one "act now"
+  // state, so it is also the one that changes shape: amber beside the green
+  // unread dot is the pair color-vision deficiency collapses first.
   'needs-input': {
     ariaLabel: r => r.needsInput,
-    className: `${DOT_BASE} bg-amber-500`,
+    className: cn('size-1.5', STATUS_SHAPE_CLASS.diamond, 'bg-(--ui-status-warning)'),
     role: 'status',
     title: r => r.waitingForAnswer
   },

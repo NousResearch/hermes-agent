@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 
+import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -143,8 +144,8 @@ export function PanelList({
 
 interface PanelListRowProps {
   active: boolean
-  // Leading status dot color class (e.g. 'bg-emerald-500'); omit for none.
-  dotClassName?: string
+  // Leading status mark; the shared StatusDot encodes tone by shape + color.
+  dotTone?: StatusTone
   // Leading codicon glyph name (used when there's no lead/dot).
   icon?: string
   // Custom leading element (colored swatch, avatar, …). Wins over dot/icon.
@@ -169,7 +170,7 @@ interface PanelListRowProps {
 // the whole row also answers right-click with the same actions as its kebab.
 export function PanelListRow({
   active,
-  dotClassName,
+  dotTone,
   icon,
   lead,
   menu,
@@ -193,8 +194,8 @@ export function PanelListRow({
         onClick={onSelect}
       >
         {lead ??
-          (dotClassName ? (
-            <span aria-hidden="true" className={cn('size-1.5 shrink-0 rounded-full', dotClassName)} />
+          (dotTone ? (
+            <StatusDot tone={dotTone} />
           ) : icon ? (
             <Codicon className="shrink-0 text-muted-foreground/55" name={icon} size="0.85rem" />
           ) : null)}
@@ -352,10 +353,10 @@ export function PanelBlock({ children, className }: { children: ReactNode; class
 export type PanelPillTone = 'bad' | 'good' | 'muted' | 'warn'
 
 const PILL_TONE: Record<PanelPillTone, string> = {
-  bad: 'bg-destructive/10 text-destructive',
-  good: 'bg-primary/10 text-primary',
+  bad: 'bg-(--ui-status-danger-soft) text-(--ui-status-danger-ink)',
+  good: 'bg-(--ui-status-success-soft) text-(--ui-status-success-ink)',
   muted: 'bg-foreground/10 text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300'
+  warn: 'bg-(--ui-status-warning-soft) text-(--ui-status-warning-ink)'
 }
 
 export function PanelPill({ children, tone = 'muted' }: { children: ReactNode; tone?: PanelPillTone }) {

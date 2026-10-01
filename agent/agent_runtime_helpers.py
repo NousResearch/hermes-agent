@@ -2116,10 +2116,40 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
                 )
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-        agent._anthropic_client = build_anthropic_client(
-            effective_key, agent._anthropic_base_url,
-            timeout=get_provider_request_timeout(agent.provider, agent.model),
-        )
+        _timeout = get_provider_request_timeout(agent.provider, agent.model)
+
+        # Provider dispatch, same shape as agent_init.py and
+        # ``_build_anthropic_client_for_key``. Vertex-hosted Claude speaks the
+        # Anthropic Messages protocol but authenticates through the AnthropicVertex
+        # SDK, not an Anthropic API key. Without this branch a ``/model`` switch
+        # rebuilt a direct Anthropic client pointed at the publisher URL, so the SDK
+        # appended ``/v1/messages`` to a base_url that has no such route and every
+        # post-switch call 404'd. Bedrock never reaches here: it returns above via
+        # ``bind_bedrock_runtime``.
+        if new_provider == "vertex":
+            # Project + region come from the shared vertex config chain
+            # (env → config.yaml → credentials), the same source agent_init uses,
+            # so switching INTO vertex works even when the session started on
+            # another provider and never stashed these attributes.
+            from agent.anthropic_vertex_adapter import (
+                build_anthropic_vertex_client,
+                get_anthropic_vertex_config,
+            )
+            try:
+                _project_id, _vx_region = get_anthropic_vertex_config()
+            except Exception:  # noqa: BLE001
+                _project_id, _vx_region = None, None
+            _project_id = _project_id or getattr(agent, "_vertex_project_id", None)
+            _vx_region = _vx_region or getattr(agent, "_vertex_region", None) or "global"
+            agent._vertex_project_id = _project_id
+            agent._vertex_region = _vx_region
+            agent._anthropic_client = build_anthropic_vertex_client(
+                _project_id, _vx_region, timeout=_timeout,
+            )
+        else:
+            agent._anthropic_client = build_anthropic_client(
+                effective_key, agent._anthropic_base_url, timeout=_timeout,
+            )
         agent._is_anthropic_oauth = anthropic_route_is_oauth(agent._anthropic_base_url, effective_key, provider=new_provider)
         agent.client = None
         agent._client_kwargs = {}

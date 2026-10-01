@@ -16,7 +16,7 @@ import weakref
 from contextlib import suppress
 from difflib import SequenceMatcher
 from types import SimpleNamespace
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from agent.i18n import t
 from gateway.config import Platform
@@ -34,6 +34,7 @@ _CALL_ENDED_MODE = "off"
 
 class GatewayVoiceMixin:
     _voice_call_keys: set[str]
+    _adapter_profile_for_source: Callable[[SessionSource], Optional[str]]
 
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
@@ -201,13 +202,15 @@ class GatewayVoiceMixin:
                 and hasattr(adapter, "is_in_voice_channel")
                 and adapter.is_in_voice_channel(guild_id)):
             return t("gateway.voice.channel_not_joined")
+        text_channel_id = adapter._voice_text_channels.get(guild_id)
         try:
-            await adapter.leave_voice_channel(guild_id)
+            text_channel_id = await adapter.leave_voice_channel(guild_id)
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
-        # Always clean up state even if leave raised an exception
-        self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, _CALL_ENDED_MODE)
+        if text_channel_id is not None:
+            voice_profile = self._adapter_profile_for_source(event.source)
+            key = self._voice_key(event.source.platform, str(text_channel_id), profile=voice_profile)
+            self._apply_voice_mode(adapter, key, str(text_channel_id), _CALL_ENDED_MODE)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return t("gateway.voice.channel_left")

@@ -536,7 +536,8 @@ class TestVoiceChannelCommands:
         """Successful leave disconnects and clears voice mode."""
         mock_adapter = AsyncMock()
         mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
-        mock_adapter.leave_voice_channel = AsyncMock()
+        mock_adapter.leave_voice_channel = AsyncMock(return_value=123)
+        mock_adapter._voice_text_channels = {111: 123}
         event = self._make_discord_event("/voice leave")
         runner.adapters[event.source.platform] = mock_adapter
         runner._voice_mode["discord:123"] = "all"
@@ -976,6 +977,7 @@ class TestLeaveExceptionHandling:
             side_effect=RuntimeError("Connection reset")
         )
         mock_adapter._voice_input_callback = MagicMock()
+        mock_adapter._voice_text_channels = {111: 123}
 
         event = _make_event("/voice leave")
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)
@@ -1762,7 +1764,7 @@ class TestPcmToWav:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["same", "move", "failed_move", "refused"])
+@pytest.mark.parametrize("outcome", ["same", "move", "failed_move", "refused", "leave_other"])
 async def test_voice_rebind_expires_only_the_replaced_call(tmp_path, monkeypatch, outcome):
     from gateway.config import Platform, PlatformConfig
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -1787,13 +1789,38 @@ async def test_voice_rebind_expires_only_the_replaced_call(tmp_path, monkeypatch
         adapter.join_voice_channel = AsyncMock(return_value=False)
     runner._apply_voice_mode(adapter, "discord:123", "123", "all", in_call=True)
     runner._apply_voice_mode(adapter, "discord:999", "999", "voice_only")
+    if outcome == "leave_other":
+        runner._apply_voice_mode(adapter, "discord:456", "456", "voice_only")
+        vc.is_playing.return_value = False
+        vc.disconnect = AsyncMock()
     event = _make_event("/voice join", chat_id="456")
     event.source.platform = Platform.DISCORD
     event.raw_message = SimpleNamespace(guild_id=111)
 
-    await runner._handle_voice_channel_join(event)
+    if outcome == "leave_other":
+        await runner._handle_voice_channel_leave(event)
+    else:
+        await runner._handle_voice_channel_join(event)
 
+    ended = outcome == "leave_other"
     successful = outcome in {"same", "move"}
+    expected_modes = {"discord:123": "all", "discord:999": "voice_only"}
+    expected_calls = {"discord:123"}
+    expected_binding = {111: 123}
+    expected_sources = {111: {"original": True}}
+    expected_persisted = {"discord:123": "off", "discord:999": "voice_only"}
+    if successful:
+        expected_modes.update({"discord:123": "off", "discord:456": "all"})
+        expected_calls = {"discord:456"}
+        expected_binding = {111: 456}
+        expected_sources = {111: event.source.to_dict()}
+        expected_persisted["discord:456"] = "off"
+    if ended:
+        expected_modes.update({"discord:123": "off", "discord:456": "voice_only"})
+        expected_calls = set()
+        expected_binding = {}
+        expected_sources = {}
+        expected_persisted["discord:456"] = "voice_only"
     assert {
         "modes": runner._voice_mode,
         "calls": runner._voice_call_keys,
@@ -1801,13 +1828,11 @@ async def test_voice_rebind_expires_only_the_replaced_call(tmp_path, monkeypatch
         "sources": adapter._voice_sources,
         "persisted": json.loads(runner._VOICE_MODE_PATH.read_text()),
     } == {
-        "modes": {"discord:123": "off" if successful else "all", "discord:999": "voice_only",
-                  **({"discord:456": "all"} if successful else {})},
-        "calls": {"discord:456"} if successful else {"discord:123"},
-        "binding": {111: 456 if successful else 123},
-        "sources": {111: event.source.to_dict() if successful else {"original": True}},
-        "persisted": {"discord:123": "off", "discord:999": "voice_only",
-                      **({"discord:456": "off"} if successful else {})},
+        "modes": expected_modes,
+        "calls": expected_calls,
+        "binding": expected_binding,
+        "sources": expected_sources,
+        "persisted": expected_persisted,
     }
 
 
@@ -1865,6 +1890,7 @@ async def test_registered_voice_event_expires_the_bot_call_only(tmp_path, monkey
             await asyncio.wait_for(started.wait(), timeout=10)
             replacement = MagicMock()
             replacement.channel = vc.channel
+            replacement.is_connected.return_value = False
             adapter._voice_clients[111] = replacement
             lock.release()
             await event_task

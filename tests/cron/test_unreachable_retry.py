@@ -129,7 +129,8 @@ def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home
     assert remaining is None or remaining.get(ur.STATE_KEY) is None
 
 
-def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypatch):
+@pytest.mark.parametrize("rung_tail", ["finish", "crash"])
+def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypatch, rung_tail):
     """A ladder re-run repeats an occurrence that already counted toward ``repeat``, so it must
     not count again. Otherwise an outage that outlasts the ladder retires a finite job with zero
     model calls, where the same outage with the ladder off costs it one run (#109990 fixed only
@@ -141,6 +142,10 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
     monkeypatch.setattr(sched, "finish_execution", lambda *_a, **_kw: None)
     runs = []
     monkeypatch.setattr(sched, "run_one_job", lambda job, **_kw: runs.append(job) or True)
+    # "crash": a rung whose run raises leaves through the crash tail, which must not count it either.
+    monkeypatch.setattr(sched, "run_job", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(sched, "mark_execution_running", lambda *_a, **_kw: {})
+    monkeypatch.setattr(sched, "_deliver_crash_failure", lambda *_a, **_kw: (None, "suppressed"))
     job_id = create_job("digest", "every 24h", repeat=2)["id"]
 
     held = []
@@ -149,6 +154,10 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
         due = next(d for d in get_due_jobs() if d["id"] == job_id)
         assert sched._process_due_job(dict(due, execution_id="exec"), None, None, False)
         run = runs[-1]
+        if rung_tail == "crash" and held:
+            assert sched._run_one_job_body(run) is False
+            assert get_job(job_id)["repeat"]["completed"] == 1, "a crashed rung must not count"
+            return
         run["_model_unreachable"] = True
         held.append(ur.will_retry(run))
         assert sched._finish_completed_run(

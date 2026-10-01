@@ -61,6 +61,36 @@ def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
     return False
 
 
+def worker_handoff_is_settled() -> bool:
+    """Prove settlement of this worker's pinned run, never a transcript tool name.
+
+    A failed tool or an older run's receipt grants no authority to stop this run.
+    Read the exact board read-only; do not initialize an ambient board on failure.
+    """
+    task_id = owned_kanban_task()
+    db_path = (os.environ.get("HERMES_KANBAN_DB") or "").strip()
+    run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    lock = (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+    if not task_id or not db_path or not run_id or not lock:
+        return False
+    import sqlite3
+    from contextlib import closing
+    from pathlib import Path
+
+    try:
+        with closing(sqlite3.connect(f"{Path(db_path).absolute().as_uri()}?mode=ro", uri=True, timeout=1)) as conn:
+            row = conn.execute(
+                "SELECT task_id, claim_lock, ended_at, outcome FROM task_runs WHERE id = ?",
+                (int(run_id),),
+            ).fetchone()
+            return bool(
+                row and row[0] == task_id and row[1] == lock and row[2] is not None
+                and row[3] in {"completed", "blocked", "review_requested", "changes_requested"}
+            )
+    except (OSError, ValueError, sqlite3.Error):
+        return False
+
+
 def build_kanban_stop_nudge(
     *,
     messages: Iterable[dict] | None = None,

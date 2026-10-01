@@ -211,6 +211,15 @@ def apply_stop_gates(
         )
         return verdict
 
+    from agent.kanban_stop import worker_handoff_is_settled
+
+    if worker_handoff_is_settled():
+        return StopGateVerdict(
+            continue_turn=False, final_response=final_response,
+            pending_verification_response=pending_verification_response,
+            pending_verification_response_previewed=pending_verification_response_previewed,
+        )
+
     _finalize_attempt = getattr(agent, "_pre_turn_finalize_nudges", 0)
     _finalize_nudge = _pre_turn_finalize_nudge(
         agent, final_response, finish_reason=str(finish_reason or "stop"),

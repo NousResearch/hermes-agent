@@ -1661,12 +1661,16 @@ async def test_successful_matrix_edit_updates_cached_reply_target():
 
 
 @pytest.mark.asyncio
-async def test_text_reply_to_image_attaches_the_quoted_image():
+@pytest.mark.parametrize("declared_size", [12, 0])
+@pytest.mark.parametrize("matrix_limit, gateway_limit, accepted", [(100, 100, True), (10, 100, False), (100, 10, False)])
+async def test_text_reply_to_image_attaches_the_quoted_image(monkeypatch, declared_size, matrix_limit, gateway_limit, accepted):
     from pathlib import Path
 
     from hermes_constants import get_hermes_home
 
     adapter = _make_adapter()
+    adapter._max_media_bytes = matrix_limit
+    monkeypatch.setattr("gateway.platforms.base.get_inbound_media_max_bytes", lambda: gateway_limit)
     adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
@@ -1676,10 +1680,10 @@ async def test_text_reply_to_image_attaches_the_quoted_image():
     adapter._client.api.request = AsyncMock(return_value={
         "event_id": "$photo", "sender": "@alice:example.org", "type": "m.room.message",
         "content": {"msgtype": "m.image", "body": "photo.png", "url": "mxc://example.org/photo",
-                    "info": {"mimetype": "image/png", "size": 12}},
+                    "info": {"mimetype": "image/png", "size": declared_size}},
     })
     image_bytes = b"\x89PNG\r\n\x1a\nDATA"
-    adapter._client.download_media = AsyncMock(return_value=image_bytes)
+    download = FakeMediaDownload(image_bytes).install(adapter._client)
     adapter._get_display_name = AsyncMock(return_value="Alice")
     adapter._background_read_receipt = MagicMock()
 
@@ -1689,11 +1693,13 @@ async def test_text_reply_to_image_attaches_the_quoted_image():
         {"m.in_reply_to": {"event_id": "$photo"}},
     )
 
-    image = Path(event.media_urls[0])
-    assert (event.reply_to_text, event.media_types, image.read_bytes(), image.is_relative_to(get_hermes_home())) == (
-        "[image]", ["image/png"], image_bytes, True
+    image = Path(event.media_urls[0]) if event.media_urls else None
+    assert (event.reply_to_text, event.media_types, image.read_bytes() if image else None,
+            image.is_relative_to(get_hermes_home()) if image else None, download.requested) == (
+        "[image]", ["image/png"] if accepted else [], image_bytes if accepted else None,
+        True if accepted else None,
+        ["mxc://example.org/photo"] if accepted or not declared_size else [],
     )
-    adapter._client.download_media.assert_awaited_once_with("mxc://example.org/photo")
 
 
 @pytest.mark.asyncio
@@ -4792,7 +4798,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
         assert (event.text, event.message_type, event.media_urls, event.media_types) == (
-            expected_text, MessageType.TEXT, [], [],
+            expected_text, MessageType.TEXT, None, None,
         )
         assert self.download.requested == []
 

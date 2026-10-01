@@ -138,3 +138,42 @@ def test_rebuild_finishing_after_close_closes_the_replacement_and_its_handle(tmp
         server._rebuild_session_agent("sid", session, session_id="k")
     assert session["agent"] is None
     assert closed == ["agent", "db"]
+
+
+@pytest.mark.parametrize("compressing", [False, True])
+def test_tools_configure_preserves_busy_session_and_profile(tmp_path, monkeypatch, compressing):
+    from tui_gateway import server
+    from tui_gateway.user_messages import busy_message
+
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    config = "platform_toolsets:\n  cli: [file]\n"
+    for path in (home, profile):
+        (path / "config.yaml").write_text(config)
+    before = [(path / "config.yaml").read_bytes() for path in (home, profile)]
+    session = {
+        "profile_home": str(profile), "running": True,
+        "_manual_compress_active": compressing, "history_version": 7,
+        "history": [{"role": "user", "content": "active input"}],
+    }
+    unchanged = {**session, "history": list(session["history"])}
+    resets = []
+    monkeypatch.setitem(server._sessions, "busy-tools", session)
+    monkeypatch.setattr(server, "_reset_session_agent", lambda *args: resets.append(args) or {})
+
+    response = server._methods["tools.configure"](
+        "busy", {"session_id": "busy-tools", "action": "enable", "names": ["web"]},
+    )
+
+    assert {
+        "response": response, "session": session, "resets": resets,
+        "configs": [(path / "config.yaml").read_bytes() for path in (home, profile)],
+    } == {
+        "response": {"jsonrpc": "2.0", "id": "busy", "error": {
+            "code": 4009, "message": busy_message("tools", compressing),
+        }},
+        "session": unchanged, "resets": [], "configs": before,
+    }

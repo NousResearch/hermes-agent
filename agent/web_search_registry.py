@@ -4,8 +4,8 @@ Populated by plugins via :meth:`PluginContext.register_web_search_provider`;
 consumed by the ``web_search`` / ``web_extract`` wrappers in :mod:`tools.web_tools`.
 
 Active selection, in precedence order (the ``supports_search`` /
-``supports_extract`` capability filter applies at every step, so a search-only
-provider configured as ``web.extract_backend`` falls through):
+``supports_extract`` capability filter applies at every step; an explicitly
+configured incapable or unregistered provider does not fall through):
 
 1. ``web.search_backend`` / ``web.extract_backend``, then ``web.backend``.
 2. The single capability-eligible provider that is registered AND available.
@@ -103,12 +103,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
         provider = snapshot.get(configured)
         if provider is not None and _capable(provider):
             return provider
-        if provider is None:
-            logger.debug("web backend '%s' configured but not registered; falling back", configured)
-        else:
-            logger.debug(
-                "web backend '%s' configured but does not support '%s'; falling back", configured, capability
-            )
+        return None
 
     # Fallbacks are availability-filtered so a registered-but-keyless provider
     # never becomes "active" on a fresh install.

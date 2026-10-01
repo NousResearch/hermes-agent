@@ -326,6 +326,41 @@ context:
 
 The `compression` config block (`compression.threshold`, `compression.protect_last_n`, etc.) is specific to the built-in `ContextCompressor`, with one explicit exception: `compression.model_thresholds` (per-model threshold overrides) is part of the context-engine contract. The host assigns the resolved map to `engine.model_thresholds` *before* the initial `update_model()` call, and the base-class `update_model()` applies it (longest substring match, falling back to the engine's configured threshold). Engines that override `update_model()` own their own compaction policy and may honor or ignore the map — `from agent.context_compressor import resolve_model_threshold` to reuse the same resolution logic. For everything else, your engine should define its own config format if needed, reading from `config.yaml` during initialization.
 
+## Bundled: the Certified Context Governor (`ri-context-governor`)
+
+Hermes bundles a receipt-carrying compaction engine backed by the
+[`context-governor`](https://crates.io/crates/context-governor) binary
+(`engine: "ri-context-governor"`). Unlike lossy summarization, every compaction
+produces a **certified V2 receipt** (HMAC-SHA256 integrity over canonical JSON) that
+records exactly what was dropped, with **exact-fallback references** — the host can
+recover the original content later, so compaction loss becomes *recoverable* rather than
+permanent. Optional memory preservation: policy flag
+`context.governor.semantic_memory_enabled: true` keeps recall-typed messages
+(`evidence_critical`, `keep_verbatim`) across compaction.
+
+Setup:
+
+```bash
+cargo install context-governor   # Linux or macOS (Windows is not supported: /proc/self/fd transport)
+hermes governor init             # provision the governed HMAC key (idempotent, 0600 descriptor-gated)
+hermes governor status           # binary + key binding + strict capability probe
+```
+
+then activate it:
+
+```yaml
+context:
+  engine: "ri-context-governor"
+  governor:
+    token_budget: 128000        # optional policy overrides (budget_mode, allocator, ...)
+```
+
+The strict activation probe verifies the binary exists, the key binding reads through
+descriptor-safe path boundaries, and the negotiated wire contract (capabilities JSON +
+two-phase compact-v2/finalize-v2 lifecycle probe) matches before the engine replaces the
+built-in compressor. `hermes governor rotate` retires and rebinds the key.
+
+
 ## Testing
 
 ```python

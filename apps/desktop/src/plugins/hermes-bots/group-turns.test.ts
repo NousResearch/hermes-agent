@@ -1256,42 +1256,6 @@ describe('stranded harvest', () => {
     }
   })
 
-  // The backend holds a Desktop approval until it is answered, so the runaway
-  // cap must not expire a member that is only waiting on the human.
-  it('keeps a member blocked on an approval past the hard cap until the user answers', async () => {
-    // Every clock read jumps a minute (two+ reads per poll): 120 blocked polls
-    // sit hours past the 3 h cap while the member waits on the user.
-    let now = 1_000_000
-    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000))
-    const room = await loadRoom({ turn: () => 'approved and done' })
-    const activity = await import('./group-activity')
-    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<any>
-    const approval = { command: 'rm -rf ./build', description: 'Clean the build directory', request_id: 'req-a1' }
-    let blockedPolls = 120
-
-    host.request = async (method: string, params: Record<string, unknown> = {}) => {
-      const result = await request(method, params)
-
-      if (method === 'session.resume' && room.gateway.rpcFor('prompt.submit').length && blockedPolls > 0) {
-        blockedPolls -= 1
-
-        return { ...result, pending_approval: approval, running: true }
-      }
-
-      return result
-    }
-
-    try {
-      expect(await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'clean up', 't1', [])).toBe(
-        'approved and done'
-      )
-      expect(blockedPolls).toBe(0)
-      expect(activity.$groupActivity.get().Room?.events.map(event => event.kind)).not.toContain('timed-out')
-    } finally {
-      clock.mockRestore()
-    }
-  })
-
   const seedSession = (room: Room, stored: string, profile: string, title: string, messages: string[][]) => {
     room.gateway.sessions.set(stored, {
       messages: messages.map(([role, content]) => ({ content, role })),

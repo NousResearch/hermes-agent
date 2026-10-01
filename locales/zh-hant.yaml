@@ -2261,6 +2261,7 @@ cli:
   clarify:
     bell_context: "澄清"
     label: "澄清"
+    timed_out_locked_answers: "（澄清已在 {timeout} 秒後逾時 — 已回傳鎖定的答案）"
   connect:
     bell_context: "連線設定"
     cannot_restart: "此連線無法再次啟動。請取消後再向代理提出一次。"
@@ -3286,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ 淺層複製 — 無法確認推送狀態，保留：{path}"
     next_session_deepens: "下一次 `hermes -w` 工作階段會加深複製並自動清理已合併的工作樹。"
     unpushed_keeping: "⚠ 工作樹有未推送的提交，保留：{path}"
+    uncommitted_keeping: "⚠ 工作樹有未提交的變更，保留：{path}"
     clean_up_manually: "手動清理方式：git worktree remove --force {path}"
     cleaned_up: "✓ 工作樹已清理：{path}"
 display:

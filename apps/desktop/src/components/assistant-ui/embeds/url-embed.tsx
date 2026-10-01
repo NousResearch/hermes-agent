@@ -11,11 +11,11 @@ import { EMBED_MAX_H } from './embed-size'
 import { EmbedFail } from './fail'
 import type { EmbedDescriptor } from './providers/types'
 import { RichBoundary } from './rich-boundary'
-import YouTubeEmbedRenderer from './youtube-embed'
 
 const FrameEmbedRenderer = lazy(() => import('./frame-embed'))
 const SocialEmbedRenderer = lazy(() => import('./social-embed'))
 const SpotifyEmbedRenderer = lazy(() => import('./spotify-embed'))
+const YouTubeEmbedRenderer = lazy(() => import('./youtube-embed'))
 
 function intrinsicHeight(descriptor: EmbedDescriptor): number {
   if (descriptor.aspectRatio) {
@@ -25,7 +25,7 @@ function intrinsicHeight(descriptor: EmbedDescriptor): number {
   return descriptor.height ?? 320
 }
 
-function LazyRenderer({ autoplay, descriptor }: { autoplay: boolean; descriptor: EmbedDescriptor }) {
+function LazyRenderer({ descriptor }: { descriptor: EmbedDescriptor }) {
   // X and Instagram load their official blockquote script in-document. The tweet
   // check also narrows the union to FrameEmbed for the iframe renderers below.
   if (descriptor.renderer === 'tweet' || descriptor.provider === 'instagram') {
@@ -33,7 +33,7 @@ function LazyRenderer({ autoplay, descriptor }: { autoplay: boolean; descriptor:
   }
 
   if (descriptor.provider === 'youtube') {
-    return <YouTubeEmbedRenderer autoplay={autoplay} descriptor={descriptor} />
+    return <YouTubeEmbedRenderer descriptor={descriptor} />
   }
 
   if (descriptor.provider === 'spotify') {
@@ -47,7 +47,6 @@ export function UrlEmbed({ descriptor }: { descriptor: EmbedDescriptor }) {
   const mode = useStore($embedMode)
   const allowed = useStore($embedAllowed)
   const [loaded, setLoaded] = useState(false)
-  const [autoplay, setAutoplay] = useState(false)
 
   // Privacy gate: don't reach out to the provider until consented. `off` keeps
   // it a plain link; otherwise the placeholder shows until "Load" (this embed)
@@ -74,16 +73,10 @@ export function UrlEmbed({ descriptor }: { descriptor: EmbedDescriptor }) {
       <RichBoundary fallback={<EmbedFail label={descriptor.label} />} resetKey={descriptor.id}>
         {consented ? (
           <Suspense fallback={null}>
-            <LazyRenderer autoplay={autoplay} descriptor={descriptor} />
+            <LazyRenderer descriptor={descriptor} />
           </Suspense>
         ) : (
-          <EmbedFacade
-            descriptor={descriptor}
-            onLoad={() => {
-              setAutoplay(true)
-              setLoaded(true)
-            }}
-          />
+          <EmbedFacade descriptor={descriptor} onLoad={() => setLoaded(true)} />
         )}
       </RichBoundary>
     </span>

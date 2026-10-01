@@ -2534,6 +2534,7 @@ cli:
   clarify:
     bell_context: "clarification"
     label: "Clarification"
+    timed_out_locked_answers: "(clarification expirée après {timeout} s — réponses verrouillées renvoyées)"
   connect:
     bell_context: "configuration de connexion"
     cannot_restart: "Cette connexion ne peut pas être relancée. Annulez et redemandez à l'agent."
@@ -3603,6 +3604,7 @@ cli:
     shallow_clone_keeping: "⚠ Clone superficiel — impossible de vérifier l'état du push, conservé : {path}"
     next_session_deepens: "La prochaine session `hermes -w` approfondira le clone et supprimera automatiquement les worktrees fusionnés."
     unpushed_keeping: "⚠ Le worktree a des commits non poussés, conservé : {path}"
+    uncommitted_keeping: "⚠ Le worktree a des modifications non commitées, conservé : {path}"
     clean_up_manually: "Pour nettoyer manuellement : git worktree remove --force {path}"
     cleaned_up: "✓ Worktree nettoyé : {path}"
 display:

@@ -2,13 +2,12 @@ import { useCallback } from 'react'
 
 import { useTheme } from './context'
 
-// Retired skin names land on a still-shipped theme so old muscle memory works.
-// `default` is intentionally NOT aliased: when the backend registers the classic
-// Hermes gold palette under that name (#76579) it must be selectable.
+// Retired skin names land on the canonical Nous skin so old muscle memory works.
 const ALIASES: Record<string, string> = {
   ares: 'ember',
-  gold: 'default',
-  hermes: 'default',
+  default: 'nous',
+  gold: 'nous',
+  hermes: 'nous',
   'nous-light': 'nous'
 }
 

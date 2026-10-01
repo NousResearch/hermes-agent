@@ -872,10 +872,11 @@ class CLICommandsMixin:
         from hermes_cli.backup import prune_quick_snapshots
         keep = 20
         if len(parts) > 2:
-            try:
-                keep = int(parts[2])
-            except ValueError:
+            # isdecimal() also rejects "-1": a negative keep would slice away the
+            # newest snapshots instead of the oldest.
+            if not parts[2].isdecimal():
                 return print(f"  {_t('snapshot.usage_prune')}")
+            keep = int(parts[2])
         deleted = prune_quick_snapshots(keep=keep)
         print(f"  {_t('snapshot.pruned', deleted=deleted, keep=keep)}")
 
@@ -1989,9 +1990,6 @@ class CLICommandsMixin:
                             self._app.invalidate()
 
                 bg_agent.thinking_callback = _bg_thinking
-                # /bg prompts paint on this terminal: they wait until answered, like the foreground turn's.
-                from tools.approval_context import reset_prompts_wait_for_answer, set_prompts_wait_for_answer
-                prompts_token = set_prompts_wait_for_answer()
                 try:
                     result = bg_agent.run_conversation(user_message=prompt, task_id=task_id)
                     response = result.get("final_response", "") if result else ""
@@ -1999,7 +1997,6 @@ class CLICommandsMixin:
                         response = _gt("model.error_prefix", error=result["error"])
                     return response
                 finally:
-                    reset_prompts_wait_for_answer(prompts_token)
                     # One agent per /bg task in a long-lived CLI process: close()
                     # is the owner boundary (memory shutdown, tool subprocesses,
                     # httpx clients); an unclosed side agent leaks all of them

@@ -345,11 +345,6 @@ class CLIChatTurnMixin:
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
-        # The user is at this terminal: approval and clarify prompts wait until answered or Ctrl+C.
-        # `chat -q` has nobody to answer (no prompt_toolkit app, often no stdin), so it keeps the
-        # approvals.timeout deadline instead of waiting forever.
-        from tools.approval_context import reset_prompts_wait_for_answer, set_prompts_wait_for_answer
-        _prompts_token = None if getattr(self, "_single_query_mode", False) else set_prompts_wait_for_answer()
         try:
             from agent.notification_presentation import notification_turn
             muted = getattr(turn, "mute_notification_reply", False)
@@ -400,8 +395,6 @@ class CLIChatTurnMixin:
                     reset_current_session_key(_approval_session_token)
                 except Exception:
                     pass
-            if _prompts_token is not None:
-                reset_prompts_wait_for_answer(_prompts_token)
 
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""

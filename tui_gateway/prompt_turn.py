@@ -203,7 +203,6 @@ class _TurnScopes:
     """Reset tokens for the thread/context scopes a turn binds (filled incrementally)."""
 
     approval: Any = None
-    prompts: Any = None  # approval/clarify prompts wait until answered (the user is at the app)
     session_tokens: list = dataclasses.field(default_factory=list)
     home: Any = None  # per-turn HERMES_HOME override for a resumed remote profile
     secret: Any = None
@@ -662,10 +661,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     fail-closed refusal scope).  The config-model sync is skipped under a /model --once
     override (not pinned as model_override, the sync would clobber it); a model picked
     mid-turn is applied first so the explicit pick wins over a config change."""
-    from tools.approval_context import set_current_session_key, set_prompts_wait_for_answer
+    from tools.approval_context import set_current_session_key
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])
-    scopes.prompts = set_prompts_wait_for_answer()
     scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
     # Profile turn: that profile's home + secrets + terminal policy. Launch-profile turn: unscoped in a
     # single-profile process; once multiplexing is active (#68559 / #107422 residual) its OWN scope,
@@ -1063,9 +1061,6 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
         if scopes.approval is not None:
             from tools.approval_context import reset_current_session_key
             reset_current_session_key(scopes.approval)
-    if scopes.prompts is not None:
-        from tools.approval_context import reset_prompts_wait_for_answer
-        reset_prompts_wait_for_answer(scopes.prompts)
     if scopes.home is not None:
         reset_hermes_home_override(scopes.home)
     if scopes.secret is not None:

@@ -17,20 +17,9 @@ import { ModelPickerOverlay } from './model-picker-overlay'
 const $focusedTreePaneId = $focusedTreePaneIdMock as unknown as WritableAtom<null | string>
 
 vi.mock('@/store/session-focus', async () => {
-  const { atom, computed } = await import('nanostores')
-  const { $selectedStoredSessionId } = await import('@/store/session')
-  const TILE_PANE_PREFIX = 'session-tile:'
-  const $focusedTreePaneId = atom<null | string>(null)
+  const { atom } = await import('nanostores')
 
-  // Only the tree focus is driven by the test; the session derivations stay real.
-  return {
-    $focusedSessionIsTile: computed($focusedTreePaneId, active => Boolean(active?.startsWith(TILE_PANE_PREFIX))),
-    $focusedStoredSessionId: computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
-      active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
-    ),
-    $focusedTreePaneId,
-    TILE_PANE_PREFIX
-  }
+  return { $focusedTreePaneId: atom<null | string>(null) }
 })
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),

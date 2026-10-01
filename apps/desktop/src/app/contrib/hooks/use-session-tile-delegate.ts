@@ -14,7 +14,7 @@ import {
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
-import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { profileScopeForSessionOwner, transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
@@ -508,18 +508,20 @@ export function useSessionTileDelegate({
           const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
           const owner = await ownerForStoredSession(storedSessionId)
 
-          const refreshed = await refreshIfTranscriptStale(storedSessionId, cached?.messages ?? [], {
+          const refresh = await transcriptRefreshIfBehind(storedSessionId, cached?.messages ?? [], {
             profile: profileScopeForSessionOwner(owner)
           })
 
-          if (refreshed) {
+          // Only a competing view's surplus refuses the send; this window's own
+          // server-side turn residue is grafted and the prompt proceeds (#130031).
+          if (refresh?.competingView) {
             updateSessionState(
               runtimeId,
               state => ({
                 ...state,
                 awaitingResponse: false,
                 busy: false,
-                messages: refreshed,
+                messages: refresh.messages,
                 pendingBranchGroup: null
               }),
               storedSessionId
@@ -536,6 +538,10 @@ export function useSessionTileDelegate({
             // and a null storedSessionId can never equal the requested session,
             // so callers never report delivery for this refusal.
             return { runtimeSessionId: runtimeId, storedSessionId: null }
+          }
+
+          if (refresh) {
+            updateSessionState(runtimeId, state => ({ ...state, messages: refresh.messages }), storedSessionId)
           }
         }
 

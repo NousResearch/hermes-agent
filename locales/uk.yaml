@@ -2261,6 +2261,7 @@ cli:
   clarify:
     bell_context: "уточнення"
     label: "Уточнення"
+    timed_out_locked_answers: "(час на уточнення вийшов через {timeout} с — повернено зафіксовані відповіді)"
   connect:
     bell_context: "налаштування підключення"
     cannot_restart: "Це підключення не можна запустити повторно. Скасуйте й попросіть агента ще раз."
@@ -3286,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Неглибокий клон — неможливо перевірити стан push, залишаємо: {path}"
     next_session_deepens: "Наступний сеанс `hermes -w` поглибить клон і автоматично видалить злиті робочі дерева."
     unpushed_keeping: "⚠ У робочому дереві є невідправлені коміти, залишаємо: {path}"
+    uncommitted_keeping: "⚠ У робочому дереві є незафіксовані зміни, залишаємо: {path}"
     clean_up_manually: "Щоб очистити вручну: git worktree remove --force {path}"
     cleaned_up: "✓ Робоче дерево очищено: {path}"
 display:

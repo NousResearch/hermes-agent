@@ -2361,6 +2361,7 @@ cli:
   clarify:
     bell_context: "clarify"
     label: "Clarify"
+    timed_out_locked_answers: "(clarify timed out after {timeout}s — locked answers returned)"
   connect:
     bell_context: "connection setup"
     cannot_restart: "This connection cannot be started again. Cancel and ask the agent again."
@@ -3387,6 +3388,7 @@ cli:
     shallow_clone_keeping: "⚠ Shallow clone — cannot verify push state, keeping: {path}"
     next_session_deepens: "The next `hermes -w` session deepens the clone and prunes merged worktrees automatically."
     unpushed_keeping: "⚠ Worktree has unpushed commits, keeping: {path}"
+    uncommitted_keeping: "⚠ Worktree has uncommitted changes, keeping: {path}"
     clean_up_manually: "To clean up manually: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree cleaned up: {path}"
 

@@ -28,9 +28,8 @@ import { openExternalLink } from '@/lib/external-link'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
 import {
   $browserPages,
-  $dockedVisiblePreviewTabs,
+  $dockedPreviewTabs,
   $previewTabs,
-  $visiblePreviewTabs,
   adoptPersistedBrowserTab,
   type BrowserPage,
   closeRightRailTab,
@@ -38,8 +37,7 @@ import {
   markBrowserTabPopped,
   newBrowserTab,
   popOutBrowserTab,
-  type PreviewTarget,
-  setPreviewTabPinned
+  type PreviewTarget
 } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { canOpenBrowserWindow } from '@/store/windows'
@@ -94,26 +92,6 @@ function browserTabMenuPrefix(tabId: string) {
         label: translateNow('preview.openInExternal'),
         onSelect: () => openExternalLink(browserTabExternalUrl(tabId) ?? '')
       })}
-    </>
-  )
-}
-
-/** Pin/unpin for EVERY preview tab's zone menu: pinned tabs are the explicit
- *  cross-session workspace, everything else belongs to the session that
- *  opened it (#73890). URL tabs keep their browser rows below it. */
-function previewTabMenuPrefix(tabId: string) {
-  const pinned = Boolean($previewTabs.get().find(tab => tab.id === tabId)?.pinned)
-  const browserRows = browserTabMenuPrefix(tabId)
-
-  return (kit: MenuKit) => (
-    <>
-      {renderActionItem(kit, {
-        icon: pinned ? 'pinned' : 'pin',
-        key: 'pin',
-        label: translateNow(pinned ? 'preview.unpin' : 'preview.pin'),
-        onSelect: () => setPreviewTabPinned(tabId, !pinned)
-      })}
-      {browserRows?.(kit) ?? null}
     </>
   )
 }
@@ -212,7 +190,7 @@ function existingPreviewAnchor(tabId: string): string | undefined {
     return inTree
   }
 
-  const other = $dockedVisiblePreviewTabs.get().find(tab => tab.id !== tabId)
+  const other = $dockedPreviewTabs.get().find(tab => tab.id !== tabId)
 
   return other ? previewPaneId(other.id) : undefined
 }
@@ -242,26 +220,7 @@ export function watchPreviewTiles(): void {
   }
 
   $rightRailActiveTabId.listen(reveal)
-  // One listener for the visible list: re-home the selection FIRST (a session
-  // switch or an unpin can leave the active tab outside the visible set, and
-  // a stale reveal of a just-hidden tab is a no-op — its pane left the tree),
-  // THEN reveal the tab the re-home left active. Registered after the mirror,
-  // so the pane set is already synced when this runs.
-  $visiblePreviewTabs.listen(() => {
-    rehome()
-    reveal()
-  })
-
-  // A session switch (or an unpin) can leave the active tab outside the
-  // visible set — re-home the selection to the first visible tab so the strip
-  // and the pane never point at a hidden preview.
-  const rehome = () => {
-    const visible = $visiblePreviewTabs.get()
-
-    if (!visible.some(tab => tab.id === $rightRailActiveTabId.get())) {
-      selectRightRailTab(visible[0]?.id ?? null)
-    }
-  }
+  $previewTabs.listen(reveal)
 
   // And the reverse: clicking a preview TAB activates its pane in the TREE
   // only, so the store's selection must follow or `$previewTarget` (⌘L quote
@@ -302,12 +261,11 @@ export function watchPreviewTiles(): void {
 }
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
-  // Only the FOCUSED session's tabs (plus pins) become panes — switching
-  // sessions swaps the drawer; a hidden tab's pane leaves the tree without
-  // closing the tab (paneMirror's sync disposes, it doesn't call close).
-  // Composed with $dockedPreviewTabs so a popped-out Browser pane also
-  // leaves the docked tree.
-  source: $dockedVisiblePreviewTabs,
+  source: $dockedPreviewTabs,
+  // Unscoped on purpose. `$previewTabs` is one global Browser/file surface —
+  // clicking a link in a bot chat must open the same pane Sessions already
+  // shows. Scoping this to `sessions` filtered the pane out of Bot Mode, so
+  // `openPreview` ran and the click looked like a no-op.
   key: tab => tab.id,
   prefix: PREVIEW_TILE_PREFIX,
   // The FIRST preview still opens its own zone docked beside main (identical
@@ -324,10 +282,7 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // A Browser is a vessel, so there can be more of it — a file peek is one of
   // a kind and leaves the strip's "+" to whatever else the zone holds.
   newTab: tabId => (targetFor(tabId)?.kind === 'url' ? newBrowserTab : undefined),
-  // Pin/unpin rides the zone tab menu for every preview tab: pinned tabs are
-  // the explicit cross-session workspace, everything else belongs to the
-  // session that opened it (#73890).
-  tabMenuPrefix: previewTabMenuPrefix,
+  tabMenuPrefix: browserTabMenuPrefix,
   lifecycleKeepAlive: tabId => {
     const target = targetFor(tabId)
 

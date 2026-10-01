@@ -6,6 +6,15 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .server import _clear_pending, _ok, _sess_building, logger
+    from .compute_host_bridge import _get_compute_host_supervisor
+    from .session_history import _clear_inflight_turn
+    from .session_lifecycle import _owns_turn_claim
+
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()

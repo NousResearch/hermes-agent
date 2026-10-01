@@ -6,6 +6,12 @@ from __future__ import annotations
 
 import contextlib
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .session_lifecycle import _claim_session_turn, _release_session_turn
+
+
 from .method_ctx import bind_module
 
 

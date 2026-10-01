@@ -207,7 +207,7 @@ async def test_restore_enters_each_profile_scope_once_per_scan(tmp_path, monkeyp
         runner._heartbeat_watch = {}
         runner._start_heartbeat_poller = lambda: None
         runner._profile_name_for_source = lambda source: source.profile
-        runner._adapter_for_source = lambda source: object()
+        runner._intake_adapter_for = runner._delivery_adapter_for = lambda source: object()
         runner._run_in_executor_with_context = asyncio.to_thread
         entered = []
         real = GatewayRunner._profile_scope_for_source

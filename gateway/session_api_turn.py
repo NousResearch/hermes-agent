@@ -32,7 +32,7 @@ def check_api_turn(authority, ref, payload):
     live = authority.sessions[ref.session_id]
     if live.source.platform == Platform.API_SERVER:
         restore_api_session(authority, ref.session_id)
-    adapter = authority.runner._adapter_for_source(live.source)
+    adapter = authority.runner._delivery_adapter_for(live.source)
     if adapter is None or getattr(adapter, 'gateway_runner', None) is not authority.runner:
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:

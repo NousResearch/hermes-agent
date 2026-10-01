@@ -246,9 +246,14 @@ async def recover_gateway_native_sessions(runner):
             await recover_webhook_finalizations(authority)
             pending = {row['target_session_id'] for row in authority.db._read_all(
                 "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-            bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
-                        for entry in runner.session_store.list_sessions() if entry.origin is not None
-                        for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
+            bindings = []
+            for entry in runner.session_store.list_sessions():
+                if entry.origin is None:
+                    continue
+                owner = authority.logical_owner(entry.session_id)
+                if owner in pending:
+                    source = runner._restored_source(entry)
+                    bindings.append((owner, source, runner._delivery_adapter_for(source)))
             outcome = await authority.recover_native_sessions(bindings)
         for sid, verdict in outcome.items():
             logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)

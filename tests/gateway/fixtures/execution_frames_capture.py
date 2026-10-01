@@ -54,7 +54,7 @@ async def capture(tmp):
     try:
         for label, instance in (('epoch1', 'owner-1'), ('epoch2', 'owner-2')):
             runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False,
-                                     _handle_message=answer, _adapter_for_source=lambda s: None)
+                                     _handle_message=answer, _intake_adapter_for=lambda s: None, _delivery_adapter_for=lambda s: None)
             authority = await initialize_session_authority(runner, profile_id='p', instance_id=instance)
             authority.sessions['shared'] = LiveSession(source, 'shared')
             peer = Peer()

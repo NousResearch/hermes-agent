@@ -236,7 +236,16 @@ class SessionAuthority:
         self._require_admission_open()
         payload = await prepare_native(self.runner, event)
         self._require_admission_open()
-        source = restore_native(payload).source
+        source = restore_native(payload, self.runner).source
+        # Registration persists the receiving bot beside the runtime route. The
+        # codec's wire source omits identity, so reconstruct it only from the
+        # private provenance that restore_native just validated against the live
+        # connector. Without this, a routed queue loses its transport on restart.
+        if getattr(self.runner.config, 'multiplex_profiles', False):
+            from gateway.session_identity import restore_identity
+            provenance = payload['native_text_v1']['provenance']
+            transport = provenance.get('transport_profile') or self.runner._primary_profile_name
+            restore_identity(source, runner=self.runner, transport_profile=transport)
         ref = self.register(source)
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
@@ -465,7 +474,7 @@ class SessionAuthority:
                 if first is not None and 'native_text_v1' in first['payload']:
                     from gateway.session_envelope import check_native_route
                     await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
-                                       self.runner._adapter_for_source(live.source))
+                                       self.runner._delivery_adapter_for(live.source))
                     # Cancellation may advance FIFO while the connector is awaited.
                     # Never let the successor inherit this row's fresh verdict.
                     current = get_session_admission(self.db, admission_id=first['admission_id'])

@@ -3276,8 +3276,7 @@ class _StreamingCall(StreamingWaitMonitor):
             display_reasoning = detail_text or reasoning_text
             if display_reasoning:
                 self._emit_reasoning(display_reasoning)
-                looped = [reasoning_watch.feed(reasoning_text or ""), detail_watch.feed(detail_text)]
-                if any(looped):
+                if reasoning_watch.feed(reasoning_text) or detail_watch.feed(detail_text):
                     runaway = "reasoning"
                     break
             # Not routed to the live display: the transport promotes a sole-payload

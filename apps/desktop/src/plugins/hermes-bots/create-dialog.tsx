@@ -1351,7 +1351,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       }}
       open={open}
     >
-      <DialogContent className="max-w-md gap-5 bg-(--ui-chat-bubble-opaque-background)" onOpenAutoFocus={event => {event.preventDefault(); searchInput.current?.focus()}}>
+      <DialogContent className="max-w-md gap-5" onOpenAutoFocus={event => {event.preventDefault(); searchInput.current?.focus()}}
+        // Overlay CSS uses a translucent menu fill; keep artwork behind this form out of the reading surface.
+        style={{ background: 'var(--ui-bg-elevated)' }}>
         <DialogHeader>
           <DialogTitle>{b.group.newTitle}</DialogTitle>
           <DialogDescription>{b.canonical.createDescription}</DialogDescription>

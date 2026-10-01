@@ -44,7 +44,12 @@ import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './c
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
-import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
+import {
+  dropPreviewTabsForProfile,
+  migratePreviewTabsForProfile,
+  rekeyPreviewTabsSession,
+  setPreviewScope
+} from './preview'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
@@ -816,6 +821,8 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // a background tile's conversation rotates too, and its pane would
     // otherwise keep the stale id forever (duplicate/differently-titled tabs).
     rekeySessionTile(previous.storedSessionId, next.storedSessionId, runtimeId)
+    // The conversation's preview tabs follow it onto the new tip (#73890).
+    rekeyPreviewTabsSession(previous.storedSessionId, next.storedSessionId)
 
     clearSettled(previous.storedSessionId)
     setSessionStalled(previous.storedSessionId, false)

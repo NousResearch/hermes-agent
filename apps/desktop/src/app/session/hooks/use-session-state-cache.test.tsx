@@ -232,6 +232,34 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect(tiles.find(t => t.storedSessionId === 'stored-A-next')).toBeDefined()
   })
 
+  it('carries the conversation preview tabs onto the new tip when compression rotates it (#73890)', async () => {
+    const { $previewTabs, $visiblePreviewTabs, closeRightRail, openPreview } = await import('@/store/preview')
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    try {
+      openPreview({ kind: 'url', label: 'Docs', source: 'https://docs.example', url: 'https://docs.example' })
+
+      act(() => {
+        cache.updateSessionState('runtime-A', state => state, 'stored-A')
+        cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+      })
+
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['stored-A-next'])
+      expect($visiblePreviewTabs.get()).toHaveLength(1)
+
+      act(() => setSelectedStoredSessionId('stored-A-next'))
+      expect($visiblePreviewTabs.get()).toHaveLength(1)
+    } finally {
+      closeRightRail()
+    }
+  })
+
   it('rekeys the persisted owner profile when its runtime rotates while another profile is visible', () => {
     let cache!: Cache
     const profileA = 'rotation-profile-a-98622'

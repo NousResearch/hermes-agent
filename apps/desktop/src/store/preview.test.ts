@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
@@ -12,6 +12,7 @@ import {
   $previewTarget,
   $visiblePreviewTabs,
   beginPreviewServerRestart,
+  closeAgentPreview,
   closeBrowserPreviewMatchingLiveUrl,
   closePreviewForSource,
   closePreviewMatching,
@@ -27,6 +28,7 @@ import {
   type PreviewTarget,
   progressPreviewServerRestart,
   prunePreviewTabsForSession,
+  rekeyPreviewTabsSession,
   renderedHtmlTarget,
   setPreviewRenderMode,
   setPreviewTabPinned
@@ -77,7 +79,7 @@ describe('preview store', () => {
   it('opens the pane and fronts the new tab', () => {
     openPreview(fileTarget('/work/demo.html'))
 
-    expect($rightRailActiveTabId.get()).toBe('file:/work/demo.html')
+    expect($rightRailActiveTabId.get()).toBe('file:file:///work/demo.html')
     expect($previewTarget.get()?.path).toBe('/work/demo.html')
   })
 
@@ -397,12 +399,14 @@ describe('preview store', () => {
   })
 })
 
-describe('preview session scoping', () => {
+describe('preview session scoping (#73890)', () => {
   afterEach(() => {
     $selectedStoredSessionId.set(null)
     closeRightRail()
     window.localStorage.clear()
   })
+
+  const paths = (tabs: readonly { target: PreviewTarget }[]) => tabs.map(tab => tab.target.path ?? tab.target.url)
 
   it('stamps the active session on tabs it opens', () => {
     $selectedStoredSessionId.set('sess-1')
@@ -411,23 +415,53 @@ describe('preview session scoping', () => {
     expect($previewTabs.get()[0]?.sessionId).toBe('sess-1')
   })
 
-  it('shows only the active session tabs plus pinned ones', () => {
+  it('shows only the focused session tabs plus pinned ones, keeping hidden tabs alive', () => {
     $selectedStoredSessionId.set('sess-1')
     openPreview(fileTarget('/work/a.html'))
     $selectedStoredSessionId.set('sess-2')
     openPreview(fileTarget('/work/b.html'))
 
-    expect($visiblePreviewTabs.get().map(tab => tab.target.path)).toEqual(['/work/b.html'])
+    expect(paths($visiblePreviewTabs.get())).toEqual(['/work/b.html'])
+    expect($previewTabs.get()).toHaveLength(2)
 
-    // Pinning makes the first session's tab visible in every session.
-    const aTab = $previewTabs.get().find(tab => tab.target.path === '/work/a.html')
-    setPreviewTabPinned(aTab!.id, true)
+    $selectedStoredSessionId.set('sess-1')
+    expect(paths($visiblePreviewTabs.get())).toEqual(['/work/a.html'])
 
-    expect($visiblePreviewTabs.get().map(tab => tab.target.path).sort()).toEqual(['/work/a.html', '/work/b.html'])
+    const aTab = $previewTabs.get().find(tab => tab.target.path === '/work/a.html')!
+    setPreviewTabPinned(aTab.id, true)
+    $selectedStoredSessionId.set('sess-2')
+    expect(paths($visiblePreviewTabs.get()).sort()).toEqual(['/work/a.html', '/work/b.html'])
 
-    // Unpinning hides it from the other session again.
-    setPreviewTabPinned(aTab!.id, false)
-    expect($visiblePreviewTabs.get().map(tab => tab.target.path)).toEqual(['/work/b.html'])
+    setPreviewTabPinned(aTab.id, false)
+    expect(paths($visiblePreviewTabs.get())).toEqual(['/work/b.html'])
+  })
+
+  it('opens the same file as one tab per session, and re-fronts it within one', () => {
+    $selectedStoredSessionId.set('sess-1')
+    openPreview(fileTarget('/work/demo.html'))
+    openPreview({ ...fileTarget('/work/demo.html'), url: '/work/demo.html', label: 'refreshed' })
+    $selectedStoredSessionId.set('sess-2')
+    openPreview(fileTarget('/work/demo.html'))
+
+    const tabs = $previewTabs.get()
+
+    expect(tabs.map(tab => tab.sessionId)).toEqual(['sess-1', 'sess-2'])
+    expect(new Set(tabs.map(tab => tab.id)).size).toBe(2)
+    expect(tabs[0]?.target.label).toBe('refreshed')
+  })
+
+  it('reuses a pinned file from another session without changing its owner', () => {
+    $selectedStoredSessionId.set('sess-1')
+    openPreview(fileTarget('/work/a.html'))
+    const id = $previewTabs.get()[0]!.id
+    setPreviewTabPinned(id, true)
+
+    $selectedStoredSessionId.set('sess-2')
+    openPreview({ ...fileTarget('/work/a.html'), label: 'refreshed' })
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]).toMatchObject({ id, pinned: true, sessionId: 'sess-1' })
+    expect($rightRailActiveTabId.get()).toBe(id)
   })
 
   it('prunes a deleted session tabs but keeps its pins', () => {
@@ -438,11 +472,10 @@ describe('preview session scoping', () => {
     openPreview(fileTarget('/work/b.html'))
 
     prunePreviewTabsForSession('sess-2')
-    expect($previewTabs.get().map(tab => tab.target.path)).toEqual(['/work/a.html'])
+    expect(paths($previewTabs.get())).toEqual(['/work/a.html'])
 
-    // Pinned tabs belong to the workspace, not the session that opened them.
     prunePreviewTabsForSession('sess-1')
-    expect($previewTabs.get().map(tab => tab.target.path)).toEqual(['/work/a.html'])
+    expect(paths($previewTabs.get())).toEqual(['/work/a.html'])
   })
 
   it('adopts ownerless draft tabs when a session appears', () => {
@@ -450,103 +483,142 @@ describe('preview session scoping', () => {
     expect($previewTabs.get()[0]?.sessionId).toBeUndefined()
 
     $selectedStoredSessionId.set('sess-new')
+
     expect($previewTabs.get()[0]?.sessionId).toBe('sess-new')
-    // The id is rekeyed onto the session-scoped form so a later open of the
-    // same file dedupes instead of stacking.
-    expect($previewTabs.get()[0]?.id).toBe('file:sess-new:/work/draft.html')
-    expect($visiblePreviewTabs.get().map(tab => tab.target.path)).toEqual(['/work/draft.html'])
+    expect(paths($visiblePreviewTabs.get())).toEqual(['/work/draft.html'])
   })
 
-  it('canonicalizes file identities across entry points', () => {
-    expect(previewTabId(fileTarget('/work/demo.html'))).toBe('file:/work/demo.html')
+  it('owns a strip "+" Browser by the focused session, never adopting it elsewhere', () => {
+    $selectedStoredSessionId.set('sess-x')
+    newBrowserTab()
+    const id = $previewTabs.get()[0]!.id
 
-    const viaPlainPath = previewTabId({ ...fileTarget('/work/demo.html'), url: '/work/demo.html' })
-    expect(viaPlainPath).toBe('file:/work/demo.html')
+    expect($previewTabs.get()[0]?.sessionId).toBe('sess-x')
+    expect($visiblePreviewTabs.get().map(tab => tab.id)).toEqual([id])
+
+    $selectedStoredSessionId.set('sess-y')
+    expect($visiblePreviewTabs.get()).toHaveLength(0)
+    expect($previewTabs.get()[0]?.sessionId).toBe('sess-x')
   })
 
-  it('scopes file tab ids to the session, so two sessions can open the same file', () => {
-    expect(previewTabId(fileTarget('/work/demo.html'), 'sess-1')).toBe('file:sess-1:/work/demo.html')
-    expect(previewTabId(fileTarget('/work/demo.html'), 'sess-2')).toBe('file:sess-2:/work/demo.html')
+  it('never navigates another session Browser for a URL open', () => {
+    $selectedStoredSessionId.set('sess-a')
+    openPreview(urlTarget('https://a.example'))
+    const aBrowser = $previewTabs.get()[0]!
 
-    $selectedStoredSessionId.set('sess-1')
-    openPreview(fileTarget('/work/demo.html'))
-    $selectedStoredSessionId.set('sess-2')
-    openPreview(fileTarget('/work/demo.html'))
+    $selectedStoredSessionId.set('sess-b')
+    openPreview(urlTarget('https://b.example'))
 
-    const tabs = $previewTabs.get()
-
-    expect(tabs).toHaveLength(2)
-    expect(tabs[0]).toMatchObject({ sessionId: 'sess-1', id: 'file:sess-1:/work/demo.html' })
-    expect(tabs[1]).toMatchObject({ sessionId: 'sess-2', id: 'file:sess-2:/work/demo.html' })
-    expect($visiblePreviewTabs.get()).toHaveLength(1)
-  })
-
-  it('re-opening the same file in the same session keeps the tab owner and pin', () => {
-    $selectedStoredSessionId.set('sess-1')
-    openPreview(fileTarget('/work/demo.html'))
-    setPreviewTabPinned($previewTabs.get()[0]!.id, true)
-
-    openPreview({ ...fileTarget('/work/demo.html'), label: 'refreshed' })
-
-    expect($previewTabs.get()).toHaveLength(1)
-    expect($previewTabs.get()[0]).toMatchObject({ sessionId: 'sess-1', pinned: true })
-    expect($previewTabs.get()[0]?.target.label).toBe('refreshed')
-  })
-
-  it('unpinning an ownerless tab adopts the current session', () => {
-    openPreview(fileTarget('/work/legacy.html'))
-    setPreviewTabPinned($previewTabs.get()[0]!.id, true)
-
-    $selectedStoredSessionId.set('sess-1')
-    setPreviewTabPinned($previewTabs.get()[0]!.id, false)
-
-    expect($previewTabs.get()[0]).toMatchObject({ pinned: false, sessionId: 'sess-1' })
-    expect($previewTabs.get()[0]?.id).toBe('file:sess-1:/work/legacy.html')
-  })
-
-  it('closes by source only within the current session', () => {
-    $selectedStoredSessionId.set('sess-1')
-    openPreview(fileTarget('/work/a.html'))
-    $selectedStoredSessionId.set('sess-2')
-    openPreview(fileTarget('/work/a.html'))
-
-    // The hidden session's tab must not be closed by the other session's row.
-    expect(closePreviewForSource('/work/a.html')).toBe(true)
-    expect($previewTabs.get()).toHaveLength(1)
-    expect($previewTabs.get()[0]?.sessionId).toBe('sess-1')
-  })
-
-  it('reopens a pinned legacy row instead of stacking a second tab', () => {
-    // A migrated legacy row: pinned, unprefixed id, no owner.
-    $previewTabs.set([{ id: 'file:/work/a.html', target: fileTarget('/work/a.html'), pinned: true }])
-
-    $selectedStoredSessionId.set('sess-1')
-    openPreview(fileTarget('/work/a.html'))
-
-    expect($previewTabs.get()).toHaveLength(1)
-    expect($previewTabs.get()[0]).toMatchObject({ pinned: true, sessionId: 'sess-1' })
-    expect($previewTabs.get()[0]?.id).toBe('file:sess-1:/work/a.html')
-    expect($visiblePreviewTabs.get()).toHaveLength(1)
-  })
-
-  it('reusing an owned pinned row from another session keeps the owner id', () => {
-    $selectedStoredSessionId.set('sess-1')
-    openPreview(fileTarget('/work/a.html'))
-    setPreviewTabPinned($previewTabs.get()[0]!.id, true)
-
-    $selectedStoredSessionId.set('sess-2')
-    openPreview({ ...fileTarget('/work/a.html'), label: 'refreshed' })
-
-    expect($previewTabs.get()).toHaveLength(1)
-    // The row keeps its OWNER's id — never an id/sessionId split (the id
-    // would say sess-2 while the owner says sess-1 until the next unpin).
-    expect($previewTabs.get()[0]).toMatchObject({
-      id: 'file:sess-1:/work/a.html',
-      sessionId: 'sess-1',
-      pinned: true
+    expect($previewTabs.get()).toHaveLength(2)
+    expect($previewTabs.get().find(tab => tab.id === aBrowser.id)).toMatchObject({
+      sessionId: 'sess-a',
+      target: { url: 'https://a.example' }
     })
-    expect($previewTabs.get()[0]?.target.label).toBe('refreshed')
-    expect($rightRailActiveTabId.get()).toBe('file:sess-1:/work/a.html')
+
+    $selectedStoredSessionId.set('sess-a')
+    expect(paths($visiblePreviewTabs.get())).toEqual(['https://a.example'])
+  })
+
+  it('opens for an explicit owner without touching the focused drawer', () => {
+    $selectedStoredSessionId.set('sess-focused')
+    openPreview(fileTarget('/work/focused.html'))
+    const focusedId = $rightRailActiveTabId.get()
+
+    openPreview(fileTarget('/work/tile.html'), 'sess-tile')
+
+    expect($previewTabs.get().find(tab => tab.target.path === '/work/tile.html')?.sessionId).toBe('sess-tile')
+    expect(paths($visiblePreviewTabs.get())).toEqual(['/work/focused.html'])
+    expect($rightRailActiveTabId.get()).toBe(focusedId)
+  })
+
+  it('agent close without a url closes only that session own tabs', () => {
+    $selectedStoredSessionId.set('sess-a')
+    openPreview(fileTarget('/work/pinned.html'))
+    setPreviewTabPinned($previewTabs.get()[0]!.id, true)
+    openPreview(fileTarget('/work/a.html'))
+    $selectedStoredSessionId.set('sess-b')
+    openPreview(fileTarget('/work/b.html'))
+
+    closeAgentPreview('sess-a', [])
+
+    expect(paths($previewTabs.get()).sort()).toEqual(['/work/b.html', '/work/pinned.html'])
+  })
+
+  it('agent close by url reaches only the tabs that session can see', () => {
+    $selectedStoredSessionId.set('sess-a')
+    openPreview(fileTarget('/work/same.html'))
+    $selectedStoredSessionId.set('sess-b')
+    openPreview(fileTarget('/work/same.html'))
+
+    closeAgentPreview('sess-a', ['/work/same.html'])
+
+    expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['sess-b'])
+  })
+
+  it('keeps a conversation tabs visible across a compression tip rotation', () => {
+    $selectedStoredSessionId.set('tip-1')
+    openPreview(fileTarget('/work/a.html'))
+    newBrowserTab()
+
+    rekeyPreviewTabsSession('tip-1', 'tip-2')
+
+    // Focus still names the old tip until the route follows; the tabs must
+    // not blink out in between (a hidden Browser loses its page).
+    expect($visiblePreviewTabs.get()).toHaveLength(2)
+
+    $selectedStoredSessionId.set('tip-2')
+    expect($visiblePreviewTabs.get()).toHaveLength(2)
+    expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['tip-2', 'tip-2'])
+  })
+
+  it('tombstones a missing file by the url the file pane reports', () => {
+    $selectedStoredSessionId.set('sess-1')
+    openPreview(fileTarget('/work/gone.html'))
+
+    markPreviewTabMissing(fileTarget('/work/gone.html').url)
+
+    expect($previewTabs.get()[0]?.target.missing).toBe(true)
+  })
+
+  // A relaunch (or a fresh pop-out renderer) reads storage at module load.
+  async function relaunchedPreviewStore() {
+    vi.resetModules()
+
+    return import('./preview')
+  }
+
+  it('restores every Browser tab of every session and every pin on relaunch', async () => {
+    $selectedStoredSessionId.set('sess-a')
+    openPreview(urlTarget('https://a.example'))
+    newBrowserTab()
+    openPreview(urlTarget('https://a2.example'))
+    $selectedStoredSessionId.set('sess-b')
+    openPreview(urlTarget('https://b.example'))
+    setPreviewTabPinned($previewTabs.get()[2]!.id, true)
+    openPreview(fileTarget('/work/b.html'))
+
+    const live = $previewTabs.get().map(tab => [tab.id, tab.sessionId, Boolean(tab.pinned)])
+    const relaunched = await relaunchedPreviewStore()
+
+    expect(relaunched.$previewTabs.get().map(tab => [tab.id, tab.sessionId, Boolean(tab.pinned)])).toEqual(live)
+  })
+
+  it('pops out a Browser tab that is not the last one persisted', async () => {
+    $selectedStoredSessionId.set('sess-a')
+    openPreview(urlTarget('https://first.example'))
+    const first = $previewTabs.get()[0]!.id
+    newBrowserTab()
+    openPreview(urlTarget('https://second.example'))
+
+    // A fresh pop-out renderer: no session focus, its view on the default
+    // bucket, the tab in another profile's bucket — found by id in storage.
+    window.localStorage.setItem('hermes.desktop.previewTabs.v2', JSON.stringify({ work: $previewTabs.get() }))
+    const fresh = await relaunchedPreviewStore()
+
+    expect(fresh.$previewTabs.get()).toHaveLength(0)
+    fresh.adoptPersistedBrowserTab(first)
+
+    expect(fresh.$previewTabs.get().find(tab => tab.id === first)?.target.url).toBe('https://first.example')
   })
 
   it('follows the focused session tile over the sidebar selection', () => {
@@ -555,117 +627,35 @@ describe('preview session scoping', () => {
     $selectedStoredSessionId.set('sess-2')
     openPreview(fileTarget('/work/b.html'))
 
-    expect($visiblePreviewTabs.get().map(tab => tab.target.path)).toEqual(['/work/b.html'])
-
-    // A sess-1 session TILE is active in the interacted zone while sess-2 is
-    // selected in the sidebar: the drawer belongs to the conversation being
-    // typed in, so the visible set follows the FOCUSED session.
     const previousTree = $layoutTree.get()
 
     try {
       $layoutTree.set(group(['session-tile:sess-1'], { active: 'session-tile:sess-1', id: 'grp-main' }))
       noteActiveTreeGroup('grp-main')
 
-      expect($visiblePreviewTabs.get().map(tab => tab.target.path)).toEqual(['/work/a.html'])
+      expect(paths($visiblePreviewTabs.get())).toEqual(['/work/a.html'])
 
-      // Leaving the tile (workspace/route active) falls back to the selection.
       noteActiveTreeGroup(null)
-      expect($visiblePreviewTabs.get().map(tab => tab.target.path)).toEqual(['/work/b.html'])
+      expect(paths($visiblePreviewTabs.get())).toEqual(['/work/b.html'])
     } finally {
-      // A failed assertion must not leak the tree/group state into the next
-      // test — the focused derivation reads both.
       noteActiveTreeGroup(null)
       $layoutTree.set(previousTree)
     }
   })
 
-  it('re-owns the singleton Browser to the session that navigates it', () => {
-    $selectedStoredSessionId.set('sess-1')
-    openPreview(urlTarget('http://localhost:5174'))
-
-    // A second session navigating the Browser takes the surface with it:
-    // keeping the original owner would leave the new URL invisible in the
-    // session that just opened it.
-    $selectedStoredSessionId.set('sess-2')
-    openPreview(urlTarget('http://localhost:9999'))
-
-    expect($previewTabs.get()).toHaveLength(1)
-    // The Browser id is minted (never reused), so assert the stable parts:
-    // one surface, re-owned to the navigating session.
-    expect($previewTabs.get()[0]?.id).toMatch(/^url:browser-/)
-    expect($previewTabs.get()[0]).toMatchObject({ sessionId: 'sess-2' })
-    expect($previewTabs.get()[0]?.target.url).toBe('http://localhost:9999')
-    expect($visiblePreviewTabs.get()).toHaveLength(1)
-
-    // And sess-1 no longer sees the navigated surface — no context leak.
-    $selectedStoredSessionId.set('sess-1')
-    expect($visiblePreviewTabs.get()).toHaveLength(0)
-  })
-
-  it('adoption dedupes against an already session-scoped row', () => {
-    // Both rows for the same file coexist before the session appears.
-    $previewTabs.set([
-      { id: 'file:/work/a.html', target: fileTarget('/work/a.html') },
-      { id: 'file:sess-1:/work/a.html', target: fileTarget('/work/a.html'), sessionId: 'sess-1' }
-    ])
-
-    $selectedStoredSessionId.set('sess-1')
-
-    expect($previewTabs.get()).toHaveLength(1)
-    expect($previewTabs.get()[0]?.id).toBe('file:sess-1:/work/a.html')
-  })
-
-  it('adoption dedupe keeps the active selection valid', () => {
-    // The colliding row is the ACTIVE tab when adoption rekeys the draft
-    // onto the same id — the survivor carries that id, so the selection must
-    // not dangle.
-    $previewTabs.set([
-      { id: 'file:/work/a.html', target: fileTarget('/work/a.html') },
-      { id: 'file:sess-1:/work/a.html', target: fileTarget('/work/a.html'), sessionId: 'sess-1' }
-    ])
-    selectRightRailTab('file:sess-1:/work/a.html')
-
-    $selectedStoredSessionId.set('sess-1')
-
-    expect($previewTabs.get()).toHaveLength(1)
-    expect($rightRailActiveTabId.get()).toBe('file:sess-1:/work/a.html')
-  })
-
-  it('migrates legacy unscoped tabs to pinned and rekeys their ids', () => {
+  it('migrates legacy unscoped tabs to pinned and keeps their ids', () => {
     const raw = JSON.stringify([
       { id: 'file:file:///work/a.html', target: fileTarget('/work/a.html') },
-      { id: 'file:file:///work/b.html', target: fileTarget('/work/b.html'), sessionId: 'sess-9' }
+      { id: 'file:file:///work/b.html', target: fileTarget('/work/b.html'), sessionId: 'sess-9' },
+      { id: 'file:file:///work/c.html', target: fileTarget('/work/c.html'), sessionId: 'sess-1', pinned: false }
     ])
 
     const decoded = decodePreviewTabs(raw)
 
-    expect(decoded).toHaveLength(2)
-    expect(decoded[0]).toMatchObject({ id: 'file:/work/a.html', pinned: true })
-    expect(decoded[1]?.id).toBe('file:sess-9:/work/b.html')
-    expect(decoded[1]?.sessionId).toBe('sess-9')
-    expect(decoded[1]?.pinned).toBeUndefined()
-  })
-
-  it('does not re-pin a persisted unpinned row', () => {
-    const raw = JSON.stringify([
-      { id: 'file:/work/a.html', target: fileTarget('/work/a.html'), sessionId: 'sess-1', pinned: false }
+    expect(decoded.map(tab => [tab.id, tab.sessionId, tab.pinned])).toEqual([
+      ['file:file:///work/a.html', undefined, true],
+      ['file:file:///work/b.html', 'sess-9', undefined],
+      ['file:file:///work/c.html', 'sess-1', false]
     ])
-
-    const decoded = decodePreviewTabs(raw)
-
-    expect(decoded[0]?.pinned).toBe(false)
-  })
-
-  it('dedupes the same file persisted under both old and canonical ids', () => {
-    const raw = JSON.stringify([
-      { id: 'file:file:///work/a.html', target: fileTarget('/work/a.html') },
-      { id: 'file:/work/a.html', target: { ...fileTarget('/work/a.html'), label: 'updated' } }
-    ])
-
-    const decoded = decodePreviewTabs(raw)
-
-    expect(decoded).toHaveLength(1)
-    expect(decoded[0]?.id).toBe('file:/work/a.html')
-    expect(decoded[0]?.target.label).toBe('updated')
   })
 })

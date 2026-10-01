@@ -7,6 +7,7 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { migrateInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { rekeyPreviewTabsSession } from '@/store/preview'
 import {
   $activeSessionId,
   $messages,
@@ -208,6 +209,7 @@ export function useSessionStateCache({
             // rekey, which this path can skip when the state updater is a no-op.
             if (storedSessionId) {
               rekeySessionTile(existing.storedSessionId, storedSessionId, sessionId)
+              rekeyPreviewTabsSession(existing.storedSessionId, storedSessionId)
             }
 
             // A rotation event needs a real next id — a null/cleared stored id

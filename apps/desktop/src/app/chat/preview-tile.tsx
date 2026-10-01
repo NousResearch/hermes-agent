@@ -38,6 +38,7 @@ import {
   markBrowserTabPopped,
   newBrowserTab,
   popOutBrowserTab,
+  preferredVisibleTabId,
   type PreviewTarget,
   setPreviewTabPinned
 } from '@/store/preview'
@@ -253,13 +254,14 @@ export function watchPreviewTiles(): void {
   })
 
   // A session switch (or an unpin) can leave the active tab outside the
-  // visible set — re-home the selection to the first visible tab so the strip
-  // and the pane never point at a hidden preview.
+  // visible set — re-home the selection onto the tab that session last had in
+  // front (else its first) so the strip and the pane never point at a hidden
+  // preview.
   const rehome = () => {
-    const visible = $visiblePreviewTabs.get()
+    const preferred = preferredVisibleTabId()
 
-    if (!visible.some(tab => tab.id === $rightRailActiveTabId.get())) {
-      selectRightRailTab(visible[0]?.id ?? null)
+    if (preferred !== $rightRailActiveTabId.get()) {
+      selectRightRailTab(preferred)
     }
   }
 
@@ -304,9 +306,8 @@ export function watchPreviewTiles(): void {
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // Only the FOCUSED session's tabs (plus pins) become panes — switching
   // sessions swaps the drawer; a hidden tab's pane leaves the tree without
-  // closing the tab (paneMirror's sync disposes, it doesn't call close).
-  // Composed with $dockedPreviewTabs so a popped-out Browser pane also
-  // leaves the docked tree.
+  // closing the tab (paneMirror's sync disposes, it doesn't call close). A
+  // popped-out Browser's pane also leaves the docked tree.
   source: $dockedVisiblePreviewTabs,
   key: tab => tab.id,
   prefix: PREVIEW_TILE_PREFIX,

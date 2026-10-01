@@ -7,9 +7,7 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
   $previewTabs,
   beginPreviewServerRestart,
-  closeBrowserPreviewMatchingLiveUrl,
-  closeDockedPreviewMatching,
-  closeRightRail,
+  closeAgentPreview,
   completePreviewServerRestart,
   openPreview,
   progressPreviewServerRestart,
@@ -17,7 +15,12 @@ import {
   requestPreviewReload
 } from '@/store/preview'
 import { $activeSessionId, $currentCwd } from '@/store/session'
-import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $focusedStoredSessionId,
+  $sessionTiles,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 
 type EventHandler = (event: GatewayEvent) => void
 
@@ -37,6 +40,13 @@ function sessionIsOnScreen(sessionId: string): boolean {
     sessionId === $activeSessionId.get() ||
     $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
   )
+}
+
+/** The stored id whose drawer an agent's preview event belongs to: the session
+ *  that ran the tool, not whichever one holds focus (#73890). A runtime with no
+ *  stored id yet is a fresh draft, whose tabs are ownerless until adopted. */
+function previewOwnerForEvent(sessionId: string | undefined): null | string {
+  return sessionId ? storedSessionIdForRuntimeId(sessionId) : $focusedStoredSessionId.get()
 }
 
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
@@ -102,7 +112,10 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
               const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
 
-              openPreview(renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached))
+              openPreview(
+                renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached),
+                previewOwnerForEvent(event.session_id)
+              )
             }
           )
         }
@@ -121,8 +134,10 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
           return
         }
 
+        const owner = previewOwnerForEvent(event.session_id)
+
         if (!target) {
-          closeRightRail()
+          closeAgentPreview(owner, [])
 
           return
         }
@@ -139,9 +154,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               }
             }
 
-            if (!closeBrowserPreviewMatchingLiveUrl(...candidates)) {
-              closeDockedPreviewMatching(...candidates)
-            }
+            closeAgentPreview(owner, candidates)
           }
         )
 

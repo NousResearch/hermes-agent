@@ -478,3 +478,64 @@ def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
     assert notices[:2] == [None, None]
     assert all(n is not None and "consecutive identical call to execute_code" in n for n in notices[2:]), notices
     assert controller.halt_decision is None, "warn-only surfaces must not halt"
+
+
+def test_discovery_loop_cap_counts_builtin_file_discovery_calls():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig.from_mapping({
+            "loop_caps": {"max_discovery_calls": 2},
+        })
+    )
+
+    assert controller.before_call("read_file", {"path": "a.py"}).allows_execution
+    assert controller.before_call("search_files", {"path": ".", "pattern": "needle"}).allows_execution
+
+    decision = controller.before_call("read_file", {"path": "b.py"})
+    assert decision.action == "block"
+    assert decision.code == "loop_discovery_cap"
+    assert decision.count == 2
+
+
+@pytest.mark.parametrize("command", [
+    "cat clue.txt",
+    "head -n 20 clue.txt",
+    "tail -n 20 clue.txt",
+    'Get-Content "clue.txt"',
+    "rg needle .",
+    "grep -R needle .",
+    """python -c "print(open('clue.txt').read())" """.strip(),
+    """python -c "from pathlib import Path; print(Path('clue.txt').read_text())" """.strip(),
+])
+def test_discovery_loop_cap_counts_clear_terminal_reads_and_searches(command):
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig.from_mapping({
+            "loop_caps": {"max_discovery_calls": 1},
+        })
+    )
+
+    assert controller.before_call("terminal", {"command": command}).allows_execution
+    decision = controller.before_call("read_file", {"path": "next.py"})
+    assert decision.action == "block"
+    assert decision.code == "loop_discovery_cap"
+
+
+@pytest.mark.parametrize("command", [
+    "pytest -q",
+    "npm run build",
+    "python app.py",
+    "echo changed > out.txt",
+    "rm clue.txt",
+    "cat clue.txt && echo changed > out.txt",
+])
+def test_discovery_loop_cap_does_not_meter_effectful_or_ambiguous_terminal_commands(command):
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig.from_mapping({
+            "loop_caps": {"max_discovery_calls": 1},
+        })
+    )
+
+    assert controller.before_call("terminal", {"command": command}).allows_execution
+    assert controller.before_call("read_file", {"path": "first.py"}).allows_execution
+    decision = controller.before_call("search_files", {"path": ".", "pattern": "second"})
+    assert decision.action == "block"
+    assert decision.code == "loop_discovery_cap"

@@ -348,7 +348,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             return "[dim]skip (token var)[/dim]"
         if name not in secrets:
             return "[red]unresolved (see warnings)[/red]"
-        already = bool(os.environ.get(name))
+        already = os.environ.get(name) is not None
         if already and not override:
             return "[dim]skip (already set)[/dim]"
         return "[green]would export[/green]" + (" (overrides)" if already else "")

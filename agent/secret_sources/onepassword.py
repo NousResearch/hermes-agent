@@ -232,7 +232,9 @@ def apply_onepassword_secrets(
 
     def _guarded(name: str) -> bool:
         """True when ``name`` must not be applied (token var or env already set)."""
-        return name == service_account_token_env or (not override_existing and bool(os.environ.get(name)))
+        return name == service_account_token_env or (
+            not override_existing and os.environ.get(name) is not None
+        )
 
     result.skipped.extend(n for n in valid if _guarded(n))
     refs_to_fetch = {n: ref for n, ref in valid.items() if not _guarded(n)}

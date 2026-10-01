@@ -924,7 +924,7 @@ export default function SessionsPage() {
       return excludedSources.length > 0 ? { excludeSources: excludedSources } : {};
     }
     if (sessionCategory === "chats") {
-      return { excludeSources: AUTOMATION_SESSION_SOURCES };
+      return { excludeSources: AUTOMATION_SESSION_SOURCES.filter((source) => source !== "oneshot") };
     }
     if (sessionCategory === "automation") {
       const excludedSources = allSourceNames.filter(

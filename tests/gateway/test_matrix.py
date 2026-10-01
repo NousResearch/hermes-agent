@@ -1802,61 +1802,44 @@ class TestMatrixReactions:
 
 
     @pytest.mark.asyncio
-    async def test_on_processing_complete_sends_check(self):
-        from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+    @pytest.mark.parametrize("reason", ["processing complete", "approval resolved"])
+    async def test_reaction_cleanup_waits_for_configured_delay(self, monkeypatch, reason):
+        from gateway.platforms.event import MessageEvent, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
         self.adapter._reaction_redaction_delay_seconds = 0.01
-        self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
         self.adapter._redact_reaction = AsyncMock(return_value=True)
-        self.adapter._send_reaction = AsyncMock(return_value="$check_reaction_456")
+        self.adapter._send_reaction = AsyncMock(return_value="$check")
+        delay_started = asyncio.Event()
+        release_delay = asyncio.Event()
+        delays = []
 
-        source = MagicMock()
-        source.chat_id = "!room:ex"
-        event = MessageEvent(
-            text="hello",
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message={},
-            message_id="$msg1",
-        )
-        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-        self.adapter._redact_reaction.assert_not_awaited()
-        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u2705")
-        await asyncio.sleep(0.03)
-        self.adapter._redact_reaction.assert_awaited_once_with(
-            "!room:ex",
-            "$eyes_reaction_123",
-            "processing complete",
-        )
+        async def delayed_sleep(delay):
+            delays.append(delay)
+            delay_started.set()
+            await release_delay.wait()
 
+        monkeypatch.setattr("plugins.platforms.matrix.adapter.asyncio.sleep", delayed_sleep)
+        if reason == "processing complete":
+            self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes"}
+            source = MagicMock(chat_id="!room:ex")
+            event = MessageEvent(text="hello", source=source, message_id="$msg1")
+            await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+            expected = [(("!room:ex", "$eyes", reason), {})]
+            self.adapter._send_reaction.assert_awaited_once_with("!room:ex", "$msg1", "\u2705")
+        else:
+            prompt = MagicMock(bot_reaction_events={"\u2705": "$allow", "\u274e": "$deny"})
+            await self.adapter._redact_bot_approval_reactions("!room:ex", prompt)
+            expected = [(("!room:ex", "$allow", reason), {}), (("!room:ex", "$deny", reason), {})]
 
-    @pytest.mark.asyncio
-    async def test_approval_reaction_cleanup_is_delayed(self):
-        """Bot approval reaction redactions should not run inline."""
-
-        self.adapter._reaction_redaction_delay_seconds = 0.01
-        self.adapter._redact_reaction = AsyncMock(return_value=True)
-        prompt = MagicMock()
-        prompt.bot_reaction_events = {
-            "\u2705": "$allow_reaction",
-            "\u274e": "$deny_reaction",
-        }
-
-        await self.adapter._redact_bot_approval_reactions("!room:ex", prompt)
-
-        self.adapter._redact_reaction.assert_not_awaited()
-        await asyncio.sleep(0.03)
-        self.adapter._redact_reaction.assert_any_await(
-            "!room:ex",
-            "$allow_reaction",
-            "approval resolved",
-        )
-        self.adapter._redact_reaction.assert_any_await(
-            "!room:ex",
-            "$deny_reaction",
-            "approval resolved",
-        )
+        tasks = tuple(self.adapter._reaction_redaction_tasks)
+        try:
+            await asyncio.wait_for(delay_started.wait(), timeout=10)
+            assert self.adapter._redact_reaction.await_args_list == []
+        finally:
+            release_delay.set()
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=5.0)
+        assert (delays, self.adapter._redact_reaction.await_args_list) == ([0.01] * len(expected), expected)
 
 
 # ---------------------------------------------------------------------------

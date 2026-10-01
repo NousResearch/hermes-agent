@@ -155,8 +155,9 @@ def resolve_and_repair_transcript_batch(
             adopt = transcript_row_snapshot(target_row) != expected
             if not adopt:
                 serialized = serialize_message_fn(msg, float(target_row["timestamp"]))
-                if "token_count" not in msg:
-                    # Replay dicts never carry token_count; a missing key means "unknown", not NULL.
+                if serialized["token_count"] is None:
+                    # Replays never decode token_count (the agent flush row sets it to None): None means
+                    # "unknown", not NULL.
                     serialized = {**serialized, "token_count": target_row["token_count"]}
                 if any(target_row[column] != serialized[column] for column in _OWNED_COLUMNS):
                     _rewrite_row(conn, session_id, target_row, serialized)

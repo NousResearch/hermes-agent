@@ -55,8 +55,10 @@ def test_mutated_replay_rewrites_its_original_row(db, include_row_ids, content, 
     assert restored[0][MESSAGE_UID] == before[0]["message_uid"]
     assert (DB_ROW_SNAPSHOT in restored[0]) is not include_row_ids
 
-    # Real rewrite sites change the payload BEFORE clearing the persisted marker.
+    # Real rewrite sites change the payload BEFORE clearing the persisted marker. The agent flush row
+    # (session_persistence._db_flush_row) always carries the token_count key, None for a replay.
     restored[0]["content"] = "after repair"
+    restored[0]["token_count"] = None
     restored[0].pop(_DB_PERSISTED_MARKER, None)
 
     assert db.append_messages_batch(sid, restored) == 0

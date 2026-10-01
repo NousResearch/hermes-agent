@@ -33,6 +33,8 @@ import {
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
+import { startupProfileForConnection } from './startup-profile-restore'
+
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
 // Every await of a source switch is bounded. A wedged spawn, ticket mint,
@@ -68,6 +70,9 @@ export const $hasMultipleConnections = computed(
 )
 
 const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord(LAST_PROFILE_STORAGE_KEY))
+// Preserve the per-source preference across the initial Electron descriptor:
+// its legacy global profile can briefly be paired with the wrong connection.
+const startupLastProfileByConnection = { ...$lastProfileByConnection.get() }
 let pendingTarget: null | string = null
 let restoreAttempted = false
 let switchRevision = 0
@@ -298,6 +303,37 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   }
 
   if ($activeConnectionId.get() === preferredId) {
+    // Electron's legacy `profile` preference is global, while this primary
+    // connection can be remote. Validate that inherited name against the
+    // selected source before treating it as the new session's owner. An
+    // explicit default route was handled above and must never be second-guessed.
+    if (preferred?.kind !== 'local' && !$activeSessionId.get() && !$selectedStoredSessionId.get()) {
+      const profile = normalizeProfileKey($activeGatewayProfile.get())
+      const revision = switchRevision
+      // A failed roster read is not evidence the profile is absent. Do not
+      // mask a subsequent switch failure as a roster failure, though.
+      const roster = await getProfiles({ connectionId: preferredId }).catch(() => null)
+
+      if (
+        roster &&
+        revision === switchRevision &&
+        pendingTarget === null &&
+        $freshSessionRequest.get() === freshSessionRequest &&
+        $activeConnectionId.get() === preferredId &&
+        normalizeProfileKey($activeGatewayProfile.get()) === profile &&
+        !$activeSessionId.get() &&
+        !$selectedStoredSessionId.get()
+      ) {
+        const target = startupProfileForConnection(profile, startupLastProfileByConnection[preferredId], roster.profiles)
+
+        if (target) {
+          await selectConnection(preferredId, { profile: target })
+        } else if (roster.profiles.some(candidate => candidate.name === profile)) {
+          $lastProfileByConnection.set({ ...$lastProfileByConnection.get(), [preferredId]: profile })
+        }
+      }
+    }
+
     await rememberConnection(preferredId)
   } else {
     await selectConnection(preferredId)

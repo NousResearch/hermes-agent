@@ -90,3 +90,40 @@ async def test_yolo_survives_gateway_restart_and_dies_at_session_boundary(tmp_pa
     third = _runner()
     restore_session_yolo(key, third.session_store.get_or_create_session(event.source).yolo)
     assert is_session_yolo_enabled(key) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("frozen", "persisted", "expected"),
+    [(False, True, {"prep-session"}), (False, False, set()), (True, True, set())],
+)
+async def test_turn_preparation_restores_yolo_after_session_open(
+    monkeypatch, frozen, persisted, expected
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from gateway.run_turn_preparation import GatewayTurnPreparationMixin
+    from tools import approval
+
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", frozen)
+    monkeypatch.setattr(approval, "_session_yolo", set())
+    entry = SimpleNamespace(yolo=True)
+    runner = _make_runner()
+
+    async def open_session(session_entry, session_key, source):
+        session_entry.yolo = persisted
+        return False, False
+
+    def observe_context(source, config, session_entry):
+        raise RuntimeError("session restoration complete")
+
+    runner._hmwa_open_session = AsyncMock(side_effect=open_session)
+    monkeypatch.setattr(
+        "gateway.run_turn_preparation.build_session_context", observe_context
+    )
+    with pytest.raises(RuntimeError, match="session restoration complete"):
+        await GatewayTurnPreparationMixin._hmwa_prepare_turn(
+            runner, None, None, entry, "prep-session", "prep-session", 1
+        )
+    assert approval._session_yolo == expected

@@ -58,7 +58,7 @@ it('hydrates the real tile cache and immutable summary from resume alone without
     })
 
     useSessionTileDelegate({
-      ...cache, requestGateway, archiveSession: vi.fn(), branchStoredSession: vi.fn(),
+      ...cache, requestGateway, archiveSession: vi.fn(), branchLoadedSession: vi.fn(), branchStoredSession: vi.fn(),
       executeSlashCommand: vi.fn(), removeSession: vi.fn()
     })
 

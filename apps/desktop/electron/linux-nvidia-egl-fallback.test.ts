@@ -137,13 +137,15 @@ describe('decideNvidiaEglFallback — exclusions', () => {
   it('HERMES_DESKTOP_DISABLE_GPU=0 keeps the GPU on even over a witnessed marker', () => {
     const marker = nvidiaEglFallbackMarker('0.21.5', '580.178.04')
 
-    expect(
-      decideNvidiaEglFallback({ ...PROBE, marker, env: { HERMES_DESKTOP_DISABLE_GPU: '0' } }).enable
-    ).toBe(false)
+    expect(decideNvidiaEglFallback({ ...PROBE, marker, env: { HERMES_DESKTOP_DISABLE_GPU: '0' } }).enable).toBe(false)
   })
 
   it('HERMES_DESKTOP_NVIDIA_SWIFTSHADER forces the fallback on without any marker', () => {
-    const decision = decideNvidiaEglFallback({ ...PROBE, env: { HERMES_DESKTOP_NVIDIA_SWIFTSHADER: '1' }, marker: null })
+    const decision = decideNvidiaEglFallback({
+      ...PROBE,
+      env: { HERMES_DESKTOP_NVIDIA_SWIFTSHADER: '1' },
+      marker: null
+    })
 
     expect(decision.enable).toBe(true)
     expect(decision.reason).toContain('override')

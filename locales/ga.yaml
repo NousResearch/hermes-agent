@@ -179,7 +179,7 @@ gateway:
     label_normal: "GNÁTH"
     status_fast: "tapa"
     status_normal: "gnáth"
-    picker_title: "⚡ **Priority Processing**\\n\\nMód reatha: `{mode}`\\n\\nRoghnaigh rogha:"
+    picker_title: "⚡ **Priority Processing**\n\nMód reatha: `{mode}`\n\nRoghnaigh rogha:"
     choice_fast: "fast — Priority Processing ar siúl"
     choice_normal: "normal — gnáthphróiseáil"
     choice_auto: "auto — tapa do na chéad soicindí de gach seal"
@@ -282,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ Ní thacaítear le `/reasoning reset --global`. Úsáid `/reasoning <level> --global` chun an réamhshocrú domhanda a athrú."
     reset_done: "🧠 ✓ Sárú réasúnaíochta seisiúin glanta; ag titim siar ar an gcumraíocht dhomhanda."
     unknown_arg: "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh, max, ultra\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
-    picker_title: "🧠 **Socruithe Réasúnaíochta**\\n\\n**Iarracht:** `{level}`\\n**Scóip:** {scope}\\n**Taispeáint:** {display}\\n\\nRoghnaigh rogha:"
+    picker_title: "🧠 **Socruithe Réasúnaíochta**\n\n**Iarracht:** `{level}`\n**Scóip:** {scope}\n**Taispeáint:** {display}\n\nRoghnaigh rogha:"
     choice_none: "none — díchumasaigh réasúnaíocht"
     choice_reset: "reset — glan sárú an tseisiúin"
     choice_show: "taispeáin réasúnaíocht sna freagraí"
@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "cead"
     label: "Cead"
-    timeout_denying: "⏱ Teorainn ama — ag diúltú don ordú"
-    timed_out_no_response: "imithe thar am (gan freagra)"
     outcome_once: "ceadaithe uair amháin"
     outcome_session: "ceadaithe don seisiún"
     outcome_always: "curtha leis an liosta ceadaithe"
@@ -2261,7 +2259,6 @@ cli:
   clarify:
     bell_context: "soiléiriú"
     label: "Soiléirigh"
-    timed_out_locked_answers: "(chuaigh an soiléiriú thar am tar éis {timeout}s — seoladh na freagraí glasáilte ar ais)"
   connect:
     bell_context: "socrú ceangail"
     cannot_restart: "Ní féidir an ceangal seo a thosú arís. Cealaigh agus iarr ar an ngníomhaire arís."

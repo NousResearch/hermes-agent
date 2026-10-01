@@ -128,6 +128,7 @@ class ProfileSessionPreview(Result):
     started_at: float | int = 0
     last_active: float | int = 0
     message_count: int = 0
+    live_message_count: int | None = None
 
 
 class ProfileWorkerSession(Result):
@@ -150,6 +151,7 @@ class ProfileCanonicalSession(Result):
     started_at: float | int = 0
     last_active: float | int = 0
     message_count: int = 0
+    live_message_count: int | None = None
 
 
 class ProfileRow(Result):

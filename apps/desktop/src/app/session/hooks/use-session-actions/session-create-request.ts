@@ -1,0 +1,52 @@
+import { requestGatewayForAgent } from '@/store/gateway'
+import type { AgentProfileRoute } from '@/store/profile'
+import type { SessionCreateResponse } from '@/types/hermes'
+
+type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+/** A backend predating #122899 (contract without `cwd_explicit`) rejects the
+ *  whole create at admission (`tui_gateway/contracts/registry.py::validate_params`,
+ *  code 4000, handler never runs) — e.g. a Hermes Cloud backend behind a
+ *  Desktop that updates from main (#128971). Those backends always honoured the
+ *  client `cwd`, so resending without the flag reproduces their behaviour.
+ *  Matched on the stable prefix, not `isOutOfSyncRpcParams`: v0.21.3 already
+ *  rejects but predates the "out of sync" suffix.
+ *  Delete once no supported backend predates #122899. */
+const CWD_EXPLICIT_REJECTED = /invalid params for session\.create: cwd_explicit:/
+
+function rejectsCwdExplicit(params: Record<string, unknown>, error: unknown): boolean {
+  return 'cwd_explicit' in params && CWD_EXPLICIT_REJECTED.test(error instanceof Error ? error.message : String(error))
+}
+
+/** `session.create` on the captured owner route (or the window's gateway).
+ *  A null `connectionId` is a legacy named-profile owner (coding workspaces). */
+export async function createGatewaySession(
+  route: (Omit<AgentProfileRoute, 'connectionId'> & { connectionId: null | string }) | null,
+  params: Record<string, unknown>,
+  requestGateway: RequestGateway
+): Promise<SessionCreateResponse> {
+  const send = (requestParams: Record<string, unknown>) =>
+    route
+      ? requestGatewayForAgent<SessionCreateResponse>(
+          route.connectionId,
+          route.profile,
+          'session.create',
+          requestParams,
+          undefined,
+          undefined,
+          { spawnPriority: 'foreground' }
+        )
+      : requestGateway<SessionCreateResponse>('session.create', requestParams)
+
+  try {
+    return await send(params)
+  } catch (error) {
+    if (!rejectsCwdExplicit(params, error)) {
+      throw error
+    }
+
+    const { cwd_explicit: _cwdExplicit, ...compatible } = params
+
+    return send(compatible)
+  }
+}

@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "الموافقة"
     label: "الموافقة"
-    timeout_denying: "⏱ انتهت المهلة — رفض الأمر"
-    timed_out_no_response: "انتهت المهلة (لا استجابة)"
     outcome_once: "مسموح مرة واحدة"
     outcome_session: "مسموح لهذه الجلسة"
     outcome_always: "أُضيف إلى قائمة السماح"
@@ -2261,7 +2259,6 @@ cli:
   clarify:
     bell_context: "استيضاح"
     label: "استيضاح"
-    timed_out_locked_answers: "(انتهت مهلة الاستيضاح بعد {timeout} ث — أُعيدت الإجابات المثبّتة)"
   connect:
     bell_context: "إعداد الاتصال"
     cannot_restart: "لا يمكن بدء هذا الاتصال مجددًا. ألغِ واطلب من الوكيل مرة أخرى."

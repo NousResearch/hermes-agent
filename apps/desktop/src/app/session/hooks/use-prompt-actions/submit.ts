@@ -3,12 +3,12 @@ import { type MutableRefObject, useCallback } from 'react'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
-import type { Translations } from '@/i18n'
+import { translateNow, type Translations } from '@/i18n'
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
 import {
   isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
@@ -19,9 +19,9 @@ import { $codingWorkspaceDrafts, codingWorkspaceDraftKey, codingWorkspaceKey } f
 import {
   $composerAttachments,
   type ComposerAttachment,
+  freezeComposerTransportPayload,
   mainComposerScope,
-  revokeDiscardedAttachmentPreviews,
-  terminalContextBlocksFromDraft
+  revokeDiscardedAttachmentPreviews
 } from '@/store/composer'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -172,11 +172,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
   return useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = sanitizeComposerInput(rawText).trim()
       // Snapshot before any provisioning/binding can change the live CWD.
       // Missing scoped CWD must resolve on the draft owner, never the main view.
       let referenceCwd = options?.referenceCwd
-      let referenceText = visibleText
       const usingComposerAttachments = !options?.attachments
 
       // Drop undefined/null holes a session switch or draft restore can leave in
@@ -192,7 +190,36 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         a => typeof a.titlePreview === 'string' && a.titlePreview.trim()
       )?.titlePreview
 
-      const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
+      // Freeze `@terminal:` chips into transport text before send. Queue drains
+      // already carry frozen transport (tokens stripped at enqueue) — never
+      // re-resolve against the live selection map, or a later Cmd+L that reused
+      // the same shell:row label silently injects unrelated output (#77078).
+      let transportRaw = rawText
+      let bubbleOverride = options?.displayText
+
+      if (!options?.fromQueue) {
+        const frozen = freezeComposerTransportPayload(rawText)
+
+        if (frozen.missingLabels.length > 0) {
+          notify({
+            kind: 'warning',
+            title: translateNow('composer.terminalSelectionMissingTitle'),
+            message: translateNow('composer.terminalSelectionMissingBody')
+          })
+
+          return false
+        }
+
+        transportRaw = frozen.transportText
+
+        if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
+          bubbleOverride = frozen.displayText
+        }
+      }
+
+      const visibleText = sanitizeComposerInput(transportRaw).trim()
+      // Workspace reference resolution may rewrite this to checkout-relative text.
+      let referenceText = visibleText
       const hasImage = attachments.some(a => a.kind === 'image')
 
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
@@ -212,8 +239,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           .filter(Boolean)
           .join('\n')
 
+        // Terminal fences live inside visibleText (frozen above / at enqueue).
         return (
-          [contextRefs, terminalContextBlocks, referenceText].filter(Boolean).join('\n\n') ||
+          [contextRefs, referenceText].filter(Boolean).join('\n\n') ||
           (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
@@ -227,7 +255,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // not the foreground flag: an explicit target (tile, queue drain) is
       // frequently not the session on screen, so the foreground flag would gate
       // one session's send on another session's turn.
-      const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
+      const hasSendable = Boolean(visibleText || attachments.length || hasImage)
 
       const guardSessionId = options?.sessionId ?? activeSessionIdRef.current
 
@@ -424,7 +452,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // skill body as its text — model-facing scaffolding — so the dispatcher
       // hands us the invocation to render instead. Everything else shows what
       // was typed.
-      const bubbleText = options?.displayText ?? visibleText
+      const bubbleText = bubbleOverride ?? visibleText
       // Keep the user-send boundary stable when later ref resolution rewrites
       // the optimistic bubble in place.
       const submittedAt = Date.now() / 1000
@@ -1007,7 +1035,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (guardStoredId && liveSessionId) {
           const localSnapshot = updateSessionState(liveSessionId, state => state, targetStoredSessionId)
 
-          const refreshed = await refreshIfTranscriptStale(guardStoredId, localSnapshot.messages, {
+          const refresh = await transcriptRefreshIfBehind(guardStoredId, localSnapshot.messages, {
             excludeMessageId: optimisticId,
             profile: profileScopeForTranscriptSession(resolveActiveTranscriptSession(guardStoredId, liveSessionId))
           })
@@ -1016,31 +1044,49 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             return abortForSessionSwitch(liveSessionId)
           }
 
-          if (refreshed) {
+          if (refresh) {
+            if (refresh.competingView) {
+              updateSessionState(
+                liveSessionId,
+                state => ({
+                  ...state,
+                  awaitingResponse: false,
+                  busy: false,
+                  messages: refresh.messages,
+                  pendingBranchGroup: null
+                }),
+                targetStoredSessionId
+              )
+
+              if (targetIsCurrentView()) {
+                scope.setMessages(() => refresh.messages)
+                notify({
+                  kind: 'warning',
+                  message: copy.staleSessionBody,
+                  title: copy.staleSessionTitle
+                })
+              }
+
+              releaseBusy()
+
+              return false
+            }
+
+            // The surplus was this window's own server-side turn residue — a turn
+            // that died on an approval timeout leaves its tool/assistant rows
+            // server-side while the window only holds its optimistic user message
+            // (#124005). Graft the rows into the view silently and let the send
+            // proceed: the local view being behind is the expected aftermath of the
+            // turn's death, not evidence of a competing view.
             updateSessionState(
               liveSessionId,
-              state => ({
-                ...state,
-                awaitingResponse: false,
-                busy: false,
-                messages: refreshed,
-                pendingBranchGroup: null
-              }),
+              state => ({ ...state, messages: refresh.messages }),
               targetStoredSessionId
             )
 
             if (targetIsCurrentView()) {
-              scope.setMessages(() => refreshed)
-              notify({
-                kind: 'warning',
-                message: copy.staleSessionBody,
-                title: copy.staleSessionTitle
-              })
+              scope.setMessages(() => refresh.messages)
             }
-
-            releaseBusy()
-
-            return false
           }
         }
 
@@ -1074,6 +1120,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // other session-scoped RPC (attach, /compress, rewind, interrupt) goes
         // through the same helper so one policy covers the whole bug class.
         let submitErr: unknown = null
+        // The identity the backend actually accepted: the live runtime id,
+        // replaced below when a stale binding was recovered.
+        let acceptedRuntimeSessionId = liveSessionId
+        // `recoverStoredSessionId` (declared above, before workspace recovery)
+        // also lets the acceptance report name the durable session when no
+        // recovery was needed.
 
         try {
           // A bot's chat is a tile scoped to the `bots` workspace; the primary chat is Sessions mode.
@@ -1120,6 +1172,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               }
             })
           }
+
+          acceptedRuntimeSessionId = submitted.sessionId
         } catch (firstErr) {
           if (firstErr instanceof SessionRecoveryAborted) {
             console.warn('[submit-drift-abort]', firstErr.reason, { phase: 'post-resume-retry' })
@@ -1133,6 +1187,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (submitErr !== null) {
           throw submitErr
         }
+
+        // The prompt is now accepted. Report the EXACT identity it landed on
+        // (recovered id included) so a caller that must prove delivery — the
+        // Quick Entry bridge — never guesses the foreground session. Fires
+        // before the local cleanup below: acceptance is already true even if a
+        // later local step throws.
+        options?.onAccepted?.({
+          runtimeSessionId: acceptedRuntimeSessionId,
+          storedSessionId: recoverStoredSessionId ?? null
+        })
 
         if (usingComposerAttachments) {
           // A submit owns only the occurrences that actually reached the

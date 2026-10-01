@@ -254,8 +254,23 @@ function PackageRow({
   // goes first and the panel follows what the backend actually holds, so a
   // failed write can't leave the two halves disagreeing. A rejected PUT may
   // still have committed (a timeout leaves it unknown), so re-read instead of
-  // assuming a rollback; if even that fails the panel stays put and the
-  // switch is live again for a retry.
+  // assuming a rollback.
+  //
+  // Three failed-write outcomes, three behaviors:
+  //  - re-read fails: outcome unknown — nothing moves, the switch stays live
+  //    for a retry;
+  //  - re-read holds the opposite value: the panel follows the backend and no
+  //    decision is recorded, so absence still means "no choice";
+  //  - re-read succeeds but the listing has NO row for the toolset at all:
+  //    the backend does not know this toolset — a settled (if empty)
+  //    answer, not a failure. kanban hits this against any backend older
+  //    than its configurable-toolset promotion: there its PUT is rejected
+  //    with 400 and the listing omits it, and deciding by
+  //    `toolsetOn === on` silently dropped the decision write, so the
+  //    plugin came back disabled after every restart. The desktop decision
+  //    is then the only record of what the user asked for: persist it and
+  //    move the panel, while a dedicated toast says the toolset half is
+  //    not configurable there.
   const toggleDesktop = async (id: string, on: boolean) => {
     const toolset = DESKTOP_PLUGIN_TOOLSETS[id]
 
@@ -267,25 +282,55 @@ function PackageRow({
 
     try {
       let toolsetOn: boolean | undefined
+      // Set only when the re-read itself failed — the backend never answered,
+      // so nothing about the toolset half is known. An undefined toolsetOn
+      // from a SUCCESSFUL re-read means the backend keeps no row for this
+      // toolset, which is a settled (if empty) answer.
+      let rereadFailed = false
+      let rowAbsent = false
 
       try {
         await setToolsetEnabled(toolset, on, profile)
         toolsetOn = on
       } catch (err) {
         toolsetOn = await getToolsets(profile).then(
-          list => list.find(row => row.name === toolset)?.enabled,
-          () => undefined
+          list => {
+            const found = list.find(row => row.name === toolset)?.enabled
+
+            if (found === undefined) {
+              rowAbsent = true
+            }
+
+            return found
+          },
+          () => {
+            rereadFailed = true
+
+            return undefined
+          }
         )
 
-        if (toolsetOn !== on) {
+        if (rowAbsent) {
+          notify({
+            kind: 'warning',
+            message: p.toolsetRowAbsent(pkg.name)
+          })
+        } else if (toolsetOn !== on) {
           notifyError(err, p.toolsetToggleFailed(pkg.name))
         }
       }
 
       void queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
 
-      if (toolsetOn === on) {
-        await setPluginEnabled(id, on)
+      if (rereadFailed || (toolsetOn !== undefined && toolsetOn !== on)) {
+        return
+      }
+
+      // Clean write, a timed-out write that committed, or a backend with no
+      // row for the toolset: the desktop decision settles now.
+      await setPluginEnabled(id, on)
+
+      if (!rowAbsent) {
         notify({
           kind: 'success',
           message: on ? p.toolsetOn(pkg.name, scopeLabel) : p.toolsetOff(pkg.name, scopeLabel)

@@ -568,6 +568,46 @@ describe('PluginsTab', () => {
       expect($pluginDecisions.get()).not.toHaveProperty('kanban')
       expect(notices('success')).toHaveLength(0)
     })
+
+    // A backend that never listed the toolset as configurable (kanban: the
+    // PUT 400s "Unknown toolset", the GET listing omits the row) is the exact
+    // shape that used to drop the decision write: the re-read answered, just
+    // with no row, so `toolsetOn` was undefined and nothing persisted — the
+    // plugin came back disabled after every restart.
+    it('keeps the enable when the backend keeps no row for the toolset', async () => {
+      publishKanban('disabled')
+      setToolsetEnabled.mockRejectedValueOnce(new Error('HTTP 400'))
+      getToolsets.mockResolvedValueOnce([])
+
+      renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
+      fireEvent.click(kanbanSwitch())
+      await waitFor(() => expect(checked()).toBe('true'))
+      await waitFor(() => expect(notices('warning').some(n => n.message.includes('not configurable'))).toBe(true))
+      await settled()
+
+      expect($pluginRecords.get().kanban.status).toBe('loaded')
+      expect($pluginDecisions.get().kanban).toBe(true)
+      expect(window.localStorage.getItem('hermes.desktop.pluginDecisions.v2')).toContain('"kanban":true')
+      expect(notices('error')).toHaveLength(0)
+      expect(notices('success')).toHaveLength(0)
+    })
+
+    it('keeps the disable when the backend keeps no row for the toolset', async () => {
+      publishKanban('loaded')
+      setToolsetEnabled.mockRejectedValueOnce(new Error('HTTP 400'))
+      getToolsets.mockResolvedValueOnce([])
+
+      renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
+      fireEvent.click(kanbanSwitch())
+      await waitFor(() => expect(checked()).toBe('false'))
+      await waitFor(() => expect(notices('warning').some(n => n.message.includes('not configurable'))).toBe(true))
+      await settled()
+
+      expect($pluginRecords.get().kanban.status).toBe('disabled')
+      expect($pluginDecisions.get().kanban).toBe(false)
+      expect(notices('error')).toHaveLength(0)
+      expect(notices('success')).toHaveLength(0)
+    })
   })
 
   it('leaves toolsets alone for desktop plugins with no agent toolset', () => {

@@ -2863,6 +2863,8 @@ export const frOverrides = {
       toolsetOff: (name: string, profile: string) => `Outils agent de ${name} désactivés pour ${profile}`,
       toolsetToggleFailed: (name: string) =>
         `Impossible de modifier les outils agent de ${name} ; le panneau Desktop reste inchangé`,
+      toolsetRowAbsent: (name: string) =>
+        `Les outils agent de ${name} ne sont pas configurables sur ce backend ; le panneau Desktop suit désormais cet interrupteur`,
       legacyBackend: 'Ce backend est trop ancien pour gérer les plugins depuis cet écran ; mettez Hermes à jour.',
       portableBadge: 'portable',
       serverStates: {

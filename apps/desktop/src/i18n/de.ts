@@ -2851,6 +2851,8 @@ export const deOverrides = {
       toolsetOff: (name: string, profile: string) => `${name}-Agent-Tools für ${profile} deaktiviert`,
       toolsetToggleFailed: (name: string) =>
         `Die ${name}-Agent-Tools konnten nicht umgeschaltet werden; das Desktop-Panel bleibt unverändert`,
+      toolsetRowAbsent: (name: string) =>
+        `Die ${name}-Agent-Tools sind auf diesem Backend nicht konfigurierbar; das Desktop-Panel folgt jetzt diesem Schalter`,
       legacyBackend:
         'Dieses Backend ist älter als schlüsseladressierte Plugin-Schalter — aktualisieren Sie Hermes, um es hier zu verwalten.',
       portableBadge: 'tragbar',

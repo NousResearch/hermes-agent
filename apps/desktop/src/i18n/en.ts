@@ -2549,6 +2549,8 @@ export const en: Translations = {
       toolsetOff: (name: string, profile: string) => `${name} agent tools disabled for ${profile}`,
       toolsetToggleFailed: (name: string) =>
         `Could not toggle the ${name} agent tools; the Desktop panel was left unchanged`,
+      toolsetRowAbsent: (name: string) =>
+        `The ${name} agent tools are not configurable on this backend; the Desktop panel now follows this switch`,
       legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
       portableBadge: 'portable',
       serverStates: {

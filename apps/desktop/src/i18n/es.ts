@@ -2844,6 +2844,8 @@ export const esOverrides = {
       toolsetOff: (name: string, profile: string) => `Herramientas de agente de ${name} desactivadas para ${profile}`,
       toolsetToggleFailed: (name: string) =>
         `No se pudieron cambiar las herramientas de agente de ${name}; el panel de Escritorio no se modificó`,
+      toolsetRowAbsent: (name: string) =>
+        `Las herramientas de agente de ${name} no son configurables en este backend; el panel de Escritorio sigue ahora a este interruptor`,
       legacyBackend:
         'Este backend es anterior a los interruptores de plugins por clave: actualiza Hermes para gestionarlo aquí.',
       portableBadge: 'portátil',

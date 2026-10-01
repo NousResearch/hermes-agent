@@ -42,23 +42,11 @@ export function resolveInstallationLauncher(
   // Earlier PM installers published only to user-bin. Trust that historical
   // launcher only after its existing version surface proves exact source identity.
   if (stagedFileExists(path.join(updateRoot, 'hermes_cli', '_launchers.py'))) {
-    const defaultHome: string = platformDefaultHermesHome(os.homedir(), process.env, isWindows ? 'win32' : 'linux')
+    const extraDirs: string[] = isWindows ? [path.join(path.dirname(updateRoot), 'bin')] : []
 
-    const dirs: string[] = isWindows
-      ? [
-          path.join(hermesHome || defaultHome, 'bin'),
-          path.join(defaultHome, 'bin'),
-          path.join(path.dirname(updateRoot), 'bin')
-        ]
-      : [path.join(os.homedir(), '.local', 'bin'), path.join(hermesHome || defaultHome, 'bin')]
-
-    for (const dir of new Set(dirs)) {
-      for (const name of names) {
-        const candidate: string = path.join(dir, name)
-
-        if (stagedFileExists(candidate) && launcherTargetsInstallation(candidate, updateRoot)) {
-          return candidate
-        }
+    for (const candidate of userBinLaunchers(isWindows, hermesHome, extraDirs)) {
+      if (launcherTargetsInstallation(candidate, updateRoot)) {
+        return candidate
       }
     }
   }
@@ -79,7 +67,53 @@ export function resolveInstallationLauncher(
 // these would change the command instead of naming a file.
 const CMD_UNSAFE_PATH: RegExp = /["%&|<>^\r\n]/
 
+/** Published user-bin launchers, at fixed locations: a GUI launch's PATH may omit them. */
+function userBinLaunchers(isWindows: boolean, hermesHome: string, extraDirs: string[] = []): string[] {
+  const names: string[] = isWindows ? ['hermes.exe', 'hermes.cmd'] : ['hermes']
+  const defaultHome: string = platformDefaultHermesHome(os.homedir(), process.env, isWindows ? 'win32' : 'linux')
+
+  const dirs: string[] = isWindows
+    ? [path.join(hermesHome || defaultHome, 'bin'), path.join(defaultHome, 'bin'), ...extraDirs]
+    : [path.join(os.homedir(), '.local', 'bin'), path.join(hermesHome || defaultHome, 'bin'), ...extraDirs]
+
+  return [...new Set(dirs)]
+    .flatMap((dir: string): string[] => names.map((name: string): string => path.join(dir, name)))
+    .filter(stagedFileExists)
+}
+
+/**
+ * A source install outside the canonical root (install.sh --dir, a
+ * setup-hermes.sh clone) is reachable only through the user-bin launcher it
+ * published. Return the install directory that launcher reports, when it is a
+ * Hermes source tree; the caller still resolves and probes it by root.
+ */
+export function userLauncherInstallRoot(
+  isWindows: boolean = process.platform === 'win32',
+  hermesHome: string = process.env.HERMES_HOME ?? ''
+): { launcher: string; root: string } | null {
+  for (const launcher of userBinLaunchers(isWindows, hermesHome)) {
+    const root: string | null = launcherInstallDirectory(launcher)
+
+    if (root && existsSync(path.join(root, 'hermes_cli', 'main.py'))) {
+      return { launcher, root }
+    }
+  }
+
+  return null
+}
+
 export function launcherTargetsInstallation(launcher: string, root: string): boolean {
+  try {
+    const reported: string | null = launcherInstallDirectory(launcher, root)
+
+    return reported !== null && reported === realpathSync(root)
+  } catch {
+    return false
+  }
+}
+
+/** The real install directory a launcher's `--version` reports, or null. */
+function launcherInstallDirectory(launcher: string, root?: string): string | null {
   try {
     // Node refuses to exec a .cmd directly (CVE-2024-27980), and `shell:true`
     // would hand an interpolated path to cmd.exe wholesale. Invoke cmd.exe
@@ -88,7 +122,7 @@ export function launcherTargetsInstallation(launcher: string, root: string): boo
     const viaCmd: boolean = process.platform === 'win32' && /\.cmd$/i.test(launcher)
 
     if (viaCmd && CMD_UNSAFE_PATH.test(launcher)) {
-      return false
+      return null
     }
 
     const command: string = viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : launcher
@@ -100,18 +134,18 @@ export function launcherTargetsInstallation(launcher: string, root: string): boo
       timeout: 15000,
       windowsHide: true,
       windowsVerbatimArguments: viaCmd,
-      env: { ...process.env, HERMES_INSTALL_ROOT: root }
+      env: root ? { ...process.env, HERMES_INSTALL_ROOT: root } : process.env
     })
 
     if (probe.error || probe.status !== 0) {
-      return false
+      return null
     }
 
     const reported: string | undefined = /^Install directory: (.+)$/m.exec(probe.stdout)?.[1]?.trim()
 
-    return reported !== undefined && realpathSync(reported) === realpathSync(root)
+    return reported ? realpathSync(reported) : null
   } catch {
-    return false
+    return null
   }
 }
 

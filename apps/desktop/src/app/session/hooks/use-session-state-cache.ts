@@ -5,7 +5,7 @@ import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
+import { migrateInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $activeSessionId,
@@ -192,6 +192,14 @@ export function useSessionStateCache({
           // tracks compression without needing a dummy state write.
           if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
             runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+
+            // The journal under the pre-rotation id is keyed by a stored id
+            // nothing will name again (the reverse mapping above is gone and
+            // lineage resolution follows the tip), so a later permanent delete
+            // could not reach it. Re-key it to the new id — copy first, then
+            // delete — so recovery survives the rotation AND the delete
+            // gesture still reaches every copy (#77486).
+            migrateInFlightTurnJournal(existing.storedSessionId, storedSessionId)
 
             // Re-home any open tile keyed on the pre-rotation id (#98622).
             // Ungated on the active runtime: a background tile's conversation

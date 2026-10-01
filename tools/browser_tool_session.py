@@ -1037,7 +1037,8 @@ def _run_browser_command(
         timeout = _bt._safe_command_timeout()
     args = args or []
 
-    preflight = _browser_command_preflight(_allow_cleanup=_allow_cleanup)
+    preflight = (_browser_command_preflight(_allow_cleanup=True)
+                 if _allow_cleanup else _browser_command_preflight())
     if "browser_cmd" not in preflight:
         return preflight
     browser_cmd = preflight["browser_cmd"]

@@ -127,7 +127,7 @@ def test_real_inactivity_cleanup_is_nonterminal_and_normal_command_recreates(
         assert bt._active_sessions[task_id]["features"]["local"] is True
 
 
-def test_provider_cdp_uses_generic_node22_path_and_provider_cleanup(
+def test_provider_cdp_uses_ordinary_runtime_and_provider_cleanup(
     monkeypatch, tmp_path
 ):
     task_id = "provider-node22"
@@ -149,7 +149,7 @@ def test_provider_cdp_uses_generic_node22_path_and_provider_cleanup(
     def _resolver(*, require_pin_tab: bool = False):
         resolver_calls.append(require_pin_tab)
         if require_pin_tab:
-            raise bt_install.AgentBrowserCapabilityError("Node >=24 required")
+            raise bt_install.AgentBrowserCapabilityError("pin-tab capability required")
         return "/tmp/agent-browser-node22"
 
     class _Proc:
@@ -183,11 +183,13 @@ def test_provider_cdp_uses_generic_node22_path_and_provider_cleanup(
     assert resolver_calls == [False, False]
     assert all("--pin-tab" not in argv for argv in commands)
     assert all("agent-browser@0.34.0" not in argv for argv in commands)
-    assert commands[0][1:3] == ["--cdp", session["cdp_url"]]
+    assert commands[0][1:5] == [
+        "--session", session["session_name"], "--cdp", session["cdp_url"]
+    ]
     provider.close_session.assert_called_once_with("paid-provider-id")
 
 
-def test_real_profile_cdp_keeps_generic_node22_and_local_headed_semantics(
+def test_real_profile_cdp_keeps_ordinary_runtime_and_local_headed_semantics(
     monkeypatch,
     tmp_path,
 ):
@@ -206,7 +208,7 @@ def test_real_profile_cdp_keeps_generic_node22_and_local_headed_semantics(
     def _resolver(*, require_pin_tab: bool = False):
         resolver_calls.append(require_pin_tab)
         if require_pin_tab:
-            raise bt_install.AgentBrowserCapabilityError("Node >=24 required")
+            raise bt_install.AgentBrowserCapabilityError("pin-tab capability required")
         return "/tmp/agent-browser-node22"
 
     class _Proc:
@@ -239,7 +241,9 @@ def test_real_profile_cdp_keeps_generic_node22_and_local_headed_semantics(
 
     assert result["success"] is True
     assert resolver_calls == [False]
-    assert commands[0][1:3] == ["--cdp", session["cdp_url"]]
+    assert commands[0][1:5] == [
+        "--session", session["session_name"], "--cdp", session["cdp_url"]
+    ]
     assert "--pin-tab" not in commands[0]
 
 

@@ -287,6 +287,158 @@ describe('useStatusSnapshot', () => {
     expect(result.current.inferenceStatus).toMatchObject({ ready: true, source: 'runtime_check' })
   })
 
+  it('revalidates remembered scopes without clearing them and keeps late answers with their owner', async () => {
+    const workStatus = { version: 'work' }
+    const homeStatus = { version: 'home' }
+    const homeRuntime = deferred<unknown>()
+    const homeSetup = deferred<unknown>()
+    const pendingHomeStatus = deferred<never>()
+    let source = 'work'
+    let pending = false
+
+    vi.mocked(getStatus).mockImplementation(() => {
+      if (source === 'home') {
+        return pendingHomeStatus.promise
+      }
+
+      return pending ? new Promise<never>(() => {}) : Promise.resolve(workStatus as never)
+    })
+
+    const requestGateway = vi.fn((method: string) => {
+      if (method === 'free_tier.status') {
+        return Promise.resolve({})
+      }
+
+      if (source === 'home') {
+        return method === 'setup.runtime_check' ? homeRuntime.promise : homeSetup.promise
+      }
+
+      return pending
+        ? new Promise<never>(() => {})
+        : Promise.resolve(method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true })
+    }) as unknown as GatewayRequester
+
+    const { rerender, result } = renderHook(({ scope, requester }) => useStatusSnapshot('open', requester, scope), {
+      initialProps: { scope: 'work\0default', requester: requestGateway }
+    })
+
+    await flushAsync()
+    const workInference = result.current.inferenceStatus
+
+    source = 'home'
+    rerender({ scope: 'home\0default', requester: requestGateway })
+    expect(result.current.statusSnapshot).toBeNull()
+    expect(result.current.inferenceStatus).toBeNull()
+
+    source = 'work'
+    pending = true
+    const statusCalls = vi.mocked(getStatus).mock.calls.length
+    rerender({ scope: 'work\0default', requester: requestGateway })
+    expect(result.current.statusSnapshot).toBe(workStatus)
+    expect(result.current.inferenceStatus).toBe(workInference)
+    expect(getStatus).toHaveBeenCalledTimes(statusCalls + 1)
+
+    // A superseded home request may warm home, but cannot change the visible work scope.
+    await act(async () => {
+      homeRuntime.resolve({ ok: false })
+      homeSetup.resolve({ provider_configured: false })
+      pendingHomeStatus.resolve(homeStatus as never)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.statusSnapshot).toBe(workStatus)
+    expect(result.current.inferenceStatus).toBe(workInference)
+
+    source = 'home'
+    rerender({ scope: 'home\0default', requester: requestGateway })
+    expect(result.current.statusSnapshot).toBe(homeStatus)
+    expect(result.current.inferenceStatus).toMatchObject({ ready: false, source: 'runtime_check' })
+    await flushAsync()
+
+    // A dependency rerun in the same scope also keeps the last authoritative result.
+    const homeInference = result.current.inferenceStatus
+
+    const failingRequester: GatewayRequester = async () => {
+      throw new Error('temporary connection failure')
+    }
+
+    rerender({ scope: 'home\0default', requester: failingRequester })
+    expect(result.current.statusSnapshot).toBe(homeStatus)
+    expect(result.current.inferenceStatus).toBe(homeInference)
+    await flushAsync()
+    expect(result.current.inferenceStatus).toBe(homeInference)
+  })
+
+  it('invalidates every scope on disconnect and rejects superseded answers for the same scope', async () => {
+    const staleRuntime = deferred<unknown>()
+    const staleSetup = deferred<unknown>()
+    const staleStatus = deferred<never>()
+    let phase: 'ready' | 'stale' | 'fresh' | 'pending' = 'ready'
+
+    vi.mocked(getStatus).mockImplementation(() => {
+      if (phase === 'stale') {
+        return staleStatus.promise
+      }
+
+      return phase === 'pending' ? new Promise<never>(() => {}) : Promise.resolve({ version: phase } as never)
+    })
+
+    const requestGateway = vi.fn((method: string) => {
+      if (method === 'free_tier.status') {
+        return Promise.resolve({})
+      }
+
+      if (phase === 'stale') {
+        return method === 'setup.runtime_check' ? staleRuntime.promise : staleSetup.promise
+      }
+
+      return phase === 'pending'
+        ? new Promise<never>(() => {})
+        : Promise.resolve(
+            method === 'setup.runtime_check' ? { ok: phase === 'ready' } : { provider_configured: phase === 'ready' }
+          )
+    }) as unknown as GatewayRequester
+
+    const { rerender, result } = renderHook(({ scope, state }) => useStatusSnapshot(state, requestGateway, scope), {
+      initialProps: { scope: 'work\0default', state: 'open' }
+    })
+
+    await flushAsync()
+    rerender({ scope: 'home\0default', state: 'open' })
+    await flushAsync()
+
+    phase = 'stale'
+    rerender({ scope: 'work\0default', state: 'open' })
+    expect(result.current.inferenceStatus).toMatchObject({ ready: true })
+    phase = 'pending'
+    rerender({ scope: 'work\0default', state: 'connecting' })
+    expect(result.current.inferenceStatus).toBeNull()
+    expect(result.current.statusSnapshot).toBeNull()
+
+    phase = 'fresh'
+    rerender({ scope: 'work\0default', state: 'open' })
+    expect(result.current.inferenceStatus).toBeNull()
+    await flushAsync()
+    expect(result.current.inferenceStatus).toMatchObject({ ready: false })
+    expect(result.current.statusSnapshot).toEqual({ version: 'fresh' })
+
+    await act(async () => {
+      staleRuntime.resolve({ ok: true })
+      staleSetup.resolve({ provider_configured: true })
+      staleStatus.resolve({ version: 'stale' } as never)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.inferenceStatus).toMatchObject({ ready: false })
+    expect(result.current.statusSnapshot).toEqual({ version: 'fresh' })
+
+    phase = 'pending'
+    rerender({ scope: 'home\0default', state: 'open' })
+    expect(result.current.inferenceStatus).toBeNull()
+    expect(result.current.statusSnapshot).toBeNull()
+    rerender({ scope: 'work\0default', state: 'open' })
+    expect(result.current.inferenceStatus).toMatchObject({ ready: false })
+    expect(result.current.statusSnapshot).toEqual({ version: 'fresh' })
+  })
+
   it('waits for a slow refresh to settle before scheduling another one', async () => {
     const setup = deferred<unknown>()
     const runtime = deferred<unknown>()

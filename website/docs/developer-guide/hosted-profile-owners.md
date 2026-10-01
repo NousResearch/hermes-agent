@@ -42,3 +42,14 @@ profile and room. Unknown work offers confirmed Discard, never Retry. Existing
 renderer-only groups require explicit new canonical-room creation; history is not
 automatically replayed as new work. The canonical workspace currently handles text
 and execution controls; attachment publication remains a separate room capability.
+
+
+## Cross-gateway document input
+
+Document-capable RoomLink clients opt in with `Hermes-Room-Features: document-input-v1` when reading authenticated `/v1/room-members/capabilities`. Support is returned as a `document_inputs` sibling, outside the legacy catalog. The old catalog, its digest and text-only dispatch mapping remain unchanged. Generic `attachments` stays false; the document feature advertises only `file` and `pdf` kinds and its bounded limits.
+
+A document dispatch binds each input’s source event, attachment identity, recipient member, kind, basename, MIME type, size and SHA-256. This immutable manifest is part of the signed request and logical run fingerprint. Only base64 transfer bytes are excluded from that fingerprint. The source retains the authorized manifest before dispatch. A manifest-only run request first checks accepted canonical evidence; only the authenticated, pre-admission `room_document_input_required` response starts lazy byte fulfillment. Accepted replay does not depend on source bytes or current ingress limits. Missing or ambiguous evidence is never permission to start the work again.
+
+The receiver verifies the complete batch before entering existing verified-document preparation and canonical accepting-write custody. The prepared payload includes the complete `api_turn_v1` admission, so its retained copies are bound to the correct session, request and payload digest. No second staging store or file-download authority is created. Interrupted preparation uses the existing logical-attempt and reclamation mechanisms.
+
+The feature permits at most 8 inputs, 5,000,000 bytes per input and 6,000,000 bytes per batch. A smaller positive `gateway.max_inbound_media_bytes` limit applies; zero or negative keeps the feature’s own fixed bounds. The signed proof plaintext budget is 9,000,000 bytes plus the 16-byte AES-GCM tag, below the unchanged generic 10 MB API body limit. User-visible documents are input-only here: peer output publication and authority-host takeover remain separate work.

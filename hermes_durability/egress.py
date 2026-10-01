@@ -3,12 +3,17 @@
 Hermes applies ``agent.redact`` on ingress (tool results into the model) and
 on display/persistence — but historically never on the bytes actually sent to
 Telegram/Slack/Discord/Matrix. A secret that reaches the assistant's final
-response was delivered verbatim. This module closes that gap at the three
-outbound choke points:
+response was delivered verbatim. This module closes that gap at the
+outbound boundaries (``category`` in parentheses):
 
-  * ``gateway/platforms/base.py`` ``_send_with_retry`` (gateway replies)
-  * ``gateway/delivery.py`` ``DeliveryTransport.send`` (cron / DeliveryRouter)
-  * ``tools/send_message_tool.py`` ``_send_via_adapter`` (agent-initiated)
+  * ``gateway/platforms/base.py``: every concrete adapter ``send`` /
+    ``edit_message`` is wrapped at class creation (``adapter_send``,
+    ``adapter_edit_message``) - full guard, plugin middleware included.
+  * ``gateway/delivery.py`` ``DeliveryTransport.send`` relay branch
+    (``delivery_relay``) - full guard; relay sends never reach a wrapper.
+  * Redaction-only passes that never call plugins: the gateway final response
+    before the delivery ledger records it (``final_response``) and the whole
+    ``send_message`` body before chunking (``send_message_tool``).
 
 Behavior:
 

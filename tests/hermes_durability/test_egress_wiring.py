@@ -99,3 +99,61 @@ def test_wrapping_not_doubled_in_subclasses():
 def test_clean_content_passes_unchanged(adapter):
     asyncio.run(adapter.send("chat", "hello world"))
     assert adapter.sent == ["hello world"]
+
+
+# ── outbound_message category contract ──────────────────────────────────────
+# Plugins key on ``category``; the documented values must be exactly the ones
+# the boundaries that call plugin middleware actually pass.
+
+def _record_categories(monkeypatch):
+    import hermes_cli.middleware as mw
+    from hermes_cli.middleware import OutboundMessageResult
+
+    seen = []
+
+    def fake(text, **context):
+        seen.append(context.get("category"))
+        return OutboundMessageResult(text=text, original_text=text)
+
+    monkeypatch.setattr(mw, "apply_outbound_message_middleware", fake)
+    return seen
+
+
+def _relay_send(text):
+    from gateway.config import Platform
+    from gateway.delivery import DeliveryTransport
+
+    class Relay:
+        async def send_for_platform(self, platform, chat_id, content, metadata=None):
+            return SendResult(success=True, message_id="r1")
+
+    transport = DeliveryTransport(Relay(), None, Platform.RELAY)
+    return asyncio.run(transport.send(Platform.TELEGRAM, "chat", text, None))
+
+
+def test_middleware_categories_match_the_boundaries(adapter, monkeypatch):
+    seen = _record_categories(monkeypatch)
+    asyncio.run(adapter.send("chat", "one"))
+    asyncio.run(adapter.edit_message("chat", "42", "two"))
+    _relay_send("three")
+    assert seen == ["adapter_send", "adapter_edit_message", "delivery_relay"]
+
+
+def test_redaction_only_passes_never_reach_plugins(monkeypatch):
+    from hermes_durability.egress import guard_outbound_text
+
+    seen = _record_categories(monkeypatch)
+    for category in ("final_response", "send_message_tool"):
+        guard_outbound_text("body", platform="telegram", category=category,
+                            apply_middleware=False)
+    assert seen == []
+
+
+def test_documented_categories_are_the_passed_ones():
+    import re
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[2]
+           / "website" / "docs" / "developer-guide" / "middleware.md").read_text()
+    rows = re.findall(r"^\| `([a-z_]+)` \| (?:the wrapped|`DeliveryTransport)", doc, re.M)
+    assert sorted(rows) == ["adapter_edit_message", "adapter_send", "delivery_relay"]

@@ -55,16 +55,30 @@ Supported middleware kinds:
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
 | `outbound_message` | `text`, `original_text`, `platform`, `session_key`, `category` | `{"text": "..."}` or `{"action": "block", "reason": "..."}` | Rewrite or veto an outbound message body at the egress boundary, after the built-in secret redaction pass. |
 
-`outbound_message` runs at the three outbound choke points (gateway replies,
-cron/DeliveryRouter sends, and the `send_message` tool) immediately before the
-platform adapter is invoked. The built-in egress redaction in
-`hermes_durability.egress` runs first and is fail-closed (a redaction failure
-blocks the send); plugin `outbound_message` middleware keeps the standard
-fail-open contract — only an explicit `{"action": "block"}` verdict stops
-delivery. `category` identifies the choke point (`final_response` for gateway
-replies, `delivery_relay` for cron/`DeliveryRouter` relay sends,
-`send_message_tool` for the `send_message` tool; the adapter wrapper passes
-`adapter_<method>`).
+`outbound_message` runs exactly once per delivered body, immediately before the
+platform API is called, at one of two boundaries: the wrapper that every
+concrete adapter's `send` and `edit_message` receive at class creation (gateway
+replies, streaming edits, media captions, native cron/`DeliveryRouter` sends and
+the `send_message` tool's live-adapter path all reach it), and the relay branch
+of `DeliveryTransport.send`, which never reaches a wrapped adapter method. The
+built-in egress redaction in `hermes_durability.egress` runs first and is
+fail-closed (a redaction failure blocks the send); plugin `outbound_message`
+middleware keeps the standard fail-open contract — only an explicit
+`{"action": "block"}` verdict stops delivery.
+
+`category` names the boundary that invoked the middleware, and is one of:
+
+| `category` | Passed by |
+|---|---|
+| `adapter_send` | the wrapped `send` of any platform adapter |
+| `adapter_edit_message` | the wrapped `edit_message` of any platform adapter (streaming edits) |
+| `delivery_relay` | `DeliveryTransport.send` when the target is fronted by the Relay transport |
+
+`session_key` is currently passed as an empty string: neither boundary knows the
+session. The gateway final response (before the delivery ledger records it) and
+the whole `send_message` body (before chunking) get an extra redaction-only pass
+that never calls plugins; `send_message` branches that talk to a platform API
+directly rather than through a live adapter get that built-in redaction only.
 
 Request middleware can return optional trace fields:
 

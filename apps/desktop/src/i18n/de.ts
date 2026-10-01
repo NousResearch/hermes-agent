@@ -13,6 +13,9 @@ import { introDe } from './intro-de'
 
 export const deOverrides = {
   lens: {
+    earlierCaptures:
+      'Frühere Erfassungen haben keine bestätigte Verbindung. Exportieren Sie sie zur Prüfung; sie werden diesem Arbeitsbereich nicht zugeordnet.',
+    exportEarlier: 'Frühere Erfassungen exportieren',
     title: 'Hermes Lens',
     subtitle: 'Webquellen an einem Ort. Auf diesem Gerät für diesen Arbeitsbereich gespeichert.',
     pinSelection: 'Ausgewählten Block anheften',

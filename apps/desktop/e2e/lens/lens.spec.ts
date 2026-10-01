@@ -61,6 +61,14 @@ test('native browser selection → persisted board → changed source → chat d
     await expect(page.locator('webview')).toBeVisible()
     await page.getByRole('button', { name: 'Hermes Lens', exact: true }).click()
     await page.screenshot({ path: 'test-results/hermes-lens.png' })
+    // Same profile name on two actual session connection owners. Opening the
+    // browser toolbar in B must not expose A's saved evidence or notes.
+    await page.getByRole('button', { name: 'Connection B', exact: true }).click()
+    await page.getByRole('button', { name: 'Hermes Lens', exact: true }).click()
+    await expect(page.getByRole('article')).toHaveCount(0)
+    await page.getByRole('button', { name: 'Connection A', exact: true }).click()
+    await page.getByRole('button', { name: 'Hermes Lens', exact: true }).click()
+    await expect(page.getByRole('textbox', { name: 'Your note' })).toHaveValue('Prefer waterfront')
   } finally {
     await app.close()
     await rm(userData, { recursive: true, force: true })

@@ -51,6 +51,7 @@ import {
   rekeyPreviewTabsSession,
   setPreviewScope
 } from './preview'
+import { PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
@@ -84,7 +85,7 @@ import {
   setTurnStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
-import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
+import { $focusedStoredSessionId, $focusedTreePaneId, TILE_PANE_PREFIX } from './session-focus'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -1837,6 +1838,8 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
 // connection pin through the SAME owner ladder as RPC dispatch (#125372).
 setSessionOwnerResolver(knownOwnerForSession)
 
+let railTileSessionId: null | string = null
+
 /** The profile whose chat is on screen — the rail's scope.
  *
  *  NOT `$activeGatewayProfile`: a focused tab does not swap the gateway socket,
@@ -1845,7 +1848,23 @@ setSessionOwnerResolver(knownOwnerForSession)
  *  showed one agent's previews in every agent's chat. `bot-row.tsx` documents
  *  the same trap for the roster highlight and resolves it the same way. */
 function railScopeForActiveSession(): string {
-  return previewScopeForRuntime($activeSessionId.get() ?? undefined)
+  const pane = $focusedTreePaneId.get()
+
+  if (pane?.startsWith(TILE_PANE_PREFIX)) {
+    railTileSessionId = pane.slice(TILE_PANE_PREFIX.length)
+  } else if (!pane?.startsWith(PREVIEW_TILE_PREFIX)) {
+    railTileSessionId = null
+  }
+
+  // Clicking the browser is part of researching for the same chat. Keep a
+  // tile's owner while the browser holds focus, but never retain a closed tile.
+  if (railTileSessionId && !$sessionTiles.get().some(tile => tile.storedSessionId === railTileSessionId)) {
+    railTileSessionId = null
+  }
+
+  return previewScopeForRuntime(
+    railTileSessionId ?? $activeSessionId.get() ?? $selectedStoredSessionId.get() ?? undefined
+  )
 }
 
 /** The preview-rail profile a runtime's chat belongs to — the bucket whose
@@ -1853,18 +1872,37 @@ function railScopeForActiveSession(): string {
  *  primary's runtime always lands on the bucket in view. */
 export function previewScopeForRuntime(runtimeId: string | undefined): string {
   const owner = knownOwnerForSession(runtimeId)
-  const profile = typeof owner === 'string' ? owner : owner?.profile
 
-  return normalizeProfileKey(profile || $activeGatewayProfile.get())
+  if (isSessionOwnerRoute(owner)) {
+    return backendScopeKey(owner.connectionId, owner.profile)
+  }
+
+  // Match the tiles store's legacy direct-remote identity as well as registry
+  // connections. Keep it during reconnects, when the live connection is null.
+  const connection = tileConnectionId
+  const profile = typeof owner === 'string' ? owner : $activeGatewayProfile.get()
+
+  return backendScopeKey(connection, profile)
 }
 
 /** Keep the rail on the chat in view, so switching agents re-homes it. */
 function syncPreviewScope() {
-  setPreviewScope(railScopeForActiveSession())
+  const scope = railScopeForActiveSession()
+  setPreviewScope(scope, railTileSessionId ? `tile:${railTileSessionId}` : 'main')
 }
 
 $activeSessionId.subscribe(syncPreviewScope)
-syncPreviewScope()
+$selectedStoredSessionId.listen(syncPreviewScope)
+$focusedTreePaneId.listen(syncPreviewScope)
+$sessionTiles.listen(syncPreviewScope)
+$sessions.listen(syncPreviewScope)
+$activeGatewayProfile.listen(syncPreviewScope)
+$connection.listen(connection => {
+  if (connection) {
+    tileConnectionId = tileConnectionScopeId(connection)
+    syncPreviewScope()
+  }
+})
 
 /** The mode of the backend that serves `owner`: the route's own `mode`, else
  *  its registry connection's kind, else the socket already dialed for it (a
@@ -2882,7 +2920,7 @@ export function dropTilesForProfile(
   persistTiles()
   // The rail is a profile-keyed family too: a deleted profile's tabs must not
   // outlive it, or a later profile of the same name inherits them.
-  dropPreviewTabsForProfile(name)
+  dropPreviewTabsForProfile(removedScope)
 }
 
 /**

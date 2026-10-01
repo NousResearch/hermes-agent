@@ -12,6 +12,8 @@ import { zhSharedMetrics } from './zh_shared_metrics'
 
 export const zhOverrides = {
   lens: {
+    earlierCaptures: '早期采集内容未关联已验证的连接。请导出后查看；它们不会分配到此工作区。',
+    exportEarlier: '导出早期采集内容',
     title: 'Hermes Lens',
     subtitle: '汇集网页资料。为此工作区保存在本设备上。',
     pinSelection: '固定所选文本块',

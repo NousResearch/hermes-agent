@@ -12,7 +12,7 @@ import { PanelEmpty } from '@/app/overlays/panel'
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Tip } from '@/components/ui/tooltip'
 import { LensPanel } from '@/features/lens/panel'
-import { registerLensGuest } from '@/features/lens/store'
+import { $lensScope, registerLensGuest } from '@/features/lens/store'
 import { useLens } from '@/features/lens/use-lens'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode, isReadFileErrorResult } from '@/lib/desktop-fs'
@@ -280,6 +280,7 @@ export function PreviewPane({
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
   const noteGuestReady = usePreviewGuestOffscreen(webviewRef, tabId)
+  const lensScope = useStore($lensScope)
   const lens = useLens(() => webviewRef.current)
   const previewServerRestart = useStore($previewServerRestart)
   const consoleHeight = useStore(consoleState.$height)
@@ -1392,7 +1393,7 @@ export function PreviewPane({
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, noteGuestReady, tabId, target.kind])
+  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, lensScope, noteGuestReady, tabId, target.kind])
 
   // Steers the LIVE guest when the session opens a new URL (#120265): loadURL
   // keeps the webview instance (JS state, cookies, form data, scroll, refs,

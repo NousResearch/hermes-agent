@@ -13,6 +13,9 @@ import { jaSharedMetrics } from './ja_shared_metrics'
 
 export const jaOverrides = {
   lens: {
+    earlierCaptures:
+      '以前のキャプチャには確認済みの接続がありません。エクスポートして確認してください。このワークスペースには割り当てられません。',
+    exportEarlier: '以前のキャプチャをエクスポート',
     title: 'Hermes Lens',
     subtitle: 'ウェブの情報をひとまとめに。このワークスペース用に端末に保存します。',
     pinSelection: '選択ブロックを保存',

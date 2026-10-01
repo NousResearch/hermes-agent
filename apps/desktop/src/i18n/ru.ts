@@ -32,6 +32,9 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 
 export const ruOverrides = {
   lens: {
+    earlierCaptures:
+      'Для прежних снимков подключение не подтверждено. Экспортируйте их для проверки; они не назначены этому рабочему пространству.',
+    exportEarlier: 'Экспортировать прежние снимки',
     title: 'Hermes Lens',
     subtitle: 'Веб-источники вместе. Сохранены на этом устройстве для этого рабочего пространства.',
     pinSelection: 'Закрепить выбранный блок',

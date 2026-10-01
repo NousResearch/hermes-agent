@@ -13,6 +13,8 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
   lens: {
+    earlierCaptures: 'اللقطات السابقة غير مرتبطة باتصال موثّق. صدّرها لمراجعتها؛ لن تُضاف إلى مساحة العمل هذه.',
+    exportEarlier: 'تصدير اللقطات السابقة',
     title: 'Hermes Lens',
     subtitle: 'مصادر الويب معًا. محفوظة على هذا الجهاز لمساحة العمل هذه.',
     pinSelection: 'تثبيت الكتلة المحددة',

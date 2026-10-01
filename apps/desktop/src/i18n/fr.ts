@@ -13,6 +13,9 @@ import { introFr } from './intro-fr'
 
 export const frOverrides = {
   lens: {
+    earlierCaptures:
+      'Les captures précédentes n’ont pas de connexion vérifiée. Exportez-les pour les consulter ; elles ne sont pas attribuées à cet espace de travail.',
+    exportEarlier: 'Exporter les captures précédentes',
     title: 'Hermes Lens',
     subtitle: 'Vos sources réunies. Enregistrées sur cet appareil pour cet espace.',
     pinSelection: 'Épingler le bloc sélectionné',

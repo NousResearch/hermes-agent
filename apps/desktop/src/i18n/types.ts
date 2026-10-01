@@ -76,6 +76,8 @@ interface ModeOptionCopy {
 
 export interface Translations extends NoticeTranslations {
   lens: {
+    earlierCaptures: string
+    exportEarlier: string
     title: string
     subtitle: string
     pinSelection: string

@@ -113,4 +113,3 @@ class FeishuApprovalMixin(BasePlatformAdapter):
                         logger.debug("[Feishu] expired-approval notice failed", exc_info=True)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
-

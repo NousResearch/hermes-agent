@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from gateway.platforms import base_pending_merge
+from gateway.platforms.event import MessageEvent
 from gateway.platforms.base_pending import (
     PendingWithdrawalMixin, merge_recorded, _PendingDispatchReservation, _can_join_pending_event, pending_dispatch_scope, release_pending_dispatch,
     reserve_pending_dispatch,
@@ -39,7 +40,7 @@ class BaseTextBatchingMixin:
             existing = self._pending_text_batches[key] = event
         else:
             merge_recorded(existing, event, base_pending_merge._append_batched_text)
-        existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
+        setattr(existing, "_last_chunk_len", len(event.text or ""))
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
             prior_task.cancel()

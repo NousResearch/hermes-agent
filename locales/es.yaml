@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "No se pudo unir al canal de voz: {error}"
     channel_deps_missing: "Faltan dependencias de voz (PyNaCl / davey). Ejecuta: `{hint}`"
     channel_join_permissions: "No se pudo unir al canal de voz. Revisa los permisos del bot (Connect + Speak)."
+    channel_joined_voice_only: "Me uní al canal de voz **{name}**. Solo responderé con voz a los mensajes de voz. Usa /voice leave para desconectar."
+    channel_joined_off: "Me uní al canal de voz **{name}**. Las respuestas seguirán siendo texto. Usa /voice on para activar respuestas de voz o /voice leave para desconectar."
     channel_joined: "Me uní al canal de voz **{name}**.\nDiré mis respuestas en voz alta y te escucharé. Usa /voice leave para desconectar."
     channel_not_joined: "No estoy en un canal de voz."
     channel_left: "Salí del canal de voz."

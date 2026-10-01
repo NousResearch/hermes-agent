@@ -14,6 +14,8 @@ interface AutoSpeakReply {
   id: string
   pending: boolean
   text: string
+  /** The turn's text through this piece, when the reply is one piece of a turn. */
+  through?: string
   /** Survives the live-id rewrite. Absent callers still speak; they just cannot join an in-flight play. */
   turnKey?: string
 }
@@ -21,9 +23,9 @@ interface AutoSpeakReply {
 interface UseAutoSpeakReplies {
   conversationActive: boolean
   failureLabel: string
-  /** Mark the current last reply spoken — shared dedupe with the conversation consumer. */
-  markSpoken: () => void
-  /** Latest completed assistant reply, or null; `pending` true while still streaming. */
+  /** Mark `reply` spoken, or with no reply the current last one — shared dedupe with the conversation consumer. */
+  markSpoken: (reply?: AutoSpeakReply) => void
+  /** Next unspoken reply, or null; `pending` true while still streaming. */
   pendingReply: () => AutoSpeakReply | null
   /** Re-arm on session switch so opening a chat never reads its existing last reply. */
   sessionId: string | null | undefined
@@ -33,8 +35,8 @@ interface UseAutoSpeakReplies {
  * Pure-TTS auto-speak: when `voice.auto_tts` is on, read each completed assistant
  * turn aloud — no dictation, no conversation loop. Stays off while a full voice
  * conversation runs (it speaks replies itself) and never overlaps clips: a reply
- * landing mid-playback is held and spoken on the playback-idle edge. Always reads
- * the latest reply, so a backlog collapses to the newest.
+ * landing mid-playback is held and spoken on the playback-idle edge. A tool turn's
+ * bubbles are read in order, each once; a backlog of turns collapses to the newest.
  */
 export function useAutoSpeakReplies({
   conversationActive,
@@ -76,11 +78,13 @@ export function useAutoSpeakReplies({
 
       const attempt = ++attemptSeq
 
-      markSpoken()
+      const previous = spokenReplyOf(sessionId)
+      markSpoken(reply)
       const marked = spokenReplyOf(sessionId)
       // Only one window voices a given reply when the same chat is open in
-      // several. The claim key is the turn, not the row id: hydration rewrites
-      // the row id, and a second claim would start a second clip.
+      // several. The claim key is the turn (or the turn's piece), not the row
+      // id: hydration rewrites the row id, and a second claim would start a
+      // second clip.
       void ownsAmbientCue(`speak:${reply.turnKey ?? reply.id}`).then(owns => {
         if (!owns || attempt !== attemptSeq) {
           return
@@ -95,12 +99,12 @@ export function useAutoSpeakReplies({
         }).then(
           started => {
             if (!started && attempt === attemptSeq) {
-              releaseUnplayedSpokenReply(sessionId, marked)
+              releaseUnplayedSpokenReply(sessionId, marked, previous)
             }
           },
           error => {
             if (attempt === attemptSeq) {
-              releaseUnplayedSpokenReply(sessionId, marked)
+              releaseUnplayedSpokenReply(sessionId, marked, previous)
               notifyError(error, failureLabel)
             }
           }

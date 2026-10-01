@@ -907,10 +907,15 @@ class TestMarkJobRun:
         monkeypatch.setattr(jobs_mod, "_croniter_retry_at", 0.0)
         assert jobs_mod._ensure_croniter() is False
         assert jobs_mod.compute_next_run(job["schedule"]) is None
+        # The in-flight guard's cadence cache must not pin the import-failure None either.
+        import cron.scheduler as sched_mod
+        expr = job["schedule"]["expr"]
+        sched_mod._cron_interval_cache.pop(expr, None)
+        assert sched_mod._cron_interval_minutes(expr) is None
+        assert expr not in sched_mod._cron_interval_cache, "import-failure None was cached"
         mark_job_run(job["id"], success=True)  # leaves state=error, next_run_at=None
 
-        # Window over (import works again): WITHOUT resetting HAS_CRONITER — the probe's
-        # cached outcome must be re-evaluated, not latched.
+        # Window over (import works again); HAS_CRONITER is left untouched.
         monkeypatch.setattr(builtins, "__import__", real_import)
         # Inside the retry backoff the failed probe is not re-run on every call...
         assert jobs_mod._ensure_croniter() is False

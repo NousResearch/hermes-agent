@@ -841,10 +841,12 @@ def _cron_interval_minutes(expr: str) -> Optional[float]:
     if expr in _cron_interval_cache:
         return _cron_interval_cache[expr]
     result = None
+    ok = False
     with contextlib.suppress(Exception):
         from cron.jobs import _ensure_croniter
 
-        if _ensure_croniter():
+        ok = _ensure_croniter()
+        if ok:
             from cron.jobs import croniter as _croniter
             from datetime import datetime
 
@@ -854,9 +856,10 @@ def _cron_interval_minutes(expr: str) -> Optional[float]:
             second = it.get_next(datetime)
             gap = (second - first).total_seconds() / 60.0
             result = gap if gap > 0 else None
-    # Cache only a real cadence: a None from a transient croniter ImportError must not pin the
-    # floor allowance for this expr for the process lifetime once the import recovers.
-    if result is not None:
+    # Cache a real cadence or a bad-expr None (croniter loaded, expr invalid: stable). Skip the
+    # None from a transient croniter ImportError so it can't pin the floor allowance for the
+    # process lifetime once the import recovers.
+    if result is not None or ok:
         _cron_interval_cache[expr] = result
     return result
 

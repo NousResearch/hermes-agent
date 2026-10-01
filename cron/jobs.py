@@ -40,7 +40,8 @@ from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
 from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
-# module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
+# module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
+# (and past `_croniter_retry_at`).
 croniter = None
 HAS_CRONITER: Optional[bool] = None
 # Monotonic deadline before the next croniter import probe after an ImportError (not latched).
@@ -2972,7 +2973,7 @@ def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[s
         "Job '%s' had no next_run_at; recovering %s run at %s",
         job.get("name", job.get("id", "?")), recovery_kind, recovered_next)
     fields: Dict[str, Any] = {"next_run_at": recovered_next}
-    if recovery_kind in {"cron", "interval"} and _is_recoverable_error_job(job):
+    if _is_recoverable_error_job(job):
         fields["state"] = "scheduled"
     job.update(fields)
     scan.persist(job["id"], **fields)

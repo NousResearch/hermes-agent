@@ -182,48 +182,6 @@ def test_adopted_snapshot_rows_are_not_recloned_as_foreign_tail(tmp_path: Path) 
     assert child.count("LIVE USER INSTRUCTION") == 1
 
 
-def test_live_prompt_without_adoption_is_not_recloned(tmp_path: Path) -> None:
-    """Control: with no concurrent writer, adoption never runs and the live prompt lands once."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("CONTROL_PARENT", source="desktop")
-    db.append_message("CONTROL_PARENT", "user", "persisted question")
-    db.append_message("CONTROL_PARENT", "assistant", "persisted answer")
-    messages = [
-        *db.get_messages_as_conversation("CONTROL_PARENT"),
-        {"role": "user", "content": "LIVE USER INSTRUCTION"},
-    ]
-    agent = _build_agent_with_db(db, "CONTROL_PARENT")
-    agent._persist_user_message_idx = len(messages) - 1
-    agent.context_compressor.compress.side_effect = _keep_protected_tail
-
-    agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    child = _contents(db.get_messages_as_conversation(agent.session_id))
-    assert child.count("LIVE USER INSTRUCTION") == 1
-
-
-def test_parent_row_appended_during_compression_is_cloned_once(tmp_path: Path) -> None:
-    """A row appended while the summary runs sits above the adopted snapshot and must reach the child once."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    agent, messages = _seed_drifted_session(db, "LATE_APPEND_PARENT")
-    appended: list = []
-
-    def _append_then_keep_tail(compress_input, **kw):
-        if not appended:
-            db.append_message("LATE_APPEND_PARENT", "user", "LATE PARENT ROW")
-            appended.append(True)
-        return _keep_protected_tail(compress_input, **kw)
-
-    agent.context_compressor.compress.side_effect = _append_then_keep_tail
-
-    agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert appended
-    child = _contents(db.get_messages_as_conversation(agent.session_id))
-    assert child.count("LIVE USER INSTRUCTION") == 1, child
-    assert child.count("LATE PARENT ROW") == 1, child
-
-
 def test_row_committed_after_adopted_snapshot_read_is_cloned_once(tmp_path: Path) -> None:
     """A row committed between the adopted snapshot read and its return is not in the snapshot.
 

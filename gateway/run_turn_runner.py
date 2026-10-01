@@ -1776,9 +1776,15 @@ class TurnRunner:
         # run_sync executes in the turn executor, so the blocking auxiliary call does not stall
         # the gateway event loop. The helper handles per-image failures fail-open.
         original_message = ctx.message or ""
-        enriched_message = asyncio.run(
-            runner._enrich_message_with_vision(original_message, image_paths)
-        )
+        # Bind the realized route as the main runtime (the old ingress path did the same for the
+        # session route); asyncio.run copies this context into its task, and the scope is reset
+        # on completion or error. Explicit auxiliary provider/model config still wins downstream.
+        from agent.auxiliary_client import scoped_runtime_main
+
+        with scoped_runtime_main({**runtime, "model": turn_route.get("model")}):
+            enriched_message = asyncio.run(
+                runner._enrich_message_with_vision(original_message, image_paths)
+            )
         ctx.message = enriched_message
         # Preserve the previous replay contract: text-fallback descriptions belong in the durable
         # authored row too, but API-only wrappers already stripped from persist_user_message must

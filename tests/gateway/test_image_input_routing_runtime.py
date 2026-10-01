@@ -221,3 +221,47 @@ def test_turn_runner_text_fallback_updates_model_and_persisted_messages():
     assert ctx.message == "image description\n\napi-only note\n\nauthored text"
     assert ctx.persist_user_message == "image description\n\nauthored text"
     assert ctx.native_image_paths == []
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_turn_runner_text_fallback_binds_realized_route_as_main_runtime(monkeypatch, tmp_path, fail):
+    """Deferred enrichment must see the realized route as the main runtime, then restore the scope."""
+    from types import SimpleNamespace
+    import agent.auxiliary_client as aux
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"default": "configured-alpha"}},
+    )
+    seen = []
+
+    async def enrich(message, _paths):
+        seen.append(aux._read_main_model())
+        if fail:
+            raise RuntimeError("vision failed")
+        return message
+
+    runner = SimpleNamespace(
+        _consume_pending_native_image_paths=lambda _key: ["/tmp/cashback.png"],
+        _decide_image_input_mode=lambda **_kwargs: "text",
+        _enrich_message_with_vision=enrich,
+    )
+    ctx = TurnContext(message="photo", session_key="durable", user_config={}, source=_source())
+    route = {
+        "model": "session-beta",
+        "runtime": {"provider": "custom", "requested_provider": "custom:beta"},
+    }
+
+    with aux.scoped_runtime_main({}):
+        if fail:
+            with pytest.raises(RuntimeError):
+                TurnRunner(runner, ctx)._prepare_images_for_realized_route(route)
+        else:
+            TurnRunner(runner, ctx)._prepare_images_for_realized_route(route)
+        # The previous scope is back once enrichment completes or errors.
+        assert aux._read_main_model() == "configured-alpha"
+
+    assert seen == ["session-beta"]

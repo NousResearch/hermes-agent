@@ -317,8 +317,12 @@ class PeerRunsHTTPClient:
             return record
         from gateway import hosted_rooms
         identity = {"task_id": task_id, "execution_generation": execution_generation}
-        return hosted_rooms.remote_run_receipt(
+        stored = hosted_rooms.remote_run_receipt(
             self.receipt_db_path, record={**self._room_scope, **identity})
+        if stored is not None and any(not isinstance(stored.get(key), str) or not stored[key]
+                                      for key in ('run_id', 'session_id')):
+            raise PeerRunsHTTPError('stored peer receipt is unreadable; admission remains unknown', ambiguous=True)
+        return stored
 
     def bind_observation(self, *, task_id: str, execution_generation: int) -> None:
         """Pin history/status reads to one exact logical task attempt."""

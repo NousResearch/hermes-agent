@@ -758,7 +758,7 @@ def revoke_room_grant_scope(
 
 def revoke_room_grant_token(
     db_path: DbPath, *, claims: Mapping[str, Any], token_sha256: str, expires_at: float,
-    now: float | None = None) -> None:
+    now: float | None = None, conn=None) -> None:
     """Revoke exactly one signed grant, leaving the rest of its scope (its replacement) usable."""
     if not isinstance(token_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", token_sha256):
         raise HostedRoomError("exact revocation requires a signed grant digest")
@@ -767,13 +767,19 @@ def revoke_room_grant_token(
     expiry = float(expires_at)
     if expiry <= timestamp:
         return  # already unusable
-    with _transaction(db_path, immediate=True) as conn:
+    def write(conn):
         conn.execute("DELETE FROM hosted_room_revoked_grant_tokens WHERE expires_at<=?", (timestamp,))
         conn.execute("""INSERT INTO hosted_room_revoked_grant_tokens(scope_key, token_sha256, expires_at)
                VALUES (?, ?, ?)
                ON CONFLICT(scope_key, token_sha256) DO UPDATE SET
                    expires_at=MAX(hosted_room_revoked_grant_tokens.expires_at, excluded.expires_at)""",
             (scope_key, token_sha256, expiry))
+
+    if conn is not None:
+        write(conn)
+    else:
+        with _transaction(db_path, immediate=True) as writer:
+            write(writer)
 
 
 def _reservation_claims(claims: Mapping[str, Any]) -> tuple[str, str, str, str, int]:

@@ -226,3 +226,64 @@ async def test_duplicate_effect_headers_cannot_change_a_signed_request(gateway, 
     finally:
         await target.close()
         await server.close()
+
+
+@pytest.mark.asyncio
+async def test_lost_maintenance_refresh_and_foreground_refresh_share_one_frozen_issuance(gateway, monkeypatch):
+    from gateway import hosted_room_peer, session_group_peer_cleanup as cleanup
+    from tests.gateway.test_session_group_peer_routes import attempt
+    server, url, room, catalog, grant = await joined(gateway, monkeypatch)
+    tracked, route, dispatch = attempt(gateway, room)
+    raw = gateway.service.peer_clients[('linked', 'reviewer')]
+    original = raw._scoped_post
+    bodies, issued = [], []
+    def refresh_with_lost_reply(path, bearer, **kwargs):
+        result = original(path, bearer, **kwargs)
+        if path.endswith('/refresh'):
+            bodies.append(kwargs['body'])
+            issued.append(result['grant'])
+            if len(issued) == 1:
+                raise PeerRunsHTTPError('maintenance response lost', ambiguous=True)
+        return result
+    try:
+        monkeypatch.setattr(raw, '_scoped_post', refresh_with_lost_reply)
+        monkeypatch.setattr(hosted_room_peer, 'room_grant_needs_dispatch_refresh',
+                            lambda *args, **kwargs: kwargs.get('leeway_seconds') != 0)
+        assert await asyncio.to_thread(tracked._refresh_if_due, 'probe', grant, {}) == grant
+        assert cleanup.status(gateway.service.db_path)[0]['mode'] == 'issuance'
+        from gateway import session_group_peer_routes
+        monkeypatch.setattr(session_group_peer_routes, '_RENEWED_TTL_SECONDS', 7200)
+        replacement = await asyncio.to_thread(tracked._refresh_if_due, 'dispatch', grant, {'dispatch': dispatch})
+        assert len(issued) == 2 and issued[0] == issued[1] == replacement
+        assert bodies[0] == bodies[1]
+        assert not any(item['mode'] == 'issuance' for item in cleanup.status(gateway.service.db_path))
+        assert await asyncio.to_thread(capabilities, url, replacement) == (200, None)
+        assert await asyncio.to_thread(capabilities, url, grant) == (403, 'room_reauthorization_required')
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_old_revoke_racing_issuance_cleanup_is_fenced_in_accepting_write(gateway, monkeypatch):
+    from gateway import hosted_rooms
+    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret, room_grant_token_digest
+    from gateway.platforms import api_server_room_grants
+    server, url, room, catalog, grant = await joined(gateway, monkeypatch)
+    client = PeerRunsHTTPClient(base_url=url, api_key='', proof_install_id=catalog['installation_id'])
+    try:
+        successor = (await asyncio.to_thread(client.refresh_grant, grant=grant, ttl_seconds=3600))['grant']
+        original = api_server_room_grants._room_grant_claims
+        def revoke_between_check_and_write(adapter, request, *, permission, conn=None):
+            claims = original(adapter, request, permission=permission, conn=conn)
+            if request.path.endswith('/cleanup-issuance') and conn is None:
+                hosted_rooms.revoke_room_grant_token(api_server_room_grants._grant_db(adapter), claims=claims,
+                    token_sha256=room_grant_token_digest(grant), expires_at=claims['status_expires_at'])
+            return claims
+        monkeypatch.setattr(api_server_room_grants, '_room_grant_claims', revoke_between_check_and_write)
+        with pytest.raises(PeerRunsHTTPError) as error:
+            await asyncio.to_thread(client.cleanup_issuance, grant=grant,
+                                    request_id=proof.issuance_request_id(grant, b'{"ttl_seconds":3600}'))
+        assert error.value.needs_reauthorization
+        assert await asyncio.to_thread(capabilities, url, successor) == (200, None)
+    finally:
+        await server.close()

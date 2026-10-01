@@ -6,6 +6,7 @@ from the same session and aggregate them before dispatching.
 """
 
 import asyncio
+from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -528,149 +529,69 @@ class TestHoldInboundAcrossReconnect:
         assert held_texts == ["boom", "after"]
 
 
-class TestReplyContextBatching:
-    @pytest.mark.asyncio
-    async def test_same_reply_target_batches_with_full_context(self):
-        adapter = _make_adapter()
-        reply_context = {
-            "reply_to_message_id": "reply-42",
-            "reply_to_text": "quoted text",
-            "reply_to_author_id": "author-a",
-            "reply_to_author_name": "Author A",
-            "reply_to_is_own_message": True,
-        }
-
-        adapter._enqueue_text_event(_make_event("first", **reply_context))
-        adapter._enqueue_text_event(_make_event("second", **reply_context))
-        await asyncio.sleep(0.2)
-
-        adapter.handle_message.assert_awaited_once()
-        dispatched = adapter.handle_message.await_args.args[0]
-        assert dispatched.text == "first\nsecond"
-        assert adapter._text_batch_reply_context(dispatched) == (
-            "reply-42",
-            "quoted text",
-            "author-a",
-            "Author A",
-            True,
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary,disconnect",
+    [
+        pytest.param("same", False, id="same-quote"),
+        pytest.param("reply_to_message_id", False, id="different-target"),
+        pytest.param("reply_to_text", False, id="different-quote"),
+        pytest.param("reply_to_author_id", False, id="different-author-id"),
+        pytest.param("reply_to_author_name", False, id="different-author-name"),
+        pytest.param("reply_to_is_own_message", False, id="different-author-kind"),
+        pytest.param("plain-first", False, id="plain-before-reply"),
+        pytest.param("plain-last", False, id="plain-after-reply"),
+        pytest.param("long-continuation", False, id="client-split-reply"),
+        pytest.param("reply_to_message_id", True, id="disconnect-at-boundary"),
+    ],
+)
+async def test_reply_batches_preserve_context_and_pending_delivery(
+    boundary, disconnect
+):
+    adapter = _make_adapter()
+    adapter._text_batch_delay_seconds = 0
+    adapter._text_batch_split_delay_seconds = 0
+    context = {
+        "reply_to_message_id": "reply-42",
+        "reply_to_text": "quoted text",
+        "reply_to_author_id": "author-a",
+        "reply_to_author_name": "Author A",
+        "reply_to_is_own_message": False,
+    }
+    first_context = {} if boundary == "plain-first" else context
+    second_context = (
+        {} if boundary in {"plain-last", "long-continuation"} else dict(context)
+    )
+    if boundary in context:
+        second_context[boundary] = (
+            True if boundary == "reply_to_is_own_message" else "different"
         )
+    first_text = (
+        "x" * adapter._SPLIT_THRESHOLD if boundary == "long-continuation" else "first"
+    )
+    first = _make_event(first_text, **first_context)
+    second = _make_event("second", **second_context)
+    expected = (
+        [replace(first, text=f"{first_text}\nsecond")]
+        if boundary in {"same", "long-continuation"}
+        else [replace(first), replace(second)]
+    )
 
-    @pytest.mark.asyncio
-    async def test_different_reply_targets_flush_separate_batches(self):
-        adapter = _make_adapter()
-        adapter._enqueue_text_event(
-            _make_event("first", reply_to_message_id="reply-1")
-        )
-        adapter._enqueue_text_event(
-            _make_event("second", reply_to_message_id="reply-2")
-        )
-
-        await asyncio.sleep(0)
-        adapter.handle_message.assert_awaited_once()
-        assert adapter.handle_message.await_args.args[0].reply_to_message_id == "reply-1"
-
-        await asyncio.sleep(0.2)
-        assert adapter.handle_message.await_count == 2
-        dispatched = [call.args[0] for call in adapter.handle_message.await_args_list]
-        assert [event.text for event in dispatched] == ["first", "second"]
-        assert [event.reply_to_message_id for event in dispatched] == [
-            "reply-1",
-            "reply-2",
-        ]
-
-    @pytest.mark.asyncio
-    async def test_incompatible_reply_flush_is_tracked_across_disconnect(self):
-        adapter = _make_adapter()
-        adapter._enqueue_text_event(
-            _make_event("first", reply_to_message_id="reply-1")
-        )
-        adapter._enqueue_text_event(
-            _make_event("second", reply_to_message_id="reply-2")
-        )
-
-        # No await between enqueue and disconnect: the tracked redispatch task
-        # must be cancellable before it can dispatch into the torn-down session.
+    adapter._enqueue_text_event(first)
+    adapter._enqueue_text_event(second)
+    if disconnect:
         adapter._mark_disconnected()
         await adapter._cancel_pending_delivery_tasks()
-
-        adapter.handle_message.assert_not_awaited()
-        assert [event.text for event in adapter._held_inbound_events] == [
-            "first",
-            "second",
-        ]
-        assert adapter._pending_text_batches == {}
-        assert adapter._pending_text_batch_tasks == {}
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("reply_first", [False, True])
-    async def test_reply_and_non_reply_flush_separate_batches(self, reply_first):
-        adapter = _make_adapter()
-        reply = _make_event("reply", reply_to_message_id="reply-42")
-        plain = _make_event("plain")
-        first, second = (reply, plain) if reply_first else (plain, reply)
-
-        adapter._enqueue_text_event(first)
-        adapter._enqueue_text_event(second)
-        await asyncio.sleep(0.2)
-
-        assert adapter.handle_message.await_count == 2
-        dispatched = [call.args[0] for call in adapter.handle_message.await_args_list]
-        assert [event.text for event in dispatched] == [first.text, second.text]
-        assert [event.reply_to_message_id for event in dispatched] == [
-            first.reply_to_message_id,
-            second.reply_to_message_id,
-        ]
-
-    @pytest.mark.parametrize(
-        ("field", "different_value"),
-        [
-            ("reply_to_text", "different quote"),
-            ("reply_to_author_id", "author-b"),
-            ("reply_to_author_name", "Author B"),
-            ("reply_to_is_own_message", True),
-        ],
-    )
-    def test_each_reply_context_field_participates_in_batch_identity(
-        self,
-        field,
-        different_value,
-    ):
-        adapter = _make_adapter()
-        common = {
-            "reply_to_message_id": "reply-42",
-            "reply_to_text": "quoted text",
-            "reply_to_author_id": "author-a",
-            "reply_to_author_name": "Author A",
-        }
-        existing = _make_event("first", **common)
-        incoming = _make_event("second", **{**common, field: different_value})
-
-        assert not adapter._text_batch_context_compatible(existing, incoming)
-
-    @pytest.mark.asyncio
-    async def test_long_continuation_inherits_reply_context(self):
-        adapter = _make_adapter()
-        first_chunk = "x" * adapter._SPLIT_THRESHOLD
-        adapter._enqueue_text_event(
-            _make_event(
-                first_chunk,
-                reply_to_message_id="reply-42",
-                reply_to_text="quoted text",
-                reply_to_author_id="author-a",
-                reply_to_author_name="Author A",
-                reply_to_is_own_message=True,
-            )
+        assert adapter.handle_message.await_args_list == []
+        assert adapter._held_inbound_events == expected
+        assert (adapter._pending_text_batches, adapter._pending_text_batch_tasks) == (
+            {},
+            {},
         )
-        adapter._enqueue_text_event(_make_event("continuation"))
-        await asyncio.sleep(0.2)
+        return
 
-        adapter.handle_message.assert_awaited_once()
-        dispatched = adapter.handle_message.await_args.args[0]
-        assert dispatched.text == f"{first_chunk}\ncontinuation"
-        assert adapter._text_batch_reply_context(dispatched) == (
-            "reply-42",
-            "quoted text",
-            "author-a",
-            "Author A",
-            True,
-        )
+    redispatch = adapter._held_inbound_redispatch_task
+    if redispatch is not None:
+        await redispatch
+    await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+    assert [call.args[0] for call in adapter.handle_message.await_args_list] == expected

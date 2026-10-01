@@ -143,3 +143,47 @@ def test_bare_root_probe_reports_the_v1_key_rejection_not_the_root_404(route, mo
         data = asyncio.run(mod.validate_custom_endpoint(body))
     assert data["ok"] is False and data["reachable"] is True
     assert "404" not in data["message"]
+
+
+def test_custom_endpoint_probe_uses_saved_key_env_when_form_is_blank(monkeypatch):
+    import hermes_cli.web_routers.config_env as mod
+    from hermes_cli.web_models import CustomEndpointUpdate
+
+    captured = {}
+    async def probe(url, headers):
+        captured.update(url=url, headers=headers)
+        return url, type("Resp", (), {"status_code": 200, "is_success": True})()
+
+    monkeypatch.setattr(mod, "load_config", lambda: {"providers": {"local": {
+        "base_url": "http://127.0.0.1:9000", "key_env": "LOCAL_KEY", "model": "model"}}})
+    monkeypatch.setattr(mod, "get_env_value_prefer_dotenv", lambda key: "saved-token")
+    monkeypatch.setattr(mod, "_probe_openai_compatible_models", probe)
+    monkeypatch.setattr(mod, "_parse_model_entries", lambda response: [])
+    monkeypatch.setattr(mod, "_probe_transport_route", lambda *args: "")
+
+    body = CustomEndpointUpdate(id="local", name="local", base_url="http://127.0.0.1:9000", model="model")
+    result = asyncio.run(mod.validate_custom_endpoint(body))
+
+    assert result["ok"] is True
+    assert captured["headers"]["Authorization"] == "Bearer saved-token"
+
+
+def test_custom_endpoint_probe_does_not_reuse_saved_key_for_changed_url(monkeypatch):
+    import hermes_cli.web_routers.config_env as mod
+    from hermes_cli.web_models import CustomEndpointUpdate
+
+    captured = {}
+    async def probe(url, headers):
+        captured.update(headers=headers)
+        return url, type("Resp", (), {"status_code": 200, "is_success": True})()
+
+    monkeypatch.setattr(mod, "load_config", lambda: {"providers": {"local": {
+        "base_url": "http://127.0.0.1:9000", "api_key": "saved-token"}}})
+    monkeypatch.setattr(mod, "_probe_openai_compatible_models", probe)
+    monkeypatch.setattr(mod, "_parse_model_entries", lambda response: [])
+    monkeypatch.setattr(mod, "_probe_transport_route", lambda *args: "")
+
+    body = CustomEndpointUpdate(id="local", name="local", base_url="http://127.0.0.1:9001", model="model")
+    asyncio.run(mod.validate_custom_endpoint(body))
+
+    assert "Authorization" not in captured["headers"]

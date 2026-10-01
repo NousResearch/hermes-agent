@@ -1167,7 +1167,7 @@ class TestTerminalOutputRedaction:
         out = "MISTRAL_API_KEY=abc123secret # used for tests"
         red = redact_terminal_output(out, "cat .env")
         assert "abc123secret" not in red
-        assert "MISTRAL_API_KEY=*** # used for tests" in red
+        assert "MISTRAL_API_KEY=«redacted-secret» # used for tests" in red
 
     def test_cat_env_export_inline_comment_preserved(self):
         """export KEY=VALUE # comment — comment preserved."""
@@ -1175,7 +1175,37 @@ class TestTerminalOutputRedaction:
         out = "export MISTRAL_API_KEY=abc123secret # prod key"
         red = redact_terminal_output(out, "cat .env")
         assert "abc123secret" not in red
-        assert "export MISTRAL_API_KEY=*** # prod key" in red
+        assert "export MISTRAL_API_KEY=«redacted-secret» # prod key" in red
+
+    def test_secret_file_read_uses_nonreusable_sentinel(self):
+        """grep/cat on a secret-bearing file masks with the self-describing sentinel
+        (``«redacted:…»``), not a head/tail mask the model can mistake for literal file
+        content (issue #130543) — matching the read_file/search_files surface."""
+        from agent.redact import redact_terminal_output
+
+        pat = "github_pat_11ABCDEFG0123456789012345678901234567890123456789012345678901234_abcd"
+        out = f"GITHUB_TOKEN={pat}\n"
+        for command in ("grep GITHUB_TOKEN ~/.hermes/.env", "cat ~/.hermes/.env"):
+            red = redact_terminal_output(out, command)
+            assert "«redacted:github_pat_…»" in red, red
+            assert pat not in red
+            # The mask must not keep head/tail chars of the credential — a shape like
+            # ``github...abcd`` reads as a real-but-truncated key, which is exactly what
+            # misled the agent into reporting the file held no valid token.
+            assert "github..." not in red, red
+            assert "abcd" not in red, red
+            # Terminal and file-tool surfaces agree on the mask for the same file.
+            assert red == redact_sensitive_text(out, file_read=True, secret_file=True)
+
+    def test_env_dump_keeps_display_mask_not_sentinel(self):
+        """printenv output is not a file read: keep the legacy display mask so the
+        sentinel change stays scoped to secret-file reads."""
+        from agent.redact import redact_terminal_output
+
+        pat = "github_pat_11ABCDEFG0123456789012345678901234567890123456789012345678901234_abcd"
+        red = redact_terminal_output(f"GITHUB_TOKEN={pat}\n", "printenv")
+        assert "github...abcd" in red, red
+        assert "«redacted" not in red, red
 
     @pytest.mark.parametrize(
         ("command", "output", "secret"),

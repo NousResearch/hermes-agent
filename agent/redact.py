@@ -1168,11 +1168,21 @@ def redact_terminal_output(output: str, command: str | None = None, *, force: bo
     """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
     pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
     shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
-    source/config dumps."""
+    source/config dumps. A secret-file read is a file read: its masks use the non-reusable
+    sentinel (``«redacted:ghp_…»``), so the model cannot mistake the mask for literal file
+    content (#130543) or write it back as a dead credential (#35519), matching the
+    read_file/search_files surfaces."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
-    redacted = redact_sensitive_text(output, force=force, code_file=code_file)
+    reads_secret_file = _command_reads_secret_file(command)
+    code_file = not (is_env_dump_command(command) or reads_secret_file)
+    redacted = redact_sensitive_text(
+        output,
+        force=force,
+        code_file=code_file,
+        file_read=reads_secret_file,
+        secret_file=reads_secret_file,
+    )
     # Source-preserving output still gets the Python-repr pass on high-confidence
     # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is
     # where {'BRAVE_API_KEY': '…'} leaks, not in source dumps.

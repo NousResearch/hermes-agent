@@ -2,6 +2,8 @@ import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 import type { ToolLabel } from '@hermes/shared'
 
+import { productToolLabel } from '@/lib/product-names'
+
 export interface McpTarget {
   name: string
   action: 'authorize' | 'enable' | 'install'
@@ -87,6 +89,12 @@ const TITLES: ConnectorTitles = {
 }
 
 export function connectorTitle(slug: string): string {
+  const product = productToolLabel(slug)
+
+  if (product) {
+    return product
+  }
+
   return (
     TITLES[slug] ??
     slug

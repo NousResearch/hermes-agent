@@ -24,6 +24,7 @@ import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/extern
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+import { hideVendorNames } from '@/lib/product-names'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
@@ -107,10 +108,12 @@ const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkSoftBreaks
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
 // identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
+  const shown = hideVendorNames(text)
+
   try {
-    return tailBoundedRemend(preprocessMarkdown(text))
+    return tailBoundedRemend(preprocessMarkdown(shown))
   } catch {
-    return text
+    return shown
   }
 }
 
@@ -630,7 +633,8 @@ function MarkdownTextSurface({
   scratchpad,
   textDirection
 }: MarkdownTextSurfaceProps) {
-  const { status, text } = useMessagePartText()
+  const { status, text: rawText } = useMessagePartText()
+  const text = hideVendorNames(rawText)
   // List/quote boxes resolve from content under Auto (see the ul/ol/blockquote
   // notes below); an explicit choice replaces that vote rather than nesting it.
   const boxDir = textDirection ?? 'auto'

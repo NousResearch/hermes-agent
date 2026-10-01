@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { productToolLabel } from '@/lib/product-names'
 import { capitalize } from '@/lib/text'
 
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
@@ -121,7 +122,8 @@ const compact = (text: string, max = PREVIEW_MAX) => {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
-const toolLabel = (name: string) => name.split('_').filter(Boolean).map(capitalize).join(' ') || name
+const toolLabel = (name: string) =>
+  productToolLabel(name) ?? (name.split('_').filter(Boolean).map(capitalize).join(' ') || name)
 
 const formatTool = (name: string, preview = '') => {
   const snippet = compact(preview, TOOL_PREVIEW_MAX)

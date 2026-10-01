@@ -2,6 +2,7 @@ import { stripAnsi } from '@hermes/shared/ansi'
 
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
+import { productToolLabel } from '@/lib/product-names'
 import { isFileMediaPath, mediaKind } from '@/lib/media'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
@@ -232,6 +233,12 @@ export const selectMessageRunning = (state: MessageRunningStateSlice) =>
   state.thread.isRunning && state.message.status?.type === 'running'
 
 function titleForTool(name: string): string {
+  const product = productToolLabel(name)
+
+  if (product) {
+    return product
+  }
+
   const normalized = name.replace(/^browser_/, '').replace(/^web_/, '')
 
   return normalized.split('_').filter(Boolean).map(capitalize).join(' ') || name

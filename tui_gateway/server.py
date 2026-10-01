@@ -2634,16 +2634,18 @@ def _make_agent(
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     with _sessions_lock:
         session = _sessions.get(sid)
+    from tui_gateway.brand_scope import build_brand_scope_prompt, scope_for_session
+    brand_prompt = ""
     if session:
-        from tui_gateway.brand_scope import build_brand_scope_prompt
         brand_prompt = build_brand_scope_prompt(
             session.get("brand_app_id") or "",
             session.get("brand_app_ids") or [],
             session.get("brand_email") or "",
             bool(session.get("brand_is_super")),
         )
-        if brand_prompt:
-            system_prompt = "\n\n".join(part for part in (system_prompt, brand_prompt) if part)
+    extra = scope_for_session(platform, brand_prompt)
+    if extra:
+        system_prompt = "\n\n".join(part for part in (system_prompt, extra) if part)
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),

@@ -22,6 +22,7 @@ import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { connectorTitle } from '@/lib/connector-tools'
 import {
   Activity,
   AppWindow,
@@ -1281,8 +1282,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         items: mcpServers.map(name => ({
           icon: Wrench,
           id: `mcp-${name}`,
-          keywords: ['mcp', 'server', 'tool'],
-          label: name,
+          keywords: ['mcp', 'server', 'tool', name],
+          label: connectorTitle(name),
           run: go(`${CAPABILITIES_ROUTE}?tab=connectors&server=${encodeURIComponent(name)}`)
         }))
       })

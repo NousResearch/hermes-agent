@@ -177,10 +177,8 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
                 timeout=300,
             )
 
-        time.sleep(0.2)
         stranger = [(a, tid) for a, tid in events if tid != owner_tid]
-        assert ("stream.sock.shutdown", stranger[0][1]) in events, events
-        assert all(a == "stream.sock.shutdown" for a, _ in stranger), f"stranger-thread FD release: {stranger}"
+        assert stranger and all(a == "stream.sock.shutdown" for a, _ in stranger), f"stranger-thread FD release: {stranger}"
         # The owner released the stream (and with it the socket) on unwind.
         assert ("stream.close", owner_tid) in events, events
         assert ("client.close", owner_tid) in client_events, client_events

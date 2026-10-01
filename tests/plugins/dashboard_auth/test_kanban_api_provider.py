@@ -151,10 +151,10 @@ class TestRegister:
     def test_config_scope_applied(self, plugin, monkeypatch):
         s = _strong_secret()
         monkeypatch.setenv("HERMES_KANBAN_API_SECRET", s)
-        monkeypatch.setattr(
-            plugin,
-            "_load_config_kanban_api_auth_section",
-            lambda: {"scope": "boards"},
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "config.yaml").write_text(
+            "dashboard:\n  kanban_api_auth:\n    scope: boards\n"
         )
         ctx = MagicMock()
         plugin.register(ctx)

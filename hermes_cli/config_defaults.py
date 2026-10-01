@@ -1040,10 +1040,13 @@ DEFAULT_CONFIG = {
             "secret": "",
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
         },
-        # Drain-control token auth (dashboard_auth/drain plugin). The secret is NOT here: env
-        # HERMES_DASHBOARD_DRAIN_SECRET; no-op unless >=256-bit, weak secrets rejected
-        # (fail-closed). scope = capability label; min_secret_chars in url-safe-b64 chars.
+        # Service-credential token auth (dashboard_auth/drain and dashboard_auth/kanban_api plugins).
+        # The secrets are NOT here: env HERMES_DASHBOARD_DRAIN_SECRET / HERMES_KANBAN_API_SECRET; no-op
+        # when unset, short or obviously structured secrets rejected (fail-closed; the check cannot
+        # measure entropy — provision with secrets.token_urlsafe(32)). scope = capability label;
+        # min_secret_chars in url-safe-b64 chars.
         "drain_auth": {"scope": "drain", "min_secret_chars": 43},
+        "kanban_api_auth": {"scope": "kanban", "min_secret_chars": 43},
         # Public URL (env HERMES_DASHBOARD_PUBLIC_URL): full authority (scheme + host + optional
         # prefix, e.g. https://example.com/hermes) for the OAuth redirect_uri; its hostname is
         # trusted by Host/Origin guards and engages the auth gate when non-loopback. For proxies

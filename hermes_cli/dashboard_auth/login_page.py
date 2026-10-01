@@ -3,8 +3,7 @@
 Providers come from the registry; an OAuth provider renders an anchor to
 ``/auth/login?provider=<name>``, a ``supports_password`` provider renders a
 credential form wired by :data:`_PASSWORD_FORM_SCRIPT`. Styling mirrors the
-``@nous-research/ui`` design system; fonts load from the SPA's ``/fonts/``
-mount, which the gate allowlists pre-auth.
+hosted settings UI so sign-in and settings look like one product.
 
 The ``class="provider-btn"`` anchor is test-stable: the suite extracts its
 href to walk the OAuth flow.
@@ -16,288 +15,97 @@ from urllib.parse import quote, urlencode
 
 from hermes_cli.dashboard_auth import list_session_providers
 
-# Single curly braces are ``str.format`` placeholders; CSS curlies are doubled.
+# Mirrors the hosted settings tokens in ``web/src/settings/settings.css``.
+# Inserted as a ``str.format`` value, so its braces stay literal.
+_STYLE = """\
+<style>
+  :root {
+    --page: #f7f7f6;
+    --ink: #171717;
+    --ink-2: #4d4d4b;
+    --muted: #8a8a86;
+    --line: #ededeb;
+    --field: #e0e0dd;
+    --soft: #f4f4f3;
+    --err: #d93025;
+    --focus: #2f6feb;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    display: grid; place-items: center; min-height: 100vh; padding: 24px 18px;
+    background: var(--page); color: var(--ink);
+    font: 14px/1.5 "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  main {
+    width: 100%; max-width: 380px; padding: 32px 28px 28px;
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+  }
+  main.wide { max-width: 480px; }
+  .face {
+    width: 34px; height: 34px; margin-bottom: 20px; border-radius: 9px;
+    background: var(--ink); color: #fff; display: grid; place-items: center;
+    font-weight: 600; font-size: 15px;
+  }
+  h1 { margin: 0 0 24px; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
+
+  .provider-list { display: grid; gap: 16px; }
+  .provider-form { display: grid; gap: 16px; }
+  .form-title { font-weight: 500; color: var(--ink-2); }
+  /* A lone form needs no "Sign in with ..." heading under the page title. */
+  .provider-list > .provider-form:only-child .form-title { display: none; }
+  .field { display: grid; gap: 6px; }
+  .field-label { font-size: 13px; color: var(--ink-2); }
+  .field-input {
+    width: 100%; height: 38px; padding: 0 12px; outline: none;
+    background: #fff; border: 1px solid var(--field); border-radius: 8px;
+    font: inherit; color: inherit; box-shadow: 0 1px 1px rgba(0, 0, 0, .02);
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .field-input:focus { border-color: #a3a3a0; box-shadow: 0 0 0 3px #f0f0ee; }
+  .form-error { color: var(--err); font-size: 13px; }
+
+  .provider-btn {
+    display: flex; align-items: center; justify-content: center; width: 100%; height: 38px; padding: 0 12px;
+    background: var(--ink); color: #fff; border: 1px solid var(--ink); border-radius: 8px;
+    font: inherit; font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, .03);
+  }
+  .provider-btn:hover { background: #333; }
+  .provider-btn:disabled { background: #ececea; border-color: #ececea; color: #a8a8a4; cursor: default; box-shadow: none; }
+  .provider-form .provider-btn { margin-top: 4px; }
+
+  p { margin: 0 0 12px; color: var(--ink-2); }
+  p:last-child { margin-bottom: 0; }
+  a { color: inherit; text-underline-offset: 2px; }
+  code {
+    padding: 1px 5px; border-radius: 5px; background: var(--soft);
+    font-family: "Geist Mono", ui-monospace, Menlo, monospace; font-size: 12.5px;
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>"""
+
+# Single curly braces are ``str.format`` placeholders.
 _LOGIN_HTML_TEMPLATE = """\
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in — Hermes Agent</title>
-<style>
-  /* Brand fonts shipped by @nous-research/ui — same files the SPA loads. */
-  @font-face {{
-    font-family: 'Collapse';
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
-  }}
-  @font-face {{
-    font-family: 'Collapse';
-    font-style: normal;
-    font-weight: 700;
-    font-display: swap;
-    src: url('/fonts/Collapse-Bold.woff2') format('woff2');
-  }}
-  @font-face {{
-    font-family: 'Rules Compressed';
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url('/fonts/RulesCompressed-Regular.woff2') format('woff2');
-  }}
-  @font-face {{
-    font-family: 'Rules Compressed';
-    font-style: normal;
-    font-weight: 600;
-    font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
-  }}
-
-  :root {{
-    --background-base: #170d02;
-    --background: #170d02;
-    --midground: #ffac02;
-    --foreground: #ffffff;
-    --hairline: color-mix(in srgb, #ffac02 18%, transparent);
-    --hairline-strong: color-mix(in srgb, #ffac02 35%, transparent);
-  }}
-
-  *, *::before, *::after {{ box-sizing: border-box; }}
-
-  html, body {{
-    margin: 0;
-    padding: 0;
-    min-height: 100%;
-    background: var(--background-base);
-    color: var(--foreground);
-    font-family: 'Collapse', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    font-size: 16px;
-    line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }}
-
-  /* Subtle dot-grid backdrop — DS idiom (see `.dither` in globals.css). */
-  body {{
-    background-image:
-      radial-gradient(
-        ellipse at top,
-        color-mix(in srgb, var(--midground) 6%, transparent) 0%,
-        transparent 55%
-      ),
-      repeating-conic-gradient(
-        color-mix(in srgb, var(--midground) 4%, transparent) 0% 25%,
-        transparent 0% 50%
-      );
-    background-size: auto, 3px 3px;
-    background-attachment: fixed;
-  }}
-
-  /* Layout: vertically center on tall screens, top-anchor on short. */
-  body {{
-    display: grid;
-    place-items: center;
-    padding: clamp(1.5rem, 6vh, 6rem) 1.25rem;
-  }}
-
-  main {{
-    width: 100%;
-    max-width: 26rem;
-    position: relative;
-    animation: slide-up 0.6s ease-out both;
-  }}
-
-  @keyframes slide-up {{
-    from {{ opacity: 0; transform: translateY(6px); }}
-    to   {{ opacity: 1; transform: translateY(0); }}
-  }}
-
-  @media (prefers-reduced-motion: reduce) {{
-    main {{ animation: none; }}
-  }}
-
-  /* Brand wordmark above the card — same uppercase + wide-tracking
-     idiom DS Buttons use. */
-  .brand {{
-    text-align: center;
-    margin-bottom: 1.75rem;
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
-    font-weight: 600;
-    font-size: 1.05rem;
-    letter-spacing: 0.32em;
-    text-transform: uppercase;
-    color: var(--midground);
-  }}
-  .brand .dot {{
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    background: var(--midground);
-    margin: 0 0.55em 0.18em;
-    vertical-align: middle;
-    border-radius: 1px;
-  }}
-
-  .card {{
-    position: relative;
-    padding: 2.25rem 2rem 2rem;
-    background: color-mix(in srgb, #ffffff 2%, var(--background-base));
-    border: 1px solid var(--hairline);
-    /* Hairline highlight + bevel shadow — matches DS Button SHADOW_DEFAULT
-       (`inset -1px -1px 0 #00000080, inset 1px 1px 0 #ffffff80`) at panel scale. */
-    box-shadow:
-      inset 1px 1px 0 0 color-mix(in srgb, #ffffff 5%, transparent),
-      inset -1px -1px 0 0 rgba(0, 0, 0, 0.4),
-      0 24px 60px -20px rgba(0, 0, 0, 0.6);
-  }}
-
-  h1 {{
-    margin: 0 0 0.4rem;
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
-    font-weight: 600;
-    font-size: 1.85rem;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--foreground);
-  }}
-
-  .subtitle {{
-    margin: 0 0 1.75rem;
-    color: color-mix(in srgb, var(--foreground) 65%, transparent);
-    font-size: 0.95rem;
-  }}
-
-  .provider-list {{
-    display: grid;
-    gap: 0.75rem;
-  }}
-
-  /* Provider button — mirrors DS Button (default variant):
-     amber surface, dark text, uppercase + wide tracking, inset bevel. */
-  .provider-btn {{
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    padding: 0.95rem 1rem;
-    text-align: center;
-    background: var(--midground);
-    color: var(--background-base);
-    font-family: 'Collapse', sans-serif;
-    font-weight: 700;
-    font-size: 0.78rem;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    text-decoration: none;
-    border: 0;
-    border-radius: 0;  /* DS Button is squared — no rounded corners. */
-    cursor: pointer;
-    box-shadow:
-      inset 1px 1px 0 0 rgba(255, 255, 255, 0.5),
-      inset -1px -1px 0 0 rgba(0, 0, 0, 0.5);
-    transition: filter 0.12s ease-out;
-  }}
-  .provider-btn:hover {{
-    filter: brightness(1.08);
-  }}
-  .provider-btn:active {{
-    /* DS Button uses `active:invert` on the default surface. */
-    filter: invert(1);
-  }}
-  .provider-btn:focus-visible {{
-    outline: 2px solid var(--midground);
-    outline-offset: 3px;
-  }}
-
-  /* Password provider form — same visual language as the OAuth buttons:
-     squared inputs, hairline borders, amber focus ring. */
-  .provider-form {{
-    display: grid;
-    gap: 0.75rem;
-    text-align: left;
-  }}
-  .form-title {{
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
-    font-weight: 600;
-    font-size: 0.72rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: color-mix(in srgb, var(--foreground) 70%, transparent);
-  }}
-  .field {{
-    display: grid;
-    gap: 0.3rem;
-  }}
-  .field-label {{
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: color-mix(in srgb, var(--foreground) 55%, transparent);
-  }}
-  .field-input {{
-    width: 100%;
-    box-sizing: border-box;
-    padding: 0.7rem 0.8rem;
-    background: color-mix(in srgb, #000000 25%, var(--background-base));
-    color: var(--foreground);
-    border: 1px solid var(--hairline-strong);
-    border-radius: 0;
-    font-family: 'Collapse', sans-serif;
-    font-size: 0.95rem;
-  }}
-  .field-input:focus-visible {{
-    outline: none;
-    border-color: var(--midground);
-    box-shadow: 0 0 0 1px var(--midground);
-  }}
-  .form-error {{
-    color: #ff6b6b;
-    font-size: 0.82rem;
-    letter-spacing: 0.02em;
-  }}
-  .provider-form .provider-btn {{
-    margin-top: 0.25rem;
-  }}
-
-  footer {{
-    margin-top: 1.75rem;
-    text-align: center;
-    color: color-mix(in srgb, var(--foreground) 45%, transparent);
-    font-size: 0.75rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    line-height: 1.7;
-  }}
-  footer .sep {{
-    display: inline-block;
-    width: 1.5rem;
-    height: 1px;
-    background: var(--hairline-strong);
-    vertical-align: middle;
-    margin: 0 0.6em 0.2em;
-  }}
-
-  /* Selection — DS uses midground bg + background text. */
-  ::selection {{
-    background: var(--midground);
-    color: var(--background-base);
-  }}
-</style>
+<title>Sign in — Hermes</title>
+{style}
 </head>
 <body>
 <main>
-  <div class="brand">Nous<span class="dot"></span>Research</div>
-  <div class="card">
-    <h1>Sign in</h1>
-    <p class="subtitle">Choose a sign-in method to continue to the Hermes Agent dashboard.</p>
-    <div class="provider-list">
+  <div class="face">H</div>
+  <h1>Sign in to Hermes</h1>
+  <div class="provider-list">
 {provider_buttons}
-    </div>
   </div>
-  <footer>
-    <span class="sep"></span>Public bind &middot; Auth required<span class="sep"></span>
-  </footer>
 </main>
 {password_script}
 </body>
@@ -310,71 +118,12 @@ _EMPTY_HTML = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign-in unavailable — Hermes Agent</title>
-<style>
-  @font-face {
-    font-family: 'Collapse';
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
-  }
-  @font-face {
-    font-family: 'Rules Compressed';
-    font-style: normal;
-    font-weight: 600;
-    font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
-  }
-  :root {
-    --background-base: #170d02;
-    --midground: #ffac02;
-    --foreground: #ffffff;
-    --hairline: color-mix(in srgb, #ffac02 18%, transparent);
-  }
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0; min-height: 100%;
-    background: var(--background-base);
-    color: var(--foreground);
-    font-family: 'Collapse', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    font-size: 16px; line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-  }
-  body {
-    display: grid; place-items: center;
-    padding: clamp(1.5rem, 6vh, 6rem) 1.25rem;
-  }
-  main {
-    width: 100%; max-width: 32rem;
-    padding: 2.25rem 2rem;
-    background: color-mix(in srgb, #ffffff 2%, var(--background-base));
-    border: 1px solid var(--hairline);
-    box-shadow:
-      inset 1px 1px 0 0 color-mix(in srgb, #ffffff 5%, transparent),
-      inset -1px -1px 0 0 rgba(0, 0, 0, 0.4),
-      0 24px 60px -20px rgba(0, 0, 0, 0.6);
-  }
-  h1 {
-    margin: 0 0 1rem;
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
-    font-weight: 600; font-size: 1.5rem;
-    letter-spacing: 0.05em; text-transform: uppercase;
-    color: var(--midground);
-  }
-  p { margin: 0 0 1rem; }
-  code {
-    background: var(--midground);
-    color: var(--background-base);
-    padding: 0.1em 0.35em;
-    font-family: 'Courier New', monospace;
-    font-size: 0.9em;
-  }
-  a { color: var(--midground); }
-</style>
+<title>Sign-in unavailable — Hermes</title>
+{style}
 </head>
 <body>
-<main>
+<main class="wide">
+<div class="face">H</div>
 <h1>Sign-in unavailable</h1>
 <p>This dashboard is bound to a non-loopback host but no authentication
 providers are available.</p>
@@ -386,7 +135,7 @@ an SSH tunnel or Tailscale.</p>
 </main>
 </body>
 </html>
-"""
+""".format(style=_STYLE)
 
 
 # Emitted ONLY when a ``supports_password`` provider is listed, so OAuth-only
@@ -461,6 +210,7 @@ def render_login_html(*, next_path: str = "") -> str:
     ]
     needs_password_script = any(getattr(p, "supports_password", False) for p in providers)
     return _LOGIN_HTML_TEMPLATE.format(
+        style=_STYLE,
         provider_buttons="\n".join(buttons),
         password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
     )
@@ -484,7 +234,8 @@ def render_native_provider_choice_html(
                        f'Sign in with {html.escape(p.display_name)}</a>')
     if not buttons:
         return _EMPTY_HTML
-    return _LOGIN_HTML_TEMPLATE.format(provider_buttons="\n".join(buttons), password_script="")
+    return _LOGIN_HTML_TEMPLATE.format(
+        style=_STYLE, provider_buttons="\n".join(buttons), password_script="")
 
 
 def _render_password_form(provider, next_path: str) -> str:

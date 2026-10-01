@@ -2277,6 +2277,30 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
   })
 
+  it('does not strip the envelope for an error that merely names an envelope field', async () => {
+    const promptCalls: Array<Record<string, unknown>> = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        promptCalls.push(params ?? {})
+        // Only the dispatcher's pre-handler 4000 proves nothing ran; a handler error
+        // may follow an accepted turn, so an identity-less retry could duplicate it.
+        throw new JsonRpcGatewayError('could not persist submitted_at for this prompt', { code: 5071 })
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('handler failure probe')).toBe(false)
+    expect(promptCalls).toHaveLength(1)
+    expect(promptCalls[0]).toMatchObject({ client_message_id: expect.any(String) })
+  })
+
   it('patches the acknowledged optimistic occurrence in place without reordering', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1_790_594_548_125)
     const seeds: Record<string, unknown>[] = []

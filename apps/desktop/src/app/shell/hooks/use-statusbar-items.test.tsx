@@ -41,6 +41,10 @@ vi.mock('@/store/session-focus', async () => {
   const TILE_PANE_PREFIX = 'session-tile:'
 
   return {
+    // session-states derives $focusedTileStoredSessionId from this pair AT IMPORT TIME, so the
+    // mock has to carry both halves of the real shape, not just the id (same as
+    // model-picker-overlay's mock).
+    $focusedSessionIsTile: computed($focusedTreePaneId, active => Boolean(active?.startsWith(TILE_PANE_PREFIX))),
     $focusedTreePaneId,
     $focusedStoredSessionId: computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
       active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected

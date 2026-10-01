@@ -110,8 +110,20 @@ describe('useDesktopIntegrations', () => {
     document.body.replaceChildren()
   })
 
+  interface DesktopRenderProps {
+    activeProfile: string
+    focusedTileStoredSessionId?: null | string
+    locationPathname: string
+    profileReady: boolean
+    resumeExhaustedSessionId: null | string
+    resumeLastSession: boolean | null
+    routedSessionId: null | string
+    sessions: readonly SessionInfo[]
+  }
+
   function render({
     activeProfile = 'default',
+    focusedTileStoredSessionId = null as string | null,
     locationPathname = '/',
     profileReady = false,
     resumeExhaustedSessionId = null as string | null,
@@ -120,27 +132,34 @@ describe('useDesktopIntegrations', () => {
     routedSessionId = null as string | null,
     sessions = [] as readonly SessionInfo[]
   } = {}) {
+    // Annotated (not satisfies): rerender() calls below spell out the props they
+    // care about, and `focusedTileStoredSessionId` is optional on them.
+    const initialProps: DesktopRenderProps = {
+      activeProfile,
+      focusedTileStoredSessionId,
+      locationPathname,
+      profileReady,
+      resumeExhaustedSessionId,
+      resumeLastSession,
+      routedSessionId,
+      sessions
+    }
+
     return renderHook(
       ({
         activeProfile,
+        focusedTileStoredSessionId = null,
         locationPathname,
         profileReady,
         resumeExhaustedSessionId,
         resumeLastSession,
         routedSessionId,
         sessions
-      }: {
-        activeProfile: string
-        locationPathname: string
-        profileReady: boolean
-        resumeExhaustedSessionId: string | null
-        resumeLastSession: boolean | null
-        routedSessionId: string | null
-        sessions: readonly SessionInfo[]
-      }) =>
+      }: DesktopRenderProps) =>
         useDesktopIntegrations({
           activeProfile,
           chatOpen: false,
+          focusedTileStoredSessionId,
           hasPreview: false,
           locationPathname,
           navigate,
@@ -152,17 +171,7 @@ describe('useDesktopIntegrations', () => {
           runtimeIdByStoredSessionId: { current: new Map() },
           sessions
         }),
-      {
-        initialProps: {
-          activeProfile,
-          locationPathname,
-          profileReady,
-          resumeExhaustedSessionId,
-          resumeLastSession,
-          routedSessionId,
-          sessions
-        }
-      }
+      { initialProps }
     )
   }
 
@@ -385,6 +394,86 @@ describe('useDesktopIntegrations', () => {
 
       expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
       expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
+    })
+  })
+
+  describe('focused session tiles are the chat to come back to', () => {
+    it('remembers the FOCUSED TILE and points the remembered route at it', () => {
+      const sessions = [
+        session({ id: 'main-chat', profile: 'default' }),
+        session({ id: 'tab-chat', profile: 'default' }),
+        session({ id: 'tab-two', profile: 'default' })
+      ]
+
+      // The route is parked on main-chat (fronting a tab never moves it) while
+      // the user is actually looking at a tab.
+      const result = render({
+        focusedTileStoredSessionId: 'tab-chat',
+        locationPathname: '/main-chat',
+        profileReady: true,
+        routedSessionId: 'main-chat',
+        sessions
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('tab-chat')
+      // sessionRoute('tab-chat') — the next launch restores THAT chat.
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/tab-chat')
+
+      // Fronting another tab re-remembers, still without the route moving.
+      result.rerender({
+        activeProfile: 'default',
+        focusedTileStoredSessionId: 'tab-two',
+        locationPathname: '/main-chat',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        resumeLastSession: true,
+        routedSessionId: 'main-chat',
+        sessions
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('tab-two')
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/tab-two')
+    })
+
+    it('leaves a PAGE route alone — a focused tile is not a destination switch', () => {
+      render({
+        focusedTileStoredSessionId: 'tab-chat',
+        locationPathname: '/skills',
+        profileReady: true,
+        routedSessionId: null,
+        sessions: [session({ id: 'tab-chat', profile: 'default' })]
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/skills')
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
+    })
+
+    it('does NOT remember a focused tile owned by another profile', () => {
+      render({
+        focusedTileStoredSessionId: 'ai-tab',
+        locationPathname: '/main-chat',
+        profileReady: true,
+        routedSessionId: 'main-chat',
+        sessions: [
+          session({ id: 'main-chat', profile: 'default' }),
+          session({ id: 'ai-tab', profile: 'ai-engineer' })
+        ]
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('main-chat')
+    })
+
+    it('does NOT remember a tile the resume already reported exhausted', () => {
+      render({
+        focusedTileStoredSessionId: 'tab-chat',
+        locationPathname: '/main-chat',
+        profileReady: true,
+        resumeExhaustedSessionId: 'tab-chat',
+        routedSessionId: 'main-chat',
+        sessions: [session({ id: 'main-chat', profile: 'default' }), session({ id: 'tab-chat', profile: 'default' })]
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('main-chat')
     })
   })
 
@@ -954,6 +1043,7 @@ describe('useDesktopIntegrations', () => {
           useDesktopIntegrations({
             activeProfile: 'default',
             chatOpen: false,
+            focusedTileStoredSessionId: null,
             hasPreview: false,
             locationPathname: '/',
             navigate,

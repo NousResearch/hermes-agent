@@ -88,6 +88,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { $focusedTileStoredSessionId } from '@/store/session-states'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
@@ -308,6 +309,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const sessionResumeRequest = useStore($sessionResumeRequest)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  // The session TILE the user is looking at (null on the primary chat or a
+  // page): fronting a tab never moves the route, so the remembered "last chat"
+  // has to follow this instead of the route alone.
+  const focusedTileSessionId = useStore($focusedTileStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
   const sessions = useStore($sessions)
   const activeConnectionId = useStore($activeConnectionId)
@@ -1015,6 +1020,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   useDesktopIntegrations({
     activeProfile: normalizeProfileKey(activeGatewayProfile),
     chatOpen,
+    focusedTileStoredSessionId: focusedTileSessionId,
     hasPreview: Boolean(previewTarget),
     locationPathname: location.pathname,
     navigate,

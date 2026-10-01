@@ -3049,6 +3049,16 @@ export function reopenLastClosedTile(): void {
 // path; the definitions live there (see the note on that module).
 export { $focusedSessionIsTile, $focusedStoredSessionId }
 
+/** The session TILE the user is looking at, or `null` when the focused pane is
+ *  anything else (the route-driven primary, a page, another pane kind). The
+ *  cold-start "reopen last chat" memory keys off this: fronting a tile never
+ *  moves the route (`focusedSessionNeedsRoute`), so a route-only memory ignored
+ *  every chat worked in as a tab. */
+export const $focusedTileStoredSessionId = computed(
+  [$focusedStoredSessionId, $focusedSessionIsTile],
+  (stored, isTile) => (isTile ? stored : null)
+)
+
 /** Every session currently OPEN as a surface: the primary's selection plus
  *  every tile's stored id. The sidebar highlights all of them (the focused one
  *  at full strength, the rest dimmed) so a multi-pane workspace shows which

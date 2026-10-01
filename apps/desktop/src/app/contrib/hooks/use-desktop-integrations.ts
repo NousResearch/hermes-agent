@@ -52,6 +52,8 @@ type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_s
 interface DesktopIntegrationsParams {
   activeProfile: string
   chatOpen: boolean
+  /** Stored id of the session TILE the user is looking at; `null` otherwise. */
+  focusedTileStoredSessionId: null | string
   hasPreview: boolean
   locationPathname: string
   navigate: (to: string, options?: { replace?: boolean }) => void
@@ -74,6 +76,7 @@ interface DesktopIntegrationsParams {
  */
 export function useDesktopIntegrations({
   activeProfile,
+  focusedTileStoredSessionId,
   locationPathname,
   navigate,
   profileReady,
@@ -246,23 +249,42 @@ export function useDesktopIntegrations({
     // non-overlay route (a page like /skills, or a session route) per profile.
     // Session-shaped routes require an explicit matching owner; unresolved and
     // wrong-profile rows must not replace known-safe navigation.
+    //
+    // The chat ON SCREEN is a focused session TILE first and the route's own
+    // chat second. Fronting a tile never moves the route
+    // (`focusedSessionNeedsRoute`: "A tile hit never does"), so a session route
+    // can be an arbitrarily OLD chat that only the main pane ever loaded while
+    // the tab the user actually works in is never recorded — the memory then
+    // reopens that old chat on every launch, and the tab workflow that causes
+    // it can never repair it. A page route (skills/settings/…) is left alone:
+    // that is an explicit destination, not a stale chat.
+    //
     // The resume-exhausted session must not be written back into remembered
     // navigation: the cleanup effect above drops it once, but this
     // persistence effect re-runs on every session-list refresh while its
     // deps are unchanged — without the barrier the dead id outlives every
     // restart and the window boots into the resume-error screen each time.
-    const exhausted = routedSessionId !== null && routedSessionId === resumeExhaustedSessionId
+    const isExhausted = (id: null | string) => id !== null && id === resumeExhaustedSessionId
 
-    if (routedSessionId && !exhausted && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
+    const focusedTile =
+      focusedTileStoredSessionId &&
+      !isExhausted(focusedTileStoredSessionId) &&
+      sessionBelongsToProfile(sessions, focusedTileStoredSessionId, activeProfile)
+        ? focusedTileStoredSessionId
+        : null
+
+    const chatToRemember = focusedTile && routedSessionId ? focusedTile : routedSessionId
+
+    if (chatToRemember && !isExhausted(chatToRemember) && sessionBelongsToProfile(sessions, chatToRemember, activeProfile)) {
       // A delegate child (source='subagent') is never itself a rememberable
       // destination: it is invisible in the sidebar, so a restart would resume
       // an orphan chat while the sidebar highlights its parent (#56983).
       // `/branch` children also carry parent_session_id but ARE user-facing —
       // source, not parenthood, is the discriminator.
-      const routedRow = sessions.find(session => sessionMatchesStoredId(session, routedSessionId))
+      const chatRow = sessions.find(session => sessionMatchesStoredId(session, chatToRemember))
 
       const rememberedSessionId =
-        routedRow?.source === 'subagent' ? routedRow.parent_session_id || null : routedSessionId
+        chatRow?.source === 'subagent' ? chatRow.parent_session_id || null : chatToRemember
 
       if (rememberedSessionId) {
         setRememberedSessionId(rememberedSessionId, activeProfile)
@@ -277,6 +299,7 @@ export function useDesktopIntegrations({
   }, [
     activeProfile,
     diskPluginsScanPending,
+    focusedTileStoredSessionId,
     locationPathname,
     navigate,
     profileReady,

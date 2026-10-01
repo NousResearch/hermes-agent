@@ -123,8 +123,11 @@ def test_peer_methods_enforce_operator_control_and_exact_params(gateway, monkeyp
         assert await call(reader, 'groups.peer.register', room_id='linked') == 'permission_denied'
         assert await call(gateway.owner, 'groups.peer.invite', **identity) == 'room_link_unavailable'
         monkeypatch.setenv('HERMES_ROOM_LINK_URL', 'http://127.0.0.1:9')
-        # Grant ids and lifetimes beyond ``ttl_seconds`` are the target's to choose.
-        for params in ({**identity, 'grant_id': 'chosen'}, {**identity, 'status_ttl_seconds': 86400},
+        # Grant ids are the target's to choose; a renewal horizon covers at least the grant's
+        # lifetime and at most 30 days.
+        for params in ({**identity, 'grant_id': 'chosen'}, {**identity, 'status_ttl_seconds': 3599},
+                       {**identity, 'status_ttl_seconds': 2592001}, {**identity, 'status_ttl_seconds': True},
+                       {**identity, 'status_ttl_seconds': float('nan')}, {**identity, 'status_ttl_seconds': '86400'},
                        {**identity, 'authority_epoch': '1'}, {**identity, 'authority_epoch': True},
                        {**identity, 'authority_epoch': 0}, {**identity, 'authority_epoch': 2**63},
                        {**identity, 'member_id': ''}, {**identity, 'room_id': 'r' * 129},
@@ -164,6 +167,15 @@ async def test_register_binds_only_the_pinned_peer_after_a_live_scoped_probe(gat
         contract.GroupsPeerInviteResult.model_validate(invitation)
         claims = decode_room_grant(gateway_room_grant_secret(), invitation['grant'], permission='status')
         assert claims['permissions'] == ['approve', 'dispatch', 'status', 'stop']
+        assert claims['status_expires_at'] == claims['expires_at']  # nothing renews unless asked
+        renewable = dict(room_id='linked', member_id='reviewer', home_install_id=room['authority_gateway_id'],
+                         authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch'],
+                         ttl_seconds=600, status_ttl_seconds=7 * 24 * 3600)
+        contract.GroupsPeerInviteParams.model_validate(renewable)
+        horizon = decode_room_grant(gateway_room_grant_secret(), (await call(
+            gateway.owner, 'groups.peer.invite', **renewable))['grant'], permission='status')
+        assert (horizon['expires_at'] - horizon['issued_at'], horizon['status_expires_at'] - horizon['issued_at']) == (
+            600, 7 * 24 * 3600)
         register = dict(room_id='linked', member_id='reviewer', target_url=url, target_profile='default',
                         grant=invitation['grant'], catalog=catalog)
         other_member = (await invite(gateway, room, member_id='host'))['grant']

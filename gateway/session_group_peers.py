@@ -59,7 +59,7 @@ def _invite(authority, params):
     identity = ('room_id', 'home_install_id', 'authority_gateway_id', 'member_id')
     if (not all(isinstance(params.get(k), str) and params[k] for k in identity)
             or type(params.get('authority_epoch')) is not int or not 1 <= params['authority_epoch'] < 2**63
-            or type(params.get('ttl_seconds', 3600)) not in (int, float)):
+            or any(type(params.get(k, 3600)) not in (int, float) for k in ('ttl_seconds', 'status_ttl_seconds'))):
         raise RuntimeStoreError('invalid_params')
     if not room_link(authority)['enabled']:
         raise RuntimeStoreError('room_link_unavailable')

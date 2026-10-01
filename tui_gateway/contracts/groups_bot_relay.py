@@ -441,6 +441,9 @@ class GroupsPeerInviteParams(ProfileParams):
     member_id: str | None = None
     grant_id: str | None = None
     ttl_seconds: float | None = None
+    # How long the room's gateway may keep renewing the grant (canonical surface); defaults to
+    # ``ttl_seconds``, so nothing is renewed unless the operator chooses a longer horizon.
+    status_ttl_seconds: float | None = None
 
 
 class GroupsPeerInviteResult(Result):

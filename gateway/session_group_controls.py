@@ -42,7 +42,7 @@ _FIELDS = {
                        'choice', 'request_id'},
     'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
-                           'member_id', 'ttl_seconds'},
+                           'member_id', 'ttl_seconds', 'status_ttl_seconds'},
     'groups.peer.revoke': {'grant'},
     'profiles.list': {'include_sessions'},
 }

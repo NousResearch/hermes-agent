@@ -659,11 +659,9 @@ export function mergeSessionPage(
   // root so a mid-turn refresh can't drop a touchSessionActivity bump.
   const prevByLineage = new Map(previous.map(session => [lineageIdentity(session), session]))
 
-
   const merged = incoming
     .filter(session => !session.is_internal_child)
     .map(session => {
-
       const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
       // User-send stamps last_active before the DB flushes the user row
       // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.

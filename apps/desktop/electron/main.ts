@@ -12344,11 +12344,13 @@ async function runPoolBackendStart(
   backend.args = await getBackendArgsForRuntime(backend)
   assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
   const hermesCwd = resolveHermesCwd()
+
   const webDist = resolveDashboardWebDist({
     activeHermesRoot: ACTIVE_HERMES_ROOT,
     appRoot: APP_ROOT,
     env: process.env
   })
+
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
   // Guard BEFORE the "Starting" line: a profile that only exists on a remote
@@ -13256,11 +13258,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     backend.args = await getBackendArgsForRuntime(backend)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     const hermesCwd = resolveHermesCwd()
+
     const webDist = resolveDashboardWebDist({
       activeHermesRoot: ACTIVE_HERMES_ROOT,
       appRoot: APP_ROOT,
       env: process.env
     })
+
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
@@ -15574,11 +15578,7 @@ function createWindow() {
       reloadUrl: rendererBaseUrl()
     })
   } else {
-    loadWindowUrl(
-      mainWindow,
-      rendererBaseUrl(),
-      'Renderer'
-    )
+    loadWindowUrl(mainWindow, rendererBaseUrl(), 'Renderer')
   }
 
   // Start the Python backend NOW, in parallel with the renderer load — not on

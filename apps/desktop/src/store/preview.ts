@@ -380,12 +380,8 @@ if (typeof window !== 'undefined') {
  *  layout-tree mirror renders only these, so a session switch swaps the drawer
  *  and pinned tabs are the explicit cross-session workspace. While no session
  *  exists (a fresh draft), ownerless tabs stay visible. */
-export const $visiblePreviewTabs = computed(
-  [$previewTabs, $focusedStoredSessionId],
-  (tabs, sessionId) =>
-    tabs.filter(
-      tab => tab.pinned || tab.sessionId === sessionId || (sessionId == null && tab.sessionId == null)
-    )
+export const $visiblePreviewTabs = computed([$previewTabs, $focusedStoredSessionId], (tabs, sessionId) =>
+  tabs.filter(tab => tab.pinned || tab.sessionId === sessionId || (sessionId == null && tab.sessionId == null))
 )
 
 // A fresh draft has no session yet, so tabs opened there are ownerless — adopt
@@ -777,7 +773,7 @@ export function openPreview(target: PreviewTarget) {
   // The id is derived from the FINAL session id so the two can never split.
   const tabSessionId =
     existing?.sessionId == null || existing.pinned || existing.sessionId === sessionId
-      ? existing?.sessionId ?? sessionId
+      ? (existing?.sessionId ?? sessionId)
       : sessionId
 
   const tab: PreviewTab = {
@@ -789,7 +785,9 @@ export function openPreview(target: PreviewTarget) {
 
   const replaceIndex = existing ? current.indexOf(existing) : -1
 
-  $previewTabs.set(replaceIndex === -1 ? [...current, tab] : current.map((item, i) => (i === replaceIndex ? tab : item)))
+  $previewTabs.set(
+    replaceIndex === -1 ? [...current, tab] : current.map((item, i) => (i === replaceIndex ? tab : item))
+  )
   noteExplicitPreviewOpen(tab.id)
   // Select the row's FINAL id: when a pinned row is reused from another
   // session, the id keeps the owner's session, so the pre-computed id would

@@ -33,9 +33,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-const { installEmbedReferer, stampEmbedRefererHeaders, withEmbedRefererStamp } = await import(
-  './embed-referer'
-)
+const { installEmbedReferer, stampEmbedRefererHeaders, withEmbedRefererStamp } = await import('./embed-referer')
 
 function partitionListener(name: string): PartitionListener {
   const listener = partitionListeners.get(name)
@@ -90,14 +88,8 @@ test('stampEmbedRefererHeaders leaves non-YouTube hosts completely untouched', (
   assert.equal(stampEmbedRefererHeaders('https://example.com/video', original), original)
 
   // Substring matches must not fool the host test either.
-  assert.equal(
-    stampEmbedRefererHeaders('https://notyoutube.com/embed/x', original),
-    original
-  )
-  assert.equal(
-    stampEmbedRefererHeaders('https://youtube.com.evil.io/embed/x', original),
-    original
-  )
+  assert.equal(stampEmbedRefererHeaders('https://notyoutube.com/embed/x', original), original)
+  assert.equal(stampEmbedRefererHeaders('https://youtube.com.evil.io/embed/x', original), original)
 })
 
 test('stampEmbedRefererHeaders tolerates unparseable URLs', () => {
@@ -112,7 +104,7 @@ test('installEmbedRefererForSession stamps through the session listener', () => 
   const listener = partitionListener('persist:hermes-embed')
 
   let result: { requestHeaders?: Record<string, string> } = {}
-  listener({ url: YOUTUBE_HOSTS[1], requestHeaders: { Accept: '*/*' } }, (r) => {
+  listener({ url: YOUTUBE_HOSTS[1], requestHeaders: { Accept: '*/*' } }, r => {
     result = r
   })
 
@@ -130,7 +122,7 @@ test('withEmbedRefererStamp applies the stamp after the wrapped listener', () =>
   })
 
   let result: { requestHeaders?: Record<string, string> } = {}
-  wrapped({ url: YOUTUBE_HOSTS[1], requestHeaders: { Accept: '*/*' } }, (r) => {
+  wrapped({ url: YOUTUBE_HOSTS[1], requestHeaders: { Accept: '*/*' } }, r => {
     result = r
   })
 
@@ -145,7 +137,7 @@ test('withEmbedRefererStamp preserves headers merged by the wrapped listener', (
   })
 
   let result: { requestHeaders?: Record<string, string> } = {}
-  wrapped({ url: YOUTUBE_HOSTS[1], requestHeaders: { Accept: '*/*' } }, (r) => {
+  wrapped({ url: YOUTUBE_HOSTS[1], requestHeaders: { Accept: '*/*' } }, r => {
     result = r
   })
 
@@ -159,7 +151,7 @@ test('withEmbedRefererStamp leaves non-YouTube requests to the wrapped listener 
   })
 
   let result: { requestHeaders?: Record<string, string> } | undefined
-  wrapped({ url: 'https://gateway.internal/api', requestHeaders: { Accept: '*/*' } }, (r) => {
+  wrapped({ url: 'https://gateway.internal/api', requestHeaders: { Accept: '*/*' } }, r => {
     result = r
   })
 

@@ -424,7 +424,12 @@ describe('preview session scoping', () => {
     const aTab = $previewTabs.get().find(tab => tab.target.path === '/work/a.html')
     setPreviewTabPinned(aTab!.id, true)
 
-    expect($visiblePreviewTabs.get().map(tab => tab.target.path).sort()).toEqual(['/work/a.html', '/work/b.html'])
+    expect(
+      $visiblePreviewTabs
+        .get()
+        .map(tab => tab.target.path)
+        .sort()
+    ).toEqual(['/work/a.html', '/work/b.html'])
 
     // Unpinning hides it from the other session again.
     setPreviewTabPinned(aTab!.id, false)

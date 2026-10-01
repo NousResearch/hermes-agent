@@ -110,7 +110,7 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
     }
 
     for (const part of message.parts) {
-      if (part.type === 'text' && part.sourceRowId !== undefined) {
+      if (part.sourceRowId !== undefined) {
         existingPartRowIndices.set(part.sourceRowId, index)
       }
     }
@@ -138,7 +138,10 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
       return undefined
     }
 
-    // Anchor on the message's own row when it has one, else its last part row.
+    // With a rowId the fold is addressed by its FIRST source row, the same key
+    // hydration uses. Without one its part rows are the only identity, and the
+    // last of them is the turn's final reply — the row the settled live bubble
+    // holds (#123801) — so preceding pending rows land before that bubble.
     return message.rowId !== undefined ? anchors[0] : anchors[anchors.length - 1]
   }
 

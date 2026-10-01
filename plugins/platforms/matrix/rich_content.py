@@ -30,7 +30,7 @@ def native_event_context(
     msgtype = str(content.get("msgtype") or "")
     return MatrixEventContext(
         sender,
-        _label_body(msgtype, _own_text(str(content.get("body") or "").strip()), sender),
+        _label_body(msgtype, _own_text(str(content.get("body") or "").strip(), content), sender),
         media_path=media_path,
         media_type=media_type,
         is_image=msgtype == "m.sticker",

@@ -19,10 +19,11 @@ _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
 
 class HostedRoomAuthorityRPC:
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
-                 authorize, timeout=30):
+                 authorize, authorize_write=None, timeout=30):
         self.authority, self.loop = authority, loop
         self.room_id, self.member_id, self.profile = room_id, member_id, profile
         self.principal, self.authorizer, self.timeout = principal, authorize, timeout
+        self.authorize_write = authorize_write
         self.callbacks = {}
         binding = json.dumps([room_id, member_id, profile], separators=(',', ':'))
         self.creation_id = 'hosted:' + hashlib.sha256(binding.encode()).hexdigest()
@@ -137,11 +138,15 @@ class HostedRoomAuthorityRPC:
         from gateway.hosted_room_input_preparation import prepare_hosted_input
         prepared = await asyncio.to_thread(prepare_hosted_input, self, request_id=request_id,
             prompt=params['prompt'], attachments=params.get('attachments'))
-        # Preparation may outlive the dispatch decision (including Stop).
-        if self.authorizer('submit', task, generation) is not True:
+        authorize_write = self.authorize_write
+        # Transports without a writer guard still recheck after background preparation.
+        # Same-home admission checks the newer snapshot inside the accepting write.
+        if authorize_write is None and self.authorizer('submit', task, generation) is not True:
             raise RuntimeStoreError('permission_denied')
         receipt = await self.authority.submit(self.principal, Submission(
-            request_id, self.ref, prepared.payload, 'queue'), _input_custody=prepared.handle)
+            request_id, self.ref, prepared.payload, 'queue'), _input_custody=prepared.handle,
+            _authorize_write=(lambda conn: authorize_write(conn, task, generation))
+            if authorize_write is not None else None)
         self.callbacks[receipt.admission_id] = params['on_terminal']
         if receipt.status in {'queued', 'started'}:
             waiter = self.authority.waiters.get(receipt.admission_id)

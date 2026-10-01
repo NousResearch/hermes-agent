@@ -1,5 +1,7 @@
 # Codex Review Workflow
 
+The helper uses `gpt-6.1-sol` with medium reasoning and fast mode disabled.
+
 Use this workflow for implementation review before committing or pushing.
 
 The spawned review agent follows `docs/workflows/reviewing.md` and must not run

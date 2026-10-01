@@ -267,7 +267,7 @@ codex_bin="$(resolve_codex_bin)"
 prepare_codex_home
 
 set -m
-CODEX_HOME="$review_codex_home" "$codex_bin" exec review -m gpt-6-astra -c features.fast_mode=false -c model_reasoning_effort='"medium"' -c sandbox_mode='"read-only"' --output-last-message "$review_out" "${review_target[@]}" >"$review_log" 2>&1 &
+CODEX_HOME="$review_codex_home" "$codex_bin" exec review -m gpt-6.1-sol -c features.fast_mode=false -c model_reasoning_effort='"medium"' -c sandbox_mode='"read-only"' --output-last-message "$review_out" "${review_target[@]}" >"$review_log" 2>&1 &
 review_pid=$!
 set +m
 printf '[codex-review] review started: pid=%s heartbeat=%ss stall_limit=%s\n' \

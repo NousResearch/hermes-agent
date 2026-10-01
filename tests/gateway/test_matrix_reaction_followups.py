@@ -181,10 +181,10 @@ def test_split_final_delivery_arms_only_successful_replies(tmp_path, monkeypatch
         )
         assert (
             store.claim("work", "!room:test", "$first", "@alice:test", "👍",
-                        verified_delivery_event_id="$second") is not None
+                        reaction_event_id="$reaction", verified_delivery_event_id="$second") is not None
         )
         assert store.claim("work", "!room:test", "$second", "@alice:test", "👍",
-                           verified_delivery_event_id="$second") is None
+                           reaction_event_id="$reaction", verified_delivery_event_id="$second") is None
 
         await adapter.configure_reaction_followups("session", True, (), **choice_context)
         monkeypatch.setattr(
@@ -237,25 +237,25 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
         delivery_event_id="$second",
     )
     assert store.claim("work", "!room:test", "$first", "@bob:test", "👍",
-                       verified_delivery_event_id="$second") is None
+                       reaction_event_id="$reaction", verified_delivery_event_id="$second") is None
     assert store.claim("other", "!room:test", "$first", "@alice:test", "👍",
-                       verified_delivery_event_id="$second") is None
+                       reaction_event_id="$reaction", verified_delivery_event_id="$second") is None
     assert store.claim("work", "!other:test", "$first", "@alice:test", "👍",
-                       verified_delivery_event_id="$second") is None
+                       reaction_event_id="$reaction", verified_delivery_event_id="$second") is None
     assert store.claim("work", "!room:test", "$first", "@alice:test", "👎",
-                       verified_delivery_event_id="$second") is None
+                       reaction_event_id="$reaction", verified_delivery_event_id="$second") is None
     assert (
         store.claim(
             "work", "!room:test", "$first", "@alice:test", "👍",
-            verified_delivery_event_id="$preview",
+            reaction_event_id="$reaction", verified_delivery_event_id="$preview",
         )
         is None
     )
 
     restarted = ReactionWatchStore(path, clock=lambda: now[0])
     claimed = restarted.claim("work", "!room:test", "$second", "@alice:test", "👍",
-                              verified_delivery_event_id="$second")
-    assert claimed == {
+                              reaction_event_id="$reaction", verified_delivery_event_id="$second")
+    assert claimed.watch == {
         "profile": "work",
         "room_id": "!room:test",
         "thread_id": "$thread",
@@ -269,7 +269,7 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
         "reply_excerpt": None,
     }
     assert restarted.claim("work", "!room:test", "$first", "@alice:test", "👍",
-                           verified_delivery_event_id="$second") is None
+                           reaction_event_id="$reaction", verified_delivery_event_id="$second") is None
 
     store.arm(
         "turn-2",
@@ -286,7 +286,7 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
     )
     now[0] += 601
     assert restarted.claim("work", "!room:test", "$later", "@alice:test", "✅",
-                           verified_delivery_event_id="$later") is None
+                           reaction_event_id="$reaction", verified_delivery_event_id="$later") is None
 
 
 @pytest.mark.parametrize("bound_session", [False, True])
@@ -316,7 +316,7 @@ def test_existing_watch_database_discards_rows_without_delivery_event(tmp_path, 
 
     store = ReactionWatchStore(path, clock=lambda: 1000.0)
     assert store.claim("work", "!room:test", "$old", "@alice:test", "👍",
-                       verified_delivery_event_id="$old") is None
+                       reaction_event_id="$reaction", verified_delivery_event_id="$old") is None
     assert store.candidate("!room:test", "$old") is None
 
     store.arm(
@@ -326,8 +326,8 @@ def test_existing_watch_database_discards_rows_without_delivery_event(tmp_path, 
         delivery_event_id="$new",
     )
     claimed = store.claim("work", "!room:test", "$new", "@alice:test", "👍",
-                          verified_delivery_event_id="$new")
-    assert claimed == {
+                          reaction_event_id="$reaction", verified_delivery_event_id="$new")
+    assert claimed.watch == {
         "profile": "work",
         "room_id": "!room:test",
         "thread_id": "",

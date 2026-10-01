@@ -16,13 +16,11 @@ import pytest
 from hermes_state_common import DEFERRED_INDEX_SQL, SCHEMA_SQL
 from hermes_state_schema import SessionSchemaMixin, schema_read_probe_statements
 
-
 def _fresh_schema_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.executescript(SCHEMA_SQL)
     conn.executescript(DEFERRED_INDEX_SQL)
     return conn
-
 
 class TestSchemaReadProbeStatements:
     def test_probes_cover_every_declared_column(self):
@@ -98,4 +96,3 @@ class TestSchemaReadProbeStatements:
             assert "no such table" in str(excinfo.value).lower()
         finally:
             conn.close()
-

@@ -59,18 +59,17 @@ _CATEGORY_ORDER = [
 
 
 @contextlib.contextmanager
-def _env_write_errors(log_msg: str, *, http_passthrough: bool):
+def _env_write_errors(log_msg: str):
     """``ValueError`` -> 400 with its message (save/remove_env_value reject
-    invalid names and denylisted keys — LD_PRELOAD, PATH, PYTHONPATH, …, and
-    the SPA needs the reason, not an opaque 500); anything else is logged and
-    becomes 500 "Internal server error"."""
+    invalid names and denylisted keys — LD_PRELOAD, PATH, PYTHONPATH, …, the
+    credential lifecycle rejects keys a managed install or administrator pins,
+    and the SPA needs the reason, not an opaque 500); ``HTTPException`` (the
+    profile scope's 404 for an unknown ``?profile=``) passes through; anything
+    else is logged and becomes 500 "Internal server error"."""
     try:
         yield
     except HTTPException:
-        if http_passthrough:
-            raise
-        _log.exception(log_msg)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
@@ -178,8 +177,9 @@ def _catalog_provider_env_metadata() -> dict:
 
     Returns ``{env_var: {provider, provider_label, description, url, is_password,
     advanced}}`` for every API-key provider in the unified ``provider_catalog()``
-    (the ``hermes model`` universe), so the desktop Keys tab renders a card even
-    for providers never hand-added to ``OPTIONAL_ENV_VARS``. Hand
+    (the ``hermes model`` universe). When multiple providers intentionally share
+    one env var, ``provider_profiles`` preserves every provider identity while
+    the legacy singular fields keep describing the first provider. Hand
     ``OPTIONAL_ENV_VARS`` prose is layered on top in the endpoint; this only
     supplies membership + grouping + fallbacks.
     """
@@ -197,17 +197,44 @@ def _catalog_provider_env_metadata() -> dict:
     }
 
     meta: dict = {}
+
+    def _profile(entry: dict) -> dict:
+        """Return the provider-specific part of a shared credential row."""
+        return {
+            "provider": entry["provider"],
+            "provider_label": entry["provider_label"],
+            "description": entry["description"],
+            "url": entry["url"],
+            "primary": bool(entry.get("provider_primary")),
+        }
+
+    def _add_provider_env(env_var: str, entry: dict) -> None:
+        """Add one provider without discarding peers that share ``env_var``."""
+        existing = meta.get(env_var)
+        if existing is None:
+            meta[env_var] = entry
+            return
+        if existing.get("provider") == entry.get("provider"):
+            return
+        profiles = existing.setdefault("provider_profiles", [_profile(existing)])
+        if not any(profile.get("provider") == entry.get("provider") for profile in profiles):
+            profiles.append(_profile(entry))
+
     for d in provider_catalog():
         if d.tab != "keys":
             continue
         # API-key vars: the first is the primary (password) field; aliases are
         # kept as additional password fields so users can clear them too.
-        for env_var in d.api_key_env_vars:
+        for index, env_var in enumerate(d.api_key_env_vars):
             if env_var in _non_provider_keys:
                 continue  # don't hijack a shared tool/messaging credential
-            meta.setdefault(
+            entry = _provider_card(
+                d, d.description, d.signup_url or None, is_password=True, advanced=False,
+            )
+            entry["provider_primary"] = index == 0
+            _add_provider_env(
                 env_var,
-                _provider_card(d, d.description, d.signup_url or None, is_password=True, advanced=False),
+                entry,
             )
         # Base-URL override is an advanced, non-secret field for the same card.
         if d.base_url_env_var:
@@ -263,6 +290,15 @@ def _get_env_vars_sync(profile: Optional[str] = None):
             # by the SAME provider identity the CLI `hermes model` picker uses.
             "provider": cat_meta.get("provider", ""),
             "provider_label": cat_meta.get("provider_label", ""),
+            # One credential can intentionally serve multiple built-in routes.
+            # Preserve those identities so Desktop can render distinct cards
+            # that edit the same underlying env var.
+            "provider_profiles": cat_meta.get("provider_profiles", []),
+            # The provider's own index-0 credential flag. Desktop picks a card's
+            # main "Paste key" field from this FIRST, so a shared alias that a
+            # peer profile contributes (DASHSCOPE_API_KEY for the CN Coding /
+            # Token Plan cards) can never re-point the card's primary field.
+            "provider_primary": bool(cat_meta.get("provider_primary", False)),
             # True for a .env key in no catalog at all — an arbitrary/custom var
             # the user added directly, listed so the Keys page can manage it.
             "custom": custom,
@@ -296,15 +332,22 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     # auxiliary.*.api_key / custom_providers[*]), so a rotation can't leave a
     # stale higher-precedence copy that keeps authenticating with the old key.
     # Display-only previews (sentinel or legacy mask) must never gain write authority.
-    # Checked before the error mapper: it turns HTTPException into a 500 at this site.
     if is_redacted_credential_preview(body.value):
         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
-    with _env_write_errors("PUT /api/env failed", http_passthrough=False):
-        from hermes_cli.credential_lifecycle import save_provider_env_credential
+    with _env_write_errors("PUT /api/env failed"):
+        return await scoped_to_thread(body.profile or profile, lambda: _save_env_credential(body.key, body.value, body.provider_setup))
 
-        return await scoped_to_thread(
-            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
-        )
+
+def _save_env_credential(key: str, value: str, provider_setup: bool = False) -> Any:
+    """Save under the request's profile scope; a new provider API key also counts as a provider setup."""
+    from hermes_cli.config import load_env
+    from hermes_cli.credential_lifecycle import save_provider_env_credential
+    from hermes_cli.observability.shared_metrics_setup import record_api_key_saved, web_setup_surface
+
+    previous = load_env().get(key)
+    result = save_provider_env_credential(key, value)
+    record_api_key_saved(key, value, previous, web_setup_surface(), connecting=provider_setup)
+    return result
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"
@@ -683,12 +726,26 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
         # drop this write (or vice versa).
         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             cfg = load_config()
+            providers = cfg.get("providers")
+            created = _resolve_custom_endpoint_entry(
+                providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+        if created:  # editing an endpoint that exists sets nothing new up
+            _record_custom_endpoint_setup(home)
         response["ok"] = True
         response["id"] = endpoint_id
         return response
+
+
+def _record_custom_endpoint_setup(home: Any) -> None:
+    """Counted after the config lock is released (a cold metrics runtime must not stall writers)."""
+    from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done, web_setup_surface
+
+    record_provider_setup_done(web_setup_surface(), "custom", hermes_home=home, background=True)
 
 
 @router.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
@@ -961,7 +1018,7 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     # ones kept providers alive in the model picker), the affected providers'
     # model-cache rows, and value-matched config.yaml api_key mirrors.
     # OAuth/device-code/manual pool entries for the same provider are preserved.
-    with _env_write_errors("DELETE /api/env failed", http_passthrough=True):
+    with _env_write_errors("DELETE /api/env failed"):
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         result = await scoped_to_thread(

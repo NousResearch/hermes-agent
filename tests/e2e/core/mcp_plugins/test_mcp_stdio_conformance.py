@@ -31,7 +31,7 @@ import pytest
 
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
-    apply_known,
+    KnownSymptom,
     build_home,
     calls_received,
     payload,
@@ -45,6 +45,7 @@ from tests.e2e.core.mcp_plugins._helpers import (
     tool_results,
 )
 from tests.e2e.core.mcp_plugins._plugin_helpers import reap_tagged
+from tests.e2e.core._pending_fixes import known_gate
 
 pytestmark = [
     pytest.mark.skipif(not sys.platform.startswith("linux"), reason="orphan sweep uses /proc"),
@@ -54,21 +55,21 @@ pytestmark = [
 SERVER = "e2e"
 UNSUPPORTED_IMAGES = ("svg", "avif", "tiff", "heic", "badb64")
 
-# Open bugs on origin/main. Strict: the test FAILS the moment the bug is fixed, forcing the entry out.
-KNOWN: dict[str, str] = {
-    "test_untrusted_server_runs_read_only_tool_without_approval":
-        "#121042 readOnlyHint read by camelCase attribute under mcp 2.x; every tool needs approval",
-    **{f"test_uncacheable_image_is_reported_to_the_model[{fmt}]":
-       "#120227 an MCP image the cache cannot store vanishes from the tool result" for fmt in UNSUPPORTED_IMAGES},
-    **{f"test_no_required_param_tools_receive_an_arguments_object[{bridge}]":
-       "#120923 every tools/call carries an information-free params._meta: {} (stdio too)"
+# Open bugs on origin/main: test id -> (the symptom's own message pattern, "#issue reason"). Run-time
+# gated around the symptom() check only (known_gate); drop an entry when its fix lands.
+KNOWN: dict[str, tuple[str, str]] = {
+    "test_untrusted_server_runs_read_only_tool_without_approval": (
+        r"^readOnlyHint=true tool was gated on an untrusted server: server got \[\], "
+        r"model got .*write-capable MCP tool 'ro_probe'",
+        "#121042 readOnlyHint read by camelCase attribute under mcp 2.x; every tool needs approval"),
+    **{f"test_uncacheable_image_is_reported_to_the_model[{fmt}]": (
+        rf"^{fmt} image block vanished: the model got no sign the tool returned an image",
+        "#120227 an MCP image the cache cannot store vanishes from the tool result") for fmt in UNSUPPORTED_IMAGES},
+    **{f"test_no_required_param_tools_receive_an_arguments_object[{bridge}]": (
+        r"^tools/call carried an information-free params\._meta: \[\{.*'_meta': \{\}",
+        "#120923 every tools/call carries an information-free params._meta: {} (stdio too)")
        for bridge in ("direct", "tool_call bridge")},
 }
-
-
-@pytest.fixture(autouse=True)
-def _known(request: pytest.FixtureRequest) -> None:
-    apply_known(request, KNOWN)
 
 
 def _run(root: Path, calls: list[tuple[str, dict[str, Any] | str]], *, extra: dict | None = None,
@@ -106,11 +107,13 @@ def test_untrusted_server_refuses_destructive_tool_before_the_rpc(untrusted: dic
     assert "error" in rw and untrusted["canary"] not in json.dumps(rw), rw
 
 
-def test_untrusted_server_runs_read_only_tool_without_approval(untrusted: dict[str, Any]) -> None:
+def test_untrusted_server_runs_read_only_tool_without_approval(untrusted: dict[str, Any],
+                                                                request: pytest.FixtureRequest) -> None:
     received = calls_received(untrusted["log"], "ro_probe")
     ro = payload(untrusted["results"][0])
-    symptom(received and f"RO:{untrusted['canary']}:r" in json.dumps(ro),
-            f"readOnlyHint=true tool was gated on an untrusted server: server got {received}, model got {ro}")
+    with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
+        symptom(received and f"RO:{untrusted['canary']}:r" in json.dumps(ro),
+                f"readOnlyHint=true tool was gated on an untrusted server: server got {received}, model got {ro}")
 
 
 def test_default_trust_server_runs_destructive_tool(tmp_path: Path) -> None:
@@ -132,7 +135,8 @@ NO_ARG_SPELLINGS: list[tuple[str, dict[str, Any] | str, dict[str, Any]]] = [
 
 
 @pytest.mark.parametrize("bridge", ["direct", "tool_call bridge"])
-def test_no_required_param_tools_receive_an_arguments_object(tmp_path: Path, bridge: str) -> None:
+def test_no_required_param_tools_receive_an_arguments_object(tmp_path: Path, bridge: str,
+                                                            request: pytest.FixtureRequest) -> None:
     search = "on" if bridge == "tool_call bridge" else "off"
     calls = [(name, args) for name, args, _ in NO_ARG_SPELLINGS]
     obs = _run(tmp_path, calls, extra={"tools": {"tool_search": {"enabled": search}}})
@@ -145,7 +149,8 @@ def test_no_required_param_tools_receive_an_arguments_object(tmp_path: Path, bri
     assert all(obs["canary"] in r for r in obs["results"]), obs["results"]
     # Last, so the KNOWN symptom below can never mask a wrong-arguments failure above.
     empty_meta = [p for p in received if "_meta" in p and not p["_meta"]]
-    symptom(not empty_meta, f"tools/call carried an information-free params._meta: {empty_meta}")
+    with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
+        symptom(not empty_meta, f"tools/call carried an information-free params._meta: {empty_meta}")
 
 
 # Image results -----------------------------------------------------------------------------------------
@@ -169,11 +174,13 @@ def test_cacheable_image_reaches_the_model_as_a_media_file(images: dict[str, Any
 
 
 @pytest.mark.parametrize("fmt", UNSUPPORTED_IMAGES)
-def test_uncacheable_image_is_reported_to_the_model(images: dict[str, Any], fmt: str) -> None:
+def test_uncacheable_image_is_reported_to_the_model(images: dict[str, Any], fmt: str,
+                                                   request: pytest.FixtureRequest) -> None:
     block = images["by_fmt"][fmt]
     text = json.dumps(block)
     status = f"IMG-STATUS:{images['canary']}:{fmt}"
     assert status in text, f"the text block next to the image was lost: {block}"
     rest = text.replace(status, "")
-    symptom("image" in rest.lower(),
-            f"{fmt} image block vanished: the model got no sign the tool returned an image: {block}")
+    with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
+        symptom("image" in rest.lower(),
+                f"{fmt} image block vanished: the model got no sign the tool returned an image: {block}")

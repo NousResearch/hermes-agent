@@ -38,6 +38,13 @@ export interface GatewayClientOptions {
 
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+// `approval.respond` deadline, counted from the user's click. The prompt itself
+// has no answer window — the backend holds a Desktop approval until it is
+// answered — so this only bounds the answer's round trip, generously: during a
+// long stream WS writes can stall well past the generic deadline while the
+// decision still lands, and a client that gave up early froze on a card that was
+// actually resolved (#60654, #55433).
+export const APPROVAL_RESPOND_TIMEOUT_MS = 300_000
 
 const isGatewayReady = (event: GatewayEvent): event is GatewayEvent<'gateway.ready'> => event.type === 'gateway.ready'
 // Replay fetch after reconnect: bounded so a wedged backend can't hold the

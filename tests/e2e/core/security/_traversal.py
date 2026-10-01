@@ -36,7 +36,7 @@ def run_tool_calls(home: Path, calls: list[tuple[str, dict[str, Any]]], *, cwd: 
     """Run one ``hermes chat -q`` turn whose model issues ``calls`` sequentially; return each tool
     result text, in call order. ``prepare`` runs after the home (config.yaml + .env) is written and
     before Hermes starts (snapshot pre-run state there). Harness failures (non-zero exit, a lost tool
-    result) are plain ``AssertionError`` so a KNOWN strict xfail never masks them."""
+    result) are plain ``AssertionError`` so a KNOWN ``known_gate`` (``raises=BoundaryBreach``) never masks them."""
     key = H.canary("sk-traversal")
     script: list[Any] = [ToolCall(name, args) for name, args in calls] + [Text("done")]
     with FakeLLMServer(script, api_key=key) as srv:

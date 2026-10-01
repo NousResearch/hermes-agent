@@ -1,6 +1,7 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+import os
 import time
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
@@ -21,11 +22,9 @@ from tools.skills_hub_search import (
 from tools.skills_hub_skillssh import SkillsShSource
 from tools.skills_hub_sources import LobeHubSource, UrlSource, WellKnownSkillSource
 
-
 # ---------------------------------------------------------------------------
 # GitHubSource._parse_frontmatter_quick
 # ---------------------------------------------------------------------------
-
 
 class TestParseFrontmatterQuick:
     def test_valid_frontmatter_including_nested_yaml(self):
@@ -47,11 +46,9 @@ class TestParseFrontmatterQuick:
         ):
             assert GitHubSource._parse_frontmatter_quick(content) == {}, repr(content)
 
-
 # ---------------------------------------------------------------------------
 # GitHubSource skills.sh.json grouping sidecar (category support)
 # ---------------------------------------------------------------------------
-
 
 class TestSkillsShGroupings:
     """Parsing + stamping of the skills.sh.json grouping sidecar.
@@ -76,8 +73,6 @@ class TestSkillsShGroupings:
             "dynamo-recipe": "Inference AI",
             "cuopt-developer": "Decision Optimization",
         }
-
-
 
     def test_list_skills_bucket_stamps_category_when_no_sidecar(self):
         # A tap-level bucket labels every skill when the repo ships no skills.sh.json
@@ -121,7 +116,6 @@ class TestSkillsShGroupings:
 # GitHubSource.trust_level_for
 # ---------------------------------------------------------------------------
 
-
 class TestTrustLevelFor:
     def _source(self):
         auth = MagicMock(spec=GitHubAuth)
@@ -134,7 +128,6 @@ class TestTrustLevelFor:
         if TRUSTED_REPOS:
             repo = next(iter(TRUSTED_REPOS))
             assert src.trust_level_for(f"{repo}/some-skill") == "trusted"
-
 
     def test_browseable_trusted_repos_have_taps(self):
         # General invariant covering all current and future trusted repos
@@ -151,7 +144,6 @@ class TestTrustLevelFor:
                 "browsable via `hermes skills browse`."
             )
 
-
 class TestGitHubSourceFileFetch:
     def test_quotes_decoded_support_path_before_contents_api_fetch(self):
         src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
@@ -164,11 +156,9 @@ class TestGitHubSourceFileFetch:
             "skill/references/foo%23bar.md"
         )
 
-
 # ---------------------------------------------------------------------------
 # SkillsShSource
 # ---------------------------------------------------------------------------
-
 
 class TestSkillsShSource:
     def _source(self):
@@ -362,7 +352,6 @@ class TestFindSkillInRepoTree:
         result = self._source()._find_skill_in_repo_tree("owner/repo", "my-skill")
         assert result is None
 
-
 class TestRepoRootSkillLayout:
     """Regression for #115028: skills.sh repos whose SKILL.md sits at the repo ROOT (no skill
     directory, e.g. orzcls/win-disk-cleaner) are listed by search but could not be resolved by
@@ -448,7 +437,6 @@ class TestRepoRootSkillLayout:
 
         assert self._source().inspect(self.IDENTIFIER) is None
 
-
 class TestWellKnownSkillSource:
     @pytest.fixture(autouse=True)
     def _allow_public_skill_fetches(self, monkeypatch):
@@ -480,7 +468,6 @@ class TestWellKnownSkillSource:
         ]
         assert all(r.source == "well-known" for r in results)
 
-
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
     @patch("tools.skills_hub.httpx.get")
@@ -503,7 +490,6 @@ class TestWellKnownSkillSource:
         bundle = self._source().fetch("well-known:https://example.com/.well-known/skills/code-review")
 
         assert bundle is None
-
 
 class TestUrlSource:
     @pytest.fixture(autouse=True)
@@ -584,7 +570,6 @@ Complex cases are documented under `{glob_reference}`.
 
     # ── fetch ───────────────────────────────────────────────────────────
 
-
     @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_skips_missing_support_file_instead_of_aborting(self, mock_get):
         # One referenced support file 404s; the other is reachable. The
@@ -635,7 +620,6 @@ Complex cases are documented under `{glob_reference}`.
         assert self._source().fetch("http://127.0.0.1/SKILL.md") is None
         mock_get.assert_not_called()
 
-
     def test_is_valid_skill_name_rejects_sentinel_and_garbage(self):
         invalid = [
             "",
@@ -647,7 +631,6 @@ Complex cases are documented under `{glob_reference}`.
         ]
         for name in invalid:
             assert not UrlSource._is_valid_skill_name(name), f"should reject {name!r}"
-
 
 class TestCheckForSkillUpdates:
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
@@ -667,10 +650,9 @@ class TestCheckForSkillUpdates:
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("same content")
         (skill_dir / "references").mkdir()
-        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+        (skill_dir / "references" / "checklist.md").write_bytes(b"- [ ] security\n")
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
-
 
     def test_reports_update_when_remote_hash_differs(self, tmp_path, monkeypatch):
         import tools.skills_hub as hub
@@ -803,11 +785,9 @@ class TestCreateSourceRouter:
         gh_idx = next(i for i, src in enumerate(sources) if isinstance(src, GitHubSource))
         assert url_idx < gh_idx
 
-
 # ---------------------------------------------------------------------------
 # HubLockFile
 # ---------------------------------------------------------------------------
-
 
 class TestHubLockFile:
 
@@ -817,7 +797,6 @@ class TestHubLockFile:
         lock = HubLockFile(path=lock_file)
         data = lock.load()
         assert data == {"version": 1, "installed": {}}
-
 
     def test_list_installed(self, tmp_path):
         lock = HubLockFile(path=tmp_path / "lock.json")
@@ -836,11 +815,9 @@ class TestHubLockFile:
         names = {e["name"] for e in installed}
         assert names == {"s1", "s2"}
 
-
 # ---------------------------------------------------------------------------
 # TapsManager
 # ---------------------------------------------------------------------------
-
 
 class TestTapsManager:
 
@@ -849,7 +826,6 @@ class TestTapsManager:
         taps_file.write_text("bad json")
         mgr = TapsManager(path=taps_file)
         assert mgr.load() == []
-
 
     def test_remove_existing_tap(self, tmp_path):
         mgr = TapsManager(path=tmp_path / "taps.json")
@@ -860,7 +836,6 @@ class TestTapsManager:
 # ---------------------------------------------------------------------------
 # LobeHubSource._convert_to_skill_md
 # ---------------------------------------------------------------------------
-
 
 class TestConvertToSkillMd:
     def test_basic_conversion(self):
@@ -886,7 +861,6 @@ class TestConvertToSkillMd:
 # ---------------------------------------------------------------------------
 # unified_search — dedup logic
 # ---------------------------------------------------------------------------
-
 
 class TestUnifiedSearchDedup:
     def _make_source(self, source_id, results):
@@ -920,7 +894,6 @@ class TestUnifiedSearchDedup:
         assert len(results) == 1
         assert results[0].trust_level == "builtin"
 
-
     def test_source_error_handled(self):
         failing = MagicMock()
         failing.source_id.return_value = "fail"
@@ -932,11 +905,9 @@ class TestUnifiedSearchDedup:
         results = unified_search("query", [failing, ok])
         assert len(results) == 1
 
-
 # ---------------------------------------------------------------------------
 # GitHub tap provider labeling + index search/filter
 # ---------------------------------------------------------------------------
-
 
 class TestGithubProviderLabeling:
 
@@ -961,7 +932,6 @@ def _make_index_source(skills):
     src._index = {"skills": skills}
     src._loaded = True
     return src
-
 
 class TestHermesIndexSearch:
     def test_search_matches_identifier_and_provider(self):
@@ -1023,11 +993,9 @@ class TestProviderFilter:
         results = unified_search("cuda", [src], source_filter="nvidia", limit=25)
         assert [r.identifier for r in results] == ["NVIDIA/skills/cuda"]
 
-
 # ---------------------------------------------------------------------------
 # append_audit_log
 # ---------------------------------------------------------------------------
-
 
 class TestAppendAuditLog:
     def test_creates_log_entry(self, tmp_path):
@@ -1041,7 +1009,6 @@ class TestAppendAuditLog:
 # ---------------------------------------------------------------------------
 # Official skills / binary assets
 # ---------------------------------------------------------------------------
-
 
 class TestOptionalSkillSourceMetadata:
     def test_scan_all_emits_repo_root_relative_metadata(self, tmp_path):
@@ -1080,7 +1047,6 @@ class TestOptionalSkillSourceMetadata:
         assert [meta.name for meta in src._scan_all()] == ["real-skill"]
         assert src._find_skill_dir("archived-skill") is None
 
-
 class TestOptionalSkillSourceBinaryAssets:
     def test_fetch_preserves_binary_assets(self, tmp_path):
         optional_root = tmp_path / "optional-skills"
@@ -1094,8 +1060,8 @@ class TestOptionalSkillSourceBinaryAssets:
         (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.wav").write_bytes(
             wav_bytes
         )
-        (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.txt").write_text(
-            "hello\n", encoding="utf-8"
+        (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.txt").write_bytes(
+            b"hello\n"
         )
         pycache_dir = skill_dir / "assets" / "neutts-cli" / "src" / "neutts_cli" / "__pycache__"
         pycache_dir.mkdir(parents=True)
@@ -1107,8 +1073,8 @@ class TestOptionalSkillSourceBinaryAssets:
         bundle = src.fetch("official/mlops/models/neutts")
 
         assert bundle is not None
-        assert bundle.files["assets/neutts-cli/samples/jo.wav"] == wav_bytes
-        assert bundle.files["assets/neutts-cli/samples/jo.txt"] == b"hello\n"
+        assert bundle.files[os.path.join("assets", "neutts-cli", "samples", "jo.wav")] == wav_bytes
+        assert bundle.files[os.path.join("assets", "neutts-cli", "samples", "jo.txt")] == b"hello\n"
         assert "assets/neutts-cli/src/neutts_cli/__pycache__/cli.cpython-312.pyc" not in bundle.files
 
     def test_fetch_rejects_sibling_directory_traversal(self, tmp_path):
@@ -1127,7 +1093,6 @@ class TestOptionalSkillSourceBinaryAssets:
         bundle = src.fetch("official/../optional-skills-escape/pwned")
 
         assert bundle is None
-
 
 class TestOptionalSkillSourceLiveRepoFallback:
     """Skills merged to main after the local install was cut must still be
@@ -1251,7 +1216,6 @@ class TestOptionalSkillSourceLiveRepoFallback:
         assert src.fetch("official/never-heard-of-it") is None
         assert src.search("never-heard-of-it") == []
 
-
 class TestQuarantineBundleBinaryAssets:
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
         import tools.skills_hub as hub
@@ -1280,8 +1244,7 @@ class TestQuarantineBundleBinaryAssets:
         assert (q_path / "SKILL.md").read_text(encoding="utf-8").startswith("---")
         assert (q_path / "assets" / "neutts-cli" / "samples" / "jo.wav").read_bytes() == b"RIFF\x00\x01fakewav"
 
-
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_quarantine_bundle_hash_matches_bundle_on_windows(self, tmp_path):
         """Real Windows text mode: the quarantined SKILL.md hashes like the fetched bundle (#117181)."""
         import tools.skills_hub as hub
@@ -1419,11 +1382,9 @@ class TestQuarantineBundleBinaryAssets:
             "assets/data/sample.wav", field_name="bundle file path", allow_nested=True
         ) == "assets/data/sample.wav"
 
-
 # ---------------------------------------------------------------------------
 # Install-path safety (lock-file → uninstall rmtree boundary)
 # ---------------------------------------------------------------------------
-
 
 class TestInstallPathSafety:
     """Guard the lock-file → ``uninstall_skill`` rmtree path.
@@ -1492,7 +1453,6 @@ class TestInstallPathSafety:
                     install_path=bad_install_path,
                     files=["SKILL.md"],
                 )
-
 
     def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Hand-edited lock.json with absolute install_path must not delete anything."""
@@ -1581,7 +1541,6 @@ class TestInstallPathSafety:
         ok, msg = uninstall_skill("evil")
         assert ok is False
         assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
-
 
     def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
         """Skill install must not follow symlinks that leak file contents
@@ -1948,14 +1907,12 @@ class TestInstallPathSafety:
         assert installed.is_dir()
         record_installed.assert_called_once_with("good-skill")
 
-
 # ---------------------------------------------------------------------------
 # parallel_search_sources — overall_timeout must be honoured even when a
 # source blocks for far longer than the budget (regression: the executor used
 # `with ... as pool`, whose __exit__ calls shutdown(wait=True) and blocked the
 # caller on the slow worker, making overall_timeout a no-op).
 # ---------------------------------------------------------------------------
-
 
 class _FakeSource(SkillSource):
     def __init__(self, sid: str, sleep: float = 0.0, results=None):
@@ -1978,7 +1935,6 @@ class _FakeSource(SkillSource):
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         return None
-
 
 class TestParallelSearchSourcesTimeout:
     def _meta(self, sid: str) -> SkillMeta:
@@ -2011,8 +1967,6 @@ class TestParallelSearchSourcesTimeout:
         assert source_counts.get("fast") == 1
         assert "fast" not in timed_out_ids
         assert any(r.source == "fast" for r in all_results)
-
-
 
 class TestIndexMissFallback:
     """An available hermes-index stands in for the external registries; when it
@@ -2088,11 +2042,9 @@ class TestIndexMissFallback:
         assert source_counts == {"hermes-index": 0, "skills-sh": 1}
         assert timed_out == ["clawhub"]
 
-
 # ---------------------------------------------------------------------------
 # _load_hermes_index — centralized index fetch (Browse-hub landing / search)
 # ---------------------------------------------------------------------------
-
 
 class TestLoadHermesIndex:
     """Regression coverage for the Skills-Hub index fetch.
@@ -2159,12 +2111,10 @@ class TestLoadHermesIndex:
         data = _load_hermes_index()
         assert data == {"skills": [{"name": "stale"}]}
 
-
 # ---------------------------------------------------------------------------
 # Referenced-path extraction & missing support files (regression: a prose
 # glob or a repo-only dev tool referenced in SKILL.md must not abort install)
 # ---------------------------------------------------------------------------
-
 
 class TestReferencedSupportPaths:
     def test_ignores_globs_placeholders_and_truncated_tokens(self):
@@ -2185,7 +2135,6 @@ class TestReferencedSupportPaths:
             "scripts/self_check.py",
             "references/guide.md",
         }
-
 
 class TestGitHubSourceFetchMissingReferencedFile:
     def _source(self):
@@ -2212,5 +2161,3 @@ class TestGitHubSourceFetchMissingReferencedFile:
         assert bundle.files["references/guide.md"] == b"# guide"
         # …and the missing one is warned about and skipped, not fatal.
         assert "references/missing.md" not in bundle.files
-
-

@@ -13,7 +13,7 @@ Two real surfaces, each timestamped against the fake's own clock (same host):
   provider: the outer client must get ``session/update`` chunks before the inner turn ends (#101507).
 
 Both are red on main (the ACP client buffers the whole response, then replays it as a stream), so
-both are strict xfails that raise :class:`KnownSymptom` only for "no progress before the result".
+both are ``known_gate`` cells that XFAIL only on :class:`KnownSymptom` for "no progress before the result".
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from typing import Any, Callable
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import TURN_TIMEOUT, KnownSymptom, NativeHome, make_home
 from tests.fakes.providers import copilot_acp as acp
 
@@ -49,9 +50,12 @@ MIN_SPAN_S = THOUGHT_STEPS * STEP_S * 0.75  # vacuity: the agent really spent se
 MARKERS = (HEAD.strip(), THOUGHT, ANSWER)
 
 
-KNOWN: dict[str, str] = {
-    "tui_stream": "#120550 copilot-acp buffers the whole turn: no reasoning/message delta reaches the UI in flight",
-    "nested_acp": "#101507 hermes acp over copilot-acp forwards inner ACP chunks only after the inner turn ends",
+# Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
+KNOWN: dict[str, tuple[str, str]] = {
+    "tui_stream": (r"^tui_stream: no agent chunk reached the surface during the [\d.]+s turn",
+                   "#120550 copilot-acp buffers the whole turn: no reasoning/message delta reaches the UI in flight"),
+    "nested_acp": (r"^nested_acp: no agent chunk reached the surface during the [\d.]+s turn",
+                   "#101507 hermes acp over copilot-acp forwards inner ACP chunks only after the inner turn ends"),
 }
 
 
@@ -211,10 +215,7 @@ def _agent_timeline(fake: acp.AcpFake) -> tuple[float, float]:
     return first, done
 
 
-@pytest.mark.parametrize("surface", [
-    pytest.param(name, marks=pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN[name]))
-    for name in SURFACES
-])
+@pytest.mark.parametrize("surface", SURFACES)
 def test_long_reasoning_turn_streams_progress_before_it_completes(observed, surface):
     obs = observed[surface]
     assert obs.fake.invalid() == [], f"requests rejected by the ACP schema: {obs.fake.invalid()}"
@@ -222,10 +223,11 @@ def test_long_reasoning_turn_streams_progress_before_it_completes(observed, surf
     first, done = _agent_timeline(obs.fake)
     assert done - first >= MIN_SPAN_S, f"vacuity: the agent streamed for only {done - first:.2f}s"
     seen_at = _first_marker_arrival(obs.received)
-    if seen_at is None or seen_at >= done - 0.3:
-        late = [round(t - done, 2) for t, m in obs.received if _chunk_text(m)]
-        raise KnownSymptom(f"{surface}: no agent chunk reached the surface during the {done - first:.1f}s turn; "
-                           f"chunk arrivals relative to the result: {late}")
+    with known_gate(KNOWN, surface, raises=KnownSymptom):
+        if seen_at is None or seen_at >= done - 0.3:
+            late = [round(t - done, 2) for t, m in obs.received if _chunk_text(m)]
+            raise KnownSymptom(f"{surface}: no agent chunk reached the surface during the {done - first:.1f}s turn; "
+                               f"chunk arrivals relative to the result: {late}")
     assert seen_at >= first, "a chunk cannot arrive before the agent sent it"
 
 

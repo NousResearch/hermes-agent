@@ -6,8 +6,8 @@ stripped, and the model served by ``tests/fakes/fake_llm_provider.FakeLLMServer`
 the boundary's observable outcome: files on disk, state.db rows, logs, and the next wire request.
 
 ``BoundaryBreach`` is raised (never a bare ``assert``) when the guarded boundary itself fails, so a
-``KNOWN`` strict xfail (``raises=BoundaryBreach``) matches only the tracked bug; a harness failure
-(boot, timeout, lost turn) still fails the test loudly.
+``KNOWN`` entry gated with ``known_gate(..., raises=BoundaryBreach)`` matches only the tracked bug; a
+harness failure (boot, timeout, lost turn) is a plain ``AssertionError`` and still fails the test loudly.
 """
 
 from __future__ import annotations
@@ -24,20 +24,14 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 class BoundaryBreach(AssertionError):
-    """A security boundary did not hold (secret leaked, file outside a store touched, approval bypassed)."""
+    """A security boundary did not hold (secret leaked, file outside a store touched, approval bypassed).
 
-
-def known_param(name: str, known: dict[str, str]) -> Any:
-    """``pytest.param`` for a scenario, marked strict-xfail on ``BoundaryBreach`` when it is KNOWN."""
-    if name in known:
-        return pytest.param(name, marks=pytest.mark.xfail(strict=True, raises=BoundaryBreach, reason=known[name]))
-    return name
+    Raised only at a boundary assertion: it is the type ``known_failure`` / ``known_gate`` accept
+    (``raises=BoundaryBreach``) for a KNOWN gap, so a harness failure can never be absorbed."""
 
 
 def canary(label: str) -> str:

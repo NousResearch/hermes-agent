@@ -28,7 +28,6 @@ from tests.e2e.core.providers._openai_helpers import (
     chat_messages,
     custom_chat_config,
     db_messages,
-    known_marks,
     oneshot,
 )
 from tests.e2e.core.providers._openai_tui import TuiGateway
@@ -36,14 +35,11 @@ from tests.fakes.providers.chat_variants import CText, CTools, FakeChatVariantSe
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="subprocess harness is Linux-gated")
 
-KNOWN: dict[str, str] = {
-    "reasoning_budget_session_keeps_answering":
-        "#118182 replayed reasoning_details grow past a route budget and wedge the session on a 400",
+KNOWN: dict[str, tuple[str, str]] = {
+    "reasoning_budget_session_keeps_answering": (
+        r"turns \[\d[\d, ]*\] were not answered once replayed reasoning passed the budget",
+        "#118182 replayed reasoning_details grow past a route budget and wedge the session on a 400"),
 }
-
-
-def known(name: str) -> list:
-    return known_marks(KNOWN, name)
 
 
 def _rd(tag: str, text: str | None = None) -> list[dict]:
@@ -128,8 +124,7 @@ def test_reasoning_content_echoed_on_tool_call_messages(tmp_path) -> None:
     assert _assistant_field(mains[2], "reasoning_content") == ["ds-1", "ds-2"], chat_messages(mains[2], "assistant")
 
 
-@pytest.mark.parametrize("scenario", [pytest.param("budget", marks=known("reasoning_budget_session_keeps_answering"))])
-def test_long_session_does_not_wedge_on_replayed_reasoning_budget(tmp_path, scenario) -> None:
+def test_long_session_does_not_wedge_on_replayed_reasoning_budget(tmp_path) -> None:
     """Each turn mints ~1 KB of reasoning; the route 400s ("Provider returned error", not
     retryable) once the replayed total passes 4 KB. Every turn must still be answered."""
     turns = 8
@@ -150,5 +145,5 @@ def test_long_session_does_not_wedge_on_replayed_reasoning_budget(tmp_path, scen
     rejected = [i for i, r in enumerate(records) if r.get("response") == "route_rejection"]
     assert rejected, "precondition: the replayed total crossed the route budget at least once"
     missing = [i for i in range(turns) if f"ANSWER-{i}" not in answers[i]]
-    with bug_assertions():
+    with bug_assertions(KNOWN, "reasoning_budget_session_keeps_answering"):
         assert not missing, f"turns {missing} were not answered once replayed reasoning passed the budget: {answers}"

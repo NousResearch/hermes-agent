@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.kanban._helpers import Board, pid_alive, wait_until
 from tests.fakes.fake_llm_provider import FakeLLMServer, Hang, Text, ToolCall
 
@@ -40,24 +41,24 @@ TICK = ("--failure-limit", "5")
 ATTEMPT_ONE_PROSE = "ATTEMPT_ONE_PROSE the card could not be finished in this run."
 ATTEMPT_TWO_MARK = "ATTEMPT_TWO_MARK heartbeat sent, about to call the provider again."
 
-# Red on current main for a tracked, open bug. Strict: the test FAILS the moment the bug is fixed,
-# forcing the entry out so the contract is enforced again.
-KNOWN: dict[str, str] = {
-    "test_fresh_claim_does_not_inherit_previous_heartbeat":
-        "#119155 a fresh claim keeps the previous run's last_heartbeat_at",
-    "test_sigkilled_attempt_is_booked_as_a_crash_of_its_own":
-        "#121255 a SIGKILLed worker is booked with the previous attempt's rc=0 trailer",
-    "test_crash_diagnostic_comes_from_the_crashed_attempt":
-        "#119618 crash diagnostic carries an older attempt's output",
+# Open tracked bugs, test name -> (pattern, reason) for ``known_gate`` (matches ``KnownGap`` only).
+# Delete an entry once its fix lands.
+KNOWN: dict[str, tuple[str, str]] = {
+    "test_fresh_claim_does_not_inherit_previous_heartbeat": (
+        r"fresh run \d+ \(started \d+\) carries last_heartbeat_at=\d+, attempt 2's value",
+        "#119155 a fresh claim keeps the previous run's last_heartbeat_at"),
+    "test_sigkilled_attempt_is_booked_as_a_crash_of_its_own": (
+        r"SIGKILLed attempt booked as \w+ .*'exit_code': 0\b",
+        "#121255 a SIGKILLed worker is booked with the previous attempt's rc=0 trailer"),
+    "test_crash_diagnostic_comes_from_the_crashed_attempt": (
+        r"attempt 2's crash diagnostic quotes attempt 1: ",
+        "#119618 crash diagnostic carries an older attempt's output"),
 }
 
 
 class KnownGap(AssertionError):
-    """The tracked bug's own assertion. Only this is xfailed; any harness failure stays red."""
-
-
-def known(name: str):
-    return pytest.mark.xfail(strict=True, raises=KnownGap, reason=KNOWN[name])
+    """The tracked bug's own assertion, the only type ``known_gate`` accepts; any harness failure
+    stays red."""
 
 
 class Director:
@@ -166,20 +167,19 @@ def test_sigkilled_worker_is_reclaimed_and_the_retry_completes_once(scenario: Sc
     assert len(b.events(sc.tid, "completed")) == 1
 
 
-@known("test_fresh_claim_does_not_inherit_previous_heartbeat")
 def test_fresh_claim_does_not_inherit_previous_heartbeat(scenario: Scenario) -> None:
     sc = scenario
     run = sc.claim_run
     assert run["outcome"] is None and run["status"] == "running", sc.board.diag(sc.tid)
     assert sc.after_claim["current_run_id"] == run["id"]
     hb = sc.after_claim["last_heartbeat_at"]
-    if hb is not None and int(hb) < int(run["started_at"]):
-        raise KnownGap(
-            f"fresh run {run['id']} (started {run['started_at']}) carries last_heartbeat_at={hb}, "
-            f"attempt 2's value {sc.hb_before_kill}")
+    with known_gate(KNOWN, "test_fresh_claim_does_not_inherit_previous_heartbeat", raises=KnownGap):
+        if hb is not None and int(hb) < int(run["started_at"]):
+            raise KnownGap(
+                f"fresh run {run['id']} (started {run['started_at']}) carries last_heartbeat_at={hb}, "
+                f"attempt 2's value {sc.hb_before_kill}")
 
 
-@known("test_sigkilled_attempt_is_booked_as_a_crash_of_its_own")
 def test_sigkilled_attempt_is_booked_as_a_crash_of_its_own(scenario: Scenario) -> None:
     sc = scenario
     run2 = _run_of_attempt(sc, 2)
@@ -188,15 +188,16 @@ def test_sigkilled_attempt_is_booked_as_a_crash_of_its_own(scenario: Scenario) -
     booked = [(k, p) for k, p in kinds if k in ("crashed", "protocol_violation", "rate_limited")]
     assert len(booked) == 1, kinds
     kind, payload = booked[0]
-    if kind != "crashed" or (payload or {}).get("exit_code") == 0:
-        raise KnownGap(f"SIGKILLed attempt booked as {kind} {payload}")
+    with known_gate(KNOWN, "test_sigkilled_attempt_is_booked_as_a_crash_of_its_own", raises=KnownGap):
+        if kind != "crashed" or (payload or {}).get("exit_code") == 0:
+            raise KnownGap(f"SIGKILLed attempt booked as {kind} {payload}")
 
 
-@known("test_crash_diagnostic_comes_from_the_crashed_attempt")
 def test_crash_diagnostic_comes_from_the_crashed_attempt(scenario: Scenario) -> None:
     sc = scenario
     run1, run2 = _run_of_attempt(sc, 1), _run_of_attempt(sc, 2)
     # Vacuity guard: attempt 1's own diagnostic does carry its prose.
     assert "ATTEMPT_ONE_PROSE" in (run1["error"] or ""), run1
-    if "ATTEMPT_ONE_PROSE" in (run2["error"] or ""):
-        raise KnownGap(f"attempt 2's crash diagnostic quotes attempt 1: {run2['error'][-300:]!r}")
+    with known_gate(KNOWN, "test_crash_diagnostic_comes_from_the_crashed_attempt", raises=KnownGap):
+        if "ATTEMPT_ONE_PROSE" in (run2["error"] or ""):
+            raise KnownGap(f"attempt 2's crash diagnostic quotes attempt 1: {run2['error'][-300:]!r}")

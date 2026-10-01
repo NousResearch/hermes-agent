@@ -23,12 +23,15 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers import _native_helpers as nh
 from tests.fakes.providers.gemini_native import HERMES_ENV, Call, Calls, GeminiFake, Recorded, Text, hermes_model
 
-KNOWN = {
-    "ref_dropped_v1": "#99438 legacy `parameters` path drops $ref/$defs instead of inlining (empty schema)",
-    "array_items_v1": "#71804 array parameter without `items` is sent as-is; Google 400s 'items: missing field'",
+KNOWN: dict[str, tuple[str, str]] = {
+    "ref_dropped_v1": (r"\$ref-typed parameter lost its shape on the v1 wire",
+                       "#99438 legacy `parameters` path drops $ref/$defs instead of inlining (empty schema)"),
+    "array_items_v1": (r"Google rejected the item-less array: .*items: missing field",
+                       "#71804 array parameter without `items` is sent as-is; Google 400s 'items: missing field'"),
 }
 
 TOOL = "mcp__hostile__lookup"
@@ -169,19 +172,19 @@ def test_v1_proto_schema_declaration_is_accepted(outcomes: dict[str, Outcome]) -
     assert params["required"] == ["query"], params
 
 
-@pytest.mark.xfail(strict=True, raises=nh.KnownSymptom, reason=KNOWN["ref_dropped_v1"])
 def test_v1_ref_parameter_keeps_its_shape(outcomes: dict[str, Outcome]) -> None:
     _assert_round_trip(outcomes["v1"], "v1")
     mode = outcomes["v1"].declaration()["parameters"]["properties"]["mode"]
-    if mode == {}:
-        raise nh.KnownSymptom(f"$ref-typed parameter lost its shape on the v1 wire: {mode}")
+    with known_gate(KNOWN, "ref_dropped_v1", raises=nh.KnownSymptom):
+        if mode == {}:
+            raise nh.KnownSymptom(f"$ref-typed parameter lost its shape on the v1 wire: {mode}")
     assert mode.get("enum") == ["fast", "slow"], mode
 
 
-@pytest.mark.xfail(strict=True, raises=nh.KnownSymptom, reason=KNOWN["array_items_v1"])
 def test_v1_array_without_items_is_accepted(outcomes: dict[str, Outcome]) -> None:
     o = outcomes["v1_itemless"]
     assert o.calls, o.result.describe()
-    if any("items: missing field" in r for r in o.rejections):
-        raise nh.KnownSymptom(f"Google rejected the item-less array: {o.rejections}")
+    with known_gate(KNOWN, "array_items_v1", raises=nh.KnownSymptom):
+        if any("items: missing field" in r for r in o.rejections):
+            raise nh.KnownSymptom(f"Google rejected the item-less array: {o.rejections}")
     _assert_round_trip(o, "v1")

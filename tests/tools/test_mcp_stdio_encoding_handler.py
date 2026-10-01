@@ -16,7 +16,6 @@ from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not _MCP_AVAILABLE, reason="MCP SDK not installed")
 
-
 class TestStdioEncodingErrorHandler:
     """Verify that _run_stdio passes encoding_error_handler='replace'."""
 
@@ -63,4 +62,3 @@ class TestStdioEncodingErrorHandler:
                 await server.shutdown()
 
         asyncio.run(_test())
-

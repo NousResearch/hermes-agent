@@ -1,3 +1,4 @@
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
 """Render ``tui_gateway/contracts`` into TypeScript and OpenRPC.
 
 Python-only (the Python CI lane has no Node): Pydantic's ``model_json_schema()`` output is walked
@@ -347,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     check = "--check" in args
     stale = []
     for path, text in render_all().items():
-        current = path.read_text(encoding="utf-8") if path.exists() else None
+        current = path.read_text(encoding="utf-8-sig") if path.exists() else None
         if current == text:
             continue
         if check:

@@ -36,17 +36,21 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.tenancy import _helpers as T
 
 from . import _scope as S
-from ._helpers import BoundaryBreach, known_param, poll
+from ._helpers import BoundaryBreach, poll
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups (serve teardown)")
 
 PROFILES = ("default", "beta")
 
-KNOWN: dict[str, str] = {
-    "plugin_route": "#120310 /api/plugins/<id>/ routes run with no profile secret scope under multiplex",
+KNOWN: dict[str, tuple[str, str]] = {
+    # every read fails closed (no scope bound); a route that borrows another profile's value stays red
+    "plugin_route": (r"^plugin_route: plugin API route did not run in the requesting profile's secret scope:"
+                     r"(\n  \w+: get_secret raised UnscopedSecretError)+\Z",
+                     "#120310 /api/plugins/<id>/ routes run with no profile secret scope under multiplex"),
 }
 
 
@@ -127,7 +131,7 @@ def test_scoped_sibling_route_resolves_each_profiles_secret(host: Host) -> None:
                                  f"(own ends {own[-4:]!r}; matches {others or 'nobody'})")
 
 
-@pytest.mark.parametrize("scenario", [known_param("plugin_route", KNOWN)])
+@pytest.mark.parametrize("scenario", ["plugin_route"])
 def test_plugin_route_runs_in_requesting_profile_scope(host: Host, scenario: str) -> None:
     replies: list[str] = []
     for name in ("default", "beta", "default"):
@@ -140,9 +144,10 @@ def test_plugin_route_runs_in_requesting_profile_scope(host: Host, scenario: str
         if value != host.secrets[name]:
             owner = next((u for u, v in host.secrets.items() if v == value), "<nobody>")
             replies.append(f"{name}: got {owner}'s value {value!r}")
-    if replies:
-        raise BoundaryBreach(f"{scenario}: plugin API route did not run in the requesting profile's "
-                             "secret scope:\n  " + "\n  ".join(replies))
+    with known_gate(KNOWN, scenario, raises=BoundaryBreach):
+        if replies:
+            raise BoundaryBreach(f"{scenario}: plugin API route did not run in the requesting profile's "
+                                 "secret scope:\n  " + "\n  ".join(replies))
 
 
 def test_mcp_subprocess_env_holds_only_own_profile_secrets(host: Host) -> None:

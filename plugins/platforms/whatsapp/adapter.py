@@ -224,10 +224,12 @@ def _file_content_hash(path: Path) -> str:
 
 
 def check_whatsapp_requirements() -> bool:
-    """
-    Check if WhatsApp dependencies are available.
+    """Return whether the Node.js bridge is discoverable or may be prepared lazily.
 
-    WhatsApp requires a Node.js bridge for most implementations.
+    Discovery runs while the gateway creates adapters, so it must stay cheap and
+    side-effect free.  Spawning ``node --version`` here made transient host pressure
+    look like a missing dependency and caused the reconnect watcher to drop WhatsApp
+    from its queue.  Real process failures remain observable in ``connect()``.
     """
     _node = find_node_executable("node")
     if not _node:
@@ -235,10 +237,7 @@ def check_whatsapp_requirements() -> bool:
 
         # Let connect prepare a missing runtime, but never install during discovery.
         return lazy_installs_allowed()
-    try:
-        return subprocess.run([_node, "--version"], timeout=5, env=with_hermes_node_path(), **_RUN_TEXT).returncode == 0
-    except Exception:
-        return False
+    return True
 
 
 # Env vars bridge.js consumes; injected because a multiplexed subprocess's os.environ lacks the secondary profile's .env.

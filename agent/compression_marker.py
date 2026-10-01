@@ -24,12 +24,15 @@ _COMPRESSION_MARKER_TEMPLATE = (
     "output — always write full, untruncated content.⟫"
 )
 
-# A minted marker (prefix + rendered counts through the first sentence). The prefix alone
-# does not match, so source/docs that mention the constant can still be edited.
+# A rendered omitted/total count inside a minted marker.
+_MARKER_COUNT_RE = r"\d[\d,]*"
+
+# Full rendered first sentence of a minted marker; renderer tests assert this shape
+# (the dispatch guard uses _COMPRESSION_MARKER_ARTIFACT_RE below).
 _COMPRESSION_MARKER_RE = re.compile(
     re.escape(_COMPRESSION_MARKER_TEMPLATE.split(". ", 1)[0] + ".")
-    .replace(re.escape("{omitted:,}"), r"\d[\d,]*")
-    .replace(re.escape("{total:,}"), r"\d[\d,]*")
+    .replace(re.escape("{omitted:,}"), _MARKER_COUNT_RE)
+    .replace(re.escape("{total:,}"), _MARKER_COUNT_RE)
 )
 
 # A marker cut by a later boundary may never reach the fixed sentence above. The
@@ -37,7 +40,7 @@ _COMPRESSION_MARKER_RE = re.compile(
 # count is present. Requiring that rendered count keeps the bare prefix/template
 # editable in source and documentation.
 _COMPRESSION_MARKER_ARTIFACT_RE = re.compile(
-    re.escape(_COMPRESSION_MARKER_PREFIX) + r"\s+\d[\d,]*"
+    re.escape(_COMPRESSION_MARKER_PREFIX) + r"\s+" + _MARKER_COUNT_RE
 )
 
 # #121548 — every OTHER model-visible elision (turn text, summaries, skill bodies, diagnostics)

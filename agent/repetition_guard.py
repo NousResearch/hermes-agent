@@ -10,6 +10,7 @@ conservative: only LONG verbatim repeats (60+ chars) covering a majority of the 
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 
 # Below this length the check doesn't run: short truncations trivially
@@ -44,6 +45,15 @@ _RUNAWAY_DISTINCT_LINE_RATIO = 0.5
 # real stop-path loops (#100716) run 80k-350k chars, while asked-for repeats ("say X 50 times",
 # identical table rows, templated YAML) stay in the low KB and must be delivered.
 STOP_PATH_MIN_CHARS = 16_000
+
+# ``is_line_cycle``: a loop whose repeats differ by one varying line (a counter, a rotating closing
+# word) defeats the exact-repeat scans, because no 60-char window or exact period recurs. It still
+# re-emits the same handful of lines, which real files at this scale never do: source, lock files,
+# schemas, prose and even pretty-printed JSON arrays keep a fifth or more of their lines distinct.
+LINE_CYCLE_MIN_LINES = 200
+_LINE_CYCLE_DISTINCT_RATIO = 0.05
+# Tool-call arguments arrive JSON-escaped, so their line breaks are the two characters ``\n``.
+_ESCAPED_LINE_BREAK = re.compile(r"\\[nr]")
 
 
 def is_repetition_dominated(text: str) -> bool:
@@ -154,3 +164,16 @@ def _line_repetition_dominated(text: str, n: int) -> bool:
     """True when a single normalized line covers half the fragment via repeats."""
     counts = Counter(norm for norm in (line.strip() for line in text.splitlines()) if norm)
     return any(c >= _MIN_REPEAT_COUNT and c * len(line) >= n * _DOMINANCE_RATIO for line, c in counts.items())
+
+
+def is_line_cycle(text: str) -> bool:
+    """True when ``text`` is a few lines cycling: at least ``LINE_CYCLE_MIN_LINES`` non-empty lines,
+    fewer than 5% of them distinct. Escaped line breaks count as breaks, so streamed tool-call
+    arguments are judged by the text they would write. Callers pass a bounded tail."""
+    if not isinstance(text, str):
+        return False
+    lines = [line.strip() for line in _ESCAPED_LINE_BREAK.sub("\n", text).splitlines()]
+    lines = [line for line in lines if line]
+    if len(lines) < LINE_CYCLE_MIN_LINES:
+        return False
+    return len(set(lines)) < len(lines) * _LINE_CYCLE_DISTINCT_RATIO

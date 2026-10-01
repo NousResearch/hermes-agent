@@ -11,6 +11,7 @@ open tool call stops growing.
 """
 import json
 import logging
+import random
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,13 @@ from agent import chat_completion_helpers as helpers
 from tests.agent.test_streaming import _make_stream_chunk, _make_tool_call_delta
 
 LOOP = "The prompt list continues with the same line again and again. "
+CLOSINGS = ["Complete.", "Final status: complete.", "Closeout.", "Launch.", "Done."]
+
+
+def _closing_loop_unit(rng):
+    """One repeat of a captured write_file loop: three fixed lines and a closing line
+    chosen irregularly, so no exact window or period recurs."""
+    return f"\\n\\n**End.**\\n\\n**Bluebell**\\n\\n**14 May**\\n\\n**{rng.choice(CLOSINGS)}**"
 
 
 def _make_agent(**kwargs):
@@ -77,6 +85,7 @@ class TestAccumulatorWatch:
         assert acc.runaway is not None
         assert acc.runaway[0] == "write_file"
         assert acc.runaway[1] >= helpers._TOOL_ARG_RUNAWAY_MIN_CHARS
+        assert acc.runaway[2] == "repetition"
         # Buffered parts are untouched by the watch.
         assert acc.materialize()[0]["function"]["arguments"].startswith('{"path":"/tmp/a.md"')
 
@@ -85,6 +94,27 @@ class TestAccumulatorWatch:
         self._feed(acc, '{"path":"/tmp/a.csv","content":"', tc_id="call_1")
         for i in range(1500):
             self._feed(acc, f"row {i}: value {i * 7919 % 104729}, label item-{i:05d}\\n")
+        assert acc._argument_chars[0] > helpers._TOOL_ARG_RUNAWAY_MIN_CHARS
+        assert acc.runaway is None
+
+    def test_flags_a_loop_whose_repeats_differ_by_one_line(self):
+        rng = random.Random(1)
+        acc = helpers._ToolCallAccumulator(watch_arguments=True)
+        self._feed(acc, '{"path":"/tmp/c.md","content":"# Launch checklist\\n', tc_id="call_1")
+        while acc.runaway is None and acc._argument_chars[0] < 100_000:
+            self._feed(acc, _closing_loop_unit(rng))
+        assert acc.runaway is not None
+        assert acc.runaway[2] == "repeated lines"
+        # Caught at the first checks past the threshold, not at the output cap.
+        assert acc.runaway[1] <= helpers._TOOL_ARG_RUNAWAY_MIN_CHARS + helpers._TOOL_ARG_RUNAWAY_STEP_CHARS + 100
+
+    def test_ignores_a_large_pretty_printed_json_array(self):
+        body = json.dumps([{"id": i, "name": f"item {i}", "tags": ["a", "b"], "active": True} for i in range(1500)], indent=2)
+        escaped = json.dumps(body)[1:-1]
+        acc = helpers._ToolCallAccumulator(watch_arguments=True)
+        self._feed(acc, '{"path":"/tmp/items.json","content":"', tc_id="call_1")
+        for i in range(0, len(escaped), 400):
+            self._feed(acc, escaped[i : i + 400])
         assert acc._argument_chars[0] > helpers._TOOL_ARG_RUNAWAY_MIN_CHARS
         assert acc.runaway is None
 
@@ -137,6 +167,44 @@ class TestStreamingGuards:
         assert "arguments degenerated into repetition" in caplog.text
         assert response.choices[0].message.tool_calls[0].function.arguments == complete
         # A looping model is responsive: the unresponsive-provider breaker is untouched.
+        assert helpers._stale_streak(agent) == 0
+
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @patch("run_agent.AIAgent._abort_request_openai_client")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_reconnects_when_streamed_arguments_cycle_through_a_few_lines(
+        self, mock_close, mock_create, mock_abort, mock_replace, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "30")
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+        rng = random.Random(1)
+
+        class CyclingArguments:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                yield _make_stream_chunk(
+                    tool_calls=[_write_file_call('{"path":"/tmp/c.md","content":"# Launch checklist\\n')]
+                )
+                for _ in range(4000):
+                    time.sleep(0.001)
+                    yield _make_stream_chunk(tool_calls=[_write_file_call(_closing_loop_unit(rng), tc_id=None)])
+                raise httpx.RemoteProtocolError("peer closed connection")
+
+        complete = '{"path":"/tmp/c.md","content":"# Launch checklist"}'
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [CyclingArguments(), _complete_retry(complete)]
+        mock_create.return_value = mock_client
+        agent = _make_agent()
+
+        with caplog.at_level(logging.WARNING):
+            response = agent._interruptible_streaming_api_call({})
+
+        assert mock_abort.called
+        assert "arguments degenerated into repeated lines" in caplog.text
+        assert response.choices[0].message.tool_calls[0].function.arguments == complete
         assert helpers._stale_streak(agent) == 0
 
     @patch("run_agent.AIAgent._abort_request_openai_client")

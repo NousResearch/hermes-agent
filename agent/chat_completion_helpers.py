@@ -47,7 +47,7 @@ from agent.message_sanitization import (
     sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
-from agent.repetition_guard import is_repetition_dominated
+from agent.repetition_guard import is_line_cycle, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -2758,6 +2758,8 @@ class _BedrockStream:
 # this size, and again after every further step of growth.
 _TOOL_ARG_RUNAWAY_MIN_CHARS = 32_000
 _TOOL_ARG_RUNAWAY_STEP_CHARS = 16_000
+# The line-cycle check reads only this much of the newest arguments, so its cost stays flat.
+_TOOL_ARG_LINE_CYCLE_TAIL_CHARS = 32_000
 
 
 class _ToolCallAccumulator:
@@ -2781,7 +2783,7 @@ class _ToolCallAccumulator:
         self._argument_chars: dict[int, int] = {}
         self._checked_chars: dict[int, int] = {}
         self.last_growth_at: Optional[float] = None
-        self.runaway: Optional[tuple[str, int]] = None
+        self.runaway: Optional[tuple[str, int, str]] = None  # (tool name, chars, loop kind)
 
     def close_watch(self) -> None:
         """The stream reported a finish: its tool calls are complete, stop watching them."""
@@ -2805,8 +2807,13 @@ class _ToolCallAccumulator:
         if size - self._checked_chars.get(idx, 0) < _TOOL_ARG_RUNAWAY_STEP_CHARS:
             return
         self._checked_chars[idx] = size
-        if is_repetition_dominated("".join(self._argument_parts.get(idx, ()))):
-            self.runaway = (self.acc[idx]["function"]["name"] or "?", size)
+        joined = "".join(self._argument_parts.get(idx, ()))
+        name = self.acc[idx]["function"]["name"] or "?"
+        if is_repetition_dominated(joined):
+            self.runaway = (name, size, "repetition")
+        # Repeats that differ by one varying line defeat the exact-repeat scans.
+        elif is_line_cycle(joined[-_TOOL_ARG_LINE_CYCLE_TAIL_CHARS:]):
+            self.runaway = (name, size, "repeated lines")
 
     def materialize(self) -> dict:
         """Join buffered argument deltas into each entry's ``arguments``; idempotent. Returns ``acc``."""
@@ -3901,8 +3908,8 @@ class _StreamingCall(StreamingWaitMonitor):
         if tool_calls is None:
             return None
         if tool_calls.runaway is not None:
-            name, size = tool_calls.runaway
-            return f"Tool call '{name}' arguments degenerated into repetition ({size:,} chars) while streaming"
+            name, size, kind = tool_calls.runaway
+            return f"Tool call '{name}' arguments degenerated into {kind} ({size:,} chars) while streaming"
         grew_at = tool_calls.last_growth_at
         if grew_at is not None and time.time() - grew_at > self._tool_arg_stall_timeout:
             return (f"Tool call arguments stalled for {time.time() - grew_at:.0f}s "

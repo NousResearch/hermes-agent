@@ -254,6 +254,7 @@ def test_unbound_worker_cannot_mutate_card(monkeypatch, worker_env):
     for handler, args in [
         (kt._handle_complete, {"summary": "stale worker says done"}),
         (kt._handle_block, {"reason": "stale worker blocks"}),
+        (kt._handle_schedule, {"reason": "stale worker parks"}),
         (kt._handle_request_review, {"summary": "stale worker hands off"}),
         (kt._handle_request_changes, {"reason": "stale worker requests changes"}),
     ]:
@@ -289,6 +290,8 @@ def test_malformed_run_id_refused_but_nonlifecycle_allowed(monkeypatch, worker_e
 
     # Run-lifecycle mutations are refused on a malformed run id.
     out = json.loads(kt._handle_complete({"summary": "stale worker says done"}))
+    assert "refused" in out.get("error", "")
+    out = json.loads(kt._handle_schedule({"reason": "stale worker parks"}))
     assert "refused" in out.get("error", "")
 
     # Non-lifecycle tools are NOT gated: heartbeat still extends the claim.
@@ -370,6 +373,55 @@ def test_block_happy_path(worker_env):
         conn.close()
 
 
+def test_schedule_parks_current_worker_with_reason(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools  # noqa: F401 — ensure registration
+    from tools.registry import registry
+
+    reason = "SCHEDULED_UNTIL=2026-09-13T00:00:00Z waiting for reconnect"
+    entry = registry.get_entry("kanban_schedule")
+    assert entry is not None and entry.toolset == "kanban"
+    out = json.loads(entry.handler({"reason": reason}))
+
+    assert out == {
+        "ok": True, "task_id": worker_env, "run_id": out["run_id"],
+        "status": "scheduled", "reason": reason,
+    }
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "scheduled"
+        run = kb.latest_run(conn, worker_env)
+        assert (run.outcome, run.summary) == ("scheduled", reason)
+        assert any(
+            event.kind == "scheduled" and event.payload == {"reason": reason}
+            for event in kb.list_events(conn, worker_env)
+        )
+
+
+def test_schedule_rejects_invalid_reason_and_unowned_contexts(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        other = kb.create_task(conn, title="sibling", assignee="peer")
+
+    invalid = json.loads(kt._handle_schedule({"reason": {"until": "tomorrow"}}))
+    foreign = json.loads(kt._handle_schedule({"task_id": other, "reason": "wait"}))
+    monkeypatch.setattr(
+        kt, "_delegation_ctx",
+        lambda predicate, default: predicate == "is_delegated_child_process_context",
+    )
+    delegated = json.loads(kt._handle_schedule({"task_id": worker_env, "reason": "wait"}))
+
+    assert "reason must be a string" in invalid["error"]
+    assert "refusing to mutate" in foreign["error"]
+    assert "delegate_task child agents are not Kanban run owners" in delegated["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+        assert kb.get_task(conn, other).status == "ready"
+
+
 def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     """Set up an isolated HERMES_HOME with one claimed goal_mode task,
     matching the pattern used by the kanban_complete judge gate tests."""
@@ -440,6 +492,31 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
         assert kb.get_task(conn, tid).status == "running"
     finally:
         conn.close()
+
+
+def test_schedule_goal_mode_refused(monkeypatch, tmp_path):
+    """``scheduled`` ends the goal loop like ``blocked``, so a goal_mode worker
+    must not use kanban_schedule to exit without the completion judge."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    d = json.loads(kt._handle_schedule({"reason": "waiting for CI"}))
+    assert "goal_mode" in d.get("error", "")
+
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_schedule_exposed_to_codex_runtime_workers():
+    """Codex app-server workers only reach Hermes tools named in EXPOSED_TOOLS."""
+    from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
+    assert "kanban_schedule" in EXPOSED_TOOLS
 
 
 def test_block_dependency_without_open_parent_is_rekinded(worker_env):

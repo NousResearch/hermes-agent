@@ -120,7 +120,11 @@ def test_discord_title_retry_recovers_auto_thread_origin(rebuilt_entry):
     assert (session_id, title) == ("sess-1", "Recovered semantic title")
 
 
+_UNREADABLE_CALLS: list = []
+
+
 def _unreadable(session_id):
+    _UNREADABLE_CALLS.append(session_id)
     raise RuntimeError("state.db unavailable")
 
 
@@ -139,6 +143,8 @@ def test_discord_title_retry_never_borrows_markers_from_another_origin(entry_ori
     )
     assert not hasattr(agent, "_on_session_title")
     assert scheduled == []
+    if get_session is _unreadable:  # the failing row read ran and was contained
+        assert _UNREADABLE_CALLS == ["sess-1"]
 
 
 @pytest.mark.anyio

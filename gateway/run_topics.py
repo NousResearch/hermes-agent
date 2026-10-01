@@ -308,7 +308,8 @@ class GatewayTopicThreadsMixin:
             # row keeps the opening origin until that entry's first peer refresh overwrites it.
             db = self.session_store._db_for_key(session_key)
             row = db.get_session(entry.session_id) if db is not None else None
-            raw, origin = (row or {}).get("origin_json"), None
+            raw = (row or {}).get("origin_json")
+            origin = None
             if raw:
                 with suppress(ValueError, KeyError, TypeError):  # malformed/legacy row: no recovery
                     origin = SessionSource.from_dict(json.loads(raw))

@@ -593,38 +593,50 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
-  const activationEpoch = gatewayActivationEpoch()
-  const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
-  const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
+  const socketGenerationRef = useRef(0)
+  const [socketGeneration, setSocketGeneration] = useState(0)
+  const source = JSON.stringify([connectionId, profile, gateway, socketGeneration])
+  const [capability, setCapability] = useState<{ source: string; epoch: number; mode: GroupExecutionMode } | null>(null)
   const knownMode = knownGroupExecutionMode({ connectionId: connectionId ?? '', profile })
   const mode = capability?.source === source ? capability.mode : knownMode === 'legacy' ? 'legacy' : 'checking'
   const [error, setError] = useState('')
   const [createRefused, setCreateRefused] = useState(false)
   const [busy, setBusy] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  useEffect(() => host.state.gateway.listen(() => {
+    socketGenerationRef.current++
+    setSocketGeneration(socketGenerationRef.current)
+  }), [])
   useEffect(() => {
     let cancelled = false
     setCapability(null)
     setError('')
     setCreateRefused(false)
+    const activationEpoch = gatewayActivationEpoch()
 
     if (gateway !== 'open') {
-      setCapability({ source, mode: knownGroupExecutionMode({ connectionId: connectionId ?? '', profile }) === 'legacy' ? 'legacy' : 'unavailable' })
+      setCapability({ source, epoch: activationEpoch, mode: knownGroupExecutionMode({ connectionId: connectionId ?? '', profile }) === 'legacy' ? 'legacy' : 'unavailable' })
 
       return
     }
 
-    void readGroupExecutionMode({ connectionId: connectionId ?? '', profile }, activationEpoch, refresh > 0)
+    const route = { connectionId: connectionId ?? '', profile }
+    const sourceCurrent = groupCreationSource(route, activationEpoch)
+    void readGroupExecutionMode(route, activationEpoch, refresh > 0 || socketGeneration > 0)
       .then(result => {
-        if (!cancelled) {
-          setCapability({ source, mode: result.mode })
+        if (cancelled || socketGenerationRef.current !== socketGeneration) {return}
+
+        if (sourceCurrent()) {
+          setCapability({ source, epoch: activationEpoch, mode: result.mode })
 
           if (result.error && result.mode === 'unavailable') {setError(String(result.error))}
+        } else if (gatewayActivationEpoch() !== activationEpoch && groupCreationSource(route)()) {
+          setRefresh(value => value + 1)
         }
       })
 
     return () => { cancelled = true }
-  }, [connectionId, profile, gateway, source, activationEpoch, refresh])
+  }, [connectionId, profile, gateway, source, socketGeneration, refresh])
 
   if (mode === 'legacy' || (mode === 'canonical' && !canonicalGroupEligibility({ connectionId: connectionId ?? '', profile }, props.members).eligible)) {
     return <LegacyGroupChatWorkspace {...props} />
@@ -639,8 +651,17 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     {mode === 'unavailable' && <Button onClick={() => setRefresh(value => value + 1)}>{b.roster.retryNow}</Button>}
     <Button disabled={mode !== 'canonical' || busy} onClick={() => {
       const route = { connectionId: connectionId ?? '', profile }
+      const activationEpoch = gatewayActivationEpoch()
+      const creationSocketGeneration = socketGenerationRef.current
+      const creationSource = JSON.stringify([route.connectionId, route.profile, 'open', creationSocketGeneration])
+      const sourceIsCurrent = groupCreationSource(route, activationEpoch)
+      const sourceCurrent = () => socketGenerationRef.current === creationSocketGeneration && sourceIsCurrent()
 
-      const sourceCurrent = groupCreationSource(route, activationEpoch)
+      const approvedGesture = capability?.source === source && capability.epoch === activationEpoch &&
+        creationSocketGeneration === socketGeneration
+
+      const name = props.group
+      const members = props.members.map(member => ({ ...member, ...(member.route ? { route: { ...member.route } } : {}) }))
 
       if (mode !== 'canonical' || !sourceCurrent()) {
         setError(b.canonical.driverUnavailable)
@@ -651,10 +672,23 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
       setBusy(true)
       setError('')
       setCreateRefused(false)
-      void createCanonicalGroup(route, props.group, props.members)
-        .then(({ room }) => {
+      void (async () => {
+          const current = await readGroupExecutionMode(route, activationEpoch, true)
+
+          if (!sourceCurrent()) {return}
+
+          setCapability({ source: creationSource, epoch: activationEpoch, mode: current.mode })
+
+          if (current.mode !== 'canonical' || !current.methods?.includes('groups.create')) {throw new Error(b.canonical.driverUnavailable)}
+
+          // An old rendered button can refresh its classification after an
+          // activation, but only the next explicit gesture may create there.
+          if (!approvedGesture) {return}
+
+          const { room } = await createCanonicalGroup(route, name, members)
+
           if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
-        })
+        })()
         .catch(e => {
           if (sourceCurrent()) {
             const refused = isCanonicalGroupCreateRefusal(e)

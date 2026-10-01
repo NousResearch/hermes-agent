@@ -85,3 +85,30 @@ def test_manifest_version_above_shared_support_is_refused_cleanly(
 
     assert not (home / "plugins" / "demo").exists()
     assert not (home / "plugins" / ".install-metadata.json").exists()
+
+
+def _refuse(monkeypatch, manifest: dict) -> str:
+    """Drive ``_check_manifest_version`` directly; the message is the deliverable (#130656)."""
+    from hermes_cli import plugins_cmd, plugins_cmd_install, plugins_manifest
+
+    monkeypatch.setattr(plugins_cmd, "PluginOperationError", RuntimeError)
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "0.21.5")
+    with pytest.raises(RuntimeError) as excinfo:
+        plugins_cmd_install._check_manifest_version(manifest, "demo")
+    return str(excinfo.value)
+
+
+def test_calver_requires_hermes_floor_refusal_does_not_recommend_update(monkeypatch):
+    """A floor written in the release-tag (CalVer) space can never be satisfied by a base_version
+    release, so the refusal must say that instead of advising an update that cannot succeed (#130656)."""
+    for spec in (">=2026.9.24", ">=v2026.9.24"):
+        message = _refuse(monkeypatch, {"requires_hermes": spec})
+        assert "cannot satisfy" in message, message
+        assert "Run " not in message  # an update cannot fix a wrong-space floor
+
+
+def test_reachable_requires_hermes_floor_refusal_still_recommends_update(monkeypatch):
+    """A floor the running base_version merely doesn't meet yet is fixable by updating."""
+    message = _refuse(monkeypatch, {"requires_hermes": ">=99.0"})
+    assert "Run " in message
+    assert "cannot satisfy" not in message

@@ -485,6 +485,30 @@ def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
     return f"requires hermes {spec}, running {current}"
 
 
+# Release tags live in a CalVer space (``vYYYY.M.D`` — see ``version_info._calver_release_version``'s
+# ``v2[0-9][0-9][0-9].*`` match and ``STABLE_TAG_RE`` capping base_version majors at three digits).
+# A ``requires_hermes`` clause targeting that space (e.g. ``>=v2026.9.24``) parses cleanly yet can
+# never be satisfied by any base_version, so admission must reject it instead of gating everything.
+_CALVER_MAJOR_FLOOR = 2000
+
+
+def requires_hermes_floor_unreachable(spec: str) -> bool:
+    """True when any ``requires_hermes`` clause targets the release-tag (CalVer) version space.
+
+    ``version_satisfies`` compares against ``running_hermes_version()`` — the ``base_version``
+    (semver) space — so a floor like ``>=2026.9.24`` compares ``(0, 21, 5) >= (2026, 9, 24)`` and
+    refuses every release, including ones newer than the tag the author meant. Such a spec is a
+    defect in the entry: no Hermes update can ever satisfy it.
+    """
+    for clause in filter(None, (c.strip() for c in spec.split(","))):
+        m = _VERSION_COMPARATOR_RE.match(clause)
+        target = m.group(2) if m else clause
+        tgt = _version_tuple(target)
+        if tgt is not None and tgt[0] >= _CALVER_MAJOR_FLOOR:
+            return True
+    return False
+
+
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
     """Build the manifest for a portable Agent Plugin directory (``plugin.json``); diagnostics warn."""
     from hermes_cli.agent_plugins import read_agent_plugin_manifest

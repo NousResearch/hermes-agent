@@ -208,7 +208,7 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     kw._ensure_git_worktree(repo, tmp_path / "wt2", "safe2")
     assert (tmp_path / "wt2" / "README").exists()
     assert worktree_gc._git(["status", "--porcelain"], cwd=str(repo)).returncode == 0
-    dirty = worktree_ops._worktree_is_dirty(str(tmp_path / "wt2"))
+    dirty = worktree_ops._worktree_is_dirty(str(tmp_path / "wt2"), str(repo))
     assert _fired(marker) == []
     assert dirty is False  # the probe ran: a skipped one reads as dirty
 
@@ -316,7 +316,7 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, c
     for tree in (Path(sub["path"]), tmp_path / "wt"):
         os.utime(tree / "README", (time.time() + 120, time.time() + 120))
     assert "inspection_failed" not in finalize_subagent_worktree(sub, prune=False)
-    assert worktree_ops._worktree_is_dirty(str(tmp_path / "wt")) is False
+    assert worktree_ops._worktree_is_dirty(str(tmp_path / "wt"), str(repo)) is False
     assert worktree_ops._worktree_add(str(repo), tmp_path / "wt-w", "hermes/filters", "HEAD", "HEAD")
     assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
 

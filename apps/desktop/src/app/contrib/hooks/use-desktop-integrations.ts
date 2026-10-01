@@ -5,10 +5,7 @@ import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-li
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
-import {
-  commandFocusedTerminal,
-  wordEraseFocusedTerminal
-} from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { getSession } from '@/hermes'

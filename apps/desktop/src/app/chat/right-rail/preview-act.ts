@@ -30,7 +30,16 @@
 import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
 
-import { clearCharsBack, clickAt, glideTo, pointerPlaced, pressKey, selectAll, typeText, wheelBy } from './preview-drive'
+import {
+  clearCharsBack,
+  clickAt,
+  glideTo,
+  pointerPlaced,
+  pressKey,
+  selectAll,
+  typeText,
+  wheelBy
+} from './preview-drive'
 import { activePreviewInput, type PreviewInputHandle } from './preview-input'
 import { activePreviewNav, type PreviewNavHandle } from './preview-nav'
 import { activePreviewScriptRunner, type PreviewScriptRunner } from './preview-script-runner'
@@ -354,10 +363,7 @@ function buildFieldStateScript(): string {
 
 /** True selection-bearing field state, or 'unknown' when it is not readable
  *  (focus elsewhere, or a control with no value/selection API). */
-type FieldState =
-  | { ok: false }
-  | { ok: true; field: false }
-  | { ok: true; field: true; len: number }
+type FieldState = { ok: false } | { ok: true; field: false } | { ok: true; field: true; len: number }
 
 async function readField(run: PreviewScriptRunner): Promise<FieldState> {
   const trip = await runJson(run, buildFieldStateScript())

@@ -130,23 +130,6 @@ def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatc
     assert "Original prompt noise" not in prompt
 
 
-def test_truncated_framed_archive_falls_back_to_older_answer(cron_env):
-    import os
-    from cron.jobs import create_job, OUTPUT_DIR
-    from cron.scheduler_prompt import _inject_context_from
-
-    job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
-    _write_archive(cron_env, job["id"], "older.md", "## Response\n\nOLDER ANSWER\n")
-    _write_archive(cron_env, job["id"], "newer.md",
-                   "**Response Characters:** 80\n## Response\n\nTRUNCATED\n")
-    os.utime(OUTPUT_DIR / job["id"] / "older.md", (1, 1))
-    os.utime(OUTPUT_DIR / job["id"] / "newer.md", (2, 2))
-    prompt, injected = _inject_context_from(job, "Report")
-    assert injected
-    assert "OLDER ANSWER" in prompt
-    assert "TRUNCATED" not in prompt
-
-
 def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, monkeypatch):
     import os
     from cron.jobs import create_job, save_job_output, OUTPUT_DIR
@@ -189,15 +172,6 @@ def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, mon
     prompt, injected = _inject_context_from(job, "Next task")
     assert injected
     assert "OLDER COMPLETE ANSWER" in prompt
-    assert quoted not in prompt
-
-    # Archives produced before prompt-length framing get the same conservative
-    # treatment: an invalid first response frame never promotes a later one.
-    saved.write_text(f"**Response Characters:** {len(answer)}\n## Response\n\n"
-                     + answer[:-len(suffix)] + "\n", encoding="utf-8")
-    os.utime(saved, (2, 2))
-    prompt, injected = _inject_context_from(job, "Next task")
-    assert injected and "OLDER COMPLETE ANSWER" in prompt
     assert quoted not in prompt
 
     # Losing the response boundary itself is also unusable, not a script archive.

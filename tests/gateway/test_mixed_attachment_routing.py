@@ -35,7 +35,8 @@ from gateway.session import SessionSource
 
 
 def _evt(media_urls, media_types, message_type):
-    return SimpleNamespace(
+    return MessageEvent(
+        text="",
         media_urls=media_urls,
         media_types=media_types,
         message_type=message_type,

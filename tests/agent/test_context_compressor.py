@@ -134,7 +134,9 @@ class TestLegacyClarifyResults:
         monkeypatch.setattr(module, "call_llm", summarize)
         c.compress(messages, force=True)
         assert requests, "exercise the public compression path, not a no-op window"
-        dispatched = json.dumps(requests[0])
+        # route_callback is an observer riding along as a kwarg; it is transport
+        # plumbing, not dispatched prompt payload, so the serialized view stays data-only.
+        dispatched = json.dumps({k: v for k, v in requests[0].items() if not callable(v)})
         assert json.dumps(expected_summary)[1:-1] in dispatched
         if expected is None or expected != answer:
             assert "using your own judgment" not in dispatched

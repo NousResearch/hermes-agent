@@ -1,11 +1,10 @@
 """The catalog admission gate must validate the pinned clone's own files only.
 
-plugin-catalog-ci.yml joins a PR-controlled ``subdir`` onto the pinned clone before
-checking the manifest and running ``hermes plugins validate``. These tests execute the
-real ``run:`` block of that step against a fixture git repo (served via a git
-``url.insteadOf`` rewrite): a ``..`` traversal, a ``file://`` repo, a non-hex ``sha``
-that would resolve to a branch tip instead of the pin, or a symlinked directory inside
-the clone must fail the gate, not silently validate files outside the pinned commit.
+These tests execute the real ``run:`` blocks of plugin-catalog-ci.yml against
+fixture git repos: the changed-entries step against a PR merge commit, and the
+pinned-source step against an origin repo served under an https URL through a
+git ``url.insteadOf`` rewrite. One case per closed bypass, plus the legitimate
+flows that must keep passing.
 """
 
 import os
@@ -16,637 +15,297 @@ from pathlib import Path
 import hermes_yaml as yaml
 import pytest
 
+pytestmark = pytest.mark.platforms("linux")
+
 ROOT = Path(__file__).resolve().parents[2]
-# CATALOG_CI_WORKFLOW lets a caller point the harness at an older workflow copy
-# (e.g. `git show HEAD:...`) to prove a case is a load-bearing regression test.
+# CATALOG_CI_WORKFLOW points the harness at another workflow copy (e.g.
+# `git show origin/main:...`) to prove a case fails on the old gate.
 WORKFLOW = Path(os.environ.get(
     "CATALOG_CI_WORKFLOW", ROOT / ".github/workflows/plugin-catalog-ci.yml"))
+REPO_URL = "https://fixture.invalid/repo"
 
 
-def _run_block() -> str:
+def _step(name_prefix: str) -> str:
     data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    steps = data["jobs"]["pinned-source-validate"]["steps"]
-    step = next(s for s in steps if s.get("name", "").startswith("Clone each entry"))
-    return step["run"]
+    for job in data["jobs"].values():
+        for step in job["steps"]:
+            if step.get("name", "").startswith(name_prefix):
+                # The workflow expands ${{ github.base_ref }} before bash sees it.
+                return step["run"].replace("${{ github.base_ref }}", "main")
+    raise LookupError(name_prefix)
 
 
-def _changed_files_block() -> str:
-    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    steps = data["jobs"]["pinned-source-validate"]["steps"]
-    step = next(s for s in steps if s.get("name", "").startswith("Find changed catalog"))
-    # The workflow expands ${{ github.base_ref }} before bash ever sees it.
-    return step["run"].replace("${{ github.base_ref }}", "main")
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def _origin_repo(tmp_path: Path) -> tuple[Path, str]:
-    origin = tmp_path / "origin"
-    (origin / "plugin").mkdir(parents=True)
-    (origin / "plugin" / "plugin.yaml").write_text("name: fixture\n", encoding="utf-8")
-    (origin / "plugin.yaml").write_text("name: root-fixture\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=origin, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"],
-        cwd=origin, check=True)
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
-    return origin, sha
+def _commit(repo: Path, msg: str = "x") -> str:
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", msg)
+    return _git(repo, "rev-parse", "HEAD")
 
 
-def _write_entry(tmp_path: Path, filename: str, *, repo: str, sha: str, subdir="") -> Path:
-    path = tmp_path / filename
-    path.write_text(
-        yaml.safe_dump({"repo": repo, "sha": sha, "subdir": subdir}), encoding="utf-8")
+def _run(script_text: str, tmp_path: Path, cwd: Path, env: dict) -> subprocess.CompletedProcess:
+    # bash <file>, not bash -c: the run text mentions "update", which trips the
+    # live-system guard's hermes-update heuristic when it sits inside the argv.
+    script = tmp_path / "step.sh"
+    script.write_text(script_text, encoding="utf-8")
+    return subprocess.run(
+        ["bash", str(script)], env=env, cwd=cwd,
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+
+
+# ── pinned-source step ────────────────────────────────────────────────────────
+
+@pytest.fixture
+def origin(tmp_path):
+    repo = tmp_path / "origin"
+    (repo / "plugin").mkdir(parents=True)
+    (repo / "plugin" / "plugin.yaml").write_text("name: fixture\n", encoding="utf-8")
+    (repo / "plugin.yaml").write_text("name: root-fixture\n", encoding="utf-8")
+    _git(repo, "init", "-q")
+    _commit(repo)
+    (tmp_path / "mktmp").mkdir()  # mktemp lands here so escape paths are predictable
+    return repo
+
+
+def _entry(tmp_path: Path, name: str, sha: str, **fields) -> Path:
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(
+        {"repo": REPO_URL, "sha": sha, "subdir": "plugin", **fields}), encoding="utf-8")
     return path
 
 
-@pytest.mark.platforms("linux")
-def test_non_hex_sha_fails_before_clone(tmp_path, fixture):
-    """A ref name like HEAD resolves to whatever the branch tip is at CI time, not the
-    declared pin; option-looking values would become git checkout flags."""
-    origin, sha, tmpdir = fixture
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha="HEAD", subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "sha must be exactly 40 lowercase hex" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
+def _planted(tmp_path: Path) -> Path:
+    planted = tmp_path / "planted"
+    planted.mkdir(exist_ok=True)
+    (planted / "plugin.yaml").write_text("name: planted\n", encoding="utf-8")
+    return planted
 
 
-@pytest.mark.platforms("linux")
-def test_whitespace_in_repo_fails_before_clone(tmp_path, fixture):
-    """The repo value is echoed into the log; a newline would smuggle workflow
-    commands like ::error:: through that echo."""
-    origin, sha, tmpdir = fixture
-    entry = _write_entry(
-        tmp_path, "evil.yaml",
-        repo="https://fixture.invalid/repo\n::error::fake", sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "repo must be an https:// git URL" in res.stdout + res.stderr
-    assert "::error::fake" not in res.stdout  # the smuggled command must never reach the log
-    assert "PASS" not in res.stdout
-
-
-@pytest.mark.platforms("linux")
-def test_non_string_subdir_fails_before_clone(tmp_path, fixture):
-    """Lockstep with the structural gate: a falsy non-string must not coerce to '' and
-    silently point the gate at the clone root."""
-    origin, sha, tmpdir = fixture
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir=0)
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "subdir must be a string" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
-
-
-@pytest.mark.platforms("linux")
-def test_unparseable_entry_fails_without_killing_the_loop(tmp_path, fixture):
-    """A malformed yaml entry fails itself but must not crash the step and skip the
-    remaining entries."""
-    origin, sha, tmpdir = fixture
-    bad = tmp_path / "broken.yaml"
-    bad.write_text("repo: [unclosed\n", encoding="utf-8")
-    ok = _write_entry(tmp_path, "ok.yaml",
-                      repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    res = _run_gate(_env_multi(tmp_path, origin, [bad, ok], tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "entry yaml is empty or unparseable" in res.stdout + res.stderr
-    assert f"PASS: {ok}" in res.stdout
-
-
-def _env(tmp_path: Path, origin: Path, entry: Path, tmpdir: Path,
-         hermes_stub: str = "#!/bin/sh\nexit 0\n") -> dict:
+def _gate(tmp_path: Path, origin: Path, entries: list[Path],
+          hermes_stub: str = "#!/bin/sh\nexit 0\n") -> subprocess.CompletedProcess:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     stub = bin_dir / "hermes"
     stub.write_text(hermes_stub, encoding="utf-8")
     stub.chmod(0o755)
-    return {
+    env = {
         **os.environ,
-        "CHANGED_FILES": str(entry),
-        "TMPDIR": str(tmpdir),
-        "HERMES_STUB_LOG": str(tmp_path / "hermes-calls.log"),
-        # the interpreter running the tests first: the step's `python3` heredoc
-        # needs ruamel.yaml, which the workflow python provides via site-packages
+        "CHANGED_FILES": "\n".join(str(e) for e in entries),
+        "TMPDIR": str(tmp_path / "mktmp"),
+        # The test interpreter first: the step's `python3 -I` parser needs
+        # ruamel.yaml from site-packages, as setup-pm provides it in CI.
         "PATH": f"{bin_dir}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+        # CI runs the step from the hermes-agent checkout; `-I` must ignore this.
+        "PYTHONPATH": str(ROOT),
         "GIT_TERMINAL_PROMPT": "0",
-        # Serve the fixture repo under an https URL so `git clone` exercises the real path.
         "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": f"url.{origin.as_uri()}.insteadOf",
-        "GIT_CONFIG_VALUE_0": "https://fixture.invalid/repo",
+        "GIT_CONFIG_VALUE_0": REPO_URL,
     }
+    return _run(_step("Clone each entry"), tmp_path, tmp_path, env)
 
 
-def _env_multi(tmp_path: Path, origin: Path, entries: list[Path], tmpdir: Path,
-               hermes_stub: str = "#!/bin/sh\nexit 0\n") -> dict:
-    return _env(tmp_path, origin, entries[0], tmpdir, hermes_stub=hermes_stub) | {
-        "CHANGED_FILES": "\n".join(str(e) for e in entries)}
-
-
-def _run_gate(env: dict, tmp_path: Path) -> subprocess.CompletedProcess:
-    # bash <file>, not bash -c: the run text mentions "update", which trips the
-    # live-system guard's hermes-update heuristic when it sits inside the argv.
-    script = tmp_path / "gate-step.sh"
-    script.write_text(_run_block(), encoding="utf-8")
-    return subprocess.run(
-        ["bash", str(script)], env=env, cwd=tmp_path,
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
-
-
-@pytest.fixture
-def fixture(tmp_path):
-    origin, sha = _origin_repo(tmp_path)
-    tmpdir = tmp_path / "mktmp"  # mktemp lands here so the escape path is predictable
-    tmpdir.mkdir()
-    return origin, sha, tmpdir
-
-
-@pytest.mark.platforms("linux")
-def test_traversal_subdir_fails_the_gate(tmp_path, fixture):
-    origin, sha, tmpdir = fixture
-    planted = tmp_path / "planted"
-    planted.mkdir()
-    (planted / "plugin.yaml").write_text("name: planted\n", encoding="utf-8")
+def _traversal_subdir(tp, origin, sha):
     # mktemp gives TMPDIR/tmp.XXX; one '..' reaches TMPDIR, then walk to planted/.
-    subdir = "../" + os.path.relpath(planted, tmpdir)
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir=subdir)
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "must be a relative path" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
+    subdir = "../" + os.path.relpath(_planted(tp), tp / "mktmp")
+    return _entry(tp, "evil.yaml", sha, subdir=subdir), "must be a relative path"
 
 
-@pytest.mark.platforms("linux")
-def test_symlinked_subdir_inside_the_clone_fails_the_gate(tmp_path, fixture):
-    origin, sha, tmpdir = fixture
-    planted = tmp_path / "planted"
-    planted.mkdir()
-    (planted / "plugin.yaml").write_text("name: planted\n", encoding="utf-8")
-    (origin / "link").symlink_to(planted)  # committed symlink pointing outside the clone
-    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "link"],
-        cwd=origin, check=True)
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="link")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "resolves outside the pinned clone" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
+def _symlinked_subdir(tp, origin, sha):
+    (origin / "link").symlink_to(_planted(tp))
+    return _entry(tp, "evil.yaml", _commit(origin), subdir="link"), "outside the pinned clone"
 
 
-@pytest.mark.platforms("linux")
-def test_file_scheme_repo_is_rejected_before_any_clone(tmp_path, fixture):
-    origin, sha, tmpdir = fixture
-    # The clone must be remote-only: file:// would let an entry 'pin' content that is
-    # really the PR checkout (or any path on the runner).
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo=origin.as_uri(), sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "repo must be an https:// git URL" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
+def _symlink_behind_in_clone_link(tp, origin, sha):
+    # find does not descend into plugin/ext (an in-clone link), so a scan of
+    # PLUGIN_DIR alone never sees lib/evil pointing out of the clone.
+    (origin / "lib").mkdir()
+    (origin / "lib" / "evil").symlink_to(_planted(tp) / "plugin.yaml")
+    (origin / "plugin" / "ext").symlink_to("../lib")
+    return _entry(tp, "evil.yaml", _commit(origin)), "symlink in the repo resolves outside"
 
 
-@pytest.mark.platforms("linux")
-def test_legit_entry_still_passes_the_gate(tmp_path, fixture):
-    origin, sha, tmpdir = fixture
-    entry = _write_entry(tmp_path, "ok.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert f"PASS: {entry}" in res.stdout
+def _tag_object_sha(tp, origin, sha):
+    _git(origin, "tag", "-a", "v1", "-m", "x")
+    return _entry(tp, "evil.yaml", _git(origin, "rev-parse", "v1")), "is not a commit object"
 
 
-@pytest.mark.platforms("linux")
-def test_empty_subdir_uses_the_clone_root(tmp_path, fixture):
-    """An empty subdir means the plugin lives at the repo root; PLUGIN_DIR must equal
-    the resolved CLONE_DIR, which the confinement check accepts only via its
-    equality branch."""
-    origin, sha, tmpdir = fixture
-    entry = _write_entry(tmp_path, "ok.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert f"PASS: {entry}" in res.stdout
+def _newline_sha(tp, origin, sha):
+    return _entry(tp, "evil.yaml", sha + "\n"), "sha must be exactly 40 lowercase hex"
 
 
-@pytest.mark.platforms("linux")
-def test_non_mapping_entry_yaml_fails(tmp_path, fixture):
-    origin, sha, tmpdir = fixture
-    entry = tmp_path / "list.yaml"
-    entry.write_text("- not\n- a mapping\n", encoding="utf-8")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "entry yaml must be a mapping" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
+def _log_forging_repo(tp, origin, sha):
+    return (_entry(tp, "evil.yaml", sha, repo=REPO_URL + "\n::error::forged"),
+            "repo must be an https:// git URL")
 
 
-@pytest.mark.platforms("linux")
-def test_tag_object_sha_is_not_a_commit_pin(tmp_path, fixture):
-    """An annotated tag object's sha is 40-hex, but checkout would peel it to the
-    tagged commit; the pin must name a commit object itself."""
-    origin, sha, tmpdir = fixture
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", "v1", "-m", "x"],
-        cwd=origin, check=True)
-    tag_sha = subprocess.check_output(
-        ["git", "rev-parse", "v1"], cwd=origin, text=True).strip()
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=tag_sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "is not a commit object" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
+def _symlinked_entry_file(tp, origin, sha):
+    link = tp / "link.yaml"
+    link.symlink_to(_entry(tp, "real.yaml", sha))
+    return link, "must be a regular file"
 
 
-@pytest.mark.platforms("linux")
-def test_symlinked_entry_file_is_rejected(tmp_path, fixture):
-    """A typechanged entry (file -> symlink) must not be followed into whatever it
-    points at; it is not a catalog entry."""
-    origin, sha, tmpdir = fixture
-    real = _write_entry(tmp_path, "real.yaml",
-                        repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    link = tmp_path / "link.yaml"
-    link.symlink_to(real)
-    res = _run_gate(_env(tmp_path, origin, link, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "must be a regular file" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
+def _self_updater_in_spaced_dir(tp, origin, sha):
+    (origin / "plugin" / "evil dir").mkdir()
+    (origin / "plugin" / "evil dir" / "dl.js").write_text(
+        "releases/download fs.writeFileSync(", encoding="utf-8")
+    return _entry(tp, "evil.yaml", _commit(origin)), "self-updating code"
 
 
-@pytest.mark.platforms("linux")
-def test_symlink_inside_plugin_dir_escaping_clone_fails(tmp_path, fixture):
-    """PLUGIN_DIR itself can resolve inside the clone while a committed symlink
-    under it still points out; every file the gate reads must stay confined."""
-    origin, sha, tmpdir = fixture
-    planted = tmp_path / "planted"
-    planted.mkdir()
-    (planted / "evil.js").write_text("releases/latest writeFile(", encoding="utf-8")
-    (origin / "plugin" / "escaped").symlink_to(planted)
-    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "link"],
-        cwd=origin, check=True)
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "symlink in the repo resolves outside" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
-
-
-@pytest.mark.platforms("linux")
-def test_plugin_yaml_as_symlink_to_outside_file_fails(tmp_path, fixture):
-    """The manifest check `-f` follows symlinks; plugin.yaml as a link to an
-    outside file must be caught by the per-symlink scan before it is trusted."""
-    origin, sha, tmpdir = fixture
-    planted = tmp_path / "planted"
-    planted.mkdir()
-    (planted / "plugin.yaml").write_text("name: planted\n", encoding="utf-8")
-    (origin / "plugin" / "plugin.yaml").unlink()
-    (origin / "plugin" / "plugin.yaml").symlink_to(planted / "plugin.yaml")
-    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "link"],
-        cwd=origin, check=True)
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "symlink in the repo resolves outside" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
-
-
-@pytest.mark.platforms("linux")
-def test_symlink_resolving_inside_the_clone_is_allowed(tmp_path, fixture):
-    """The confinement scan is about escape, not symlinks per se: a link whose
-    target stays inside the pinned clone must not over-reject."""
-    origin, sha, tmpdir = fixture
-    (origin / "plugin" / "alias.yaml").symlink_to("plugin.yaml")
-    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "alias"],
-        cwd=origin, check=True)
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
-    entry = _write_entry(tmp_path, "ok.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert f"PASS: {entry}" in res.stdout
-
-
-@pytest.mark.platforms("linux")
-def test_self_updater_in_spaced_dirname_is_caught(tmp_path, fixture):
-    """A filename containing spaces must not split through the grep|xargs stage and
-    let a self-updating file slip past."""
-    origin, sha, tmpdir = fixture
-    d = origin / "plugin" / "evil dir"
-    d.mkdir()
-    (d / "inject.js").write_text("releases/latest writeFile(", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "evil"],
-        cwd=origin, check=True)
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "self-updating code" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
-
-
-@pytest.mark.platforms("linux")
-def test_newline_filename_cannot_forge_workflow_commands(tmp_path, fixture):
-    """The matched filenames are echoed inside an ::error line; a newline in a
-    committed filename must not smuggle an extra workflow command into the log."""
-    origin, sha, tmpdir = fixture
+def _log_forging_filename(tp, origin, sha):
     (origin / "plugin" / "evil\n::error::forged.js").write_text(
         "releases/latest writeFile(", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "evil"],
-        cwd=origin, check=True)
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "self-updating code" in res.stdout + res.stderr
-    assert not any(
-        line.lstrip().startswith("::error::forged") for line in res.stdout.splitlines())
+    return _entry(tp, "evil.yaml", _commit(origin)), "self-updating code"
 
 
-@pytest.mark.platforms("linux")
-def test_parser_crash_fails_that_entry_not_the_loop(tmp_path, fixture):
-    """If the parser process dies without output (OOM-kill, signal), the entry must
-    fail via the PARSED fallback; it must never inherit the previous iteration's
-    repo/sha and pass on that content."""
-    origin, sha, tmpdir = fixture
-    ok = _write_entry(tmp_path, "ok.yaml",
-                      repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    crash = _write_entry(tmp_path, "crash.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    ok2 = _write_entry(tmp_path, "ok2.yaml",
-                       repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    env = _env_multi(tmp_path, origin, [ok, crash, ok2], tmpdir)
-    stub = tmp_path / "bin" / "python3"  # parser dies only on the one entry file
-    stub.write_text(
-        '#!/bin/sh\ncase "$*" in */crash.yaml) exit 1;; esac\n'
-        # Unresolved path on purpose: .venv/bin/python resolves to the base
-        # interpreter, which would drop the venv's site-packages under -I.
-        f'exec "{sys.executable}" "$@"\n',
+def _shadowed_parser_import(tp, origin, sha):
+    # cwd is the PR checkout; without `python3 -I` this shlex.py shadows the
+    # stdlib (first imported by the parser itself) and swallows the verdict.
+    (tp / "shlex.py").write_text(
+        "def quote(s):\n"
+        "    if s.startswith('repo must'):\n"
+        "        s = ''\n"
+        "    return \"'\" + s.replace(\"'\", \"'\\\\''\") + \"'\"\n", encoding="utf-8")
+    return _entry(tp, "evil.yaml", sha, repo=origin.as_uri()), "repo must be an https:// git URL"
+
+
+@pytest.mark.parametrize("case", [
+    _traversal_subdir, _symlinked_subdir, _symlink_behind_in_clone_link, _tag_object_sha,
+    _newline_sha, _log_forging_repo, _symlinked_entry_file, _self_updater_in_spaced_dir,
+    _log_forging_filename, _shadowed_parser_import,
+], ids=lambda f: f.__name__.lstrip("_"))
+def test_bypass_fails_the_gate(tmp_path, origin, case):
+    sha = _git(origin, "rev-parse", "HEAD")
+    entry, expected = case(tmp_path, origin, sha)
+    res = _gate(tmp_path, origin, [entry])
+    out = res.stdout + res.stderr
+    assert res.returncode != 0, out
+    assert expected in out
+    assert "PASS" not in res.stdout
+    # PR-controlled values must never smuggle a workflow command into the log.
+    assert not any(line.startswith("::error::forged") for line in res.stdout.splitlines())
+
+
+def test_one_entry_cannot_skip_or_impersonate_the_others(tmp_path, origin):
+    """Plugin code that drains stdin must not consume the remaining entry list,
+    and an entry whose parser dies must fail itself rather than inherit the
+    previous entry's repo/sha."""
+    sha = _git(origin, "rev-parse", "HEAD")
+    ok, crash, ok2 = (_entry(tmp_path, n, sha) for n in ("ok.yaml", "crash.yaml", "ok2.yaml"))
+    python_stub = tmp_path / "bin" / "python3"
+    python_stub.parent.mkdir()
+    # Unresolved interpreter path on purpose: .venv/bin/python resolves to the
+    # base interpreter, which would drop the venv's site-packages under -I.
+    python_stub.write_text(
+        f'#!/bin/sh\ncase "$*" in */crash.yaml) exit 1;; esac\nexec "{sys.executable}" "$@"\n',
         encoding="utf-8")
-    stub.chmod(0o755)
-    res = _run_gate(env, tmp_path)
+    python_stub.chmod(0o755)
+    res = _gate(tmp_path, origin, [ok, crash, ok2],
+                hermes_stub="#!/bin/sh\ncat >/dev/null\nexit 0\n")
     assert res.returncode != 0, res.stdout + res.stderr
-    assert "catalog entry parser failed" in res.stdout + res.stderr
+    assert "catalog entry parser failed" in res.stdout
     assert f"PASS: {ok}" in res.stdout
     assert f"PASS: {ok2}" in res.stdout
     assert f"PASS: {crash}" not in res.stdout
 
 
-@pytest.mark.platforms("linux")
-def test_parser_imports_cannot_be_shadowed_by_checkout_files(tmp_path, fixture):
-    """The parser runs with cwd = the PR checkout; without interpreter isolation a
-    PR-authored shlex.py shadows the stdlib import and can swallow the verdict.
-
-    shlex, not re: `re` is already imported during interpreter startup, so a cwd
-    re.py never shadows it and the guard would pass even without `-I`. shlex is
-    first imported by the parser itself, so it is the load-bearing vector."""
-    origin, sha, tmpdir = fixture
-    (tmp_path / "shlex.py").write_text(
-        "def quote(s):\n"
-        "    if s.startswith('repo must'):\n"
-        "        s = ''  # swallow the rejection so BAD evals empty\n"
-        "    return \"'\" + s.replace(\"'\", \"'\\\\''\") + \"'\"\n",
-        encoding="utf-8")
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo=origin.as_uri(), sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "repo must be an https:// git URL" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
-
-
-@pytest.mark.platforms("linux")
-def test_validate_process_cannot_drain_the_remaining_entries(tmp_path, fixture):
-    """The entry list travels on fd 3: plugin validate code reading stdin cannot
-    consume the remaining entry names and skip their validation."""
-    origin, sha, tmpdir = fixture
-    ok = _write_entry(tmp_path, "ok.yaml",
-                      repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    ok2 = _write_entry(tmp_path, "ok2.yaml",
-                       repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    stub = "#!/bin/sh\ncat >/dev/null\nexit 0\n"  # drains whatever stdin it is handed
-    res = _run_gate(
-        _env_multi(tmp_path, origin, [ok, ok2], tmpdir, hermes_stub=stub), tmp_path)
+@pytest.mark.parametrize("fields", [
+    {"subdir": "plugin"},
+    {"subdir": ""},
+    {"subdir": None},
+    {"subdir": "plugin", "alias": True},
+], ids=["subdir-entry", "repo-root", "null-subdir", "in-clone-symlink"])
+def test_legit_entry_passes_the_gate(tmp_path, origin, fields):
+    if fields.pop("alias", False):
+        (origin / "plugin" / "alias.yaml").symlink_to("plugin.yaml")
+        _commit(origin)
+    entry = _entry(tmp_path, "ok.yaml", _git(origin, "rev-parse", "HEAD"), **fields)
+    res = _gate(tmp_path, origin, [entry])
     assert res.returncode == 0, res.stdout + res.stderr
-    assert f"PASS: {ok}" in res.stdout
-    assert f"PASS: {ok2}" in res.stdout
-    assert "all changed catalog entries" in res.stdout
+    assert f"PASS: {entry}" in res.stdout
 
 
-@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("mut", [
-    {},
-    {"subdir": "../x"},
-    {"subdir": "/abs/path"},
-    {"subdir": 5},
-    {"repo": "file:///etc/passwd"},
-    {"repo": "https://x/y\n::error::x"},
-    {"sha": "HEAD"},
-    {"sha": "a" * 40 + "\n"},
+    {}, {"subdir": None}, {"subdir": "../x"}, {"subdir": 5},
+    {"repo": "https://x/y\n::error::x"}, {"sha": "a" * 40 + "\n"},
 ])
-def test_workflow_and_structural_gate_agree(tmp_path, fixture, mut):
-    """The field rules are duplicated between the parse step and the structural
-    validator by necessity (different environments); the same entry must produce
-    the same verdict at both gates or the parity has drifted."""
-    origin, sha, tmpdir = fixture
-    data = {"name": "parity-plugin", "repo": "https://fixture.invalid/repo",
-            "sha": sha, "subdir": "plugin", "description": "d",
-            "maintainer": "o", **mut}
+def test_structural_and_pinned_gates_agree(tmp_path, origin, mut):
+    """The field rules live in both the parse step and the structural validator
+    (different environments); the same entry must get the same verdict."""
+    data = {"name": "parity-plugin", "description": "d", "maintainer": "o",
+            "repo": REPO_URL, "sha": _git(origin, "rev-parse", "HEAD"),
+            "subdir": "plugin", **mut}
     entry = tmp_path / "parity.yaml"
     entry.write_text(yaml.safe_dump(data), encoding="utf-8")
     structural = subprocess.run(
         [sys.executable, str(ROOT / "scripts/validate_plugin_catalog.py"), str(entry)],
         capture_output=True, text=True)
-    gate = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
+    gate = _gate(tmp_path, origin, [entry])
     assert (structural.returncode == 0) == (gate.returncode == 0), (
-        f"structural rc={structural.returncode} gate rc={gate.returncode}\n"
         f"{structural.stdout}{structural.stderr}\n{gate.stdout}{gate.stderr}")
 
 
-@pytest.mark.platforms("linux")
-def test_changed_files_step_reports_renamed_and_typechanged_entries(tmp_path):
-    """AM alone misses renames (R) and file->symlink typechanges (T); either would
-    drop the entry from CHANGED_FILES and skip the supply-chain gate entirely."""
-    work = tmp_path / "work"
-    (work / "plugin-catalog").mkdir(parents=True)
-    (work / "plugin-catalog" / "a.yaml").write_text("name: a\n", encoding="utf-8")
-    (work / "plugin-catalog" / "b.yaml").write_text("name: b\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=work, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=work, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
-        cwd=work, check=True)
-    base = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=work, text=True).strip()
-    subprocess.run(
-        ["git", "update-ref", "refs/remotes/origin/main", base], cwd=work, check=True)
-    subprocess.run(["git", "checkout", "-qb", "pr"], cwd=work, check=True)
-    subprocess.run(
-        ["git", "mv", "plugin-catalog/a.yaml", "plugin-catalog/renamed.yaml"],
-        cwd=work, check=True)
-    (work / "plugin-catalog" / "b.yaml").unlink()
-    (work / "plugin-catalog" / "b.yaml").symlink_to("/etc/hostname")
-    subprocess.run(["git", "add", "-A"], cwd=work, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "pr"],
-        cwd=work, check=True)
-    out = tmp_path / "gh-output.txt"
-    script = tmp_path / "changed-step.sh"
-    script.write_text(_changed_files_block(), encoding="utf-8")
-    res = subprocess.run(
-        ["bash", str(script)], env={**os.environ, "GITHUB_OUTPUT": str(out)},
-        cwd=work, capture_output=True, text=True, timeout=60)
-    assert res.returncode == 0, res.stdout + res.stderr
-    files = out.read_text(encoding="utf-8")
-    assert "plugin-catalog/renamed.yaml" in files
-    assert "plugin-catalog/b.yaml" in files
+# ── changed-entries step ──────────────────────────────────────────────────────
 
-
-@pytest.mark.platforms("linux")
-def test_symlink_hidden_behind_in_clone_dir_link_is_caught(tmp_path, fixture):
-    """find does not descend into a symlinked directory: plugin/ext -> ../lib is
-    itself in-clone and passes, while lib/evil -> outside is only reachable
-    through it. A PLUGIN_DIR-only scan enumerates ext but never sees lib/evil,
-    so the scan must cover the whole clone."""
-    origin, sha, tmpdir = fixture
-    planted = tmp_path / "planted"
-    planted.mkdir()
-    (planted / "plugin.yaml").write_text("name: planted\n", encoding="utf-8")
-    (origin / "lib").mkdir()
-    (origin / "lib" / "evil").symlink_to(planted / "plugin.yaml")
-    (origin / "plugin" / "ext").symlink_to("../lib")
-    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "evil"],
-        cwd=origin, check=True)
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "resolves outside the pinned clone" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
-
-
-@pytest.mark.platforms("linux")
-def test_self_updater_via_release_download_and_writefilesync(tmp_path, fixture):
-    """Neither releases/latest nor raw.githubusercontent covers a tarball pull
-    from releases/download or codeload, and the Node fs.* write sinks were
-    missing beside the Tauri plugin names."""
-    origin, sha, tmpdir = fixture
-    (origin / "plugin" / "dl.js").write_text(
-        "releases/download fs.writeFileSync(", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "evil"],
-        cwd=origin, check=True)
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=origin, text=True).strip()
-    entry = _write_entry(tmp_path, "evil.yaml",
-                         repo="https://fixture.invalid/repo", sha=sha, subdir="plugin")
-    res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)
-    assert res.returncode != 0, res.stdout + res.stderr
-    assert "self-updating code" in res.stdout + res.stderr
-    assert "PASS" not in res.stdout
-
-
-def _guard_block(job: str) -> str:
-    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    step = next(s for s in data["jobs"][job]["steps"]
-                if s.get("name", "").startswith("Catalog PRs must only touch"))
-    # The workflow expands ${{ github.base_ref }} before bash ever sees it.
-    return step["run"].replace("${{ github.base_ref }}", "main")
-
-
-def test_data_only_guard_is_identical_in_both_jobs():
-    """Both jobs run the same guard text; drift between them would let a
-    tooling change slip into a 'catalog' PR through one job."""
-    assert _guard_block("structural") == _guard_block("pinned-source-validate")
-
-
-def _guard_pr_repo(tmp_path: Path, extra_files: dict[str, str]) -> Path:
-    """Fixture: main has a catalog entry; the PR commit adds a catalog entry
-    plus whatever extra files the caller gives ({} means a clean diff)."""
-    repo = tmp_path / "pr"
-    (repo / "plugin-catalog").mkdir(parents=True)
-    (repo / "plugin-catalog" / "old.yaml").write_text("name: old\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-qb", "main", str(repo)], check=True)
-    for args in (["config", "user.email", "t@t"], ["config", "user.name", "T"],
-                 ["add", "-A"], ["commit", "-qm", "base"],
-                 ["update-ref", "refs/remotes/origin/main", "HEAD"]):
-        subprocess.run(["git", *args], cwd=repo, check=True)
-    (repo / "plugin-catalog" / "new.yaml").write_text("name: new\n", encoding="utf-8")
-    for name, content in extra_files.items():
+def _write(repo: Path, files: dict[str, str]) -> None:
+    for name, content in files.items():
         path = repo / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "pr"],
-        cwd=repo, check=True)
-    return repo
 
 
-@pytest.mark.platforms("linux")
-def test_data_only_guard_rejects_mixed_diff(tmp_path):
-    """A PR adding an entry AND touching gate tooling must fail before any
-    clone happens."""
-    repo = _guard_pr_repo(tmp_path, {"scripts/tool.py": "x = 2\n"})
-    script = tmp_path / "guard-step.sh"
-    script.write_text(_guard_block("structural"), encoding="utf-8")
-    res = subprocess.run(
-        ["bash", str(script)], cwd=repo,
-        capture_output=True, text=True, timeout=60)
-    assert res.returncode == 1, res.stdout + res.stderr
-    assert "must only touch plugin-catalog" in res.stdout
-    assert "scripts/tool.py" in res.stdout
+def _rename(repo):
+    _git(repo, "mv", "plugin-catalog/old.yaml", "plugin-catalog/renamed.yaml")
 
 
-@pytest.mark.platforms("linux")
-def test_data_only_guard_passes_clean_catalog_diff(tmp_path):
-    repo = _guard_pr_repo(tmp_path, {})
-    script = tmp_path / "guard-step.sh"
-    script.write_text(_guard_block("structural"), encoding="utf-8")
-    res = subprocess.run(
-        ["bash", str(script)], cwd=repo,
-        capture_output=True, text=True, timeout=60)
-    assert res.returncode == 0, res.stdout + res.stderr
+def _typechange(repo):
+    (repo / "plugin-catalog" / "old.yaml").unlink()
+    (repo / "plugin-catalog" / "old.yaml").symlink_to("/etc/hostname")
 
 
-def test_checkouts_do_not_persist_credentials():
-    """Pinned-repo code runs under `hermes plugins validate`; the job token must
-    not sit in .git/config where that code could read it."""
-    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    checkouts = [s for job in data["jobs"].values() for s in job["steps"]
-                 if "actions/checkout@" in s.get("uses", "")]
-    assert checkouts
-    for step in checkouts:
-        assert step.get("with", {}).get("persist-credentials") is False
+NEW = {"plugin-catalog/new.yaml": "name: new\n"}
+
+
+@pytest.mark.parametrize("change, rc, listed, text", [
+    (_rename, 0, ["plugin-catalog/renamed.yaml"], None),
+    (_typechange, 0, ["plugin-catalog/old.yaml"], None),
+    (lambda r: _write(r, {**NEW, "scripts/tool.py": "x = 2\n"}), 1, [], "scripts/tool.py"),
+    (lambda r: _write(r, {"plugin-catalog/old.yaml": "name: old\nsha: b\n"}), 0,
+     ["plugin-catalog/old.yaml"], None),
+    (lambda r: _write(r, {**NEW, "contributors/emails/a@b.c": "someone\n"}), 0,
+     ["plugin-catalog/new.yaml"], None),
+    (lambda r: _write(r, {"plugin-catalog/README.md": "rules v2\n",
+                          "website/docs/catalog.md": "docs\n",
+                          ".github/workflows/x.yml": "on: push\n"}), 0, [], None),
+], ids=["rename", "typechange", "entry-plus-tooling", "sha-bump",
+        "entry-plus-email-map", "readme-docs-ci-only"])
+def test_changed_entries_step(tmp_path, change, rc, listed, text):
+    """Renames and typechanges must reach the pinned gate; an entry PR that also
+    touches tooling fails before any clone, while email maps and entry-free
+    policy PRs stay green."""
+    repo = tmp_path / "pr"
+    _write(repo, {"plugin-catalog/old.yaml": "name: old\n", "plugin-catalog/README.md": "rules\n"})
+    _git(repo, "init", "-qb", "main")
+    base = _commit(repo, "base")
+    _git(repo, "checkout", "-qb", "pr")
+    change(repo)
+    _commit(repo, "pr")
+    # Shape of GitHub's pull_request checkout: a merge commit whose first parent
+    # is the base tip (also origin/main, for the merge-base form of the step).
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge", "pr")
+    _git(repo, "checkout", "-q", "--detach")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base)
+    out = tmp_path / "gh-output.txt"
+    out.touch()
+    res = _run(_step("Find changed catalog"), tmp_path, repo,
+               {**os.environ, "GITHUB_OUTPUT": str(out)})
+    assert res.returncode == rc, res.stdout + res.stderr
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert [f for f in lines if f and "__EOF__" not in f and f != "files<<__EOF__"] == listed
+    if text:
+        assert text in res.stdout

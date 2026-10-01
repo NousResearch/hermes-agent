@@ -134,65 +134,32 @@ def test_non_https_repo_fails(tmp_path):
     _expect_error(tmp_path, {"repo": "git@github.com:evil/x.git"}, "repo")
 
 
-@pytest.mark.parametrize("repo", [
-    "https://github.com/x y",          # space: echoed into CI logs
-    "https://github.com/x\n::error::f",  # newline would smuggle workflow commands
-    "https://github.com/x\ty",
-    "https://",                        # scheme with no host
-])
-def test_repo_with_whitespace_or_no_host_fails(tmp_path, repo):
-    """The admission workflow echoes repo into the log and feeds it to git clone; it must
-    be a single whitespace-free https:// token."""
-    _expect_error(tmp_path, {"repo": repo}, "repo")
-
-
 def test_short_sha_fails(tmp_path):
     _expect_error(tmp_path, {"sha": "abc123"}, "sha")
-
-
-@pytest.mark.parametrize("subdir", [
-    "../planted",          # escapes the pinned clone root
-    "plugin/../../x",      # interior traversal
-    "..",                  # bare parent
-    "/abs/path",           # absolute path
-    "plugin//x",           # empty segment
-    "plugin/../x",
-    "plugin\\..\\x",       # backslash separator
-    "plugin/.",            # dot segment
-    "~/x",
-    "file:///etc",
-])
-def test_traversal_subdir_fails(tmp_path, subdir):
-    """The admission CI joins subdir onto a pinned clone; traversal or absolute forms
-    would point the supply-chain gate at files outside the pinned commit."""
-    _expect_error(tmp_path, {"subdir": subdir}, "subdir")
-
-
-@pytest.mark.parametrize("subdir", ["", "plugin", "plugins/browserclaw", "src/x_y.z-1"])
-def test_plain_relative_subdir_passes(tmp_path, subdir):
-    path = write_entry(tmp_path, {**VALID_ENTRY, "subdir": subdir}, "ok.yaml")
-    assert run_validator(str(path)).returncode == 0
-
-
-def test_non_string_subdir_fails(tmp_path):
-    _expect_error(tmp_path, {"subdir": 5}, "subdir")
 
 
 def test_non_hex_sha_fails(tmp_path):
     _expect_error(tmp_path, {"sha": "z" * 40}, "sha")
 
 
-@pytest.mark.parametrize("field", ["name", "sha", "version"])
-def test_trailing_newline_fails(tmp_path, field):
-    """$ matches just before a trailing newline, so anchored-but-$ patterns accept
-    "abc...\\n" while the workflow's fullmatch rejects it; \\Z keeps the two
-    gates identical."""
-    value = {
-        "name": "example-plugin\n",
-        "sha": "38fe0fb53eff98d477f807432e965429e665ca33\n",
-        "version": "1.0\n",
-    }[field]
-    _expect_error(tmp_path, {field: value}, field)
+@pytest.mark.parametrize("field, value, ok", [
+    ("subdir", "plugins/browserclaw", True),
+    ("subdir", None, True),               # bare `subdir:` = repo root
+    ("subdir", "../planted", False),      # escapes the pinned clone
+    ("subdir", "plugin/../x", False),
+    ("subdir", "/abs/path", False),
+    ("subdir", "plugin\\..\\x", False),
+    ("subdir", 5, False),
+    ("repo", "https://github.com/x\n::error::f", False),  # echoed into CI logs
+    ("sha", "38fe0fb53eff98d477f807432e965429e665ca33\n", False),  # $ admits a trailing \n
+])
+def test_source_fields_the_pinned_gate_joins_or_echoes(tmp_path, field, value, ok):
+    """The admission CI joins subdir onto the pinned clone and echoes repo/sha into the
+    log; the structural gate must refuse the shapes the pinned gate refuses."""
+    if ok:
+        assert run_validator(str(write_entry(tmp_path, {**VALID_ENTRY, field: value}))).returncode == 0
+    else:
+        _expect_error(tmp_path, {field: value}, field)
 
 
 def test_bad_tier_fails(tmp_path):

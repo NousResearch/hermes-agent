@@ -11,11 +11,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
-from agent.anthropic_thinking_policy import model_preserves_prior_thinking
-from agent.anthropic_endpoints import (
-    _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
-)
+from agent.anthropic_thinking_policy import anthropic_thinking_route, model_preserves_prior_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -576,24 +572,20 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     with sticky sessions and validates the same signatures, so it takes the native path despite not
     being anthropic.com.
     """
-    is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
-    is_kimi = _is_kimi_family_endpoint(base_url, model)
-    is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
-        is_third_party and _model_name_is_deepseek_thinking(model)
-    )
+    route = anthropic_thinking_route(base_url, model)
     last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
     preserve_prior = model_preserves_prior_thinking(model)
     for idx, m in _assistant_block_lists(result):
-        if is_kimi:
+        if route == "kimi":
             pass  # shared cleanup below still strips cache markers + the flag
-        elif is_deepseek:
+        elif route == "deepseek":
             # Strip signed (or redacted-with-data), keep unsigned.
             new_content = [
                 b for b in m["content"]
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
             m["content"] = new_content or [_text_block("(empty)")]
-        elif is_third_party or (idx != last_assistant_idx and not preserve_prior):
+        elif route == "third_party" or (idx != last_assistant_idx and not preserve_prior):
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:
             new_content = _keep_valid_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))

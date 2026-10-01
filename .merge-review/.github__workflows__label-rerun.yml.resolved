@@ -1,0 +1,157 @@
+name: Label rerun
+
+# When the ``ci-reviewed`` label is added to a PR, rerun all failed jobs in
+# the latest CI run. This re-evaluates ``review-labels`` (which now sees the
+# label) and GitHub reruns the dependent ``all-checks-pass`` gate.
+#
+# When the ``run-e2e`` label is added, rerun the head commit's CI, Docker and
+# Nix runs in full. Their ``detect`` job reads the PR's labels through the API
+# (a rerun replays the original event payload), so the rerun turns every slow
+# lane on (scripts/ci/classify_changes.py).
+#
+# ``gh run rerun`` only works on a completed run. Thus this waits when the
+# run is still in progress. The wait is now short. The two slowest jobs are
+# the 40-minute comment poller and the 45-minute image build. Each one moved
+# to its own workflow, so a CI run ends when its required jobs end.
+#
+# The review comment updates without help. The poller in
+# ci-review-comment.yml watches the CI run through the API. It gets the
+# rerun results.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: write
+  pull-requests: read
+
+# Keyed by label so one label's job does not cancel the other's.
+concurrency:
+  group: label-rerun-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  cancel-in-progress: true
+
+jobs:
+  rerun-review-label-gate:
+    name: Rerun review-labels job
+    # Keep workflow_run privileged execution scoped to CI runs that originated
+    # from this repository's own PR branches. The script also verifies the
+    # ci-reviewed label before it can rerun anything.
+    if: >-
+      (github.event_name == 'pull_request' && github.event.label.name == 'ci-reviewed') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.conclusion == 'failure' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Rerun only the now-approved review gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          LABEL_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+          COMPLETED_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+        run: |
+          set -euo pipefail
+
+          run_id="$COMPLETED_RUN_ID"
+          pr_number="$LABEL_PR_NUMBER"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            # A label can be added before CI finishes. Do not wait here: the
+            # workflow_run trigger below will perform the retry at completion.
+            run_info=$(gh run list \
+              --repo "$REPO" \
+              --commit "$HEAD_SHA" \
+              --workflow ci.yaml \
+              --limit 1 \
+              --json databaseId,status \
+              --jq '.[0] | "\(.databaseId) \(.status)"' 2>/dev/null || true)
+            if [ -z "$run_info" ]; then
+              echo "No CI run found for this PR yet; completion trigger will re-check."
+              exit 0
+            fi
+            run_id="${run_info%% *}"
+            status="${run_info##* }"
+            if [ "$status" != "completed" ]; then
+              echo "CI run $run_id is $status; not holding a runner while it finishes."
+              exit 0
+            fi
+          fi
+
+          if [ -z "$run_id" ] || [ -z "$HEAD_SHA" ]; then
+            echo "Missing CI run or head SHA; nothing to rerun."
+            exit 0
+          fi
+
+          if [ -z "$pr_number" ]; then
+            pr_number=$(gh api \
+              "repos/$REPO/commits/$HEAD_SHA/pulls" \
+              --jq 'map(select(.state == "open")) | .[0].number // empty' 2>/dev/null || true)
+          fi
+          if [ -z "$pr_number" ]; then
+            echo "No pull request is associated with $HEAD_SHA; nothing to rerun."
+            exit 0
+          fi
+
+          if ! gh pr view "$pr_number" --repo "$REPO" --json labels --jq '.labels[].name' \
+            | grep -Fxq 'ci-reviewed'; then
+            echo "PR #$pr_number is not ci-reviewed; no retry needed."
+            exit 0
+          fi
+
+          review_job_id=$(gh run view "$run_id" --repo "$REPO" --json jobs --jq \
+            '.jobs[] | select(.conclusion == "failure" and (.name | startswith("Review label gate /"))) | .databaseId' \
+            | head -n 1)
+          if [ -z "$review_job_id" ]; then
+            echo "No failed Review label gate in CI run $run_id; no retry needed."
+            exit 0
+          fi
+
+          echo "Run completed. Rerunning all failed jobs..."
+          gh run rerun "$RUN_ID" --repo "$REPO" --failed || true
+          echo "Done. GitHub will rerun review-labels and all dependent jobs."
+
+  rerun-with-e2e:
+    name: Rerun CI with every E2E lane
+    if: github.event.label.name == 'run-e2e'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Cancel and rerun the head commit's CI, Docker and Nix runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          for workflow in ci.yaml docker.yml nix.yml; do
+            RUN_ID=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" --workflow "$workflow" \
+              --event pull_request --limit 1 --json databaseId --jq '.[0].databaseId // empty' || true)
+            if [ -z "$RUN_ID" ]; then
+              echo "$workflow: no run for $HEAD_SHA"
+              continue
+            fi
+            # A run in progress was classified without the label: stop it,
+            # then rerun it once GitHub marks it completed.
+            STATUS=$(gh run view "$RUN_ID" --repo "$REPO" --json status --jq .status || echo unknown)
+            if [ "$STATUS" != completed ]; then
+              gh run cancel "$RUN_ID" --repo "$REPO" || true
+              for _ in $(seq 60); do
+                STATUS=$(gh run view "$RUN_ID" --repo "$REPO" --json status --jq .status || echo unknown)
+                [ "$STATUS" = completed ] && break
+                sleep 5
+              done
+            fi
+            if gh run rerun "$RUN_ID" --repo "$REPO"; then
+              echo "$workflow: rerunning $RUN_ID"
+            else
+              echo "::warning::$workflow: could not rerun $RUN_ID (status $STATUS)"
+            fi
+          done

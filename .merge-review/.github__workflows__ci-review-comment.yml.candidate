@@ -1,0 +1,108 @@
+name: CI review comment
+
+# Live-updating PR review comment.
+#
+# The poller runs after CI or Docker completes and is bounded to 10 minutes.
+# A Docker completion starts one short finalizer instead of reserving a runner
+# while its build runs.
+#
+# ``workflow_run`` starts this when CI or Docker finishes. It always reads the
+# workflow and scripts from the default branch, never from the PR head.
+# It makes a write token safe here.
+#
+# The poller reads job results through the API. It always reports the CI run
+# plus the separate Docker run, and depends on neither.
+
+on:
+  workflow_run:
+    workflows: [CI, "Docker Build, Test, and Publish"]
+    # A completed run has final job results, so the comment does not occupy a
+    # hosted runner for the lifetime of CI or a long Docker build.
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+# One bounded poller per PR. ``workflow_run.head_branch`` resolves to the
+# default branch for these runs, so using it puts unrelated PRs in one
+# cancellation group. Use the head SHA when GitHub omits the PR association;
+# the poller resolves the PR number from that SHA before posting.
+concurrency:
+  group: ci-review-comment-${{ github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  comment:
+    name: CI review comment (live)
+    # Fork PRs get no comment: the poller needs a write token. Same-repository
+    # runs can omit ``pull_requests`` too, so let the script resolve that case
+    # from the head SHA.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Resolve CI run for this commit
+        id: ci-run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+          TRIGGER_WORKFLOW: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+          if [ "$TRIGGER_WORKFLOW" = "CI" ]; then
+            ci_run_id="$TRIGGER_RUN_ID"
+          else
+            ci_run_id=$(gh run list \
+              --repo "$REPO" \
+              --commit "$HEAD_SHA" \
+              --workflow ci.yaml \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+          fi
+
+          if [ -z "$ci_run_id" ] || [ "$ci_run_id" = "null" ]; then
+            echo "No CI run found for $HEAD_SHA" >&2
+            exit 1
+          fi
+
+          echo "id=$ci_run_id" >> "$GITHUB_OUTPUT"
+          echo "url=https://github.com/$REPO/actions/runs/$ci_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Run live comment poller
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The CI run to report on — not this run. The name must not be
+          # GITHUB_RUN_ID: the runner sets the GITHUB_* defaults itself and
+          # ignores an env: override, so that name silently resolves to THIS
+          # run. The poller then watches itself, which stays in_progress for
+          # as long as the poller runs, and it waits out its whole timeout.
+          CI_RUN_ID: ${{ steps.ci-run.outputs.id }}
+          # Sibling runs for the same commit that the comment also covers,
+          # one workflow name per line (a name can contain a comma).
+          # The poller resolves each name to its runs through the API.
+          WATCH_WORKFLOWS: |
+            Docker Build, Test, and Publish
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_URL: ${{ steps.ci-run.outputs.url }}
+          # Commit info for the review comment header.
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+          COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+        run: |
+          python3 -u scripts/ci/live_comment.py \
+            --interval 30 \
+            --timeout 600

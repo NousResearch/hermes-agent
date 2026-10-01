@@ -1,0 +1,76 @@
+# .github/workflows/rust-tests.yml
+name: Rust tests
+
+# `cargo test` for the Tauri bootstrap installer (Hermes-Setup). Nothing in CI
+# compiled this crate before: `.rs` lives under `apps/`, so the change
+# classifier matched it as `frontend` and ran the TypeScript matrix, which
+# cannot notice a Rust error. The crate's unit tests existed in the tree and had
+# never run.
+#
+# Linux runner on purpose. The pipe-drain tests in src/powershell.rs need a real
+# process tree whose grandchild inherits the parent's stdout, and their fixture
+# is `#[cfg(unix)]`; the Windows half of that same contract is covered by
+# `-SelfTestPipeDrain` in scripts/desktop-update/windows.ps1 on the Windows
+# lane. A Windows runner here would compile them out and report green over zero
+# coverage.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bootstrap-installer:
+    name: cargo test (bootstrap installer)
+    # cargo builds codegen units and test binaries in parallel across the
+    # cores. This lane also builds the crate from the start when Cargo.toml
+    # changes.
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/bootstrap-installer/src-tauri
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Tauri links against the system webkit2gtk on Linux, so the crate does
+      # not compile without these even for `cargo test --lib`.
+      - name: Install Tauri system dependencies
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
+
+      # Keyed on Cargo.toml, not Cargo.lock: apps/bootstrap-installer/.gitignore
+      # excludes the lockfile (a create-tauri-app scaffold default), so there is
+      # nothing pinned to hash and `--locked` cannot be used. That also means
+      # this crate re-resolves its whole dependency graph on every build, which
+      # is a real gap for a signed installer given the pinning policy in
+      # AGENTS.md — tracking separately rather than widening this PR.
+      #
+      # No restore-keys: a partial hit leaves a stale target dir, and cargo
+      # re-resolves correctly on top of a Cargo.toml-keyed hit anyway.
+      - name: Restore cargo cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/bootstrap-installer/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/bootstrap-installer/src-tauri/Cargo.toml') }}
+
+      # --lib only: the integration/bin targets would need a built frontend
+      # (vite dist) that this lane deliberately does not produce.
+      - name: cargo test
+        run: cargo test --lib

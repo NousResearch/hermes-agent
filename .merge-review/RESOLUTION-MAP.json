@@ -1,0 +1,622 @@
+[
+  {
+    "path": ".github/actions/plugin-validate/action.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/case-collision-check.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/ci-review-comment.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/ci.yaml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/contributor-check.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/deploy-site.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/docker-lint.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/docker.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/docs-site-checks.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/e2e-desktop.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/history-check.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/infographic-check.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/install-e2e-run.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/install-e2e.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/installer-tests.yml",
+    "strategy": "keep-fork-file-upstream-deleted"
+  },
+  {
+    "path": ".github/workflows/js-autofix.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/js-tests.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/label-rerun.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/lint.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/lockfile-diff.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/nix.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/osv-scanner.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/profile-artifact-check.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/publish-e2e-evidence.yml",
+    "strategy": "keep-fork-file-upstream-deleted"
+  },
+  {
+    "path": ".github/workflows/review-labels.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/rust-tests.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/skills-index-freshness.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/skills-index.yml",
+    "strategy": "union"
+  },
+  {
+    "path": ".github/workflows/supply-chain-audit.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/tests-os.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/tests.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/uv-lockfile-check.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".github/workflows/windows-venv-e2e.yml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": ".gitignore",
+    "strategy": "union"
+  },
+  {
+    "path": "acp_adapter/content.py",
+    "strategy": "union"
+  },
+  {
+    "path": "agent/background_review.py",
+    "strategy": "union"
+  },
+  {
+    "path": "agent/image_routing.py",
+    "strategy": "union"
+  },
+  {
+    "path": "agent/reasoning_summaries.py",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/bootstrap-installer/package.json",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/bootstrap-installer/src-tauri/Cargo.toml",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "apps/bootstrap-installer/src-tauri/tauri.conf.json",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/e2e/fixtures.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/backend-ready.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/desktop-installation.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/git-repo-scan.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/git-review-ops.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/hardening.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/main.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/managed-ssh-update.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/pool-spawn-coordinator.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/ssh-config.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/ssh-connection.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/update-api-check.test.ts",
+    "strategy": "keep-fork-file-upstream-deleted"
+  },
+  {
+    "path": "apps/desktop/electron/update-api-check.ts",
+    "strategy": "keep-fork-file-upstream-deleted"
+  },
+  {
+    "path": "apps/desktop/electron/windows-hermes-path.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/electron/windows-hermes-path.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/package.json",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/scripts/stage-native-deps.test.mjs",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/capabilities/index.test.tsx",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/capabilities/index.tsx",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/capabilities/plugins/plugins-tab.test.tsx",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/capabilities/plugins/plugins-tab.tsx",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/capabilities/skills/embedded-hub-picker.tsx",
+    "strategy": "keep-fork-file-upstream-deleted"
+  },
+  {
+    "path": "apps/desktop/src/app/capabilities/skills/skills-tab.tsx",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/command-center/index.tsx",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/command-center/maintenance.test.tsx",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/settings/about-settings.tsx",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/settings/subpages.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/app/settings/vault-settings.tsx",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/global.d.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/i18n/ar.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/i18n/en.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/i18n/ja.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/i18n/ru.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/i18n/types.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/i18n/zh-hant.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/i18n/zh.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/lib/with-timeout.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/store/connections.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/store/connections.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/store/gateway-activation-prune-lease.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/store/gateway.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/store/profile.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/store/updates.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/src/store/updates.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/desktop/tsconfig.e2e.json",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/shared/src/catalog-install.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "apps/shared/src/index.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "gateway/hosted_room_driver.py",
+    "strategy": "union"
+  },
+  {
+    "path": "gateway/run_turn.py",
+    "strategy": "union"
+  },
+  {
+    "path": "hermes_cli/AGENTS.md",
+    "strategy": "union"
+  },
+  {
+    "path": "hermes_cli/gateway_windows.py",
+    "strategy": "union"
+  },
+  {
+    "path": "hermes_cli/plugin_validate.py",
+    "strategy": "manual"
+  },
+  {
+    "path": "hermes_cli/plugins_cmd.py",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "hermes_cli/update_cmd.py",
+    "strategy": "manual"
+  },
+  {
+    "path": "hermes_cli/update_cmd_windows.py",
+    "strategy": "union"
+  },
+  {
+    "path": "hermes_cli/update_cmd_zip.py",
+    "strategy": "union"
+  },
+  {
+    "path": "hermes_cli/update_handoff.py",
+    "strategy": "manual"
+  },
+  {
+    "path": "package-lock.json",
+    "strategy": "manual"
+  },
+  {
+    "path": "pyproject.toml",
+    "strategy": "manual"
+  },
+  {
+    "path": "scripts/desktop-update/windows.ps1",
+    "strategy": "union"
+  },
+  {
+    "path": "scripts/install.ps1",
+    "strategy": "union"
+  },
+  {
+    "path": "scripts/release.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests-js/package.json",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "tests/acp_adapter/test_acp_images.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/acp_adapter/test_session.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/agent/test_file_safety_sandbox_mirror.py",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "tests/agent/test_image_routing.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/agent/test_save_url_image.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/agent/test_vault_backends.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/agent/test_vision_tool_messages.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/ci/test_classify_changes.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/e2e/core/sqlite/_helpers.py",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "tests/e2e/core/tenancy/test_routing_truth_table.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/gateway/test_feishu.py",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "tests/gateway/test_hosted_room_links.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/gateway/test_hosted_room_peer.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/gateway/test_media_resend_dedup.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/gateway/test_platform_base.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/gateway/test_post_stream_media_delivery.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/gateway/test_tts_media_routing.py",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "tests/hermes_cli/test_anon_auth_core.py",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "tests/hermes_cli/test_plugin_install_ref.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/hermes_cli/test_plugin_validate.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/hermes_cli/test_profiles.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/hermes_cli/test_stderr_timestamp.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/hermes_cli/test_update_concurrent_quarantine.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/hermes_cli/test_update_post_swap_handoff.py",
+    "strategy": "keep-fork-file-upstream-deleted"
+  },
+  {
+    "path": "tests/hermes_cli/test_web_server_boot_handshake.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/scripts/desktop_update/test_desktop_update_windows_pipe_drain.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/scripts/test_release_bootstrap_installer_version.py",
+    "strategy": "keep-fork-file-upstream-deleted"
+  },
+  {
+    "path": "tests/test_hermes_logging.py",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "tests/tools/test_bot_live_owner_delivery.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tools/test_bot_mode_dm.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tools/test_completed_process_results.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tools/test_mcp_npx_cached_bin.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tools/test_mcp_tool.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tools/test_mcp_tool_issue_948.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tools/test_process_registry.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tools/test_process_registry_windows_live.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tui_gateway/test_bot_relay_methods.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tui_gateway/test_hosted_room_two_gateway_scoped.py",
+    "strategy": "fallback-ours"
+  },
+  {
+    "path": "tests/tui_gateway/test_prompt_accept_logging.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tests/tui_gateway/test_tui_gateway_server.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tools/bot_mode_dm.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tools/lazy_deps.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tools/mcp_tool_config.py",
+    "strategy": "fallback-theirs"
+  },
+  {
+    "path": "tools/mcp_tool_transport.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tui_gateway/methods_session.py",
+    "strategy": "union"
+  },
+  {
+    "path": "tui_gateway/model_switch.py",
+    "strategy": "fallback-ours"
+  },
+  {
+    "path": "tui_gateway/prompt_turn.py",
+    "strategy": "union"
+  },
+  {
+    "path": "ui-tui/src/__tests__/terminalSetup.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "ui-tui/src/__tests__/virtualHistoryOffsetCache.test.ts",
+    "strategy": "union"
+  },
+  {
+    "path": "uv.lock",
+    "strategy": "manual"
+  },
+  {
+    "path": "website/docs/user-guide/windows-native.md",
+    "strategy": "union"
+  }
+]

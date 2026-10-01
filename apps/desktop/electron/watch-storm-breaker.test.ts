@@ -179,4 +179,24 @@ describe('guardedWatch', () => {
 
     expect(onPollChange).toHaveBeenCalledTimes(1)
   })
+
+  test('an empty directory vanishing is still a change (error is not the empty snapshot)', () => {
+    let gone = false
+
+    const { fw, onPollChange } = setup('win32', {
+      snapshot: () => {
+        if (gone) {
+          throw new Error('ENOENT')
+        }
+
+        return ''
+      }
+    })
+
+    fw.emit(WATCH_STORM_MAX_EVENTS + 1)
+    gone = true
+    vi.advanceTimersByTime(WATCH_STORM_POLL_MS)
+
+    expect(onPollChange).toHaveBeenCalledTimes(1)
+  })
 })

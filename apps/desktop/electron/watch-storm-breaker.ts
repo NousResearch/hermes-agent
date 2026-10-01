@@ -55,11 +55,16 @@ export function stormBreakerArmed(platform: string): boolean {
   return platform === 'win32'
 }
 
-function safeSnapshot(snapshot: () => string): string {
+/**
+ * `null` = the snapshot failed (target removed or unreadable). Kept distinct
+ * from the empty string, which is the valid snapshot of an empty directory, so
+ * an empty directory vanishing still compares as a change.
+ */
+function safeSnapshot(snapshot: () => string): string | null {
   try {
     return snapshot()
   } catch {
-    return ''
+    return null
   }
 }
 

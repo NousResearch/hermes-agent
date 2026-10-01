@@ -15,8 +15,8 @@ import {
   backgroundMaterialFor,
   glassActive,
   type TranslucencyState,
-  type WindowsBackgroundMaterial,
-  windowOpacityFor
+  windowOpacityFor,
+  type WindowsBackgroundMaterial
 } from '../../shared/src/translucency'
 
 export {

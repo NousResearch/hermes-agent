@@ -227,7 +227,7 @@ def tail_log(
     if not follow:
         return
     try:
-        _follow_log(log_path, initial_lines=_read_all_lines(log_path) if has_filters else None, **filters)
+        _follow_log(log_path, initial_lines=_read_last_record_lines(log_path) if has_filters else None, **filters)
     except KeyboardInterrupt:
         print("\n--- stopped ---")
 
@@ -245,6 +245,11 @@ def _read_tail(path: Path, num_lines: int, *, has_filters: bool = False, **filte
 def _read_all_lines(path: Path) -> list:
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         return f.readlines()
+
+
+def _read_last_record_lines(path: Path, max_lines: int = 256) -> list:
+    """Read a bounded suffix sufficient to seed follow-mode filter state."""
+    return _read_last_n_lines(path, max_lines)
 
 
 def _read_last_n_lines(path: Path, n: int) -> list:

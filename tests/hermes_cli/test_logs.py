@@ -11,6 +11,7 @@ from hermes_cli.logs import (
     _parse_line_timestamp,
     _parse_since,
     _read_last_n_lines,
+    _read_last_record_lines,
     _read_tail,
 )
 
@@ -149,6 +150,16 @@ class TestReadTail:
         result = _read_last_n_lines(log_file, 5)
         assert len(result) == 5
         assert "line 9" in result[-1]
+
+    def test_follow_seed_reads_bounded_suffix(self, tmp_path):
+        log_file = tmp_path / "large.log"
+        record = "2026-01-01 00:00:00 INFO x: line\n"
+        log_file.write_text(record * 40000)
+
+        result = _read_last_record_lines(log_file)
+
+        assert len(result) == 256
+        assert result[-1] == record
 
     def test_unstamped_lines_share_the_verdict_of_the_record_above(self, tmp_path):
         old = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S,000")

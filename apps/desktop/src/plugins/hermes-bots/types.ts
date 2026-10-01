@@ -9,6 +9,8 @@
  * required is a claim that every one of those paths supplies it.
  */
 
+import type { ProfileSessionPreview } from '@hermes/plugin-sdk'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -53,6 +55,7 @@ export interface SessionPreview {
   /** Unix seconds, not milliseconds. */
   last_active?: number
   message_count?: number
+  live_message_count?: ProfileSessionPreview['live_message_count']
   preview?: string
   title?: string
 }

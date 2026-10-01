@@ -120,14 +120,24 @@ def test_unknown_channel_created_over_http_retains_identity_and_immutable_reques
         assert "immutable" in headers[f"releases/channel-builds/{one['buildId']}/request.json"]["Cache-Control"]
 
 
-def test_stable_branded_channel_reuses_the_published_stable_identity():
-    """--branding stable is fixed at creation and needs an actual published stable to copy."""
+def test_stable_branded_channel_reuses_the_published_stable_identity(monkeypatch):
+    """--branding stable is fixed at creation; it copies a published stable record, and
+    before stable has any channel record it uses the identity the first stable release
+    is held to."""
     from hermes_cli.release_channels import ChannelError, canonical_json
+    from scripts.releases import channel_releases
+    product = {"token": "f204dc6857361e33", "displayName": "Hermes Agent",
+               "appId": "com.nousresearch.hermes-bundled", "appNamePascal": "HermesBundled",
+               "artifactNamePascal": "HermesBundled", "cliName": "hermes",
+               "windowsExecutableName": "Hermes Agent", "msixAppIdWithOrg": "NousResearch.HermesBundled"}
+    monkeypatch.setattr(channel_releases, "product_identity", lambda tag: dict(product))
     with object_server() as (url, objects, headers, requests, faults):
         pub = publisher(url)
+        assert pub.create("before-stable", "stable")["identity"] == product
+        assert not [key for key in objects if key.startswith("releases/channel-identities/")]
+        stable = pub.create("stable")
         with pytest.raises(ChannelError, match="none is published"):
             pub.create("like-stable", "stable")
-        stable = pub.create("stable")
         stable.update(policy="stable-release", nextSequence=2, head={
             "buildId": "e" * 32, "sequence": 1, "sha256": "0" * 64,
             "manifestKey": "releases/channel-builds/" + "e" * 32 + "/build.json"})

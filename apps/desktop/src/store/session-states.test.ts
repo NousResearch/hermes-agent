@@ -35,6 +35,7 @@ import {
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
   foregroundSessionScopes,
+  frontMainIfSelected,
   isSessionRemote,
   knownOwnerForSession,
   markSelectionRestore,
@@ -552,6 +553,51 @@ describe('SessionTile workspace scope', () => {
       workspaceMode: 'bots',
       workspaceOwnerKey: 'connection-a::default'
     })
+  })
+})
+
+describe('frontMainIfSelected (#125899 — Bot row click while its chat sits in main)', () => {
+  const activePane = () => {
+    const tree = $layoutTree.get()
+
+    return tree?.type === 'group' ? tree.active : null
+  }
+
+  afterEach(() => {
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('fronts the workspace pane over another bot tile when main holds the chat', () => {
+    // The promoted-into-main state: closing main dropped the bot tile and
+    // loaded its chat as the primary; the zone sits on another bot tile.
+    $selectedStoredSessionId.set('bot-chat')
+    $layoutTree.set(group(['workspace', tilePane('other-bot')], { active: tilePane('other-bot'), id: 'main' }))
+
+    expect(frontMainIfSelected('bot-chat')).toBe(true)
+    expect(activePane()).toBe('workspace')
+  })
+
+  it('matches a compression-lineage alias of the chat main holds', () => {
+    setSessions([{ _lineage_ids: ['seg-1', 'seg-2'], _lineage_root_id: 'seg-1', id: 'seg-2' } as never])
+    $selectedStoredSessionId.set('seg-2')
+    $layoutTree.set(group(['workspace'], { id: 'main' }))
+
+    expect(frontMainIfSelected('seg-1')).toBe(true)
+    setSessions([])
+  })
+
+  it('reports false and fronts nothing when main holds another chat', () => {
+    $selectedStoredSessionId.set('other-chat')
+    $layoutTree.set(group(['workspace', tilePane('other-bot')], { active: tilePane('other-bot'), id: 'main' }))
+
+    expect(frontMainIfSelected('bot-chat')).toBe(false)
+    expect(activePane()).toBe(tilePane('other-bot'))
+  })
+
+  it('reports false when main holds nothing', () => {
+    expect(frontMainIfSelected('bot-chat')).toBe(false)
   })
 })
 

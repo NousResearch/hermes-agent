@@ -1923,6 +1923,7 @@ export interface ProfileSessionPreview {
   started_at?: number
   last_active?: number
   message_count?: number
+  live_message_count?: number | null
 }
 /** Newest kanban/tool worker row, so rosters can show a profile as working. */
 export interface ProfileWorkerSession {
@@ -1941,6 +1942,7 @@ export interface ProfileCanonicalSession {
   started_at?: number
   last_active?: number
   message_count?: number
+  live_message_count?: number | null
 }
 /** ``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on so a headless bot has a provider. */
 export interface ProfilesCreateParams {
@@ -3127,6 +3129,7 @@ export interface SessionListRow {
   preview?: string
   started_at?: number
   message_count?: number
+  live_message_count?: number | null
   source?: string
 }
 export interface SessionMostRecentParams {

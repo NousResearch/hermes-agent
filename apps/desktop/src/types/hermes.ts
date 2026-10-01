@@ -59,6 +59,8 @@ export interface AudioSttLeaseResponse {
   leases: null | number
   /** Warm-up outcome: `loaded` | `cached` | `noop` | `error`. Release carries no action. */
   action?: string
+  /** Whether the configured engine was actually warmed (`noop` for cloud providers carries false). */
+  warmed?: boolean
   provider?: string
   error?: string
 }

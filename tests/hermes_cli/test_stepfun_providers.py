@@ -6,14 +6,6 @@ so region is a provider id with its own key env var, never a base-url toggle ove
 
 from __future__ import annotations
 
-import sys
-import types
-
-if "dotenv" not in sys.modules:
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    sys.modules["dotenv"] = fake_dotenv
-
 
 # (id, base url, key env var, base-url override var, models.dev catalog)
 STEPFUN_IDS = (

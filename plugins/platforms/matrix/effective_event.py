@@ -81,7 +81,7 @@ async def _decrypt(client: Any, raw: dict[str, Any]) -> tuple[Any | None, dict[s
     try:
         return await decrypt_history_event(client, raw), None
     except UndecryptableEvent as exc:
-        return None, {"event_id": raw.get("event_id"), "error": str(exc)}
+        return None, {"event_id": str(raw.get("event_id") or ""), "error": str(exc)}
 
 
 async def effective_event(
@@ -172,7 +172,7 @@ async def _apply_replacement(
             if is_redacted is not None and is_redacted(replacement_id):
                 return unavailable
             return MatrixEffectiveEvent(content, original_content, error={
-                "event_id": replacement.get("event_id"),
+                "event_id": replacement_id,
                 "error": "encrypted replacement could not be inspected",
             })
     else:

@@ -53,14 +53,10 @@ class DiscordVoiceLifecycleMixin:
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self.name)
 
-
-
-
     def _cancel_voice_timeout(self: DiscordAdapter, guild_id: int) -> None:
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
-
 
     def _reset_voice_timeout(self: DiscordAdapter, guild_id: int) -> None:
         """Reset the auto-disconnect inactivity timer."""
@@ -72,7 +68,6 @@ class DiscordVoiceLifecycleMixin:
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
             self._voice_timeout_handler(guild_id, timeout)
         )
-
 
     async def _voice_timeout_handler(self: DiscordAdapter, guild_id: int, timeout: Optional[int] = None) -> None:
         """Auto-disconnect after the configured inactivity timeout."""
@@ -104,8 +99,6 @@ class DiscordVoiceLifecycleMixin:
                     await ch.send(t("platform.discord.voice.left_inactivity"))
                 except Exception:
                     pass
-
-
 
     def _notify_voice_disconnect(self: DiscordAdapter, text_ch_id: Optional[int]) -> None:
         """Tell the runner that the call bound to ``text_ch_id`` ended so it resets the voice mode."""

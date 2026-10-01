@@ -564,6 +564,7 @@ class TestVoiceChannelCommands:
         """Voice input creates synthetic event and calls handle_message."""
         from gateway.config import Platform
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {}
         mock_channel = AsyncMock()
@@ -596,6 +597,7 @@ class TestVoiceChannelCommands:
             lambda _config: [("team-bot", None), ("first", None), ("second", None)],
         )
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter._owner_profile = "team-bot"
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: SessionSource(
@@ -650,6 +652,7 @@ class TestVoiceChannelCommands:
         )
 
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: bound_source.to_dict()}
         mock_channel = AsyncMock()

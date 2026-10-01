@@ -99,6 +99,23 @@ class MatrixRichContentSnapshot:
         )
         return cls(MatrixTurnContext.capture(adapter, event), contributions)
 
+    def pending_state(self) -> dict[str, Any]:
+        return {
+            "kind": "matrix_rich_content",
+            "context": self.context.pending_state(),
+            "contributions": [
+                {
+                    "event_id": contribution.authored.event_id,
+                    "sender": contribution.authored.sender,
+                    "original_text": contribution.original_text,
+                    "original_content_text": contribution.original_content_text,
+                    "original_media_identity": contribution.original_media_identity,
+                    "media_paths": list(contribution.media_paths),
+                }
+                for contribution in self.contributions
+            ],
+        }
+
     def use_turn_context(self, update: TurnContextUpdate | None) -> None:
         self.context.use_turn_context(update)
 

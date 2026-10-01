@@ -82,7 +82,7 @@ it('discovers retained rooms when the actual primary socket opens after the list
   expect(Object.values($canonicalGroupBindings.get())).toEqual([{ ...route, roomId: 'retained' }])
 })
 
-it('refreshes discovery after reconnect and refuses the old socket response', async () => {
+it.each([false, true])('refreshes discovery after reconnect and refuses the old socket response (batched: %s)', async batched => {
   let releaseOld!: (page: unknown) => void
   let lists = 0
   request.mockImplementation(async method => {
@@ -96,13 +96,23 @@ it('refreshes discovery after reconnect and refuses the old socket response', as
   render(<CanonicalGroupList onOpen={vi.fn()} />)
   await waitFor(() => expect(lists).toBe(1))
   const epoch = gatewayActivationEpoch()
+  const oldPage = { rooms: [{ room_id: 'stale', name: 'Old socket room', members: [] }], next_offset: null }
 
-  await act(async () => { changeSocket('closed') })
-  await act(async () => { changeSocket('open') })
+  if (batched) {
+    await act(async () => {
+      changeSocket('closed')
+      changeSocket('open')
+      // Return the old request before React has committed the batched
+      // reconnect, so an effect-cleanup flag alone cannot fence it.
+      releaseOld(oldPage)
+    })
+  } else {
+    await act(async () => { changeSocket('closed') })
+    await act(async () => { changeSocket('open') })
+    await screen.findByRole('button', { name: 'Current room' })
+    await act(async () => { releaseOld(oldPage) })
+  }
   await screen.findByRole('button', { name: 'Current room' })
-  await act(async () => {
-    releaseOld({ rooms: [{ room_id: 'stale', name: 'Old socket room', members: [] }], next_offset: null })
-  })
 
   expect(gatewayActivationEpoch()).toBe(epoch)
   expect(screen.queryByRole('button', { name: 'Old socket room' })).toBeNull()

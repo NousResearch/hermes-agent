@@ -1,0 +1,157 @@
+/* On-screen choice dialog: a small, always-on-top card centered on the primary
+ * display. The window is transparent and frameless, so this paints the card
+ * itself. Uses the app's theme tokens so it matches whatever theme is active;
+ * the accent cyan ties it to the Hermes identity. */
+
+.ask-choice-surface {
+  align-items: center;
+  background: transparent;
+  display: flex;
+  height: 100vh;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease-out;
+  width: 100vw;
+}
+
+.ask-choice-surface[data-state='active'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ask-choice-card {
+  animation: ask-choice-pop 180ms ease-out;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(34, 211, 238, 0.12),
+    0 0 44px rgba(34, 211, 238, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 20px 16px;
+  width: 100%;
+}
+
+.ask-choice-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.ask-choice-glyph {
+  align-items: center;
+  background: linear-gradient(160deg, rgba(34, 211, 238, 0.24), rgba(34, 211, 238, 0.1));
+  border: 1px solid rgba(34, 211, 238, 0.4);
+  border-radius: 9px;
+  color: #67e8f9;
+  display: flex;
+  font-size: 15px;
+  font-weight: 700;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.ask-choice-eyebrow {
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ask-choice-question {
+  color: var(--color-foreground);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.ask-choice-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ask-choice-option {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 11px;
+  color: var(--color-foreground);
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  padding: 11px 12px;
+  text-align: left;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    transform 120ms ease;
+  width: 100%;
+}
+
+.ask-choice-option:hover {
+  background: rgba(34, 211, 238, 0.1);
+  border-color: rgba(34, 211, 238, 0.55);
+  transform: translateY(-1px);
+}
+
+.ask-choice-option:active {
+  transform: translateY(0);
+}
+
+.ask-choice-option:focus-visible {
+  border-color: rgba(34, 211, 238, 0.8);
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.35);
+  outline: none;
+}
+
+.ask-choice-option-key {
+  align-items: center;
+  background: rgba(34, 211, 238, 0.14);
+  border: 1px solid rgba(34, 211, 238, 0.32);
+  border-radius: 7px;
+  color: #67e8f9;
+  display: flex;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.ask-choice-option-label {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.ask-choice-foot {
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  text-align: center;
+}
+
+@keyframes ask-choice-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ask-choice-card {
+    animation: none;
+  }
+}

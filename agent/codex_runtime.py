@@ -779,7 +779,7 @@ def _output_text_of(item: Any) -> str:
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
-    Only ``usage`` / ``status`` / ``id`` are read from the terminal frame — never ``response.output``. Output
+    Only ``usage`` / ``status`` / ``id`` / ``service_tier`` are read from the terminal frame — never ``response.output``. Output
     items come from ``output_item.done``, or are synthesized from text deltas, or settled from function calls
     announced via ``output_item.added`` but never confirmed (some backends omit per-item done events on success)."""
 
@@ -790,6 +790,7 @@ class _CodexResponseAssembler:
     active_summary_index: Any = None
     terminal_status: str = "completed"
     terminal_usage = terminal_response_id = terminal_incomplete_details = terminal_error = None
+    terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
 
@@ -911,6 +912,7 @@ class _CodexResponseAssembler:
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
+            self.terminal_service_tier = _event_field(resp_obj, "service_tier")
             rstatus = _event_field(resp_obj, "status")
             if isinstance(rstatus, str):
                 self.terminal_status = rstatus
@@ -978,7 +980,7 @@ class _CodexResponseAssembler:
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
-            error=self.terminal_error)
+            error=self.terminal_error, service_tier=self.terminal_service_tier)
 
 
 def _consume_codex_event_stream(

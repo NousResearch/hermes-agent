@@ -703,6 +703,8 @@ export interface SubmitTextOptions {
    *  (queue drain, steer, external submit requests): the check is a no-op
    *  without it. */
   composerScope?: string | null
+  /** This submit's fresh draft acquired a stored key. Never fired for navigation. */
+  onComposerScopeAssigned?: (scope: string) => void
   /** What the transcript shows for this send, when it differs from the text
    *  the agent receives. A `/skill` invocation expands into the whole skill
    *  body — model-facing scaffolding the UI must never render — so the slash
@@ -720,6 +722,13 @@ export interface SubmitTextOptions {
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
   fromQueue?: boolean
+  /** Called once with the EXACT session identity the backend accepted the
+   *  prompt into — the live runtime id after any stale-runtime recovery, plus
+   *  the durable stored id when the caller knows it. A caller that must prove
+   *  delivery to another surface (Quick Entry) uses this instead of guessing
+   *  from the foreground session. Never called for a rejected or aborted
+   *  submit, and never for slash commands, which never reach prompt.submit. */
+  onAccepted?: (identity: { runtimeSessionId: string; storedSessionId: null | string }) => void
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground
    *  session between enqueue and drain. */

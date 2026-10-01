@@ -1133,6 +1133,9 @@ export const deOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Chat-Textgröße',
+      chatTextScaleDesc:
+        'Skaliert Unterhaltungstext und Nachrichteneingabe relativ zur UI-Skalierung. Seitenleisten und Bedienelemente behalten ihre Größe.',
       title: 'Darstellung',
       intro: 'Nur für Desktop. Modus ist die Helligkeit; Theme ist Farbpalette und Chat-Design.',
       colorMode: 'Farbmodus',
@@ -5041,6 +5044,10 @@ export const deOverrides = {
       editModels: 'Modelle bearbeiten…',
       followDefault: 'Standard aus den Einstellungen verwenden',
       refreshModels: 'Modelle aktualisieren',
+      favorites: 'Favoriten',
+      addFavorite: 'Zu Favoriten hinzufügen',
+      removeFavorite: 'Aus Favoriten entfernen',
+      favoriteShortcut: '⇧ Klick',
       fast: 'Schnell',
       free: 'kostenlos',
       cacheRead: 'Cache-Lesung',
@@ -5527,6 +5534,10 @@ export const deOverrides = {
           body: provider =>
             `${provider} war nicht erreichbar oder hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.`
         },
+        no_reply: {
+          title: 'Die Antwort wurde nicht fertig',
+          body: 'Hermes hat diesen Durchlauf ohne Antwort beendet. Versuchen Sie es erneut, um sie noch einmal zu senden.'
+        },
         stream_drop: {
           title: 'Die Antwort wurde abgebrochen',
           body: 'Die Verbindung ist abgebrochen, bevor die Antwort fertig war. Versuchen Sie es erneut, um sie noch einmal zu senden.'
@@ -5709,14 +5720,9 @@ export const deOverrides = {
       placeholder: 'Geben Sie Ihre Antwort ein…',
       skip: 'Überspringen',
       skipped: 'Übersprungen',
-      continueLabel: 'Weiter',
+      noAnswer: 'Keine Antwort',
       confirmAndContinueLabel: 'Bestätigen und fortfahren',
-      answeredBadge: 'Beantwortet',
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
-      lateAnswer: (question, choice) => `Re: „${question}“ — meine Antwort: ${choice}`,
-      lateAnswerTip: 'Diese Antwort als Folgenachricht entwerfen',
-      lateAnswerHint:
-        'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.',
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
     },

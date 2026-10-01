@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 from collections import deque
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
@@ -641,7 +642,7 @@ class WebhookAdapter(BasePlatformAdapter):
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
+            "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         if not self._record_delivery_id(delivery_identity, now):

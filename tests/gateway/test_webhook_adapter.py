@@ -535,6 +535,11 @@ class TestIdempotency:
             data = await resp2.json()
             assert data["status"] == "duplicate"
 
+            # Header-less deliveries in the same millisecond must not collide on a fallback id.
+            with patch("gateway.platforms.webhook.time.time", return_value=1_700_000_000.0):
+                bare = [await cli.post("/webhooks/idem", json={"a": 2}) for _ in range(2)]
+            assert [r.status for r in bare] == [202, 202]
+
     @pytest.mark.asyncio
     async def test_delivery_id_is_scoped_to_authenticated_route(self):
         """Provider IDs deduplicate retries for one route, not unrelated authenticated routes."""

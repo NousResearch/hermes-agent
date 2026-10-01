@@ -940,10 +940,12 @@ async def test_room_state_note_reaches_queued_follow_up_and_its_saved_row(tmp_pa
         response="first", result={"interrupted": True, "messages": []}, stream_task=None,
     )
 
+    from gateway.input_owner import gateway_input_owner
+
     kwargs = runner._run_agent.await_args.kwargs
     assert (kwargs["message"], kwargs["persist_user_display_metadata"], pending.channel_state["topic"]) == (
         f'[The room topic changed to: "Topic B"]\n{_UNTRUSTED_MARKER}\n\n[New message]\nqueued',
-        {"channel_state": pending.channel_state}, "Topic B",
+        {"gateway_input_owner": gateway_input_owner(pending, pending.source), "channel_state": pending.channel_state}, "Topic B",
     )
 
 

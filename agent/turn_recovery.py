@@ -1381,6 +1381,9 @@ def reset_hint(api_error: Exception) -> str:
     return f"~{format_duration_compact(remaining)}" if remaining >= 1 else ""
 
 
+_RETRY_AFTER_CAP_SECONDS = 600
+
+
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
@@ -1410,10 +1413,17 @@ def compute_error_backoff(
             _payload = _nested if isinstance(_nested, dict) else _error_body
             _retry_after = parse_retry_after_seconds(_payload.get("retry_after"))
     if _retry_after is not None:
-        # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
-        # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
-        # realistic provider reset windows while still rejecting pathological values. (#26293)
-        _retry_after = min(_retry_after, 600)
+        if is_rate_limited and _retry_after > _RETRY_AFTER_CAP_SECONDS:
+            # A rate limit that reopens past the cap is a spent quota window (hours to days), not
+            # a request bucket: no in-turn wait reaches it, and sleeping the cap only delays the
+            # fallback / terminal error by 10 minutes per attempt. Take the short backoff instead.
+            _retry_after = None
+        else:
+            # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
+            # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
+            # realistic provider reset windows while still rejecting pathological values. (#26293)
+            _retry_after = min(_retry_after, _RETRY_AFTER_CAP_SECONDS)
+    if _retry_after is not None:
         if _retry_after <= 0:
             # A zero/expired cooldown (retry-after: 0, or an HTTP-date in the
             # past, which the parser clamps to 0.0) carries no usable wait —

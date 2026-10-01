@@ -32,6 +32,7 @@ __all__ = [
     "expose_pm_git",
     "noninteractive_git_env",
     "noninteractive_repo_git_env",
+    "FILTER_DISCOVERY_FAILED",
     "NO_DRIVER_DIFF_FLAGS",
     "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
@@ -469,12 +470,16 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
 
 
 _FILTER_COMMAND_KEY = re.compile(r"^filter\..+\.(?:clean|smudge|process)$", re.IGNORECASE)
-# ``includeIf "onbranch:..."`` is evaluated against the CURRENT branch, so a ``worktree add`` of
-# another branch can load filters this discovery never saw; refuse rather than half-harden.
+# Any ``includeIf`` is evaluated against the CURRENT checkout: ``onbranch:`` against the current
+# branch, ``gitdir:`` against the current git dir (``.git/worktrees/<name>`` during ``worktree add``),
+# so the spawned git can load filters this discovery never saw; refuse rather than half-harden.
+# Global/system config is already /dev/null, so only repo-local includes reach this.
+_INCLUDE_IF_KEY = re.compile(r"^includeif\..*\.path$", re.IGNORECASE)
 # Each discovered key costs two env entries; a repo with tens of thousands of filters would make
 # every spawn fail with E2BIG ("Argument list too long"), so refuse past a generous cap.
 _MAX_FILTER_KEYS = 256
-_ONBRANCH_INCLUDE_KEY = re.compile(r"^includeif\.onbranch:.*\.path$", re.IGNORECASE)
+# Stand-in stderr for a git call refused because filter discovery could not be trusted.
+FILTER_DISCOVERY_FAILED = "git filter discovery failed"
 
 
 def noninteractive_repo_git_env(
@@ -491,37 +496,36 @@ def noninteractive_repo_git_env(
     automatic git operation instead of running with only partial hardening.
     """
     env = noninteractive_git_env(base)
-    try:
-        proc = subprocess.run(
-            [
-                "git", "-C", str(cwd), "config", "--includes", "--name-only", "-z",
-                "--get-regexp", r"^(filter\..*\.(clean|smudge|process)|includeif\.onbranch:.*\.path)$",
-            ],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=2, stdin=subprocess.DEVNULL, env=env, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode not in (0, 1):
+    # bounded_probe_run, not subprocess.run: Windows' post-timeout communicate() can deadlock and
+    # a bare spawn flashes a console. (Not bounded_git_probe: rc 1 = "no filters" is a verdict.)
+    proc = bounded_probe_run(
+        [
+            "git", "-C", str(cwd), "config", "--includes", "--name-only", "-z",
+            "--get-regexp", r"^(filter\..*\.(clean|smudge|process)|includeif\..*\.path)$",
+        ],
+        timeout=2, env=env,
+    )
+    if proc is None or proc.returncode not in (0, 1):
         return None
 
     keys: list[str] = []
     required: list[str] = []
     seen: set[str] = set()
-    for raw in proc.stdout.split("\0"):
+    # Dedup on the exact name ``--name-only`` prints: git lowercases section and variable but keeps
+    # the subsection's case, and ``[filter "Evil"]`` is a different driver from ``[filter "evil"]``.
+    for raw in (proc.stdout or "").split("\0"):
         key = raw.strip()
-        lowered = key.lower()
-        if _ONBRANCH_INCLUDE_KEY.fullmatch(key):
+        if _INCLUDE_IF_KEY.fullmatch(key):
             return None
-        if not key or lowered in seen or not _FILTER_COMMAND_KEY.fullmatch(key):
+        if not key or key in seen or not _FILTER_COMMAND_KEY.fullmatch(key):
             continue
-        seen.add(lowered)
+        seen.add(key)
         keys.append(key)
         if len(keys) > _MAX_FILTER_KEYS:
             return None
         required_key = key.rsplit(".", 1)[0] + ".required"
-        if required_key.lower() not in seen:
-            seen.add(required_key.lower())
+        if required_key not in seen:
+            seen.add(required_key)
             required.append(required_key)
 
     start = int(env.get("GIT_CONFIG_COUNT", "0") or 0)

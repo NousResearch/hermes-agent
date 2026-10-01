@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli._subprocess_compat import (
+    FILTER_DISCOVERY_FAILED,
     NO_DRIVER_DIFF_FLAGS,
     harden_git_argv,
     noninteractive_git_env,
@@ -212,7 +213,7 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     assert _fired(marker) == []
     assert dirty is False  # the probe ran: a skipped one reads as dirty
 
-    clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    clean = _CLEAN_GIT_ENV
     subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "branch", "pr-1"], check=True, env=clean)
     kw._ensure_git_worktree(repo, tmp_path / "wt3", "safe3")
     worktree_ops._reap_prune_verdicts(str(repo), [(tmp_path / "wt2", 0.0, False, "reap", None)], 0.0)
@@ -224,23 +225,65 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     assert not {"safe2", "pr-1", "safe3"} & set(branches)  # the deletions ran
 
 
-def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path):
+_CLEAN_GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+                  "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+def _make_filter_repo(tmp: Path, attrs: str, config) -> Path:
+    """Committed repo whose ``.gitattributes`` is *attrs*; ``config(repo)`` is appended to ``.git/config``."""
+    repo = tmp / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=_CLEAN_GIT_ENV)
+    (repo / "README").write_text("hi\n")
+    (repo / ".gitattributes").write_text(attrs)
+    ident = ["-c", "user.email=a@b", "-c", "user.name=a"]
+    subprocess.run(["git", "-C", str(repo), *ident, "add", "."], check=True, env=_CLEAN_GIT_ENV)
+    subprocess.run(["git", "-C", str(repo), *ident, "commit", "-qm", "init"], check=True, env=_CLEAN_GIT_ENV)
+    with open(repo / ".git" / "config", "a") as fh:
+        fh.write(config(repo))
+    return repo
+
+
+def _evil_filter(marker: str, name: str = "evil") -> str:
+    return (f'[filter "{name}"]\n\tsmudge = touch \'{marker}.smudge\'; cat\n'
+            f'\tclean = touch \'{marker}.clean\'; cat\n\trequired = true\n')
+
+
+def _evil_include(condition: str, marker: str):
+    def config(repo: Path) -> str:
+        (repo / ".git" / "evil.inc").write_text(_evil_filter(marker))
+        return f'[includeIf "{condition(repo)}"]\n\tpath = evil.inc\n'
+    return config
+
+
+@pytest.mark.parametrize("hostile", ["plain", "case_collision", "onbranch_include", "gitdir_include", "filter_flood"])
+def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, hostile):
     """A filter driver is named by ``.gitattributes``, so the fixed env pins cannot reach it:
-    ``worktree add`` runs its smudge command and ``status`` its clean command."""
+    ``worktree add`` runs its smudge command and ``status`` its clean command. Subsection names are
+    case-sensitive, so ``[filter "Evil"]`` must be neutralized next to a benign ``[filter "evil"]``.
+    Discovery that cannot be trusted refuses the git call: any ``includeIf`` (``onbranch:`` matches the
+    new branch, ``gitdir:`` the ``.git/worktrees/<name>`` dir of ``worktree add``) loads filters
+    discovery never saw, and a huge filter inventory would overflow the argv/env limit (E2BIG)."""
     from hermes_cli import kanban_db_workspace as kw
     from hermes_cli import worktree_gc
     from tools.async_delegation_recovery_hints import git_state_hint
-    clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
-    repo, marker = tmp_path / "repo", (tmp_path / "FILTER").as_posix()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=clean)
-    (repo / "README").write_text("hi\n")
-    (repo / ".gitattributes").write_text("README filter=evil\n")
-    ident = ["-c", "user.email=a@b", "-c", "user.name=a"]
-    subprocess.run(["git", "-C", str(repo), *ident, "add", "."], check=True, env=clean)
-    subprocess.run(["git", "-C", str(repo), *ident, "commit", "-qm", "init"], check=True, env=clean)
-    for key, value in {"filter.evil.smudge": f"touch '{marker}.smudge'; cat",
-                       "filter.evil.clean": f"touch '{marker}.clean'; cat", "filter.evil.required": "true"}.items():
-        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True, env=clean)
+    marker = (tmp_path / "FILTER").as_posix()
+    attrs, config = {
+        "plain": ("README filter=evil\n", lambda r: _evil_filter(marker)),
+        "case_collision": ("README filter=Evil\n",
+                           lambda r: '[filter "evil"]\n\tsmudge = cat\n\tclean = cat\n' + _evil_filter(marker, "Evil")),
+        "onbranch_include": ("README filter=evil\n", _evil_include(lambda r: "onbranch:safe", marker)),
+        "gitdir_include": ("README filter=evil\n",
+                           _evil_include(lambda r: f"gitdir:{(r / '.git' / 'worktrees').as_posix()}/", marker)),
+        "filter_flood": ("README filter=evil\n",
+                         lambda r: "".join(f'[filter "f{i}"]\n\tclean = cat\n' for i in range(300))),
+    }[hostile]
+    repo = _make_filter_repo(tmp_path, attrs, config)
+
+    if hostile in ("onbranch_include", "gitdir_include", "filter_flood"):
+        res = kw._git(repo, "worktree", "add", "-b", "safe", str(tmp_path / "wt"), "HEAD", timeout=30)
+        assert (res.returncode, res.stderr) == (1, FILTER_DISCOVERY_FAILED)
+        assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
+        return
 
     kw._ensure_git_worktree(repo, tmp_path / "wt", "safe")
     assert (tmp_path / "wt" / "README").read_text() == "hi\n"
@@ -266,38 +309,11 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path):
     assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
 
 
-@pytest.mark.parametrize("hostile", ["onbranch_include", "filter_flood"])
-def test_repo_filter_discovery_fails_closed(tmp_path, hostile):
-    """An ``includeIf "onbranch:"`` loads filters only once the new branch is checked out, and a
-    huge filter inventory would overflow the argv/env limit (E2BIG); both refuse the git call."""
-    from hermes_cli import kanban_db_workspace as kw
-    clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
-    repo, marker = tmp_path / "repo", tmp_path / "FILTER"
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=clean)
-    (repo / "README").write_text("hi\n")
-    (repo / ".gitattributes").write_text("README filter=evil\n")
-    ident = ["-c", "user.email=a@b", "-c", "user.name=a"]
-    subprocess.run(["git", "-C", str(repo), *ident, "add", "."], check=True, env=clean)
-    subprocess.run(["git", "-C", str(repo), *ident, "commit", "-qm", "init"], check=True, env=clean)
-    evil = f'[filter "evil"]\n\tsmudge = touch \'{marker.as_posix()}\'; cat\n\trequired = true\n'
-    with open(repo / ".git" / "config", "a") as fh:
-        if hostile == "onbranch_include":
-            (repo / ".git" / "evil.inc").write_text(evil)
-            fh.write('[includeIf "onbranch:safe"]\n\tpath = evil.inc\n')
-        else:
-            fh.write("".join(f'[filter "f{i}"]\n\tclean = cat\n' for i in range(300)))
-
-    res = kw._git(repo, "worktree", "add", "-b", "safe", str(tmp_path / "wt"), "HEAD", timeout=30)
-    assert (res.returncode, res.stderr) == (1, "git filter discovery failed")
-    assert not marker.exists()
-
-
 def test_worktree_reclaim_transport_calls_ignore_repo_ssh_command(tmp_path, monkeypatch):
     """The reclaim sweep's ``ls-remote`` and the shallow-repo ``fetch --unshallow`` run unattended;
     a repository-level ``core.sshCommand`` must not run on either."""
     from hermes_cli import worktree_ops
-    clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
-    clean.pop("GIT_SSH_COMMAND", None)
+    clean = {k: v for k, v in _CLEAN_GIT_ENV.items() if k != "GIT_SSH_COMMAND"}
     src, repo, marker = tmp_path / "src", tmp_path / "repo", (tmp_path / "SSH").as_posix()
     subprocess.run(["git", "init", "-q", str(src)], check=True, env=clean)
     ident = ["-c", "user.email=a@b", "-c", "user.name=a"]

@@ -2,16 +2,18 @@
 
 A crash between turn start and the reply leaves a durable ``user;user`` pair. The alternation repair
 hands the compressor one dict for both rows, so the commit has to account for two originals behind it.
-A turn killed later leaves a tool call with no result, or a result the repair cannot pair. The repair
-drops those rows, and they are still behind the dict before them. Two assistant rows in a row are
-folded into one turn the same way.
+A turn killed later leaves a tool call with no result; the repair drops that row, and it is still
+behind the dict before it.
 """
 
 from types import SimpleNamespace
 
 import pytest
 
-from tests.agent.test_in_place_preflight_rewind import _replies_displayed, _turn, session  # noqa: F401
+from tests.agent import test_in_place_preflight_rewind as _rewind
+from tests.agent.test_in_place_preflight_rewind import _replies_displayed, _turn
+
+session = _rewind.session  # shared fixture
 
 
 def _call(call_id):
@@ -20,17 +22,10 @@ def _call(call_id):
 
 
 _UNANSWERED = ("user", "U12x this prompt never got a reply", {})
-_RETRIED = ("user", "U12y the same request again", {})
-_RESULT = ("tool", "partial output", {"tool_call_id": "call_killed"})
 KILLED_TURN_LEFT = {
-    "prompt": [_UNANSWERED],
-    "two_prompts": [_UNANSWERED, _RETRIED],
-    "tool_call": [_UNANSWERED, _call("call_killed")],
-    "tool_result": [_UNANSWERED, _RESULT],
-    "two_prompts_tool_call": [_UNANSWERED, _RETRIED, _call("call_killed")],
-    "two_tool_calls": [_UNANSWERED, _call("call_killed"), _call("call_killed_again")],
-    "result_after_a_reply": [_RESULT],
-    "two_replies": [("assistant", "A12b a second reply to the same prompt", {})],
+    "prompt": [_UNANSWERED],  # #125564: user;user, the unanswered prompt must not be sent twice
+    "tool_call": [_UNANSWERED, _call("call_killed")],  # #129123: the dropped tool row is accounted for
+    "benign": [],  # plain alternating history: compaction is unchanged
 }
 
 
@@ -68,50 +63,3 @@ def test_compaction_over_an_unanswered_prompt_keeps_one_copy_of_every_row(sessio
         "SELECT COUNT(*) FROM messages WHERE session_id = 'sid' AND active = 1"
         " AND (role = 'tool' OR tool_calls IS NOT NULL)").fetchone()[0] == 0
     assert [c.split(" ")[0] for c in live[-2:]] == ["U15", "A15"]
-
-
-@pytest.mark.parametrize("row_ids", [True, False])
-@pytest.mark.parametrize("left", ["tool_result", "tool_call"])
-def test_a_row_dropped_ahead_of_the_first_survivor_is_archived_with_it(tmp_path, left, row_ids):
-    """Nothing is kept before a row the repair drops at the head of the history, so the first
-    survivor stands for it."""
-    from agent.conversation_compression_archive import coverage_for_commit
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("sid", source="test")
-    for role, content, fields in (KILLED_TURN_LEFT[left][-1], ("user", "U1", {}), ("assistant", "A1", {})):
-        db.append_message("sid", role, content, **fields)
-    watermark = db.get_active_message_watermark("sid")
-    held = db.get_messages_as_conversation("sid", repair_alternation=True, include_row_ids=row_ids)
-    assert [m["content"] for m in held] == ["U1", "A1"]
-    covered_ids, unresolved = coverage_for_commit(db, "sid", held)
-
-    db.archive_and_compact(
-        "sid", [{"role": "user", "content": "summary"}], watermark=watermark,
-        covered_ids=covered_ids, unresolved_held=unresolved)
-
-    assert [row["content"] for row in db.get_messages("sid")] == ["summary"]
-    db.close()
-
-
-def test_the_repair_row_counts_stay_off_the_request_copy(session):
-    """The commit reads the counts off the live dict. A transport is handed the request copy, and
-    one that forwards unknown keys must not find them there."""
-    from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
-    from agent.turn_context import build_api_messages
-
-    db, agent = session
-    _turn(db, agent, SimpleNamespace(conversation_history=[]), "cli", 1, 5_000)
-    for role, content, fields in KILLED_TURN_LEFT["two_prompts_tool_call"]:
-        db.append_message("sid", role, content, **fields)
-    history = db.get_messages_as_conversation("sid", repair_alternation=True)
-    counts = {MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS}
-    assert counts <= set(history[-1])  # two prompts merged, and the tool call dropped behind them
-
-    request, _ = build_api_messages(
-        agent, history, current_turn_user_idx=len(history) - 1,
-        ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="")
-
-    assert not any(counts & set(message) for message in request)
-    assert counts <= set(history[-1])

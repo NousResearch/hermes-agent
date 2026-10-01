@@ -1314,10 +1314,8 @@ class _CodexStreamGuard:
                     "deferred_close=stranger_thread)", shutdown_count)
             except Exception:
                 logger.debug("Codex auxiliary: client abort during timeout failed", exc_info=True)
-            # Socket shutdown only wakes a reader on a REAL transport; the owner may be blocked
-            # inside the SDK's event stream (or a socketless test double). Closing the
-            # attempt-owned stream releases it without touching shared FDs.
-            self.close_attempt_stream("attempt stream close during stranger-thread timeout failed")
+            # Socket shutdown is the only stranger-thread operation. The request owner
+            # closes the attempt stream in its finally block, after it leaves the SDK.
         # The aux client cache wraps this same client; drop the entry so the next aux call
         # doesn't reuse the dead transport and fail fast.
         try:

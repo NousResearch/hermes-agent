@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from contextlib import AbstractContextManager
 import json
 import logging
 from typing import Callable, Optional
 
 from agent.i18n import t
 from gateway.config import GatewayConfig, Platform
-from gateway.run_shutdown import _delivery_target_key, _notice_target_key, _send_error, _send_failed
+from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 
 logger = logging.getLogger("gateway.run")
 
@@ -43,8 +45,22 @@ def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[st
 
 class GatewayStartupNoticesMixin:
     config: GatewayConfig
+    _standalone_launch_scope: Callable[[], AbstractContextManager]
     _marker_profile: Callable[[dict], Optional[str]]
     _pending_marker_metadata: Callable[..., Optional[dict]]
+
+    @contextlib.asynccontextmanager
+    async def _startup_notice_scope(self, profile: Optional[str]):
+        if profile is None and not self.config.multiplex_profiles:
+            with self._standalone_launch_scope():
+                yield
+            return
+        from gateway.run import _async_profile_runtime_scope
+        from hermes_cli.profiles import get_profile_dir
+        profile_name = profile or "default"
+        home = (getattr(self, "_served_profile_homes", None) or {}).get(profile_name)
+        async with _async_profile_runtime_scope(home or get_profile_dir(profile_name)):
+            yield
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
@@ -71,7 +87,10 @@ class GatewayStartupNoticesMixin:
             if transport is None:
                 logger.debug("Restart notification skipped: no live transport for %s", platform_str)
                 return None
-            platform_cfg = self.config.platforms.get(platform)
+            profile = self._marker_profile(data)
+            profile_config = (getattr(self, "_profile_configs", None) or {}).get(profile)
+            platform_cfg = (profile_config.platforms.get(platform) if profile_config else None)
+            platform_cfg = platform_cfg or self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Restart notification suppressed: %s has gateway_restart_notification=false", platform_str
@@ -83,10 +102,11 @@ class GatewayStartupNoticesMixin:
                 for field in ("user_id", "scope_id"):
                     if data.get(field):
                         metadata[field] = str(data[field])
-            result = await transport.send(
-                platform, str(chat_id), t("gateway.startup.restarted"),
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
+            async with self._startup_notice_scope(profile):
+                result = await transport.send(
+                    platform, str(chat_id), t("gateway.startup.restarted"),
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
             # adapter.send() catches provider errors (e.g. "Chat not found") and returns
             # SendResult(success=False) rather than raising, so inspect the result before claiming success.
             if _send_failed(result):
@@ -238,10 +258,6 @@ class GatewayStartupNoticesMixin:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = t("gateway.startup.online")
-        free_tier_line = self._free_tier_startup_line()
-        if free_tier_line:
-            message = f"{message}\n{free_tier_line}"
         targets = list(self._served_home_channel_transports())
         # A chat already notified for ANOTHER profile is not notified again.
         notified_chats = {
@@ -263,11 +279,17 @@ class GatewayStartupNoticesMixin:
             if chat in notified_chats:
                 delivered.add(target)
                 continue
-            if await self._send_home_channel_message(
-                platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
-            ):
-                notified_chats.add(chat)
-                delivered.add(target)
-                logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
+            with _log_suppressed(logging.WARNING, "Home-channel startup notification failed for %s:%s: %s",
+                                 platform.value, home.chat_id):
+                async with self._startup_notice_scope(profile):
+                    message = t("gateway.startup.online")
+                    free_tier_line = self._free_tier_startup_line()
+                    if free_tier_line:
+                        message = f"{message}\n{free_tier_line}"
+                    if await self._send_home_channel_message(
+                        platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
+                    ):
+                        notified_chats.add(chat)
+                        delivered.add(target)
+                        logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
         return delivered
-

@@ -7,6 +7,7 @@ every served profile was reached, or the missed channels are lost for good.
 """
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -43,12 +44,16 @@ def _home_config(platform: Platform, chat_id: str) -> GatewayConfig:
 def multiplex_runner(tmp_path, monkeypatch):
     """A host multiplexer: launch profile on Discord, served profile ``coder`` on Telegram."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = _home_config(Platform.DISCORD, "launch-home")
     runner.config.sessions_dir = tmp_path / "sessions"
     runner.adapters = {}
     runner._profile_configs = {"coder": _home_config(Platform.TELEGRAM, "coder-home")}
+    coder_home = tmp_path / "coder"
+    coder_home.mkdir()
+    runner._served_profile_homes = {"coder": coder_home}
     runner._profile_adapters = {"coder": {}}
     runner._free_tier_startup_line = Mock(return_value=None)
     runner._planned_restart_notice_lock = None
@@ -138,6 +143,7 @@ async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypat
     is a common setup; keyed per profile it received two "Gateway online" messages.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = _home_config(Platform.TELEGRAM, "-100999")
@@ -145,6 +151,9 @@ async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypat
     launch, coder = _adapter(), _adapter()
     runner.adapters = {Platform.TELEGRAM: launch}
     runner._profile_configs = {"coder": _home_config(Platform.TELEGRAM, "-100999")}
+    coder_home = tmp_path / "coder"
+    coder_home.mkdir()
+    runner._served_profile_homes = {"coder": coder_home}
     runner._profile_adapters = {"coder": {Platform.TELEGRAM: coder}}
     runner._free_tier_startup_line = Mock(return_value=None)
     runner._planned_restart_notice_lock = None
@@ -158,7 +167,9 @@ async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_one_broken_profile_does_not_starve_the_rest(multiplex_runner, monkeypatch):
+async def test_one_broken_profile_does_not_starve_the_rest(
+    multiplex_runner, monkeypatch, tmp_path
+):
     """A profile whose transport resolution raises is skipped; the fan-out continues."""
     runner, marker = multiplex_runner
     runner.adapters[Platform.DISCORD] = _adapter()
@@ -168,6 +179,9 @@ async def test_one_broken_profile_does_not_starve_the_rest(multiplex_runner, mon
         "c": _home_config(Platform.SLACK, "c-home"),
     }
     runner._profile_adapters = {"b": {Platform.TELEGRAM: _adapter()}, "c": {Platform.SLACK: ok}}
+    runner._served_profile_homes = {"b": tmp_path / "b", "c": tmp_path / "c"}
+    for profile_home in runner._served_profile_homes.values():
+        profile_home.mkdir()
     real = gateway_delivery.resolve_delivery_transport
 
     def resolve(platform, config, adapters):
@@ -190,6 +204,7 @@ async def test_unserved_profile_config_is_pruned_from_the_fan_out(tmp_path, monk
     entry makes ``owed <= delivered`` permanently false and ``.restart_pending.json`` immortal.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = _home_config(Platform.DISCORD, "launch-home")
     runner._profile_configs = {"ghost": _home_config(Platform.TELEGRAM, "-200")}
@@ -234,8 +249,7 @@ async def test_a_served_profiles_reconnect_replays_the_owed_notice(multiplex_run
     runner._secondary_reconnect_attempt = AsyncMock(return_value=(coder, True))
 
     await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM)
-    for _ in range(50):
-        await asyncio.sleep(0)
+    await asyncio.wait_for(asyncio.gather(*runner._background_tasks), timeout=5)
 
     assert runner._profile_adapters["coder"][Platform.TELEGRAM] is coder
     coder.send.assert_awaited_once()

@@ -85,7 +85,8 @@ def _shell_write_re(file_alt: str) -> str:
         r'|\w\s*>(?![/\\]))')
     # At command position, ``<input>/path`` is an input/output redirect pair, even though
     # the same token inside a prose sentence can be a documented path placeholder.
-    input_output = r'(?:^|[;&|])\s*[\w./\\:-]+(?:\s+-[\w-]+)*\s+<[\w./\\:-]+\s*>'
+    input_output = (
+        r'(?:^|[;&|`(])\s*(?:\$\s+)?[\w./\\:-]+(?:\s+-[\w-]+)*\s+<[\w./\\:-]+\s*>')
     # A real redirect can target a documented placeholder path; excluding its closing ``>``
     # must not hide an earlier write operator on the same line.
     path_prefix = r'["\']?(?:[~\w./-]|<[\w./\\:-]+>)*'

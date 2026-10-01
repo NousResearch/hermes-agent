@@ -87,10 +87,26 @@ def _setup(depth, monkeypatch: pytest.MonkeyPatch):
 async def test_cancel_timeout_preserves_only_non_durable_input_on_completion(
     tmp_path, monkeypatch, durable
 ):
+    from gateway.config import GatewayConfig
     from gateway.platforms import base
+    from gateway.platforms.base_pending import bind_pending_dispatch_input
+    from gateway.session import SessionStore
+    from hermes_state import SessionDB
 
     adapter, runner, expected = _setup(3, monkeypatch)
 
+    class _CancellationRunner(_AdmissionRunner):
+        def __init__(self, adapter, states):
+            super().__init__(adapter)
+            self.states = states
+            self.session_store = SessionStore(
+                tmp_path / "sessions", GatewayConfig(multiplex_profiles=False)
+            )
+
+    runner = _CancellationRunner(adapter, runner.states)
+    adapter.gateway_runner = runner
+    db = SessionDB()
+    db.create_session("straggler", "gateway")
     attempted = adapter._pending_messages.pop("shared")
     adapter._stage_next_queued_event("shared", attempted)
     entered, cancelled, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -102,6 +118,7 @@ async def test_cancel_timeout_preserves_only_non_durable_input_on_completion(
     monkeypatch.setattr(base.asyncio, "wait_for", bounded_wait)
 
     async def handler(event):
+        bind_pending_dispatch_input("straggler", "straggler-owner")
         entered.set()
         try:
             await asyncio.Event().wait()
@@ -121,7 +138,12 @@ async def test_cancel_timeout_preserves_only_non_durable_input_on_completion(
             expected[1:],
         )
         if durable:
-            release_pending_dispatch(adapter, "shared", attempted, claimed=True)
+            db.append_message(
+                "straggler",
+                "user",
+                attempted.text,
+                display_metadata={"gateway_input_owner": "straggler-owner"},
+            )
         finish.set()
         await wait_for(asyncio.shield(task), 5)
         assert (
@@ -133,6 +155,8 @@ async def test_cancel_timeout_preserves_only_non_durable_input_on_completion(
         finish.set()
         await wait_for(asyncio.shield(task), 5)
         await adapter.cancel_background_tasks()
+        runner.session_store.close_all_db_handles()
+        db.close()
 
 
 @pytest.mark.asyncio
@@ -155,6 +179,7 @@ async def test_cancel_timeout_preserves_only_non_durable_input_on_completion(
         "cancel-claimed",
         "cancel-claim-race",
         "cancel-claim-complete",
+        "cancel-claim-replaced",
         "reservation-replaced",
     ],
 )
@@ -184,13 +209,19 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
                 entered.set()
                 await asyncio.Event().wait()
 
-            if path in {"cancel-claim-race", "cancel-claim-complete"}:
+            if path in {
+                "cancel-claim-race",
+                "cancel-claim-complete",
+                "cancel-claim-replaced",
+            }:
 
                 async def admit(event):
                     entered.set()
                     try:
                         await asyncio.Event().wait()
                     except asyncio.CancelledError:
+                        if path == "cancel-claim-replaced":
+                            reserve_pending_dispatch(adapter, "shared", incoming)
                         return event, event.source, True
 
                 runner._hm_admit_event = admit
@@ -212,7 +243,7 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
                 runner._begin_session_run_generation = lambda key: 1
                 runner._handle_message_with_agent = (
                     AsyncMock(side_effect=asyncio.CancelledError)
-                    if path == "cancel-claim-race"
+                    if path != "cancel-claim-complete"
                     else AsyncMock(return_value=None)
                 )
                 runner._run_post_turn_hooks = AsyncMock()
@@ -229,13 +260,19 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
             await adapter.cancel_session_processing("shared", discard_pending=False)
             assert (
                 _events(adapter, runner),
-                adapter._pending_dispatch_reservations,
+                {
+                    key: record.event
+                    for key, record in adapter._pending_dispatch_reservations.items()
+                },
             ) == (
                 expected[1:]
                 if path
-                in {"cancel-claimed", "cancel-claim-race", "cancel-claim-complete"}
+                in {
+                    "cancel-claimed",
+                    "cancel-claim-complete",
+                }
                 else expected,
-                {},
+                {"shared": incoming} if path == "cancel-claim-replaced" else {},
             )
             return
         if path == "reserved":

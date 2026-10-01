@@ -2439,12 +2439,13 @@ class MatrixAdapter(MatrixRedactionMixin, MatrixFollowupMixin, MatrixContextMixi
             size = int(info.get("size") or 0)
         except (TypeError, ValueError):
             size = 0
-        if size and size > self._max_media_bytes:
+        limit = self._inbound_media_limit()
+        if size and size > limit:
             return None
         media_type = str(info.get("mimetype") or "image/png")
         path = await self._download_and_cache_media(
             url, event_id, encrypted_file, MessageType.PHOTO, media_type, False,
-            str(content.get("body") or ""),
+            str(content.get("body") or ""), limit,
         )
         return (path, media_type) if path else None
 

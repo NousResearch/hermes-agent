@@ -420,7 +420,7 @@ def test_canonical_preflight_dedupes_ordered_thinking_carrier():
         {
             "id": "tool_1",
             "type": "function",
-            "function": {"name": "search", "arguments": "{\\\"q\\\":\\\"x\\\"}"},
+            "function": {"name": "search", "arguments": "{\"q\":\"x\"}"},
         }
     ]
     canonical = [

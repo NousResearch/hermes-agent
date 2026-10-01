@@ -45,6 +45,7 @@ import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
 import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
+import { PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
@@ -1892,20 +1893,56 @@ setSessionOwnerResolver(knownOwnerForSession)
  *  the launch profile while you read another agent's chat. Keying the rail there
  *  showed one agent's previews in every agent's chat. `bot-row.tsx` documents
  *  the same trap for the roster highlight and resolves it the same way. */
-function railScopeForActiveSession(): string {
-  const owner = knownOwnerForSession($activeSessionId.get() ?? undefined)
-  const profile = typeof owner === 'string' ? owner : owner?.profile
+let railTileSessionId: null | string = null
 
-  return normalizeProfileKey(profile || $activeGatewayProfile.get())
+function railScopeForActiveSession(): string {
+  const pane = $focusedTreePaneId.get()
+
+  if (pane?.startsWith(TILE_PANE_PREFIX)) {
+    railTileSessionId = pane.slice(TILE_PANE_PREFIX.length)
+  } else if (!pane?.startsWith(PREVIEW_TILE_PREFIX)) {
+    railTileSessionId = null
+  }
+
+  // Clicking the browser is part of researching for the same chat. Keep a
+  // tile's owner while the browser holds focus, but never retain a closed tile.
+  if (railTileSessionId && !$sessionTiles.get().some(tile => tile.storedSessionId === railTileSessionId)) {
+    railTileSessionId = null
+  }
+
+  const sessionId = railTileSessionId ?? $activeSessionId.get() ?? $selectedStoredSessionId.get()
+  const owner = knownOwnerForSession(sessionId)
+
+  if (isSessionOwnerRoute(owner)) {
+    return backendScopeKey(owner.connectionId, owner.profile)
+  }
+
+  // Match the tiles store's legacy direct-remote identity as well as registry
+  // connections. Keep it during reconnects, when the live connection is null.
+  const connection = tileConnectionId
+  const profile = typeof owner === 'string' ? owner : $activeGatewayProfile.get()
+
+  return backendScopeKey(connection, profile)
 }
 
 /** Keep the rail on the chat in view, so switching agents re-homes it. */
 function syncPreviewScope() {
-  setPreviewScope(railScopeForActiveSession())
+  const scope = railScopeForActiveSession()
+  setPreviewScope(scope, railTileSessionId ? `tile:${railTileSessionId}` : 'main')
 }
 
 $activeSessionId.subscribe(syncPreviewScope)
-syncPreviewScope()
+$selectedStoredSessionId.listen(syncPreviewScope)
+$focusedTreePaneId.listen(syncPreviewScope)
+$sessionTiles.listen(syncPreviewScope)
+$sessions.listen(syncPreviewScope)
+$activeGatewayProfile.listen(syncPreviewScope)
+$connection.listen(connection => {
+  if (connection) {
+    tileConnectionId = tileConnectionScopeId(connection)
+    syncPreviewScope()
+  }
+})
 
 /** The mode of the backend that serves `owner`: the route's own `mode`, else
  *  its registry connection's kind, else the socket already dialed for it (a
@@ -2909,7 +2946,7 @@ export function dropTilesForProfile(
   persistTiles()
   // The rail is a profile-keyed family too: a deleted profile's tabs must not
   // outlive it, or a later profile of the same name inherits them.
-  dropPreviewTabsForProfile(name)
+  dropPreviewTabsForProfile(removedScope)
 }
 
 /**

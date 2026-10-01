@@ -14,12 +14,13 @@
  * buttons, so a glyph here and a glyph on the strip are still the same button.
  */
 
-import { useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Input } from '@/components/ui/input'
 import { PaneStripGlyph } from '@/components/ui/pane-tab'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
@@ -32,6 +33,9 @@ interface PreviewBrowserBarProps {
   commentCount?: number
   consoleOpen: boolean
   devToolsOpen: boolean
+  lensContent?: ReactNode
+  lensOpen?: boolean
+  onToggleLens?: () => void
   loading: boolean
   onBack: () => void
   /** The pane's Close — the one visible way out of a full-width Browser. */
@@ -104,6 +108,9 @@ export function PreviewBrowserBar({
   consoleOpen,
   devToolsOpen,
   loading,
+  lensContent,
+  lensOpen,
+  onToggleLens,
   onBack,
   onClose,
   onFlushComments,
@@ -219,6 +226,34 @@ export function PreviewBrowserBar({
           text={url}
         />
       </div>
+      {onToggleLens && (
+        <Popover
+          onOpenChange={next => {
+            if (next !== lensOpen) {
+              onToggleLens()
+            }
+          }}
+          open={lensOpen}
+        >
+          <PopoverAnchor asChild>
+            <span className="inline-flex">
+              <PaneStripGlyph
+                active={lensOpen}
+                icon={<Codicon name="preview" size="0.8125rem" />}
+                label={t.lens.title}
+                onSelect={onToggleLens}
+              />
+            </span>
+          </PopoverAnchor>
+          <PopoverContent
+            align="end"
+            className="flex max-h-[min(680px,80vh)] w-[min(760px,calc(100vw-24px))] flex-col overflow-hidden"
+            onOpenAutoFocus={event => event.preventDefault()}
+          >
+            {lensContent}
+          </PopoverContent>
+        </Popover>
+      )}
       {onToggleAnnotate ? (
         <PaneStripGlyph
           active={annotateMode}

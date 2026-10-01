@@ -66,6 +66,40 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  lens: {
+    earlierCaptures: string
+    exportEarlier: string
+    title: string
+    subtitle: string
+    pinSelection: string
+    pinPage: string
+    working: string
+    emptyTitle: string
+    emptyBody: string
+    truncated: string
+    changed: string
+    checked: string
+    note: string
+    openSource: string
+    refresh: string
+    remove: string
+    question: string
+    ask: string
+    added: string
+    selectHint: string
+    comparePrompt: string
+    errors: {
+      selectText: string
+      emptyPage: string
+      unavailable: string
+      sourceChanged: string
+      openFirst: string
+      saveFailed: string
+      boardFull: string
+      noComposer: string
+    }
+  }
+
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: {
     consentTitle: string

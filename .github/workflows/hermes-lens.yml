@@ -1,0 +1,44 @@
+name: Hermes Lens
+on:
+  push:
+    branches: ['lens-ci/**']
+  pull_request:
+    paths:
+      - 'apps/desktop/src/features/lens/**'
+      - 'apps/desktop/e2e/lens/**'
+      - 'apps/desktop/src/store/preview.ts'
+      - 'apps/desktop/src/store/session-states.ts'
+      - 'apps/desktop/src/app/chat/right-rail/preview-*.tsx'
+      - '.github/workflows/hermes-lens.yml'
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.22.1'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Install the locked Electron binary
+        working-directory: apps/desktop
+        run: node -e "require(require.resolve('electron/install.js'))"
+      - name: Board and browser contracts
+        working-directory: apps/desktop
+        run: npm run test:ui -- src/features/lens src/store/preview-tabs-scope.test.ts src/store/session-states-profile-rename.test.ts src/app/chat/right-rail/preview-browser-bar.test.tsx
+      - name: Native browser integration
+        working-directory: apps/desktop
+        run: npx playwright test --config e2e/lens/playwright.config.ts
+      - name: Upload native screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lens-${{ matrix.os }}
+          path: apps/desktop/test-results/

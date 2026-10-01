@@ -1,17 +1,19 @@
-"""Kanban board workflow: the one definition of columns, traits and transitions.
+"""Kanban board workflow: the one definition of board columns and manual moves.
 
-Groundwork for user-defined columns and workflow per board (issue #54818). Target model —
-``tasks.status`` holds a board-defined column key and kernel behavior attaches to
-column *traits*, not to status names.
+Groundwork for user-defined columns and workflow per board (issue #54818). Target
+model: ``tasks.status`` holds a board-defined column key.
 
-Phase 0 (this module): ``DEFAULT_WORKFLOW`` writes today's columns and manual move
-matrix down as data, and the scattered status copies (``VALID_STATUSES``,
-``BOARD_COLUMNS``, the agent-tool enum, CLI icons) derive from it. The kernel does not
-consult traits yet. Automatic (kernel-driven) transitions are deliberately NOT modelled
-here: the kernel has ~20 conditional status writes (block routing, crash/reclaim return,
-parent reopen, import, ...) and that model is designed with the kernel switch, so this
-module never publishes a partial contract. ``tests/plugins/test_kanban_workflow_matrix.py``
-pins ``manual`` to the live dashboard API in both directions.
+Phase 0 (this module) holds only what is consumed or checked today: the column list
+(order, label, CLI icon, drag target) and the manual move matrix. The scattered status
+copies (``VALID_STATUSES``, ``BOARD_COLUMNS``, the agent-tool enum, CLI icons) derive
+from it, and ``tests/plugins/test_kanban_workflow_matrix.py`` pins ``manual`` to the live
+dashboard API in both directions.
+
+Kernel semantics are deliberately NOT modelled here — neither what a column means to
+the dispatcher (claimable, terminal, parent gate) nor kernel-driven transitions (~20
+conditional status writes: block routing, crash/reclaim return, parent reopen, import).
+Both are designed together with the kernel switch, so this module never publishes a
+partial contract.
 
 Pure data + stdlib only: ``kanban_db`` imports this module, never the reverse.
 """
@@ -25,20 +27,6 @@ from typing import Iterator, Mapping, Optional
 # ``archived`` is outside every workflow: a filter toggle, never a board column.
 ARCHIVED = "archived"
 
-# --- Traits: kernel behavior a column opts into ------------------------------------------
-DECOMPOSE = "decompose"                    # specifier/decomposer input (today: triage)
-WAIT_PARENTS = "wait_parents"              # parked until every parent is satisfied (todo)
-HOLD_TIME = "hold_time"                    # time gate, not dispatchable (scheduled)
-DISPATCH_IMPLEMENT = "dispatch_implement"  # dispatcher claims for the assignee (ready)
-CLAIMED = "claimed"                        # a worker holds the card (running) — Phase 1 turns
-                                           # this into a claim fact instead of a column
-HOLD_HUMAN = "hold_human"                  # waiting on a person / external blocker (blocked)
-DISPATCH_REVIEW = "dispatch_review"        # dispatcher claims for the reviewer (review)
-TERMINAL = "terminal"                      # satisfies a child's parent gate (done)
-
-TRAITS = frozenset({
-    DECOMPOSE, WAIT_PARENTS, HOLD_TIME, DISPATCH_IMPLEMENT, CLAIMED, HOLD_HUMAN, DISPATCH_REVIEW, TERMINAL,
-})
 
 @dataclass(frozen=True)
 class Column:
@@ -46,8 +34,7 @@ class Column:
 
     key: str
     label: str
-    icon: str = "?"                  # single-glyph CLI marker
-    traits: frozenset = frozenset()
+    icon: str = "?"  # single-glyph CLI marker
     # Offered as a drag/menu target in board UIs. False for columns a card normally
     # reaches only through a verb with extra input (reviewer, wake time) or the kernel.
     drag_target: bool = True
@@ -57,27 +44,21 @@ class Column:
 class Workflow:
     """Columns (board order) and the manual move allow-list."""
 
-    columns: tuple
+    columns: tuple[Column, ...]
     # Manual moves (drag, PATCH status) a human may request: ``src -> {dst}``. Archive is
     # always allowed and not listed. Allowed != guaranteed: verbs still apply their own
     # gates (parents open, completion evidence).
-    manual: Mapping[str, frozenset]
+    manual: Mapping[str, frozenset[str]]
 
     def __iter__(self) -> Iterator[Column]:
         return iter(self.columns)
 
-    def keys(self) -> tuple:
+    def keys(self) -> tuple[str, ...]:
         """Column keys in board order (never includes ``archived``)."""
         return tuple(c.key for c in self.columns)
 
     def column(self, key: str) -> Optional[Column]:
         return next((c for c in self.columns if c.key == key), None)
-
-    def keys_with(self, trait: str) -> tuple:
-        """Keys of every column carrying ``trait``, in board order."""
-        if trait not in TRAITS:
-            raise ValueError(f"unknown kanban workflow trait {trait!r}")
-        return tuple(c.key for c in self.columns if trait in c.traits)
 
     def _require(self, key: str) -> Column:
         col = self.column(key)
@@ -97,8 +78,7 @@ class Workflow:
         """JSON shape served by the dashboard's ``GET /workflow``."""
         return {
             "columns": [
-                {"key": c.key, "label": c.label, "icon": c.icon, "traits": sorted(c.traits),
-                 "drag_target": c.drag_target}
+                {"key": c.key, "label": c.label, "icon": c.icon, "drag_target": c.drag_target}
                 for c in self.columns
             ],
             "manual": {src: sorted(dsts) for src, dsts in self.manual.items()},
@@ -106,29 +86,19 @@ class Workflow:
         }
 
     def validate(self) -> None:
-        """Raise ``ValueError`` on an inconsistent workflow (duplicate/unknown keys, no terminal)."""
+        """Raise ``ValueError`` on an inconsistent workflow (duplicate or unknown keys)."""
         keys = self.keys()
         if len(set(keys)) != len(keys):
             raise ValueError(f"duplicate column keys: {keys}")
         if ARCHIVED in keys:
             raise ValueError(f"{ARCHIVED!r} is reserved and cannot be a column")
         known = set(keys)
-        for c in self.columns:
-            unknown = c.traits - TRAITS
-            if unknown:
-                raise ValueError(f"column {c.key!r}: unknown traits {sorted(unknown)}")
         for src, dsts in self.manual.items():
             if src not in known or not set(dsts) <= known:
                 raise ValueError(f"manual moves from {src!r} reference unknown columns")
-        if not self.keys_with(TERMINAL):
-            raise ValueError("workflow needs at least one terminal column")
 
 
-def _col(key: str, label: str, icon: str, *traits: str, drag_target: bool = True) -> Column:
-    return Column(key=key, label=label, icon=icon, traits=frozenset(traits), drag_target=drag_target)
-
-
-def _frozen_manual(table: Mapping[str, tuple]) -> Mapping[str, frozenset]:
+def _frozen_manual(table: Mapping[str, tuple[str, ...]]) -> Mapping[str, frozenset[str]]:
     return MappingProxyType({src: frozenset(dsts) for src, dsts in table.items()})
 
 
@@ -138,14 +108,14 @@ def _frozen_manual(table: Mapping[str, tuple]) -> Mapping[str, frozenset]:
 # a parentless task; ``test_kanban_workflow_matrix.py`` re-measures it against the live API.
 DEFAULT_WORKFLOW = Workflow(
     columns=(
-        _col("triage", "Triage", "◇", DECOMPOSE),
-        _col("todo", "Todo", "◻", WAIT_PARENTS),
-        _col("scheduled", "Scheduled", "⏱", HOLD_TIME, drag_target=False),
-        _col("ready", "Ready", "▶", DISPATCH_IMPLEMENT),
-        _col("running", "Running", "●", CLAIMED, drag_target=False),
-        _col("blocked", "Blocked", "⊘", HOLD_HUMAN),
-        _col("review", "Review", "◎", DISPATCH_REVIEW, drag_target=False),
-        _col("done", "Done", "✓", TERMINAL),
+        Column("triage", "Triage", "◇"),
+        Column("todo", "Todo", "◻"),
+        Column("scheduled", "Scheduled", "⏱", drag_target=False),
+        Column("ready", "Ready", "▶"),
+        Column("running", "Running", "●", drag_target=False),
+        Column("blocked", "Blocked", "⊘"),
+        Column("review", "Review", "◎", drag_target=False),
+        Column("done", "Done", "✓"),
     ),
     manual=_frozen_manual({
         "triage": ("todo", "ready"),

@@ -1613,7 +1613,7 @@ _PROFILE_SETTINGS = ("orchestrator_profile", "default_assignee")
 
 @router.get("/workflow")
 def get_workflow():
-    """Board columns (order, label, icon, traits, drag target) and the manual move
+    """Board columns (order, label, icon, drag target) and the manual move
     allow-list. Every board uses the default workflow today; per-board
     workflows (``board.json``) arrive in a later phase behind this same shape."""
     return kanban_workflow.DEFAULT_WORKFLOW.to_dict()

@@ -101,8 +101,8 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 
 # --- Constants ---
 
-# Derived from the one workflow definition (``kanban_workflow``); a mutable copy for legacy callers.
-VALID_STATUSES = set(kanban_workflow.DEFAULT_STATUSES)
+# Derived from the one workflow definition (``kanban_workflow``).
+VALID_STATUSES = kanban_workflow.DEFAULT_STATUSES
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.

@@ -68,6 +68,20 @@ it.each(['', new Error('offline')])('keeps an opened link usable when title reso
   expect(openExternal).toHaveBeenCalledTimes(1)
 })
 
+it('grants image preview permission per URL and forgets it when the gallery closes', async () => {
+  fixture.content = 'https://example.com/one.png https://example.com/two.png'
+  const first = gallery()
+  const buttons = await screen.findAllByRole('button', { name: 'Preview' })
+  fireEvent.click(buttons[0])
+  await waitFor(() => expect(first.container.querySelectorAll('img[src^="https://example.com"]')).toHaveLength(1))
+  expect(screen.getAllByRole('button', { name: 'Preview' })).toHaveLength(1)
+  first.unmount()
+
+  const second = gallery()
+  await screen.findAllByRole('button', { name: 'Preview' })
+  expect(second.container.querySelectorAll('img[src^="https://example.com"]')).toHaveLength(0)
+})
+
 it('retains automatic local file previews through the existing bridge', async () => {
   fixture.content = 'MEDIA:/tmp/generated/local.png'
   const readFileDataUrl = vi.fn().mockResolvedValue('data:image/png;base64,TE9DQUw=')

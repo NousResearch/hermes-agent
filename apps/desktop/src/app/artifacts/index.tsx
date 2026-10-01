@@ -284,10 +284,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         // Tilde/relative hrefs have no file URL form. Keep them gateway-owned:
         // expanding them on the client would target the wrong home or cwd.
         if (isRemoteGateway() && isArtifactFilePath(artifact.value)) {
-          await downloadGatewayMediaFile(artifact.value, {
-            sessionId: artifact.sessionId,
-            profile: artifact.profile
-          })
+          await downloadGatewayMediaFile(artifact.value, { sessionId: artifact.sessionId, profile: artifact.profile })
 
           return
         }
@@ -347,11 +344,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       searchValue={query}
       tabs={[
         { id: 'all', label: a.tabAll, meta: artifacts ? counts.all : null },
-        {
-          id: 'image',
-          label: a.tabImages,
-          meta: artifacts ? counts.image : null
-        },
+        { id: 'image', label: a.tabImages, meta: artifacts ? counts.image : null },
         { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
         { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
       ]}

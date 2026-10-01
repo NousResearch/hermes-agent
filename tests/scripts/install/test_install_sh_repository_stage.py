@@ -167,3 +167,26 @@ def test_interactive_stages_skip_without_a_terminal(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert not marker.exists()
     assert "no terminal" in result.stdout + result.stderr
+
+
+def test_rerun_marks_partial_clone_packs_when_the_fetch_crashes(tmp_path):
+    """git 2.53+ aborts fetches into a partial clone with unmarked packs (#124272); the installer
+    rerun is the recovery for installs whose own updater cannot fetch, so it marks them first."""
+    origin = _origin(tmp_path / "origin")
+    assert _stage(tmp_path, origin).returncode == 0
+    install = tmp_path / "install"
+    _git(install, "config", "remote.origin.promisor", "true")
+    _git(install, "repack", "-adq")
+    packs = list((install / ".git" / "objects" / "pack").glob("pack-*.pack"))
+    assert packs and not any(p.with_suffix(".promisor").exists() for p in packs)
+    _commit(origin, "two")
+    # Stand-in for the git 2.53+ index-pack crash: any fetch while an unmarked pack exists dies.
+    crashing_fetch = (
+        'git() { if [ "${3:-}" = fetch ]; then for p in "$2"/.git/objects/pack/pack-*.pack; do '
+        '[ -e "${p%.pack}.promisor" ] || { echo "BUG: should_include_obj" >&2; return 128; }; done; fi; '
+        'command git "$@"; }'
+    )
+    result = _stage(tmp_path, origin, prelude=crashing_fetch)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (install / "README").read_text() == "two"
+    assert all(p.with_suffix(".promisor").exists() for p in packs)

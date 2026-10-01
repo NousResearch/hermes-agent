@@ -44,7 +44,7 @@ DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 
 # Per-attempt turn timeout and attempt ceiling for bot_relay.deliver (tui_gateway/methods_bot_relay.py).
 TURN_ATTEMPT_TIMEOUT_SECONDS = 600
 TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
-# Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay.ts; both test suites pin it.
+# Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay-budget.ts; both test suites pin it.
 DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
 DESKTOP_DELIVER_TIMEOUT_SECONDS = (
     TURN_WAIT_SECONDS_FALLBACK + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS

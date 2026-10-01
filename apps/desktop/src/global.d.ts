@@ -17,7 +17,12 @@ import type {
   PetOverlayOpenRequest,
   PetOverlayStatePayload
 } from './store/pet-overlay'
-import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
+import type {
+  QuickEntryStatePush,
+  QuickEntryStatus,
+  QuickEntrySubmitPayload,
+  QuickEntrySubmitResult
+} from './store/quick-entry'
 
 export {}
 
@@ -95,6 +100,14 @@ declare global {
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      // Cross-window renderer relay (pop-out Browser ↔ chat windows). Electron
+      // main relays opaque payloads to the other Hermes renderer windows;
+      // renderer code keeps the destination exact and rejects anything not
+      // addressed to its window.
+      windowRelay?: {
+        send: (payload: unknown) => void
+        onMessage: (callback: (payload: unknown) => void) => () => void
+      }
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
@@ -176,7 +189,8 @@ declare global {
         // Quick window → main: send this payload (main forwards it to the
         // primary renderer, which routes it to the target session and submits
         // through the normal prompt path) and hide.
-        submit: (payload: QuickEntrySubmitPayload) => void
+        submit: (payload: QuickEntrySubmitPayload) => Promise<QuickEntrySubmitResult>
+        ackSubmit: (correlationId: string, result: QuickEntrySubmitResult) => void
         // Quick window → main: hide without sending (Escape / blur).
         dismiss: () => void
         // Primary renderer → main → quick window: gateway connection state +
@@ -186,10 +200,17 @@ declare global {
         // Quick window subscribes to those pushes.
         onState: (callback: (payload: QuickEntryStatePush) => void) => () => void
         // Primary renderer subscribes to submits captured by the quick window.
-        onSubmit: (callback: (payload: QuickEntrySubmitPayload | string) => void) => () => void
+        onSubmit: (
+          callback: (payload: (QuickEntrySubmitPayload & { correlationId: string }) | string) => void
+        ) => () => void
         // Quick window subscribes to "you were just summoned" so it can reset
         // its draft and re-focus the input on every open.
         onShown: (callback: () => void) => () => void
+        // Quick window subscribes to the outcome of a submit whose relay timed
+        // out (delivery is unknown until this arrives).
+        onLateResult: (
+          callback: (payload: { correlationId: string; result: QuickEntrySubmitResult }) => void
+        ) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
@@ -911,6 +932,8 @@ export interface DesktopPluginProfileRoute {
   // across sources.
   connectionId: string
   mode: 'local' | 'remote'
+  // Electron's authoritative registry primary. Absent on older shells.
+  primary?: true
   profile: string
   targetProfile: string
 }
@@ -1480,7 +1503,7 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
+  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string

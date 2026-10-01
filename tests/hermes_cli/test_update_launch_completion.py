@@ -95,11 +95,56 @@ def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_p
     assert len(completion_tail) == 2
 
     completion_tail.exit_code = 0
+    # Age the recorded failure past the backoff window (#122206): a flaky
+    # tail that a plain relaunch fixes is the historical case, but only once
+    # the backoff window has elapsed — fresh failures wait it out.
+    attempts = venv_sync._completion_attempts_path(root)
+    old = 1.0
+    os.utime(attempts, (old, old))
     # Dependencies are already this interpreter's: the tail alone owes no re-exec.
     assert venv_sync.prepare_launch(root, []) is None
     assert len(syncs) == 1 and len(completion_tail) == 3
     assert venv_sync.prepare_launch(root, []) is None
     assert len(completion_tail) == 3, "a finished tail was run again"
+
+
+@pytest.mark.parametrize("script", ["source_completion.py", "update_completion.py"])
+def test_prepared_completion_import_does_not_start_another_tail(tmp_path, monkeypatch, completion_tail, script):
+    """Maintenance imports the CLI while its own completion marker is still present."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    worker = root / "hermes_cli" / script
+    worker.parent.mkdir()
+    worker.touch()
+    venv_sync.arm_completion(root)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(sys, "argv", [str(worker), "--source", str(root), "--finish-update", "--prepared"])
+
+    assert venv_sync.prepare_launch(root, sys.argv[1:]) is None
+    assert not completion_tail
+    assert venv_sync.completion_pending_path(root).is_file()
+
+
+def test_same_named_script_outside_the_checkout_still_repairs(tmp_path, monkeypatch, completion_tail):
+    """Only this checkout's own tail is exempt: another tree's worker still owes this one's repair."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    foreign = tmp_path / "other" / "hermes_cli" / "source_completion.py"
+    foreign.parent.mkdir(parents=True)
+    foreign.touch()
+    venv_sync.arm_completion(root)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(sys, "argv", [str(foreign), "--prepared"])
+
+    assert venv_sync.prepare_launch(root, sys.argv[1:]) is None
+    assert len(completion_tail) == 1
+    assert not venv_sync.completion_pending_path(root).is_file()
 
 
 def test_completion_tail_output_stays_off_stdout(tmp_path, monkeypatch, completion_tail):
@@ -291,3 +336,69 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
+
+@pytest.mark.parametrize("marker,value,owed_by_cli", [
+    ("HERMES_SUPERVISED_CHILD", "1", True),
+    ("HERMES_S6_SUPERVISED_CHILD", "true", True),
+    ("HERMES_SUPERVISED_CHILD", "0", False),
+    ("HERMES_SUPERVISED_CHILD", "false", False),
+])
+def test_supervised_launch_leaves_a_pending_tail_to_the_cli(
+    tmp_path, monkeypatch, capsys, completion_tail, marker, value, owed_by_cli
+):
+    """A supervised start leaves a pending tail to the CLI; its manager restarts it every boot (#123340).
+
+    systemd/launchd/s6 restart the gateway under a policy; with a marker that never
+    clears, each boot would rebuild the completion environment until the disk fills.
+    The obligation stays with `hermes update`. An off value (`0`/`false`) is not a
+    supervised launch and still repays the tail.
+    """
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.completion_pending_path(root)
+    pending.parent.mkdir(parents=True)
+    pending.write_text("owed\n")
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.setenv(marker, value)
+
+    assert venv_sync.prepare_launch(root, ["gateway", "run"]) is None
+    if owed_by_cli:
+        assert completion_tail == []
+        assert pending.is_file(), "a supervised child discharged an obligation the CLI still owes"
+        out, err = capsys.readouterr()
+        assert out == "" and err.count("run `hermes update`") == 1
+    else:
+        assert len(completion_tail) == 1
+        assert not pending.is_file()
+
+
+def test_supervised_launch_with_stale_dependencies_still_syncs(
+    tmp_path, monkeypatch, completion_tail
+):
+    """Stale dependencies stay one-shot for a supervised child (#123340 review).
+
+    A hand-run ``git pull`` leaves the tree's lockfile ahead of the installed
+    tools with no pending marker; a manager restart must still sync and finish
+    (pre-image behavior) instead of booting on the stale dependency graph — or
+    crash-looping under ``Restart=always`` with no sync at all. The sticky-tail
+    exemption above must not swallow this one-shot condition.
+    """
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    syncs = []
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: syncs.append(a))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+
+    venv_sync.prepare_launch(root, ["gateway", "run"])
+    assert syncs, "a supervised child booted on a stale dependency graph without syncing"
+    assert completion_tail, "the tail armed by that sync was never finished"
+    assert not venv_sync.completion_pending_path(root).is_file()

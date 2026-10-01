@@ -6,12 +6,14 @@ profile name explains the rule; missing optional dependencies point at ``hermes 
 """
 
 import io
+import os
 import sys
 from contextlib import redirect_stderr
 
 import pytest
 
 from hermes_cli._parser import build_top_level_parser
+
 
 def _parse_error(argv: list[str]) -> str:
     parser, subparsers, _chat = build_top_level_parser()
@@ -47,6 +49,8 @@ def test_invalid_profile_flag_value_explains_rule_and_exits(monkeypatch):
     with redirect_stderr(err), pytest.raises(SystemExit) as exc:
         _main._apply_profile_override()
     assert exc.value.code == 2
+    assert "'Work Bot' is not a valid profile name" in err.getvalue()
+    assert "Run `hermes profile list`" in err.getvalue()
 
 def test_pytest_style_dash_p_is_still_ignored(monkeypatch):
     from hermes_cli import main as _main
@@ -63,11 +67,59 @@ def test_option_looking_dash_p_value_is_a_silent_skip_even_under_hermes(monkeypa
     monkeypatch.setattr(sys, "argv", ["hermes", "-p", "--flag"])
     assert _main._scan_profile_flag(sys.argv[1:]) == (None, 0, None)
 
-def test_title_cased_profile_label_is_normalised_not_rejected(monkeypatch):
+@pytest.mark.parametrize(
+    ("flag", "attached", "consume"),
+    (
+        pytest.param("-p", False, 2, id="short-separated"),
+        pytest.param("--profile", False, 2, id="long-separated"),
+        pytest.param("--profile", True, 1, id="long-attached"),
+    ),
+)
+def test_ascii_mixed_case_profile_selector_is_normalised(flag, attached, consume):
     from hermes_cli import main as _main
 
-    assert _main._scan_profile_flag(["-p", " Work ", "status"]) == ("work", 2, 0)
-    assert _main._scan_profile_flag(["--profile=Work", "status"]) == ("work", 1, 0)
+    profile_args = [f"{flag}= Work "] if attached else [flag, " Work "]
+    assert _main._scan_profile_flag([*profile_args, "status"]) == ("work", consume, 0)
+
+
+@pytest.mark.parametrize(
+    ("flag", "attached"),
+    (
+        pytest.param("-p", False, id="short-separated"),
+        pytest.param("--profile", False, id="long-separated"),
+        pytest.param("--profile", True, id="long-attached"),
+    ),
+)
+@pytest.mark.parametrize(
+    ("source", "ascii_alias"),
+    (
+        pytest.param("ẞ", "ss", id="casefold-expansion"),
+        pytest.param("K", "k", id="simple-lower-alias"),
+    ),
+)
+def test_unicode_profile_selector_cannot_alias_an_ascii_profile(
+    tmp_path, monkeypatch, capsys, flag, attached, source, ascii_alias
+):
+    from hermes_cli import main as _main
+
+    root = tmp_path / ".hermes"
+    aliased_profile = root / "profiles" / ascii_alias
+    aliased_profile.mkdir(parents=True)
+    (aliased_profile / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    profile_args = [f"{flag}={source}"] if attached else [flag, source]
+    monkeypatch.setattr(sys, "argv", ["hermes", *profile_args, "status"])
+
+    with pytest.raises(SystemExit) as exc:
+        _main._apply_profile_override()
+
+    stderr = capsys.readouterr().err
+    assert exc.value.code == 2
+    assert f"{source!r} is not a valid profile name" in stderr
+    assert "Use lowercase letters, numbers, '-' or '_'" in stderr
+    assert "Run `hermes profile list`" in stderr
+    assert os.environ["HERMES_HOME"] == str(root)
+
 
 def test_invalid_dash_p_after_a_subcommand_is_left_to_that_subcommand(monkeypatch):
     from hermes_cli import main as _main

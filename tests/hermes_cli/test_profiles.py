@@ -75,6 +75,11 @@ class TestNormalizeProfileName:
         assert normalize_profile_name("Jules") == "jules"
         assert normalize_profile_name("  Librarian ") == "librarian"
 
+    @pytest.mark.parametrize("name", ["ẞ", "K"])
+    def test_non_ascii_source_rejected_before_case_normalization(self, name):
+        with pytest.raises(ValueError, match="not a valid profile name"):
+            normalize_profile_name(name)
+
 
 class TestValidateProfileName:
     """Tests for validate_profile_name()."""

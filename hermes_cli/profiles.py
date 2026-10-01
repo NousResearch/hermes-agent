@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from hermes_cli._startup_fast import normalize_ascii_profile_name
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import (
@@ -290,9 +291,11 @@ def _invalid_profile_name_error(name: str) -> ValueError:
 # Validation
 
 def normalize_profile_name(name: str) -> str:
-    """Canonical profile id used on disk and in ``-p`` argv: lowercase, ``default`` matched
-    case-insensitively. Dashboards/tools may pass title-cased labels — normalize before
-    validation, assignment, and subprocess spawn.
+    """Canonical profile id used on disk and in ``-p`` argv: ASCII lowercase.
+
+    Dashboards/tools may pass ASCII title-cased labels — normalize before validation,
+    assignment, and subprocess spawn. Non-ASCII source text is rejected before case
+    conversion so Unicode case mappings cannot alias an ASCII on-disk id.
 
     Named profiles are stored lowercase under ``profiles/<id>/``. See #18498.
     """
@@ -301,9 +304,10 @@ def normalize_profile_name(name: str) -> str:
     stripped = name.strip()
     if not stripped:
         raise ValueError("profile name cannot be empty")
-    if stripped.casefold() == "default":
-        return "default"
-    return stripped.lower()
+    normalized = normalize_ascii_profile_name(stripped)
+    if normalized is None:
+        raise _invalid_profile_name_error(stripped)
+    return normalized
 
 
 def validate_profile_name(name: str) -> None:

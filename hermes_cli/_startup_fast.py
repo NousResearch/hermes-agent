@@ -29,6 +29,7 @@ import sys
 
 __all__ = [
     "project_root_str", "normalize_hermes_home_env",
+    "normalize_ascii_profile_name",
     "ensure_project_root_on_path",
     "is_global_fast_version_argv",
     "is_container_startup_environment",
@@ -40,6 +41,18 @@ __all__ = [
     "try_fast_version",
     "is_desktop_ssh_backend_argv",
 ]
+
+
+def normalize_ascii_profile_name(name: str) -> str | None:
+    """Strip and lowercase an ASCII profile label, rejecting non-ASCII source text.
+
+    The ASCII check must happen before ``lower()``: Unicode characters such as
+    ``K`` otherwise normalize to valid on-disk ids (``k``).
+    """
+    stripped = name.strip()
+    if not stripped or not stripped.isascii():
+        return None
+    return stripped.lower()
 
 
 def _read_text(path: str) -> str | None:

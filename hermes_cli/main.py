@@ -474,7 +474,7 @@ def _scan_profile_flag(argv: list) -> tuple:
 
     Historically the flag worked even after the subcommand (`hermes chat -p
     coder`), so scan broadly; stop at ``--`` and at the `mcp add --args`
-    passthrough region. The value is normalised (strip + casefold, matching
+    passthrough region. The value is normalised (ASCII-only strip + lower, matching
     ``profiles.normalize_profile_name``) before validation so ``-p Work`` selects
     ``work``. A value that cannot be a profile name is rejected so
     resolve_profile_env never sys.exits on it; the rejection is explained (exit 2)
@@ -492,16 +492,16 @@ def _scan_profile_flag(argv: list) -> tuple:
         arg = argv[i]
         if arg == "--" or (arg == "--args" and _inside_mcp_add_args(argv, i)):
             break
-        if arg in {"--profile", "-p"} and i + 1 < len(argv):
-            raw = argv[i + 1]
-            value = raw.strip().casefold()
-            if re.match(_PROFILE_NAME_RE, value):
-                return value, 2, i
+        attached = arg.startswith("--profile=")
+        if (arg in {"--profile", "-p"} and i + 1 < len(argv)) or attached:
+            consume = 1 if attached else 2
+            raw = arg.split("=", 1)[1] if attached else argv[i + 1]
+            value = _startup_fast.normalize_ascii_profile_name(raw)
+            if value is not None and re.match(_PROFILE_NAME_RE, value):
+                return value, consume, i
             if not saw_subcommand and not _looks_like_option_value(raw) and _looks_like_hermes_invocation():
                 _exit_invalid_profile_name(raw)
             break
-        if arg.startswith("--profile="):
-            return arg.split("=", 1)[1].strip().casefold(), 1, i
         takes_value = "=" not in arg and i + 1 < len(argv) and (
             arg in value_flags
             or (arg in optional_value_flags and not argv[i + 1].startswith("-"))

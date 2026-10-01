@@ -1060,20 +1060,33 @@ class SessionMessagesMixin:
                 return None
             retired_ids.update(matches)
         rows = [row for row in rows if row[0] not in retired_ids]
-        runs: List[List[int]] = []
-        for start in range(len(rows)):
-            merged = ""
-            for end in range(start, len(rows)):
-                row_id, role, part = rows[end]
-                if role != "user" or not isinstance(part, str):
-                    break
-                merged = f"{merged}\n\n{part}" if merged and part else (merged or part)
-                if not content.startswith(merged):
-                    break
-                if end - start + 1 == width:
-                    if merged == content:
-                        runs.append([rows[i][0] for i in range(start, end + 1)])
-                    break
+
+        def runs_joining_to(text: str) -> List[List[int]]:
+            runs: List[List[int]] = []
+            for start in range(len(rows)):
+                merged = ""
+                for end in range(start, len(rows)):
+                    row_id, role, part = rows[end]
+                    if role != "user" or not isinstance(part, str):
+                        break
+                    merged = f"{merged}\n\n{part}" if merged and part else (merged or part)
+                    if not text.startswith(merged):
+                        break
+                    if end - start + 1 == width:
+                        if merged == text:
+                            runs.append([rows[i][0] for i in range(start, end + 1)])
+                        break
+            return runs
+
+        runs = runs_joining_to(content)
+        if not runs:
+            from gateway.message_timestamps import strip_leading_message_timestamps
+
+            # The gateway renders a timestamp onto the merged dict after the repair; the stored rows
+            # never had it. Tried second, so a stored row that begins with one still matches as is.
+            rendered_off, _ = strip_leading_message_timestamps(content)
+            if rendered_off != content:
+                runs = runs_joining_to(rendered_off)
         if len(runs) > 1:
             return None
         return runs[0] if runs else []

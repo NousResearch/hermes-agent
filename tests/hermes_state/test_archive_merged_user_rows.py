@@ -4,6 +4,8 @@ The commit resolves a merged user dict to the durable ``user;user`` run behind i
 never persisted can carry the same text as rows another surface appended after the snapshot.
 """
 
+import pytest
+
 from hermes_state import SessionDB
 
 
@@ -25,10 +27,13 @@ def test_unpersisted_prompt_leaves_rows_appended_after_the_snapshot_live(tmp_pat
     db.close()
 
 
+_PAIR = [("user", "first prompt"), ("user", "second prompt")]
+
+
 def _unanswered_pair(tmp_path, *after):
     db = SessionDB(tmp_path / "state.db")
     db.create_session("sid", source="test")
-    for role, content in (("user", "first prompt"), ("user", "second prompt"), *after):
+    for role, content in (*_PAIR, *after):
         db.append_message("sid", role, content)
     return db, db.get_active_message_watermark("sid")
 
@@ -37,11 +42,17 @@ def _live(db):
     return [row["content"] for row in db.get_messages("sid")]
 
 
-def test_carried_merged_prompt_rendered_with_a_timestamp_keeps_one_copy_of_each_row(tmp_path):
+@pytest.mark.parametrize("named", [True, False])
+def test_carried_merged_prompt_rendered_with_a_timestamp_keeps_one_copy_of_each_row(tmp_path, named):
     from gateway.run import _build_gateway_agent_history
 
-    db, watermark = _unanswered_pair(tmp_path)
+    # named: the pair is resolved through the render, so another surface's row below the watermark stays
+    # live. Not named: an identical earlier pair makes the run ambiguous, and the watermark path widens
+    # its tail rewind by the stamp.
+    after = [("assistant", "UNSEEN")] if named else [("assistant", "A1"), *_PAIR]
+    db, watermark = _unanswered_pair(tmp_path, *after)
     restored = db.get_messages_as_conversation("sid", repair_alternation=True)
+    restored = restored[:1] if named else restored[-1:]
     held, _ = _build_gateway_agent_history(restored, inject_timestamps=True)
     assert held[0]["content"] != restored[0]["content"]  # the render is what hides the rows
 
@@ -49,10 +60,11 @@ def test_carried_merged_prompt_rendered_with_a_timestamp_keeps_one_copy_of_each_
         "sid", [{"role": "assistant", "content": "summary"}, held[0]], watermark=watermark, tail_count=1,
         covered_ids=[], unresolved_held=held)
 
-    assert _live(db) == ["summary", held[0]["content"]]
+    assert _live(db) == ["summary", held[0]["content"], *(["UNSEEN"] if named else [])]
     recalled = " ".join(row["content"] for row in db._conn.execute(
         "SELECT content FROM messages WHERE session_id = 'sid' AND (active = 1 OR compacted = 1)").fetchall())
-    assert (recalled.count("first prompt"), recalled.count("second prompt")) == (1, 1)
+    copies = 1 if named else 2
+    assert (recalled.count("first prompt"), recalled.count("second prompt")) == (copies, copies)
     db.close()
 
 

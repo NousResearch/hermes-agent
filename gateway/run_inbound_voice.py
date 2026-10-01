@@ -1,17 +1,65 @@
 """Voice transcription and pending transcript delivery for GatewayRunner."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
-from typing import Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    from gateway.run import GatewayRunner
+    from gateway.platforms.event import MessageEvent
 
 from gateway.run_common import _UNSET
 
 logger = logging.getLogger("gateway.run")
 
 
+@dataclass(frozen=True)
+class VoiceClipTranscript:
+    path: str
+    text: str
+
+
+@dataclass(frozen=True)
+class VoiceTranscriptPart:
+    text: str
+    clip: VoiceClipTranscript | None = None
+
+
+@dataclass(frozen=True)
+class VoiceTranscription:
+    text: str
+    clips: tuple[VoiceClipTranscript, ...] = ()
+    parts: tuple[VoiceTranscriptPart, ...] = ()
+
+    def transcripts(self) -> List[str]:
+        return [clip.text for clip in self.clips]
+
+    def authored_text(self, user_text: str) -> str:
+        return "\n\n".join(text for text in (user_text, *(clip.text for clip in self.clips)) if text).strip()
+
+    def render(self, user_text: str) -> str:
+        notes = "\n\n".join(
+            f'"{part.clip.text}"' if part.clip is not None else part.text
+            for part in self.parts
+        )
+        return GatewayInboundVoiceMixin._prepend_media_prefix(notes, user_text) if notes else user_text
+
+
 class GatewayInboundVoiceMixin:
     """Prepare voice input and deliver transcript echoes."""
+
+    if TYPE_CHECKING:
+        from gateway.config import GatewayConfig
+
+        config: GatewayConfig
+        _should_echo_stt_transcripts = GatewayRunner._should_echo_stt_transcripts
+        _echo_stt_transcripts = GatewayRunner._echo_stt_transcripts
+        _thread_metadata_for_source = GatewayRunner._thread_metadata_for_source
+        _reply_anchor_for_event = staticmethod(GatewayRunner._reply_anchor_for_event)
 
     _EMPTY_TEXT_PLACEHOLDER = "(The user sent a message with no text content)"
 
@@ -57,11 +105,16 @@ class GatewayInboundVoiceMixin:
         return transcript, f'"{transcript}"'
 
     async def _enrich_message_with_transcription(
-        self, user_text: str, audio_paths: list[str]
+        self, user_text: str, audio_paths: list[str], *, event: MessageEvent | None = None,
     ) -> tuple[str, list[str]]:
-        """Transcribe voice clips with the configured STT provider and prepend the transcripts →
-        ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
-        failed or STT is disabled) let callers echo them back before the agent loop."""
+        result = await self._transcribe_voice_clips(user_text, audio_paths)
+        if event is not None:
+            setattr(event, "_gateway_pending_stt_input", result)
+        return result.text, result.transcripts()
+
+    async def _transcribe_voice_clips(
+        self, user_text: str, audio_paths: list[str]
+    ) -> VoiceTranscription:
         from gateway.run import _probe_audio_duration
         audio_paths = list(dict.fromkeys(audio_paths))
         if not getattr(self.config, "stt_enabled", True):
@@ -71,7 +124,10 @@ class GatewayInboundVoiceMixin:
                 duration_str = await _probe_audio_duration(abs_path)
                 suffix = f" (duration: {duration_str})" if duration_str else ""
                 notes.append(f"[The user sent a voice message: {abs_path}{suffix}]")
-            return (self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text), []
+            return VoiceTranscription(
+                self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text,
+                parts=tuple(VoiceTranscriptPart(note) for note in notes),
+            )
 
         try:
             from tools.transcription_tools import (
@@ -79,26 +135,31 @@ class GatewayInboundVoiceMixin:
             )
         except ModuleNotFoundError as e:
             logger.error("Transcription module unavailable: %s", e)
-            return self._prepend_media_prefix("[voice message could not be transcribed]", user_text), []
+            note = "[voice message could not be transcribed]"
+            return VoiceTranscription(self._prepend_media_prefix(note, user_text), parts=(VoiceTranscriptPart(note),))
 
         enriched_parts = []
-        successful_transcripts: list[str] = []
+        clips: list[VoiceClipTranscript] = []
+        parts: list[VoiceTranscriptPart] = []
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 transcript, note = await self._transcribe_one_clip(
                     path, transcribe_audio, transcribe_audio_local_fallback,
                 )
-                if transcript is not None:
-                    successful_transcripts.append(transcript)
+                clip = VoiceClipTranscript(path, transcript) if transcript is not None else None
+                if clip is not None:
+                    clips.append(clip)
+                parts.append(VoiceTranscriptPart(note, clip))
                 enriched_parts.append(note)
             except Exception as e:
                 logger.error("Transcription error: %s", e)
-                enriched_parts.append(self._untranscribed_audio_note(path))
+                note = self._untranscribed_audio_note(path)
+                parts.append(VoiceTranscriptPart(note))
+                enriched_parts.append(note)
 
-        if enriched_parts:
-            user_text = self._prepend_media_prefix("\n\n".join(enriched_parts), user_text)
-        return user_text, successful_transcripts
+        text = self._prepend_media_prefix("\n\n".join(enriched_parts), user_text) if enriched_parts else user_text
+        return VoiceTranscription(text, tuple(clips), tuple(parts))
 
     def _pending_event_audio_paths(self, event) -> list[str]:
         """Return STT-eligible paths from a pending voice message."""
@@ -119,7 +180,7 @@ class GatewayInboundVoiceMixin:
         if not audio_paths:
             return user_text if user_text is not None else (getattr(event, "text", None) or None), []
         text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
+        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths, event=event)
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
         return enriched_text, successful_transcripts

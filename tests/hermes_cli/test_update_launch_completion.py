@@ -95,6 +95,12 @@ def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_p
     assert len(completion_tail) == 2
 
     completion_tail.exit_code = 0
+    # Age the recorded failure past the backoff window (#122206): a flaky
+    # tail that a plain relaunch fixes is the historical case, but only once
+    # the backoff window has elapsed — fresh failures wait it out.
+    attempts = venv_sync._completion_attempts_path(root)
+    old = 1.0
+    os.utime(attempts, (old, old))
     # Dependencies are already this interpreter's: the tail alone owes no re-exec.
     assert venv_sync.prepare_launch(root, []) is None
     assert len(syncs) == 1 and len(completion_tail) == 3

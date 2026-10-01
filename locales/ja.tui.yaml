@@ -933,7 +933,7 @@ slashCmd.session.compress.compressedOther: "{0} 件のメッセージを圧縮�
 slashCmd.session.compress.nothing: "圧縮するものがありません"
 slashCmd.session.compress.tokSuffix: " · {0} tok"
 slashCmd.session.fast.mode: "高速モード: {0}"
-slashCmd.session.fast.usage: "使い方: /fast [normal|fast|status|on|off|toggle]"
+slashCmd.session.fast.usage: "使い方: /fast [normal|fast|ultrafast|status|on|off|toggle]"
 slashCmd.session.indicator.current: "インジケーター: {0}"
 slashCmd.session.indicator.switched: "インジケーター → {0}"
 slashCmd.session.indicator.usage: "使い方: /indicator [{0}]"

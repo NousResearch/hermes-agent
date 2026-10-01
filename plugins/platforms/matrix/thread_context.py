@@ -36,7 +36,7 @@ except ImportError:
         GET = "GET"
 
 
-async def _decrypt_thread_event(client: Any, raw: dict) -> Any | None:
+async def _decrypt_thread_event(client: Any, raw: dict[str, Any]) -> Any | None:
     crypto = getattr(client, "crypto", None)
     if crypto is None:
         return None

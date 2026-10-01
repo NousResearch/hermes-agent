@@ -73,17 +73,29 @@ def git_repo_no_remote(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_exit_cleanup_preserves_dirty_worktree(git_repo, monkeypatch, capsys):
-    """Exit cleanup must preserve local changes for manual recovery."""
+@pytest.mark.parametrize("real_untracked", [True, False], ids=["untracked-file-kept", "include-symlink-only-removed"])
+def test_exit_cleanup_preserves_dirty_worktree(git_repo, monkeypatch, capsys, real_untracked):
+    """Exit cleanup must preserve local changes, but not count .worktreeinclude symlinks as changes.
+
+    A trailing-slash ignore (``node_modules/``) never matches the include step's symlink, so git
+    lists it as untracked; treating that as dirty would keep every worktree of such a repo forever.
+    """
     import cli
 
+    (git_repo / "node_modules").mkdir()
+    (git_repo / "node_modules" / "dep.js").write_text("x\n")
+    (git_repo / ".worktreeinclude").write_text("node_modules\n")
+    (git_repo / ".git" / "info" / "exclude").write_text("node_modules/\n.worktreeinclude\n.worktrees/\n")
     worktree = git_repo / ".worktrees" / "session"
     worktree.parent.mkdir()
     subprocess.run(
         ["git", "worktree", "add", str(worktree), "-b", "hermes/session", "HEAD"],
         cwd=git_repo, check=True, capture_output=True,
     )
-    (worktree / "untracked.txt").write_text("recover me\n")
+    worktree_ops._copy_worktree_includes(str(git_repo), worktree)
+    assert (worktree / "node_modules").is_symlink()
+    if real_untracked:
+        (worktree / "untracked.txt").write_text("recover me\n")
     monkeypatch.setattr(cli, "release_lsp_clients", lambda path: None)
     printed = []
     monkeypatch.setattr(cli, "_cprint", printed.append)
@@ -94,11 +106,16 @@ def test_exit_cleanup_preserves_dirty_worktree(git_repo, monkeypatch, capsys):
         "repo_root": str(git_repo),
     })
 
-    assert worktree.exists()
-    assert (worktree / "untracked.txt").read_text() == "recover me\n"
     out = "".join(printed) + capsys.readouterr().out
-    assert "uncommitted changes" in out
-    assert "--force" not in out
+    if real_untracked:
+        assert worktree.exists()
+        assert (worktree / "untracked.txt").read_text() == "recover me\n"
+        assert "uncommitted changes" in out
+        assert "--force" not in out
+    else:
+        assert not worktree.exists()
+        assert "cleaned up" in out
+        assert (git_repo / "node_modules" / "dep.js").exists()
 
 
 

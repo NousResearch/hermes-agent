@@ -508,11 +508,54 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
         return True
 
 
+def _include_symlink_paths(worktree_path: str, timeout: int = 10) -> set:
+    """Relative paths in *worktree_path* that are ``.worktreeinclude`` directory symlinks.
+
+    ``_copy_worktree_includes`` symlinks included directories back to the main checkout. A
+    trailing-slash gitignore pattern (``node_modules/``) never matches a symlink, so git reports
+    each one as untracked. Only a symlink at a listed entry that resolves to that same entry in
+    the main repo qualifies — anything else is real user state.
+    """
+    common = _git_out(["rev-parse", "--path-format=absolute", "--git-common-dir"], worktree_path,
+                      timeout=timeout)
+    if not common:
+        return set()
+    repo_root = Path(common).parent
+    include_file = repo_root / ".worktreeinclude"
+    if not include_file.is_file():
+        return set()
+    wt = Path(worktree_path)
+    paths = set()
+    for line in include_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        entry = line.strip().replace("\\", "/").rstrip("/")
+        if not entry or entry.startswith("#"):
+            continue
+        dst = wt / entry
+        try:
+            if dst.is_symlink() and dst.resolve() == (repo_root / entry).resolve():
+                paths.add(entry)
+        except (OSError, ValueError):
+            continue
+    return paths
+
+
 def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
-    """Whether a worktree has staged/unstaged/untracked changes. Fails SAFE toward True."""
+    """Whether a worktree has staged/unstaged/untracked changes. Fails SAFE toward True.
+
+    Untracked ``.worktreeinclude`` directory symlinks are ignored: they are our own scaffolding,
+    and counting them would keep every worktree of such a repo forever.
+    """
     try:
-        status = _git_out(["status", "--porcelain"], worktree_path, timeout=timeout)
-        return status is None or bool(status)
+        result = _git(["status", "--porcelain", "-z"], worktree_path, timeout=timeout)
+        if result.returncode != 0:
+            return True
+        entries = [e for e in result.stdout.split("\0") if e]
+        if not entries:
+            return False
+        if any(not e.startswith("?? ") for e in entries):
+            return True
+        include_links = _include_symlink_paths(worktree_path, timeout=timeout)
+        return any(e[3:].rstrip("/") not in include_links for e in entries)
     except Exception:
         return True
 

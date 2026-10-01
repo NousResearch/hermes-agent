@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import type { EmbedDescriptor } from './providers/types'
+import { EMBED_DEFAULT_H } from './embed-size'
+import type { EmbedDescriptor, EmbedProvider } from './providers/types'
 import { useIsDark } from './use-is-dark'
 
 // X and Instagram render in the provider's own cross-origin iframe, like every
@@ -14,17 +15,14 @@ import { useIsDark } from './use-is-dark'
 // window-open policy denies them anyway), forms and modals. The frame is
 // cross-origin, so allow-same-origin gives it nothing of ours, and Electron
 // injects no preload into subframes.
-export const SOCIAL_FRAME_SANDBOX = 'allow-scripts allow-same-origin'
+const SOCIAL_FRAME_SANDBOX = 'allow-scripts allow-same-origin'
 
-const FRAME_ORIGIN: Record<string, string> = {
+const FRAME_ORIGIN: Partial<Record<EmbedProvider, string>> = {
   instagram: 'https://www.instagram.com',
   twitter: 'https://platform.twitter.com'
 }
 
-// Placeholder until the embed page reports its rendered height.
-const DEFAULT_HEIGHT = 320
-
-export function socialFrameSrc(descriptor: EmbedDescriptor, theme: 'dark' | 'light'): string {
+function socialFrameSrc(descriptor: EmbedDescriptor, theme: 'dark' | 'light'): string {
   if (descriptor.renderer !== 'tweet') {
     return descriptor.embedUrl
   }
@@ -48,7 +46,7 @@ interface EmbedMessage {
 // own widget scripts listen for: X sends {"twttr.embed": {method:
 // "twttr.private.resize", params: [{height}]}}, Instagram the JSON string
 // {"type": "MEASURE", "details": {height}}. Only that number is read.
-export function reportedHeight(data: unknown): number | null {
+function reportedHeight(data: unknown): number | null {
   let message = data
 
   if (typeof message === 'string') {
@@ -78,7 +76,7 @@ export function reportedHeight(data: unknown): number | null {
 export default function SocialEmbedRenderer({ descriptor }: { descriptor: EmbedDescriptor }) {
   const isDark = useIsDark()
   const ref = useRef<HTMLIFrameElement | null>(null)
-  const [height, setHeight] = useState(descriptor.height ?? DEFAULT_HEIGHT)
+  const [height, setHeight] = useState(descriptor.height ?? EMBED_DEFAULT_H)
   const src = useMemo(() => socialFrameSrc(descriptor, isDark ? 'dark' : 'light'), [descriptor, isDark])
 
   useEffect(() => {

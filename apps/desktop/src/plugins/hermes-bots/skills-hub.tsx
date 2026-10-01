@@ -6,7 +6,7 @@
  * it reaches back into neither.
  */
 
-import { Button, host, Input, useI18n } from '@hermes/plugin-sdk'
+import { Button, Codicon, host, Input, useI18n } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
@@ -21,7 +21,17 @@ import type { RosterRow } from './types'
 // checklist above gains the row. Search-box fallback kept for offline use.
 
 const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const FALLBACK_HUB_ORIGIN = 'https://nousresearch.github.io'
 const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
+const FALLBACK_HUB_PICKER_URL = FALLBACK_HUB_ORIGIN + '/hermes-agent/docs/skills?embed=picker'
+// A WAF-blocked or unreachable docs host must not delay the fallback longer
+// than this — the probe only decides which origin to embed, never blocks it.
+const HUB_PROBE_TIMEOUT_MS = 8_000
+
+function isHubOrigin(origin: string) {
+  return origin === HUB_ORIGIN || origin === FALLBACK_HUB_ORIGIN
+}
+
 /** One `skills.manage action=search` hit. */
 interface HubSkillResult {
   description?: string
@@ -43,8 +53,42 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
   const [installing, setInstalling] = useState<null | string>(null)
   const [installed, setInstalled] = useState<Record<string, boolean>>({})
   const [browseHub, setBrowseHub] = useState(false)
+  const [hubPickerUrl, setHubPickerUrl] = useState(HUB_PICKER_URL)
   const installRef = useRef<((name: string, displayName?: string) => Promise<void>) | null>(null)
   const frameRef = useRef<HTMLIFrameElement | null>(null)
+
+  // Vercel's WAF denies some residential IP ranges for the whole docs domain,
+  // leaving the pane on a block page (#118203). The equivalent GitHub Pages
+  // deployment serves the same picker, so probe the primary before each
+  // browse session and fall back when it is unreachable or refuses us. The
+  // probe carries its own deadline — a hanging connection must not stall the
+  // fallback.
+  useEffect(() => {
+    if (!browseHub) {
+      return undefined
+    }
+
+    let mounted = true
+
+    void fetch(HUB_PICKER_URL, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(HUB_PROBE_TIMEOUT_MS)
+    })
+      .then(response => {
+        if (mounted && !response.ok) {
+          setHubPickerUrl(FALLBACK_HUB_PICKER_URL)
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setHubPickerUrl(FALLBACK_HUB_PICKER_URL)
+        }
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [browseHub])
 
   // Picker messages from the embedded hub page. Origin- AND source-checked —
   // only OUR frame may ask for an install (the hub origin alone would let any
@@ -56,7 +100,7 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
     }
 
     const onMessage = (event: MessageEvent) => {
-      if (event.origin !== HUB_ORIGIN) {
+      if (!isHubOrigin(event.origin)) {
         return
       }
 
@@ -185,7 +229,7 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
             <iframe
               ref={frameRef}
               sandbox="allow-scripts allow-same-origin"
-              src={HUB_PICKER_URL}
+              src={hubPickerUrl}
               style={{
                 width: '133.34%',
                 height: '133.34%',
@@ -244,7 +288,10 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
                   ) : null}
                 </div>
                 {installed[r.name] ? (
-                  <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">✓ {h.installed}</span>
+                  <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
+                    <Codicon name="check" size="0.65rem" />
+                    {h.installed}
+                  </span>
                 ) : (
                   <Button
                     aria-label={b.tools.installHint(r.name)}

@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { group, split } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup, noteHoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { $rightRailActiveTabId, selectRightRailTab } from '@/store/layout'
-import { closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
+import { $previewTabs, closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
+
+import { watchPreviewTiles } from '../preview-tile'
 
 import { PREVIEW_READ_MAX_CHARS, readActivePreview, registerPreviewPageReader } from './preview-reader'
 
@@ -34,6 +38,9 @@ describe('readActivePreview (read_preview tool)', () => {
     cleanups = []
     closeRightRail()
     window.localStorage.clear()
+    noteActiveTreeGroup(null)
+    noteHoveredTreeGroup(null)
+    $layoutTree.set(null)
   })
 
   it('answers null when nothing is open, so the tool reports it cleanly', async () => {
@@ -137,4 +144,100 @@ describe('readActivePreview (read_preview tool)', () => {
 
     expect(await readActivePreview()).toMatchObject({ text: 'second' })
   })
+
+  it('reads the hovered preview zone instead of the global right-rail tab', async () => {
+    openPreview(fileTarget('/work/a.md'))
+    const fileId = $rightRailActiveTabId.get()!
+    openPreview(urlTarget('https://example.com/tickets'))
+    const browserId = $rightRailActiveTabId.get()!
+    selectRightRailTab(fileId)
+    mountSplit(fileId, browserId)
+    noteHoveredTreeGroup('grp-browser')
+
+    expect(await readActivePreview()).toMatchObject({ kind: 'url', url: 'https://example.com/tickets' })
+  })
+
+  it('reads the focused preview zone instead of a stale global file tab', async () => {
+    openPreview(fileTarget('/work/a.md'))
+    const fileId = $rightRailActiveTabId.get()!
+    openPreview(urlTarget('https://example.com/tickets'))
+    const browserId = $rightRailActiveTabId.get()!
+    selectRightRailTab(fileId)
+    mountSplit(fileId, browserId)
+    noteActiveTreeGroup('grp-browser')
+
+    expect(await readActivePreview()).toMatchObject({ kind: 'url', url: 'https://example.com/tickets' })
+  })
+
+  it('reads the hovered file when that zone is what the user is looking at', async () => {
+    openPreview(fileTarget('/work/a.md'))
+    const fileId = $rightRailActiveTabId.get()!
+    openPreview(urlTarget('https://example.com/tickets'))
+    const browserId = $rightRailActiveTabId.get()!
+    mountSplit(fileId, browserId)
+    noteHoveredTreeGroup('grp-file')
+
+    expect(await readActivePreview()).toMatchObject({ kind: 'file', path: '/work/a.md' })
+  })
+
+  it('returns active_tab_id and the open tab list when more than one preview is mounted', async () => {
+    openPreview(fileTarget('/work/project-network.html'))
+    const fileId = $rightRailActiveTabId.get()!
+    openPreview(urlTarget('https://example.com/tickets'))
+    const browserId = $rightRailActiveTabId.get()!
+
+    expect(await readActivePreview()).toMatchObject({
+      active_tab_id: browserId,
+      kind: 'url',
+      tabs: [
+        { id: fileId, kind: 'file', label: '/work/project-network.html', url: 'file:///work/project-network.html' },
+        { id: browserId, kind: 'url', label: 'Browser', url: 'https://example.com/tickets' }
+      ],
+      url: 'https://example.com/tickets'
+    })
+    expect($previewTabs.get()).toHaveLength(2)
+  })
 })
+
+describe('follow() does not overwrite an explicit open in another group', () => {
+  beforeEach(() => {
+    closeRightRail()
+    window.localStorage.clear()
+    noteActiveTreeGroup(null)
+    noteHoveredTreeGroup(null)
+    $layoutTree.set(null)
+  })
+
+  it('keeps the opened URL when the other group is still the interacted zone', async () => {
+    watchPreviewTiles()
+    openPreview(fileTarget('/work/project-network.html'))
+    const fileId = $rightRailActiveTabId.get()!
+    openPreview(urlTarget('about:blank'))
+    const browserId = $rightRailActiveTabId.get()!
+    mountSplit(fileId, browserId)
+    noteActiveTreeGroup('grp-file')
+
+    openPreview(urlTarget('https://example.com/tickets'))
+    // reveal may not commit when the pane is already fronted; the layout
+    // listener is what copies the interacted zone. Fire that same listener.
+    $layoutTree.set(mountSplit(fileId, browserId))
+
+    expect($rightRailActiveTabId.get()).toBe(browserId)
+    expect(await readActivePreview()).toMatchObject({
+      active_tab_id: browserId,
+      kind: 'url',
+      url: 'https://example.com/tickets'
+    })
+  })
+})
+
+function mountSplit(fileId: string, browserId: string) {
+  const tree = split('row', [
+    group([`preview-tile:${browserId}`], { active: `preview-tile:${browserId}`, id: 'grp-browser' }),
+    group([`preview-tile:${fileId}`], { active: `preview-tile:${fileId}`, id: 'grp-file' })
+  ])
+
+  $layoutTree.set(tree)
+
+  return tree
+}

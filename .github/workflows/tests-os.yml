@@ -41,6 +41,20 @@ on:
         type: boolean
         required: false
         default: true
+      e2e:
+        description: >-
+          Run the Windows E2E job (tests/e2e/core/windows). A slow lane
+          (scripts/ci/classify_changes.py); a caller that passes nothing gets it.
+        type: boolean
+        required: false
+        default: true
+      e2e_upgrade:
+        description: >-
+          Run the Windows install + update journey (tests/e2e/core/windows_update).
+          A slow lane; a caller that passes nothing gets it.
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -70,7 +84,7 @@ jobs:
             timeout: 60
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       # No arm64 wheels for some of the extras below: PM builds them from sdist.
       - name: Set up native ARM64 build dependencies
@@ -160,12 +174,21 @@ jobs:
         env:
           # These files spawn nested PowerShell trees. CPU-count parallelism
           # starves cold child startup before the fixture's idle deadline.
-          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '2' || '8') || '' }}
+          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
+
+  install-update-e2e:
+    # The real scripts/install.ps1 -> `hermes update` HEAD -> NEXT journey on a real Windows
+    # host (tests/e2e/core/windows_update): fresh install, gateway across the update,
+    # interpreter selection, non-ASCII profile paths and tool ACLs, partial-clone fetch and
+    # venv holders. Its own workflow so wine2e-install/** pushes can run it alone.
+    name: Windows install + update E2E
+    if: inputs.e2e_upgrade
+    uses: ./.github/workflows/windows-install-update-e2e.yml
 
   e2e-windows:
     # Real Hermes processes on a real Windows host (tests/e2e/core/windows): hermes.exe,
@@ -181,6 +204,7 @@ jobs:
     # Windows race that passes on retry is still a race. Tracked Windows bugs are strict
     # xfails (per-file KNOWN tables), so a fix turns this job red until the entry goes.
     name: Windows E2E (real processes)
+    if: inputs.e2e
     # 32-core like os-tests' Windows row: seven files run in parallel and each spawns
     # process trees; on the 4-vCPU image the suite step took 153-171 s (job 4.7-5.6 min),
     # here 124 s (job 3.1 min), with headroom against scheduling-starved timeouts.
@@ -188,7 +212,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm

@@ -3,6 +3,7 @@ import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
+import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
@@ -13,6 +14,7 @@ import {
   type DesktopCommandSurface,
   type DesktopPickerId,
   desktopSlashUnavailableMessage,
+  desktopSubcommandUnavailableMessage,
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
@@ -37,6 +39,7 @@ import {
   $connection,
   $sessions,
   $yoloActive,
+  applySessionTitle,
   setActiveSessionId,
   setCurrentUsage,
   setModelPickerOpen,
@@ -189,7 +192,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
+    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean; typed?: boolean }) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -265,8 +268,22 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
 
-        if (!isDesktopSlashCommand(name)) {
+        // Resolve the INVOCATION, not just the name: a command the desktop owns
+        // for its management surface can still delegate individual subcommands
+        // to the backend (`/skills pending` — see desktopSubcommandAllowlist).
+        if (!isDesktopSlashCommand(name, arg)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
+
+          return
+        }
+
+        // Commands narrowed by `desktop_subcommands` (e.g. /skills exposes
+        // only its write-approval review slice here — the CLI hub mutations
+        // must not be reachable from a desktop exec) stop at the client.
+        const subcommandBlocked = desktopSubcommandUnavailableMessage(name, arg)
+
+        if (subcommandBlocked) {
+          renderSlashOutput(subcommandBlocked)
 
           return
         }
@@ -364,7 +381,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             renderSlashOutput(
               queued === 'queued'
                 ? 'session busy — message queued to send when the current turn finishes'
-                : 'session busy — /interrupt the current turn before sending this command'
+                : 'session busy — stop the current reply first (Stop button or Esc), then send this command'
             )
 
             return
@@ -597,6 +614,58 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
+        // /background (alias /bg) starts a detached background turn via the
+        // gateway's prompt.background RPC — the TUI's path
+        // (ui-tui/src/app/slash/commands/session.ts). It must NOT go through
+        // runExec: the slash worker's HermesCLI prints the completion from a
+        // fire-and-forget thread after process_command already returned, past
+        // the worker's stdout capture window, so the result never reached the
+        // conversation that started the task (#97635, #57444). The RPC replies
+        // immediately with the task id; the response itself arrives later as a
+        // background.complete gateway event, which the gateway-event dispatcher
+        // appends to this session.
+        background: async ctx => {
+          const text = ctx.arg.trim()
+
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if (!text) {
+            renderSlashOutput(
+              'Usage: /background <prompt> — the task runs in a separate session and the result appears here when done.'
+            )
+
+            return
+          }
+
+          try {
+            const result = await requestGateway<{ task_id?: string }>('prompt.background', {
+              session_id: sessionId,
+              text
+            })
+
+            renderSlashOutput(
+              result.task_id
+                ? `Background task ${result.task_id} started — you can continue chatting; the result will appear here when done.`
+                : 'Background task started — you can continue chatting; the result will appear here when done.'
+            )
+          } catch (err) {
+            // Older gateways without the dedicated RPC still have the
+            // slash-worker route — same compatibility fallback as runRpc.
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
         // /compress (alias /compact) runs the gateway's dedicated
         // session.compress RPC — the TUI's path
         // (ui-tui/src/app/slash/commands/session.ts). It must NOT go through
@@ -701,6 +770,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                 storedSessionId
               )
             }
+
+            // The transcript just shrank by 5-10x outside any turn (busy never
+            // flipped), so the keyed context breakdown — if already fetched —
+            // is now wrong by that factor. Bump the invalidation generation:
+            // the statusbar gauge refetches immediately instead of serving the
+            // pre-compression figure until the session is switched (#94001).
+            invalidateContextBreakdown(sessionId)
 
             const usage = { ...result?.usage, ...result?.info?.usage }
 
@@ -1014,7 +1090,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const finalTitle = (result?.title || arg).trim()
             const queued = result?.pending === true
 
-            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+            // Patch every sidebar slice (lineage-aware), then refresh the
+            // project surfaces — a bare-id recents patch left project rows
+            // stale until a profile switch (#123337).
+            applySessionTitle(sessionId, finalTitle || null)
             await refreshSessions().catch(() => undefined)
             renderSlashOutput(
               finalTitle
@@ -1237,6 +1316,18 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           return
+        }
+
+        // Shared metrics count each command the user typed exactly once, here, whether the desktop
+        // handles it locally or on the gateway (which no longer counts slash.exec itself). An alias
+        // re-dispatch (recordInput=false) and programmatic calls (typed=false) are not user input.
+        if (recordInput && options?.typed !== false) {
+          const metricsSessionId = sessionHint || activeSessionIdRef.current
+
+          void requestGateway('shared_metrics.slash_command', {
+            command: name,
+            ...(metricsSessionId ? { session_id: metricsSessionId } : {})
+          }).catch(() => undefined)
         }
 
         const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }

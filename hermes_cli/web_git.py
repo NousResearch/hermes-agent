@@ -20,6 +20,9 @@ from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_en
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
+# How much of a failed gh command's stderr rides into the surfaced error. A
+# toast can carry the informative tail; the full traceback helps nobody (#87731).
+_GH_ERR_TAIL_CHARS = 400
 _UNTRACKED_LINE_MAX_BYTES = 1024 * 1024
 _UNTRACKED_SCAN_CAP = 500
 _COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
@@ -383,21 +386,23 @@ def review_commit_context(cwd: str) -> dict:
 # ── ship flow (gh) ───────────────────────────────────────────────────────────
 
 
-def _gh(cwd: str, args: list[str]) -> tuple[bool, str]:
+def _gh(cwd: str, args: list[str]) -> tuple[bool, str, str]:
+    """``(ok, stdout, stderr)`` of ``gh`` in ``cwd``. Never raises on non-zero exit —
+    the caller decides what a failure means, and the real reason rides in stderr."""
     if not shutil.which("gh"):
-        return False, ""
+        return False, "", ""
     # GH_PROMPT_DISABLED: gh's documented kill-switch for interactive prompts.
     env = noninteractive_git_env()
     env["GH_PROMPT_DISABLED"] = "1"
     proc = _run(["gh", *args], cwd, _GH_TIMEOUT, env)
     if proc is None:
-        return False, ""
-    return proc.returncode == 0, proc.stdout or ""
+        return False, "", ""
+    return proc.returncode == 0, proc.stdout or "", proc.stderr or ""
 
 
 def _gh_json(cwd: str, args: list[str]):
     """Parsed JSON stdout of a successful gh call, else None."""
-    ok, out = _gh(cwd, args)
+    ok, out, _stderr = _gh(cwd, args)
     if not ok:
         return None
     try:
@@ -463,7 +468,7 @@ def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> 
     by_number = list(dict.fromkeys(int(n) for n in (numbers or []) if n))[:_PR_QUERY_BRANCH_CAP]
     if not wanted and not by_number:
         return not_ready
-    repo_ok, repo_out = _gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    repo_ok, repo_out, _repo_err = _gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
     owner, _, name = repo_out.strip().partition("/")
     if not repo_ok or not owner or not name:
         # gh missing, unauthenticated, or no GitHub remote — all "nothing to badge".
@@ -490,9 +495,15 @@ def review_create_pr(cwd: str) -> dict:
         _review_push(cwd)
     except RuntimeError:
         pass
-    created, out = _gh(cwd, ["pr", "create", "--fill"])
+    created, out, err = _gh(cwd, ["pr", "create", "--fill"])
     if not created:
-        raise RuntimeError("gh pr create failed (is gh installed and authenticated?)")
+        # gh's own stderr says why the create failed ("no commits between main
+        # and feature", a missing upstream, a publish-email refusal). The generic
+        # fallback lied whenever gh itself was fine — keep it only for the case
+        # gh reported nothing (#87731). Bounded: a toast carries the tail, not
+        # the whole traceback.
+        detail = err.strip()[-_GH_ERR_TAIL_CHARS:] or "is gh installed and authenticated?"
+        raise RuntimeError(f"gh pr create failed: {detail}")
     url = next((line for line in reversed(out.strip().splitlines()) if line.strip()), "")
     return {"url": url}
 
@@ -533,6 +544,17 @@ def _sanitize_branch(name: str) -> str:
     for pattern, repl in _BRANCH_SANITIZERS:
         value = re.sub(pattern, repl, value)
     return value
+
+
+def _fetch_tracking_ref(root: str, remote: str, branch: str) -> bool:
+    """Fetch ``<remote>/<branch>`` by explicit refspec; True when the remote has the branch.
+
+    A tag-pinned narrow clone maps only the tag in ``remote.<remote>.fetch``, so a by-name
+    fetch writes FETCH_HEAD without creating the tracking ref (#125686).
+    """
+    from hermes_cli.update_cmd_check import tracking_refspec
+
+    return _git(root, ["fetch", remote, tracking_refspec(remote, branch)])[0] == 0
 
 
 def _slugify(name: str) -> str:
@@ -587,21 +609,40 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
     if not requested:
         raise RuntimeError("Branch name is required.")
     # "origin/feature" is a remote-tracking ref, not a branch git can check out — `git worktree add <dir>
-    # origin/feature` detaches HEAD. Create a local branch with the same short name that tracks the remote
+    # origin/feature` detaches HEAD. Create a local branch of the same short name that tracks the remote
     # ref, like `git switch feature` does for a branch on exactly one remote. (Parity with the Electron op;
     # a remote gateway serves this mirror, so the desktop's convert-a-branch flow must behave identically.
     # #81724)
     remote = _remote_of_ref(root, requested)
+    fetched = False
+    if not remote and "/" in requested and not _ref_exists(root, f"refs/heads/{requested}"):
+        # A tag-pinned narrow clone has no tracking ref for any branch, so the ref-based reading
+        # above misreads "origin/feature" as a local branch. When no such local branch exists
+        # and the remote carries the branch, fetching it creates the ref; otherwise keep the
+        # local-branch reading and its error.
+        maybe_remote, maybe_branch = requested.split("/", 1)
+        if _git_line(root, ["remote", "get-url", maybe_remote]) and _fetch_tracking_ref(
+            root, maybe_remote, maybe_branch
+        ):
+            remote, fetched = maybe_remote, True
     existing = requested.split("/", 1)[1] if remote else requested
     if not remote and existing == _default_branch(root):
         _git_ok(root, ["switch", existing])
         return {"path": root, "branch": existing, "repoRoot": root}
     target = _unique_dir(os.path.join(root, ".worktrees", _slugify(existing)))
     if remote:
-        # Best-effort freshness; on failure (offline, branch gone) the last known ref is still
+        # Best-effort freshness: on failure (offline, branch gone) the last known ref is still
         # there to branch from.
-        _git(root, ["fetch", remote, existing])
-        _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested])
+        fetched = fetched or _fetch_tracking_ref(root, remote, existing)
+        if _git(root, ["worktree", "add", "--track", "-b", existing, target, requested])[0] != 0:
+            # `--track` needs remote.<remote>.fetch to map the ref back to a remote branch; a
+            # narrow clone maps only its tag. Branch untracked, then register the branch and
+            # wire upstream, but only for a branch the fetch just proved exists: a configured
+            # refspec whose source is gone makes every later plain `git fetch` fail.
+            _git_ok(root, ["worktree", "add", "-b", existing, target, requested])
+            if fetched:
+                _git(root, ["remote", "set-branches", "--add", remote, existing])
+                _git(root, ["branch", f"--set-upstream-to={requested}", existing])
     else:
         _git_ok(root, ["worktree", "add", target, existing])
     return {"path": target, "branch": existing, "repoRoot": root}
@@ -624,7 +665,11 @@ def worktree_add(cwd: str, options: dict) -> dict:
         # (offline / no remote) are ignored — git uses the local ref or raises a clear error
         # below if it is entirely missing.
         if base.startswith("origin/"):
-            _git(root, ["fetch", "origin", base[len("origin/"):]])
+            remote_branch = base[len("origin/"):]
+            # `base` comes straight from the API, and inside a refspec a glob such as
+            # "origin/*" would fetch every branch: only fetch valid branch names.
+            if _git(root, ["check-ref-format", "--branch", remote_branch])[0] == 0:
+                _fetch_tracking_ref(root, "origin", remote_branch)
             # Branching off a remote-tracking ref auto-wires upstream tracking; the user wants
             # a standalone local branch (Electron-op parity).
             args.append("--no-track")

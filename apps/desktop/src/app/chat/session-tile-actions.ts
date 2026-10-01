@@ -45,6 +45,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import type { GatewayRequester } from '../contrib/types'
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
+import { isStaleTargetError } from '../session/hooks/use-prompt-actions'
 import {
   appendMidTurnUserMessage,
   applyBranchVisibility,
@@ -613,6 +614,47 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           )
         )
       } catch (err) {
+        // Same stale-target hazard as the primary chat's restore (#107593): a
+        // tile's cached durable row ids go stale after optimistic sends, resume
+        // drift, or session.branch remapping, and the gateway refuses with 4018.
+        // Mirror edit's recovery: refresh the transcript from the stored
+        // session, recompute the restore plan against fresh history, retry once.
+        if ((plan.truncateMessageId || plan.truncateRowId !== undefined) && isStaleTargetError(err)) {
+          try {
+            const refreshed = await sessionTileDelegate()!.resumeTile(storedIdRef.current, {
+              refreshTranscript: true
+            })
+            if (typeof refreshed === 'string' && refreshed && refreshed !== sessionId) {
+              runtimeIdRef.current = refreshed
+            }
+
+            const freshMessages = readMessages()
+            const retryPlan = planRestore(freshMessages, messageId, {
+              text: target?.text ?? plan.sourceText,
+              userOrdinal: target?.userOrdinal ?? plan.truncateOrdinal
+            })
+
+            if (retryPlan.truncateMessageId || retryPlan.truncateRowId !== undefined) {
+              applySurvivorRowIds(
+                await submitRewind(
+                  retryPlan.text,
+                  retryPlan.truncateOrdinal,
+                  interruptFirst,
+                  retryPlan.truncateMessageId,
+                  retryPlan.truncateRowId,
+                  retryPlan.sourceText,
+                  durableRowIdsForRebind(freshMessages)
+                )
+              )
+
+              return
+            }
+          } catch {
+            // Fall through to the rollback below: the optimistic truncation
+            // must never survive a failed retry.
+          }
+        }
+
         update(state => ({
           ...state,
           busy: false,

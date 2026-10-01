@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   baseSshOptions,
@@ -15,6 +15,8 @@ import {
   buildInteractiveSshArgs,
   buildMasterArgs,
   classifySshError,
+  CONTROL_FORWARD_KEEPALIVE_MS,
+  CONTROL_PERSIST_SECONDS,
   controlSocketPath,
   createSshProbeConnection,
   forwardSpec,
@@ -29,6 +31,7 @@ import {
   validateSshTarget,
   withRemoteTimeout
 } from './ssh-connection'
+import { createControlMasterHolders } from './ssh-control-master-holders'
 
 const execFileAsync = promisify(execFile)
 
@@ -158,6 +161,9 @@ test('baseSshOptions carries the house ControlMaster/BatchMode/accept-new policy
   assert.match(joined, /StrictHostKeyChecking=accept-new/)
   assert.match(joined, /ExitOnForwardFailure=yes/)
   assert.match(joined, /ConnectTimeout=15/)
+  assert.match(joined, /ServerAliveInterval=15/)
+  assert.match(joined, /ServerAliveCountMax=3/)
+  assert.match(joined, /TCPKeepAlive=yes/)
   assert.ok(!joined.includes('StrictHostKeyChecking=no'), 'never disables host-key checking')
 })
 
@@ -260,6 +266,16 @@ function fakeChild({ code = 0, signal = null, stdout = '', stderr = '', errorEve
   }
 
   if (hang) {
+    process.nextTick(() => {
+      if (stdout) {
+        child.stdout.emit('data', Buffer.from(stdout))
+      }
+
+      if (stderr) {
+        child.stderr.emit('data', Buffer.from(stderr))
+      }
+    })
+
     return child // never emits close → drives the timeout path
   }
 
@@ -470,6 +486,35 @@ test('open() surfaces a classified auth error', async () => {
   )
 })
 
+test('open() turns a Tailscale browser-check timeout into safe interactive-auth guidance', async () => {
+  const checkUrl = 'https://login.tailscale.com/a/example-one-time-check'
+
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) {
+      return { code: 255 }
+    }
+
+    return {
+      hang: true,
+      stderr: `# Tailscale SSH requires an additional check.\n# To authenticate, visit: ${checkUrl}\n`
+    }
+  })
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d', connectTimeoutMs: 20 })
+
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.INTERACTIVE_AUTH)
+      assert.match(err.message, /Tailscale SSH requires an interactive browser check/)
+      assert.match(err.message, /ssh me@box true/)
+      assert.doesNotMatch(err.message, /login\.tailscale\.com|example-one-time-check/)
+
+      return true
+    }
+  )
+})
+
 test('exec() returns stdout on success and rejects (classified) on failure', async () => {
   const okSpawn = scriptedSpawn([{ code: 0, stdout: 'Linux\n' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn: okSpawn, controlDir: '/tmp/d' })
@@ -508,6 +553,35 @@ test('forward() issues -O forward with a loopback-bound -L spec', async () => {
   assert.equal(args[0], '-O')
   assert.equal(args[1], 'forward')
   assert.ok(args.includes('127.0.0.1:5000:127.0.0.1:6000'))
+  await conn.cancelForward(5000, 6000)
+})
+
+test('mux forward keeps the ControlPersist master alive until the final forward is cancelled', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const spawnFn = scriptedSpawn({ code: 0 })
+
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+
+    await conn.forward(5000, 6000)
+    await conn.forward(5001, 6001)
+    assert.ok(CONTROL_FORWARD_KEEPALIVE_MS < CONTROL_PERSIST_SECONDS * 1_000)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+
+    const checks = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'check').length
+    assert.equal(checks(), 1, 'a tracked forward refreshes the ControlPersist timer')
+
+    await conn.cancelForward(5000, 6000)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(checks(), 2, 'cancelling one of several forwards keeps the refresh active')
+
+    await conn.cancelForward(5001, 6001)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS * 2)
+    assert.equal(checks(), 2, 'cancelling the final forward stops the refresh timer')
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('lifecycle logging passes through redaction', async () => {
@@ -587,17 +661,25 @@ test('open() records what the failed ssh did in the desktop log (#80836)', async
     await assert.rejects(conn.open())
     fs.rmSync(controlDir, { recursive: true, force: true })
     assert.ok(
-      logs.some(line => /connect to me@box:22 failed \(kind=unknown, exit=null, signal=SIGTERM\): \(empty\)/.test(line)),
+      logs.some(line =>
+        /connect to me@box:22 failed \(kind=unknown, exit=null, signal=SIGTERM\): \(empty\)/.test(line)
+      ),
       `mux=${mux}: ${logs.join(' | ')}`
     )
   }
 
   const logs: string[] = []
   const spawnFn = scriptedSpawn([{ code: 255, stderr: 'me@box: Permission denied (publickey).' }])
-  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false, rememberLog: line => logs.push(line) })
+
+  const conn = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, mux: false, rememberLog: line => logs.push(line) }
+  )
 
   await assert.rejects(conn.open())
-  assert.ok(logs.some(line => /failed \(kind=auth-failed, exit=255, signal=none\): me@box: Permission denied/.test(line)))
+  assert.ok(
+    logs.some(line => /failed \(kind=auth-failed, exit=255, signal=none\): me@box: Permission denied/.test(line))
+  )
 })
 
 test('runSsh keeps Node close signal on the result', async () => {
@@ -613,7 +695,10 @@ test('no-mux open() does not classify a signal death with empty stderr as unreac
   const spawnFn = scriptedSpawn([{ signal: 'SIGTERM', stderr: '' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
 
-  await assert.rejects(() => conn.open(), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGTERM'))
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => assertSignalDeathNotUnreachable(err, 'SIGTERM')
+  )
 })
 
 test('mux open() does not classify a signal-killed master with empty stderr as unreachable', async () => {
@@ -627,21 +712,30 @@ test('mux open() does not classify a signal-killed master with empty stderr as u
 
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
-  await assert.rejects(() => conn.open(), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGHUP'))
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => assertSignalDeathNotUnreachable(err, 'SIGHUP')
+  )
 })
 
 test('exec() does not classify a signal death with empty stderr as unreachable', async () => {
   const spawnFn = scriptedSpawn([{ signal: 'SIGKILL', stderr: '' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
-  await assert.rejects(() => conn.exec('uname -s'), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGKILL'))
+  await assert.rejects(
+    () => conn.exec('uname -s'),
+    (err: any) => assertSignalDeathNotUnreachable(err, 'SIGKILL')
+  )
 })
 
 test('forward() does not classify a signal death with empty stderr as unreachable', async () => {
   const spawnFn = scriptedSpawn([{ signal: 'SIGPIPE', stderr: '' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
-  await assert.rejects(() => conn.forward(5000, 6000), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGPIPE'))
+  await assert.rejects(
+    () => conn.forward(5000, 6000),
+    (err: any) => assertSignalDeathNotUnreachable(err, 'SIGPIPE')
+  )
 })
 
 test('close() does not report a signal-killed -O exit with empty stderr as unreachable', async () => {
@@ -661,7 +755,12 @@ test('close() does not report a signal-killed -O exit with empty stderr as unrea
 
   const conn = new SshConnection(
     { host: 'box', user: 'me' },
-    { spawnFn, controlDir: '/tmp/d', rememberLog: line => logs.push(line) }
+    {
+      spawnFn,
+      controlDir: '/tmp/d',
+      controlMasterHolders: createControlMasterHolders(),
+      rememberLog: line => logs.push(line)
+    }
   )
 
   await conn.open()
@@ -1231,7 +1330,12 @@ test('failed ControlMaster close disowns the master instead of retrying it', asy
   // contract: a master that refuses -O exit is disowned — socket dropped,
   // connection marked closed — so the next open dials fresh.
   const spawnFn = scriptedSpawn([{ code: 255, stderr: 'master refused exit' }])
-  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: true, controlDir: '/tmp/d' })
+
+  const conn = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders: createControlMasterHolders() }
+  )
+
   conn._opened = true
   await conn.close()
   assert.equal(conn._opened, false)
@@ -1353,4 +1457,171 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
 
     assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
   }
+})
+
+// #97264: every attempt for one scope/host/identity hashes to the same
+// ControlPath, so a stale attempt's `-O exit` used to kill the master its
+// successor had attached to (the live backend's forward died ~40s after
+// "ready"). Script the master as shared state so each op reflects it.
+function sharedMasterSpawn() {
+  const state = { alive: false, exits: 0 }
+
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) {
+      return state.alive ? { code: 0 } : { code: 255, stderr: 'no control master' }
+    }
+
+    if (args.includes('-M')) {
+      state.alive = true
+
+      return { code: 0 }
+    }
+
+    if (args.includes('-O') && args.includes('exit')) {
+      state.exits += 1
+      state.alive = false
+
+      return { code: 0 }
+    }
+
+    return { code: 0 } // `exit 0` verify exec through the live master
+  })
+
+  return { spawnFn, state }
+}
+
+test('a stale attempt closing late leaves the master its successor attached to (#97264)', async () => {
+  const { spawnFn, state } = sharedMasterSpawn()
+  const controlMasterHolders = createControlMasterHolders()
+  const opts = { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+
+  const stale = new SshConnection({ host: 'box', user: 'me' }, opts)
+  await stale.open()
+
+  const winner = new SshConnection({ host: 'box', user: 'me' }, opts)
+  await winner.open()
+  assert.equal(winner.controlPath, stale.controlPath, 'precondition: both attempts share one ControlPath')
+
+  await stale.close()
+  assert.equal(state.exits, 0, 'the stale attempt must not run -O exit on the shared socket')
+  assert.equal(await winner.isAlive(), true, 'the winning attempt keeps its master')
+
+  await winner.close()
+  assert.equal(state.exits, 1, 'the last holder still tears the master down')
+  assert.equal(state.alive, false)
+})
+
+test('a failed newer attempt does not kill the master an older live connection holds (#97264)', async () => {
+  const { spawnFn, state } = sharedMasterSpawn()
+  const controlMasterHolders = createControlMasterHolders()
+  const opts = { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+
+  const live = new SshConnection({ host: 'box', user: 'me' }, opts)
+  await live.open()
+  const failed = new SshConnection({ host: 'box', user: 'me' }, opts)
+  await failed.open()
+
+  await failed.close()
+  assert.equal(state.exits, 0)
+  assert.equal(await live.isAlive(), true)
+})
+
+test('a stale close while a successor is still dialing does not exit the master (#97264)', async () => {
+  const controlMasterHolders = createControlMasterHolders()
+  const exits: string[][] = []
+
+  let releaseMaster: () => void = () => {}
+
+  const spawnFn: any = (_cmd, args) => {
+    if (args.includes('-O') && args.includes('exit')) {
+      exits.push(args)
+    }
+
+    if (args.includes('check')) {
+      return fakeChild({ code: 255 })
+    }
+
+    if (args.includes('-M')) {
+      const child = fakeChild({ hang: true })
+      releaseMaster = () => child.emit('close', 0, null)
+
+      return child
+    }
+
+    return fakeChild({ code: 0 })
+  }
+
+  const opts = { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders, connectTimeoutMs: 5000 }
+  const staleSpawn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
+
+  const stale = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn: staleSpawn, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+  )
+
+  await stale.open()
+
+  const successor = new SshConnection({ host: 'box', user: 'me' }, opts)
+  const dialing = successor.open()
+  await new Promise(resolve => setImmediate(resolve))
+
+  await stale.close()
+  assert.ok(
+    !staleSpawn.calls.some(args => args.includes('-O') && args.includes('exit')),
+    'the stale attempt must not exit a master a dialing successor is attaching to'
+  )
+
+  releaseMaster()
+  await dialing
+  assert.equal(controlMasterHolders.count(successor.controlPath), 1)
+})
+
+test('a failed open releases its claim so the remaining holder can still close the master', async () => {
+  const controlMasterHolders = createControlMasterHolders()
+  const { spawnFn, state } = sharedMasterSpawn()
+
+  const live = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+  )
+
+  await live.open()
+
+  const authFail = scriptedSpawn(args =>
+    args.includes('check') ? { code: 255 } : { code: 255, stderr: 'Permission denied (publickey).' }
+  )
+
+  const broken = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn: authFail, mux: true, controlDir: '/tmp/d', controlMasterHolders }
+  )
+
+  await assert.rejects(() => broken.open())
+  await live.close()
+  assert.equal(state.exits, 1, 'the failed opener left no phantom claim behind')
+})
+
+test('#103288: every spawn uses the injected sshBinary; the default stays bare ssh', async () => {
+  const commands: string[] = []
+
+  const spawnFn: any = (cmd: string) => {
+    commands.push(cmd)
+
+    return fakeChild({ code: 0 })
+  }
+
+  const custom = createSshProbeConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, sshBinary: 'C:\\Program Files\\Git\\usr\\bin\\ssh.exe' }
+  )
+
+  await custom.open()
+  await custom.exec('true')
+  assert.ok(commands.length >= 2, 'open + exec both spawned')
+  assert.deepEqual([...new Set(commands)], ['C:\\Program Files\\Git\\usr\\bin\\ssh.exe'])
+
+  commands.length = 0
+  const plain = createSshProbeConnection({ host: 'box', user: 'me' }, { spawnFn })
+  await plain.open()
+  assert.deepEqual([...new Set(commands)], ['ssh'])
 })

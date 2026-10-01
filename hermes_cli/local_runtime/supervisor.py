@@ -143,6 +143,8 @@ class LlamaServerSupervisor:
         self._watchdog: threading.Thread | None = None
         self._log_handle = None
         self._idle_since: dict[str, float] = {}
+        # Launch budget the preset file was last planned against (bootstrap.refit_idle_presets).
+        self._refit_usable: int | None = None
 
     # ── endpoints ────────────────────────────────────────────
 
@@ -358,13 +360,19 @@ class LlamaServerSupervisor:
 
     # ── model management (router endpoints) ──────────────────
 
-    def models(self) -> dict:
+    def models(self, timeout_s: int = 30) -> dict:
         """{model_id: status_value} from GET /models."""
         return {m["id"]: m.get("status", {}).get("value", "unknown")
-                for m in self._request("/models").get("data", [])}
+                for m in self._request("/models", timeout_s=timeout_s).get("data", [])}
 
     def load_model(self, model_id: str, timeout_s: int = 600) -> None:
         self._request("/models/load", {"model": model_id}, timeout_s=timeout_s)
+
+    def reload_presets(self) -> None:
+        """Have the router re-read the preset file (GET /models?reload=1). It applies new launch
+        flags to models that aren't loaded and unloads any loaded model whose flags changed, so
+        callers rewrite the file only while nothing is loaded."""
+        self._request("/models?reload=1", timeout_s=10)
 
     def unload_model(self, model_id: str) -> None:
         """Free the child's VRAM now (POST /models/unload; bogus name -> 400). Momentary: never

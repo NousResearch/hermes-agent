@@ -11,9 +11,11 @@ import {
   type ComposerAttachment,
   createComposerAttachmentOccurrenceId,
   createComposerAttachmentScope,
+  mainComposerScope,
   migrateSessionDraft,
   removeComposerAttachment,
   requestVoiceConversationStart,
+  revokeAttachmentPreviewUrls,
   SESSION_DRAFTS_STORAGE_KEY,
   stashSessionDraft,
   takeSessionDraft,
@@ -38,6 +40,51 @@ describe('voice conversation start requests', () => {
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'id'>): ComposerAttachment {
   return { kind: 'file', label: 'doc.pdf', ...overrides }
 }
+
+function stubRevokeObjectURL() {
+  const revokeObjectURL = vi.fn()
+  vi.stubGlobal('URL', { ...URL, revokeObjectURL })
+
+  return revokeObjectURL
+}
+
+describe('blob preview URL ownership handoff', () => {
+  afterEach(() => {
+    $composerAttachments.set([])
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('direct-submit handoff keeps blob previews across clear, then revokes when the optimistic consumer is discarded', () => {
+    // Mirrors use-composer-submit: clone → clear({ retainPreviewUrls }) → dispatch clone.
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-direct-submit-1'
+    addComposerAttachment(attachment({ id: 'image:drop', kind: 'image', label: 'Lattice.png', previewUrl: blobUrl }))
+
+    const submittedAttachments = $composerAttachments.get().map(item => ({ ...item }))
+    mainComposerScope.clear({ retainPreviewUrls: true })
+
+    expect($composerAttachments.get()).toEqual([])
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+    expect(submittedAttachments[0]?.previewUrl).toBe(blobUrl)
+
+    // Optimistic bubble discarded / replaced without restoring into the composer.
+    revokeAttachmentPreviewUrls(submittedAttachments)
+    expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl)
+  })
+
+  it('still revokes blob previews on a normal clear (no handoff)', () => {
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-clear-1'
+    const scope = createComposerAttachmentScope()
+    scope.add(attachment({ id: 'image:x', kind: 'image', previewUrl: blobUrl }))
+
+    scope.clear()
+
+    expect(scope.$attachments.get()).toEqual([])
+    expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl)
+  })
+})
 
 describe('updateComposerAttachment', () => {
   afterEach(() => {
@@ -235,6 +282,14 @@ describe('session drafts', () => {
     expect(takeSessionDraft(null).text).toBe('new chat draft')
     expect(takeSessionDraft(undefined).text).toBe('new chat draft')
     expect(takeSessionDraft('session-a').text).toBe('session draft')
+  })
+
+  it('keeps separate fresh-chat lifecycle drafts isolated', () => {
+    stashSessionDraft('__new__:first', 'first unsent chat', [])
+    stashSessionDraft('__new__:second', 'second unsent chat', [])
+
+    expect(takeSessionDraft('__new__:first').text).toBe('first unsent chat')
+    expect(takeSessionDraft('__new__:second').text).toBe('second unsent chat')
   })
 
   it('persists draft text (not attachments) to localStorage', () => {

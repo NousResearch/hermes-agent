@@ -20,10 +20,13 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 import pytest
+
+from tests.live_process_fixtures import sleeper_script_path
 
 pytestmark = [
     pytest.mark.platforms("windows"),
@@ -38,12 +41,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _spawn(args: list[str], cwd: Path | None = None, python: str | None = None) -> subprocess.Popen:
     """Spawn a real sleeper process whose argv carries the given tail.
 
-    ``python -c "sleep" <tail...>`` — the tail is inert data to the child
+    ``python <sleeper.py> <tail...>`` — the tail is inert data to the child
     but fully visible to psutil cmdline scans, which is what the detection
     code classifies on.
     """
     proc = subprocess.Popen(
-        [python or sys.executable, "-c", "import time; time.sleep(300)", *args],
+        [python or sys.executable, sleeper_script_path(), *args],
         cwd=str(cwd or PROJECT_ROOT),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -91,8 +94,7 @@ class TestDetection:
         lives in the checkout's ``.venv``, which ``project_venv_dir`` resolves since
         7a94b1fbf77, so a ``sys.executable`` child IS a venv holder by design. The base
         interpreter the venv was created from is the foreign python."""
-        import tempfile
-
+        
         from hermes_constants import project_venv_dir
 
         base = getattr(sys, "_base_executable", None) or sys.executable
@@ -156,20 +158,24 @@ class TestAncestorExclusion:
             " 'pids': [p for p, _, _ in matches]}))\n",
             encoding="utf-8",
         )
-        parent_oneliner = (
-            "import subprocess, sys;"
-            f" r = subprocess.run([sys.executable, {str(child_file)!r}],"
-            f" capture_output=True, text=True, cwd={str(PROJECT_ROOT)!r});"
-            " print(r.stdout.strip());"
-            " sys.stderr.write(r.stderr[-500:])"
+        # The parent's code lives in a FILE too: a ``python -c <src>`` command line is an
+        # interpreter running inline source and carries no readable Hermes identity (#107002),
+        # so a ``-c`` parent would not be a gateway to any classifier.
+        parent_file = tmp_path / "parent_gateway.py"
+        parent_file.write_text(
+            "import subprocess, sys\n"
+            f"r = subprocess.run([sys.executable, {str(child_file)!r}],\n"
+            f"    capture_output=True, text=True, cwd={str(PROJECT_ROOT)!r})\n"
+            "print(r.stdout.strip())\n"
+            "sys.stderr.write(r.stderr[-500:])\n",
+            encoding="utf-8",
         )
         # The parent's argv carries `gateway run` so it IS a gateway to any
         # cmdline classifier; it runs the child synchronously.
         result = subprocess.run(
             [
                 sys.executable,
-                "-c",
-                parent_oneliner,
+                str(parent_file),
                 "-m",
                 "hermes_cli.main",
                 "gateway",

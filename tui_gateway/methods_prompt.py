@@ -68,7 +68,10 @@ def _find_user_turn_by_row_id(history: list, target_row_id: int):
 def _load_durable_truncation_history(
     session: dict, fallback_sid: str = "", repair_alternation: bool = True):
     """Load the durable live-replay transcript, or None when it cannot be proven safe."""
-    session_key = str(session.get("session_key") or fallback_sid or "")
+    # Same stale-key hazard as the submit row and the out-of-band probe: a compression rotation moves the
+    # live tip off session_key, and this is the load every adoption path replays from — reading the parent
+    # returns a transcript without the continuation (#123545).
+    session_key = _submit_row_target_key(session) or str(fallback_sid or "")
     if not session_key:
         return []
     try:
@@ -97,12 +100,20 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     """
     if (hit := _find_user_turn_by_row_id(history, target_row_id)) is not None:
         return hit
-    db_history = _load_durable_truncation_history(session)
+    # Identity lookups read the UN-REPAIRED transcript: repair merges any user;user run
+    # into its first row (a model-switch marker run, or an interrupted turn that persisted
+    # no assistant row followed by a resend), and the merged row keeps only the first
+    # row's _row_id — the absorbed rows' ids vanish from the repaired view, so resolving
+    # against it fails closed on rows that are physically present (#94486's live-session
+    # shape). Resolution must read the physical rows, the same discipline the rebind path
+    # applies below for the active-id set.
+    db_history = _load_durable_truncation_history(session, repair_alternation=False)
     if db_history is None:
         return None
-    # Heal missing stamps only when EVERY pair agrees: the durable copy is alternation-
-    # repaired while the live list can carry optimistic/marker rows, and a stamp on a
-    # misaligned pair is sticky (re-aims every later rewind at the wrong durable row).
+    # Heal missing stamps only when EVERY pair agrees: the live list can carry
+    # optimistic/marker rows while the durable copy is physical, and the two can coincide
+    # in length while position-shifted; a stamp on a misaligned pair is sticky (re-aims
+    # every later rewind at the wrong durable row).
     if len(db_history) == len(history) and all(
             _mem_db_pair_agrees(mem, db_msg) for mem, db_msg in zip(history, db_history)):
         for mem, db_msg in zip(history, db_history):
@@ -114,8 +125,10 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
         return None
     db_ord, db_idx = db_hit
     mem_user_indices = _history_user_indices(history)
-    # Same-ordinal mapping across lists that can diverge (repair may merge a user;user
-    # pair): trust it only when the mapped live turn shows the durable target's content.
+    # Same-ordinal mapping across lists that can still diverge (the live list itself may
+    # have been materialized from a repaired, merged view on resume, shifting every later
+    # user ordinal relative to the physical rows): trust the mapping only when the mapped
+    # live turn shows the same content as the durable target.
     if db_ord >= len(mem_user_indices) or not _mem_db_pair_agrees(
             history[mem_user_indices[db_ord]], db_history[db_idx]):
         return None
@@ -536,7 +549,8 @@ def _lock_in_submit_turn(
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""), session.get("profile_home") or None):
             return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
         if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
             return _err(
@@ -649,7 +663,8 @@ def _(rid, params: dict) -> dict:
             # for `running` to clear and resubmits with the truncation intact.
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            display_kind=display_kind)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -915,8 +930,15 @@ def _(rid, params: dict) -> dict:
         from run_agent import AIAgent
         kwargs = _background_agent_kwargs(session["agent"], task_id)
         with _side_agent_session_db(kwargs.get("session_db")) as session_db:
-            result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
-                user_message=text, task_id=task_id)
+            agent = AIAgent(**{**kwargs, "session_db": session_db})
+            try:
+                result = agent.run_conversation(user_message=text, task_id=task_id)
+            finally:
+                # AIAgent.close() is the owner boundary (memory shutdown, tool
+                # subprocesses, httpx clients); an unclosed side agent leaks
+                # all of them for the gateway's life (#50197).
+                with contextlib.suppress(Exception):
+                    agent.close()
         return _final_response_text(result)
 
     return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
@@ -1011,7 +1033,8 @@ def _(rid, params: dict) -> dict:
     if not request_id or not question_id:
         return _err(rid, 4002, "request_id and question_id required")
     answer = params.get("answer", "")
-    answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    if answer is not None and not isinstance(answer, str):
+        answer = json.dumps(answer, ensure_ascii=False)
     if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
     from tui_gateway import server_requests
@@ -1148,7 +1171,10 @@ def _spawn_side_agent(
     extra = extra or {}
 
     def run():
-        session_tokens = _set_session_context(task_id, cwd=(cwd or _session_cwd(session)))
+        # ``parent`` is the caller's live sid (``_sess`` admitted it): bind it as the UI owner so
+        # prompts this worker raises (skill secrets) reach the session whose profile it runs under.
+        session_tokens = _set_session_context(
+            task_id, cwd=(cwd or _session_cwd(session)), ui_session_id=parent)
         # Bug #50233: ephemeral agent threads don't inherit the session's ContextVar scopes (set on the
         # session-create thread), so a side turn under a non-default profile ran against the wrong home.
         # Bind the profile's home + secrets + terminal policy for the whole body, exactly as a prompt turn
@@ -1256,11 +1282,3 @@ def _approval_respond_session_fallback(params: dict):
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import types  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

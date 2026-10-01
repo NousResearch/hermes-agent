@@ -4,6 +4,43 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  sharedMetrics: {
+    consentTitle: 'Aider à améliorer Hermes ?',
+    consentBody:
+      'Les métriques partagées ne contiennent que des compteurs bornés. Jamais de prompts, fichiers, chemins ni textes d’erreur. La collecte reste locale. Les envoyer à Nous est un consentement distinct.',
+    whatIsCollected: 'Ce qui est collecté',
+    collectedIntro: 'Uniquement des compteurs bornés :',
+    collectedActivity: 'Activité, durée des sessions, résultats et classes d’erreur',
+    collectedModels: 'Routes de modèles et totaux de tokens',
+    collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
+    collectedMilestones: 'Comptes de configuration regroupés',
+    collectedReliability:
+      'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
+    collectedUsage:
+      "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
+    collectedMachine:
+      "Données générales de la machine : plage de RAM, type de GPU, âge et canal de la version de Hermes, mises à jour en retard, utilisation d'un serveur de modèles local",
+    installId:
+      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
+    consentWindow:
+      'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
+    readDocs: 'Lire tous les détails',
+    share: 'Collecter et envoyer à Nous',
+    local: 'Collecter en local uniquement',
+    off: 'Non merci',
+    changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
+    saveFailed: 'Impossible d’enregistrer votre choix',
+    collectLabel: 'Collecter les statistiques d’utilisation',
+    collectDesc:
+      'Compteurs bornés conservés sur cet appareil. Jamais de prompts, fichiers, chemins ni textes d’erreur.',
+    sendLabel: 'Envoyer les statistiques d’utilisation à Nous',
+    sendDesc:
+      'Envoyer chaque paquet quotidien au service de télémétrie de Nous. Seules les données d’une fenêtre de consentement sont envoyées. Nécessite la collecte activée.',
+    unavailable: 'Mettez à jour le backend Hermes pour modifier ce réglage.',
+    stripBody: 'Uniquement des compteurs bornés, jamais de prompts ni de fichiers.',
+    stripChoices: { share: 'Envoyer à Nous', local: 'Local uniquement', off: 'Non merci' },
+    stripDetails: 'Détails'
+  },
   intro: introFr,
   connectors: {
     title: 'Connectez vos applications',
@@ -492,6 +529,10 @@ export const frOverrides = {
     backendOutOfDateTitle: 'Backend obsolète',
     backendOutOfDateMessage:
       'Votre backend Hermes est plus ancien que cette version du desktop et peut ne pas fonctionner correctement. Mettez-le à jour pour les aligner.',
+    desktopOutOfDateTitle: 'Application Hermes obsolète',
+    desktopOutOfDateMessage:
+      "Cette application Hermes est plus ancienne que le backend auquel elle est connectée et peut ne pas fonctionner correctement. Effectuez la mise à jour de l'application pour les aligner.",
+    updateDesktopApp: "Mettre à jour l'application",
     installMethodUnsupportedTitle: "Méthode d'installation non prise en charge",
     updateHermes: 'Mettre à jour Hermes',
     updateReadyTitle: 'Mise à jour prête',
@@ -680,6 +721,8 @@ export const frOverrides = {
       'composer.focus': 'Mettre le focus sur le compositeur',
       'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
       'composer.voice': 'Démarrer / arrêter la conversation vocale',
+      'composer.reasoningUp': 'Augmenter le niveau de raisonnement',
+      'composer.reasoningDown': 'Réduire le niveau de raisonnement',
       'view.toggleSidebar': 'Basculer la barre latérale des sessions',
       'view.cycleSidebarGrouping': 'Changer le regroupement des sessions',
       'view.toggleRightSidebar': "Basculer l'explorateur de fichiers",
@@ -689,7 +732,7 @@ export const frOverrides = {
       'view.toggleProfileRail': 'Afficher ou masquer la barre des profils',
       'view.toggleSimpleMode': 'Activer ou désactiver le mode simple',
       'view.showFiles': "Afficher l'explorateur de fichiers",
-      'view.showBrowser': 'Ouvrir le navigateur',
+      'view.showBrowser': 'Basculer le navigateur',
       'view.toggleHud': 'Basculer le mode HUD',
       'hud.snapToPointer': 'Déplacer le HUD vers le pointeur (global, lorsque le HUD est ouvert)',
       'view.showTerminal': 'Basculer le terminal',
@@ -706,6 +749,15 @@ export const frOverrides = {
       'view.findInPage': 'Rechercher dans la page',
       'view.findNext': 'Rechercher la correspondance suivante',
       'view.findPrevious': 'Rechercher la correspondance précédente',
+      'view.tabSlot.1': "Basculer vers l'onglet 1",
+      'view.tabSlot.2': "Basculer vers l'onglet 2",
+      'view.tabSlot.3': "Basculer vers l'onglet 3",
+      'view.tabSlot.4': "Basculer vers l'onglet 4",
+      'view.tabSlot.5': "Basculer vers l'onglet 5",
+      'view.tabSlot.6': "Basculer vers l'onglet 6",
+      'view.tabSlot.7': "Basculer vers l'onglet 7",
+      'view.tabSlot.8': "Basculer vers l'onglet 8",
+      'view.tabSlot.9': "Basculer vers l'onglet 9",
       'appearance.toggleMode': 'Basculer clair / sombre',
       'profile.default': 'Basculer vers le profil par défaut',
       'profile.switch.1': 'Basculer vers le profil 1',
@@ -1082,6 +1134,9 @@ export const frOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Taille du texte du chat',
+      chatTextScaleDesc:
+        'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',
       title: 'Apparence',
       intro:
         'Exclusif au desktop. Le mode contrôle la luminosité ; le thème contrôle la palette et le chrome de la conversation.',
@@ -1161,6 +1216,9 @@ export const frOverrides = {
       textDirection: { auto: 'Auto', rtl: 'De droite à gauche', ltr: 'De gauche à droite' },
       introSplashTitle: "Écran d'accueil",
       introSplashDesc: "Le logo et l'invite affichés dans une conversation vide.",
+      modelPricingTitle: 'Tarifs des modèles',
+      modelPricingDesc:
+        "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
       reactionsTitle: 'Réactions aux messages',
       reactionsDesc: 'Réactions emoji façon iMessage — réagissez aux messages, et Hermes peut réagir aux vôtres.',
       tipsTitle: "Astuces dans l'application",
@@ -1172,7 +1230,11 @@ export const frOverrides = {
       toursDesc:
         "Laissez Hermes vous guider dans l'application en assombrissant l'écran et en mettant chaque étape en évidence.",
       composerPopoutTitle: 'Détacher la zone de saisie',
-      composerPopoutDesc: "Autoriser la zone de saisie à s'ouvrir dans une fenêtre flottante distincte.",
+      composerPopoutDesc:
+        'Permet de faire glisser la zone de saisie hors de son emplacement. Désactivé, elle reste ancrée en bas.',
+      fileBrowserTitle: 'Navigateur de fichiers',
+      fileBrowserDesc:
+        "Affiche le navigateur de fichiers à côté du chat lorsqu'un espace de travail est ouvert. Le bouton de la barre de titre modifie aussi ce réglage.",
       vibeHeartsTitle: "Cœurs d'ambiance",
       vibeHeartsDesc:
         "Des cœurs flottants apparaissent lorsque vous dites merci, « je t'aime », « good bot » ou envoyez un cœur. Cette option est indépendante des réactions aux messages ci-dessus.",
@@ -2040,6 +2102,8 @@ export const frOverrides = {
       provider: 'Fournisseur',
       model: 'Modèle',
       applying: 'Application...',
+      mainAppliedTitle: 'Modèle principal mis à jour',
+      mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,
       defaultsLabel: 'Par défaut',
       reasoning: 'Raisonnement',
       reasoningOff: 'Désactivé',
@@ -2052,6 +2116,7 @@ export const frOverrides = {
       restartFailed: 'Impossible de redémarrer le backend',
       auxiliaryTitle: 'Modèles auxiliaires',
       resetAllToMain: 'Tout réinitialiser au principal',
+      staleAuxDismiss: 'Ne plus afficher',
       auxiliaryDesc:
         "Les tâches d'assistance s'exécutent sur le modèle principal par défaut. Attribuez un modèle dédié à toute tâche pour remplacer.",
       setToMain: 'Définir comme principal',
@@ -2793,11 +2858,16 @@ export const frOverrides = {
       emptyHint: 'Parcourez le catalogue ci-dessous pour installer un plugin vérifié en un clic.',
       loadFailed: "Impossible de charger les plugins de l'agent",
       toggleFailed: name => `Impossible de modifier l'état de ${name}`,
+      toolsetOn: (name: string, profile: string) => `Outils agent de ${name} activés pour ${profile}`,
+      toolsetOff: (name: string, profile: string) => `Outils agent de ${name} désactivés pour ${profile}`,
+      toolsetToggleFailed: (name: string) =>
+        `Impossible de modifier les outils agent de ${name} ; le panneau Desktop reste inchangé`,
       legacyBackend: 'Ce backend est trop ancien pour gérer les plugins depuis cet écran ; mettez Hermes à jour.',
       portableBadge: 'portable',
       serverStates: {
         connected: 'connecté',
         app_not_running: 'application non lancée',
+        hermes_not_connected: 'connexion MCP manquante',
         endpoint_unavailable: 'point de terminaison indisponible',
         no_interactive_session: 'aucune session interactive',
         version_too_old: 'version trop ancienne',
@@ -3070,12 +3140,6 @@ export const frOverrides = {
       system: 'Système',
       usage: 'Utilisation'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnostiques, sauvegardes, curateur et données de mémoire',
-      sessions: 'Rechercher et gérer les sessions',
-      system: 'État, journaux et actions système',
-      usage: 'Activité des jetons, coûts et skills au fil du temps'
-    },
     nav: {
       newChat: {
         title: 'Nouvelle session',
@@ -3126,7 +3190,8 @@ export const frOverrides = {
     gatewayStopped: 'Gateway de messagerie arrêté',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Sessions actives ${count}`,
     restartGateway: 'Redémarrer le gateway',
-    openBrowser: 'Ouvrir le navigateur',
+    openBrowser: 'Basculer le navigateur',
+    toggleBrowser: 'Basculer le navigateur',
     gatewayRestartFailed: 'Échec du redémarrage du gateway.',
     sharedGatewayRestartTitle: 'Redémarrer le gateway partagé ?',
     sharedGatewayRestartDescription: bots => `Tous les bots de cet appareil se reconnecteront : ${bots}`,
@@ -3161,7 +3226,7 @@ export const frOverrides = {
     actions: count => `${count} actions`,
     logFile: 'Fichier journal',
     logLevel: 'Niveau',
-    logSearchPlaceholder: 'Filtrer les lignes du journal...',
+    logSearchPlaceholder: 'Rechercher dans les journaux…',
     maintenance: {
       runOps: 'Diagnostiques',
       doctor: 'Exécuter le diagnostic',
@@ -3210,6 +3275,13 @@ export const frOverrides = {
   },
   messaging: {
     search: 'Rechercher dans la messagerie...',
+    statusFilter: {
+      all: 'Tous',
+      bad: 'Erreurs',
+      good: 'Connectés',
+      muted: 'Inactifs',
+      warn: 'Attention requise'
+    },
     loading: 'Chargement des plateformes de messagerie...',
     loadFailed: 'Échec du chargement des plateformes de messagerie',
     states: {
@@ -3778,6 +3850,8 @@ export const frOverrides = {
     nameLabel: 'Nom',
     namePlaceholder: 'Point du matin',
     promptLabel: 'Invite',
+    scriptLabel: 'Script',
+    scriptBadge: 'script',
     promptPlaceholder: 'Résumez mes fils Slack non lus et envoyez-moi les 5 principaux par email...',
     frequencyLabel: 'Fréquence',
     deliverLabel: 'Livrer vers',
@@ -4065,6 +4139,7 @@ export const frOverrides = {
       backgroundRunning: 'Tâche en arrière-plan en cours',
       draftSession: 'Brouillon — aucun message envoyé',
       handoffOrigin: platform => `Transférée depuis ${platform}`,
+      continuationOrigin: 'Continuation automatique — cette conversation a été compressée puis poursuivie',
       ownedByProfile: profile => `Profil : ${profile}`,
       renamed: 'Renommée',
       renameFailed: 'Échec du renommage',
@@ -4266,6 +4341,8 @@ export const frOverrides = {
     restoredDraftNotice: 'Votre message non envoyé a été restauré',
     restoredDraftUndo: 'Annuler',
     queueEdit: 'Modifier',
+    queueExpand: 'Déplier',
+    queueCollapse: 'Replier',
     queueSendNext: 'Suivant',
     queueSteer: 'Diriger — réorienter maintenant le tour en cours',
     queueSend: 'Envoyer',
@@ -4275,6 +4352,9 @@ export const frOverrides = {
     queueStuckTitle: "Message en file d'attente non envoyé",
     queueStuckBody:
       "Un tour en file d'attente a continué à échouer lors de l'envoi. Il est toujours en file d'attente — essayez de l'envoyer à nouveau.",
+    queueDroppedTitle: "Élément en file d'attente abandonné",
+    queueDroppedBody:
+      "Cette entrée d'arrière-plan a été abandonnée car sa session n'a pas pu être reprise après plusieurs tentatives. Le reste de la file d'attente est inchangé.",
     previewUnavailable: 'Aperçu indisponible',
     previewLabel: label => `Aperçu ${label}`,
     couldNotPreview: label => `Impossible d'apercevoir ${label}`,
@@ -4368,6 +4448,7 @@ export const frOverrides = {
     goalWaiting: 'Objectif en attente',
     subagents: count => `${count} sous-agent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tâches ${done}/${total}`,
+    previousTodos: (done, total) => `Tâches précédentes ${done}/${total}`,
     running: 'En cours',
     stop: 'Arrêter',
     dismiss: 'Rejeter',
@@ -4456,7 +4537,8 @@ export const frOverrides = {
       copyFailure: 'Impossible de copier le critère dans le presse-papiers',
       continuationFailed: "Impossible de soumettre la poursuite de l'objectif",
       continuationQueued: 'Objectif repris — poursuite en attente de la fin du tour actuel',
-      continuationBusy: 'Objectif repris — session occupée, utilisez /interrupt pour poursuivre',
+      continuationBusy:
+        "Objectif repris — session occupée, arrêtez d'abord la réponse en cours (bouton Stop ou Échap) pour poursuivre",
       controlUnavailable: msg => `Commandes de session indisponibles : ${msg}`,
       dismissError: "Masquer l'erreur",
       add: 'Ajouter'
@@ -4512,19 +4594,25 @@ export const frOverrides = {
   },
   updates: {
     discontinuedTitle: "Cette version de Hermes n'est plus prise en charge",
-    discontinuedBody: "Cette version de Hermes n'est plus prise en charge et risque de ne plus fonctionner — désinstallez-la. Vos données restent sur le disque.",
+    discontinuedBody:
+      "Cette version de Hermes n'est plus prise en charge et risque de ne plus fonctionner — désinstallez-la. Vos données restent sur le disque.",
     channels: { stable: 'Stable', canary: 'Canary' },
     appName: 'Hermes',
     availableBodyRelease: tag => `La version ${tag} est prête à être installée.`,
     releaseAvailable: tag => `La version ${tag} est disponible.`,
     checkingShort: 'Vérification…',
-    availableBodyAppInstaller: "Une nouvelle version de Hermes est prête. Hermes va se fermer, Windows terminera la mise à jour, puis Hermes rouvrira automatiquement.",
-    applyingBodyAppInstaller: "Hermes va se fermer et Windows terminera la mise à jour. Hermes rouvrira ensuite automatiquement — vous n'avez rien à faire.",
-    applyingCloseAppInstaller: 'Cette fenêtre va se fermer, Windows terminera la mise à jour et Hermes rouvrira automatiquement.',
+    availableBodyAppInstaller:
+      'Une nouvelle version de Hermes est prête. Hermes va se fermer, Windows terminera la mise à jour, puis Hermes rouvrira automatiquement.',
+    applyingBodyAppInstaller:
+      "Hermes va se fermer et Windows terminera la mise à jour. Hermes rouvrira ensuite automatiquement — vous n'avez rien à faire.",
+    applyingCloseAppInstaller:
+      'Cette fenêtre va se fermer, Windows terminera la mise à jour et Hermes rouvrira automatiquement.',
     checkUnknownTitleAppInstaller: 'Impossible de vérifier les mises à jour',
-    checkUnknownBodyAppInstaller: "Windows n'a pas pu rechercher les mises à jour. Elles s'installent également automatiquement au redémarrage de Hermes.",
+    checkUnknownBodyAppInstaller:
+      "Windows n'a pas pu rechercher les mises à jour. Elles s'installent également automatiquement au redémarrage de Hermes.",
     versionDetailsTitle: 'Détails de la version',
-    versionDetailsBody: "Cette installation est gérée hors de l'application. Mettez-la à jour de la même manière que vous l'avez installée.",
+    versionDetailsBody:
+      "Cette installation est gérée hors de l'application. Mettez-la à jour de la même manière que vous l'avez installée.",
     versionDetailsVersion: 'Version',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origine de la compilation',
@@ -4546,11 +4634,11 @@ export const frOverrides = {
     versionUnavailable: 'Version indisponible',
     bundleOutOfSync: "Version de l'application obsolète",
     bundleOutOfSyncDesc:
-        "Le runtime Hermes a été mis à jour, mais l'application Desktop utilise encore une ancienne version. Les nouvelles fonctions de l'interface, comme le mode Bot, resteront absentes jusqu'à sa mise à jour. Lancez la mise à jour ci-dessous pour reconstruire l'application. Si cet avertissement persiste, réinstallez-la avec le dernier installateur Desktop.",
+      "Le runtime Hermes a été mis à jour, mais l'application Desktop utilise encore une ancienne version. Les nouvelles fonctions de l'interface, comme le mode Bot, resteront absentes jusqu'à sa mise à jour. Lancez la mise à jour ci-dessous pour reconstruire l'application. Si cet avertissement persiste, réinstallez-la avec le dernier installateur Desktop.",
     bundleOutOfSyncAction: "Obtenir l'installateur",
     bundleSwapPending: 'Redémarrez pour terminer la mise à jour',
     bundleSwapPendingDesc:
-        "L'application mise à jour est déjà installée — Hermes doit seulement redémarrer pour la charger. Vos conversations et paramètres sont préservés.",
+      "L'application mise à jour est déjà installée — Hermes doit seulement redémarrer pour la charger. Vos conversations et paramètres sont préservés.",
     bundleSwapPendingAction: 'Redémarrer Hermes',
     checkNow: 'Vérifier maintenant',
     seeWhatsNew: 'Voir les nouveautés',
@@ -4604,10 +4692,15 @@ export const frOverrides = {
     maybeLater: 'Peut-être plus tard',
     moreChanges: count =>
       `+ ${count} ${count === 1 ? 'changement supplémentaire inclus' : 'changements supplémentaires inclus'}.`,
+    copyFullLog: 'Copier le journal complet des modifications',
     manualTitle: 'Mise à jour depuis votre terminal',
+    manualUnavailableTitle: 'Mise à jour impossible ici',
     manualBody:
       "Vous avez installé Hermes depuis la ligne de commande, les mises à jour s'y effectuent donc aussi. Collez ceci dans votre terminal :",
     manualPickedUp: 'Hermes prendra en compte la nouvelle version au prochain lancement.',
+    manualBodyBackend:
+      'Le backend Hermes est géré en dehors de cette app. Exécutez ceci sur le serveur qui l’héberge :',
+    manualPickedUpBackend: 'Le backend chargera la nouvelle version une fois la mise à jour terminée.',
     guiSkewTitle: "Mettre à jour l'application de bureau",
     guiSkewBody:
       "Le backend a été mis à jour, mais ce package d'application de bureau ne l'a pas été. Mettez à jour ou réinstallez l'application de bureau Hermes (votre AppImage / .deb / .rpm) pour qu'elle corresponde.",
@@ -4804,6 +4897,7 @@ export const frOverrides = {
     replaceCurrent: 'Remplacer la valeur actuelle',
     pasteApiKey: 'Collez votre clé API',
     localApiKeyPlaceholder: 'Clé API (facultatif — uniquement si votre point de terminaison en requiert une)',
+    localModelNamePlaceholder: 'Nom du modèle (ex. command-a-plus-05-2026)',
     couldNotSave: "Impossible d'enregistrer l'identifiant.",
     connecting: 'Connexion',
     update: 'Mettre à jour',
@@ -4947,7 +5041,12 @@ export const frOverrides = {
     noAuthenticatedProviders: 'Aucun fournisseur authentifié.',
     addProvider: 'Ajouter un fournisseur…',
     addCustomModel: 'Ajouter un modèle personnalisé',
-    removeCustomModel: 'Retirer le modèle personnalisé'
+    removeCustomModel: 'Retirer le modèle personnalisé',
+    resetToDefaults: 'Rétablir les valeurs par défaut',
+    resetConfirm: 'Rétablir la visibilité des modèles par défaut ?',
+    resetDescription:
+      'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
+    resetAction: 'Rétablir'
   },
   shell: {
     windowControls: 'Contrôles de fenêtre',
@@ -4957,8 +5056,17 @@ export const frOverrides = {
       search: 'Rechercher des modèles',
       noModels: 'Aucun modèle trouvé',
       editModels: 'Modifier les modèles…',
+      followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
-      fast: 'Rapide'
+      favorites: 'Favoris',
+      addFavorite: 'Ajouter aux favoris',
+      removeFavorite: 'Retirer des favoris',
+      favoriteShortcut: '⇧ Clic',
+      fast: 'Rapide',
+      free: 'gratuit',
+      cacheRead: 'lecture en cache',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',
@@ -5280,6 +5388,7 @@ export const frOverrides = {
     hideTabStrip: 'Masquer les onglets',
     showStripTab: title => `Afficher ${title}`,
     hideStripTab: title => `Masquer ${title}`,
+    zoneMenuLabel: title => `Options de zone pour ${title}`,
     lastTabKeptTitle: 'Le dernier onglet reste affiché',
     lastTabKeptBody:
       "Cette zone doit conserver au moins un onglet visible. Affichez d'abord un autre onglet ou repliez toute la barre latérale.",
@@ -5436,8 +5545,13 @@ export const frOverrides = {
             `${provider} a renvoyé une erreur serveur. Réessayez dans un instant ou changez de fournisseur.`
         },
         timeout: {
-          title: 'Délai de réponse dépassé',
-          body: provider => `${provider} n'a pas répondu à temps. Réessayez pour renvoyer le message.`
+          title: 'Service d’IA injoignable',
+          body: provider =>
+            `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
+        },
+        no_reply: {
+          title: "La réponse n'a pas abouti",
+          body: 'Hermes a terminé ce tour sans réponse. Réessayez pour la renvoyer.'
         },
         stream_drop: {
           title: 'La réponse a été interrompue',
@@ -5574,6 +5688,8 @@ export const frOverrides = {
       preparingAudio: "Préparation de l'audio…",
       stopReading: 'Arrêter la lecture',
       readAloud: 'Lire à voix haute',
+      copyFullResponse: 'Copier la réponse complète',
+      readAloudFullResponseHint: 'Maj+clic : lire la réponse complète',
       editMessage: 'Modifier le message',
       expandMessage: 'Développer le message',
       scrollToBottom: 'Défiler vers le bas',
@@ -5618,14 +5734,11 @@ export const frOverrides = {
       placeholder: 'Saisissez votre réponse…',
       skip: 'Passer',
       skipped: 'Ignoré',
-      continueLabel: 'Continuer',
+      noAnswer: 'Pas de réponse',
       confirmAndContinueLabel: 'Confirmer et continuer',
-      answeredBadge: 'Répondu',
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
-      lateAnswer: (question, choice) => `Re : « ${question} » — ma réponse : ${choice}`,
-      lateAnswerTip: 'Rédiger cette réponse comme message de suivi',
-      lateAnswerHint:
-        "Cette invite n'attend plus de réponse. Choisissez une option pour la rédiger comme message de suivi."
+      notDelivered:
+        "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
     },
     catalogInstall: {
       preparing: 'Préparation de l’installation…',
@@ -6062,6 +6175,11 @@ export const frOverrides = {
   ui: {
     search: {
       clear: 'Effacer la recherche'
+    },
+    logs: {
+      bottom: 'Aller à la fin',
+      search: 'Rechercher dans les journaux…',
+      top: 'Aller au début'
     },
     pagination: {
       label: 'pagination',

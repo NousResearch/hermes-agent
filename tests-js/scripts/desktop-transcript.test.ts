@@ -16,6 +16,7 @@ function transcript(legacy: boolean): TranscriptFixture {
   user.dataset.slot = 'aui_user-message-root'
   user.dataset.role = 'user'
   user.textContent = 'new checkpoint nonce'
+
   // v2026.6.19 StickyHumanMessageContainer drops MessagePrimitive.Root's ID.
   if (!legacy) { user.dataset.messageId = 'new-user' }
   const assistant = document.createElement('div')
@@ -23,6 +24,7 @@ function transcript(legacy: boolean): TranscriptFixture {
   assistant.dataset.messageId = 'new-assistant'
   assistant.textContent = MOCK_REPLY
   viewport.append(user, assistant)
+
   return { viewport, user, assistant }
 }
 
@@ -33,6 +35,7 @@ test('historical and current user bubbles retain ordered fresh-turn proof', (): 
     const pair = newCompletedPair(read(), [], 'new checkpoint nonce')
     expect(pair?.user.text).toBe(user.textContent)
     expect(pair?.assistant.id).toBe('new-assistant')
+
     if (legacy) {
       expect(pair?.user.id).toBe(`legacy-user-text:${user.textContent}`)
       expect(pair?.user.idSource).toBe('legacy-user-text')
@@ -40,11 +43,13 @@ test('historical and current user bubbles retain ordered fresh-turn proof', (): 
       expect(pair?.user.id).toBe('new-user')
       expect(pair?.user.idSource).toBeUndefined()
     }
+
     // Remounting preserved history cannot turn it into a new checkpoint.
     const before = read().map((message: TranscriptMessage): string => message.id)
     const remounted = transcript(legacy)
     expect(newCompletedPair(transcriptMessages([remounted.viewport]), before, 'new checkpoint nonce')).toBeNull()
     user.textContent = 'next checkpoint nonce'
+
     if (!legacy) { user.dataset.messageId = 'next-user' }
     // A fresh user still cannot reuse the previous assistant's real ID.
     expect(newCompletedPair(read(), before, 'next checkpoint nonce')).toBeNull()

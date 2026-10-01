@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 
 
@@ -358,7 +359,7 @@ class TestHistoryDisplay:
         cli._handle_resume_command("/resume")
         output = capsys.readouterr().out
 
-        assert "Recent sessions" in output
+        assert t("cli.session.recent_header") in output
         assert "Checking Running Hermes Agent" in output
 
 
@@ -389,7 +390,7 @@ class TestHistoryDisplay:
         output = capsys.readouterr().out
 
         assert "Unknown command" not in output
-        assert "Recent sessions" in output
+        assert t("cli.session.recent_header") in output
         assert "Checking Running Hermes Agent" in output
         assert "20260401_201329_d85961" in output
 
@@ -780,3 +781,19 @@ class TestPluginToolsetStartupValidation:
 
 
 
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        ({"OPENROUTER_API_KEY": "", "OPENAI_API_KEY": "fake-openai-project-key"}, ""),
+        ({"OPENROUTER_API_KEY": "", "OPENAI_API_KEY": "sk-or-v1-fake-in-openai-var"}, "sk-or-v1-fake-in-openai-var"),
+        ({"OPENROUTER_API_KEY": "sk-or-v1-fake-router", "OPENAI_API_KEY": "fake-openai-project-key"}, "sk-or-v1-fake-router"),
+    ],
+    ids=["real-openai-key-not-seeded", "sk-or-in-openai-var", "openrouter-key-wins"],
+)
+def test_openrouter_startup_key_never_holds_a_real_openai_key(env, expected):
+    # The startup key can reach /model before the first turn resolves runtime,
+    # so it must already follow the sk-or- gate for openrouter.ai.
+    cli = _make_cli(env_overrides=env)
+    assert (cli.api_key or "") == expected

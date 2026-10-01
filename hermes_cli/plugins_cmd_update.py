@@ -39,7 +39,7 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
             raise _pc().PluginOperationError(not_git_msg())
         if before_pull is not None:
             before_pull()
-        return _reclone_plugin_update(source, install_record.get("revision"))
+        return _reclone_plugin_update(target, source, install_record.get("revision"))
     if before_pull is not None:
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
@@ -47,12 +47,19 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
     return update_plugin(target, interactive=interactive)
 
 
-def _reclone_plugin_update(source: str, previous_revision: object) -> str:
-    """Update a plugin whose tree is not a git checkout: a subdirectory install ships only
-    ``<clone>/<subdir>``, so the ``.git`` stays in the temp clone (#65314). Re-run the install
-    from the recorded source (same URL, same subdir) and swap the fresh tree in; the metadata
-    revision is rewritten by the installer. Returns pull-shaped output for the callers."""
-    new_target, _manifest, _name = _pc()._install_plugin_core(source, force=True)
+def _reclone_plugin_update(target: Path, source: str, previous_revision: object) -> str:
+    """Update a subdirectory install by re-cloning its source and atomically replacing the tree.
+
+    These installs carry no local ``.git``, so the staged replacement also carries user-owned
+    config/data from *target* before publication instead of silently deleting it (#122006).
+    """
+    from hermes_cli.plugins_cmd_catalog import _carry_user_files
+
+    new_target, _manifest, _name = _pc()._install_plugin_core(
+        source,
+        force=True,
+        before_swap=lambda _manifest, tree: _carry_user_files(target, tree, None),
+    )
     revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
     previous = previous_revision if isinstance(previous_revision, str) else ""
     if revision and revision == previous:

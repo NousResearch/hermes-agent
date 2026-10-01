@@ -154,10 +154,12 @@ class ToolCallGuardrailConfig:
 
 @dataclass(frozen=True)
 class IdenticalCallObservation:
-    """``notice`` is appended after the result, ``stub`` replaces a byte-identical duplicate result."""
+    """``notice`` is appended after the result, ``stub`` replaces a byte-identical duplicate result;
+    ``kind`` names the detector behind the notice (``identical_call_streak`` / ``identical_cycle``)."""
 
     notice: str | None = None
     stub: str | None = None
+    kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -422,7 +424,7 @@ class ToolCallGuardrailController:
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
-        result_hash = _result_hash(result)
+        result_hash = _result_hash(result, tool_name)
         previous = self._no_progress.get(signature)
         repeat_count = previous[1] + 1 if previous is not None and previous[0] == result_hash else 1
         self._no_progress[signature] = (result_hash, repeat_count)
@@ -446,7 +448,7 @@ class ToolCallGuardrailController:
         """
         is_plain_str = isinstance(result, str)
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
-        result_hash = _result_hash(result) if is_plain_str else ""
+        result_hash = _result_hash(result, tool_name) if is_plain_str else ""
 
         if is_plain_str and (signature, result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
             self._identical_streak_count += 1
@@ -458,9 +460,9 @@ class ToolCallGuardrailController:
             self._identical_streak_first_call_id = tool_call_id or ""
         count = self._identical_streak_count
 
-        notice = None
+        notice = kind = None
         if not is_stall_guard_repeatable(tool_name) and count >= STALL_GUARD_IDENTICAL_CALL_THRESHOLD:
-            notice = _IDENTICAL_CALL_NOTICE.format(ordinal=_ordinal(count), tool_name=tool_name)
+            notice, kind = _IDENTICAL_CALL_NOTICE.format(ordinal=_ordinal(count), tool_name=tool_name), "identical_call_streak"
             # The no-progress BLOCK in before_call only covers idempotent_tools; this streak
             # is tool-agnostic, so with hard stops on, halt at the same threshold (a model
             # replaying a successful `terminal` call otherwise runs to the budget).
@@ -477,14 +479,14 @@ class ToolCallGuardrailController:
             cycle = self._detect_identical_cycle()
             if cycle is not None:
                 period, laps = cycle
-                notice = _IDENTICAL_CYCLE_NOTICE.format(count=laps, period=period, tool_name=tool_name)
+                notice, kind = _IDENTICAL_CYCLE_NOTICE.format(count=laps, period=period, tool_name=tool_name), "identical_cycle"
                 if self.config.hard_stop_enabled and laps >= self.config.no_progress_block_after and self._halt_decision is None:
                     self._decide("halt", "identical_cycle_halt", tool_name, laps, signature, period=period)
 
         stub = None
         if is_plain_str and count >= 2 and not failed and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS:
             stub = self._build_result_reference_stub(tool_name, args)
-        return IdenticalCallObservation(notice=notice, stub=stub)
+        return IdenticalCallObservation(notice=notice, stub=stub, kind=kind)
 
     def _detect_identical_cycle(self) -> tuple[int, int] | None:
         """Detect a repeating identical-call cycle ending at the latest observed call.
@@ -600,9 +602,28 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
 
 
-def _result_hash(result: str | None) -> str:
+# execute_code reports per-call kernel bookkeeping — a running `kernel.execution_count` and wall-clock
+# `duration_seconds` — that changes on every invocation even when the code did the same thing. Hashed
+# as-is, every replay of an identical empty probe looks new and the identical-call streak never forms
+# (a model re-ran one empty execute_code call 147 times unflagged). Only these known locations in
+# execute_code's own result shape are dropped: for any other tool the same key names can be real output.
+def _without_execute_code_metadata(parsed: Any) -> Any:
+    if not isinstance(parsed, dict):
+        return parsed
+    cleaned = {k: v for k, v in parsed.items() if k != "duration_seconds"}
+    kernel = cleaned.get("kernel")
+    if isinstance(kernel, dict):
+        cleaned["kernel"] = {k: v for k, v in kernel.items() if k != "execution_count"}
+    return cleaned
+
+
+def _result_hash(result: str | None, tool_name: str = "") -> str:
     parsed = safe_json_loads(result or "")
-    return _sha256(_canonical_json(parsed) if parsed is not None else (result or ""))
+    if parsed is None:
+        return _sha256(result or "")
+    if tool_name == "execute_code":
+        parsed = _without_execute_code_metadata(parsed)
+    return _sha256(_canonical_json(parsed))
 
 
 _BOOL_WORDS = {w: True for w in ("1", "true", "yes", "on", "enabled")} | {w: False for w in ("0", "false", "no", "off", "disabled")}

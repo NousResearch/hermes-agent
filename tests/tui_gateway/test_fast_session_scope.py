@@ -121,3 +121,44 @@ class TestConfigGetFastSessionScope:
         with patch.dict(server._sessions, {"s6": session}, clear=False):
             resp = _get({"key": "fast", "session_id": "s6"})
         assert resp["result"]["value"] == "fast"
+
+
+class TestSessionInfoFastFollowsTheRoute:
+    """``session.info`` reports Fast only where the priority tier reaches the wire. A profile-wide
+    ``service_tier: fast`` on a local model sends nothing, so the Fast switch and label stay hidden."""
+
+    @staticmethod
+    def _info(**agent_fields) -> dict:
+        agent = SimpleNamespace(**{
+            "reasoning_config": None, "service_tier": "priority", "request_overrides": {},
+            "session_id": "sess-key", "api_mode": "chat_completions", **agent_fields,
+        })
+        return server._session_info(agent, {"session_key": "k7", "agent": agent})
+
+    def test_first_party_route_reports_fast(self) -> None:
+        info = self._info(model="gpt-5.4", provider="openai", base_url="https://api.openai.com/v1")
+        assert (info["service_tier"], info["fast"]) == ("priority", True)
+
+    def test_anthropic_route_reads_the_anthropic_base_url(self) -> None:
+        info = self._info(model="claude-opus-5", provider="anthropic", api_mode="anthropic_messages",
+                          base_url="", _anthropic_base_url="https://api.anthropic.com")
+        assert info["fast"] is True
+
+    def test_local_model_keeps_the_tier_but_reports_no_fast(self) -> None:
+        info = self._info(model="Qwen3.8-27B-UD-Q4_K_M", provider="llamacpp", base_url="http://127.0.0.1:18434/v1")
+        assert (info["service_tier"], info["fast"]) == ("priority", False)
+
+    def test_fast_capable_model_behind_a_proxy_reports_no_fast(self) -> None:
+        info = self._info(model="gpt-5.4", provider="openrouter", base_url="https://openrouter.ai/api/v1")
+        assert info["fast"] is False
+
+    def test_pending_switch_is_judged_by_the_new_route(self) -> None:
+        """Mid-turn the agent still holds the old base URL; the pending pick decides."""
+        agent = SimpleNamespace(
+            reasoning_config=None, service_tier="priority", request_overrides={}, session_id="sess-key",
+            api_mode="chat_completions", model="gpt-5.4", provider="openai", base_url="https://api.openai.com/v1")
+        session = {"session_key": "k8", "agent": agent, "pending_model_switch": {
+            "display_model": "Qwen3.8-27B-UD-Q4_K_M", "display_provider": "llamacpp"}}
+        assert server._session_info(agent, session)["fast"] is False
+        session["pending_model_switch"] = {"display_model": "claude-opus-5", "display_provider": "anthropic"}
+        assert server._session_info(agent, session)["fast"] is True

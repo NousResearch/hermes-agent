@@ -24,6 +24,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { RELAY_DELIVER_TIMEOUT_MS } from './relay-budget'
 import type { ProfileRoute } from './types'
 
 const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
@@ -34,6 +35,7 @@ const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } 
       get: () => {
         try {
           const raw = window.localStorage.getItem('hermes.desktop.pluginDecisions.v2')
+
           return raw ? (JSON.parse(raw) as Record<string, boolean>) : {}
         } catch {
           return {}
@@ -70,11 +72,15 @@ vi.mock('./data', () => ({
 const RELAY_PUSH_DEBOUNCE_MS = 250
 const RELAY_DRAIN_INTERVAL_MS = 30_000
 
-const route = (id: string): ProfileRoute => ({
+const route = (
+  id: string,
+  options: { mode?: ProfileRoute['mode']; primary?: true; profile?: string } = {}
+): ProfileRoute => ({
   connectionId: id,
-  mode: 'remote',
-  profile: 'default',
-  targetProfile: 'default'
+  mode: options.mode ?? 'remote',
+  ...(options.primary === true ? { primary: true } : {}),
+  profile: options.profile ?? 'default',
+  targetProfile: options.profile ?? 'default'
 })
 
 /** Every RPC through one table, recording what each connection was asked. */
@@ -357,6 +363,66 @@ describe('the 30s drain does not open a gateway socket with nothing to deliver (
 })
 
 describe('relay-route socket retention (#93594)', () => {
+  it('does not poll or retain the non-primary local source of a remote-primary Desktop', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [
+      route('remote-primary', { primary: true }),
+      route('remote-primary', { primary: true, profile: 'research' }),
+      route('local', { mode: 'local' }),
+      route('local', { mode: 'local', profile: 'research' })
+    ])
+    const pins = trackRetention()
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    await pushAndSettle()
+
+    // Only the sole remaining connection's one-time roster clear goes out; the local source is never polled.
+    expect(calls).toEqual([{ connectionId: 'remote-primary', method: 'bot_relay.roster.sync', params: { agents: [] } }])
+    expect(pins).toHaveLength(0)
+
+    stopBotRelay()
+  })
+
+  it('preserves local-primary, multi-remote, and fail-open peer sets', async () => {
+    for (const routes of [
+      [route('local', { mode: 'local', primary: true }), route('remote-peer')],
+      [route('remote-primary', { primary: true }), route('remote-peer')],
+      [route('remote-primary'), route('local', { mode: 'local' })],
+      [route('remote-primary', { primary: true }), route('local', { mode: 'local', primary: true })],
+      [
+        route('remote-primary', { primary: true }),
+        route('remote-primary', { profile: 'research' }),
+        route('local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        route('local', { mode: 'local' }),
+        route('unexpected-local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        { ...route('remote-peer'), primary: false } as unknown as ProfileRoute,
+        route('local', { mode: 'local' })
+      ]
+    ]) {
+      hostMock.profileRoutes = vi.fn(async () => routes)
+      const pins = trackRetention()
+      const calls = respondWith(() => ({ envelopes: [] }))
+      const { startBotRelay, stopBotRelay } = await loadRelay()
+
+      startBotRelay()
+      await vi.advanceTimersByTimeAsync(0)
+      await pushAndSettle()
+
+      expect(new Set(calls.map(call => call.connectionId))).toEqual(new Set(routes.map(item => item.connectionId)))
+      expect(pins.map(pin => pin.route.connectionId)).toEqual([...new Set(routes.map(item => item.connectionId))])
+
+      stopBotRelay()
+    }
+  })
+
   it('pins each connection ONCE across many drain ticks', async () => {
     const pins = trackRetention()
 
@@ -644,6 +710,13 @@ describe('the drain loop wires drain → deliver → reply', () => {
       connectionId: 'b',
       params: { message: 'status?', profile: 'ops' }
     })
+
+    // #93911: the deliver deadline must outlive the backend's own turn bound.
+    const deliverCall = (hostMock.requestProfile as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([, method]) => method === 'bot_relay.deliver'
+    )
+
+    expect(deliverCall?.[3]).toBe(RELAY_DELIVER_TIMEOUT_MS)
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',
       params: { id: 'env-1', reply: 'all green' }

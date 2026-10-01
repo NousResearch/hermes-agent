@@ -170,7 +170,6 @@ export const uk = defineLocale({
     muteHaptics: 'Вимкнути тактильний відгук',
     unmuteHaptics: 'Увімкнути тактильний відгук',
     openSettings: 'Відкрити налаштування',
-    openKeybinds: 'Клавіатурні скорочення'
   },
 
   keybinds: {
@@ -656,7 +655,6 @@ export const uk = defineLocale({
       envOverride: 'перевизначення env',
       intro:
         'Hermes Desktop запускає власний локальний шлюз за замовчуванням. Використовуйте віддалений шлюз коли хочете керувати вже запущеним Hermes-бекендом на іншій машині. Оберіть профіль нижче для власного віддаленого хоста.',
-      appliesTo: 'Застосовується до',
       envOverrideTitle: 'Змінні середовища керують цією сесією Desktop.',
       envOverrideDesc:
         'Скиньте HERMES_DESKTOP_REMOTE_URL та HERMES_DESKTOP_REMOTE_TOKEN для використання збережених налаштувань нижче.',
@@ -945,11 +943,6 @@ export const uk = defineLocale({
     mcpServers: 'MCP-сервери',
     archivedChats: 'Архівовані чати',
     sections: { sessions: 'Сесії', system: 'Система', usage: 'Використання' },
-    sectionDescriptions: {
-      sessions: 'Пошук та керування сесіями',
-      system: 'Статус, логи та системні дії',
-      usage: 'Токени, вартість та активність навичок'
-    },
     nav: {
       newChat: { title: 'Нова сесія', detail: 'Почати нову сесію' },
       settings: { title: 'Налаштування', detail: 'Налаштувати Hermes Desktop' },
@@ -1857,7 +1850,6 @@ export const uk = defineLocale({
 
   preview: {
     tab: 'Попередній перегляд',
-    closeTab: label => `Закрити ${label}`,
     closePane: 'Закрити панель перегляду',
     loading: 'Завантаження перегляду',
     unavailable: 'Попередній перегляд недоступний',
@@ -1988,7 +1980,6 @@ export const uk = defineLocale({
       placeholder: 'Введіть відповідь…',
       skip: 'Пропустити',
       skipped: 'Пропущено',
-      continueLabel: 'Продовжити'
     },
     tool: {
       copyCode: 'Копіювати код',

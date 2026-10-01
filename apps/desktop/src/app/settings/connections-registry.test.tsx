@@ -133,7 +133,16 @@ describe('ConnectionsRegistrySection', () => {
     fireEvent.change(url, { target: { value: 'https://a.example' } })
     fireEvent.click(screen.getByRole('button', { name: /^(OAuth|Sign in)$/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Sign in with/ }))
-    await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://a.example'))
+    await waitFor(() =>
+      expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://a.example', {
+        connectionId: null,
+        label: 'New gateway',
+        // The draft's kind/authMode ride along: they gate the pre-save cookie
+        // jar in oauth-partition.ts (a cookie-auth remote earns its own jar).
+        authMode: 'oauth',
+        kind: 'remote'
+      })
+    )
     fireEvent.change(url, { target: { value: 'https://b.example' } })
     await act(async (): Promise<void> => pendingLogin.resolve({ connected: true }))
     expect(screen.queryByText('Signed in')).toBeNull()
@@ -209,7 +218,19 @@ describe('ConnectionsRegistrySection', () => {
     // Cloud never takes a pasted token: no token box, a sign-in button instead.
     expect(screen.queryByPlaceholderText('Paste session token')).toBeNull()
     fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
-    await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://team.hermes.cloud'))
+    // The draft identity rides along (#99989): a pre-save sign-in must name the
+    // connection whose jar the login writes into — connectionId null (unset draft)
+    // plus the draft label here. The kind/authMode matter just as much: a CLOUD
+    // draft must sign in on the legacy shared portal jar, which is the jar the
+    // saved cloud entry reads — never a private per-connection jar.
+    await waitFor(() =>
+      expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://team.hermes.cloud', {
+        connectionId: null,
+        label: 'Team cloud',
+        authMode: 'oauth',
+        kind: 'cloud'
+      })
+    )
 
     fireEvent.click(screen.getByText('Save connection').closest('button')!)
 

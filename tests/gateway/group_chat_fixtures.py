@@ -34,7 +34,8 @@ def runner_for(authority, bot):
 
 
 def authority_for(home, db):
-    return SimpleNamespace(db=db, profile_id=str(home), epoch=begin_runtime_epoch(db, instance_id='test'))
+    return SimpleNamespace(db=db, profile_id=str(home), instance_id='test', events={},
+                           epoch=begin_runtime_epoch(db, instance_id='test'))
 
 
 def message(text, *, user='alice', chat='chat-1', chat_type='dm', platform=Platform.TELEGRAM,

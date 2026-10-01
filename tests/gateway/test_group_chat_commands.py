@@ -23,6 +23,10 @@ def setup(tmp_path, monkeypatch):
         service = authority.hosted_room_service = CanonicalHostedRoomService(authority, None)
         status = service.runtime.status
         monkeypatch.setattr(service.runtime, 'status', lambda: {**status(), 'running': True})
+        # Planning Bot turns is the driver's job; these tests stop at the room log and controls.
+        monkeypatch.setattr(service, 'prepare_room', lambda binding: None)
+        service.approvals = []
+        monkeypatch.setattr(service, 'approve', lambda **kw: service.approvals.append(kw) or {'status': 'resolved'})
         bot = Bot()
         runner = runner_for(authority, bot)
         state = SimpleNamespace(db=db, authority=authority, service=service, bot=bot, runner=runner,
@@ -159,3 +163,133 @@ def test_group_runs_while_the_chat_agent_is_busy():
     assert 'group' in GatewayBusySessionMixin._PLAIN_COMMANDS
     command = resolve_command('group')
     assert command.gateway_only and command.busy_policy == 'dispatch'
+
+
+def connected(setup, *, chat_type='dm', chat='chat-1', user='alice'):
+    room(setup, 'mine', 'Research')
+    allow(setup, run(setup, '/group', chat_type=chat_type, chat=chat, user=user))
+    run(setup, '/group', chat_type=chat_type, chat=chat, user=user)
+
+
+def user_events(setup):
+    return [e for e in hosted_rooms.read_events(setup.db.db_path, room_id='mine')['events']
+            if e['kind'] == 'message.user']
+
+
+def test_send_records_the_real_author_once_per_platform_message(setup):
+    connected(setup)
+    reply = run(setup, '/group 1 send Please run the tests\nthen report', message_id='tg-77')
+    assert reply == 'Sent to Group 1. Read the replies with /group 1'
+    assert run(setup, '/group 1 send Please run the tests\nthen report', message_id='tg-77') == reply
+    event, = user_events(setup)
+    assert event['actor'] == {'kind': 'user', 'id': 'telegram:alice', 'display_name': 'Alice via Telegram'}
+    assert event['payload']['text'] == 'Please run the tests\nthen report'
+    assert event['payload']['thread_id'].startswith('messaging-send:')
+    run(setup, '/group 1 send Second', message_id='tg-78')
+    assert len(user_events(setup)) == 2
+    assert 'Write the message after send' in run(setup, '/group 1 send   ')
+    assert 'Write the message after send' in run(setup, '/group 1 send ' + 'x' * 70000)
+
+
+def test_desktop_send_keeps_its_own_author_and_cannot_borrow_one(setup):
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_group_controls import dispatch_group_control
+    from hermes_state_runtime import RuntimeStoreError
+    room(setup, 'mine', 'Research')
+    desktop = AuthorityConnection(setup.authority, object(), {'user_id': 'desktop-user'})
+    setup.service.authorize_room(desktop.actor.subject, 'own', create=True)
+    hosted_rooms.create_room(setup.db.db_path, room_id='own', name='Own', members=MEMBERS,
+                             authority_gateway_id=setup.gateway)
+
+    async def probe():
+        sent = await desktop.dispatch({'id': 1, 'method': 'groups.send', 'params': {
+            'room_id': 'own', 'event_id': 'e1', 'payload': {'text': 'hi', 'thread_id': 't'}}})
+        assert sent['result']['event']['actor'] == {'kind': 'user', 'id': 'desktop'}
+        forged = await desktop.dispatch({'id': 2, 'method': 'groups.send', 'params': {
+            'room_id': 'own', 'event_id': 'e2', 'payload': {'text': 'hi', 'thread_id': 't'},
+            'author': {'kind': 'user', 'id': 'telegram:1'}}})
+        assert forged['error']['message'] == 'invalid_params'
+        for method, author in (('groups.stop', {'kind': 'user', 'id': 'x'}),
+                               ('groups.send', {'kind': 'user', 'id': 'desktop'}),
+                               ('groups.send', {'kind': 'member', 'id': 'ada'})):
+            with pytest.raises(RuntimeStoreError, match='invalid_params'):
+                await dispatch_group_control(desktop, method, {'room_id': 'own'}, author=author)
+    asyncio.run(probe())
+
+
+def test_stop_fences_the_room_and_reports_the_tasks(setup):
+    import time
+    from gateway import hosted_room_driver as tasks
+    connected(setup)
+    tasks.admit_task(setup.db.db_path, tasks.TaskIdentity('mine', 'task-1', 'thread', 'turn'),
+                     payload={'target_profile': 'default', 'target_member_id': 'ada', 'source_event_seq': 1,
+                              'prompt': 'work'}, clock=time.time)
+    assert run(setup, '/group 1 stop', message_id='s1') == 'Stopping work in Group 1 (1 task).'
+    stops = [e for e in hosted_rooms.read_events(setup.db.db_path, room_id='mine')['events']
+             if e['kind'] == 'room.stop_requested']
+    assert len(stops) == 1 and stops[0]['payload']['cancel_id'].startswith('messaging-stop:')
+    assert run(setup, '/group 1 stop', message_id='s2') == 'Nothing was running in Group 1.'
+
+
+def pending(setup, request='req-1', command='rm -rf ./build'):
+    action = {'kind': 'approval', 'task_id': 'task-1', 'execution_generation': 1, 'run_id': None,
+              'session_id': 'session-1', 'request_id': request,
+              'approval': {'kind': 'approval', 'prompt_id': request, 'command': command,
+                           'description': 'delete build output', 'choices': ['once', 'deny']}}
+    setup.service._set_pending_action('mine', 'ada', action)
+    return slash.approval_code({**action, 'member_id': 'ada'})
+
+
+def test_approve_once_and_deny_answer_the_exact_request(setup):
+    connected(setup)
+    code = pending(setup)
+    detail = run(setup, '/group 1')
+    assert 'Idle · 1 approval waiting' in detail
+    assert f'Approval {code} · Ada asks to run:\n```\nrm -rf ./build\n```\ndelete build output' in detail
+    assert f'Answer: /group 1 approve {code} once|deny' in detail
+    assert run(setup, f'/group 1 approve {code} once') == 'Allowed once for Ada.'
+    assert setup.service.approvals == [{'session_id': 'session-1', 'request_id': 'req-1', 'choice': 'once'}]
+    assert 'isn’t waiting any more' in run(setup, f'/group 1 approve {code} once')
+    code = pending(setup, request='req-2')
+    assert run(setup, f'/group 1 APPROVE {code.upper()} Deny') == 'Denied for Ada.'
+    assert setup.service.approvals[-1]['choice'] == 'deny'
+    assert len(setup.service.approvals) == 2
+
+
+def test_a_change_rechecks_access_right_before_dispatch(setup, monkeypatch):
+    connected(setup)
+    code = pending(setup)
+    real = slash.current_grant
+    calls = []
+    monkeypatch.setattr(slash, 'current_grant', lambda *a: calls.append(1) or (real(*a) if len(calls) == 1 else None))
+    assert 'access to Group Chats changed' in run(setup, f'/group 1 approve {code} once')
+    assert setup.service.approvals == []
+
+
+def test_an_unconfirmed_outcome_is_reported_not_retried(setup, monkeypatch):
+    connected(setup)
+    code = pending(setup)
+    monkeypatch.setattr(setup.service, 'approve', lambda **kw: (_ for _ in ()).throw(TimeoutError('secret text')))
+    reply = run(setup, f'/group 1 approve {code} once')
+    assert 'couldn’t confirm whether that worked' in reply and 'secret' not in reply
+
+
+def test_shared_chat_controls_need_the_group_admin_list(setup):
+    connected(setup, chat_type='group', chat='team', user='bob')
+    assert 'Sent to Group 1' in run(setup, '/group 1 send hi', chat_type='group', chat='team', user='bob')
+    assert 'group_allow_admin_from' in run(setup, '/group 1 stop', chat_type='group', chat='team', user='carol')
+    assert user_events(setup)[0]['actor']['id'] == 'telegram:bob'
+
+
+def test_send_has_its_own_tighter_limit(setup, monkeypatch):
+    connected(setup)
+    for index in range(slash._SEND_RATE_LIMIT):
+        assert 'Sent' in run(setup, f'/group 1 send {index}', message_id=f'm{index}')
+    assert run(setup, '/group 1 send more', message_id='mx') == slash.TOO_FAST
+    assert 'Group 1 · Research' in run(setup, '/group 1')
+
+
+def test_commands_are_shown_exactly_but_never_as_markup():
+    assert slash.code('rm -rf ./x && echo `id`', block=True) == '```\nrm -rf ./x && echo ˋidˋ\n```'
+    assert slash.code('a\u202eb\nc') == '`a b c`'
+    assert slash.code('one\ntwo', block=True) == '```\none\ntwo\n```'

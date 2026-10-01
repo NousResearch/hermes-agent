@@ -41,8 +41,12 @@ _FIELDS = {
 }
 
 
-async def dispatch_group_control(connection, method, params):
+async def dispatch_group_control(connection, method, params, *, author=None):
+    """``author`` (internal callers only) records who typed a ``groups.send``; RPC clients are Desktop."""
     authority, actor = connection.authority, connection.actor
+    if author is not None and (method != 'groups.send' or type(author) is not dict
+                               or author.get('kind') != 'user' or author.get('id') == 'desktop'):
+        raise RuntimeStoreError('invalid_params')
     capability = GROUP_METHODS.get(method, 'session:read')
     if capability not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -68,7 +72,7 @@ async def dispatch_group_control(connection, method, params):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
-                return _group(authority, actor, home, method, supplied)
+                return _group(authority, actor, home, method, supplied, author=author)
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
@@ -78,7 +82,7 @@ async def dispatch_group_control(connection, method, params):
     return await asyncio.to_thread(invoke)
 
 
-def _group(authority, actor, home, method, params):
+def _group(authority, actor, home, method, params, *, author=None):
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
@@ -107,7 +111,7 @@ def _group(authority, actor, home, method, params):
             raise RuntimeStoreError('runtime_coordination_required')
         if not params.get('room_id'):
             raise RuntimeStoreError('invalid_params')
-        return _execution_control(service, method, params)
+        return _execution_control(service, method, params, author=author)
 
     def capabilities():
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
@@ -186,12 +190,12 @@ def _group(authority, actor, home, method, params):
     return handlers[method]()
 
 
-def _execution_control(service, method, params):
+def _execution_control(service, method, params, *, author=None):
     def send():
         from gateway.hosted_rooms import user_event_id
         event = service.send(room_id=params.get('room_id'),
                              event_id=user_event_id(params.get('event_id')),
-                             payload=params.get('payload'))
+                             payload=params.get('payload'), **({'actor': author} if author else {}))
         return {'event': event, 'client_event_id': params.get('event_id'),
                 'accepted': True, 'driver_started': True}
 

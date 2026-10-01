@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import hashlib
+import json
+import logging
 import re
 import time
 from types import SimpleNamespace
 from typing import Any
 import unicodedata
+import uuid
 
 from gateway.group_chat_access import (
     UNAVAILABLE, GroupChatDenied, assign_refs, current_grant, display_code, request_code, resolve_chat,
@@ -20,17 +24,21 @@ from gateway.group_chat_access import (
 )
 from hermes_state_runtime import RuntimeStoreError
 
+logger = logging.getLogger(__name__)
 PAGE_SIZE = 8
 RECENT_EVENTS = 30
 RECENT_MESSAGES = 6
 MAX_ROSTER = 12
 _RATE_WINDOW_SECONDS = 60.0
 _RATE_LIMIT = 30
+_SEND_RATE_LIMIT = 10
 _RATE_KEYS = 2048
+MAX_APPROVALS = 12
 _CAPABILITIES = frozenset({'session:read', 'session:submit', 'session:control', 'session:approve'})
 
 PAUSED = 'Group Chats are paused while the gateway starts or stops. Try again in a moment.'
 TOO_FAST = 'Too many Group Chat commands. Wait a minute and try again.'
+ACCESS_CHANGED = 'This chat’s access to Group Chats changed. Send {prefix}group to check.'
 _NAME_ESCAPES = str.maketrans({c: chr(ord(c) + 0xFEE0) for c in r'@`*_[]<>\:#&|~()!/+='})
 
 
@@ -43,6 +51,9 @@ class Command:
     verb: str
     ref: int = 0
     page: int = 1
+    text: str = ''
+    code: str = ''
+    choice: str = ''
 
 
 def safe(value: Any, limit: int = 180) -> str:
@@ -50,6 +61,13 @@ def safe(value: Any, limit: int = 180) -> str:
     text = re.sub(r'(?i)\bMEDIA:\S*', '[media]', str(value or ''))
     text = ''.join(' ' if unicodedata.category(c).startswith('C') else c for c in text)
     return ' '.join(text.split())[:limit].translate(_NAME_ESCAPES)
+
+
+def code(value: Any, limit: int = 400, *, block: bool = False) -> str:
+    """A command shown exactly, as the gateway shows approvals: in code, never as markup or mentions."""
+    text = ''.join(c if c == '\n' and block else ' ' if unicodedata.category(c).startswith('C') else c
+                   for c in str(value or ''))[:limit].replace('`', 'ˋ')
+    return f'```\n{text}\n```' if block else f'`{" ".join(text.split())}`'
 
 
 def _raw_args(event) -> str:
@@ -75,13 +93,31 @@ def parse(args: str) -> Command:
     ref = _number(words[0], 10**9)
     if len(words) == 1:
         return Command('show', ref)
+    verb = words[1].casefold()
+    if verb == 'send':
+        # Everything after "send", exactly as typed (line breaks included).
+        text = re.match(r'\s*\S+\s+\S+(?:\s(.*))?$', args, re.DOTALL).group(1) or ''
+        return Command('send', ref, text=text.strip())
+    if verb == 'stop' and len(words) == 2:
+        return Command('stop', ref)
+    if verb == 'approve' and len(words) == 4 and words[3].casefold() in {'once', 'deny'}:
+        return Command('approve', ref, code=words[2].casefold(), choice=words[3].casefold())
     raise ValueError(args)
+
+
+def approval_code(action: dict) -> str:
+    """A short handle for one exact pending request (member, task, attempt and request)."""
+    identity = [action.get(k) for k in ('member_id', 'task_id', 'execution_generation', 'request_id')]
+    return hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()[:6]
 
 
 def help_text(prefix: str) -> str:
     g = prefix + 'group'
     return '\n'.join(['Group Chats', f'{g} list [page] — your Group Chats',
-                      f'{g} N — status, Bots and recent messages', f'{g} help'])
+                      f'{g} N — status, approvals and recent messages',
+                      f'{g} N send <message> — post a message as you',
+                      f'{g} N stop — stop the work in progress',
+                      f'{g} N approve <code> once|deny — answer an approval', f'{g} help'])
 
 
 def _connect_text(chat, code: str, ttl: int, prefix: str) -> str:
@@ -94,7 +130,7 @@ def _connect_text(chat, code: str, ttl: int, prefix: str) -> str:
     return '\n'.join(lines)
 
 
-def _too_fast(runner, key) -> bool:
+def _too_fast(runner, key, limit=_RATE_LIMIT) -> bool:
     now = time.monotonic()
     buckets = getattr(runner, '_group_chat_rate_buckets', None)
     if buckets is None:
@@ -103,7 +139,7 @@ def _too_fast(runner, key) -> bool:
         del buckets[stale]
     recent = [stamp for stamp in buckets.get(key, ()) if now - stamp < _RATE_WINDOW_SECONDS]
     # Live buckets are never evicted: rotating identities must not reset anyone's limit.
-    if len(recent) >= _RATE_LIMIT or (key not in buckets and len(buckets) >= _RATE_KEYS):
+    if len(recent) >= limit or (key not in buckets and len(buckets) >= _RATE_KEYS):
         return True
     buckets[key] = [*recent, now]
     return False
@@ -162,6 +198,50 @@ class _GroupCommand:
                 raise Refused(PAUSED) from exc
             raise
 
+    async def _recheck(self):
+        """Right before a change: the sender, the chat and its grant are still exactly as checked."""
+        try:
+            chat, _ = resolve_chat(self.runner, self.event)
+        except GroupChatDenied as exc:
+            raise Refused(str(exc)) from exc
+        grant = await asyncio.to_thread(current_grant, self.authority, chat)
+        if chat.key != self.chat.key or grant is None or grant['owner'] != self.grant['owner']:
+            raise Refused(ACCESS_CHANGED.format(prefix=self.prefix))
+
+    async def _change(self, ref, method, params, **kwargs):
+        """Dispatch one change; an outcome we can't confirm is reported, never retried."""
+        from gateway.session_group_controls import dispatch_group_control
+        await self._recheck()
+        try:
+            return await dispatch_group_control(self.connection, method, params, **kwargs)
+        except RuntimeStoreError as exc:
+            if exc.reason == 'runtime_coordination_required':
+                raise Refused(PAUSED) from exc
+            if method == 'groups.approve' and exc.reason == 'stale_generation':
+                raise Refused(self._gone(ref)) from exc
+            raise Refused(f'Group {ref} didn’t accept that. Send {self.prefix}group {ref} to see why.') from exc
+        except RuntimeError as exc:
+            if method == 'groups.approve' and str(exc) == 'room approval is no longer pending':
+                raise Refused(self._gone(ref)) from exc
+            raise self._uncertain(method, ref) from exc
+        except Exception as exc:
+            raise self._uncertain(method, ref) from exc
+
+    def _gone(self, ref):
+        return f'That approval isn’t waiting any more. Send {self.prefix}group {ref} to see what is.'
+
+    def _uncertain(self, method, ref):
+        # Transport and service errors can carry private text; keep it out of logs and replies.
+        logger.warning('Group Chat %s from messaging ended without a confirmed outcome', method)
+        return Refused(f'Hermes couldn’t confirm whether that worked. Send {self.prefix}group {ref} '
+                       'before trying again.')
+
+    def _message_id(self, purpose: str) -> str:
+        """Stable for a redelivered platform message, unique otherwise."""
+        message = self.event.message_id or self.event.source.message_id or uuid.uuid4().hex
+        identity = [purpose, self.chat.key, str(message)]
+        return f'messaging-{purpose}:' + hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:40]
+
     def _room_id(self, ref: int) -> str:
         room_id = room_for_ref(self.grant, ref)
         if room_id is None:
@@ -213,13 +293,14 @@ class _GroupCommand:
 
     def _detail(self, ref, state, events):
         room, status = state['room'], state.get('driver_status') or {}
-        labels = {m['member_id']: safe(m.get('display_name') or m.get('handle') or m['member_id'], 48)
-                  for m in room['members']}
+        labels = _labels(room)
         lines = [f'Group {ref} · {safe(room["name"], 72)}', self._status(status)]
         roster = [f'{labels[m["member_id"]]} ({safe("@" + (m.get("handle") or m["member_id"]), 33)})'
                   for m in room['members'][:MAX_ROSTER]]
         extra = len(room['members']) - MAX_ROSTER
         lines.append('Bots: ' + ', '.join(roster) + (f' and {extra} more' if extra > 0 else ''))
+        for action in _approvals(status)[:MAX_APPROVALS]:
+            lines.extend(['', *self._approval_lines(ref, action, labels)])
         previews = [p for p in (self._preview(e, labels) for e in events) if p][-RECENT_MESSAGES:]
         lines.extend(['', 'Recent messages', *(previews or ['No messages yet.'])])
         lines.extend(['', *self._commands(ref)])
@@ -240,8 +321,60 @@ class _GroupCommand:
             parts.append(f'{len(actions) - approvals} to retry or discard in Desktop')
         return ' · '.join(parts)
 
+    def _approval_lines(self, ref, action, labels):
+        approval = action.get('approval') or {}
+        description = safe(approval.get('description'), 300)
+        lines = [f'Approval {approval_code(action)} · {labels.get(action.get("member_id"), "A Bot")} asks to run:',
+                 code(approval.get('command') or approval.get('description') or 'an action', block=True)]
+        if description and description != approval.get('command'):
+            lines.append(description)
+        lines.append(f'Answer: {self.prefix}group {ref} approve {approval_code(action)} once|deny')
+        return lines
+
     def _commands(self, ref):
-        return [f'Refresh: {self.prefix}group {ref}']
+        g = f'{self.prefix}group {ref}'
+        return [f'Send: {g} send <message>', f'Stop: {g} stop', f'Refresh: {g}']
+
+    async def _send(self, command):
+        from gateway.hosted_room_discussion import MAX_USER_TEXT_BYTES
+        if not command.text or len(command.text.encode('utf-8')) > MAX_USER_TEXT_BYTES:
+            raise Refused(f'Write the message after send, for example: {self.prefix}group {command.ref} send Hello')
+        if _too_fast(self.runner, (self.chat.key, self.chat.user_id, 'send'), _SEND_RATE_LIMIT):
+            raise Refused(TOO_FAST)
+        room_id = self._room_id(command.ref)
+        event_id = self._message_id('send')
+        await self._change(command.ref, 'groups.send', {
+            'room_id': room_id, 'event_id': event_id, 'payload': {'text': command.text, 'thread_id': event_id}},
+            author=self.chat.author())
+        return f'Sent to Group {command.ref}. Read the replies with {self.prefix}group {command.ref}'
+
+    async def _stop(self, command):
+        room_id = self._room_id(command.ref)
+        result = await self._change(command.ref, 'groups.stop',
+                                    {'room_id': room_id, 'cancel_id': self._message_id('stop')})
+        count = result['cancelled']
+        return (f'Stopping work in Group {command.ref} ({count} task{"" if count == 1 else "s"}).'
+                if count else f'Nothing was running in Group {command.ref}.')
+
+    async def _pending(self, command):
+        room_id = self._room_id(command.ref)
+        try:
+            state = await self._call('groups.state', {'room_id': room_id})
+        except RuntimeStoreError as exc:
+            raise Refused(f'Group {command.ref} isn’t available right now.') from exc
+        room = state['room']
+        matches = [a for a in _approvals(state.get('driver_status') or {}) if approval_code(a) == command.code]
+        if len(matches) != 1:
+            raise Refused(self._gone(command.ref))
+        labels = _labels(room)
+        return room_id, matches[0], labels.get(matches[0]['member_id'], 'the Bot')
+
+    async def _approve(self, command):
+        room_id, action, bot = await self._pending(command)
+        params = {'room_id': room_id, 'choice': command.choice,
+                  **{key: action[key] for key in ('member_id', 'task_id', 'execution_generation', 'request_id')}}
+        await self._change(command.ref, 'groups.approve', params)
+        return f'Allowed once for {bot}.' if command.choice == 'once' else f'Denied for {bot}.'
 
     @staticmethod
     def _preview(event, labels):
@@ -254,3 +387,16 @@ class _GroupCommand:
         else:
             return None
         return f'• {speaker}: {safe(payload.get("text") or "[attachment]")}'
+
+
+def _labels(room) -> dict[str, str]:
+    return {m['member_id']: safe(m.get('display_name') or m.get('handle') or m['member_id'], 48)
+            for m in room['members']}
+
+
+def _approvals(status) -> list[dict]:
+    """Exact pending approvals as the canonical driver reports them."""
+    return [action for action in status.get('pending_actions') or []
+            if type(action) is dict and action.get('kind') == 'approval'
+            and all(type(action.get(k)) is str and action[k] for k in ('member_id', 'task_id', 'request_id'))
+            and type(action.get('execution_generation')) is int]

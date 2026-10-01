@@ -77,10 +77,14 @@ def validate_tool_calls(
     advance only when a turn has NO valid call, so a degenerate model still halts at
     3; args cut off mid-stream (routers rewrite ``length`` → ``tool_calls``) are refused
     outright rather than retried."""
-    from agent.conversation_loop import _invalid_tool_name_error_content
+    from agent.conversation_loop import _invalid_tool_name_error_content, _session_deferred_tool_names
 
     tool_calls = assistant_message.tool_calls
     valid_names = agent.valid_tool_names
+    # Computed only when a name is actually unknown: deferred-hint scoping needs the
+    # session catalog, which is too costly to rebuild on every validated batch.
+    deferred_names = _session_deferred_tool_names(agent) if any(
+        tc.function.name not in valid_names for tc in tool_calls) else frozenset()
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolValidationVerdict:
         return ToolValidationVerdict(action=action, result=result, mixed_invalid_batch=_mixed_invalid_batch)
@@ -136,7 +140,7 @@ def validate_tool_calls(
         _append_tool_error_results(
             messages, tool_calls,
             lambda tc: (
-                _invalid_tool_name_error_content(tc.function.name, valid_names)
+                _invalid_tool_name_error_content(tc.function.name, valid_names, deferred_names)
                 if tc.function.name not in valid_names
                 else "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
             ),

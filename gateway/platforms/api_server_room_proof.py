@@ -2,6 +2,7 @@
 import hashlib
 import json
 import time
+from collections.abc import MutableMapping
 
 from aiohttp import web
 
@@ -11,23 +12,90 @@ _REFRESH = '/v1/room-members/grants/refresh'
 _MAX_ISSUANCE_RECEIPTS = 4096
 
 
-def wrap(adapter, handler):
+class PlaintextRequest(MutableMapping):
+    """Forward request identity/state while exposing only authenticated body bytes.
+
+    The underlying aiohttp request is left untouched. Handler mapping writes remain
+    on that request; transport, route, profile and session metadata are delegated.
+    """
+    def __init__(self, request, body, limit):
+        self._request, self._body = request, body
+        self.client_max_size = limit
+
+    def __getattr__(self, name):
+        return getattr(self._request, name)
+
+    def __getitem__(self, key):
+        return self._request[key]
+
+    def __setitem__(self, key, value):
+        self._request[key] = value
+
+    def __delitem__(self, key):
+        del self._request[key]
+
+    def __iter__(self):
+        return iter(self._request)
+
+    def __len__(self):
+        return len(self._request)
+
+    @property
+    def content_length(self):
+        return len(self._body)
+
+    @property
+    def body_exists(self):
+        return bool(self._body)
+
+    @property
+    def can_read_body(self):
+        return bool(self._body)
+
+    async def read(self):
+        return self._body
+
+    async def text(self):
+        return self._body.decode('utf-8')
+
+    async def json(self, *, loads=json.loads):
+        return loads(await self.text())
+
+
+def _seal(response, key, request_mac):
+    wire, nonce, signature = proof.seal_response(key, request_mac, response.status, response.body or b'')
+    response.body = wire
+    response.headers.pop('Content-Length', None)
+    response.headers['Content-Type'] = 'application/octet-stream'
+    response.headers[proof.RESPONSE_HEADER] = signature
+    response.headers[proof.RESPONSE_NONCE_HEADER] = nonce
+    return response
+
+
+def wrap(adapter, handler, *, max_bytes=None):
     async def handle(request):
         if len(request.headers.getall('Authorization', [])) > 1:
             return web.json_response({'error': {'code': 'invalid_room_proof'}}, status=401)
         header = request.headers.get('Authorization', '')
         if not header.startswith(proof.SCHEME):
             return await handler(request)
-        # aiohttp's application body limit is enforced by read before proof decoding.
-        body = await request.read()
+        plaintext_limit = request.client_max_size if max_bytes is None else max_bytes
+        body_reader = request.clone(client_max_size=plaintext_limit + proof.WIRE_OVERHEAD)
+        wire_body = await body_reader.read()
         try:
-            token, key, request_mac, envelope = proof.verify_request(
+            token, key, request_mac, envelope, body = proof.verify_request(
                 header, secret=adapter._room_grant_secret(),
                 installation_id=hosted_rooms.local_authority_gateway_id(),
-                method=request.method, path=request.raw_path, body=body, headers=request.headers)
+                method=request.method, path=request.raw_path, body=wire_body, headers=request.headers)
         except Exception:
             return web.json_response({'error': {'code': 'invalid_room_proof'}}, status=401)
+        if len(body) > plaintext_limit:
+            return _seal(web.json_response({'error': {'code': 'body_too_large'}}, status=413), key, request_mac)
+        request = PlaintextRequest(request, body, plaintext_limit)
         request['verified_room_grant'] = token
+        if request.path.endswith('/events'):
+            return _seal(web.json_response({'error': {'code': 'room_proof_streaming_unsupported'}}, status=400),
+                         key, request_mac)
         cache_key = None
         try:
             if request.method == 'POST' and request.path == _REFRESH:
@@ -53,9 +121,7 @@ def wrap(adapter, handler):
                         if row['body'] is not None:
                             response = web.Response(body=bytes(row['body']), status=row['status'],
                                                     content_type='application/json')
-                            response.headers[proof.RESPONSE_HEADER] = proof.response_proof(
-                                key, request_mac, response.status, response.body)
-                            return response
+                            return _seal(response, key, request_mac)
                     else:
                         count = conn.execute('SELECT COUNT(*) FROM hosted_room_grant_refresh_receipts').fetchone()[0]
                         if count >= _MAX_ISSUANCE_RECEIPTS:
@@ -82,9 +148,7 @@ def wrap(adapter, handler):
                 # An exception may occur after accepting work or losing its durable reply.
                 # It is uncertainty, never proof that the target did not admit the request.
                 response = web.json_response({'error': {'code': 'room_proof_outcome_unknown'}}, status=503)
-        response.headers[proof.RESPONSE_HEADER] = proof.response_proof(
-            key, request_mac, response.status, response.body or b'')
-        return response
+        return _seal(response, key, request_mac)
     return handle
 
 

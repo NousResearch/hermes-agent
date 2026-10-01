@@ -138,7 +138,7 @@ class RoomLinkStatus(Result):
     """``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``."""
 
     enabled: bool
-    authentication: Literal['proof-v1'] | None = None
+    authentication: Literal['proof-v2'] | None = None
     profile: str | None = None
     catalog: RoomLinkCatalog | None = None
     endpoint: RoomLinkEndpoint | None = None

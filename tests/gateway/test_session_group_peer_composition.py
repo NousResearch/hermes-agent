@@ -105,7 +105,7 @@ class _LostReplyProxy(BaseHTTPRequestHandler):
                 self.server.accepted.set()
                 return
             self.send_response(response.status)
-            for key in ('Content-Type', 'Hermes-Room-Proof'):
+            for key in ('Content-Type', 'Hermes-Room-Proof', 'Hermes-Room-Nonce'):
                 if response.headers.get(key):
                     self.send_header(key, response.headers[key])
             self.send_header('Content-Length', str(len(data)))

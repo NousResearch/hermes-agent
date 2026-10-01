@@ -619,13 +619,21 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
 def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 2: prune tool_calls not answered in the IMMEDIATELY following tool run (a displaced
     result masks the per-call stub pass and strict providers 400). Payload-empty turns are
-    dropped; codex interims exempt."""
+    dropped; codex interims exempt.
+
+    A call that may have had a side effect is answered with an UNKNOWN-effect result instead:
+    a killed turn leaves exactly this shape (the call row is persisted before the tool runs), and
+    erasing it lets the resumed model repeat an action that already happened (#49201). The result
+    is a projection of the durable rows, regenerated on every load, so it is never flushed."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.replay_cleanup import unanswered_call_results
 
     repairs = 0
     pruned: List[Dict] = []
     leading: List[Dict] = []
+    recovered_after: Dict[int, List[Dict]] = {}
     for i, msg in enumerate(messages):
+        pruned.extend(recovered_after.pop(i, ()))
         if not (
             isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("tool_calls")
             and not _is_codex_interim(msg)
@@ -633,12 +641,25 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             pruned.append(msg)
             continue
         answered: set = set()
+        run_end = i + 1
         for follower in messages[i + 1:]:
             if not (isinstance(follower, dict) and follower.get("role") == "tool"):
                 break
+            run_end += 1
             tid = (follower.get("tool_call_id") or "").strip()
             if tid:
                 answered.update(tool_result_id_variants(tid))
+        unanswered = [
+            tc for tc in msg["tool_calls"]
+            if isinstance(tc, dict) and not tool_call_id_variants(tc) & answered and coalesce_tool_call_id(tc)
+        ]
+        results = unanswered_call_results(unanswered) if unanswered else None
+        if results:
+            for result in results:
+                result[_DB_PERSISTED_MARKER] = True
+            recovered_after[run_end] = results
+            answered.update(v for tc in unanswered for v in tool_call_id_variants(tc))
+            repairs += 1
         kept_calls = [tc for tc in msg["tool_calls"] if tool_call_id_variants(tc) & answered]
         if len(kept_calls) != len(msg["tool_calls"]):
             repairs += 1
@@ -654,6 +675,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             # marker, so pop it or the flush scan skips the dict and the DB keeps the old calls.
             msg.pop(_DB_PERSISTED_MARKER, None)
         pruned.append(msg)
+    pruned.extend(recovered_after.pop(len(messages), ()))
     _retire_leading_drops(pruned, leading)
     return pruned, repairs
 

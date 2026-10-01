@@ -749,6 +749,11 @@ class TestStrictUrlCredentialRedaction:
                 "NET_SECRET",
                 "//***:***@x.test/path",
             ),
+            (
+                "https://Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e:@llm-proxy.example/v1",
+                "Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e",
+                "https://***:***@llm-proxy.example/v1",
+            ),
         ],
     )
     def test_masks_all_url_reference_forms_only_when_opted_in(
@@ -760,13 +765,6 @@ class TestStrictUrlCredentialRedaction:
 
         assert secret not in result
         assert result == expected
-
-    def test_opaque_username_credentials_are_fully_redacted(self):
-        token = "Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e"
-        text = f"https://{token}:@llm-proxy.example/v1"
-        result = redact_sensitive_text(text, redact_url_credentials=True)
-        assert token not in result
-        assert result == "https://***:***@llm-proxy.example/v1"
 
     def test_similarly_named_public_params_remain_unchanged(self):
         text = "/metrics?token_count=17&session_id=public"

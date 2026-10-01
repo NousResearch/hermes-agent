@@ -265,11 +265,13 @@ class HostedRoomService:
             bind_observation(task_id=identity.task_id, execution_generation=execution_generation)
 
         tracked_client = self._track_peer_client(binding, key, route, client)
-        self._recover_peer_admission(binding, task, route, tracked_client)
+        from tui_gateway.hosted_room_peer_documents import task_documents
+        documents = task_documents(self.db_path, binding, task)
+        self._recover_peer_admission(binding, task, route, tracked_client, document_inputs=documents)
         return PeerHostedRoomTransport(
             binding=binding, route=route, client=tracked_client,
             source_event_seq=int(payload.get("source_event_seq") or 0),
-            task_id=getattr(identity, "task_id", None), execution_generation=execution_generation)
+            task_id=getattr(identity, "task_id", None), execution_generation=execution_generation, document_inputs=documents)
 
     def _track_peer_client(
         self, binding: HostedRoomBinding, key: tuple[str, str], route: PeerMemberRoute, client: Any) -> Any:
@@ -285,7 +287,7 @@ class HostedRoomService:
 
     def _recover_peer_admission(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], route: PeerMemberRoute,
-        client: Any) -> None:
+        client: Any, *, document_inputs=None) -> None:
         """Rediscover an admitted peer run without advancing its generation."""
         recover = _hook(client, "recover_dispatch")
         identity, payload = task.get("identity"), task.get("payload")
@@ -302,7 +304,7 @@ class HostedRoomService:
         dispatch = build_member_dispatch(
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
-            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id)
+            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id, document_inputs=document_inputs)
         recover(dispatch=dispatch.as_mapping(), grant=route.grant)
 
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:

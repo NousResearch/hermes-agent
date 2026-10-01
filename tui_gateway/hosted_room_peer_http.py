@@ -503,6 +503,9 @@ class PeerRunsHTTPClient:
         try:
             recovered = self._admit_dispatch(checked, grant=grant)
         except PeerRunsHTTPError as exc:
+            if checked.document_inputs and exc.not_admitted:
+                raise PeerRunsHTTPError(str(exc), ambiguous=True, retryable=exc.retryable,
+                                        status_code=exc.status_code, error_code=exc.error_code) from exc
             if exc.retryable or exc.ambiguous:
                 delay = self._next_poll_delay(backoff)
                 self._recovery_backoff = {key: {"delay": delay, "next_attempt_at": now + delay}}
@@ -523,12 +526,40 @@ class PeerRunsHTTPClient:
         session_id = self._session_id(checked, grant=grant)
 
         def admit() -> dict[str, Any]:
-            result = self._request(
-                "/v1/runs", method="POST",
-                body={"input": checked.prompt, "hosted_room_dispatch": checked.as_mapping()},
-                headers={
-                    "Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
-                room_grant=grant)
+            body = {"input": checked.prompt, "hosted_room_dispatch": checked.as_mapping()}
+            def post():
+                return self._request("/v1/runs", method="POST", body=body,
+                    headers={"Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
+                    room_grant=grant)
+            try:
+                result = post()
+            except PeerRunsHTTPError as exc:
+                if not (checked.document_inputs and exc.error_code == "room_document_input_required"
+                        and exc.status_code == 409 and exc.not_admitted and not exc.ambiguous):
+                    raise
+                # Only an exact no-admission receipt permits new ingress checks/source reads.
+                # Capability changes never prevent observation of previously accepted input.
+                capability = self._request("/v1/room-members/capabilities", room_grant=grant,
+                                           headers={"Hermes-Room-Features": "document-input-v1"})
+                live = GatewayRoomCatalog.from_mapping(capability.get("catalog"))
+                if (live.catalog_digest != checked.capability_digest or live.installation_id != checked.target_install_id
+                        or any(capability.get(field) != getattr(checked, field)
+                               for field in _RECEIPT_SCOPE_FIELDS if field != "target_install_id")):
+                    raise PeerRunsHTTPError("peer document capability scope changed", ambiguous=True)
+                from gateway.hosted_room_documents import manifest, check_capability
+                try:
+                    limits = check_capability(capability.get("document_inputs"))
+                    if limits is None:
+                        raise ValueError("peer supports text only")
+                    manifest(checked.document_inputs, member_id=checked.member_id, capability=limits)
+                except ValueError as error:
+                    raise PeerRunsHTTPError("peer document availability changed", ambiguous=True) from error
+                from tui_gateway.hosted_room_peer_documents import transfer_documents
+                try:
+                    body["document_bytes"] = transfer_documents(self.receipt_db_path, checked)
+                except (OSError, ValueError) as error:
+                    raise PeerRunsHTTPError("peer document source unavailable", not_admitted=True) from error
+                result = post()
 
             if not str(result.get("run_id") or ""):
                 raise PeerRunsHTTPError(

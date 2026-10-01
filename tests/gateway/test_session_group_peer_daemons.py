@@ -190,7 +190,7 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
             assert state['driver_status']['peer_routes'] == [
                 {'room_id': 'linked', 'member_id': 'reviewer', 'status': 'ready'}], state
 
-            # The member receives text only: a file addressed to it fails visibly, nothing is sent.
+            # Native image input is not advertised by the document extension: no partial transfer.
             uploaded = (await rpc(home_ws, 'groups.attachment.upload', room_id='linked', upload_id='pixel',
                                   kind='image', name='pixel.png', mime='image/png', data_base64=_PIXEL))['result']
             manifest = [{k: uploaded[k] for k in ('attachment_id', 'kind', 'name', 'size', 'mime')}]
@@ -198,7 +198,7 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
                 'text': '@reviewer FILE_PROOF', 'thread_id': 'thread', 'attachments': manifest})
             assert sent['result']['accepted'], sent
             failed = (await _events(home_ws, 'turn.failed', count=2))[-1]
-            assert 'can receive text only' in failed['payload']['error'], failed
+            assert 'file/PDF documents only' in failed['payload']['error'], failed
             assert len(target_model.requests) == 1
 
             # Stop reaches the work running on the other gateway.

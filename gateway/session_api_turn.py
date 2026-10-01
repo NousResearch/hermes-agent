@@ -17,7 +17,7 @@ _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
-                 'session_history_delivery')
+                 'session_history_delivery', 'room_document_inputs')
 _OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
@@ -98,7 +98,7 @@ def admit_api_turn(adapter, **kwargs):
         from gateway.session_api import declared_api_session
         sid = declared_api_session(authority.db, declared_key) or sid
     authority._require_admission_open()
-    settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
+    settings = {key: kwargs.get(key) for key in _SETTING_KEYS if key != 'room_document_inputs'}
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):
@@ -127,6 +127,14 @@ def admit_api_turn(adapter, **kwargs):
         payload['api_turn_v1']['turn_author'] = author
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
     from hermes_state_terminal import retry_terminal_admission
+    prepared = None
+    if (settings.get('room_dispatch') or {}).get('document_inputs'):
+        # Session binding is private and fixed by the verified dispatch; no path supplied by a peer.
+        bind_api_session(authority, sid, hosted_dispatch=kwargs['room_dispatch'])
+        from gateway.session_peer_documents import prepare
+        prepared = prepare(authority, session_id=sid, request_id=request_id, payload=payload,
+                           documents=kwargs.get('_room_document_bytes'))
+        payload = prepared.payload
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
     if row is not None:
@@ -137,7 +145,8 @@ def admit_api_turn(adapter, **kwargs):
     check_api_turn(authority, ref, payload)
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
                               session_id=sid, request_id=request_id, payload=payload,
-                              _authorize_write=kwargs.get("_authorize_write"))
+                              _authorize_write=kwargs.get("_authorize_write"),
+                              input_custody=prepared.handle if prepared else None)
     return authority, ref, row
 
 
@@ -267,11 +276,18 @@ def prepare_api_execution(authority, ref, payload):
                          (_SETTINGS_PREFIX + ref.session_id, _json(settings)))
         authority.db._execute_write(write)
     content = payload['text']
+    if (settings.get('room_dispatch') or {}).get('document_inputs'):
+        from gateway.session_peer_documents import content as document_content
+        content = document_content(authority, ref, payload)
     if data and isinstance(content, list):
         from gateway.session_api_media import restore_api_images
         content = restore_api_images(content, data.get('media') or [])
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
-            'content': content, 'turn_author': data.get('turn_author') if data else None}
+            'content': content, 'turn_author': data.get('turn_author') if data else None,
+            **({'files_persist_user_message': payload['text'] + '\n\n' + '\n'.join(
+                '[Attached document: ' + json.dumps(item['name']) + ']'
+                for item in settings['room_dispatch']['document_inputs'])}
+               if (settings.get('room_dispatch') or {}).get('document_inputs') else {})}
 
 
 def _api_observers(authority, session_id):

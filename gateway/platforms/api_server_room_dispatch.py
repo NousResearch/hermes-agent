@@ -14,7 +14,7 @@ except ImportError:
 from gateway.platforms.api_server_room_grants import _json_error
 
 
-async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
+async def _ensure_hosted_member_session(self, dispatch: Any, *, create=True) -> str:
     """Create or verify the target's canonical hidden group session. The ``Group: <room_id>``
     namespace is reused on purpose (Desktop-assisted -> hosted keeps one transcript); a
     conflicting title under another session id fails closed rather than merging."""
@@ -26,6 +26,8 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
         f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
         f"{dispatch.member_id}\0{dispatch.target_profile}")
     session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+    if not create:
+        return session_id
     from gateway.session_authorities import active_authority
     authority = active_authority(self.gateway_runner)
     if authority is not None:
@@ -73,7 +75,7 @@ async def _normalize_room_dispatch(
     _openai_error, room_token = _api_server._openai_error, self._room_grant_token(request)
     if not room_token:
         return body, None
-    if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch"}:
+    if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch", "document_bytes"}:
         return body, _json_error(
             _openai_error, "Room dispatch accepts only input and hosted_room_dispatch.",
             code="invalid_room_dispatch", status=400)
@@ -83,6 +85,8 @@ async def _normalize_room_dispatch(
         from gateway.hosted_room_execution_policy import RoomExecutionPolicy
         from gateway.platforms.api_server_room_grants import _local_room_catalog
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
+        if dispatch.document_inputs is not None and not request.get("verified_room_grant"):
+            raise ValueError("document inputs require proof-v2 transport")
         verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
         active_profile = _api_server._api_request_profile.get() or "default"
         local_install = hosted_rooms.local_authority_gateway_id()
@@ -100,7 +104,12 @@ async def _normalize_room_dispatch(
         expected_key = f"room:{dispatch.task_id}:{dispatch.execution_generation}"
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
-        session_id = await self._ensure_hosted_member_session(dispatch)
+        if "document_bytes" in body and dispatch.document_inputs is None:
+            raise ValueError("unbound document transfer")
+        request["room_document_bytes"] = body.get("document_bytes")
+        # Document transfer is checked after accepted-run lookup, before any new session/input effects.
+        session_id = (await self._ensure_hosted_member_session(dispatch) if dispatch.document_inputs is None
+                      else await _ensure_hosted_member_session(self, dispatch, create=False))
         return {
             "input": dispatch.prompt,
             "session_id": session_id,

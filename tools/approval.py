@@ -20,12 +20,12 @@ import threading
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
-from agent.i18n import t
 from tools import approval_context
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
-    _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
-    _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
+    _is_gateway_approval_context, _is_interactive_cli, _is_kanban_approval_context,
+    _is_single_query_approval_context, _is_unattended_platform_approval_context,
+    _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
     _tirith_fail_open, get_current_session_key,
 )
 from tools.approval_detection import (
@@ -176,7 +176,7 @@ def resolve_gateway_approval(session_key: str, choice: str,
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
     """Withdraw one pending approval nobody can answer (the only attached client cannot render it).
     The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of
-    idling on a prompt shown nowhere (#112548). False when it is no longer pending."""
+    idling for the whole approvals.timeout (#112548). False when it is no longer pending."""
     with _lock:
         queue = _gateway_queues.get(session_key, [])
         entry = next((e for e in queue if e.data.get("request_id") == request_id), None)
@@ -500,27 +500,28 @@ def _approved() -> dict:
     return {"approved": True, "message": None}
 
 
-# ``outcome`` -> one plain sentence for the person who just answered (or did not), keyed as
-# ``approval.summary.<outcome>`` (``approval.summary.default`` for unknown outcomes). ``message`` is
+# ``outcome`` -> one plain sentence for the person who just answered (or did not). ``message`` is
 # addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
 # model text away, so a Reject click does not read like an error the user caused.
-_USER_SUMMARY_OUTCOMES = frozenset({"denied", "timeout", "notify_failed", "cancelled", "blocked"})
-# ``_GateSpec.noun`` values (identifiers) -> ``approval.noun.<noun>`` for the human sentence.
-_USER_SUMMARY_NOUNS = frozenset({"command", "code", "action"})
+_USER_SUMMARIES = {
+    "denied": "You denied this {noun} — it did not run.",
+    "timeout": "No answer within {minutes} — the {noun} did not run.",
+    "notify_failed": "The approval request could not be delivered — the {noun} did not run.",
+    "cancelled": "The approval prompt was withdrawn or never reached you — the {noun} did not run.",
+    "blocked": "This {noun} is not allowed in an unattended session — it did not run.",
+}
 
 
 def _user_summary(outcome: str, noun: str = "command") -> str:
     from tools.approval_context import _get_approval_timeout, format_approval_window
     window = format_approval_window(_get_approval_timeout())
-    key = f"approval.summary.{outcome}" if outcome in _USER_SUMMARY_OUTCOMES else "approval.summary.default"
-    noun_text = t(f"approval.noun.{noun}") if noun in _USER_SUMMARY_NOUNS else noun
-    return t(key, noun=noun_text, window=window)
+    return _USER_SUMMARIES.get(outcome, "This {noun} did not run.").format(noun=noun, minutes=window)
 
 
 def _denied(message: str, *, pattern_key: str, description: str, outcome: str, noun: str = "command",
             **extra) -> dict:
     """Standard non-consent result: the agent must not retry or rephrase. ``user_summary`` is the
-    one-line human reading of the same outcome (see ``_user_summary``)."""
+    one-line human reading of the same outcome (see ``_USER_SUMMARIES``)."""
     return {"approved": False, "message": message, "pattern_key": pattern_key,
             "description": description, "outcome": outcome, "user_consent": False,
             "user_summary": _user_summary(outcome, noun), **extra}
@@ -584,7 +585,7 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
 @dataclass(frozen=True)
 class _Unattended:
     """One non-interactive context and the text every gate uses to explain it."""
-    name: str       # "single_query" | "cron" | "unattended"
+    name: str       # "kanban" | "single_query" | "cron" | "unattended"
     cfg_key: str    # approvals.<cfg_key>: approve|deny
     clause: str     # "why nobody can approve" (lower-case sentence fragment)
     scope: str      # "in cron jobs" — completes "To allow ... {scope}"
@@ -604,6 +605,11 @@ class _Unattended:
                 f"instead, or set approvals.{self.cfg_key}: approve only if {self.trust}.")
 
 
+_KANBAN_CTX = _Unattended(
+    "kanban", "kanban_mode",
+    "kanban workers run without a user present to approve it",
+    "in kanban workers", "this kanban worker is intentionally trusted",
+)
 _SINGLE_QUERY_CTX = _Unattended(
     "single_query", "single_query_mode",
     "single-query mode (-q) runs without a user present to approve it",
@@ -616,11 +622,15 @@ _CRON_CTX = _Unattended(
 
 
 def _unattended_contexts() -> list[_Unattended]:
-    """Active unattended contexts in evaluation order: single-query first (``hermes chat -q``
-    exports HERMES_INTERACTIVE=1 but nobody answers); cron beats a platform marker because
-    cron binds the platform for delivery routing only."""
+    """Active unattended contexts in evaluation order: kanban first when marked
+    (dispatcher also sets ``-q``, so kanban must win over single-query);
+    otherwise single-query (``hermes chat -q`` exports HERMES_INTERACTIVE=1 but
+    nobody answers); cron beats a platform marker because cron binds the
+    platform for delivery routing only."""
     contexts = []
-    if _is_single_query_approval_context():
+    if _is_kanban_approval_context():
+        contexts.append(_KANBAN_CTX)
+    elif _is_single_query_approval_context():
         contexts.append(_SINGLE_QUERY_CTX)
     if _is_cron_approval_context():
         contexts.append(_CRON_CTX)
@@ -934,16 +944,21 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 def _presence(approval_callback=None) -> tuple:
     """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context.
 
-    Single-query ``-q`` and cron clear the presence trio: ``hermes chat -q`` exports
-    HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
-    passes its environ to every external cron worker (#110932) — in neither can a human answer
-    the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
-    pending approval. Unattended *platforms* keep ``is_ask``: api_server relies on it for the
-    ``/v1/runs`` approval bridge (``approval.request`` → ``POST /v1/runs/{id}/approval``)."""
+    Single-query ``-q``, cron, and kanban workers clear the presence trio: ``hermes chat -q``
+    exports HERMES_INTERACTIVE=1 for sudo prompts, a gateway sets HERMES_EXEC_ASK=1 at startup and
+    passes its environ to every external cron worker (#110932), and kanban dispatch similarly
+    leaves no human for the card (#106993) — in none of these can a human answer, so the gate must
+    resolve from ``approvals.<ctx>_mode`` instead of parking on a pending approval. Unattended
+    *platforms* keep ``is_ask``: api_server relies on it for the ``/v1/runs`` approval bridge
+    (``approval.request`` → ``POST /v1/runs/{id}/approval``)."""
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context() or _is_cron_approval_context():
+    if (
+        _is_single_query_approval_context()
+        or _is_cron_approval_context()
+        or _is_kanban_approval_context()
+    ):
         is_cli = is_gateway = is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
@@ -983,6 +998,8 @@ def _run_approval_gate(
         deny_messages = {
             "single_query": single_query_deny_message, "cron": cron_deny_message,
             "unattended": unattended_deny_message,
+            # No kanban_deny_message kwarg; empty falls through to _KANBAN_CTX.block_message.
+            "kanban": "",
         }
         for ctx in _unattended_contexts():
             if ctx.mode() == "deny":
@@ -1311,3 +1328,53 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
 
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import contextlib  # noqa: F401,E402
+import contextvars  # noqa: F401,E402
+import fnmatch  # noqa: F401,E402
+import functools  # noqa: F401,E402
+import re  # noqa: F401,E402
+import shlex  # noqa: F401,E402
+import sys  # noqa: F401,E402
+import tempfile  # noqa: F401,E402
+import time  # noqa: F401,E402
+import unicodedata  # noqa: F401,E402
+import uuid  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'DANGEROUS_PATTERNS': ('tools.approval_detection', 'DANGEROUS_PATTERNS'),
+    'DANGEROUS_PATTERNS_COMPILED': ('tools.approval_detection', 'DANGEROUS_PATTERNS_COMPILED'),
+    'HARDLINE_PATTERNS': ('tools.approval_detection', 'HARDLINE_PATTERNS'),
+    'HARDLINE_PATTERNS_COMPILED': ('tools.approval_detection', 'HARDLINE_PATTERNS_COMPILED'),
+    'HUMAN_WAIT_MARGIN_S': ('tools.approval_human_wait', 'HUMAN_WAIT_MARGIN_S'),
+    'cfg_get': ('hermes_cli.config', 'cfg_get'),
+    'get_plugin_manager': ('tools.approval_prompt', 'get_plugin_manager'),
+    'human_wait_ceiling': ('tools.approval_human_wait', 'human_wait_ceiling'),
+    'human_wait_seconds': ('tools.approval_human_wait', 'human_wait_seconds'),
+    'human_wait_window': ('tools.approval_human_wait', 'human_wait_window'),
+    'is_interrupted': ('tools.interrupt', 'is_interrupted'),
+    'request_elicitation_consent': ('tools.approval_prompt', 'request_elicitation_consent'),
+    'reset_current_observability_context': ('tools.approval_context', 'reset_current_observability_context'),
+    'reset_current_session_key': ('tools.approval_context', 'reset_current_session_key'),
+    'reset_hermes_interactive_context': ('tools.approval_context', 'reset_hermes_interactive_context'),
+    'set_current_observability_context': ('tools.approval_context', 'set_current_observability_context'),
+    'set_current_session_key': ('tools.approval_context', 'set_current_session_key'),
+    'set_hermes_interactive_context': ('tools.approval_context', 'set_hermes_interactive_context'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

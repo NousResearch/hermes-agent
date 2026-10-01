@@ -36,6 +36,7 @@ approvals:
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
   single_query_mode: deny         # deny | approve — what single-query (-q) sessions do on a dangerous command
   unattended_mode: deny           # deny | approve — what webhook/API sessions do on a dangerous command
+  kanban_mode: deny               # deny | approve — what kanban workers do when they hit a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
 ```
@@ -45,10 +46,11 @@ The full set of keys:
 | Key | Default | What it controls |
 |---|---|---|
 | `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
-| `timeout` | `300` | Seconds Hermes waits for an approval reply on messaging platforms, ACP and approval transport plugins before timing out. The CLI, TUI and Desktop wait until you answer. |
+| `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
 | `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Mirrors `cron_mode`. |
+| `kanban_mode` | `deny` | How [kanban dispatcher workers](./features/kanban.md) behave when they trigger a dangerous-command prompt or `execute_code`. Workers are spawned with both `-q` and kanban markers; this key — not `single_query_mode` — governs that path. `deny` blocks instantly (the agent must find another path); `approve` auto-approves in kanban context. Mirrors `cron_mode`. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
@@ -185,9 +187,7 @@ Deny rules are a shell-command policy, not a complete shell interpreter or an OS
 
 ### Approval Timeout
 
-In the CLI, the TUI and the Desktop app an approval prompt has no deadline: it stays up until you answer it, interrupt the turn (Ctrl+C / Stop), or close the session. The command does not run while it waits.
-
-On messaging platforms (and in ACP editors and approval transport plugins) the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
+When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
 
 An expired prompt cannot be reopened: the pending entry is discarded and the agent is told not to retry on its own within that turn. To run the operation after all, send a new message asking for it (for example "go ahead and run that now") — the agent issues a fresh tool call, which raises a fresh approval card, and a "once" approval applies only to that call. A timeout is not counted as a denial, so asking again is never penalized.
 
@@ -565,7 +565,7 @@ Container resources are configurable in `~/.hermes/config.yaml`:
 ```yaml
 terminal:
   backend: docker
-  docker_image: "nousresearch/hermes-sandbox:desktop"
+  docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
   docker_forward_env: []  # Explicit allowlist only; empty keeps secrets out of the container
   container_cpu: 1        # CPU cores
   container_memory: 5120  # MB (default 5GB)
@@ -696,7 +696,7 @@ With the switch off Hermes never reads or refreshes those files: the `claude_cod
 - Credential files are mounted **read-only** into Docker containers
 - Skills Guard scans skill content for suspicious env access patterns before installation
 - Missing/unset vars are never registered (you can't leak what doesn't exist)
-- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms. Such a name is refused when declared, and a declared name that a platform adapter claims later (a plugin adapter registering after the skill loaded) stops being forwarded from then on
+- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
 
 ## MCP Credential Handling
 

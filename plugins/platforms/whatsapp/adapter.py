@@ -1382,6 +1382,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
+        if self._drop_unresolved(event):
+            return
         existing = self._pending_text_batches.get(self._text_batch_key(event))
         super()._enqueue_text_event(event)
         if existing is None:

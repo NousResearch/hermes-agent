@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SessionSource, merge_pending_message_event
+from gateway.platforms.base import SessionSource, _reply_anchor_for_event, merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
 
 
@@ -231,6 +231,7 @@ class TestMergePendingMessageEventLatestIdentity:
         assert merged.text == "first part\nsecond part"
         assert merged.message_id == "wamid.B"
         assert merged.reply_to_message_id == "wamid.B"
+        assert _reply_anchor_for_event(merged) == "wamid.B"
 
     def test_text_merge_falls_back_to_latest_reply_anchor(self):
         """A later chunk with no message_id of its own but a reply_to anchor
@@ -254,6 +255,16 @@ class TestMergePendingMessageEventLatestIdentity:
         assert merged.message_id == "wamid.A"
         assert merged.reply_to_message_id == "wamid.PRIOR"
 
+    def test_anchorless_followup_keeps_existing_identity(self):
+        first = _make_event("first", Platform.WHATSAPP, msg_id="wamid.A", reply_to_id="wamid.A")
+        pending = {"session": first}
+        merge_pending_message_event(pending, "session", _make_event("second", Platform.WHATSAPP), merge_text=True)
+
+        assert pending["session"].text == "first\nsecond"
+        assert pending["session"].message_id == "wamid.A"
+        assert pending["session"].reply_to_message_id == "wamid.A"
+        assert _reply_anchor_for_event(pending["session"]) == "wamid.A"
+
 
 # =====================================================================
 # WhatsApp (Baileys bridge) text batching
@@ -265,7 +276,7 @@ def _make_whatsapp_adapter():
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(WhatsAppAdapter)
-    adapter._platform = adapter.platform = Platform.WHATSAPP
+    adapter.platform = Platform.WHATSAPP
     adapter.config = config
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
@@ -317,4 +328,23 @@ class TestWhatsAppTextBatching:
         assert dispatched.text == "first part\nsecond part"
         assert dispatched.message_id == "wamid.B"
         assert dispatched.reply_to_message_id == "wamid.B"
+        assert _reply_anchor_for_event(dispatched) == "wamid.B"
 
+    @pytest.mark.asyncio
+    async def test_rejected_route_keeps_pending_message_and_timer(self):
+        adapter = _make_whatsapp_adapter()
+        first = _make_event("first", Platform.WHATSAPP, msg_id="wamid.A")
+        adapter._enqueue_text_event(first)
+        key = adapter._text_batch_key(first)
+        original_task = adapter._pending_text_batch_tasks[key]
+        rejected = _make_event("rejected", Platform.WHATSAPP, msg_id="wamid.B")
+        rejected.source.profile_route_rejected = True
+
+        adapter._enqueue_text_event(rejected)
+
+        assert adapter._pending_text_batches[key] is first
+        assert first.text == "first" and first.message_id == "wamid.A"
+        assert adapter._pending_text_batch_tasks[key] is original_task
+        await asyncio.wait_for(original_task, timeout=2)
+        adapter.handle_message.assert_awaited_once_with(first)
+        assert _reply_anchor_for_event(first) == "wamid.A"

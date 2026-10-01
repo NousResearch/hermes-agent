@@ -162,17 +162,28 @@ def build_vendor_gateway_url(vendor: str) -> str:
     return f"{get_tool_gateway_scheme()}://{vendor}-gateway.{shared_domain}"
 
 
-def resolve_managed_tool_gateway(
-    vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
-    token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
-    """Resolve shared managed-tool gateway config for a vendor."""
-    if not managed_nous_tools_enabled():
-        return None
+def _vendor_gateway(vendor: str, gateway_builder, token_reader) -> Optional[ManagedToolGatewayConfig]:
     gateway_origin = (gateway_builder or build_vendor_gateway_url)(vendor)
     nous_user_token = (token_reader or read_nous_access_token)()
     if not gateway_origin or not nous_user_token:
         return None
     return ManagedToolGatewayConfig(vendor=vendor, gateway_origin=gateway_origin, nous_user_token=nous_user_token, managed_mode=True)
+
+
+def resolve_managed_tool_gateway(
+    vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
+    token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
+    """Resolve shared managed-tool gateway config for a vendor (entitled accounts only)."""
+    if not managed_nous_tools_enabled():
+        return None
+    return _vendor_gateway(vendor, gateway_builder, token_reader)
+
+
+def resolve_free_search_gateway(token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
+    """Perplexity ``search_type: "fast"`` is served to every Nous identity with no funding check, so it needs a
+    token this profile may use (guest-disabled and refresh rules live in the reader), not paid entitlement.
+    Search only: every other vendor route goes through :func:`resolve_managed_tool_gateway`."""
+    return _vendor_gateway("perplexity", None, token_reader)
 
 
 def is_managed_tool_gateway_ready(

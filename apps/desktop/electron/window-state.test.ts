@@ -70,7 +70,10 @@ test('sanitizeWindowState treats isMaximized strictly', () => {
 })
 
 test('sanitizeWindowState treats boundsCapturedFullScreen strictly and stays optional', () => {
-  assert.equal(sanitizeWindowState({ width: 1400, height: 900, boundsCapturedFullScreen: true }).boundsCapturedFullScreen, true)
+  assert.equal(
+    sanitizeWindowState({ width: 1400, height: 900, boundsCapturedFullScreen: true }).boundsCapturedFullScreen,
+    true
+  )
   assert.equal(
     sanitizeWindowState({ width: 1400, height: 900, boundsCapturedFullScreen: 'yes' }).boundsCapturedFullScreen,
     undefined
@@ -146,6 +149,7 @@ test('computeWindowOptions recovers stale fullscreen normal bounds to a centered
     isMaximized: false,
     boundsCapturedFullScreen: true
   })
+
   assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1536, height: 832 })
 })
 
@@ -159,7 +163,9 @@ test('computeWindowOptions recovers a legacy exact-work-area snapshot written be
 test('computeWindowOptions recovers a legacy snapshot matching the full display bounds', () => {
   // A fullscreen window over a hidden taskbar reports the display's full
   // bounds, not the work area. Still an exact match, so still recovered.
-  const displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 }, bounds: { x: 0, y: 0, width: 1920, height: 1080 } }]
+  const displays = [
+    { workArea: { x: 0, y: 0, width: 1920, height: 1040 }, bounds: { x: 0, y: 0, width: 1920, height: 1080 } }
+  ]
   const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1080, isMaximized: false })
   assert.deepEqual(computeWindowOptions(saved, displays, 'win32'), { width: 1536, height: 832 })
 })

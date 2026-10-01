@@ -3470,10 +3470,19 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
+    # Durability (carried, 2 Oct 2026): activate the committed dependency
+    # generation before entering the worker chain. The bare `-m` spawn relies
+    # on ambient site-packages for third-party imports (ruamel.yaml, dotenv,
+    # croniter), so every new upstream import and every store re-sync broke
+    # ALL cron workers (29 Sep + 2 Oct 2026 incidents). `import
+    # hermes_bootstrap` leases the generation at child start, exactly like
+    # every other managed child. Deliberately NOT runtime_command(): no `-I`
+    # flag, so the #112729 PYTHONPATH pin below keeps working unchanged.
     command = [
         sys.executable,
-        "-m",
-        "cron.scheduler",
+        "-c",
+        "import hermes_bootstrap, runpy; "
+        "runpy.run_module('cron.scheduler', run_name='__main__', alter_sys=True)",
         "--external-worker-file",
         str(payload_path),
         "--ack-file",

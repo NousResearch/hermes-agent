@@ -831,7 +831,8 @@ def _(rid, params: dict) -> dict:
                 logger.debug("finalized-session reopen before isolated dispatch failed for %s",
                              sid, exc_info=True)
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            turn_claim=turn_claim)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)

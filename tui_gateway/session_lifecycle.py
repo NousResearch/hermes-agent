@@ -761,21 +761,21 @@ def _interrupt_session_turn(
     caller, never from request_id prefix sniffing — a future orphan caller may use another id (#106678).
     """
     use_compute_host = _session_uses_compute_host(session)
-    # A manual compaction holds `running` with no run thread and its own finally releases it: Stop must not
-    # abort it nor clear `running` under it, or the next submit is admitted idle and loses its reply (#133504).
-    compressing = bool(session.get("_manual_compress_active"))
-    should_interrupt = bool(session.get("running")) and not compressing
-    if use_compute_host:
-        # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
-        # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
-        if should_interrupt or session.get("_compute_host_active"):
-            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
     with session["history_lock"]:
         interrupted_claim = session.get("_turn_claim")
+        compressing = bool(session.get("_manual_compress_active"))
+        should_interrupt = bool(session.get("running")) and not compressing
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+    if use_compute_host:
+        # Host I/O must stay outside history_lock because the interrupted operation can require that lock.
+        if should_interrupt or session.get("_compute_host_active"):
+            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
+    with session["history_lock"]:
+        if not _owns_turn_claim(session, interrupted_claim):
+            return use_compute_host
     if should_interrupt:
         # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
@@ -816,13 +816,7 @@ def _interrupt_session_turn(
                     and not claim_thread_alive):
                 session["running"] = False
                 _clear_inflight_turn(session)
-    # Sibling of the #102895 finalize-path fix above: an explicit /stop (or the WS-orphan reaper's
-    # interrupt-at-grace) must also reach a background memory/skill review, not just the foreground
-    # turn. The review fork is invisible to `should_interrupt`/`claim_thread_alive` above (both gated
-    # on the FOREGROUND turn's session["running"]/_run_thread) — a user hitting Stop while only the
-    # post-turn review is still running (the common case: the main turn already finished) would see
-    # "stopped" while the review keeps calling the model. Fires unconditionally (both compute-host
-    # and in-process turns) since the review is always local to this process.
+    # Background memory reviews run outside the foreground turn and need separate interruption.
     if (agent_for_review := session.get("agent")) is not None:
         with contextlib.suppress(Exception):
             from agent.background_review import cancel_background_review_for_live_turn
@@ -840,6 +834,7 @@ def _interrupt_session_turn(
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
     return use_compute_host
+
 
 
 def _session_has_active_delegations(sid: str, session: dict | None = None) -> bool:

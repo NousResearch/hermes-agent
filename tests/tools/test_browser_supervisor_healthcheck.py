@@ -284,7 +284,8 @@ def test_start_failure_is_stopped_and_never_published(
     assert created[0].stop_calls == 1
 
 
-def test_stop_fences_inflight_starter_publication(isolated_registry, monkeypatch):
+@pytest.mark.parametrize("stop_method", ["stop", "stop_all"])
+def test_stop_fences_inflight_starter_publication(isolated_registry, monkeypatch, stop_method):
     """A starter that completes after stop must be stopped, never published."""
     started = threading.Event()
     release = threading.Event()
@@ -325,7 +326,12 @@ def test_stop_fences_inflight_starter_publication(isolated_registry, monkeypatch
     thread.start()
     assert started.wait(timeout=3)
 
-    isolated_registry.stop("stop-race")
+    assert not isolated_registry._generation
+    assert not isolated_registry._by_task
+    if stop_method == "stop_all":
+        isolated_registry.stop_all()
+    else:
+        isolated_registry.stop("stop-race")
     release.set()
     thread.join(timeout=4)
 

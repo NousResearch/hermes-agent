@@ -707,15 +707,18 @@ def _close_orphaned_pinned_target(socket_dir: str, session_name: str) -> bool:
 def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> bool:
     """Reap one ``agent-browser-<session>`` dir if orphaned; True when a daemon was killed.
 
-    A live ``owner_pid`` means another hermes process owns it — leave it UNLESS untracked
-    here and idle past ``BROWSER_ORPHAN_GRACE_SECONDS`` (owner-alive alone made leaked
-    daemons immortal); no owner_pid (legacy) falls back to this process's tracking. A
+    A live ``owner_pid`` always protects a pinned or unknown shared-CDP task: this
+    process's empty tracking map and old file mtimes cannot prove another process's
+    turn has ended. Confirmed unpinned daemons retain the idle leak escape hatch;
+    no owner_pid (legacy) falls back to this process's tracking. A
     pidless dir is only stale after the grace period (deleting it immediately races the
     creator's first stdout open). The PID is identity-verified before any tree-kill.
     """
     owner_pid, owner_alive = _owner_pid_alive(socket_dir, session_name)
+    target_ownership = _orphan_target_ownership(socket_dir, session_name)
     if owner_alive is True:
-        if session_name in tracked_names:
+        if (session_name in tracked_names
+                or target_ownership is not OrphanTargetOwnership.CONFIRMED_UNPINNED):
             return False
         idle_s = _socket_dir_idle_seconds(socket_dir)
         if idle_s is None or idle_s < _bt.BROWSER_ORPHAN_GRACE_SECONDS:
@@ -728,7 +731,6 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
     elif owner_alive is None and session_name in tracked_names:
         return False
 
-    target_ownership = _orphan_target_ownership(socket_dir, session_name)
     if target_ownership is OrphanTargetOwnership.UNKNOWN:
         _bt.logger.warning(
             "Orphaned shared-CDP target metadata for session %s is missing "

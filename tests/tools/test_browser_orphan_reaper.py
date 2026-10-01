@@ -861,3 +861,37 @@ class TestPeriodicOrphanReap:
             bt._cleanup_running = orig_running
 
         assert len(reap_calls) > 1, "startup-only reap would give exactly 1"
+
+
+@pytest.mark.parametrize("ownership", ["pinned", "missing", "corrupt"])
+def test_live_foreign_owner_keeps_shared_cdp_page_despite_old_socket_activity(tmp_path, monkeypatch, ownership):
+    """Another Hermes process cannot infer inactivity from its own empty tracking map."""
+    import subprocess
+    import sys
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        name = "cdp_foreign_live"
+        d = _make_socket_dir(tmp_path, name, pid=12345, owner_pid=owner.pid,
+                             pinned_target_id="FOREIGN-OWNED" if ownership == "pinned" else None,
+                             cdp_endpoint="ws://shared/devtools/browser/foreign")
+        if ownership == "corrupt":
+            (d / f"{name}.target").write_text("{broken", encoding="utf-8")
+        _age_socket_dir(d, bt.BROWSER_ORPHAN_GRACE_SECONDS + 600)
+        assert owner.poll() is None
+        assert bt_lifecycle._owner_pid_alive(str(d), name) == (owner.pid, True)
+        close = MagicMock(return_value=True)
+        kill = MagicMock(return_value=True)
+        monkeypatch.setattr(bt_lifecycle, "_close_orphaned_pinned_target", close)
+        monkeypatch.setattr(bt_lifecycle, "_terminate_verified_daemon", kill)
+
+        assert bt_lifecycle._reap_socket_dir(str(d), name, tracked_names=set()) is False
+        close.assert_not_called()
+        kill.assert_not_called()
+        assert d.exists()
+        assert (d / f"{name}.owner_pid").read_text() == str(owner.pid)
+    finally:
+        owner.terminate()
+        owner.wait(timeout=5)

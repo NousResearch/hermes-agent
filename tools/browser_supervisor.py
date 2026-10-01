@@ -728,8 +728,11 @@ class _SupervisorRegistry:
                 for supervisor in supervisors
             ]
             self._starting.clear()
-            for task_id in set(self._generation) | set(self._starting) | {
-                task_id for task_id, _ in items
+            # The first starter may have neither a generation entry nor a
+            # published supervisor yet. Fence the captured starter task IDs
+            # even after the live starter map has been cleared.
+            for task_id in set(self._generation) | {
+                task_id for task_id, _ in items + starters
             }:
                 self._generation[task_id] = self._generation.get(task_id, 0) + 1
         seen: set[int] = set()

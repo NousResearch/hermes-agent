@@ -1,13 +1,13 @@
 name: hermes-atoll
 title: Hermes Notch Plugin
 repo: https://github.com/himanusia/hermes-notch-plugin
-sha: c8a01b668836e5d9a49f92226f0f305b6decccb0
+sha: 871511c721294579412025ae8a31119521f9be67
 description: "Native Hermes Agent plugin that runs the local Atoll notch monitor for Hermes session and turn status on macOS."
 maintainer: himanusia
 tier: community
 category: desktop
 version: "0.3.0"
-image: https://raw.githubusercontent.com/himanusia/hermes-notch-plugin/c8a01b668836e5d9a49f92226f0f305b6decccb0/assets/hermes-atoll-thumbnail.jpg
+image: https://raw.githubusercontent.com/himanusia/hermes-notch-plugin/871511c721294579412025ae8a31119521f9be67/assets/hermes-atoll-thumbnail.jpg
 platforms: [macos]
 capabilities:
   provides_tools: []

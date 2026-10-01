@@ -1920,18 +1920,28 @@ def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(
     monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 3)
     monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
     approval_mod.register_gateway_notify("ws-old-approval", lambda data: server._emit_approval_request("ws-old-approval", data))
+    poll_event = wait_mod._poll_event
+    settled_before_wait = []
+
+    def observe_wait(event, session_key, **kwargs):
+        settled_before_wait.append(event.is_set())
+        return poll_event(event, session_key, **kwargs)
+
+    monkeypatch.setattr(wait_mod, "_poll_event", observe_wait)
     try:
-        t0 = time.monotonic()
         decision = wait_mod._await_gateway_decision(
             "ws-old-approval", approval_mod._gateway_notify_cbs["ws-old-approval"],
             {"command": "rm -rf build", "description": "", "pattern_key": "dangerous", "pattern_keys": ["dangerous"]})
-        waited = time.monotonic() - t0
     finally:
         approval_mod.unregister_gateway_notify("ws-old-approval")
-    assert waited < 1, decision
-    assert decision["choice"] is None and decision["cancelled"]
-    assert peer.frames == []
-    assert "ws-old-approval" not in approval_mod._gateway_queues
+    assert {
+        "settled_before_wait": settled_before_wait, "resolved": decision["resolved"],
+        "choice": decision["choice"], "withdrawn": bool(decision.get("cancelled")),
+        "frames": peer.frames, "queued": "ws-old-approval" in approval_mod._gateway_queues,
+    } == {
+        "settled_before_wait": [True], "resolved": True, "choice": None,
+        "withdrawn": True, "frames": [], "queued": False,
+    }
 
 
 def test_approval_that_ends_before_its_settle_hook_attaches_is_still_withdrawn(server):

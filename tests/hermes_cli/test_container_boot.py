@@ -250,23 +250,26 @@ def test_profiles_default_subdir_is_skipped_with_warning(
 
 
 # ---------------------------------------------------------------------------
-# Dashboard-container role detection (skip reconcile on the dashboard)
+# Web-backend role detection (skip reconcile on dashboard and serve)
 # ---------------------------------------------------------------------------
 
 
-def test_main_skips_reconcile_in_dashboard_container_s6v3(
+@pytest.mark.parametrize("role", ["dashboard", "serve"])
+def test_main_skips_reconcile_in_web_backend_container_s6v3(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    role: str,
 ) -> None:
-    """The dashboard skip must fire under the s6-overlay v3 argv shape.
+    """The web-backend skip must fire under the s6-overlay v3 argv shape.
 
     Regression test for issue #49196: under s6-overlay v3 the container
     command is read off the rc.init-launched process, whose argv is
-    ``/bin/sh -e .../rc.init top .../main-wrapper.sh dashboard ...`` — not a
+    ``/bin/sh -e .../rc.init top .../main-wrapper.sh dashboard ...``, not a
     bare ``/init`` prefix. Before the fix, the prefix-strip left ``/bin/sh``
     at args[0], so the role read as non-dashboard, the dashboard container
     reconciled, and it started its own gateway-default (dual Telegram
     getUpdates 409). Asserting the slot is absent proves the skip fires.
+    A ``serve`` container on the same shared volume must skip too (#64846).
     """
     from hermes_cli import container_boot
 
@@ -283,7 +286,7 @@ def test_main_skips_reconcile_in_dashboard_container_s6v3(
             "/run/s6/basedir/scripts/rc.init",
             "top",
             "/opt/hermes/docker/main-wrapper.sh",
-            "dashboard",
+            role,
             "--host",
             "0.0.0.0",
             "--port",

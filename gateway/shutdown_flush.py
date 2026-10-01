@@ -529,6 +529,10 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
         for path, payload in regular:
             # One rejected ordinary payload must not poison every later boot; its file stays put.
             try:
+                from gateway.shutdown_pending import PENDING_SCHEMA, project_pending_snapshot
+                if payload.get("schema") == PENDING_SCHEMA:
+                    recovered += project_pending_snapshot(path, payload, session_resolver=session_resolver)
+                    continue
                 if _recover_one_payload(
                     session_db, path, payload,
                     session_resolver=session_resolver,

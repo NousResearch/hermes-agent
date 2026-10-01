@@ -95,10 +95,14 @@ class HostedRoomService:
             pending_action=self._set_pending_action,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
-            turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
+            turn_timeout_seconds=_hosted_room_turn_timeout_seconds(), **self._runtime_options())
 
     def _make_rpc(self, server):
         return HostedRoomServerRPC(server)
+
+    def _runtime_options(self) -> dict[str, Any]:
+        """Extra ``HostedRoomRuntime`` options a subclass opts into; none here."""
+        return {}
 
     def _load_stored_links(self) -> None:
         """Rehydrate persisted peer routes; collect per-link errors into one string."""

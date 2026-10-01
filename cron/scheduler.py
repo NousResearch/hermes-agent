@@ -2540,10 +2540,12 @@ def run_job(
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         # The length stamp lets context_from re-extract this exact payload even when the
-        # response itself embeds a "## Response" heading (#128543).
+        # response itself embeds a "## Response" heading (#128543). The reader is handed
+        # the stored document stripped, so the stamp counts the stripped response to keep
+        # both sides of the comparison normalized identically.
         output = (
             _run_doc_header(job, job_name, job_id, prompt)
-            + f"**Response Length:** {len(logged_response)}\n\n## Response\n\n{logged_response}\n"
+            + f"**Response Length:** {len(logged_response.strip())}\n\n## Response\n\n{logged_response}\n"
         )
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)

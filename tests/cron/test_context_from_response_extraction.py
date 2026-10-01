@@ -113,7 +113,7 @@ class TestStampedArchives:
             "# Cron Job: probe\n\n"
             "**Job ID:** j1\n**Run Time:** t\n**Schedule:** N/A\n\n"
             f"## Prompt\n\n{prompt}\n\n"
-            f"**Response Length:** {len(answer)}\n\n## Response\n\n{answer}\n"
+            f"**Response Length:** {len(answer.strip())}\n\n## Response\n\n{answer}\n"
         )
 
     def test_answer_with_embedded_heading_survives(self, cron_env):
@@ -172,8 +172,9 @@ class TestStampedArchives:
         assert "Skill docs say" not in prompt  # the prompt half stays dropped
 
     def test_edited_stamp_falls_through_to_older_archive(self, cron_env):
-        """A stamp that no longer bounds the tail (edited/truncated archive) is not a
-        guessed boundary: the archive is skipped, the older one is used."""
+        """A stamp that no longer matches the tail (archive truncated after the fact) is
+        not a guessed boundary: the archive is skipped, the older one is used. The
+        heading itself stays intact so the guard's length comparison is what rejects."""
         from cron.jobs import create_job
         from cron.scheduler_prompt import _inject_context_from
 
@@ -181,15 +182,57 @@ class TestStampedArchives:
         _write_archive(
             cron_env, job["id"], "2026-09-18_08-00-00.md",
             "# Cron Job: probe\n\n## Prompt\n\ndo the thing\n\n## Response\n\nOLDER-REAL-ANSWER\n")
+        # Declared 94 characters but the stored tail only survived 14: a truncated
+        # archive must not inject its fragment as this run's previous answer.
         _write_archive(
             cron_env, job["id"], "2026-09-19_08-00-00.md",
-            self._stamped_archive("do the thing", "TRUNCATED-HEAD")[:-20] + "\n")
+            "# Cron Job: probe\n\n## Prompt\n\ndo the thing\n\n"
+            "**Response Length:** 94\n\n## Response\n\nThe nightly re\n")
 
         prompt, injected = _inject_context_from(job, "Report")
 
         assert injected is True
         assert "OLDER-REAL-ANSWER" in prompt
-        assert "TRUNCATED-HEAD" not in prompt
+        assert "The nightly re" not in prompt
+
+    def test_trailing_whitespace_answer_still_extracts(self, cron_env):
+        """The writer stamps the stripped response because the caller reads the stored
+        document stripped: an answer with trailing whitespace must not have its stamp
+        mismatch its own archive and silently fall through to an older one."""
+        from cron.jobs import create_job
+        from cron.scheduler import _build_job_prompt
+
+        answer = "TRAILING-SPACE-ANSWER-7\n\n\n"
+        job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
+        _write_archive(
+            cron_env, job["id"], "2026-09-19_08-00-00.md",
+            self._stamped_archive("do the thing", answer))
+
+        prompt = _build_job_prompt(job)
+
+        assert "TRAILING-SPACE-ANSWER-7" in prompt
+
+    def test_oversized_stamp_quoted_in_the_prompt_does_not_hijack(self, cron_env):
+        """A prompt quoting an oversized stamp must not swallow the prompt half: its
+        remainder can only be shorter than the declared count, which an exact match
+        rejects before the writer's own stamp accepts the real answer."""
+        from cron.jobs import create_job
+        from cron.scheduler import _build_job_prompt
+
+        quoting_prompt = (
+            "Skill docs say the archive looks like:\n\n"
+            "**Response Length:** 99999\n\n## Response\n\nbody\n\nNow do the work."
+        )
+        answer = "REAL-ANSWER-42"
+        job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
+        _write_archive(
+            cron_env, job["id"], "2026-09-19_08-00-00.md",
+            self._stamped_archive(quoting_prompt, answer))
+
+        prompt = _build_job_prompt(job)
+
+        assert "REAL-ANSWER-42" in prompt
+        assert "Skill docs say" not in prompt  # the prompt half stays dropped
 
     def test_unicode_answer_round_trips_by_character_count(self, cron_env):
         """The stamp counts characters (not bytes): a CJK answer re-extracts whole."""
@@ -252,7 +295,7 @@ class TestWriterStampsTheResponse:
 
         assert success is True
         assert final_response == answer
-        assert f"**Response Length:** {len(answer)}" in output
+        assert f"**Response Length:** {len(answer.strip())}" in output
         # The stored document re-extracts the whole answer, embedded heading included.
         from cron.scheduler_prompt import _archive_answer
         assert _archive_answer(output) == answer

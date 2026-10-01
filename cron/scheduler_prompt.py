@@ -75,10 +75,13 @@ def _archive_answer(archive: str) -> str | None:
 
     Stamped archives extract by the declared count (#128543): the writer's stamp sits
     right before its heading and the response runs to end-of-document, so the writer's
-    is the first stamp whose heading-to-tail remainder fits the declared count — a
-    stamp+heading pair quoted inside the prompt leaves more text behind, and one inside
-    the payload can only follow the writer's. A stamp that bounds no heading (archive
-    edited or truncated after the fact) yields no answer rather than a guessed split.
+    is the first stamp whose heading-to-tail remainder matches the declared count
+    exactly — a stamp+heading pair quoted inside the prompt leaves more text behind, and
+    one inside the payload can only follow the writer's. Both sides count the stripped
+    payload (the writer stamps the stripped response; the caller hands the document over
+    stripped), so trailing whitespace cannot mask a mismatch. A stamp that bounds no
+    heading, or no longer matches the tail (archive edited or truncated after the fact)
+    yields no answer rather than a guessed split.
 
     Legacy archives without the stamp keep the last-occurrence split: the LAST
     ``## Response`` is the writer's boundary — the assembled prompt half can itself carry
@@ -93,12 +96,13 @@ def _archive_answer(archive: str) -> str | None:
     stamps = list(_RESPONSE_STAMP_RE.finditer(archive))
     if stamps:
         for stamp in stamps:
-            # The writer ends the document with the payload's final newline, and the
-            # caller may hand over the document stripped or verbatim — tolerate that
-            # tail when checking the declared count.
+            # The writer stamps the stripped response and the caller hands the document
+            # over stripped, so an intact archive matches the declared count exactly —
+            # only exact acceptance keeps a truncated tail from being injected as the
+            # answer instead of falling through to an older archive.
             after = archive[stamp.end():].rstrip("\n")
             heading = _STAMPED_HEADING_RE.match(after)
-            if heading is not None and len(after) - heading.end() <= int(stamp.group(1)):
+            if heading is not None and len(after[heading.end():].strip()) == int(stamp.group(1)):
                 answer = after[heading.end():]
                 break
         if answer is None:

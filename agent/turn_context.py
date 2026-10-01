@@ -68,9 +68,18 @@ def _preflight_request_tokens(
         if native_anthropic_preserves_prior_thinking(
             getattr(agent, "base_url", ""), getattr(agent, "model", "")
         ):
+            from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
             from agent.message_sanitization import native_anthropic_accounting_projection
 
-            estimate_messages = native_anthropic_accounting_projection(messages)
+            # Preflight runs on canonical history, while the eventual request is a
+            # filtered copy. Mirror suppression onto shallow message copies before
+            # projection so already-rejected blocks cannot trigger phantom compression.
+            estimate_messages = [
+                dict(message) if isinstance(message, dict) else message
+                for message in messages
+            ]
+            apply_rejected_thinking_suppression(agent, estimate_messages)
+            estimate_messages = native_anthropic_accounting_projection(estimate_messages)
     return estimate_request_tokens_rough(
         estimate_messages, system_prompt=system_prompt or "", tools=tools,
         charge_stale_thinking=charge_stale_thinking,

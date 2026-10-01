@@ -2448,6 +2448,8 @@ class TestMatrixSourcePermalink:
         self.adapter._background_read_receipt = MagicMock()
         self.adapter._require_mention = False
         self.adapter._matrix_session_scope = "room"
+        from mautrix.errors import MNotFound
+        self.adapter._client = types.SimpleNamespace(get_state_event=AsyncMock(side_effect=MNotFound(404)))
 
     async def _source(self, room_id="!room:example.org", event_id="$msg", relates_to=None):
         ctx = await self.adapter._resolve_message_context(
@@ -2602,7 +2604,7 @@ class TestMatrixSourcePermalink:
             "sender": "@creator:creator.example", "state_key": "", "origin_server_ts": 0,
             "content": {"room_version": room_version},
         }))
-        self.adapter._client = types.SimpleNamespace(state_store=store)
+        self.adapter._client.state_store = store
 
         source = await self._source(room_id=room_id)
 
@@ -3424,3 +3426,119 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+@pytest.mark.parametrize("joined", [False, True])
+@pytest.mark.parametrize("origin", ["fetch", "state", "timeline", "missing", "failure"])
+@pytest.mark.asyncio
+async def test_permalink_routing_obeys_authoritative_acl_and_later_sync(joined, origin):
+    from mautrix.client import Client
+    from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
+    from mautrix.errors import MNotFound
+    from mautrix.types import Member, Membership
+
+    case = TestMatrixSourcePermalink()
+    case.setup_method()
+    adapter = case.adapter
+    room = "!room:Blocked.Example:8448"
+    adapter._user_id = "@bot:Blocked.Example:8448"
+    store = MemoryStateStore()
+    if joined:
+        await store.set_members(room, {
+            "@admin:Blocked.Example:8448": Member(membership=Membership.JOIN),
+            "@member:allowed.example": Member(membership=Membership.JOIN),
+            "@ip:192.0.2.1": Member(membership=Membership.JOIN),
+        })
+        await store.set_power_levels(room, {"users": {"@admin:Blocked.Example:8448": 100}})
+    denied = {"allow": ["*.example"], "deny": ["blocked.?xample"]}
+    reads = []
+
+    async def request(method, path, **kwargs):
+        if "m.room.server_acl" not in str(path):
+            raise MNotFound(404)
+        reads.append(str(path))
+        if origin == "missing":
+            raise MNotFound(404)
+        if origin == "failure" and len(reads) == 1:
+            raise RuntimeError("temporary unavailable state")
+        return dict(denied)
+
+    client = Client(mxid=adapter._user_id, api=types.SimpleNamespace(request=request, log=MagicMock()),
+                    state_store=store, sync_store=MemorySyncStore())
+    adapter._client = client
+    adapter._schedule_pending_invite_joins = MagicMock()
+
+    def sync(content, section):
+        event = {"type": "m.room.server_acl", "state_key": "", "event_id": "$acl",
+                 "sender": "@admin:blocked.example", "origin_server_ts": 0, "content": content}
+        return {"next_batch": "$saved", "rooms": {"join": {room: {section: {"events": [event]}}}}}
+
+    if origin in ("state", "timeline"):
+        await adapter._absorb_sync(client, sync(denied, origin))
+    first = (await case._source(room_id=room)).source_permalink
+    second = (await case._source(room_id=room)).source_permalink
+    await adapter._absorb_sync(client, sync({"allow": ["*"]}, "timeline"))
+    third = (await case._source(room_id=room)).source_permalink
+    prefix = "https://matrix.to/#/!room:Blocked.Example:8448/$msg"
+    blocked = prefix + ("?via=allowed.example" if joined else "")
+    unrestricted = prefix + "?via=Blocked.Example%3A8448" + ("&via=allowed.example" if joined else "")
+    expected_first = unrestricted if origin == "missing" else prefix if origin == "failure" else blocked
+    expected_second = unrestricted if origin == "missing" else blocked
+    expected_reads = 0 if origin in ("state", "timeline") else 2 if origin == "failure" else 1
+    assert (first, second, third, len(reads), await client.sync_store.get_next_batch()) == (
+        expected_first, expected_second, unrestricted, expected_reads, "$saved",
+    )
+
+
+@pytest.mark.parametrize("change", ["edit", "leave", "reconnect"])
+@pytest.mark.asyncio
+async def test_permalink_acl_resolution_serializes_reads_and_keeps_newer_sync(change):
+    from mautrix.client import Client
+    from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
+    from mautrix.errors import MNotFound
+
+    case = TestMatrixSourcePermalink()
+    case.setup_method()
+    adapter = case.adapter
+    room = "!room:example.org"
+    entered, release = asyncio.Event(), asyncio.Event()
+    reads = []
+
+    async def request(method, path, **kwargs):
+        if "m.room.server_acl" not in str(path):
+            raise MNotFound(404)
+        reads.append(str(path))
+        entered.set()
+        await release.wait()
+        return {"allow": ["*"]}
+
+    client = Client(mxid="@bot:example.org", api=types.SimpleNamespace(request=request, log=MagicMock()),
+                    state_store=MemoryStateStore(), sync_store=MemorySyncStore())
+    adapter._client = client
+    adapter._schedule_pending_invite_joins = MagicMock()
+    tasks = [asyncio.create_task(case._source(room_id=room)) for _ in range(2)]
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        if change == "edit":
+            update = {"rooms": {"join": {room: {"state": {"events": [{
+                "type": "m.room.server_acl", "state_key": "", "event_id": "$acl",
+                "sender": "@admin:example.org", "origin_server_ts": 0,
+                "content": {"allow": []},
+            }]}}}}}
+        elif change == "leave":
+            update = {"rooms": {"leave": {room: {}}}}
+        else:
+            client = Client(mxid="@bot:example.org", api=client.api,
+                            state_store=MemoryStateStore(), sync_store=MemorySyncStore())
+            adapter._client = client
+            update = {}
+        await adapter._absorb_sync(client, update)
+    finally:
+        release.set()
+    sources = await asyncio.gather(*tasks)
+    later = (await case._source(room_id=room)).source_permalink
+    prefix = "https://matrix.to/#/!room:example.org/$msg"
+    assert ([source.source_permalink for source in sources], later, len(reads)) == (
+        [prefix] * 2, prefix if change == "edit" else prefix + "?via=example.org",
+        1 if change == "edit" else 2,
+    )

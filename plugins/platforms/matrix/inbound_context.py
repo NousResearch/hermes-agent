@@ -76,9 +76,10 @@ class MatrixInboundContextMixin:
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
+        policy = await self._permalink_routing.resolve(self._client, room_id)
         via = await room_via_servers(
             getattr(self._client, "state_store", None), room_id,
-            ((self._user_id or "").partition(":")[2], identity.server_name))
+            ((self._user_id or "").partition(":")[2], identity.server_name), policy=policy)
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,

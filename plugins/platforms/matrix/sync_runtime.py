@@ -57,6 +57,7 @@ class MatrixSyncMixin:
         """Apply one sync response: joined rooms, next_batch, event dispatch, pending invites. Returns next_batch.
         The initial (full-state) sync also seeds the DM cache and dispatches so the OlmMachine sees
         to-device key shares queued while offline."""
+        self._permalink_routing.observe_sync(client, sync_data)
         self._last_sync_ts = time.time()
         rooms_join = sync_data.get("rooms", {}).get("join", {})
         if rooms_join or initial:

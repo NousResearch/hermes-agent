@@ -78,6 +78,7 @@ from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.sync_runtime import MatrixSyncMixin
+from plugins.platforms.matrix.permalinks import MatrixPermalinkRouting
 from plugins.platforms.matrix.inbound_context import MatrixInboundContextMixin
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
@@ -875,6 +876,7 @@ class MatrixAdapter(MatrixSyncMixin, MatrixInboundContextMixin, BasePlatformAdap
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
         self._joined_rooms: Set[str] = set()
+        self._permalink_routing = MatrixPermalinkRouting()
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()

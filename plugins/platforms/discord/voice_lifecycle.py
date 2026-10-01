@@ -108,3 +108,104 @@ class DiscordVoiceLifecycleMixin:
             self._on_voice_disconnect(str(text_ch_id))
         except Exception:
             pass
+
+    async def join_voice_channel(self: DiscordAdapter, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
+        """Join a voice channel; returns True on success. ``text_channel_id`` stores the
+        transcription-routing binding so programmatic joins work without ``/voice join``."""
+        from plugins.platforms.discord.adapter import DISCORD_AVAILABLE, VoiceReceiver
+
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+        guild_id = channel.guild.id
+        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            existing = self._voice_clients.get(guild_id)
+            if existing and existing.is_connected():
+                if existing.channel.id == channel.id:
+                    self._reset_voice_timeout(guild_id)
+                    return True
+                await existing.move_to(channel)
+                self._reset_voice_timeout(guild_id)
+                return True
+            vc = await channel.connect()
+            self._voice_clients[guild_id] = vc
+            self._reset_voice_timeout(guild_id)
+            if text_channel_id is not None:
+                self._voice_text_channels[guild_id] = text_channel_id
+            if source is not None:
+                self._voice_sources[guild_id] = source
+            try:
+                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver.start()
+                self._voice_receivers[guild_id] = receiver
+                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
+                    self._voice_listen_loop(guild_id)
+                )
+            except Exception as e:
+                logger.warning("Voice receiver failed to start: %s", e)
+            # Mixer is best-effort; failure falls back to one-shot FFmpegPCMAudio playback.
+            if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
+                try:
+                    await self._install_voice_mixer(guild_id, vc)
+                except Exception as e:
+                    logger.warning("Voice mixer failed to start: %s", e)
+            return True
+
+    async def leave_voice_channel(self: DiscordAdapter, guild_id: int) -> None:
+        """Disconnect from the voice channel in a guild."""
+        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            receiver = self._voice_receivers.pop(guild_id, None)
+            pending_inputs = []
+            if receiver:
+                pending_inputs = receiver.flush_pending()
+                receiver.stop()
+            listen_task = self._voice_listen_tasks.pop(guild_id, None)
+            if listen_task:
+                listen_task.cancel()
+            guild = self._client.get_guild(guild_id) if self._client is not None else None
+            for user_id, pcm_data in pending_inputs:
+                if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
+                    await self._process_voice_input(guild_id, user_id, pcm_data)
+            # Tear down the mixer (stops the continuous outgoing stream).
+            if getattr(self, "_voice_mixers", None) is not None:
+                self._voice_mixers.pop(guild_id, None)
+            vc = self._voice_clients.pop(guild_id, None)
+            if vc and vc.is_connected():
+                try:
+                    if vc.is_playing():
+                        vc.stop()
+                except Exception:
+                    pass
+                await vc.disconnect()
+            task = self._voice_timeout_tasks.pop(guild_id, None)
+            if task:
+                task.cancel()
+            self._voice_text_channels.pop(guild_id, None)
+            self._voice_sources.pop(guild_id, None)
+
+    async def _handle_voice_state_update(self: DiscordAdapter, member, before, after) -> None:
+        """Track voice channel join/leave events."""
+        bot_guild_ids = set(self._voice_clients.keys())
+        if not bot_guild_ids:
+            return
+        guild_id = member.guild.id
+        if guild_id not in bot_guild_ids:
+            return
+        if member == self._client.user:
+            return
+        joined = before.channel is None and after.channel is not None
+        left = before.channel is not None and after.channel is None
+        switched = (
+            before.channel is not None
+            and after.channel is not None
+            and before.channel != after.channel
+        )
+        if joined or left or switched:
+            logger.info(
+                "Voice state: %s (%d) %s (guild %d)",
+                member.display_name,
+                member.id,
+                "joined " + after.channel.name if joined
+                else "left " + before.channel.name if left
+                else f"moved {before.channel.name} -> {after.channel.name}",
+                guild_id,
+            )

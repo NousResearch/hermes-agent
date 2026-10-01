@@ -899,12 +899,18 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    session_id: Optional[str] = None,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
     Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)``; verdict is done /
     blocked / continue / wait / skipped. ``parse_failed`` means unusable output; transport errors
     set ``transport_failed`` instead and fail-open to ``continue``.
+
+    ``session_id`` is the conversation the goal belongs to. The judge runs after the turn, often on a
+    thread that never saw the turn's context (the CLI's post-turn hook, an executor), so without it the
+    affinity key falls back to a random one-shot value and session-pinned relays (OpenCode's
+    ``x-opencode-session``) route the judge away from the conversation's backend (#115000).
     """
     if not goal.strip():
         return "skipped", "empty goal", False, None, False
@@ -941,6 +947,9 @@ def judge_goal(
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
 
+    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+    # A host-declared scope (kanban's ``kanban:<task>``) wins; otherwise bind the goal's session.
+    affinity_token = None if get_affinity_scope() or not session_id else set_affinity_scope(session_id)
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
     except AuxiliaryClientUnavailable as exc:
@@ -951,6 +960,9 @@ def judge_goal(
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
         return "continue", f"judge error: {type(exc).__name__}", False, None, True
+    finally:
+        if affinity_token is not None:
+            reset_affinity_scope(affinity_token)
 
     verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
     logger.info("goal judge: verdict=%s reason=%s%s", verdict, _truncate(reason, 120),
@@ -1506,6 +1518,7 @@ class GoalManager:
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            session_id=self.session_id,
         )
         state.last_verdict = verdict
         state.last_reason = reason

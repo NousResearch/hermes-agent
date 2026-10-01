@@ -364,7 +364,8 @@ import {
   activateWindow as activateRestoredWindow,
   decideSecondInstanceAction,
   ensureMainWindow,
-  shouldQuitOnAllClosed
+  shouldQuitOnAllClosed,
+  shouldQuitOnLastChatClosed
 } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -14131,6 +14132,15 @@ let petOverlayWindow = null
 // persisted popped-out flag survives for the next boot's restorePetOverlay
 // (#55920).
 let appQuitting = false
+// Whether a quit is actually in progress (#130810). Set in before-quit only
+// once the active-work guard has passed (quit is confirmed/proceeding, not
+// held for confirmation), so the last-chat `closed` fallback can tell "the
+// user closed the last chat surface, quit now" apart from "windows are
+// closing because a quit is already tearing down". Deliberately distinct from
+// appQuitting above, which is also set by the primary window's `close`
+// handler for overlay pop-in suppression and would otherwise suppress the
+// fallback on every ordinary close.
+let quitInProgress = false
 // Set while a close is in flight: Electron's close() is async and can be
 // aborted on macOS, so the window may still be alive after closePetOverlay().
 // openPetOverlay must never reuse (or leave) a closing window — otherwise two
@@ -15323,8 +15333,15 @@ function createWindow() {
   bindGeometryPersistence(mainWindow, schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => {
+  mainWindow.on('close', (event: Electron.Event) => {
     schedulePersistWindowState.flush()
+
+    // A prevented close (tray absorb, active-work "Keep Running") leaves the
+    // window alive, so the app is not quitting: keep the latch clear so a
+    // later close still quites cleanly (#130810).
+    if (event.defaultPrevented) {
+      return
+    }
 
     // On Windows/Linux, closing the primary window IS quitting (the
     // window-all-closed handler calls app.quit()). Latch the quit flag here,
@@ -19681,24 +19698,37 @@ function registerChatWindow(window: BrowserWindow) {
     // here (preventDefault), and a multi-window close still has peers left,
     // so quitting only when no chat surface remains is safe: it forces the
     // ordinary before-quit teardown (backends, SSH, PTYs, watchers) even when
-    // window-all-closed is blocked.
-    if (!IS_MAC && !isQuittingForHandoff && chatWindows.size === 0 && !appQuitting) {
+    // window-all-closed is blocked. Keyed on quitInProgress, not appQuitting:
+    // an ordinary primary-window close sets appQuitting for overlay pop-in
+    // suppression before `closed` fires, which must not suppress this quit.
+    if (
+      shouldQuitOnLastChatClosed({
+        platform: process.platform,
+        isQuittingForHandoff,
+        remainingChatWindows: chatWindows.size,
+        quitInProgress
+      })
+    ) {
       app.quit()
     }
   })
 }
 
 app.on('before-quit', event => {
-  // Latch first, before ANY teardown below closes the pet overlay: its
-  // 'closed' handler must not echo pop-in during quit, or the persisted
-  // popped-out state is wiped and the overlay never restores (#55920).
-  appQuitting = true
-
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
-  // exactly as it was.
+  // exactly as it was: a held quit is not a quit in progress, and the
+  // overlay-suppression latch must not leak into the next close (#130810).
   if (heldQuitForActiveWork(event)) {
+    appQuitting = false
     return
   }
+
+  // Quit is really proceeding: latch both before ANY teardown below closes
+  // the pet overlay — its 'closed' handler must not echo pop-in during quit,
+  // or the persisted popped-out state is wiped and the overlay never restores
+  // (#55920).
+  appQuitting = true
+  quitInProgress = true
 
   minimizeToTray.beginQuit()
   mainProcessLagWatchdog.stop()

@@ -49,6 +49,45 @@ export function shouldQuitOnAllClosed(platform: NodeJS.Platform | string, isQuit
 }
 
 /**
+ * Whether the last-chat-window `closed` fallback must quit the app (#130810).
+ *
+ * Hidden helpers (Quick Entry, HUD, pet overlay) are still BrowserWindows,
+ * so `window-all-closed` never fires while one lingers. This fallback quits
+ * when no chat surface remains. It is keyed on whether a quit is actually in
+ * progress (`quitInProgress`), never on the overlay-suppression latch
+ * (`appQuitting`): on Windows/Linux an ordinary primary-window close sets
+ * `appQuitting = true` in its `close` handler (for #55920 pop-in
+ * suppression) before `closed` fires, so gating on that latch would suppress
+ * the very quit the fallback exists for and strand a windowless
+ * single-instance lock holder.
+ */
+export function shouldQuitOnLastChatClosed({
+  platform,
+  isQuittingForHandoff,
+  remainingChatWindows,
+  quitInProgress
+}: {
+  platform: NodeJS.Platform | string
+  isQuittingForHandoff: boolean
+  remainingChatWindows: number
+  quitInProgress: boolean
+}): boolean {
+  if (platform === 'darwin') {
+    return false
+  }
+
+  if (isQuittingForHandoff) {
+    return false
+  }
+
+  if (quitInProgress) {
+    return false
+  }
+
+  return remainingChatWindows === 0
+}
+
+/**
  * Explicit-activation restore for a user-invoked relaunch (#130810).
  *
  * Unlike the ambient `focusWindow` in main.ts (showInactive, never steal

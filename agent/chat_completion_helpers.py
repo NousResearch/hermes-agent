@@ -3500,6 +3500,9 @@ class _StreamingCall(StreamingWaitMonitor):
             response = self._attempt_stream_response = getattr(raw_stream, "response", None)
             # Snapshot response diagnostics now so they survive a stream dying before the first event.
             self._quiet(lambda: self.agent._stream_diag_capture_response(_diag, response))
+            # The streamed main turn never reaches create_anthropic_message's on_response hook, so
+            # capture rate-limit / credits headers here, as _chat_stream_created does for its wire.
+            self._quiet(lambda: self.agent._capture_anthropic_response_headers(response))
             self._writer_token = claim_stream_writer(self.agent)
             self._reabort_if_cancelled(response)
 

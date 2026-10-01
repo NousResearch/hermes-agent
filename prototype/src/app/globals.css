@@ -1,0 +1,224 @@
+@import "tailwindcss";
+
+/* ============================================================
+   ARO WORKBENCH — DESIGN TOKENS  (themeable via html[data-theme])
+   Ported from the attached coding-agent-design-system (Conductor).
+   ============================================================ */
+@theme {
+  --color-void: var(--t-void);
+  --color-sunken: var(--t-sunken);
+  --color-base: var(--t-base);
+  --color-raise: var(--t-raise);
+  --color-hover: var(--t-hover);
+  --color-overlay: var(--t-overlay);
+  --color-well: var(--t-well);
+  --color-code: var(--t-code);
+  --color-track: var(--t-track);
+  --color-line: var(--t-line);
+  --color-line-soft: var(--t-line-soft);
+  --color-line-strong: var(--t-line-strong);
+
+  --color-ink: var(--t-ink);
+  --color-ink-2: var(--t-ink-2);
+  --color-ink-3: var(--t-ink-3);
+  --color-ink-4: var(--t-ink-4);
+
+  --color-iris: var(--t-iris);
+  --color-iris-soft: var(--t-iris-soft);
+  --color-iris-deep: var(--t-iris-deep);
+  --color-iris-tint: color-mix(in srgb, var(--t-iris) 14%, var(--t-base));
+  --color-on-iris: var(--t-on-iris);
+  --color-cyan: var(--t-cyan);
+  --color-cyan-tint: color-mix(in srgb, var(--t-cyan) 12%, var(--t-base));
+  --color-mint: var(--t-mint);
+  --color-mint-tint: color-mix(in srgb, var(--t-mint) 12%, var(--t-base));
+  --color-amber: var(--t-amber);
+  --color-amber-tint: color-mix(in srgb, var(--t-amber) 13%, var(--t-base));
+  --color-rose: var(--t-rose);
+  --color-rose-tint: color-mix(in srgb, var(--t-rose) 12%, var(--t-base));
+  --color-sky: var(--t-sky);
+  --color-sky-tint: color-mix(in srgb, var(--t-sky) 12%, var(--t-base));
+  --color-plum: var(--t-plum);
+  --color-plum-tint: color-mix(in srgb, var(--t-plum) 12%, var(--t-base));
+
+  --font-display: var(--f-grotesk, "Space Grotesk"), "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--f-inter, "Inter"), "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--f-jbmono, "JetBrains Mono"), "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+
+  --shadow-e1: 0 1px 2px var(--t-shadow-a);
+  --shadow-e2: 0 2px 8px -2px var(--t-shadow-b);
+  --shadow-e3: 0 12px 32px -8px var(--t-shadow-c);
+  --shadow-e4: 0 32px 80px -24px var(--t-shadow-d);
+  --shadow-glow-iris: 0 0 0 1px color-mix(in srgb, var(--t-iris) 40%, transparent), 0 8px 30px -10px color-mix(in srgb, var(--t-iris) 55%, transparent);
+
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --animate-rise: rise 0.32s var(--ease-out-quint) both;
+  --animate-fade: fade 0.22s ease both;
+  --animate-pop: pop 0.22s var(--ease-spring) both;
+  --animate-shimmer: shimmer 2.2s linear infinite;
+  --animate-breathe: breathe 2.6s ease-in-out infinite;
+  --animate-slide-down: slideDown 0.2s var(--ease-out-quint) both;
+  --animate-slide-up: slideUp 0.24s var(--ease-out-quint) both;
+  --animate-caret: caret 1.1s steps(1) infinite;
+  --animate-sweep: sweep 1.6s ease-in-out infinite;
+  --animate-sheet: sheetIn 0.28s var(--ease-out-quint) both;
+}
+@keyframes sheetIn { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
+@keyframes drawerIn { from { opacity: 0; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
+@utility drawer-in { animation: drawerIn 0.24s var(--ease-out-quint) both; }
+
+/* ---------------- THEMES ---------------- */
+:root,
+html[data-theme="obsidian"] {
+  color-scheme: dark;
+  --t-void: #06070a; --t-sunken: #090b10; --t-base: #0c0e14; --t-raise: #12151d;
+  --t-hover: #1a1e29; --t-overlay: #1b202b; --t-well: #0f1218; --t-code: #07080b; --t-track: #191d26;
+  --t-line: #1f232f; --t-line-soft: #171a22; --t-line-strong: #2b3040;
+  --t-ink: #eaecf3; --t-ink-2: #a3acbe; --t-ink-3: #727c94; --t-ink-4: #4e5768;
+  --t-iris: #7c6bff; --t-iris-soft: #a89cff; --t-iris-deep: #4a3ec2; --t-on-iris: #ffffff;
+  --t-cyan: #35d6c4; --t-mint: #46d68f; --t-amber: #f2b33d; --t-rose: #ff6b7a; --t-sky: #5ba8ff; --t-plum: #e879c8;
+  --t-shadow-a: rgba(0,0,0,.4); --t-shadow-b: rgba(0,0,0,.55); --t-shadow-c: rgba(0,0,0,.7); --t-shadow-d: rgba(0,0,0,.85);
+}
+html[data-theme="daylight"] {
+  color-scheme: light;
+  --t-void: #eef0f4; --t-sunken: #f4f5f8; --t-base: #ffffff; --t-raise: #f7f8fb;
+  --t-hover: #eceef3; --t-overlay: #ffffff; --t-well: #f3f4f8; --t-code: #f6f7fa; --t-track: #e4e7ee;
+  --t-line: #dfe3ea; --t-line-soft: #e9ecf1; --t-line-strong: #c9cfda;
+  --t-ink: #15181f; --t-ink-2: #3f4655; --t-ink-3: #6b7383; --t-ink-4: #9aa1b0;
+  --t-iris: #5b4ce6; --t-iris-soft: #4e3fd6; --t-iris-deep: #3f33b8; --t-on-iris: #ffffff;
+  --t-cyan: #0f9f90; --t-mint: #1f9f5f; --t-amber: #b7790a; --t-rose: #d8404f; --t-sky: #2874d6; --t-plum: #b23f97;
+  --t-shadow-a: rgba(20,24,40,.06); --t-shadow-b: rgba(20,24,40,.08); --t-shadow-c: rgba(20,24,40,.14); --t-shadow-d: rgba(20,24,40,.22);
+}
+html[data-theme="nord"] {
+  color-scheme: dark;
+  --t-void: #1f232c; --t-sunken: #242933; --t-base: #2a303b; --t-raise: #313845;
+  --t-hover: #3a4252; --t-overlay: #333b49; --t-well: #2d3440; --t-code: #232832; --t-track: #3a4252;
+  --t-line: #3b4354; --t-line-soft: #343c4a; --t-line-strong: #4a5468;
+  --t-ink: #eceff4; --t-ink-2: #c8cfdb; --t-ink-3: #8d97a8; --t-ink-4: #667184;
+  --t-iris: #88c0d0; --t-iris-soft: #a3d2df; --t-iris-deep: #5e81ac; --t-on-iris: #1f232c;
+  --t-cyan: #8fbcbb; --t-mint: #a3be8c; --t-amber: #ebcb8b; --t-rose: #bf616a; --t-sky: #81a1c1; --t-plum: #b48ead;
+  --t-shadow-a: rgba(0,0,0,.3); --t-shadow-b: rgba(0,0,0,.4); --t-shadow-c: rgba(0,0,0,.55); --t-shadow-d: rgba(0,0,0,.7);
+}
+html[data-theme="ember"] {
+  color-scheme: dark;
+  --t-void: #0e0a09; --t-sunken: #130e0c; --t-base: #171210; --t-raise: #1f1815;
+  --t-hover: #2a211d; --t-overlay: #2a211d; --t-well: #1b1512; --t-code: #100c0a; --t-track: #2a211d;
+  --t-line: #2e2521; --t-line-soft: #241d19; --t-line-strong: #3f332d;
+  --t-ink: #f5ece4; --t-ink-2: #c9b9ad; --t-ink-3: #8f8074; --t-ink-4: #62564d;
+  --t-iris: #ff8a4c; --t-iris-soft: #ffab7d; --t-iris-deep: #c85f26; --t-on-iris: #1a0f08;
+  --t-cyan: #4fd1b5; --t-mint: #7bd389; --t-amber: #f5c05a; --t-rose: #ff6b6b; --t-sky: #6cb4ff; --t-plum: #e48fd0;
+  --t-shadow-a: rgba(0,0,0,.4); --t-shadow-b: rgba(0,0,0,.55); --t-shadow-c: rgba(0,0,0,.7); --t-shadow-d: rgba(0,0,0,.85);
+}
+html[data-theme="paper"] {
+  color-scheme: light;
+  --t-void: #ece7dc; --t-sunken: #f1ede3; --t-base: #faf7f0; --t-raise: #f4f0e6;
+  --t-hover: #e9e3d5; --t-overlay: #fbf9f3; --t-well: #f0ebe0; --t-code: #f3efe5; --t-track: #e0d9ca;
+  --t-line: #dcd4c3; --t-line-soft: #e6dfd0; --t-line-strong: #c6bca6;
+  --t-ink: #23201a; --t-ink-2: #4b463c; --t-ink-3: #7a7262; --t-ink-4: #a59c88;
+  --t-iris: #8a5cf6; --t-iris-soft: #7748e8; --t-iris-deep: #5f36c9; --t-on-iris: #ffffff;
+  --t-cyan: #0f8f86; --t-mint: #3e8f3e; --t-amber: #a86e0a; --t-rose: #c7453f; --t-sky: #2d6fc2; --t-plum: #a8408f;
+  --t-shadow-a: rgba(60,45,20,.06); --t-shadow-b: rgba(60,45,20,.09); --t-shadow-c: rgba(60,45,20,.15); --t-shadow-d: rgba(60,45,20,.22);
+}
+
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pop { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+@keyframes shimmer { from { background-position: -200% 0; } to { background-position: 200% 0; } }
+@keyframes breathe { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.86); } }
+@keyframes slideDown { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
+
+@layer base {
+  * { border-color: var(--color-line); }
+  html, body { height: 100%; }
+  html { overflow: hidden; }
+  body {
+    background: var(--color-void);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01", "tnum";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+    transition: background-color .25s ease, color .25s ease;
+  }
+  ::selection { background: color-mix(in srgb, var(--color-iris) 32%, transparent); }
+  button, input, textarea { font: inherit; color: inherit; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  }
+}
+
+@utility scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+  &::-webkit-scrollbar { width: 9px; height: 9px; }
+  &::-webkit-scrollbar-track { background: transparent; }
+  &::-webkit-scrollbar-thumb { background: var(--color-line-strong); border: 3px solid transparent; background-clip: content-box; border-radius: 99px; }
+}
+@utility no-scrollbar { scrollbar-width: none; &::-webkit-scrollbar { display: none; } }
+@utility inset-line { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-ink) 5%, transparent); }
+@utility grid-bg {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--color-ink) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--color-ink) 4%, transparent) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+@utility dot-bg {
+  background-image: radial-gradient(color-mix(in srgb, var(--color-ink) 8%, transparent) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+/* Ambient depth behind working surfaces — subtle, never a blob */
+@utility ambient {
+  background-image:
+    radial-gradient(820px 380px at 50% 112%, color-mix(in srgb, var(--color-iris) 8%, transparent), transparent 68%),
+    radial-gradient(560px 280px at 8% -12%, color-mix(in srgb, var(--color-cyan) 5%, transparent), transparent 70%),
+    linear-gradient(180deg, color-mix(in srgb, var(--color-ink) 1.6%, transparent), transparent 220px);
+}
+/* Top hairline highlight on raised chrome */
+@utility hairline {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-ink) 6%, transparent);
+}
+@utility tabular { font-variant-numeric: tabular-nums; }
+@utility text-gradient {
+  background: linear-gradient(100deg, var(--color-ink) 10%, var(--color-iris-soft) 55%, var(--color-cyan) 95%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+@utility skeleton {
+  background: linear-gradient(90deg, var(--color-raise) 0%, var(--color-hover) 40%, var(--color-raise) 80%);
+  background-size: 200% 100%; animation: var(--animate-shimmer);
+}
+@utility ring-focus {
+  outline: none;
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-iris) 70%, transparent), 0 0 0 5px color-mix(in srgb, var(--color-iris) 14%, transparent);
+}
+@utility diff-add { background: color-mix(in srgb, var(--color-mint) 10%, transparent); box-shadow: inset 2px 0 0 var(--color-mint); }
+@utility diff-del { background: color-mix(in srgb, var(--color-rose) 10%, transparent); box-shadow: inset 2px 0 0 var(--color-rose); }
+@utility resizer-y {
+  position: relative; flex-shrink: 0; height: 5px; margin: -2px 0; cursor: row-resize; z-index: 30;
+  &::after { content: ""; position: absolute; inset: 2px 0; background: transparent; transition: background .15s; }
+  &:hover::after, &[data-active="true"]::after { background: var(--color-iris); }
+}
+@utility resizer {
+  position: relative; flex-shrink: 0; width: 5px; margin: 0 -2px; cursor: col-resize; z-index: 30;
+  &::after { content: ""; position: absolute; inset: 0 2px; background: transparent; transition: background .15s; }
+  &:hover::after, &[data-active="true"]::after { background: var(--color-iris); }
+}
+
+/* Aro brand accent — the emerald of the Aro mark, usable as an agent tone */
+@theme {
+  --color-emerald: #10b981;
+  --color-emerald-soft: #6ee7b7;
+  --color-emerald-tint: color-mix(in srgb, #10b981 12%, var(--t-base));
+}

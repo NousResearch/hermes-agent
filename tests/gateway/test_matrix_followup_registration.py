@@ -635,7 +635,8 @@ async def test_replacement_transport_preserves_turn_queue_and_final_choice(
 async def test_pending_control_on_a_watched_reply_claims_the_reaction(
     delivery, monkeypatch, control, valid_choice
 ):
-    from plugins.platforms.matrix.adapter import _MatrixApprovalPrompt, _MatrixPickerPrompt
+    from plugins.platforms.matrix.adapter import _MatrixPickerPrompt
+    from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
     from tools import approval
 
     adapter = delivery.adapter
@@ -648,7 +649,7 @@ async def test_pending_control_on_a_watched_reply_claims_the_reaction(
     resolved = []
     monkeypatch.setattr(
         approval, "resolve_gateway_approval",
-        lambda session_key, choice: resolved.append((session_key, choice)) or 1,
+        lambda session_key, choice, *, approval_id: resolved.append((session_key, choice, approval_id)) or 1,
     )
 
     async def selected(_room, choice):
@@ -656,9 +657,9 @@ async def test_pending_control_on_a_watched_reply_claims_the_reaction(
 
     if control == "approval":
         adapter._approval_prompts_by_event[target] = _MatrixApprovalPrompt(
-            "session", source.chat_id, target, requester_user_id=source.user_id,
+            "session", source.chat_id, target, approval_id="control-approval", requester_user_id=source.user_id,
         )
-        emoji, expected = "✅", ("session", "once")
+        emoji, expected = "✅", ("session", "once", "control-approval")
     else:
         registry = (adapter._model_picker_prompts_by_event if control == "model-picker"
                     else adapter._choice_picker_prompts_by_event)

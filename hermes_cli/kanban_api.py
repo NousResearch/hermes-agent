@@ -760,7 +760,7 @@ def task_transcript(
     if not _transcripts_enabled():
         raise HTTPException(status_code=404, detail="transcripts are disabled")
     with _connection(board) as conn:
-        task = _require_task(conn, task_id)
+        _require_task(conn, task_id)
         if run_id is None:
             run = kanban_db.latest_run(conn, task_id)
         else:
@@ -773,7 +773,8 @@ def task_transcript(
     messages: list[dict[str, Any]] = []
     has_more = False
     if run is not None and session_id:
-        profile = run.profile or task.assignee or "default"
+        # The run's own profile, never the task's assignee: PATCH can repoint the assignee.
+        profile = run.profile or "default"
         try:
             rows = _read_session_messages(
                 profile, str(session_id), 0 if latest else after_id, limit + 1, latest

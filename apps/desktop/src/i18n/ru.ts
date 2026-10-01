@@ -516,6 +516,29 @@ export const ru = defineLocale({
     noResults: 'Языки не найдены'
   },
   settings: {
+    voiceCommandProvider: {
+      add: 'Добавить локального провайдера STT',
+      description:
+        'Запускайте доверенную локальную команду для распознавания речи. Hermes передаёт путь к аудиофайлу и читает записанную командой расшифровку; команда выполняется со всеми правами вашего пользователя.',
+      providerName: 'Имя провайдера',
+      command: 'Команда',
+      commandHelp: 'Обязательны: {input_path} и {output_path} или {output_dir}.',
+      language: 'Язык',
+      model: 'Модель',
+      optional: 'Необязательно',
+      transcriptFormat: 'Формат расшифровки',
+      timeout: 'Время ожидания',
+      timeoutPlaceholder: '300 секунд',
+      addProvider: 'Добавить провайдера',
+      errors: {
+        invalidName:
+          'Используйте имя из строчных латинских букв, начиная с буквы; допустимы цифры, дефисы и подчёркивания.',
+        reservedName: 'Это имя зарезервировано для встроенного провайдера STT.',
+        duplicateName: 'Провайдер с таким именем уже существует.',
+        missingInput: 'Команда должна содержать {input_path}.',
+        missingOutput: 'Команда должна содержать {output_path} или {output_dir}.'
+      }
+    },
     subpages: {
       appearanceTheme: 'Тема',
       appearanceTypography: 'Шрифты и масштаб',

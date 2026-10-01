@@ -808,6 +808,29 @@ export const deOverrides = {
     noResults: 'Keine Sprachen gefunden'
   },
   settings: {
+    voiceCommandProvider: {
+      add: 'Lokalen STT-Anbieter hinzufügen',
+      description:
+        'Führen Sie einen vertrauenswürdigen lokalen Befehl zur Spracherkennung aus. Hermes übergibt den Audiopfad und liest das vom Befehl geschriebene Transkript; der Befehl wird mit allen Rechten Ihres Benutzerkontos ausgeführt.',
+      providerName: 'Anbietername',
+      command: 'Befehl',
+      commandHelp: 'Erforderlich: {input_path} und entweder {output_path} oder {output_dir}.',
+      language: 'Sprache',
+      model: 'Modell',
+      optional: 'Optional',
+      transcriptFormat: 'Transkriptformat',
+      timeout: 'Zeitlimit',
+      timeoutPlaceholder: '300 Sekunden',
+      addProvider: 'Anbieter hinzufügen',
+      errors: {
+        invalidName:
+          'Verwenden Sie einen Namen aus lateinischen Kleinbuchstaben, der mit einem Buchstaben beginnt; Zahlen, Bindestriche und Unterstriche sind erlaubt.',
+        reservedName: 'Dieser Name ist für einen integrierten STT-Anbieter reserviert.',
+        duplicateName: 'Ein Anbieter mit diesem Namen ist bereits vorhanden.',
+        missingInput: 'Der Befehl muss {input_path} enthalten.',
+        missingOutput: 'Der Befehl muss {output_path} oder {output_dir} enthalten.'
+      }
+    },
     subpages: {
       appearanceTheme: 'Design',
       appearanceTypography: 'Typografie',

@@ -56,6 +56,7 @@ import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { VoiceCommandProviderAction } from './voice-command-provider-dialog'
 
 export function ConfigSettings({
   activeSectionId,
@@ -471,6 +472,7 @@ function ConfigSettingsInner({
           <QuickEntrySettings />
         </>
       )}
+      {activeSectionId === 'voice' && <VoiceCommandProviderAction config={config} onApply={updateConfig} />}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}

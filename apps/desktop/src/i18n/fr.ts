@@ -808,6 +808,29 @@ export const frOverrides = {
     noResults: 'Aucune langue trouvée'
   },
   settings: {
+    voiceCommandProvider: {
+      add: 'Ajouter un fournisseur STT local',
+      description:
+        'Exécutez une commande locale de confiance pour la reconnaissance vocale. Hermes fournit le chemin du fichier audio et lit la transcription écrite par votre commande ; celle-ci dispose de tous les droits de votre compte utilisateur.',
+      providerName: 'Nom du fournisseur',
+      command: 'Commande',
+      commandHelp: 'Requis : {input_path} et soit {output_path}, soit {output_dir}.',
+      language: 'Langue',
+      model: 'Modèle',
+      optional: 'Facultatif',
+      transcriptFormat: 'Format de transcription',
+      timeout: 'Délai maximal',
+      timeoutPlaceholder: '300 secondes',
+      addProvider: 'Ajouter le fournisseur',
+      errors: {
+        invalidName:
+          'Utilisez un nom en minuscules commençant par une lettre latine ; les chiffres, tirets et traits de soulignement sont autorisés.',
+        reservedName: 'Ce nom est réservé à un fournisseur STT intégré.',
+        duplicateName: 'Un fournisseur portant ce nom existe déjà.',
+        missingInput: 'La commande doit contenir {input_path}.',
+        missingOutput: 'La commande doit contenir {output_path} ou {output_dir}.'
+      }
+    },
     subpages: {
       appearanceTheme: 'Thème',
       appearanceTypography: 'Typographie',

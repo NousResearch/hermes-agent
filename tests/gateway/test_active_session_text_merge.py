@@ -232,23 +232,27 @@ async def test_debounce_resets_timer_on_new_arrival():
     ([], []),
     (["/tmp/q.png"], ["image/png"]),
 ])
-def test_pending_message_merge_keeps_incoming_reply_context(media_urls, media_types):
+@pytest.mark.parametrize("authorized", [None, False, True])
+def test_pending_message_merge_keeps_incoming_reply_context(media_urls, media_types, authorized):
     existing = _make_event("one")
     incoming = _make_event("two")
     incoming.media_urls, incoming.media_types = list(media_urls), list(media_types)
     incoming.reply_to_message_id, incoming.reply_to_text = "$photo", "[image]"
     incoming.reply_to_author_id, incoming.reply_to_author_name = "@alice:example.org", "Alice"
-    incoming.reply_to_author_authorized = True
+    incoming.reply_to_author_authorized = authorized
+    expected = replace(
+        existing, text="one\n\ntwo" if media_urls else "one\ntwo",
+        media_urls=list(media_urls), media_types=list(media_types),
+        media_text_inlined=[None] * len(media_urls),
+        reply_to_message_id="$photo", reply_to_text="[image]",
+        reply_to_author_id="@alice:example.org", reply_to_author_name="Alice",
+        reply_to_author_authorized=authorized, merged_message_ids=[incoming.message_id],
+    )
     pending = {"session": existing}
 
     merge_pending_message_event(pending, "session", incoming, merge_text=True)
 
-    merged = pending["session"]
-    assert (
-        merged.media_urls, merged.reply_to_message_id, merged.reply_to_text,
-        merged.reply_to_author_id, merged.reply_to_author_name,
-        merged.reply_to_is_own_message, merged.reply_to_author_authorized,
-    ) == (media_urls, "$photo", "[image]", "@alice:example.org", "Alice", False, True)
+    assert pending == {"session": expected}
 
 
 @pytest.mark.asyncio
@@ -393,6 +397,7 @@ async def test_busy_merges_preserve_reply_context_and_attachments(
             replace(
                 events[members[0]],
                 text=text,
+                merged_message_ids=[events[index].message_id for index in members if index != anchor_index],
                 message_id=events[anchor_index].message_id,
                 reply_to_message_id=quote.reply_to_message_id,
                 reply_to_text=quote.reply_to_text,

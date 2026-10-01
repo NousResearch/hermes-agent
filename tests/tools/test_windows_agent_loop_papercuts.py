@@ -127,6 +127,15 @@ class TestBrowserScreenshotPathRegex:
         m = self._re().findall("shot: C:/Users/u/shots/page.jpeg")
         assert m == ["C:/Users/u/shots/page.jpeg"]
 
+    def test_long_base64_output_does_not_trigger_unbounded_scan(self):
+        import time
+        import tools.browser_use_cli as bu_cli
+
+        blob = ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" * 4000)[:200 * 1024]
+        started = time.perf_counter()
+        assert bu_cli._find_screenshot(blob, since=time.time()) is None
+        assert time.perf_counter() - started < 0.05
+
     def test_posix_path_still_matches(self):
         m = self._re().findall("wrote /tmp/bu-task/shot.webp")
         assert m == ["/tmp/bu-task/shot.webp"]

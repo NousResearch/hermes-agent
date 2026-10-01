@@ -163,6 +163,34 @@ test('failed foreground re-login returns the original gate refusal without retry
   expect(retries).toBe(0)
 })
 
+test('a Hermes Cloud agent gate 401 never clears cookies or opens a cookie login, even in the foreground', async () => {
+  const refusal = GATE_401()
+  const actions: string[] = []
+
+  await expect(
+    retryCookie401WithLogin(
+      refusal,
+      { method: 'GET' },
+      {
+        cookieLoginAllowed: false,
+        clearCookies: () => {
+          actions.push('clear')
+        },
+        login: async () => {
+          actions.push('login')
+        },
+        retry: async () => {
+          actions.push('retry')
+
+          return 'unexpected'
+        }
+      }
+    )
+  ).rejects.toBe(refusal)
+  expect(canShowInteractiveOauthLogin()).toBe(true)
+  expect(actions).toEqual([])
+})
+
 test('ws-ticket minting vouches for replay on a cookie 401', async () => {
   let seen: any
 

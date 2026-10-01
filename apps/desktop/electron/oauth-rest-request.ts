@@ -72,12 +72,29 @@ export function canShowInteractiveOauthLogin(): boolean {
   return interactiveLoginAllowed.getStore() !== false
 }
 
+export interface CookieReloginActions<T> {
+  clearCookies: () => void
+  login: () => Promise<unknown>
+  retry: () => Promise<T>
+  /**
+   * False for a gateway whose credential never comes from an embedded cookie
+   * login. A Hermes Cloud agent signs in only through the desktop's portal
+   * session (system browser + token exchange); a hidden cookie window there
+   * would land on the portal's own login page inside an app window.
+   */
+  cookieLoginAllowed?: boolean
+}
+
 export async function retryCookie401WithLogin<T>(
   error: unknown,
   options: { method?: unknown; replayOn401?: unknown },
-  actions: { clearCookies: () => void; login: () => Promise<unknown>; retry: () => Promise<T> }
+  actions: CookieReloginActions<T>
 ): Promise<T> {
-  if (!canShowInteractiveOauthLogin() || !shouldReplayAfterCookie401(error, options)) {
+  if (
+    actions.cookieLoginAllowed === false ||
+    !canShowInteractiveOauthLogin() ||
+    !shouldReplayAfterCookie401(error, options)
+  ) {
     throw error
   }
 

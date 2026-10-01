@@ -224,6 +224,27 @@ test('a 400 invalid_grant on refresh clears the store: the user is signed out', 
   expect(session.hasLivePortalSession()).toBe(false)
 })
 
+test('background portal auth never opens the system browser: only login() does', async () => {
+  // Signed out, and a refresh the portal rejects: discovery, the per-agent
+  // exchange and token reads all report "sign in" instead of starting one.
+  const signedOut = makeSession({})
+
+  await expect(signedOut.session.getPortalAccessToken()).resolves.toBeNull()
+  await expect(signedOut.session.exchangeForAgent('agt_1')).rejects.toMatchObject({ needsCloudLogin: true })
+  expect(signedOut.opened).toEqual([])
+
+  const rejected = makeSession({
+    store: makeStore({ [PORTAL]: fresh({ expiresAt: 1 }) }),
+    postJson: async () => {
+      throw httpStatusError(400, JSON.stringify({ error: 'invalid_grant' }))
+    }
+  })
+
+  await expect(rejected.session.exchangeForAgent('agt_1')).rejects.toMatchObject({ needsCloudLogin: true })
+  await expect(rejected.session.getPortalAccessToken()).resolves.toBeNull()
+  expect(rejected.opened).toEqual([])
+})
+
 test('a transient refresh failure keeps the refresh token for the next attempt', async () => {
   const store = makeStore({ [PORTAL]: fresh({ expiresAt: 1 }) })
 

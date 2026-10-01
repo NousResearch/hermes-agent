@@ -66,7 +66,7 @@ import { BackendDialClaims } from './backend-dial-claim'
 import type { HostBackendRecord } from './backend-discovery'
 import { buildDesktopBackendEnv, profileBackendParentEnv } from './backend-env'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
-import { isReauthRequiredError, waitForHermesReady } from './backend-health'
+import { isNousCloudAgentUrl, isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   backendCommandMatches,
   type BackendOwnershipEntry,
@@ -115,6 +115,7 @@ import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { createCloudAgentAuth, createCloudAgentRegistry } from './cloud-agent-auth'
+import { isCloudLoginRequired } from './cloud-auth-errors'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverCloudAgentsWithBearer } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
@@ -7791,6 +7792,9 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 
   return attempt().catch(async error => {
     return retryCookie401WithLogin(error, options, {
+      // Hermes Cloud agents authenticate with exchanged bearers only; a cookie
+      // re-login there would open the portal's login page in an app window.
+      cookieLoginAllowed: !isHermesCloudAgentRequestUrl(url),
       clearCookies: () => remoteSessionCookies.clear(partition, url),
       login: async () => {
         try {
@@ -7913,6 +7917,24 @@ const nativeAccessTokenCoordinator: ReturnType<typeof createNativeAccessTokenCoo
       isSavedCloudConnection: baseUrl => isSavedCloudConnectionUrl(baseUrl)
     })
   )
+
+// Whether a request URL targets a Hermes Cloud agent dashboard: the Cloud
+// host suffix, a portal-confirmed registry binding, or a saved Cloud-mode
+// connection. Errs toward "Cloud" — the only consequence is that no embedded
+// cookie login is attempted for it.
+function isHermesCloudAgentRequestUrl(url: string): boolean {
+  if (isNousCloudAgentUrl(url)) {
+    return true
+  }
+
+  try {
+    const origin = new URL(url).origin
+
+    return cloudAgentRegistry.agentIdFor(origin) !== null || isSavedCloudConnectionUrl(origin)
+  } catch {
+    return false
+  }
+}
 
 // Whether a saved connection (legacy connection.json — global or per-profile —
 // or the v2 registry) points at this URL in Hermes Cloud mode. Only gates the
@@ -16340,7 +16362,9 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             profiles: null,
             error: redactSecrets(String(error?.message || error)),
             needsSignIn:
-              isReauthRequiredError(error) || (connection.authMode === 'oauth' && isGatewayAuthRejection(error))
+              isReauthRequiredError(error) ||
+              isCloudLoginRequired(error) ||
+              (connection.authMode === 'oauth' && isGatewayAuthRejection(error))
           }
         }
 

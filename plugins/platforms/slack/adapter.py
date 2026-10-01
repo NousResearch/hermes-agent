@@ -248,10 +248,11 @@ def _wrap_markdown_tables(text: str) -> str:
     return "\n".join(out)
 
 
-# Slash invoker's user_id: set in _handle_slash_command, read in send() to pick the right stashed
-# response_url under concurrent slashes (ContextVars propagate to the background task).
-_slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "_slash_user_id", default=None)
+# The reply context of the slash invocation this task is answering. It belongs to one invocation,
+# not to a channel + user, so two overlapping slashes from one sender cannot take each other's
+# ephemeral reply; the background task inherits the same dict, which send() marks consumed.
+_slash_reply_context: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
+    "_slash_reply_context", default=None)
 
 
 @dataclass
@@ -1105,9 +1106,6 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self._native_task_card_streams: dict[tuple[str, str, str], _NativeTaskCardStream] = {}
         # Guard: set the Slack AI thread title once per DM thread, not per reply.
         self._titled_assistant_threads: set = set()
-        # Slash-command contexts so send() can route the first reply ephemerally. Keyed
-        # (team_id, channel_id, user_id), two-part when no team id → {"response_url", "ts"}.
-        self._slash_command_contexts: dict[tuple[str, ...], dict[str, Any]] = {}
         self._slash_lanes = SlashHandoffLanes()  # arrival order of one session's slashes
         # Native streaming state per _stream_key: {"ts", "draft_id", "sent", "started", "base"}.
         # ``sent`` is the raw pre-mrkdwn text of the whole segment; the API is append-only so
@@ -1429,31 +1427,18 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 "This usually means a scope, auth, or file-permission problem.")
         return None
 
-    # Slash-command ephemeral helpers. response_url is valid 30 min; the much shorter TTL avoids
-    # routing unrelated messages as ephemeral after a slow/dropped handler. Hard cap because TTL
-    # cleanup only runs on lookup, so never-replied contexts would accumulate.
-    _SLASH_CTX_TTL = 120.0
-    _SLASH_CTX_MAX = 1000
-
-    def _pop_slash_context(self, chat_id: str, team_id: str = "") -> Optional[dict[str, Any]]:
-        """Pop the fresh slash context for *chat_id*, matched on the exact ``(team_id, channel_id,
-        user_id)`` key via the ``_slash_user_id`` ContextVar so a concurrent slash from another
-        user/workspace can't steal it. ContextVar unset (non-slash send) matches nothing, else
-        normal sends would steal a pending slash reply."""
-        self._purge_stale_slash_contexts()  # dict is small; purge on every lookup
-        team_id = str(team_id or "")
-        uid = _slash_user_id.get()
-        if uid:
-            key = (team_id, chat_id, uid) if team_id else (chat_id, uid)
-            return self._slash_command_contexts.pop(key, None)
-        return None
-
-    def _purge_stale_slash_contexts(self) -> None:
-        now = time.monotonic()
-        for k in [
-            k for k, v in self._slash_command_contexts.items()
-            if now - v["ts"] > self._SLASH_CTX_TTL]:
-            self._slash_command_contexts.pop(k, None)
+    @staticmethod
+    def _pop_slash_context(chat_id: str, team_id: str = "") -> Optional[dict[str, Any]]:
+        """Take this task's slash reply context for a send to *chat_id* in *team_id*, once: the
+        first reply goes ephemeral. Read from the invocation's own ContextVar, so a send outside
+        a slash (unset) or to another channel/workspace takes nothing. Not time-limited: when the
+        response_url has expired, the postEphemeral fallback still keeps the reply private."""
+        ctx = _slash_reply_context.get()
+        if (not ctx or ctx["consumed"] or ctx["channel_id"] != chat_id
+                or ctx["team_id"] != str(team_id or "")):
+            return None
+        ctx["consumed"] = True
+        return ctx
 
     def _format_chunks(self, content: str) -> list[str]:
         """mrkdwn-format ``content`` and split to ``MAX_MESSAGE_LENGTH`` (never empty)."""
@@ -6235,45 +6220,26 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         if not rejected and not controls_running_turn:
             lane = self._event_session_key(event)  # slot taken before any lookup is awaited
             ahead, handed_off = self._slash_lanes.reserve(lane)
-        # ContextVar lets send() match the right response_url under concurrent slashes.
-        slash_user_token = _slash_user_id.set(user_id or None)
+        # The first reply of this invocation goes ephemeral. COMMAND events only: free-form
+        # "/hermes <question>" replies must stay public.
+        response_url = command.get("response_url", "")
+        reply_ctx = None
+        if response_url and user_id and channel_id and text.startswith("/"):
+            reply_ctx = {
+                "response_url": response_url, "user_id": user_id, "channel_id": channel_id,
+                "team_id": str(team_id or ""), "consumed": False}
+        reply_ctx_token = _slash_reply_context.set(reply_ctx)
         try:
             if lane is not None:
                 source.chat_name = await self._resolve_channel_name(channel_id, team_id=team_id)
                 source.user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
                 if ahead is not None:
                     await asyncio.wait((ahead,))
-            # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
-            # events only: free-form "/hermes <question>" replies must stay public.
-            response_url = command.get("response_url", "")
-            if response_url and user_id and channel_id and text.startswith("/"):
-                self._stash_slash_context(team_id, channel_id, user_id, response_url)
             # The slot opens once handle_message returns: the gateway may suspend before queueing.
             await self.handle_message(event)
         finally:
-            _slash_user_id.reset(slash_user_token)
+            _slash_reply_context.reset(reply_ctx_token)
             self._slash_lanes.release(lane, ahead, handed_off)
-
-    def _stash_slash_context(
-        self, team_id: str, channel_id: str, user_id: str, response_url: str) -> None:
-        """Remember a slash ``response_url`` (+ user for the postEphemeral fallback),
-        bounded: TTL-purge then oldest-first eviction, since contexts whose reply
-        never happens are otherwise never looked up."""
-        context_key = (
-            (str(team_id), str(channel_id), str(user_id))
-            if team_id
-            else (str(channel_id), str(user_id)))
-        self._slash_command_contexts[context_key] = {
-            "response_url": response_url, "user_id": user_id, "ts": time.monotonic()}
-        if len(self._slash_command_contexts) <= self._SLASH_CTX_MAX:
-            return
-        self._purge_stale_slash_contexts()
-        if len(self._slash_command_contexts) > self._SLASH_CTX_MAX:
-            excess = len(self._slash_command_contexts) - self._SLASH_CTX_MAX // 2
-            for old_key in sorted(
-                self._slash_command_contexts, key=lambda k: self._slash_command_contexts[k]["ts"]
-            )[:excess]:
-                del self._slash_command_contexts[old_key]
 
     def _build_thread_session_key(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "", *,

@@ -57,5 +57,10 @@ describe('SocialEmbedRenderer', () => {
     post(frame, 'https://www.instagram.com', measure, window)
 
     expect(frame.style.height).toBe('450px')
+
+    // Positive control: the same message from the frame's own origin and window resizes it.
+    post(frame, 'https://www.instagram.com', measure)
+
+    expect(frame.style.height).toBe('999px')
   })
 })

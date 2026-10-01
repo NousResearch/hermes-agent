@@ -3,14 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
 
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.reply_context import MatrixEventContext
+from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 from plugins.platforms.matrix.sync_transport import DurableSyncStore, SyncDispatch
+from plugins.platforms.matrix.voice_mention import ParkedVoices
 
 
-class MatrixIntakeMixin:
+class MatrixIntakeMixin(BasePlatformAdapter):
+    _client: Any
+    _require_mention: bool
+    _event_context_cache: MatrixEventContextCache
+    _parked_voices: ParkedVoices
+    _text_batch_intakes: dict[int, list[tuple[str, asyncio.Future[bool]]]]
+    _buffered_intakes: dict[str, asyncio.Future[bool]]
+    _strip_mention: Callable[[str], str]
+    _content_mentions_bot: Callable[[str, dict], bool]
+    _handle_media_message: Callable[..., Awaitable[bool | None]]
+    _background_read_receipt: Callable[[str, str], None]
+    _build_inbound_event: Callable[..., Awaitable[MessageEvent | None]]
+
     async def handle_message(self, event: MessageEvent) -> None:
         if getattr(event, "_hermes_startup_restore_replay", False) is True:
             await super().handle_message(event)

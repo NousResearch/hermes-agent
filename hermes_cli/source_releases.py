@@ -140,7 +140,7 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
         # does, any descendants prove that this pinned build would roll us back.
         if result.returncode == 0 and result.stdout.strip():
             raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
-        if terminal["head"]["sequence"] > request["sequence"]:
+        if result.returncode != 0 and terminal["head"]["sequence"] > request["sequence"]:
             # A missing qualified commit is expected in shallow checkouts, but
             # it is not evidence that the installed source is safe to retire.
             # Keep the decision conservative until ancestry can be verified.

@@ -165,6 +165,24 @@ def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, 
         _refuse_retirement_downgrade(request, terminal, ["git"], tmp_path)
 
 
+@pytest.mark.parametrize("terminal_sequence", [1, 2])
+def test_retirement_downgrade_allows_verified_empty_ancestry(monkeypatch, tmp_path, terminal_sequence):
+    from hermes_cli.source_releases import _refuse_retirement_downgrade
+
+    class Result:
+        returncode = 0
+        stdout = ""
+
+    def run(argv, **_kwargs):
+        assert argv[1:3] == ["rev-list", "--ancestry-path"]
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", run)
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": terminal_sequence}}
+    _refuse_retirement_downgrade(request, terminal, ["git"], tmp_path)
+
+
 @pytest.mark.parametrize("channel", ["stable", "canary"])
 @pytest.mark.parametrize("start", ["old", "ahead", "local"])
 def test_source_check_and_apply_land_on_selected_release(releases, monkeypatch, capsys, channel, start):

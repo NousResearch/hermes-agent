@@ -2508,23 +2508,6 @@ def _event_media_is_video(event, index: int) -> bool:
     return _event_media_kind_is(event, index, "video/", frozenset({MessageType.VIDEO}))
 
 
-def _build_media_placeholder(event) -> str:
-    """Text placeholder for media-only events (later replaced by vision enrichment).
-    Queued media is dequeued via .text only, so a caption-less event would otherwise be lost."""
-    parts = []
-    media_urls = getattr(event, "media_urls", None) or []
-    for i, url in enumerate(media_urls):
-        if _event_media_is_image(event, i):
-            parts.append(f"[User sent an image: {url}]")
-        elif _event_media_is_audio(event, i):
-            parts.append(f"[User sent audio: {url}]")
-        elif _event_media_is_video(event, i):
-            parts.append(f"[User sent a video: {url}]")
-        else:
-            parts.append(f"[User sent a file: {url}]")
-    return "\n".join(parts)
-
-
 def _build_document_context_note(
     display_name: str, agent_path: str, mtype: str, *, content_inlined: bool = True) -> str:
     """Context note prepended to a user turn when they attach a document.

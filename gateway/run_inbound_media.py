@@ -85,3 +85,22 @@ def rehomed_media_path(raw: str) -> str:
         return str(active / "cache" / Path(raw).relative_to(launch / "cache"))
     except ValueError:
         return raw
+
+
+def _build_media_placeholder(event) -> str:
+    """Text placeholder for media-only events (later replaced by vision enrichment).
+    Queued media is dequeued via .text only, so a caption-less event would otherwise be lost."""
+    from gateway.run import _event_media_is_image, _event_media_is_audio, _event_media_is_video
+
+    parts = []
+    media_urls = getattr(event, "media_urls", None) or []
+    for i, url in enumerate(media_urls):
+        if _event_media_is_image(event, i):
+            parts.append(f"[User sent an image: {url}]")
+        elif _event_media_is_audio(event, i):
+            parts.append(f"[User sent audio: {url}]")
+        elif _event_media_is_video(event, i):
+            parts.append(f"[User sent a video: {url}]")
+        else:
+            parts.append(f"[User sent a file: {url}]")
+    return "\n".join(parts)

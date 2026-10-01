@@ -15,6 +15,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
+from tests.discord_mock import ensure_discord_module as _ensure_discord_mock
 
 
 def _run(coro):
@@ -87,20 +88,6 @@ class TestTelegramSendImageFile:
 # ---------------------------------------------------------------------------
 # Discord send_image_file tests
 # ---------------------------------------------------------------------------
-
-
-def _ensure_discord_mock():
-    """Install mock discord module so DiscordAdapter can be imported."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return
-
-    discord_mod = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.Client = MagicMock
-    discord_mod.File = MagicMock
-
-    for name in ("discord", "discord.ext", "discord.ext.commands"):
-        sys.modules.setdefault(name, discord_mod)
 
 
 _ensure_discord_mock()
@@ -263,5 +250,4 @@ class TestScreenshotCleanup:
         _cleanup_old_screenshots(tmp_path, max_age_hours=24)
 
         assert old.exists(), "Repeated cleanup should be skipped while throttled"
-
 

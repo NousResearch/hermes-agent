@@ -21,6 +21,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
+from tests.discord_mock import ensure_discord_module as _ensure_discord_mock
 
 
 def _run(coro):
@@ -131,17 +132,6 @@ class TestTelegramMultiImage:
 # ---------------------------------------------------------------------------
 # Discord
 # ---------------------------------------------------------------------------
-
-
-def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return
-    discord_mod = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.Client = MagicMock
-    discord_mod.File = MagicMock
-    for name in ("discord", "discord.ext", "discord.ext.commands"):
-        sys.modules.setdefault(name, discord_mod)
 
 
 _ensure_discord_mock()
@@ -405,5 +395,4 @@ class TestEmailMultiImage:
         assert to_addr == "user@example.com"
         assert len(file_paths) == 3
         assert "alt 0" in body
-
 

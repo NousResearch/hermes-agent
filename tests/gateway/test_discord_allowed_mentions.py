@@ -6,78 +6,10 @@ and that the four ``DISCORD_ALLOW_MENTION_*`` env vars correctly opt back
 in when an operator explicitly wants a different policy.
 """
 
-import sys
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
-
-class _FakeAllowedMentions:
-    """Stand-in for ``discord.AllowedMentions`` that exposes the same four
-    boolean flags as real attributes so the test can assert on them.
-    """
-
-    def __init__(self, *, everyone=True, roles=True, users=True, replied_user=True):
-        self.everyone = everyone
-        self.roles = roles
-        self.users = users
-        self.replied_user = replied_user
-
-    def __repr__(self) -> str:  # pragma: no cover - debug helper
-        return (
-            f"AllowedMentions(everyone={self.everyone}, roles={self.roles}, "
-            f"users={self.users}, replied_user={self.replied_user})"
-        )
-
-
-def _ensure_discord_mock():
-    """Install (or augment) a mock ``discord`` module.
-
-    Other test modules in this directory stub ``discord`` via
-    ``sys.modules.setdefault`` — whichever test file imports first wins and
-    our full module is then silently dropped. We therefore ALWAYS force
-    ``AllowedMentions`` onto whatever is currently in ``sys.modules["discord"]``;
-    that's the only attribute this test file actually needs real behavior from.
-    """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
-        return
-
-    if sys.modules.get("discord") is None:
-        discord_mod = MagicMock()
-        discord_mod.Intents.default.return_value = MagicMock()
-        discord_mod.Client = MagicMock
-        discord_mod.File = MagicMock
-        discord_mod.DMChannel = type("DMChannel", (), {})
-        discord_mod.Thread = type("Thread", (), {})
-        discord_mod.ForumChannel = type("ForumChannel", (), {})
-        discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
-        discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, danger=3, green=1, blurple=2, red=3, grey=4, secondary=5)
-        discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4)
-        discord_mod.Interaction = object
-        discord_mod.Embed = MagicMock
-        discord_mod.app_commands = SimpleNamespace(
-            describe=lambda **kwargs: (lambda fn: fn),
-            choices=lambda **kwargs: (lambda fn: fn),
-            Choice=lambda **kwargs: SimpleNamespace(**kwargs),
-        )
-        discord_mod.opus = SimpleNamespace(is_loaded=lambda: True)
-
-        ext_mod = MagicMock()
-        commands_mod = MagicMock()
-        commands_mod.Bot = MagicMock
-        ext_mod.commands = commands_mod
-
-        sys.modules["discord"] = discord_mod
-        sys.modules.setdefault("discord.ext", ext_mod)
-        sys.modules.setdefault("discord.ext.commands", commands_mod)
-
-    # Whether we just installed the mock OR the mock was already installed
-    # by another test's _ensure_discord_mock, force the AllowedMentions
-    # stand-in onto it — _build_allowed_mentions() reads this attribute.
-    sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
-
+from tests.discord_mock import ensure_discord_module as _ensure_discord_mock
 
 _ensure_discord_mock()
 
@@ -116,5 +48,4 @@ def test_env_var_opts_back_into_everyone(monkeypatch):
     assert am.roles is False
     assert am.users is True
     assert am.replied_user is True
-
 

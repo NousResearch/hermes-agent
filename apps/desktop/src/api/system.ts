@@ -57,9 +57,9 @@ export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
 }
 
 // surface=declared serves the curated desktop schema; the dashboard consumes the raw plugin schema.
-export function getMemoryProviderConfig(provider: string, profile?: null | string): Promise<MemoryProviderConfig> {
+export function getMemoryProviderConfig(provider: string, profile?: ProfileScope): Promise<MemoryProviderConfig> {
   return hermesApi<MemoryProviderConfig>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`
   })
 }
@@ -67,10 +67,10 @@ export function getMemoryProviderConfig(provider: string, profile?: null | strin
 export function saveMemoryProviderConfig(
   provider: string,
   values: Record<string, string>,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
     method: 'PUT',
     body: { values }
@@ -79,12 +79,9 @@ export function saveMemoryProviderConfig(
 
 // Memory-provider OAuth connect (provider-keyed; 404s for providers without an
 // OAuth flow). Profile-scoped: the grant lands in the active profile's config.
-export function startMemoryProviderOAuth(
-  provider: string,
-  profile?: null | string
-): Promise<MemoryProviderOAuthStatus> {
+export function startMemoryProviderOAuth(provider: string, profile?: ProfileScope): Promise<MemoryProviderOAuthStatus> {
   return hermesApi<MemoryProviderOAuthStatus>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
     method: 'POST'
   })
@@ -92,10 +89,10 @@ export function startMemoryProviderOAuth(
 
 export function getMemoryProviderOAuthStatus(
   provider: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<MemoryProviderOAuthStatus> {
   return hermesApi<MemoryProviderOAuthStatus>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
   })
 }
@@ -145,9 +142,9 @@ export function runCurator(): Promise<ActionResponse> {
   })
 }
 
-export function restartGateway(): Promise<ActionResponse> {
+export function restartGateway(profile?: ProfileScope): Promise<ActionResponse> {
   return hermesApi<ActionResponse>({
-    ...profileScoped(),
+    ...capabilityScoped(profile),
     path: '/api/gateway/restart',
     method: 'POST'
   })
@@ -260,10 +257,10 @@ export function setSttLease(lease: string, active: boolean, owner: ResolvedOwner
   })
 }
 
-export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabsVoicesResponse> {
+export function getElevenLabsVoices(profile?: ProfileScope): Promise<ElevenLabsVoicesResponse> {
   return hermesApi<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices',
-    ...profileScoped(profile)
+    ...capabilityScoped(profile)
   })
 }
 

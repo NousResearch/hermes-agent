@@ -3079,6 +3079,7 @@ export function useSessionActions({
       const archived = listed?.session
       const stampedProfile = archived?.profile?.trim()
       const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
+      const archivedOwner = sessionOwnerRouteFromRow(archived) ?? profile
 
       if (
         listed &&
@@ -3109,7 +3110,7 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, profile)
+        await setSessionArchived(storedSessionId, true, archivedOwner)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, profile)

@@ -59,13 +59,19 @@ function rowsOf(data: unknown): unknown[] {
   return Array.isArray(data.sessions) ? data.sessions : []
 }
 
-function tagRowsWithConnection(rows: unknown[], connectionId: string): void {
+function tagRowsWithConnection(
+  rows: unknown[],
+  connectionId: string,
+  bindRowsToRoute?: (rows: unknown[]) => unknown[]
+): unknown[] {
   for (const row of rows) {
     if (row && typeof row === 'object') {
       const session = row as Record<string, unknown>
       session.connection_id = connectionId
     }
   }
+
+  return bindRowsToRoute ? bindRowsToRoute(rows) : rows
 }
 
 /** Preserve the registry source that served a session REST response.
@@ -74,7 +80,12 @@ function tagRowsWithConnection(rows: unknown[], connectionId: string): void {
  * own session rows naturally omit Desktop's synthetic `connection_id`. Without
  * restoring that provenance, a `profile: "default"` row later resumes through
  * the legacy local primary instead of the active registry gateway. */
-export function tagRegistrySessionResponse(path: string, data: unknown, connectionId: string): unknown {
+export function tagRegistrySessionResponse(
+  path: string,
+  data: unknown,
+  connectionId: string,
+  bindRowsToRoute?: (rows: unknown[]) => unknown[]
+): unknown {
   if (!data || typeof data !== 'object') {
     return data
   }
@@ -82,7 +93,8 @@ export function tagRegistrySessionResponse(path: string, data: unknown, connecti
   const pathname = path.split('?', 1)[0].replace(/\/+$/, '')
 
   if (pathname === '/api/sessions' || pathname === '/api/profiles/sessions') {
-    tagRowsWithConnection(rowsOf(data), connectionId)
+    const response = data as Record<string, unknown>
+    response.sessions = tagRowsWithConnection(rowsOf(data), connectionId, bindRowsToRoute)
 
     return data
   }
@@ -91,7 +103,12 @@ export function tagRegistrySessionResponse(path: string, data: unknown, connecti
     const response = data as Record<string, unknown>
 
     for (const key of ['recents', 'cron', 'messaging']) {
-      tagRowsWithConnection(rowsOf(response[key]), connectionId)
+      const slice = response[key]
+
+      if (slice && typeof slice === 'object') {
+        const record = slice as Record<string, unknown>
+        record.sessions = tagRowsWithConnection(rowsOf(slice), connectionId, bindRowsToRoute)
+      }
     }
 
     return data
@@ -100,6 +117,8 @@ export function tagRegistrySessionResponse(path: string, data: unknown, connecti
   if (/^\/api\/sessions\/[^/]+$/.test(pathname)) {
     const session = data as Record<string, unknown>
     session.connection_id = connectionId
+
+    return bindRowsToRoute ? (bindRowsToRoute([session])[0] ?? data) : data
   }
 
   return data
@@ -445,11 +464,14 @@ async function fetchSessionRowsInPages(
 export async function fetchRegistrySessionRows(
   sources: RegistrySessionSource[],
   searchParams: URLSearchParams,
-  getJson: GetJsonForDescriptor
+  getJson: GetJsonForDescriptor,
+  bindRowsToRoute?: (rows: unknown[], descriptor: unknown) => unknown[]
 ): Promise<unknown[]> {
   const rows: unknown[] = []
 
-  const tag = (sourceRows: unknown[], connectionId: string, profileLabel: null | string) => {
+  const tag = (sourceRows: unknown[], connectionId: string, profileLabel: null | string, descriptor: unknown) => {
+    const tagged: unknown[] = []
+
     for (const row of sourceRows) {
       if (!row || typeof row !== 'object') {
         continue
@@ -465,8 +487,10 @@ export async function fetchRegistrySessionRows(
 
       session.is_default_profile = false
       session.connection_id = connectionId
-      rows.push(session)
+      tagged.push(session)
     }
+
+    rows.push(...(bindRowsToRoute ? bindRowsToRoute(tagged, descriptor) : tagged))
   }
 
   await Promise.all(
@@ -482,7 +506,7 @@ export async function fetchRegistrySessionRows(
             const sourceRows = await fetchSessionRowsInPages('/api/sessions', params, path => getJson(descriptor, path))
 
             if (sourceRows) {
-              tag(sourceRows, source.connectionId, profileLabel || 'default')
+              tag(sourceRows, source.connectionId, profileLabel || 'default', descriptor)
             }
           })
         )
@@ -513,7 +537,7 @@ export async function fetchRegistrySessionRows(
       }
 
       if (sourceRows) {
-        tag(sourceRows, source.connectionId, null)
+        tag(sourceRows, source.connectionId, null, shared.descriptor)
       }
     })
   )

@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as ConfigApi from '@/api/config'
 import { I18nProvider, TRANSLATIONS } from '@/i18n'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $settingsScopeOverride } from '@/store/settings-scope'
 
 import { ModelSettings } from './model-settings'
 
@@ -42,13 +43,17 @@ vi.mock('@/hermes', async () => ({
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
   getApiRequestProfile: () => 'default',
   getMoaModels: (profile?: null | string) => getMoaModels(profile),
-  profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
+  profileScopeKey: (scope?: null | string | { connectionId?: string | null; profile?: string | null }) =>
+    scope && typeof scope === 'object'
+      ? `${scope.connectionId ?? ''}\u0000${scope.profile ?? ''}`
+      : (scope ?? '').trim() || 'default',
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   getHermesConfigRecord: () => getHermesConfigRecord(),
-  saveHermesConfig: (config: unknown) => saveHermesConfig(config),
+  saveHermesConfig: (config: unknown, profile?: unknown) =>
+    profile === undefined ? saveHermesConfig(config) : saveHermesConfig(config, profile),
   setApiRequestProfile: () => {}
 }))
 
@@ -65,6 +70,7 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 }))
 
 beforeEach(() => {
+  $settingsScopeOverride.set(null)
   getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'hermes-4' })
   getGlobalModelOptions.mockResolvedValue({
     providers: [
@@ -93,9 +99,13 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   profileSwitchHandler = null
+  $settingsScopeOverride.set(null)
 })
 
-function renderModelSettings(scopeProfile?: string) {
+function renderModelSettings(
+  scopeProfile?: string | { connectionId: string; profile: string },
+  onMainModelChanged?: (provider: string, model: string) => void
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
@@ -103,7 +113,7 @@ function renderModelSettings(scopeProfile?: string) {
     // needs a router context in tests (the app provides HashRouter at root).
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ModelSettings scopeProfile={scopeProfile} />
+        <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -192,6 +202,21 @@ describe('ModelSettings', () => {
     expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', 'leverage-ai')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualOnboarding).not.toHaveBeenCalled()
+  })
+
+  it('hands provider setup the frozen gateway/profile owner', async () => {
+    const scope = { connectionId: 'remote-a', profile: 'research' }
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'anthropic', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        { name: 'Anthropic', slug: 'anthropic', models: [], authenticated: false, auth_type: 'oauth' }
+      ]
+    })
+
+    await renderModelSettings(scope)
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
+
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', scope)
   })
 
   it('replaces the selected provider and model when the active profile changes', async () => {
@@ -316,6 +341,21 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('does not repaint active-model stores when applying a non-active profile model', async () => {
+    $settingsScopeOverride.set('research')
+    const onMainModelChanged = vi.fn()
+
+    await renderModelSettings({ connectionId: 'remote-a', profile: 'research' }, onMainModelChanged)
+
+    const modelSelect = (await screen.findAllByRole('combobox'))[1]
+    fireEvent.click(modelSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'hermes-4-mini' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect(setModelAssignment).toHaveBeenCalled())
+    expect(onMainModelChanged).not.toHaveBeenCalled()
+  })
+
   it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {
     // The cached record is a default-expanded snapshot; a CLI pin made after it
     // loaded is not in it. Echoing the whole record back would reset that
@@ -331,6 +371,20 @@ describe('ModelSettings', () => {
     fireEvent.click(fastSwitch)
 
     await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { service_tier: 'fast' } }))
+  })
+
+  it('drops a profile-default save rejection after the active profile changes', async () => {
+    let rejectSave!: (error: Error) => void
+    clearNotifications()
+    saveHermesConfig.mockReturnValueOnce(new Promise((_resolve, reject) => (rejectSave = reject)))
+    renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('switch'))
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled())
+    await act(async () => profileSwitchHandler?.())
+    await act(async () => rejectSave(new Error('old profile failed')))
+
+    expect($notifications.get()).toEqual([])
   })
 
   it('hides the reasoning/speed defaults when the main model reports no capabilities', async () => {

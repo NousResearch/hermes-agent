@@ -42,7 +42,7 @@ function confirmModelWarning(message: string): Promise<boolean> {
 export async function setMainModelAssignment(
   request: Omit<ModelAssignmentRequest, 'scope'>,
   scopeProfile?: ProfileScope,
-  options?: { skipConfirmPrompt?: boolean }
+  options?: { isCurrent?: () => boolean; skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   // Only pass the extra arg when a scope override exists, so unscoped callers
   // keep the exact legacy call shape.
@@ -68,6 +68,10 @@ export async function setMainModelAssignment(
 
     if (!accepted) {
       throw new Error(translateNow('modelAssignment.declined'))
+    }
+
+    if (options?.isCurrent?.() === false) {
+      throw new Error(translateNow('modelAssignment.saveFailed'))
     }
 
     result = await assign({ ...request, confirm_expensive_model: true })

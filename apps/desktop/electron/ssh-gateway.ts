@@ -13,19 +13,26 @@ interface Ssh {
   cancelForward(localPort: number, remotePort: number, remoteHost?: string): Promise<void>
 }
 
+/** Read-only capability inspection through the selected launcher, never a
+ * login-home probe or a gateway start. Shared by attach and cold inventory. */
+export async function inspectSshGatewayCommands(ssh: Pick<Ssh, 'exec'>, remoteHermesPath: string) {
+  const hermesPath = await locateHermes(ssh, remoteHermesPath)
+  const help = await ssh.exec(`${expandRemotePath(hermesPath)} gateway --help`, { timeoutMs: 15000 })
+  return { hermesPath, canonical: /^\s+ensure\s+/m.test(help), tickets: /^\s+ticket\s+/m.test(help) }
+}
+
 export async function attachSshGateway(options: {
   ssh: Ssh; profile: string; remoteHermesPath: string; pickLocalPort: () => Promise<number>
   signal?: AbortSignal; profileAlias?: string
 }) {
   const { ssh, profile } = options
-  const hermesPath = await locateHermes(ssh, options.remoteHermesPath)
+  const commands = await inspectSshGatewayCommands(ssh, options.remoteHermesPath)
+  const hermesPath = commands.hermesPath
   const command = expandRemotePath(hermesPath)
   // Only confirmed absence permits the existing classic connection path. A
   // transport, import, or authentication failure is never "old runtime".
-  const help = await ssh.exec(`${command} gateway --help`, { timeoutMs: 15000 })
-
-  if (!/^\s+ensure\s+/m.test(help)) {return null}
-  if (!/^\s+ticket\s+/m.test(help)) {throw new Error('Update Hermes on the SSH host to support private native tickets, then reconnect.')}
+  if (!commands.canonical) {return null}
+  if (!commands.tickets) {throw new Error('Update Hermes on the SSH host to support private native tickets, then reconnect.')}
 
   const scoped = `${command}${profile ? ` --profile ${quote(profile)}` : ''}`
   const connection = await ensureLocalGateway(async () => ({

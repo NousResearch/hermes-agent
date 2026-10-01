@@ -73,7 +73,7 @@ The `.env` keys above supply **credentials only**. The active cloud browser is c
 
 Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) instead of the built-in browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages.
 
-**This is the default browser mode**: when `browser.backend` is unset and the `browser-use` CLI is runnable (installed, or available through `uvx`), the agent gets the single `browser_exec` tool. If the CLI can't run, Hermes falls back to the built-in browser tools automatically.
+**This is the default browser mode**: when `browser.backend` is unset, the agent gets the single `browser_exec` tool. Its engine is browser-harness (the Browser Use CLI is a thin wrapper around it), a regular Python dependency of Hermes, so every install ships it, including the Desktop app, with no separate download. If it is ever missing from Hermes's environment, Hermes falls back to the built-in browser tools and `hermes update` restores it.
 
 The mode is a **driver** that composes with your configured browser backend: it drives Hermes' own headless Chromium, a Nous-subscription cloud browser, Browserbase, Firecrawl, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools.
 
@@ -91,7 +91,7 @@ browser:
 
 (`backend: "browser-use"` remains valid to force the mode explicitly.)
 
-Browser Use's own cloud browsers need `browser-use auth login` or `BROWSER_USE_API_KEY`; other browser sources use their existing credentials unchanged.
+Browser Use's own cloud browsers need `BROWSER_USE_API_KEY`; other browser sources use their existing credentials unchanged.
 
 :::note
 Because Browser Use mode executes model-written Python on your machine, the
@@ -217,18 +217,33 @@ When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.
 
-:::note Windows: the browser must be fully closed
+:::note A running browser can block the login/autofill databases
 On Windows a running Chrome/Edge/Brave holds its cookie and login databases with
 an exclusive (deny-all) lock, so Hermes cannot copy them while the browser is
 open — it fails fast with a "fully quit the browser and retry" message rather
 than hang or produce a signed-out session. Real-profile browsing on Windows
 therefore requires the browser **fully quit**, including any background/tray
 instance (Chrome's "continue running background apps when closed" keeps a
-`chrome.exe` alive after you close the window). macOS and Linux can copy the
-profile while the browser is running.
+`chrome.exe` alive after you close the window).
+
+On macOS and Linux the profile is not file-locked, but each authentication
+database is snapshotted through SQLite's online backup with a five-second
+budget, and a running Chrome typically holds `Login Data`, `Login Data For
+Account` and `Web Data` with a hot write lock that never yields within that
+budget (`Cookies` usually snapshots fine). When that happens Hermes stops the
+launch and names the databases it could not read — for example "chrome is
+running and holds the profile's Login Data, Login Data For Account, Web Data
+with a write lock" — so in practice **quit the browser before launching a
+real-profile session on macOS/Linux too**. You can reopen it once the session is
+up (the snapshot is a separate directory), but the auth files are re-synced on
+every fresh session launch, so a browser left running then hits the same lock.
+Hermes preserves committed
+WAL data through SQLite rather than falling back to a raw file copy, which could
+silently lose recent logins. Unreadable or corrupt databases also stop the
+launch, with the SQLite error named in the message.
 
 Set `browser.real_profile_autoclose: true` to let Hermes **offer to close the
-browser for you** when it's holding the profile. Even with this on, Hermes never
+browser for you** when it's holding the profile lock (the Windows case). Even with this on, Hermes never
 closes it automatically — when the profile is locked it always stops and the
 agent asks you first; only on your approval does it run `hermes browser
 close-profile` (terminates the browser process tree bound to that profile,
@@ -251,6 +266,39 @@ to fully quit the browser — it won't loop or kill again on its own.
 - **Desktop:** toggle it in **Capabilities → Tools → Browser → Use My Real
   Browser Profile** (the switch sits above the backend options), or in
   Settings → Config under the `browser` section.
+
+#### Scheduled and unattended runs
+
+A real-profile session lets a `cronjob` drive a site you're already signed into.
+The snapshot runs headless by default, and the auth files (`Cookies`,
+`Login Data`, …) are re-synced from your real profile on every fresh session —
+an already-open session is reused as-is, so the sync happens when a new one is
+launched. Without saved vault credentials, an expired session on that site
+surfaces as a login page that the unattended tick reports rather than hanging on.
+
+Three things to set up before scheduling one:
+
+- **Turn the toggle on.** `browser.use_real_profile` defaults to `false`, and
+  without it the job gets a clean, unauthenticated profile — see above.
+- **Give the job the browser toolset:**
+  `cronjob(action="create", enabled_toolsets=["browser", ...], ...)` — a per-job
+  list wins over the cron-platform config
+  ([details](./cron.md#toolsets-available-to-cron-jobs)).
+- **Assume nothing can be prompted for.** A cron, webhook, API or
+  `hermes chat -q` session has nobody to answer a prompt, so a site that is not
+  usable on the synced cookies alone — a login form, a fresh 2FA challenge —
+  needs its credentials saved ahead of time, authenticator key included. That is
+  the [credential vault's](./credential-vault.md#headless-sessions) job, and it
+  is what carries a run after your own session has expired.
+
+**Windows prerequisite:** the browser has to be fully quit before a snapshot can
+be taken at all, so a scheduled tick needs it closed beforehand — Hermes never
+closes it without asking you first (see the note above).
+
+The bundled `product-price-monitor` skill is a worked example of the recurring
+shape — a JSON watch contract written during setup, then one scheduled tick that
+re-reads it, compares, and alerts on change — though it covers the scheduling
+half, not logins.
 
 ### Camofox local mode
 
@@ -482,21 +530,20 @@ In the CLI, use:
 If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Brave Origin/Nightly, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths and binary names such as `brave-origin`, `brave-origin-nightly`, `/opt/brave.com/brave-origin/brave-origin`, `/opt/brave.com/brave-origin-nightly/brave-origin`, `/opt/brave-bin/brave`, and `/snap/bin/brave`.
 
 :::caution Shared-CDP runtime requirement
-Page-isolated `/browser connect` sessions require **Node.js 24 or newer** and
-**agent-browser 0.34.0 or newer**, because `--pin-tab` first shipped in
-agent-browser 0.34 and that package declares Node.js 24 as its minimum. The
-same capability also works on newer supported releases such as Node.js 26.
+Page-isolated `/browser connect` sessions require **agent-browser 0.34.0 or newer**
+with `--pin-tab` support. Hermes's package manager selects a hash-pinned native
+CLI and daemon, so this path has no Node.js requirement. Install or repair it
+with `hermes pm install agent-browser`; `/browser connect` remains the normal
+entry point for selecting your external browser.
 
-Hermes itself and ordinary non-CDP browser sessions remain supported on
-Node.js 22.22 or newer; those sessions use the Node-22-compatible
-`agent-browser@0.26.0` acquisition path. On Node.js 22, a shared-CDP command
-fails after the read-only version preflight but before any `--pin-tab` command
-or daemon starts, and reports the two prerequisites instead of running an
-unsupported package. The capability-scoped npx path uses the exact audited
-`agent-browser@0.34.0` package, enforces npm's engine check, and overrides the
-normal 14-day release-age gate only for that one exact acquisition. Future
-0.34.x releases do not inherit that exception automatically.
-:::
+A compatible external `agent-browser` on PATH is also supported. If you install
+its npm wrapper yourself, follow that package's Node.js engine requirements
+(Node.js 24 or newer for 0.34.0). Hermes checks the selected command's version
+and `--pin-tab` capability before dispatch; an older or incompatible command
+returns `pin_tab_unavailable` without starting a browser action. The native
+runtime is provisioned only through Hermes's package manager, with its existing
+lazy-install consent and checksum verification; there is no npx acquisition or
+release-age exception.
 
 :::tip
 To start a Chromium-family browser manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if the browser is already running with your normal profile:
@@ -535,7 +582,9 @@ Then launch the Hermes CLI and run `/browser connect`.
 
 **Why `--user-data-dir`?** Without it, launching a Chromium-family browser while a regular instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. A dedicated user-data-dir forces a fresh browser process where the debug port actually listens. `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
 
-**Chrome 136+ makes the dedicated profile mandatory.** As a security hardening change, Chrome 136 and later silently refuse to open the remote debugging port when `--remote-debugging-port` is combined with the *default* user-data-dir — even from a cold start with no other Chrome running. The browser launches normally but nothing ever listens on 9222, so `/browser connect` (and any manual `curl http://127.0.0.1:9222/json/version`) fails with connection refused. There is no error message. The fix is exactly the commands above: always pass a `--user-data-dir` pointing somewhere other than your default profile directory (e.g. `$HOME/.hermes/chrome-debug`). This applies to Chrome, Chromium, Edge, and Brave builds that have picked up the change.
+**Chrome 136+ makes the dedicated profile mandatory.** Two separate mechanisms are in play, and neither applies once you pass a non-default `--user-data-dir`. First, since [Chrome 136](https://developer.chrome.com/blog/remote-debugging-port) `--remote-debugging-port` and `--remote-debugging-pipe` "will no longer be respected if attempting to debug the default Chrome data directory" — the flag is silently ignored, no dialog, and `/browser connect` (or `curl http://127.0.0.1:9222/json/version`) gets connection refused even from a cold start. Second, [Chrome 144+](https://developer.chrome.com/blog/chrome-devtools-mcp-debug-your-browser-session) adds an opt-in *approval* flow for debugging your real profile: you enable it under `chrome://inspect/#remote-debugging`, and Chrome then shows an **"Allow remote debugging?"** dialog for **every incoming connection** (not once per launch), with nothing listening until you press **Allow**. If you see that dialog, you are on the approval path, not the flag path. The fix is exactly the commands above: point `--user-data-dir` somewhere other than your default profile directory (e.g. `$HOME/.hermes/chrome-debug`), which needs neither the toggle nor the dialog. This applies to Chrome, Chromium, Edge, and Brave builds that have picked up the change.
+
+A dedicated profile starts out signed out of everything. If you want the agent to browse with your existing logins *and* no approval dialog, use [`browser.use_real_profile`](#real-profile-browsing-use-your-own-logins) instead: it snapshots your active profile into a copy and drives that, which is a non-default user-data-dir and so never triggers either mechanism.
 :::
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session. Each Hermes task pins the page target it creates and does not adopt another task's existing tab. Cookies, storage, and signed-in account state still belong to the shared browser profile and are intentionally shared.
@@ -606,17 +655,19 @@ AGENT_BROWSER_ARGS=--no-sandbox
 
 ### Install agent-browser CLI
 
-You don't need to install anything — `agent-browser` resolves automatically via
-npx on first browser-tool use. To avoid the one-time fetch, install the package
-line for the browser mode you use (optional):
+The installers and `hermes update` install `agent-browser` and its pinned
+Chromium through Hermes's package manager by default. If you installed with
+`--skip-browser` / `-SkipBrowser`, or the download failed, install them with:
 
 ```bash
-# Ordinary local/non-CDP browser sessions (Node.js >=22.22)
-npm install -g 'agent-browser@0.26.0'
-
-# Shared-CDP /browser connect sessions (Node.js >=24)
-npm install -g 'agent-browser@0.34.0'
+hermes pm install agent-browser
 ```
+
+This also undoes an earlier `--skip-browser` choice, so updates keep the
+browser tools current. An `agent-browser` already on your `PATH` also works.
+On Linux, Chromium may also need system libraries
+(`npx playwright install-deps chromium`). On Android/Termux, run
+`npm install -g agent-browser && agent-browser install` instead.
 
 :::info
 The `browser` toolset must be included in your config's `toolsets` list or enabled via `hermes config set toolsets '["hermes-cli", "browser"]'`.

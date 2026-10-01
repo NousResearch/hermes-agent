@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
@@ -23,6 +24,7 @@ import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
 import { openPreview } from '@/store/preview'
+import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -200,12 +202,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
             icon="globe"
             key="link-open-app"
             label={copy.link.openInApp}
-            onSelect={() =>
-              openPreview(
-                { kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl },
-                'explicit-link'
-              )
-            }
+            onSelect={() => openPreview({ kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl })}
           />
         ) : null,
         <Item
@@ -241,10 +238,12 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
             key="image-open-app"
             label={copy.link.openInApp}
             onSelect={() =>
-              openPreview(
-                { kind: 'url', label: hostPathLabel(target.imageUrl), source: target.imageUrl, url: target.imageUrl },
-                'explicit-link'
-              )
+              openPreview({
+                kind: 'url',
+                label: hostPathLabel(target.imageUrl),
+                source: target.imageUrl,
+                url: target.imageUrl
+              })
             }
           />
         ) : null,
@@ -400,12 +399,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
             icon="globe"
             key="guest-link-open-app"
             label={copy.link.openInApp}
-            onSelect={() =>
-              openPreview(
-                { kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl },
-                'explicit-link'
-              )
-            }
+            onSelect={() => openPreview({ kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl })}
           />
         ) : null,
         <Item
@@ -573,6 +567,12 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
         label={t.keybinds.actions['view.toggleStatusbar']}
         onSelect={toggleStatusbarVisible}
       />,
+      <Item
+        icon="organization"
+        key="shell-profile-rail"
+        label={t.keybinds.actions['view.toggleProfileRail']}
+        onSelect={toggleProfileRailVisible}
+      />,
       // The pointer-only way back to a hidden tab strip: right-clicking the
       // shell reaches this menu from anywhere, including a zone that has no
       // chrome left to right-click.
@@ -605,8 +605,8 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
  *
  * Every right-click in the app resolves here first. Radix-owned surfaces
  * (session rows and other `context-menu-trigger` wrappers) keep their own
- * menus; the reaction bubble keeps plain right-clicks; terminals answer
- * through their registered xterm handles; everything else gets a menu
+ * menus; the reaction bubble keeps plain right-clicks; terminals and the
+ * Star Map answer through registered handles; everything else gets a menu
  * assembled from what the click landed on — link, image, editable,
  * selection — with the window verbs as the empty-target fallback. Replaced
  * both the native Electron menu and the shell fallback wrapper, so labels
@@ -631,6 +631,15 @@ export function AppContextMenu() {
       // (status bar footer is `data-slot="statusbar"`). The marker is stamped
       // after `{...props}` on ContextMenuTrigger and is not overwritten.
       if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
+        return
+      }
+
+      // The Star Map owns node hits, but empty canvas space still reaches the
+      // shell fallback below. A canvas-wide opt-out would lose that fallback.
+      if (openStarMapNodeMenuFor(element, event.clientX, event.clientY)) {
+        event.preventDefault()
+        event.stopPropagation()
+
         return
       }
 

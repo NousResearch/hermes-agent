@@ -55,7 +55,6 @@ def _run_commands(
         "_find_agent_browser",
         lambda **_kwargs: browser_cmd,
     )
-    monkeypatch.setattr(browser_install, "_requires_real_termux_browser_install", lambda _cmd: False)
     monkeypatch.setattr(browser_cloud, "_is_local_mode", lambda: False)
     monkeypatch.setattr(browser_session, "_get_session_info", sessions.__getitem__)
     monkeypatch.setattr(browser_cloud, "_get_browser_engine", lambda: "auto")
@@ -74,9 +73,6 @@ def _run_commands(
     return commands, results
 
 
-def test_npx_specs_keep_generic_and_pin_tab_capabilities_separate():
-    assert browser_tool.AGENT_BROWSER_NPX_SPEC == "agent-browser@0.26.0"
-    assert browser_tool.AGENT_BROWSER_PIN_TAB_NPX_SPEC == "agent-browser@0.34.0"
 
 
 def test_cdp_command_uses_named_session_and_pins_tab(monkeypatch, tmp_path):
@@ -185,48 +181,6 @@ def test_non_cdp_command_keeps_existing_session_shape(monkeypatch, tmp_path):
     ]]
 
 
-def test_cdp_npx_command_uses_pin_spec_and_npm_policy(monkeypatch, tmp_path):
-    cdp_url = "ws://127.0.0.1:9222/devtools/browser/shared"
-    sessions = {
-        "task-npx": {
-            "session_name": "cdp_task_npx",
-            "bb_session_id": None,
-            "cdp_url": cdp_url,
-            "features": {"cdp_override": True},
-        }
-    }
-    environments: list[dict[str, str]] = []
-    monkeypatch.setattr(browser_install, "_resolve_npx_bin", lambda: "/managed/bin/npx")
-
-    commands, results = _run_commands(
-        monkeypatch,
-        tmp_path,
-        sessions,
-        [("task-npx", "snapshot", ["-c"])],
-        browser_cmd=browser_tool.NPX_AGENT_BROWSER_SENTINEL,
-        environments=environments,
-    )
-
-    assert results == [{"success": True}]
-    assert commands == [[
-        "/managed/bin/npx",
-        "--ignore-scripts",
-        "--prefer-offline",
-        "-y",
-        "agent-browser@0.34.0",
-        "--session",
-        "cdp_task_npx",
-        "--cdp",
-        cdp_url,
-        "--pin-tab",
-        "--json",
-        "snapshot",
-        "-c",
-    ]]
-    assert len(environments) == 1
-    assert environments[0]["PATH"] == "/usr/bin"
-    assert environments[0]["npm_config_engine_strict"] == "true"
-    assert environments[0]["npm_config_min_release_age"] == "0"
 
 
 def test_two_tasks_pin_distinct_sessions_on_same_cdp_endpoint(monkeypatch, tmp_path):

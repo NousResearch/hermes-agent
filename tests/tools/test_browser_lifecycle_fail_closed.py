@@ -166,7 +166,6 @@ def test_provider_cdp_uses_generic_node22_path_and_provider_cleanup(
             self.returncode = -9
 
     monkeypatch.setattr(bt_install, "_find_agent_browser", _resolver)
-    monkeypatch.setattr(bt_install, "_requires_real_termux_browser_install", lambda _cmd: False)
     monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
     monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
     monkeypatch.setattr(bt_lifecycle, "_write_owner_pid", lambda *_a: None)
@@ -224,7 +223,6 @@ def test_real_profile_cdp_keeps_generic_node22_and_local_headed_semantics(
             self.returncode = -9
 
     monkeypatch.setattr(bt_install, "_find_agent_browser", _resolver)
-    monkeypatch.setattr(bt_install, "_requires_real_termux_browser_install", lambda _cmd: False)
     monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
     monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
     monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
@@ -348,7 +346,6 @@ def test_cleanup_command_ignores_turn_interrupt(monkeypatch, tmp_path):
     monkeypatch.setattr(
         bt_install, "_find_agent_browser", lambda **_kwargs: "/tmp/agent-browser"
     )
-    monkeypatch.setattr(bt_install, "_requires_real_termux_browser_install", lambda _cmd: False)
     monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
     monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
     monkeypatch.setattr(bt_lifecycle, "_write_owner_pid", lambda *_a: None)

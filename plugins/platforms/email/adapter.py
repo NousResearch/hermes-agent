@@ -16,16 +16,21 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from gateway.platforms.base import (BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-                                    cache_document_from_bytes, cache_image_from_bytes)
+from agent.i18n import t
+from gateway.platforms.base import (
+    BasePlatformAdapter, SendResult,
+    cache_document_from_bytes, cache_image_from_bytes,
+)
+from gateway.platforms.helpers import cancel_task
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
-from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
+from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, decode_json_list_literal, send_error
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +54,19 @@ _CHARSET_ALIASES = {"unknown-8bit": "utf-8", "unknown": "utf-8", "x-unknown": "u
 _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[^>]*>", re.IGNORECASE), "\n"),
               (re.compile(r"</p>", re.IGNORECASE), "\n"), (re.compile(r"<[^>]+>"), ""), (re.compile(r"&nbsp;"), " "),
               (re.compile(r"&amp;"), "&"), (re.compile(r"&lt;"), "<"), (re.compile(r"&gt;"), ">"), (re.compile(r"\n{3,}"), "\n\n"))
-# "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
-_AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
-_AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
+# ``display <bracketed>`` split for the _extract_email_address fallback (linear: neither part can match the other's delimiters).
+_SINGLE_BRACKET_FROM_RE = re.compile(r'([^"<>]*)<([^<>\s]+)>\s*')
+_COMMENT_RE = re.compile(r"\([^()]*\)")
+# Longest From: value we parse. parseaddr is pure Python and superlinear on hostile input (~1s at 100KB, GIL held);
+# a real mailbox plus display name stays far below this (RFC 5322 caps a line at 998 chars).
+_MAX_FROM_LEN = 2048
+# Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
+_AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
+# One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
+# any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
+_QUOTED = r'"(?:[^"\\]|\\.)*"'
+_AUTH_PROP_RE = re.compile(r'(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*((?:%s|[^\s";])+)'
+                           r'|(?:%s|[^\s"])+' % (_QUOTED, _QUOTED), re.IGNORECASE)
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -141,13 +156,25 @@ def _open_smtp(host: str, port: int, security: str, ctx: ssl.SSLContext, smtp_cl
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID: 163/NetEase require it after LOGIN (else every UID command
-    returns ``BYE Unsafe Login``); other servers may reject it, so failures are swallowed."""
+    returns ``BYE Unsafe Login``); other servers may reject it, so failures are swallowed.
+
+    Sent only when the server advertises ``ID`` (RFC 2971 requires advertising it): a server
+    without the extension can answer an untagged ``* BYE Unknown command.`` and close the
+    connection, which imaplib cannot surface here — the failure appears one command later
+    as a misleading SELECT error and the adapter retries forever (Purelymail, #39856).
+    ``imap.capabilities`` is populated by imaplib at connect, so the check is free."""
+    if "ID" not in imap.capabilities:
+        logger.debug(
+            "[Email] Server does not advertise IMAP ID capability; skipping ID"
+        )
+        return
     try:
         try:
-            from hermes_cli import __version__ as _hermes_version
+            from hermes_cli.version_info import get_version_info
+            version = get_version_info().base_version
         except Exception:  # noqa: BLE001 — keep ID best-effort if import fails
-            _hermes_version = "0"
-        imap.xatom("ID", f'("name" "hermes-agent" "version" "{_hermes_version}" '
+            version = "0"
+        imap.xatom("ID", f'("name" "hermes-agent" "version" "{version}" '
                          '"vendor" "NousResearch" "support-email" "noreply@nousresearch.com")')
     except Exception as e:  # noqa: BLE001 — best-effort, never fatal
         logger.debug("[Email] IMAP ID command not accepted: %s", e)
@@ -227,9 +254,70 @@ def _strip_html(html: str) -> str:
 
 
 def _extract_email_address(raw: str) -> str:
-    """Extract bare email address from 'Name <addr>' format."""
-    match = re.search(r"<([^>]+)>", raw)
-    return (match.group(1) if match else raw).strip().lower()
+    """Bare lowercased addr-spec from a From: value. Uses parseaddr, not a first-<...> regex (GHSA-rxqh-5572-8m77);
+    RFC 5322 folding is unfolded first because parseaddr misreads a folded quoted display name. Unquoted
+    ``Name <addr>`` values parseaddr rejects (``Doe, John <j@x>``) fall back to their single bracketed address,
+    but only when the display part (``(comments)`` removed) cannot hold another mailbox or group: no quotes, ``;``,
+    ``:`` or stray parens, and no ``@`` unless it is exactly the bracketed address (``a@x <a@x>``). Values over
+    ``_MAX_FROM_LEN`` (or with more than 64 ``(``) and results without ``@`` return ``""`` so the caller drops the message."""
+    value = re.sub(r"\r?\n[ \t]+", " ", str(raw or ""))
+    if len(value) > _MAX_FROM_LEN or value.count("(") > 64:
+        return ""  # hostile size/nesting: take the empty-sender drop (parseaddr recurses per nested comment)
+    _, addr = parseaddr(value)
+    if not addr and (m := _SINGLE_BRACKET_FROM_RE.fullmatch(value)):
+        display, bracketed = _strip_comments(m.group(1)).strip(), m.group(2)
+        if ("@" in bracketed[1:-1] and not any(c in display for c in ";:()")
+                and ("@" not in display or display.lower() == bracketed.lower())):
+            addr = bracketed
+    addr = addr.strip().lower()
+    return addr if "@" in addr else ""  # a bare word (``John``) is not a sender identity
+
+
+def _strip_comments(text: str) -> str:
+    """Remove (possibly nested) ``(comments)``, innermost first, until nothing changes."""
+    while (stripped := _COMMENT_RE.sub(" ", text)) != text:
+        text = stripped
+    return text
+
+
+def _ar_clauses(text: str) -> Optional[List[str]]:
+    """Split an Authentication-Results value on ``;`` outside quoted-strings and (nested) comments; comments are
+    dropped, quoted-strings kept (``header.from="x"`` stays readable). ``None`` when a quote or comment is unbalanced."""
+    clauses, cur, depth, quoted, i = [], [], 0, False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and (quoted or depth):
+            if quoted:
+                cur.append(text[i:i + 2])
+            i += 2
+            continue
+        if quoted:
+            quoted = c != '"'
+            cur.append(c)
+        elif depth:
+            depth += {"(": 1, ")": -1}.get(c, 0)
+            if not depth:
+                cur.append(" ")
+        elif c == "(":
+            depth = 1
+        elif c == '"':
+            quoted = True
+            cur.append(c)
+        elif c == ")":
+            return None  # stray close paren: unbalanced
+        elif c == ";":
+            clauses.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    return None if quoted or depth else clauses + ["".join(cur)]
+
+
+def _auth_props(text: str) -> List[Tuple[str, str]]:
+    """``(property, value)`` pairs (``header.from=x``) of one comment-free Authentication-Results clause, property
+    lowercased, surrounding quotes stripped. Quoted-string contents are never scanned for properties."""
+    return [(p.lower(), v.strip('"')) for p, v in _AUTH_PROP_RE.findall(text) if p]
 
 
 def _domain_of(address: str) -> str:
@@ -261,18 +349,32 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
                     or _domains_aligned(serv, authserv_id)), None)
     if trusted is None:
         return False, "no Authentication-Results from trusted authserv-id"
-    methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
-    props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
-    if methods.get("dmarc") == "pass":  # DMARC already enforces From alignment
+    # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
+    # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
+    if (clauses := _ar_clauses(trusted)) is None:
+        return False, "unbalanced quote or comment in Authentication-Results"
+    results: Dict[str, List[Tuple[str, List[Tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}
+    for clause in clauses:
+        if m := _AUTH_METHOD_RE.match(clause):
+            results[m.group(1).lower()].append((m.group(2).lower(), _auth_props(clause)))
+
+    def aligned(props: List[Tuple[str, str]], names: Tuple[str, ...], *, required: bool = True) -> bool:
+        domains = [_domain_of(v) for p, v in props if p in names]
+        return (bool(domains) or not required) and all(_domains_aligned(d, from_domain) for d in domains)
+
+    if len(results["dmarc"]) > 1:
+        return False, "ambiguous dmarc result"
+    # every header.from in the dmarc clause must be the From domain we parsed (absent header.from: trust the verdict)
+    if any(r == "pass" and aligned(props, ("header.from",), required=False) for r, props in results["dmarc"]):
         return True, "dmarc=pass"
-    if methods.get("spf") == "pass":  # envelope/MAIL FROM domain must align with From
-        spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
-        if _domains_aligned(_domain_of(spf_domain) if "@" in spf_domain else spf_domain, from_domain):
-            return True, "spf=pass aligned"
-    if methods.get("dkim") == "pass":  # signing domain header.d must align with From
-        dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.from", ""))
-        if _domains_aligned(dkim_domain, from_domain):
-            return True, "dkim=pass aligned"
+    # one SMTP transaction has one MAIL FROM verdict: a second spf clause means the SPF signal is not trusted
+    if len(results["spf"]) == 1 and (spf := results["spf"][0])[0] == "pass" and aligned(
+            spf[1], ("smtp.mailfrom", "smtp.from", "envelope-from")):
+        return True, "spf=pass aligned"
+    # several dkim clauses are normal (one per signature): any single pass whose own header.d aligns is enough
+    if any(r == "pass" and aligned(props, ("header.d",) if any(p == "header.d" for p, _ in props) else ("header.from",))
+           for r, props in results["dkim"]):
+        return True, "dkim=pass aligned"
     return False, f"authentication failed ({trusted[:120]})"
 
 
@@ -478,11 +580,8 @@ class EmailAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop polling and disconnect."""
         self._running = False
-        if self._poll_task:
-            self._poll_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._poll_task
-            self._poll_task = None
+        await cancel_task(self._poll_task)
+        self._poll_task = None
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:
@@ -558,7 +657,10 @@ class EmailAdapter(BasePlatformAdapter):
     def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:
         """Parse one RFC822 payload into a dispatchable dict; ``None`` for automated senders. Raises on pathological input (caller logs + continues)."""
         msg = email_lib.message_from_bytes(raw_email)
-        sender_addr, sender_name = _extract_email_address(msg.get("From", "")), _decode_header_value(msg.get("From", ""))
+        if not (sender_addr := _extract_email_address(msg.get("From", ""))):  # never dispatch an empty identity
+            logger.debug("[Email] Dropping message with no parseable From address: %r", msg.get("From", ""))
+            return None
+        sender_name = _decode_header_value(msg.get("From", ""))
         if "<" in sender_name:
             sender_name = sender_name.split("<")[0].strip().strip('"')
         subject = _decode_header_value(msg.get("Subject", "(no subject)"))
@@ -575,35 +677,68 @@ class EmailAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _allow_all_senders() -> bool:
-        """True when the operator opted into any sender (EMAIL_ or GATEWAY_ALLOW_ALL_USERS)."""
-        return (_get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY)
+        """True when the operator opted into any sender (EMAIL_ or GATEWAY_ALLOW_ALL_USERS).
+
+        Both names go through the scoped reader: under multiplex ``os.environ`` is the DEFAULT
+        profile's opt-in, and borrowing it opened every secondary mailbox to any sender."""
+        return any(_get_secret(name, "").strip().lower() in _TRUTHY
+                   for name in ("EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"))
 
     @staticmethod
-    def _allowlist_in_effect() -> bool:
-        """True when EMAIL_/GATEWAY_ALLOWED_USERS gates access (without one the gateway default-denies, so the spoofable From: grants nothing)."""
-        return bool(_get_secret("EMAIL_ALLOWED_USERS", "").strip() or os.getenv("GATEWAY_ALLOWED_USERS", "").strip())
+    def _open_access() -> bool:
+        """True when the gateway admits any sender, so a forged From: gains nothing. The gateway's own order:
+        EMAIL_ALLOW_ALL_USERS wins over a list, GATEWAY_ALLOW_ALL_USERS applies only while no list is set."""
+        if _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY:
+            return True
+        return (_get_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY
+                and not any(_get_secret(name, "").strip() for name in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")))
+
+    def _answers_unknown_senders(self) -> bool:
+        """True when ``platforms.email.unauthorized_dm_behavior`` opts into ``pair`` or ``decline``."""
+        behavior = (self.config.extra or {}).get("unauthorized_dm_behavior")
+        return isinstance(behavior, str) and behavior.strip().lower() in {"pair", "decline"}
 
     def _sender_accepted(self, sender_addr: str, msg_data: Dict[str, Any]) -> bool:
-        """Pre-dispatch sender gate: self, automated, allowlist, From: authentication."""
+        """Pre-dispatch sender gate: self, automated, authorization, From: authentication."""
         if sender_addr == self._address.lower():
             return False
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
             return False
-        # Drop senders the gateway would never authorize before a MessageEvent (and thread context) exists —
-        # otherwise a dispatch/authorization race can send a reply even though the handler returned None.
         allowed_raw = _get_secret("EMAIL_ALLOWED_USERS", "").strip()
-        if not allowed_raw:
-            if not self._allow_all_senders():
-                logger.debug("[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset and open access is not opted in: %s", sender_addr)
-                return False
-        elif sender_addr.lower() not in {a.strip().lower() for a in allowed_raw.split(",") if a.strip()}:
-            logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+        # Parsed like the gateway's allowlists (JSON list literals included), or '["alice"]' would dodge the guard below.
+        listed = set()
+        for raw in (allowed_raw, _get_secret("GATEWAY_ALLOWED_USERS", "")):
+            raw = decode_json_list_literal(raw)
+            listed.update(str(a).strip().lower() for a in (raw if isinstance(raw, list) else str(raw).split(","))
+                          if str(a).strip())
+        if sender_addr.lower() in listed:
+            granted = True
+        elif sender_addr.split("@", 1)[0].lower() in listed:
+            # The gateway's check also matches an address by its bare local part (#119446), so an entry like "alice"
+            # would admit, or pair, alice@<any domain>; the domain is the sender's to choose.
+            logger.debug("[Email] Dropping sender whose local part alone matches an allowlist entry: %s", sender_addr)
             return False
-        # Reject spoofed senders (GHSA-rxqh-5572-8m77): the allowlist keys on the attacker-controlled
-        # From:. Only matters when an allowlist GRANTS access and allow-all is off; fail-closed.
-        if (self._require_authenticated_sender and self._allowlist_in_effect()
-                and not self._allow_all_senders() and not msg_data.get("sender_authenticated", False)):
+        else:
+            # Approved pairings grant access too, and only the gateway's own check sees them. Its verdict also decides
+            # open access: GATEWAY_ALLOW_ALL_USERS beside a GATEWAY_ALLOWED_USERS list grants a stranger nothing there.
+            verdict = self._is_sender_authorized(sender_addr, "dm", sender_addr)
+            granted = verdict if verdict is not None else (not allowed_raw and self._allow_all_senders())
+        # Drop senders the gateway would neither authorize nor answer (pair/decline) before a MessageEvent (and thread
+        # context) exists — otherwise a dispatch/authorization race can send a reply even though the handler returned None.
+        if not granted and not self._answers_unknown_senders():
+            logger.debug("[Email] Dropping unauthorized sender at dispatch (unknown senders are ignored): %s", sender_addr)
+            return False
+        # Reject spoofed senders (GHSA-rxqh-5572-8m77): short of open access, every grant keys on the attacker-controlled
+        # From:, and a pairing code or decline is mailed back to it, open access or not; fail-closed. Only a granted
+        # sender's drop warns: forged mail from strangers is routine, and the opt-out hint would be wrong advice for it.
+        if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
+            if not granted:
+                logger.debug("[Email] Not answering unknown sender with unauthenticated From: %s (%s)",
+                             sender_addr, msg_data.get("auth_reason", "no verdict"))
+                return False
+            if self._open_access():
+                return True
             logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
                            "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
                            "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
@@ -626,7 +761,8 @@ class EmailAdapter(BasePlatformAdapter):
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
-            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name),
+            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name,
+                                     message_id=msg_data["message_id"]),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None)
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
@@ -684,9 +820,11 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
-        """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising."""
-        msg, msg_id, _ = self._new_reply(to_addr, body)
+    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
+                         reply_to_msg_id: Optional[str] = None) -> str:
+        """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising.
+        An explicit *reply_to_msg_id* threads the mail like ``_send_email`` does (#10131)."""
+        msg, msg_id, _ = self._new_reply(to_addr, body, reply_to_msg_id)
         for path, name in files:
             try:
                 _attach_file(msg, path, name)
@@ -703,28 +841,29 @@ class EmailAdapter(BasePlatformAdapter):
         return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """One email per batch: local files attached, URL images linked in the body (no remote download); base-class fallback on failure."""
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
         body_parts, local_paths = [], []
         for image_url, alt_text in images:
             if alt_text:
                 body_parts.append(alt_text)
             if not image_url.startswith("file://"):
-                body_parts.append(f"Image: {image_url}")  # parity with send_image
+                body_parts.append(t("platform.email.image_line", url=image_url))  # parity with send_image
             elif Path(local_path := _unquote(image_url[7:])).exists():
                 local_paths.append(local_path)
             else:
                 logger.warning("[Email] Skipping missing image: %s", local_path)
         if not local_paths and not body_parts:
-            return
+            return SendResult(success=False, error="no valid images in batch")
         try:
-            await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
+            message_id = await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
+        return SendResult(success=True, message_id=message_id)
 
     def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
@@ -735,11 +874,14 @@ class EmailAdapter(BasePlatformAdapter):
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         """Send a file as an email attachment."""
-        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name), "[Email] Send document failed: %s")
+        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name, reply_to),
+                                    "[Email] Send document failed: %s")
 
-    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None) -> str:
+    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None,
+                                    reply_to_msg_id: Optional[str] = None) -> str:
         """Send an email with a single file attachment via SMTP (raises if unattachable)."""
-        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False)
+        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False,
+                                     reply_to_msg_id=reply_to_msg_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""
@@ -755,10 +897,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
     if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+        return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        for key, value in (("From", address), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)
@@ -770,7 +912,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             from tools.send_message_tool import _error as _e
             return _e(f"Email send failed: {e}")
         except Exception:
-            return {"error": f"Email send failed: {e}"}
+            return send_error(f"Email send failed: {e}")
 
 
 def _is_connected(config) -> bool:
@@ -781,15 +923,11 @@ def _is_connected(config) -> bool:
     return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
 
 
-def _build_adapter(config):
-    """Factory wrapper that constructs EmailAdapter from a PlatformConfig."""
-    return EmailAdapter(config)
-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
-        name="email", label="Email", adapter_factory=_build_adapter, check_fn=check_email_requirements, is_connected=_is_connected,
+        name="email", label="Email", adapter_factory=EmailAdapter, check_fn=check_email_requirements, is_connected=_is_connected,
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", allowed_users_env="EMAIL_ALLOWED_USERS",
         allow_all_env="EMAIL_ALLOW_ALL_USERS", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,

@@ -347,9 +347,14 @@ def _emergency_cleanup_all_sessions():
     """atexit: close this process's sessions, then sweep orphans left by crashed
     hermes processes — every clean exit reaps accumulated orphans, not only
     processes that used the browser tool."""
-    if _bt._cleanup_done:
+    try:
+        if _bt._cleanup_done:
+            return
+        _bt._cleanup_done = True
+    except Exception:
+        # Interpreter shutdown (or a half-updated tree mid-`hermes update` where the
+        # origin's fresh import fails, e.g. #112437): no resolvable state, nothing to clean.
         return
-    _bt._cleanup_done = True
 
     # Own sessions first so their owner_pid files are gone before the reaper scans.
     # Real-profile Chrome is launched directly (not by agent-browser), so the
@@ -395,7 +400,7 @@ def _session_owner_scope(task_id: str):
     home_token = set_hermes_home_override(owner_home)
     try:
         hydrate_profile_secret_sources(Path(owner_home))
-        secret_token = set_secret_scope(build_profile_secret_scope(Path(owner_home)))
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(owner_home)), profile_home=owner_home)
         try:
             yield
         finally:
@@ -443,6 +448,11 @@ def _cleanup_inactive_browser_sessions():
                 sessions_to_cleanup.append(task_id)
 
     for task_id in sessions_to_cleanup:
+        with _session_owner_scope(task_id):
+            if _human_holds_shared_browser(task_id):
+                # A human took the bot's screen (login, 2FA) — the agent is idle BECAUSE they are working.
+                _update_session_activity(task_id)
+                continue
         elapsed = int(current_time - _bt._session_last_activity.get(task_id, current_time))
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
@@ -473,6 +483,15 @@ def _cleanup_inactive_browser_sessions():
                 _bt.logger.error("Force-reap of browser session %s failed: %s", task_id, reap_exc)
             finally:
                 _forget_session_tracking(task_id, activity=False)
+
+
+def _human_holds_shared_browser(task_id: str) -> bool:
+    """Lease check for the janitor, under the owner's profile scope (the lease is per profile)."""
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id)
+    if not session_info:
+        return False
+    return _session.human_holds_shared_browser(session_info)
 
 
 def _write_owner_pid(socket_dir: str, session_name: str) -> None:
@@ -509,6 +528,13 @@ def _write_shared_cdp_endpoint(
         _bt.logger.debug("Could not persist shared-CDP endpoint for %s: %s", session_name, exc)
 
 
+def _argv_token_is_path(token: str, path: str) -> bool:
+    """True when ``token`` (or its ``--flag=VALUE`` value) names exactly ``path``."""
+    want = os.path.normpath(path).lower()
+    candidate = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
+    return bool(candidate) and os.path.normpath(candidate).lower() == want
+
+
 def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
                                     session_name: str) -> bool:
     """Confirm a live PID is genuinely *this* session's agent-browser daemon (fail-closed).
@@ -531,7 +557,8 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     try:
         proc = psutil.Process(daemon_pid)
         name = (proc.name() or "").lower()
-        cmdline = " ".join(proc.cmdline() or []).lower()
+        argv = list(proc.cmdline() or [])
+        cmdline = " ".join(argv).lower()
     except psutil.NoSuchProcess:
         return False  # vanished between the liveness check and now
     except (psutil.AccessDenied, OSError) as exc:
@@ -540,9 +567,10 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     if "agent-browser" not in name and "agent-browser" not in cmdline:
         return refuse("not an agent-browser process (name=%r)", name)
 
-    socket_dir_l = socket_dir.lower()
-    socket_base_l = os.path.basename(socket_dir).lower()
-    bound = socket_dir_l in cmdline or (socket_base_l and socket_base_l in cmdline)
+    # Binding must be the FULL socket-dir path as an argv token (bare or `--flag=path`),
+    # never a substring: the dir basename is predictable (`agent-browser-<session>`), so a
+    # recycled PID running e.g. `grep agent-browser-h_x ...` would pass a basename check.
+    bound = any(_argv_token_is_path(tok, socket_dir) for tok in argv)
     if not bound:
         try:
             env_dir = (proc.environ() or {}).get("AGENT_BROWSER_SOCKET_DIR", "")
@@ -579,7 +607,7 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
 def _read_pid_file(path: str) -> Optional[int]:
     """Integer PID from ``path``; None when missing or corrupt."""
     try:
-        return int(Path(path).read_text(encoding="utf-8").strip())
+        return int(Path(path).read_text(encoding="utf-8-sig").strip())
     except (ValueError, OSError):
         return None
 
@@ -771,13 +799,19 @@ def _reap_orphaned_browser_sessions():
 
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []
-    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*"):
+    # The shared real-profile attach daemon is named, not ``<prefix>_<hex>``; list it explicitly.
+    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
+                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
         socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
     if not socket_dirs:
         return
 
     with _bt._cleanup_lock:
         tracked_names = {info.get("session_name") for info in _bt._active_sessions.values() if info.get("session_name")}
+    # Browsing on the shared real-profile daemon runs through per-task ``rp_*`` sessions
+    # (``--cdp``), so its own dir never shows activity; the idle escape hatch would misfire
+    # under a live user. Owner liveness alone gates it — a dead owner still gets reaped.
+    tracked_names.add(_bt._REAL_PROFILE_SESSION)
 
     reaped = 0
     for socket_dir in socket_dirs:
@@ -827,9 +861,20 @@ def _start_browser_cleanup_thread():
 
 def _stop_browser_cleanup_thread():
     """Stop the background cleanup thread."""
-    _bt._cleanup_running = False
-    if _bt._cleanup_thread is not None:
-        _bt._cleanup_thread.join(timeout=5)
+    try:
+        _bt._cleanup_running = False
+        thread = _bt._cleanup_thread
+    except Exception:
+        # Same unimportable-origin case as _emergency_cleanup_all_sessions (#112437):
+        # no resolvable thread state, nothing to stop.
+        return
+    if thread is not None:
+        # A second Ctrl+C during the timed join lands here as KeyboardInterrupt; the janitor is a
+        # daemon thread, so letting it propagate only prints "Exception ignored in atexit callback".
+        try:
+            thread.join(timeout=5)
+        except (SystemExit, KeyboardInterrupt):
+            pass
 
 
 def _update_session_activity(task_id: str):
@@ -1189,7 +1234,7 @@ def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
     if not os.path.isfile(pid_file):
         return False
     try:
-        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8-sig").strip())
         if not _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
             _bt.logger.debug("Skipped daemon kill for %s: pid %s failed identity verification", session_name, daemon_pid)
             return False
@@ -1378,16 +1423,13 @@ def cleanup_all_browsers() -> None:
         pass
 
     _install._discover_homebrew_node_dirs.cache_clear()
+    _bt._chromium_autoinstall_attempted = False
     # Each resolved flag flips BEFORE its cache is nulled so a concurrent reader never
     # sees ``resolved=True`` with ``cache=None``.
     for flag, cache in (
-        ("_agent_browser_resolved", "_cached_agent_browser"),
-        ("_pin_tab_agent_browser_resolved", "_cached_pin_tab_agent_browser"),
         ("_command_timeout_resolved", "_cached_command_timeout"),
         ("_snapshot_threshold_resolved", "_cached_snapshot_threshold"),
-        ("_chromium_autoinstall_attempted", "_cached_chromium_installed"),
         ("_browser_engine_resolved", "_cached_browser_engine"),
     ):
         setattr(_bt, flag, False)
         setattr(_bt, cache, None)
-    _bt._pin_tab_failure_cache = None

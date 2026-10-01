@@ -1,26 +1,21 @@
-"""agent-browser / Chromium discovery and install: PATH merging, npx resolution, candidate binaries, Chromium detection + auto-install, requirement checks.
+"""PM-owned agent-browser / Chromium discovery, acquisition and readiness.
 
 Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle."""
 
-import contextlib
 import functools
 import os
 import re
-import shutil
 import subprocess
-import sys
-import time
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_constants import agent_browser_runnable, get_hermes_home, is_termux as _is_termux_environment, node_tool_runnable
+import shutil
+
+from hermes_constants import agent_browser_runnable, is_termux as _is_termux_environment
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
-from tools import browser_tool_lifecycle as _lifecycle
 from tools import browser_tool_lightpanda_fallback as _lp
-
 
 @functools.lru_cache(maxsize=1)
 def _discover_homebrew_node_dirs() -> tuple[str, ...]:
@@ -37,14 +32,10 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
         if os.path.isdir(bin_dir := os.path.join(homebrew_opt, entry, "bin"))
     )
 
-
 def _browser_candidate_path_dirs() -> list[str]:
-    """Return ordered browser CLI PATH candidates shared by discovery and execution."""
+    """System PATH fallbacks for externally owned browser helpers."""
     _bt = _origin()
-    home = get_hermes_home()
-    managed = (home / "node" / "bin", home / "node", home / "node_modules" / ".bin")
-    return [*map(str, managed), *_discover_homebrew_node_dirs(), *_bt._SANE_PATH_DIRS]
-
+    return [*_discover_homebrew_node_dirs(), *_bt._SANE_PATH_DIRS]
 
 def _merge_browser_path(existing_path: str = "") -> str:
     """Prepend browser-specific PATH fallbacks without reordering existing entries."""
@@ -55,94 +46,26 @@ def _merge_browser_path(existing_path: str = "") -> str:
             prefix_parts.append(part)
     return os.pathsep.join(prefix_parts + path_parts)
 
-
 def _browser_install_hint() -> str:
-    package = f"'{_origin().AGENT_BROWSER_NPX_SPEC}'"
     if _is_termux_environment():
-        return f"npm install -g {package} && agent-browser install"
-    return f"npm install -g {package} && agent-browser install --with-deps"
-
-
-class AgentBrowserCapabilityError(RuntimeError):
-    """The discovered CLI/runtime cannot provide strict shared-CDP pinning."""
-
-
-def _apply_agent_browser_npm_policy(
-    env: Dict[str, str], *, pin_tab_acquisition: bool = False
-) -> Dict[str, str]:
-    """Apply the release-age/engine policy to one agent-browser npx process.
-
-    Ordinary acquisition keeps the 14-day quarantine. The exact reviewed
-    pin-tab package gets a scoped zero-day exception so an empty cache can
-    acquire the security capability immediately.
-    """
-    _bt = _origin()
-    env["npm_config_engine_strict"] = "true"
-    env["npm_config_min_release_age"] = str(
-        0 if pin_tab_acquisition else _bt.AGENT_BROWSER_NPX_MIN_RELEASE_AGE_DAYS
-    )
-    return env
-
-
-def _is_npx_agent_browser_sentinel(browser_cmd: str) -> bool:
-    return browser_cmd.strip() == _origin().NPX_AGENT_BROWSER_SENTINEL
-
-
-def _requires_real_termux_browser_install(browser_cmd: str) -> bool:
-    return _is_termux_environment() and _cloud._is_local_mode() and _is_npx_agent_browser_sentinel(browser_cmd)
-
-
-def _termux_browser_install_error() -> str:
-    return f"Local browser automation on Termux cannot rely on the bare npx fallback. Install agent-browser explicitly first: {_browser_install_hint()}"
-
+        return "npm install -g agent-browser && agent-browser install"
+    return "hermes pm install agent-browser (system libraries: npx playwright install-deps chromium)"
 
 def _agent_browser_candidate_present(path: str | None) -> bool:
     if not path:
         return False
-    if " " in path and path.split()[0].endswith("npx"):
-        return True
-    return os.path.exists(path) and (os.name == "nt" or os.access(path, os.X_OK))
+    return os.path.isfile(path) and (os.name == "nt" or os.access(path, os.X_OK))
 
-
-def _resolve_npx_bin() -> Optional[str]:
-    """Resolve a runnable npx, extended (Hermes-managed/Homebrew) PATH first.
-
-    Bare PATH first would let a broken system npx shadow a healthy managed one,
-    so every candidate is validated with ``node_tool_runnable`` before use.
-    """
-    extended_path = _merge_browser_path("")
-    for path in ([extended_path] if extended_path else []) + [None]:
-        npx = shutil.which("npx", path=path)
-        if npx and node_tool_runnable(npx):
-            return npx
-    return None
-
-
-def _agent_browser_candidates(extended_path: str):
-    """Yield agent-browser lookup candidates lazily: ambient PATH → extended PATH → repo-local node_modules/.bin.
-
-    The local lookup uses ``shutil.which`` with an explicit path so Windows resolves the ``.cmd`` shim
-    (CreateProcess cannot run npm's extensionless POSIX shim — WinError 193).
-    """
-    yield shutil.which("agent-browser")
-    if extended_path:
-        yield shutil.which("agent-browser", path=extended_path)
-    local_bin_dir = Path(__file__).parent.parent / "node_modules" / ".bin"
-    if local_bin_dir.is_dir():
-        yield shutil.which("agent-browser", path=str(local_bin_dir))
-
+class AgentBrowserCapabilityError(RuntimeError):
+    """The selected CLI/runtime cannot provide strict shared-CDP target pinning."""
 
 _SEMVER_TRIPLE_RE = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?![\d-])")
-_NODE_MAJOR_RE = re.compile(r"(?m)^\s*v?(\d+)(?:\.\d+){1,2}\s*$")
 
-
-def _version_probe_env() -> Dict[str, str]:
-    _bt = _origin()
-    env = _bt._build_browser_env()
-    _apply_agent_browser_npm_policy(env)
+def _version_probe_env() -> dict[str, str]:
+    from pm import env_for
+    env = _origin()._build_browser_env()
     env["PATH"] = _merge_browser_path(env.get("PATH", ""))
-    return env
-
+    return env_for("agent-browser", base_env=env)
 
 def _probe_agent_browser_version(path: str) -> Optional[tuple[int, int, int]]:
     """Run a concrete CLI's real ``--version`` entrypoint and parse semver."""
@@ -167,282 +90,113 @@ def _probe_agent_browser_version(path: str) -> Optional[tuple[int, int, int]]:
     match = _SEMVER_TRIPLE_RE.search(f"{result.stdout}\n{result.stderr}")
     return tuple(int(part) for part in match.groups()) if match is not None else None
 
+def _pin_tab_candidate_status(path: str) -> bool:
+    """Verify the concrete command supports the pinning protocol before page access.
 
-def _effective_node_major(executable: str) -> Optional[int]:
-    """Return the Node major the browser subprocess PATH would resolve."""
-    env = _version_probe_env()
-    search_parts = [str(Path(executable).parent)]
-    search_parts.extend(part for part in env.get("PATH", "").split(os.pathsep) if part)
-    node_bin = shutil.which("node", path=os.pathsep.join(dict.fromkeys(search_parts)))
-    if not node_bin:
-        return None
-    try:
-        result = subprocess.run(
-            [node_bin, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            env=env,
-            creationflags=windows_hide_flags(),
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    if result.returncode != 0:
-        return None
-    match = _NODE_MAJOR_RE.search(f"{result.stdout}\n{result.stderr}")
-    return int(match.group(1)) if match is not None else None
-
-
-def _pin_tab_candidate_status(
-    path: str,
-) -> tuple[bool, Optional[tuple[int, int, int]], Optional[int]]:
-    """Compatibility plus observed CLI/Node versions for one candidate."""
-    _bt = _origin()
+    PM selects the native Rust CLI/daemon; it does not require Node. External
+    npm wrappers retain their own published engine requirements.
+    """
     version = _probe_agent_browser_version(path)
-    if version is None or version < _bt.AGENT_BROWSER_PIN_TAB_MIN_VERSION:
-        return False, version, None
-    node_major = _effective_node_major(path)
-    return (
-        node_major is not None
-        and node_major >= _bt.AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR,
-        version,
-        node_major,
-    )
+    if version is None or version < _origin().AGENT_BROWSER_PIN_TAB_MIN_VERSION:
+        return False
+    try:
+        result = subprocess.run([path, "--help"], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=10,
+                                env=_version_probe_env(), creationflags=windows_hide_flags(), check=False)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    help_text = f"{result.stdout}\n{result.stderr}"
+    return result.returncode == 0 and all(flag in help_text for flag in ("--pin-tab", "--session", "--cdp"))
 
-
-def _pin_tab_capability_error(node_major: Optional[int] = None) -> str:
-    _bt = _origin()
-    detected = f" Detected Node.js {node_major}." if node_major is not None else ""
-    return (
-        "Shared-CDP page isolation requires agent-browser >=0.34.0 and "
-        f"Node.js >={_bt.AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR}.{detected} "
-        "Hermes and ordinary non-CDP browser commands remain supported on "
-        "Node.js >=22.22. Use Node.js 24+ (Node.js 26 also qualifies) and "
-        "install agent-browser >=0.34.0, then retry."
-    )
-
+def _pin_tab_capability_error() -> str:
+    return ("Shared-CDP page isolation requires agent-browser >=0.34.0 with --pin-tab support. "
+            "Install the pinned native runtime with 'hermes pm install agent-browser', then retry. "
+            "An external compatible agent-browser on PATH is also supported. No unpinned package is downloaded.")
 
 def _find_agent_browser(*, validate: bool = True, require_pin_tab: bool = False) -> str:
-    """Find the agent-browser CLI: PATH, Homebrew/managed dirs, local node_modules/.bin, npx fallback, lazy install.
+    """Use PM's selected executable, then an external PATH/Homebrew installation.
 
-    A bare ``shutil.which`` hit is NOT trusted: agent-browser's npm postinstall re-points a global symlink at our
-    local node_modules binary, which vanishes on the next ``hermes update`` and leaves a dangling link ``which``
-    still reports (exec fails with 127). Candidates are validated with ``agent_browser_runnable`` before caching
-    so a dead one falls through. ``validate=False`` (schema-time check_fn) only tests presence and never caches.
-    Raises FileNotFoundError when agent-browser is not installed.
+    Shared CDP requires a verified pin-tab-capable CLI/runtime before any browser
+    command is dispatched. PM remains the only lazy-install owner; an older pin
+    fails closed instead of introducing an alternate download path. Readiness
+    checks without pinning never execute or acquire a package. Selection is not
+    cached, so updated PM facts and profile changes are visible immediately.
     """
-    _bt = _origin()
+    import pm
 
-    def _not_found(cached: bool) -> FileNotFoundError:
-        return FileNotFoundError(f"agent-browser CLI not found{' (cached)' if cached else ''}. Install it with: "
-                                 f"{_browser_install_hint()}\nOr ensure npx is available in your PATH.")
+    termux = _is_termux_environment()
+    checked = set()
 
-    def _accept(candidate: str) -> str:
-        # Set resolved at each accept site (not before the search) so a concurrent reader never sees
-        # resolved=True with a None cache.
-        if validate and require_pin_tab:
-            _bt._cached_pin_tab_agent_browser = candidate
-            _bt._pin_tab_agent_browser_resolved = True
-            _bt._pin_tab_failure_cache = None
-            if not _bt._agent_browser_resolved:
-                _bt._cached_agent_browser = candidate
-                _bt._agent_browser_resolved = True
-        elif validate:
-            _bt._cached_agent_browser = candidate
-            _bt._agent_browser_resolved = True
-        return candidate
-
-    if (
-        require_pin_tab
-        and _bt._pin_tab_agent_browser_resolved
-        and _bt._cached_pin_tab_agent_browser is not None
-    ):
-        return _bt._cached_pin_tab_agent_browser
-    if require_pin_tab and _bt._pin_tab_failure_cache is not None:
-        retry_at, message = _bt._pin_tab_failure_cache
-        if time.monotonic() < retry_at:
-            raise AgentBrowserCapabilityError(message)
-        _bt._pin_tab_failure_cache = None
-    if _bt._agent_browser_resolved and not require_pin_tab:
-        if _bt._cached_agent_browser is None:
-            raise _not_found(cached=True)
-        return _bt._cached_agent_browser
-
-    detected_node_major: Optional[int] = None
-
-    def candidate_usable(path: str) -> bool:
-        nonlocal detected_node_major
+    def usable(candidate):
+        if candidate in checked:
+            return False
+        checked.add(candidate)
         if require_pin_tab:
-            usable, _version, node_major = _pin_tab_candidate_status(path)
-            if node_major is not None:
-                detected_node_major = node_major
-            return usable
-        return agent_browser_runnable(path) if validate else _agent_browser_candidate_present(path)
+            return _pin_tab_candidate_status(candidate)
+        return (agent_browser_runnable if validate else _agent_browser_candidate_present)(candidate)
 
-    extended_path = _merge_browser_path("")
-    for candidate in _agent_browser_candidates(extended_path):
-        if candidate and candidate_usable(candidate):
-            return _accept(candidate)
-    # npx fallback (also searches the extended PATH)
-    if npx_path := _resolve_npx_bin():
-        if require_pin_tab:
-            detected_node_major = _effective_node_major(npx_path)
-            if (
-                detected_node_major is not None
-                and detected_node_major >= _bt.AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR
-            ):
-                return _accept(_bt.NPX_AGENT_BROWSER_SENTINEL)
-        else:
-            return _accept(_bt.NPX_AGENT_BROWSER_SENTINEL)
+    if not termux:
+        installed = pm.installed_package("agent-browser")
+        if installed and installed.binary is not None:
+            candidate = str(installed.binary)
+            if not require_pin_tab or usable(candidate):
+                return candidate
+    for search_path in (None, _merge_browser_path("")):
+        if search_path == "":
+            continue
+        candidate = shutil.which("agent-browser", path=search_path)
+        if candidate and usable(candidate):
+            return candidate
+    if require_pin_tab and (termux or pm.installed_package("agent-browser") is not None):
+        raise AgentBrowserCapabilityError(_pin_tab_capability_error())
+    hint = f"agent-browser CLI not found. Install it with: {_browser_install_hint()}"
+    if validate and not termux:
+        try:
+            pm.ensure("agent-browser")
+        except (pm.InstallError, OSError) as exc:
+            raise FileNotFoundError(f"{hint}\n{exc}") from exc
+        installed = pm.installed_package("agent-browser")
+        if installed and installed.binary is not None:
+            candidate = str(installed.binary)
+            if not require_pin_tab or _pin_tab_candidate_status(candidate):
+                return candidate
     if require_pin_tab:
-        message = _pin_tab_capability_error(detected_node_major)
-        _bt._pin_tab_failure_cache = (
-            time.monotonic() + _bt.AGENT_BROWSER_PIN_TAB_FAILURE_TTL_SECONDS,
-            message,
-        )
-        raise AgentBrowserCapabilityError(message)
-    if not validate:
-        raise FileNotFoundError("agent-browser CLI not found")
-    try:  # Nothing found — try lazy installation before giving up.
-        from hermes_cli.dep_ensure import ensure_dependency
-        if ensure_dependency("browser"):
-            home = get_hermes_home()
-            managed = (home / "node_modules" / ".bin", home / "node" / "bin", home / "node")
-            for path in (None, *([extended_path] if extended_path else []), *map(str, managed)):
-                recheck = shutil.which("agent-browser", path=path)
-                if recheck and agent_browser_runnable(recheck):
-                    return _accept(recheck)
-    except Exception:
-        pass
-    _bt._agent_browser_resolved = True
-    raise _not_found(cached=False)
-
+        raise AgentBrowserCapabilityError(_pin_tab_capability_error())
+    raise FileNotFoundError(hint)
 
 def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
-    """Best-effort pre-fetch of the agent-browser npm package via npx (``hermes update`` / ``doctor --fix``).
-
-    Runs with the credential-scrubbed env every other agent-browser spawn uses (registry-fetched npm code must
-    never see the operator keyring), in its own process group, and tree-kills on timeout so a surviving
-    descendant cannot hold the capture pipe open. Never raises; True only when npx exited 0.
-
-    agent-browser is no longer a root package.json dependency (#43564) — it resolves lazily via ``npx
-    agent-browser`` instead, which keeps it out of the npm workspace install graph entirely (nothing to
-    prune it anymore) but means the first real invocation in a session would otherwise pay npx's
-    registry-lookup/fetch cost. Calling this during ``hermes update`` (or ``hermes doctor --fix``) warms
-    npx's own cache ahead of time, restoring the "available before any session starts" property
-    agent-browser had while it was an eager root dependency — without re-entangling it with the workspace
-    graph.
-    """
-    _bt = _origin()
-    npx_bin = _resolve_npx_bin()
-    if not npx_bin:
-        return False
-    env = _bt._build_browser_env()
-    _apply_agent_browser_npm_policy(env)
-    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
-    popen_kwargs: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True, "env": env}
-    if os.name == "posix":
-        popen_kwargs.update(creationflags=windows_hide_flags(), start_new_session=True)
-    else:
-        popen_kwargs["creationflags"] = windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating range; a compromised future patch must not run
-    # install-time lifecycle scripts here. --prefer-offline: once cached, repeat runs must not re-hit the registry.
-    cmd = [npx_bin, "--ignore-scripts", "--prefer-offline", "-y", _bt.AGENT_BROWSER_NPX_SPEC, "--version"]
-    try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **popen_kwargs)
-    except Exception:
-        return False
-    try:
-        proc.communicate(timeout=timeout)
-        return proc.returncode == 0
-    except Exception as exc:
-        _lifecycle._kill_process_tree(proc)
-        if isinstance(exc, subprocess.TimeoutExpired):
-            with contextlib.suppress(Exception):
-                proc.communicate(timeout=5)
-        return False
-
-
-def _chromium_search_roots() -> List[str]:
-    """Chromium / headless-shell scan roots in agent-browser/Playwright probe order: ``PLAYWRIGHT_BROWSERS_PATH``, then the per-OS default cache."""
-    env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-    home = os.path.expanduser("~")
-    roots: List[str] = [env_path] if env_path and env_path != "0" else []
-    roots.append(os.path.join(home, ".cache", "ms-playwright"))
-    if sys.platform == "darwin":
-        roots.append(os.path.join(home, "Library", "Caches", "ms-playwright"))
-    if sys.platform == "win32":
-        local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
-        roots.append(os.path.join(local, "ms-playwright"))
-    return roots
-
-
-def _has_chromium_build(root: str) -> bool:
-    """True when ``root`` holds a Playwright ``chromium-*`` / ``chromium_headless_shell-*`` dir (agent-browser accepts either)."""
-    try:
-        return any(e.startswith(("chromium-", "chromium_headless_shell-")) for e in os.listdir(root))
-    except OSError:
-        return False
-
+    """Frozen old-updater surface names this module too (the extraction-era home); tools.browser_tool
+    carries the permanent definition. No npx work is performed; relaunch instead."""
+    return False
 
 def _chromium_installed() -> bool:
-    """True when a usable Chromium (or headless-shell) build is on disk; cached.
+    """An explicit browser executable or PM's selected full Chromium exists."""
+    from hermes_cli.browser_runtime import chromium_executable
 
-    Checks ``AGENT_BROWSER_EXECUTABLE_PATH``, then system Chrome/Chromium on PATH, then Playwright's cache.
-    Without a binary the CLI hangs on first use until the command timeout fires, so the tool must not be advertised.
-    """
-    _bt = _origin()
-    if _bt._cached_chromium_installed is not None:
-        return _bt._cached_chromium_installed
-    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
-    _bt._cached_chromium_installed = bool(
-        (ab_path and (os.path.isfile(ab_path) or shutil.which(ab_path)))
-        or any(shutil.which(name) for name in ("google-chrome", "chromium", "chromium-browser", "chrome"))
-        or any(root and os.path.isdir(root) and _has_chromium_build(root) for root in _chromium_search_roots())
-    )
-    return _bt._cached_chromium_installed
-
+    ab_path = chromium_executable()
+    return bool(ab_path and (os.path.isfile(ab_path) or shutil.which(ab_path)))
 
 def _maybe_autoinstall_chromium() -> bool:
-    """Best-effort, gated download of the Chromium *binary* on local cold start.
+    """Install only PM's pinned full Chromium, never the upstream browser pair.
 
-    Binary only (``agent-browser install``), never ``--with-deps`` — that shells ``apt`` and needs root. Gated by
-    ``security.allow_lazy_installs``, skipped in Docker (Chromium ships in the image), attempted once per process.
+    Docker supplies the binary. Other installs require lazy-install consent.
     """
     _bt = _origin()
     if _bt._chromium_autoinstall_attempted:
         return _chromium_installed()
     _bt._chromium_autoinstall_attempted = True
-    if _running_in_docker():
+    if _running_in_docker() or _is_termux_environment() or os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH"):
         return False
-    from tools.lazy_deps import _allow_lazy_installs
-    if not _allow_lazy_installs():
+    from pm import InstallError, ensure, lazy_installs_allowed
+    if not lazy_installs_allowed():
         return False
+    _bt.logger.info("browser: installing PM's pinned Chromium")
     try:
-        browser_cmd = _find_agent_browser()
-    except FileNotFoundError:
+        ensure("chromium")
+    except (InstallError, OSError) as exc:
+        _bt.logger.warning("browser: Chromium auto-install failed: %s", exc)
         return False
-    install_cmd = [browser_cmd, "install"]
-    if _is_npx_agent_browser_sentinel(browser_cmd):
-        install_cmd = [_resolve_npx_bin() or "npx", "--ignore-scripts", "-y", _bt.AGENT_BROWSER_NPX_SPEC, "install"]
-
-    _bt.logger.info("browser: Chromium missing — auto-installing the browser binary (one-time ~170MB; disable via security.allow_lazy_installs)")
-    try:
-        proc = subprocess.run(install_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
-                              env=_bt._build_browser_env(), stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError) as e:
-        _bt.logger.warning("browser: Chromium auto-install failed to start: %s", e)
-        return False
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip()[-300:]
-        _bt.logger.warning("browser: Chromium auto-install exited %s: %s", proc.returncode, tail)
-        return False
-    _bt._cached_chromium_installed = None
     return _chromium_installed()
-
 
 def _running_in_docker() -> bool:
     """Best-effort detection of whether we're inside a Docker container."""
@@ -453,7 +207,6 @@ def _running_in_docker() -> bool:
             return "docker" in fp.read()
     except OSError:
         return False
-
 
 def check_browser_requirements() -> bool:
     """Whether the browser tools should be advertised.
@@ -473,12 +226,10 @@ def check_browser_requirements() -> bool:
         return True
     # Do not exec ``agent-browser --version`` here: Windows .cmd shims flash a console during Desktop startup. Execution paths still validate.
     try:
-        browser_cmd = _find_agent_browser(validate=False)
+        _find_agent_browser(validate=False)
     except FileNotFoundError:
         return False
-    # Termux: the bare npx fallback is too fragile to advertise as a satisfied local dependency.
-    if _requires_real_termux_browser_install(browser_cmd):
-        return False
+
     # Cloud mode also requires provider credentials; no local Chromium needed.
     provider = _cloud._get_cloud_provider()
     if provider is not None:
@@ -489,7 +240,6 @@ def check_browser_requirements() -> bool:
     # Local Chrome mode needs Chromium on disk or the CLI hangs until the command timeout.
     return _chromium_installed()
 
-
 def check_browser_vision_requirements() -> bool:
     """Advertise ``browser_vision`` only with BOTH a working browser AND a vision backend.
 
@@ -499,8 +249,5 @@ def check_browser_vision_requirements() -> bool:
     """
     if not check_browser_requirements():
         return False
-    try:
-        from tools.vision_tools import check_vision_requirements
-    except ImportError:
-        return False
+    from tools.vision_tools import check_vision_requirements
     return check_vision_requirements()

@@ -101,7 +101,8 @@ def _apply_grown_window(agent: Any, compressor: Any, grown: int) -> None:
 
 
 def _refund_api_call(agent: Any, api_call_count: int) -> int:
-    """A pass that never reached the provider refunds the call count and budget."""
+    """Refund the call count and iteration budget for a pass that should not consume it:
+    one that never reached the provider (preflight) or a provider-switch fallback hop."""
     # Host progress-aware timeout (#98722, salvaged from #98741): this preflight iteration never reached the
     # provider. Refund its provisional call/budget exactly like a successful pre-API compaction, then stop
     # before the unchanged oversized request reaches the provider — its overflow error would only invoke
@@ -156,6 +157,11 @@ def _idle_compaction(
     if _idle_gap < _idle_after:
         return
     _compressor = agent.context_compressor
+    # A live or restored native checkpoint must reach its issuer once so real usage,
+    # rather than an opaque ciphertext estimate, decides whether local compression is
+    # still needed.  Threshold and post-tool preflight honor the same latch.
+    if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
+        return
     # Route-aware pressure: on compacted native-Codex sessions the durable figure
     # overstates the wire, so reuse the preflight estimator.
     _idle_tokens = _tc._preflight_request_tokens(
@@ -253,7 +259,8 @@ def _preflight_compression(
         # snapshot may arm the interrupted-turn rollback.
         if isinstance(_snapshot_val, int) and not isinstance(_snapshot_val, bool):
             agent._turn_preflight_display_snapshot = _snapshot_val
-    _preflight_deferred = getattr(
+    # An anchored figure is real usage + delta: never deferred.
+    _preflight_deferred = not getattr(agent, "_request_pressure_anchored", False) and getattr(
         _compressor, "should_defer_preflight_to_real_usage", lambda _tokens: False
     )(_preflight_tokens)
     _codex_native_auto = _codex_native_auto_compaction(agent)
@@ -273,8 +280,8 @@ def _preflight_compression(
     _compress_block_reason = None
     if _preflight_deferred:
         logger.info(
-            "Skipping preflight compression: rough estimate ~%s >= %s, "
-            "but last real provider prompt was %s after compression",
+            "Skipping preflight compression: rough estimate ~%s >= %s is not anchored on "
+            "real usage (last real provider prompt %s); deferring to the next response",
             f"{_preflight_tokens:,}", f"{_compressor.threshold_tokens:,}",
             f"{_compressor.last_real_prompt_tokens:,}",
         )
@@ -398,6 +405,7 @@ def _run_preflight_passes(
             _orig_len, len(out.messages), _orig_tokens, _preflight_tokens
         ):
             _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
+            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             out.blocked = True
             break  # Cannot compress further: neither rows nor tokens moved
         out.conversation_history = conversation_history_after_compression(
@@ -415,6 +423,8 @@ def _run_preflight_passes(
                 "~%s -> ~%s request tokens; skipping additional passes",
                 f"{_orig_tokens:,}", f"{_preflight_tokens:,}",
             )
+            # Sub-5% progress on a request still above the window: no further pass will get under it.
+            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             break
 
 

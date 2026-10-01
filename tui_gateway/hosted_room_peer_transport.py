@@ -193,8 +193,9 @@ class PeerHostedRoomTransport(InternalSessionRPC):
 
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str = "",
     ) -> Mapping[str, Any]:
+        del member_id  # the signed route already names the member
         self._validate_coordinates(profile=profile, source=source)
         if self._session_id not in {None, session_id}:
             raise ValueError("peer room session changed during admission")

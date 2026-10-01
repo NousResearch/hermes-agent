@@ -13,13 +13,6 @@ def transport():
     return get_transport("bedrock_converse")
 
 
-class TestBedrockBasic:
-
-    def test_api_mode(self, transport):
-        assert transport.api_mode == "bedrock_converse"
-
-    def test_registered(self, transport):
-        assert transport is not None
 
 
 class TestBedrockBuildKwargs:

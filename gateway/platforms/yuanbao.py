@@ -42,13 +42,16 @@ except ImportError:
     websockets = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
+    BasePlatformAdapter, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import helpers as _mdchunk
-from gateway.platforms._shared import get_scoped_secret as _yb_secret
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.yuanbao_media import (
     download_url as media_download_url, get_cos_credentials, upload_to_cos,
     build_image_msg_body, build_file_msg_body, guess_mime_type, md5_hex,
@@ -62,17 +65,14 @@ from gateway.platforms.yuanbao_proto import (
     encode_send_private_heartbeat, encode_send_group_heartbeat, encode_query_group_info,
     encode_get_group_member_list, next_seq_no,
 )
-from gateway.session import build_session_key
 from gateway.session_transcript import TranscriptReadError
 
 logger = logging.getLogger(__name__)
 
 # AUTH_BIND / sign-token header values
-try:
-    from hermes_cli import __version__ as _HERMES_VERSION
-except ImportError:
-    _HERMES_VERSION = "0.0.0"
-_APP_VERSION = _BOT_VERSION = _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
+
+_APP_VERSION = _BOT_VERSION = get_version_info().base_version
 _YUANBAO_INSTANCE_ID = str(HERMES_INSTANCE_ID)
 _OPERATION_SYSTEM = sys.platform
 
@@ -96,8 +96,20 @@ NO_RECONNECT_CLOSE_CODES = {4012, 4013, 4014, 4018, 4019, 4021}  # permanent err
 HEARTBEAT_TIMEOUT_THRESHOLD = 2  # consecutive missed pongs before reconnect
 REPLY_HEARTBEAT_INTERVAL_S = 2.0   # RUNNING cadence
 REPLY_HEARTBEAT_TIMEOUT_S = 30.0   # auto-FINISH after this much inactivity
-SLOW_RESPONSE_TIMEOUT_S = 120.0  # push SLOW_RESPONSE_MESSAGE when the agent is silent this long
-SLOW_RESPONSE_MESSAGE = "任务有点复杂，正在努力处理中，请耐心等待..."
+SLOW_RESPONSE_TIMEOUT_S = 120.0  # push slow_response_message() when the agent is silent this long
+
+
+def slow_response_message() -> str:
+    """Patience notice pushed after SLOW_RESPONSE_TIMEOUT_S of agent silence (localized; the
+    Chinese wording Yuanbao users historically saw lives in locales/zh.yaml)."""
+    return t("platform.yuanbao.slow_response_notice")
+
+
+# Cron wrapper markers, mirrored from cron/scheduler_delivery.py (``wrap_response``). The wrapper
+# is not keyed yet; when it is, import the same key here so ``strip_cron_wrapper`` keeps matching.
+CRON_WRAPPER_HEADER_PREFIX = "Cronjob Response: "
+CRON_WRAPPER_DIVIDER = "\n-------------\n\n"
+CRON_WRAPPER_FOOTER_PREFIX = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
 
 # Transcript anchors: [image|ybres:abc]  [file:report.pdf|ybres:xyz]  [voice|ybres:…]
 _YB_RES_REF_RE = re.compile(r"\[(image|voice|video|file(?::[^|\]]*)?)\|ybres:([A-Za-z0-9_\-]+)\]")
@@ -135,13 +147,6 @@ def _cancel_all(tasks: Dict[str, asyncio.Task]) -> None:
         if not task.done():
             task.cancel()
     tasks.clear()
-
-
-async def _cancel_task(task: asyncio.Task) -> None:
-    """Cancel *task* and wait for it to unwind (swallowing the CancelledError)."""
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
 
 
 class MarkdownProcessor:
@@ -699,39 +704,30 @@ class ChatRoutingMiddleware(InboundMiddleware):
         await next_fn()
 
 
-class AccessPolicy:
+class AccessPolicy(OwnAccessPolicyMixin):
     """DM / group access rules shared by inbound middleware and outbound ``send_dm``."""
+    ALLOW_ALL_ENV_PREFIX = "YUANBAO"
+
     def __init__(self, dm_policy: str, dm_allow_from: list[str], group_policy: str, group_allow_from: list[str]) -> None:
         self._dm_policy = dm_policy
-        self._dm_allow_from = dm_allow_from
+        self._allow_from = dm_allow_from
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
 
-    def _open_dm_opted_in(self) -> bool:
-        return any((_yb_secret(k, "") or "").lower() in {"true", "1", "yes"}
-                   for k in ("GATEWAY_ALLOW_ALL_USERS", "YUANBAO_ALLOW_ALL_USERS"))
-
-    def _evaluate(self, policy: str, allow_from: list[str], principal: str, *, pairing: bool) -> bool:
-        """Shared allow/deny rule; *pairing* is the verdict for the "pairing" policy."""
-        if policy == "allowlist":
-            return principal in allow_from
-        if policy == "pairing":
-            return pairing
-        if policy == "open":
-            return self._open_dm_opted_in()
-        return False  # "disabled" or unknown
-
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
-        return self._evaluate(self._dm_policy, self._dm_allow_from, sender_id.strip(), pairing=False)
+        return self._is_dm_allowed(sender_id.strip())
 
     def is_dm_intake_allowed(self, sender_id: str) -> bool:
         """Whether a DM may reach gateway intake (pairing handshake path)."""
-        principal = str(sender_id or "").strip()
-        return bool(principal) and self._evaluate(self._dm_policy, self._dm_allow_from, principal, pairing=True)
+        return self._is_dm_intake_allowed(sender_id)
 
     def is_group_allowed(self, group_code: str) -> bool:
-        return self._evaluate(self._group_policy, self._group_allow_from, group_code.strip(), pairing=False)
+        """Unlike the shared rule, an ``open`` group still needs the allow-all opt-in: Yuanbao groups
+        have no runner-side mention gate, so open-without-opt-in would forward every member."""
+        if self._group_policy == "open":
+            return self._open_dm_opted_in()
+        return self._is_group_allowed(group_code.strip())
 
     @property
     def dm_policy(self) -> str:
@@ -767,7 +763,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
         if not adapter._auto_sethome_done and adapter._sender_may_designate_home(ctx):
-            _cur_home = os.getenv("YUANBAO_HOME_CHANNEL", "")
+            _cur_home = _yb_secret("YUANBAO_HOME_CHANNEL", "") or ""
             _should_set = not _cur_home or (_cur_home.startswith("group:") and ctx.chat_type == "dm")
             if ctx.chat_type == "dm":
                 adapter._auto_sethome_done = True  # DM seen — no further upgrades needed
@@ -778,14 +774,17 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     @staticmethod
     def _persist_home(adapter, ctx: InboundContext) -> None:
         try:
-            from hermes_constants import get_hermes_home
-            from hermes_cli.config import atomic_config_write, read_user_config_raw
-            config_path = get_hermes_home() / "config.yaml"
-            # Raw read: merged defaults must not be persisted to the user's file.
-            user_config: dict = read_user_config_raw(config_path)
-            user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-            atomic_config_write(config_path, user_config)
-            os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
+            from gateway.config import HomeChannel, persist_home_channel
+            home = HomeChannel(platform=Platform.YUANBAO, chat_id=str(ctx.chat_id), name=str(ctx.chat_name or "Home"))
+            # ``platforms.yuanbao.home_channel`` in the owning profile's config.yaml is the durable record
+            # ``load_gateway_config`` reads back; the live PlatformConfig is updated so cron/home-channel
+            # delivery in THIS process has a target without a restart.
+            persist_home_channel(home)
+            adapter.config.home_channel = home
+            # Under a multiplexed secondary's scope the process env is the DEFAULT profile's; writing there
+            # would make this tenant's chat the default profile's cron/notification home.
+            if not _profile_scoped():
+                os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
             logger.info("[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel", adapter.name, ctx.chat_id, ctx.chat_name)
         except Exception as e:
             logger.warning("[%s] Auto-sethome failed: %s", adapter.name, e)
@@ -1030,7 +1029,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
         if matched_cmd and not is_owner:
             logger.info("[%s] Reject non-owner slash command: chat=%s from=%s cmd=%s", adapter.name, ctx.chat_id, ctx.from_account, matched_cmd)
             adapter._track_task(asyncio.create_task(
-                adapter.send(ctx.chat_id, f"⚠️ {matched_cmd} is only available to the creator in private chat mode"),
+                adapter.send(ctx.chat_id, t("platform.yuanbao.owner_command_denied", command=matched_cmd)),
                 name=f"yuanbao-owner-cmd-denial-{matched_cmd}"))
             return  # Stop pipeline
         if matched_cmd and is_owner and cmd_line:
@@ -1677,11 +1676,8 @@ class DispatchMiddleware(InboundMiddleware):
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
-        _sk = build_session_key(
-            ctx.source,
-            group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
-        )
+        # The adapter seam: keyed in the owner profile's namespace, same as ``handle_message``.
+        _sk = adapter._source_session_key(ctx.source)
 
         async def _dispatch_inbound_event() -> None:
             if any(mt.startswith(("application/", "text/")) for mt in ctx.media_types):
@@ -1805,7 +1801,7 @@ class ConnectionManager:
         if not WEBSOCKETS_AVAILABLE:
             msg = "Yuanbao startup failed: 'websockets' package not installed"
             adapter._set_fatal_error("yuanbao_missing_dependency", msg, retryable=True)
-            logger.warning("[%s] %s. Run: pip install websockets", adapter.name, msg)
+            logger.warning("[%s] %s. Run: hermes pm repair", adapter.name, msg)
             return False
         if not adapter._app_key or not adapter._app_secret:
             msg = "Yuanbao startup failed: YUANBAO_APP_ID and YUANBAO_APP_SECRET are required"
@@ -1843,6 +1839,7 @@ class ConnectionManager:
         self._ws = await asyncio.wait_for(
             websockets.connect(  # type: ignore[attr-defined]
                 self._adapter._ws_url, ping_interval=None, ping_timeout=None, close_timeout=5,
+                happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
             ),
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
@@ -1872,7 +1869,7 @@ class ConnectionManager:
         for attr, _coro_name, _tag in self._LOOPS:
             task = getattr(self, attr)
             if task:
-                await _cancel_task(task)
+                await cancel_task(task)
                 setattr(self, attr, None)
         disc_exc = RuntimeError("YuanbaoAdapter disconnected")
         for fut in self._pending_acks.values():
@@ -2339,7 +2336,7 @@ class HeartbeatManager:
         """Stop the RUNNING sender and optionally send FINISH."""
         task = self._reply_heartbeat_tasks.pop(chat_id, None)
         if task and not task.done():
-            await _cancel_task(task)
+            await cancel_task(task)
         if send_finish:
             await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
 
@@ -2363,7 +2360,7 @@ class SlowResponseNotifier:
         try:
             await asyncio.sleep(SLOW_RESPONSE_TIMEOUT_S)
             logger.info("[%s] Agent response exceeded %ds for %s, sending wait notice", self._adapter.name, int(SLOW_RESPONSE_TIMEOUT_S), chat_id)
-            await self._sender.send_text_chunk(chat_id, SLOW_RESPONSE_MESSAGE)
+            await self._sender.send_text_chunk(chat_id, slow_response_message())
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -2565,10 +2562,10 @@ class MessageSender:
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
         """Strip the scheduler's cron header/footer wrapper; unchanged when the shape doesn't match."""
-        if not content.startswith("Cronjob Response: "):
+        if not content.startswith(CRON_WRAPPER_HEADER_PREFIX):
             return content
-        divider = "\n-------------\n\n"
-        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
+        divider = CRON_WRAPPER_DIVIDER
+        footer_prefix = CRON_WRAPPER_FOOTER_PREFIX
         divider_pos = content.find(divider)
         footer_pos = content.rfind(footer_prefix)
         if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos or "\n(job_id: " not in content[:divider_pos]:
@@ -2602,14 +2599,31 @@ class YuanbaoAdapter(BasePlatformAdapter):
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000
     _active_instance: ClassVar[Optional["YuanbaoAdapter"]] = None
+    # Per Hermes home: a multiplexed gateway runs one Yuanbao adapter per profile, and the tools /
+    # send_message read "the" adapter from inside a profile-scoped turn, so last-wins would route
+    # profile B's sends through profile A's bot. Registration and lookup both key on the ambient
+    # override (connect/reconnect tasks inherit the profile's Context); the slot above serves the
+    # unscoped path.
+    _active_instances: ClassVar[Dict[str, "YuanbaoAdapter"]] = {}
 
     @classmethod
     def get_active(cls) -> Optional["YuanbaoAdapter"]:
-        return cls._active_instance
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            return cls._active_instance
+        return cls._active_instances.get(hermes_home_key())
 
     @classmethod
     def set_active(cls, adapter: Optional["YuanbaoAdapter"]) -> None:
-        cls._active_instance = adapter
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            cls._active_instance = adapter
+        elif adapter is None:
+            cls._active_instances.pop(hermes_home_key(), None)
+        else:
+            cls._active_instances[hermes_home_key()] = adapter
 
     def __init__(self, config: PlatformConfig, **kwargs: Any) -> None:
         super().__init__(config, Platform.YUANBAO)
@@ -2648,7 +2662,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._access_policy = AccessPolicy(*_policy("dm"), *_policy("group"))
         self._inbound_pipeline: InboundPipeline = InboundPipelineBuilder.build()
         # Auto-sethome stays open when no home is set or the home is a group (upgradable by first DM).
-        _existing_home = os.getenv("YUANBAO_HOME_CHANNEL") or (config.home_channel.chat_id if config.home_channel else "")
+        _existing_home = _yb_secret("YUANBAO_HOME_CHANNEL", "") or (config.home_channel.chat_id if config.home_channel else "")
         self._auto_sethome_done: bool = bool(_existing_home) and not _existing_home.startswith("group:")
 
     def _track_task(self, task: asyncio.Task) -> asyncio.Task:
@@ -2659,7 +2673,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
     @property
     def enforces_own_access_policy(self) -> bool:
-        """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
+        """Intake gating lives in ``AccessPolicy`` (composed, not inherited), so the flag stays here."""
         return True
 
     def _sender_may_designate_home(self, ctx: InboundContext) -> bool:
@@ -2692,7 +2706,10 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Cancel background tasks and close the WebSocket connection."""
         if YuanbaoAdapter._active_instance is self:
-            YuanbaoAdapter.set_active(None)
+            YuanbaoAdapter._active_instance = None
+        for home_key, active in list(YuanbaoAdapter._active_instances.items()):
+            if active is self:
+                del YuanbaoAdapter._active_instances[home_key]
         self._running = False
         self._mark_disconnected()
         self._release_platform_lock()
@@ -2776,7 +2793,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         if not self._access_policy.is_dm_allowed(user_id):
             return SendResult(success=False, error="DM access denied for this user")
         if len(text) > self.DM_MAX_CHARS:
-            text = text[:self.DM_MAX_CHARS] + "\n...(truncated)"
+            text = text[:self.DM_MAX_CHARS] + t("platform.shared.truncated_suffix")
         return await self.send(f"direct:{user_id}", text, group_code=group_code)
 
     # Media sends delegate to MessageSender.send_media via the named handler strategy.
@@ -2801,205 +2818,3 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def _get_cached_token(self) -> dict:
         """Current valid sign token (module-level cache)."""
         return await SignManager.get_token(self._app_key, self._app_secret, self._api_domain, route_env=self._route_env)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-AUTH_FAILED_CODES = {4001, 4002, 4003}      # permanent auth failure, re-sign token
-
-AUTH_RETRYABLE_CODES = {4010, 4011, 4099}   # transient, can retry with same token
-
-class FileUrlHandler(MediaSendHandler):
-    """Strategy: send file from a URL (download → COS → TIMFileElem)."""
-
-    async def acquire_file(self, adapter, **kwargs):
-        file_url: str = kwargs["file_url"]
-        logger.info("[%s] FileUrlHandler: downloading %s", adapter.name, file_url)
-        file_bytes, content_type = await media_download_url(
-            file_url, max_size_mb=adapter.MEDIA_MAX_SIZE_MB,
-        )
-        filename = kwargs.get("filename")
-        if not filename:
-            path_part = file_url.split("?")[0]
-            filename = os.path.basename(path_part) or "file"
-        if not content_type or content_type == "application/octet-stream":
-            content_type = guess_mime_type(filename) or "application/octet-stream"
-        return file_bytes, filename, content_type
-
-    def build_msg_body(self, upload_result, **kwargs):
-        return build_file_msg_body(
-            url=upload_result["url"],
-            filename=kwargs["filename"],
-            uuid=kwargs["file_uuid"],
-            size=upload_result["size"],
-        )
-
-class GroupQueryService:
-    """Encapsulates all group query operations (both low-level WS calls and
-    higher-level AI-tool-facing wrappers).
-
-    Responsibilities:
-      - Low-level WS encode/decode for group info and member list queries
-      - Chat-id parsing, error wrapping and result filtering for AI tools
-      - Member cache population on the adapter
-    """
-
-    def __init__(self, adapter: "YuanbaoAdapter") -> None:
-        self._adapter = adapter
-
-    # ------------------------------------------------------------------
-    # Low-level WS query methods
-    # ------------------------------------------------------------------
-
-    async def query_group_info_raw(self, group_code: str) -> Optional[dict]:
-        """Query group info via WS (group name, owner, member count, etc.).
-
-        Returns:
-            Decoded dict or None on failure.
-        """
-        adapter = self._adapter
-        if adapter._connection.ws is None:
-            return None
-        encoded = encode_query_group_info(group_code)
-        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
-        decoded = _decode(encoded)
-        req_id = decoded["head"]["msg_id"]
-        try:
-            response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            head = response.get("head", {})
-            status = head.get("status", 0)
-            if status != 0:
-                logger.warning("[%s] query_group_info failed: status=%d", adapter.name, status)
-                return None
-            biz_data = response.get("data", b"") or response.get("body", b"")
-            if biz_data and isinstance(biz_data, bytes):
-                return decode_query_group_info_rsp(biz_data)
-            return {"group_code": group_code}
-        except asyncio.TimeoutError:
-            logger.warning("[%s] query_group_info timeout: group=%s", adapter.name, group_code)
-            return None
-        except Exception as exc:
-            logger.warning("[%s] query_group_info failed: %s", adapter.name, exc)
-            return None
-
-    async def get_group_member_list_raw(
-        self, group_code: str, offset: int = 0, limit: int = 200
-    ) -> Optional[dict]:
-        """Query group member list via WS.
-
-        Returns:
-            Decoded dict or None on failure.  Also populates adapter._member_cache.
-        """
-        adapter = self._adapter
-        if adapter._connection.ws is None:
-            return None
-        encoded = encode_get_group_member_list(group_code, offset=offset, limit=limit)
-        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
-        decoded = _decode(encoded)
-        req_id = decoded["head"]["msg_id"]
-        try:
-            response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            head = response.get("head", {})
-            status = head.get("status", 0)
-            if status != 0:
-                logger.warning("[%s] get_group_member_list failed: status=%d", adapter.name, status)
-                return None
-            biz_data = response.get("data", b"") or response.get("body", b"")
-            if biz_data and isinstance(biz_data, bytes):
-                result = decode_get_group_member_list_rsp(biz_data)
-            else:
-                result = {"members": [], "next_offset": 0, "is_complete": True}
-            if result and result.get("members"):
-                adapter._member_cache[group_code] = (time.time(), result["members"])
-            return result
-        except asyncio.TimeoutError:
-            logger.warning("[%s] get_group_member_list timeout: group=%s", adapter.name, group_code)
-            return None
-        except Exception as exc:
-            logger.warning("[%s] get_group_member_list failed: %s", adapter.name, exc)
-            return None
-
-    # ------------------------------------------------------------------
-    # AI-tool-facing wrappers (chat_id parsing + filtering)
-    # ------------------------------------------------------------------
-
-    async def query_group_info(self, chat_id: str) -> dict:
-        """AI tool: Query current group info.
-
-        No parameters needed (group_code extracted from session context).
-        Returns group name, owner, member count, etc.
-        """
-        if not chat_id.startswith("group:"):
-            return {"error": "This command is only available in group chats"}
-        group_code = chat_id[len("group:"):]
-        result = await self.query_group_info_raw(group_code)
-        if result is None:
-            return {"error": "Failed to query group info"}
-        return result
-
-    async def query_session_members(
-        self,
-        chat_id: str,
-        action: str = "list_all",
-        name: Optional[str] = None,
-    ) -> dict:
-        """AI tool: Query group member list.
-
-        Args:
-            chat_id: Chat ID (extracted from session context)
-            action: 'find' (search by name) | 'list_bots' (list bots) | 'list_all' (list all)
-            name: Search keyword when action='find'
-
-        Returns:
-            {"members": [...], "total": int, "mentionHint": str}
-        """
-        if not chat_id.startswith("group:"):
-            return {"error": "This command is only available in group chats"}
-        group_code = chat_id[len("group:"):]
-        result = await self.get_group_member_list_raw(group_code)
-        if result is None:
-            return {"error": "Failed to query group members"}
-
-        members = result.get("members", [])
-
-        if action == "find" and name:
-            query = name.lower()
-            members = [
-                m for m in members
-                if query in (m.get("nickname", "") or "").lower()
-                or query in (m.get("name_card", "") or "").lower()
-                or query in (m.get("user_id", "") or "").lower()
-            ]
-        elif action == "list_bots":
-            members = [m for m in members if "bot" in (m.get("nickname", "") or "").lower()]
-
-        # Construct mentionHint
-        mention_hint = ""
-        if members and len(members) <= 10:
-            names = [m.get("name_card") or m.get("nickname") or m.get("user_id", "") for m in members]
-            mention_hint = "Mention with @name: " + ", ".join(names)
-
-        return {
-            "members": members[:50],  # Limit return count
-            "total": len(members),
-            "mentionHint": mention_hint,
-        }
-
-REPLY_REF_TTL_S = 300.0            # Reference dedup TTL (5 minutes)
-
-def get_active_adapter() -> Optional["YuanbaoAdapter"]:
-    """Delegate to ``YuanbaoAdapter.get_active()``."""
-    return YuanbaoAdapter.get_active()
-
-async def send_yuanbao_direct(
-    adapter: "YuanbaoAdapter",
-    chat_id: str,
-    message: str,
-    media_files: Optional[List[Tuple[str, bool]]] = None,
-) -> Dict[str, Any]:
-    """Delegate to ``OutboundManager.send_direct``."""
-    return await adapter._outbound.sender.send_direct(chat_id, message, media_files)
-# ---- END PLUGIN-COMPAT ----

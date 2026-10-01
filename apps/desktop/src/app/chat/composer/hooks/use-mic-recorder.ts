@@ -9,6 +9,11 @@ type BrowserAudioContext = typeof AudioContext
  *  analyser reads flat, so `heardSpeech=false` is no proof of silence. */
 const METER_RESUME_TIMEOUT_MS = 300
 
+/** Ignore over-threshold frames this long after capture opens (mic pop, start chime). */
+export const SPEECH_SETTLE_MS = 300
+/** Unbroken over-threshold time before a take counts as speech (filters clicks). */
+export const SPEECH_ONSET_MS = 150
+
 export interface MicRecorderOptions {
   onLevel?: (level: number) => void
   onError?: (error: Error) => void
@@ -103,6 +108,8 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const meterUnverifiedRef = useRef(false)
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
+  // Start of the current unbroken run of over-threshold frames (null = quiet).
+  const loudSinceRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
 
   const cleanup = () => {
@@ -204,9 +211,24 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         const idleSilenceMs = options.idleSilenceMs ?? 0
 
         if (speechThreshold > 0 && options.onSilence && !silenceTriggeredRef.current) {
-          if (normalized >= speechThreshold) {
+          // A USB mic pops (and a start chime rings) the instant capture opens, and
+          // a desk mic hears clicks: brief spikes over the threshold. Counting one
+          // loud frame as speech started the end-of-utterance clock before the user
+          // spoke, so the take ended as just the transient ("[clicking]") and the
+          // real sentence was lost. Speech = sustained loudness, past the open settle.
+          const loud = normalized >= speechThreshold && now - startedAtRef.current >= SPEECH_SETTLE_MS
+
+          if (loud) {
+            loudSinceRef.current ??= now
+          } else {
+            loudSinceRef.current = null
+          }
+
+          if (loud && (heardSpeechRef.current || now - loudSinceRef.current! >= SPEECH_ONSET_MS)) {
             heardSpeechRef.current = true
             silenceStartedAtRef.current = null
+          } else if (loud) {
+            // Onset still forming: neither speech yet nor silence.
           } else if (heardSpeechRef.current && silenceMs > 0) {
             silenceStartedAtRef.current ??= now
 
@@ -305,6 +327,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     meterUnverifiedRef.current = false
     silenceTriggeredRef.current = false
     silenceStartedAtRef.current = null
+    loudSinceRef.current = null
     startedAtRef.current = Date.now()
 
     recorder.ondataavailable = event => {

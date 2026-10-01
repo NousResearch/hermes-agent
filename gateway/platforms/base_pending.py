@@ -9,13 +9,6 @@ does not repeat the choice that selected it. A photo followed by two texts merge
 in the pending slot, and withdrawing the photo leaves one event with both texts, although the two
 texts alone would have queued as two turns.
 
-A rebuilt event contains only what the recorded merges produced. An attribute that other code set
-on a merged event without ``merge_recorded`` is lost. Today this affects only the voice-transcript
-echo count (``_gateway_pending_stt_echoed``), so an already posted transcript can be echoed
-again. That needs two voice notes merged in the pending slot, which happens only on the base
-adapter path without a runner or on the requeue at the interrupt depth limit: the runner's FIFO
-gives each voice note its own turn.
-
 ``PendingWithdrawalMixin`` declares the attributes that its host (``BasePlatformAdapter``)
 provides.
 
@@ -170,7 +163,11 @@ def merge_recorded(existing: MessageEvent, event: MessageEvent, merge: Merge) ->
     if not existing._merged_parts:
         existing._merged_parts = [(pending_part(existing), None)]
     existing._merged_parts.append((event, merge))
+    echoed = set(getattr(existing, "_gateway_pending_stt_echoed_paths", ()))
+    echoed.update(getattr(event, "_gateway_pending_stt_echoed_paths", ()))
     merge(existing, event)
+    if echoed:
+        existing._gateway_pending_stt_echoed_paths = echoed.intersection(existing.media_urls)
 
 
 def withdraw_from_event(event: Any, matches: Callable[[MessageEvent], bool]) -> Tuple[bool, Any]:
@@ -196,6 +193,9 @@ def withdraw_from_event(event: Any, matches: Callable[[MessageEvent], bool]) -> 
     rebuilt = pending_part(remaining[0][0])
     for part, merge in remaining[1:]:
         merge_recorded(rebuilt, part, merge)
+    echoed = set(getattr(event, "_gateway_pending_stt_echoed_paths", ()))
+    if echoed:
+        rebuilt._gateway_pending_stt_echoed_paths = echoed.intersection(rebuilt.media_urls)
     return True, rebuilt
 
 

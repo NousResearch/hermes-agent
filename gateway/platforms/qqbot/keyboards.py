@@ -79,7 +79,10 @@ class InlineKeyboard(_Serializable):
 
 def parse_approval_button_data(button_data: str) -> Optional[tuple[str, str, Optional[str]]]:
     """Parse approval button data into (session_key, decision, request_id)."""
-    return m.groups() if (m := _APPROVAL_DATA_RE.match(button_data or "")) else None
+    match = _APPROVAL_DATA_RE.match(button_data or "")
+    if match is None:
+        return None
+    return match.group(1), match.group(2), match.group(3)
 
 
 def parse_update_prompt_button_data(button_data: str) -> Optional[str]:

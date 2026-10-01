@@ -22,6 +22,7 @@ from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionStore
 from gateway.turn_context import TurnContext
 from plugins.platforms.matrix.adapter import MatrixAdapter
+from tests.gateway.matrix_helpers import FakeMediaDownload
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.reply_context import MatrixEventContext
 from plugins.platforms.matrix.thread_context import history_entry
@@ -66,10 +67,10 @@ def _adapter(monkeypatch: pytest.MonkeyPatch) -> tuple[MatrixAdapter, AsyncMock]
     received = AsyncMock()
     adapter.handle_message = received
     adapter._client = SimpleNamespace(
-        download_media=AsyncMock(return_value=PNG),
-        api=SimpleNamespace(request=AsyncMock(return_value={"chunk": []})),
+        api=SimpleNamespace(request=AsyncMock(return_value={"chunk": []}), session=SimpleNamespace()),
         crypto=None,
     )
+    adapter._client._test_media_download = FakeMediaDownload(PNG).install(adapter._client)
     return adapter, received
 
 
@@ -168,7 +169,7 @@ async def test_native_content_reaches_model_with_actor_description_and_pixels(
     if scenario == "oversize":
         adapter._max_media_bytes = len(PNG) - 1
     if scenario == "download-failure":
-        adapter._client.download_media.side_effect = OSError("unavailable")
+        adapter._client._test_media_download.fail = True
     if scenario == "invalid-url-denied":
         raw["content"]["url"] = "https://example.org/fox.png"
     if scenario == "missing-url-denied":
@@ -192,7 +193,7 @@ async def test_native_content_reaches_model_with_actor_description_and_pixels(
         adapter._max_media_bytes = len(PNG) - 1
     if scenario in {"download-edit", "download-redaction"}:
 
-        async def changed_download(_url):
+        async def changed_versions():
             if scenario == "download-redaction":
                 await adapter._on_redaction(
                     SimpleNamespace(room_id=ROOM, redacts="$native")
@@ -215,9 +216,9 @@ async def test_native_content_reaches_model_with_actor_description_and_pixels(
                     },
                     replacement_id="$edit",
                 )
-            return PNG
+            return SimpleNamespace(supports=lambda _version: True)
 
-        adapter._client.download_media.side_effect = changed_download
+        adapter._client.versions = AsyncMock(side_effect=changed_versions)
     if scenario == "missing-media-key":
         raw["content"]["file"] = {
             "url": raw["content"].pop("url"),
@@ -236,7 +237,7 @@ async def test_native_content_reaches_model_with_actor_description_and_pixels(
     if scenario.endswith("denied"):
         assert (
             received.await_count,
-            adapter._client.download_media.await_count,
+            len(adapter._client._test_media_download.requested),
         ) == (0, 0)
         return
     received.assert_awaited_once()
@@ -244,9 +245,9 @@ async def test_native_content_reaches_model_with_actor_description_and_pixels(
     assert call is not None
     event = call.args[0]
     text = _body(kind)
-    if scenario == "oversize":
+    if scenario in {"oversize", "download-oversize"}:
         text += "\n[matrix sticker attachment too large]"
-    if scenario in {"download-failure", "missing-media-key", "download-oversize"}:
+    if scenario in {"download-failure", "missing-media-key"}:
         text += "\n[matrix sticker image unavailable]"
     assert {
         "text": event.text,
@@ -258,7 +259,7 @@ async def test_native_content_reaches_model_with_actor_description_and_pixels(
     } == {
         "text": text,
         "type": MessageType.TEXT
-        if kind == "emote" or scenario == "oversize"
+        if kind == "emote" or scenario in {"oversize", "download-oversize"}
         else MessageType.PHOTO,
         "actor": SENDER,
         "room": ROOM,

@@ -106,7 +106,7 @@ class _PendingDispatchReservation:
             return
         event._merged_parts = self.event._merged_parts
         for attr in ("_pending_snapshot_uid", "_gateway_pending_stt_text", "_gateway_pending_stt_transcripts",
-                     "_gateway_pending_stt_clips", "_gateway_pending_stt_echoed_paths"):
+                     "_gateway_pending_stt_clips", "_gateway_pending_stt_input", "_gateway_pending_stt_echoed_paths"):
             if hasattr(self.event, attr):
                 setattr(event, attr, getattr(self.event, attr))
         self.aliases.append(event)
@@ -130,7 +130,7 @@ class _PendingDispatchReservation:
                     setattr(event, item.name, getattr(remaining, item.name))
             event._merged_parts = remaining._merged_parts
             event._prepared_inbound = None
-            for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts", "_gateway_pending_stt_clips"):
+            for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts", "_gateway_pending_stt_clips", "_gateway_pending_stt_input"):
                 if hasattr(event, attr):
                     delattr(event, attr)
             setattr(event, "_gateway_pending_stt_echoed_paths", echoed.intersection(event.media_urls))

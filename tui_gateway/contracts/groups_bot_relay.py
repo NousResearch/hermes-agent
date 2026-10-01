@@ -372,7 +372,8 @@ class GroupsReplicateResult(Result):
 
 
 method("groups.replicate", params=GroupsReplicateParams, result=GroupsReplicateResult,
-       doc="Persist one authority-stamped replay page into the local replica store; idempotent.")
+       doc="Persist one authority-stamped replay page into the local replica store; idempotent. "
+           "Refused (4116, reason replica_provenance_required) until exclusive-authority recovery exists.")
 
 
 class GroupsReplicaStateParams(RoomParams):
@@ -411,7 +412,8 @@ class GroupsPromoteResult(Result):
 
 
 method("groups.promote", params=GroupsPromoteParams, result=GroupsPromoteResult,
-       doc="Continue a replicated room on this gateway at epoch + 1; requires confirm=true.")
+       doc="Continue a replicated room on this gateway at epoch + 1; requires confirm=true. "
+           "Refused (4118, reason authority_takeover_disabled) until exclusive-authority recovery exists.")
 
 
 class GroupsDemoteParams(RoomParams):
@@ -427,7 +429,8 @@ class GroupsDemoteResult(Result):
 
 
 method("groups.demote", params=GroupsDemoteParams, result=GroupsDemoteResult,
-       doc="Fence this gateway's stale room authority against a proven newer epoch.")
+       doc="Fence this gateway's stale room authority against a proven newer epoch. "
+           "Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists.")
 
 
 # ── peer routes (RoomLink) ────────────────────────────────────────────────────────────────────

@@ -34,6 +34,46 @@ class ReplicaGapError(ReplicaError): """A page does not start at the replica's n
 class ReplicaEpochRegressionError(ReplicaError): """A page or demotion carries an older authority epoch than stored."""
 
 
+class TakeoverGateClosedError(ReplicaError):
+    """``require_takeover`` refused a takeover RPC; ``reason`` names the missing guarantee."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+#: Capability features the takeover RPCs advertise, only while ``takeover_enabled()``.
+TAKEOVER_FEATURES = ("log_replication", "authority_takeover")
+_TAKEOVER_REFUSALS = {
+    "promote": ("authority_takeover_disabled",
+                "Group Chat takeover is disabled until Hermes can select one globally exclusive authority."),
+    "demote": ("authority_takeover_disabled",
+               "Group Chat demotion is disabled until Hermes can select one globally exclusive authority."),
+    "replicate": ("replica_provenance_required",
+                  "Group Chat replication is disabled until Hermes can verify that a page came from the "
+                  "room's authority."),
+}
+
+
+def takeover_enabled() -> bool:
+    """Whether ``groups.promote``, ``groups.demote`` and ``groups.replicate`` may run.
+
+    Closed. Takeover is only safe once Hermes can select one globally exclusive authority for a
+    room: today two gateways can both promote a copy, a demoted gateway cannot be proven to have
+    stopped writing, and a page handed to ``groups.replicate`` is no proof of what the authority
+    wrote. Exclusive-authority recovery opens this gate; it is the only switch.
+    """
+    return False
+
+
+def require_takeover(operation: str) -> None:
+    """The one gate in front of the takeover RPCs: refuse with a typed reason while it is closed."""
+    if takeover_enabled():
+        return
+    reason, message = _TAKEOVER_REFUSALS[operation]
+    raise TakeoverGateClosedError(message, reason=reason)
+
+
 def _initialize_replica_schema(conn: sqlite3.Connection) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS hosted_room_replicas (
             room_id TEXT PRIMARY KEY, name TEXT NOT NULL, members_json TEXT NOT NULL,

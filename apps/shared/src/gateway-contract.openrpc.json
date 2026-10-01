@@ -1106,7 +1106,7 @@
     },
     {
       "name": "groups.demote",
-      "summary": "Fence this gateway's stale room authority against a proven newer epoch.",
+      "summary": "Fence this gateway's stale room authority against a proven newer epoch. Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists.",
       "params": [
         {
           "name": "params",
@@ -1232,7 +1232,7 @@
     },
     {
       "name": "groups.promote",
-      "summary": "Continue a replicated room on this gateway at epoch + 1; requires confirm=true.",
+      "summary": "Continue a replicated room on this gateway at epoch + 1; requires confirm=true. Refused (4118, reason authority_takeover_disabled) until exclusive-authority recovery exists.",
       "params": [
         {
           "name": "params",
@@ -1286,7 +1286,7 @@
     },
     {
       "name": "groups.replicate",
-      "summary": "Persist one authority-stamped replay page into the local replica store; idempotent.",
+      "summary": "Persist one authority-stamped replay page into the local replica store; idempotent. Refused (4116, reason replica_provenance_required) until exclusive-authority recovery exists.",
       "params": [
         {
           "name": "params",

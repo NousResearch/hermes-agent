@@ -187,6 +187,22 @@ hermes peer stop spark run_abc123
 
 ### 转移托管房间的权威
 
+:::caution 保留，但已停用
+`groups.replicate`、`groups.promote` 和 `groups.demote` 仍保留在协议中，但在 Hermes 具备独占权威恢复能力之前处于停用状态。只有当一个房间的权威只能由唯一一个 gateway 持有时，接管才是安全的，而 Hermes 目前还无法保证这一点：两个 gateway 可能都提升同一个副本，而被降级的 gateway 也无法被证明已经停止写入。交给 `groups.replicate` 的页面同样不能证明权威实际写入了什么。在此之前，每次调用都会在触及房间之前被拒绝，`groups.capabilities` 的 `features` 中也不会包含 `log_replication` 和 `authority_takeover`。`groups.replica_state` 仍会报告该 gateway 已持有的副本。
+
+| 方法 | 错误码 | `error.data.reason` |
+| --- | --- | --- |
+| `groups.replicate` | `4116` | `replica_provenance_required` |
+| `groups.promote` | `4118` | `authority_takeover_disabled` |
+| `groups.demote` | `4119` | `authority_takeover_disabled` |
+
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":4118,"message":"Group Chat takeover is disabled until Hermes can select one globally exclusive authority.","data":{"reason":"authority_takeover_disabled"}}}
+```
+
+本节其余部分描述的是独占权威恢复启用这些方法之后它们的工作方式。
+:::
+
 权威接管是一项**运维恢复流程**，而不是原子化的交接。请在相应的 gateway 上使用现有的 JSON-RPC 方法 `groups.promote` 和 `groups.demote`。不存在 `groups.peer.promote` 或 `groups.peer.demote` 方法；`groups.capabilities` 会列出你的 gateway 支持的方法。
 
 :::warning 提升之前先隔离旧的写入方

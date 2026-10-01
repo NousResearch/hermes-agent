@@ -311,6 +311,23 @@ def test_scoped_prefix_rejects_foreign_credential_403():
     assert resp.status_code == 403
 
 
+@pytest.mark.parametrize("broad_first", [True, False])
+def test_longest_prefix_scope_wins_regardless_of_registration_order(broad_first):
+    # A broad unscoped prefix must not shadow a narrower scoped one: the
+    # scope boundary cannot depend on plugin load order.
+    register_provider(_TokenProvider(secret="drain-secret", scopes=("drain",)))
+    registrations = [("/api/plugins/", None), ("/api/plugins/kanban/v1/", "kanban")]
+    for prefix, scope in registrations if broad_first else reversed(registrations):
+        token_auth.register_token_route_prefix(prefix, scope=scope)
+
+    def status(path):
+        req = _FakeRequest(path=path, headers={"authorization": "Bearer drain-secret"})
+        return _run(token_auth.token_auth_middleware(req, _call_next_ok)).status_code
+
+    assert status("/api/plugins/kanban/v1/tasks") == 403
+    assert status("/api/plugins/other/tasks") == 200
+
+
 def test_unscoped_route_accepts_any_verified_principal():
     # Backward compatibility: no scope requirement → any verified principal
     # passes, exactly the pre-scope behaviour.

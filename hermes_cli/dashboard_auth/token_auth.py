@@ -55,13 +55,14 @@ def register_token_route_prefix(prefix: str, *, scope: Optional[str] = None) -> 
 
 def _match_token_route(path: str):
     """Required scope for ``path`` (``None`` = any verified principal), or ``_NO_MATCH``.
-    Exact registrations win; among prefixes the first registered match wins."""
+    Exact registrations win; among prefixes the longest match wins, so the scope boundary never
+    depends on plugin load order (a broad prefix cannot shadow a narrower scoped one)."""
     with _lock:
         if path in _token_routes:
             return _token_routes[path]
-        for prefix, scope in _token_route_prefixes.items():
-            if path.startswith(prefix):
-                return scope
+        matches = [p for p in _token_route_prefixes if path.startswith(p)]
+        if matches:
+            return _token_route_prefixes[max(matches, key=len)]
     return _NO_MATCH
 
 

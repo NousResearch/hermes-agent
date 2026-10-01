@@ -214,12 +214,15 @@ export function normalizeComposerSendPrefs(value: unknown): ComposerSendPrefs {
 
   return {
     enterSends: record.enterSends !== false,
-    // Defaults ON: a file written before this key existed keeps breaking the
-    // line as it always did, and closing the gate gives the least surprising
-    // result. Turning it off is the deliberate "the key does nothing" choice.
-    enterNewline: record.enterNewline !== false,
-    sendOnDoubleTap: record.sendOnDoubleTap === true,
-    sendOnHold: record.sendOnHold === true,
+    // Defaults OFF, unlike the gate itself: the shipped shape of the guard is an
+    // inert press plus the two deliberate gestures, so switching the guard on
+    // never introduces a line break the user did not ask for.
+    enterNewline: record.enterNewline === true,
+    // ON while the gate is closed, because these are the two gestures a person
+    // performs on purpose: the feature is useful the moment it is switched on.
+    // They stay inert while `enterSends` is true, since the first press commits.
+    sendOnDoubleTap: record.sendOnDoubleTap !== false,
+    sendOnHold: record.sendOnHold !== false,
     sendOnPause: record.sendOnPause === true,
     // Off unless asked for: this is the one gesture that acts with no press at
     // all, so it must never arrive switched on.
@@ -245,9 +248,9 @@ export function composerPrefsFromConfig(composer: unknown): ComposerSendPrefs {
 
   return normalizeComposerSendPrefs({
     enterSends: record.enter_sends !== false,
-    enterNewline: record.enter_newline !== false,
-    sendOnDoubleTap: record.send_on_double_tap === true,
-    sendOnHold: record.send_on_hold === true,
+    enterNewline: record.enter_newline === true,
+    sendOnDoubleTap: record.send_on_double_tap !== false,
+    sendOnHold: record.send_on_hold !== false,
     sendOnPause: record.send_on_pause === true,
     sendOnIdle: record.send_on_idle === true,
     idleSendMs: record.idle_send_ms,

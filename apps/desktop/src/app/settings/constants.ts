@@ -598,7 +598,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   desktop: {
     composer: {
       enterSends:
-        'Turn off for multiline-first input: Enter inserts a newline, Ctrl/Cmd+Enter sends or queues, and Shift+Enter steers a running turn.'
+        'Prevent accidental send. Turn off for multiline-first input: Enter inserts a newline, Ctrl/Cmd+Enter sends or queues, and Shift+Enter steers a running turn.'
     },
     repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
     repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',

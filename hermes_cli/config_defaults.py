@@ -2635,10 +2635,16 @@ DEFAULT_CONFIG = {
         # is clamped to the bounds in apps/shared/src/composer-send.ts, so a
         # value typed here by hand behaves exactly like one moved by a slider.
         "composer": {
+            # The guard is opted INTO: Enter keeps sending until this is false,
+            # the only default that cannot surprise someone who never opens the
+            # setting. The rest of the block is the profile a user gets the moment
+            # they switch it on: an inert press, plus the two gestures a person
+            # performs on purpose (double tap and hold). The send the app guesses
+            # from a typing pause, and the auto-send, both stay off.
             "enter_sends": True,
-            "enter_newline": True,
-            "send_on_double_tap": False,
-            "send_on_hold": False,
+            "enter_newline": False,
+            "send_on_double_tap": True,
+            "send_on_hold": True,
             "send_on_pause": False,
             "send_on_idle": False,
             "double_enter_ms": 400,

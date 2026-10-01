@@ -801,7 +801,7 @@ export const en: Translations = {
       title: 'Enter and sending',
       description: 'Keep a stray Enter from sending, and choose every other way a draft can be sent.',
       gateLabel: 'Keep a bare Enter from sending',
-      gateDescription: 'A lone press never commits, however often you hit it.',
+      gateDescription: 'Prevent accidental send. A lone press never commits, however often you hit it.',
       newlineLabel: 'A bare Enter starts a new line',
       newlineDescription: 'Off means the press does nothing at all, and only the gestures below send.',
       gesturesTitle: 'Other ways to send',

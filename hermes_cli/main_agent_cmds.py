@@ -80,7 +80,7 @@ _ACP_FLAGS = (
 
 def cmd_governor(args):
     """hermes governor init|status|rotate — governed-key lifecycle for the
-    certified ri-context-governor engine (receipt-carrying compaction)."""
+    ri-context-governor engine (receipt-carrying compaction)."""
     import shutil as _shutil
 
     sub = getattr(args, "governor_command", None) or "status"

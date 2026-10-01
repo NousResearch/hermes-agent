@@ -564,9 +564,17 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
         executable = ""
         for candidate_index in range(2, len(tokens)):
             candidate = " ".join(tokens[:candidate_index]).lower().rstrip('"\'')
-            if candidate.endswith(("python", "python.exe", "python3", "python3.exe")):
-                option_index, executable = candidate_index, candidate
-                break
+            executable_name = re.split(r"[\\/]", candidate)[-1]
+            if executable_name not in {"python", "python.exe", "python3", "python3.exe"}:
+                continue
+            # A directory such as ``Python 3.11`` can itself end in ``python``
+            # before the remaining path fragment; only accept a bare interpreter
+            # name when the next token starts the option block.
+            if executable_name in {"python", "python3"} and candidate_index < len(tokens) - 1:
+                if not tokens[candidate_index].startswith("-"):
+                    continue
+            option_index, executable = candidate_index, candidate
+            break
         if option_index is not None:
             tokens = [executable, *tokens[option_index:]]
 

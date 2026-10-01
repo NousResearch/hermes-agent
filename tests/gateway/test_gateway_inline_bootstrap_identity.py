@@ -55,6 +55,14 @@ def test_bootstrap_argv_is_identity_only_for_the_process_running_it(join: str) -
     assert not looks_like_gateway_command_line(watcher) and _hermes_holder_subcommand(watcher) is None
 
 
-def test_unquoted_interpreter_path_with_spaces_reaches_inline_source() -> None:
-    tokens = "C:/Hermes Agent/.venv/Scripts/python.exe -I -c source hermes gateway run".split()
-    assert inline_source_flag_index(tokens) == 2
+@pytest.mark.parametrize(
+    "command_line",
+    [
+        "C:/Hermes Agent/.venv/Scripts/python.exe -I -c source hermes gateway run",
+        r"C:\Program Files\Python 3.11\python.exe -I -c source hermes gateway run",
+        r"C:\Program Files\Python 3.11\python3.exe -I -c source hermes gateway run",
+        r"C:\Program Files\Python 3.11\python -I -c source hermes gateway run",
+    ],
+)
+def test_unquoted_interpreter_path_with_spaces_reaches_inline_source(command_line: str) -> None:
+    assert inline_source_flag_index(command_line.split()) == 2

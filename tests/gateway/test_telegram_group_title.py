@@ -4,8 +4,10 @@ Only the external bot transport is replaced; no live Telegram mutations are made
 """
 
 import asyncio
+import logging
 import time
 from types import SimpleNamespace
+from typing import Optional
 
 import pytest
 from telegram.error import RetryAfter
@@ -17,6 +19,7 @@ from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionSource
+from gateway.title_compose import MAX_TITLE_LENGTH, compose_group_title
 from gateway.turn_context import TurnContext
 from hermes_constants import get_hermes_home
 from hermes_state import SessionDB
@@ -31,7 +34,7 @@ class RecordingBot:
         self.called = asyncio.Event()
         self.release = asyncio.Event()
         self.release.set()
-        self.error = None
+        self.error: Optional[BaseException] = None  # raised by set_chat_title to refuse a rename
 
     async def set_chat_title(self, *, chat_id, title):
         self.renames.append((chat_id, title, get_hermes_home()))
@@ -57,6 +60,13 @@ def _adapter():
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token", extra={"rich_messages": False}))
     adapter._bot = RecordingBot()
     return adapter
+
+
+def _recorder(adapter):
+    """The adapter's RecordingBot, bound so type checkers see it as non-None."""
+    bot = adapter._bot
+    assert isinstance(bot, RecordingBot)
+    return bot
 
 
 def _attach(runner, source, session_id):
@@ -387,13 +397,19 @@ async def test_filtered_titles_and_rejection_do_not_interrupt_replies(tmp_path, 
         unavailable = SessionSource(platform=Platform.TELEGRAM, chat_id="-101", chat_type="group", profile="missing")
         await asyncio.to_thread(_attach(runner, unavailable, "unavailable"), "Do not borrow default", "llm")
 
-        # The transport sees exact text, including whitespace and an over-limit title.
+        # The lane adds no sanitization of its own: what reaches the transport is exactly what
+        # the one composer (gateway/title_compose) returns for the subject it was handed. That
+        # composer — not the lane — is now the single place the string is built, so it owns the
+        # strip and the 100-char cap. Previously this asserted raw callback passthrough, which
+        # T4 supersedes (t_f0122159).
         title = "  Café  " + "x" * 129
         bot.release.clear()
         bot.error = ValueError("sensitive transport details must not be logged")
         await asyncio.to_thread(callback, title, "llm")
         await asyncio.wait_for(bot.called.wait(), timeout=2)
-        assert [(chat, text) for chat, text, _home in bot.renames] == [(-101, title)]
+        sent = [text for _chat, text, _home in bot.renames]
+        assert sent == [compose_group_title(title, "", None)]
+        assert len(sent[0]) <= MAX_TITLE_LENGTH  # the composer, not the lane, bounds the string
         result = await asyncio.wait_for(adapter.send("-101", "Reply while rename waits"), timeout=2)
         assert result.success
         bot.release.set()
@@ -656,3 +672,196 @@ def test_retry_delay_policy_table():
     assert GatewayTopicThreadsMixin._telegram_group_title_retry_delay(lane, RetryAfter(3)) == 3.0
     assert GatewayTopicThreadsMixin._telegram_group_title_retry_delay(lane, RetryAfter(0)) == min_s
     assert GatewayTopicThreadsMixin._telegram_group_title_retry_delay(lane, ValueError("no guidance")) is None
+
+
+# --- Fresh composition at rename time + the per-session rename budget (ticket t_f0122159) ---
+
+def _title_session(db, session_id, *, title=None, model=None, started_at=None):
+    """A gateway-shaped session row plus (optionally) the stored title/model the lane reads."""
+    _store_session(db, session_id, started_at=started_at)
+    if model is not None:
+        db._write_sql("UPDATE sessions SET model = ? WHERE id = ?", (model, session_id))
+    if title is not None:
+        # Retitle through the user path: ``set_auto_title`` refuses to overwrite an existing
+        # llm/derived title (correct provenance precedence), and these tests change the STORED
+        # title to model a late recompose, not to assert who may set it.
+        assert db.set_session_title(session_id, title)
+
+
+def _rename_counts(runner, source, session_id):
+    counts = getattr(runner, "_telegram_group_title_rename_counts", None) or {}
+    return counts.get(
+        (GatewayTopicThreadsMixin._telegram_topic_profile_name(source), str(source.chat_id), str(session_id)),
+        0,
+    )
+
+
+async def _await_renames(bot, count, timeout_s=5.0):
+    """Poll until the transport has been called *count* times.
+
+    ``_fire`` waits on the lane's outcome record, which a re-fire of the SAME session already
+    has from the previous turn — so for a session renaming repeatedly (the budget case) the
+    record is not a completion signal and the transport count is.
+    """
+    for _ in range(int(timeout_s / 0.01)):
+        if len(bot.renames) >= count:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"transport never reached {count} renames: got {len(bot.renames)}")
+
+
+async def _run_lane(runner, source, session_id, title):
+    """Drive one lane turn to completion and wait for it.
+
+    Firing through the callback schedules the turn and returns immediately, so a test that then
+    retitles the session can race the still-running turn. The lane's outcome record cannot close
+    that gap either — it is stamped to the second, so two same-second turns are byte-identical.
+    Awaiting the coroutine IS the completion barrier, and these tests are about lane-internal
+    behaviour (budget, fresh composition) rather than about the scheduling seam.
+    """
+    await runner._rename_telegram_group_for_session_title(source, session_id, title)
+
+
+@pytest.mark.asyncio
+async def test_budget_third_applies_fourth_skipped_with_warning(caplog):
+    """Three APPLIED renames per session, then silence: the fourth issues no Telegram call,
+    and the cap is visible in the log naming the session instead of vanishing (spec §3.5)."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _store_session(db, "session-budget", started_at=time.time())
+        for index in range(GatewayTopicThreadsMixin._TELEGRAM_GROUP_TITLE_RENAME_BUDGET):
+            # Same session, a different stored title each time: the budget is per session, so
+            # churn within one conversation is what exhausts it.
+            assert db.set_session_title("session-budget", f"Churn {index}")
+            await _run_lane(runner, source, "session-budget", f"Churn {index}")
+        assert [text for _chat, text, _home in adapter._bot.renames] == ["Churn 0", "Churn 1", "Churn 2"]
+        assert _rename_counts(runner, source, "session-budget") == \
+            GatewayTopicThreadsMixin._TELEGRAM_GROUP_TITLE_RENAME_BUDGET
+        # One more genuine title change for that session: over budget, no transport call.
+        assert db.set_session_title("session-budget", "Churn over")
+        with caplog.at_level(logging.WARNING, logger="gateway.run_topics"):
+            await _run_lane(runner, source, "session-budget", "Churn over")
+        assert [text for _chat, text, _home in adapter._bot.renames] == ["Churn 0", "Churn 1", "Churn 2"]
+        assert "session-budget" in caplog.text
+        assert "budget" in caplog.text.lower()
+        # A different session in the same chat still has its full budget: the count is per session.
+        _title_session(db, "session-budget-fresh", title="Other session", started_at=time.time() + 99)
+        await _run_lane(runner, source, "session-budget-fresh", "Other session")
+        assert adapter._bot.titles["-101"] == "Other session"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_skips_do_not_consume_budget(caplog):
+    """Only an APPLIED rename spends budget: kill-switch skip, not-owned skip, read-back
+    no-op and a transport rejection together leave room for the full cap."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    bot = _recorder(adapter)
+    extra = {"disable_group_auto_rename": True}
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra=extra)})
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _store_session(db, "skips", started_at=time.time())
+        # Kill-switch skip: no lane is scheduled at all, so nothing is counted.
+        await asyncio.to_thread(_attach(runner, source, "skips"), "Never renamed", "llm")
+        await asyncio.sleep(0.05)
+        assert bot.renames == []
+        extra["disable_group_auto_rename"] = False
+        # Not-owned skip: a newer session owns the group, so the older one spends nothing.
+        _title_session(db, "skips-newer", title="Newer", started_at=time.time() + 10)
+        await _run_lane(runner, source, "skips", "Stale")
+        assert bot.renames == []
+        # The owner's first applied rename spends one.
+        await _run_lane(runner, source, "skips-newer", "Newer")
+        assert [text for _chat, text, _home in bot.renames] == ["Newer"]
+        # Read-back no-op: Telegram already holds this exact title.
+        await _run_lane(runner, source, "skips-newer", "Newer")
+        assert len(bot.renames) == 1
+        # Transport rejection: the call was issued and refused, so it is not an applied rename.
+        # The rejected session must stay the owner (a newer session would take the group and
+        # turn this into an ownership skip instead).
+        bot.error = ValueError("refused")
+        try:
+            assert db.set_session_title("skips-newer", "Rejected")
+            await _run_lane(runner, source, "skips-newer", "Rejected")
+        finally:
+            bot.error = None
+        assert _rename_counts(runner, source, "skips-newer") == 1
+        # The two remaining slots are still there after a kill-switch skip, an ownership skip,
+        # a read-back no-op and a transport rejection — only the applied rename above spent one.
+        for index in range(GatewayTopicThreadsMixin._TELEGRAM_GROUP_TITLE_RENAME_BUDGET - 1):
+            assert db.set_session_title("skips-newer", f"Fresh {index}")
+            await _run_lane(runner, source, "skips-newer", f"Fresh {index}")
+        assert [text for _chat, text, _home in bot.renames][-2:] == ["Fresh 0", "Fresh 1"]
+        assert _rename_counts(runner, source, "skips-newer") == \
+            GatewayTopicThreadsMixin._TELEGRAM_GROUP_TITLE_RENAME_BUDGET
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_composition_read_fresh_at_rename_time():
+    """The rename carries the string composed from the CURRENT store state, not the title the
+    callback happened to hand over: a late-context recompose sees the stored subject."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-fresh", title="Stored subject", model="opencode-go/space-bunny-free",
+                       started_at=time.time())
+        # The callback carries a stale subject; the store is the truth.
+        await _fire(adapter, runner, source, "session-fresh", "Stale callback subject")
+        assert [text for _chat, text, _home in adapter._bot.renames] == [
+            compose_group_title("Stored subject", "opencode-go/space-bunny-free", None)]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_lane_uses_compose_group_title(monkeypatch):
+    """The lane delegates the string to the one composer instead of reimplementing it: swapping
+    the composer changes what the transport sees."""
+    seen = []
+
+    def _spy(subject, model, reasoning):
+        seen.append((subject, model, reasoning))
+        return f"COMPOSED::{subject}"
+
+    monkeypatch.setattr("gateway.title_compose.compose_group_title", _spy)
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-spy", title="Spy subject", model="provider/team/model-x",
+                       started_at=time.time())
+        await _fire(adapter, runner, source, "session-spy", "Spy subject")
+        assert [text for _chat, text, _home in adapter._bot.renames] == ["COMPOSED::Spy subject"]
+        assert seen == [("Spy subject", "provider/team/model-x", None)]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_readback_noop_does_not_burn_budget():
+    """The read-back dedupe sits BEFORE the budget check (§3.4): re-firing an unchanged title
+    is a no-op that never spends a rename."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-noop", title="Steady", started_at=time.time())
+        for _ in range(5):
+            await _fire(adapter, runner, source, "session-noop", "Steady")
+        assert len(adapter._bot.renames) == 1
+        assert _rename_counts(runner, source, "session-noop") == 1
+    finally:
+        db.close()

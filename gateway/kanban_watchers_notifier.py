@@ -304,9 +304,20 @@ class _Collector:
         if not events:
             return None
         task = self.kb.get_task(conn, sub["task_id"])
+        # Terminal-diagnostic formatters (gave_up/crashed/timed_out) append the
+        # worker's last comment as a findings block; fetch it now, on the open
+        # connection (formatters run later, off-connection).
+        last_comment = None
+        if any(ev.kind in ("gave_up", "crashed", "timed_out") for ev in events):
+            try:
+                last_comment = self.kb.get_last_comment(conn, sub["task_id"])
+            except Exception as comment_exc:
+                logger.debug("kanban notifier: last-comment fetch failed for %s: %s",
+                             sub["task_id"], comment_exc)
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
-        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task,
+                "last_comment": last_comment, "board": slug}
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
@@ -376,6 +387,29 @@ def _first_line(text: str, limit: int) -> str:
     return lines[0][:limit] if lines else text[:limit]
 
 
+def _last_worker_note(n) -> str:
+    """Excerpt of the task's last comment, for terminal-diagnostic pings.
+
+    ``gave_up`` / ``crashed`` / ``timed_out`` mean the worker never delivered a
+    handoff through the normal channel; its last comment (``kanban_comment``,
+    authored as the assignee profile) is routinely where the real findings
+    live — findings that otherwise die with the worker. The collector fetched
+    the comment while the board connection was open (``last_comment`` on the
+    delivery dict); formatters run later, off that connection, so they only
+    read the cached object. Redacted + local-path-scrubbed like review
+    reasons (external delivery). Empty when there is no comment — the ping
+    format is then unchanged — and never raises.
+    """
+    comment = getattr(n, "last_comment", None)
+    if comment is None:
+        return ""
+    try:
+        note = _safe_review_reason(getattr(comment, "body", ""), limit=240)
+    except Exception:
+        return ""
+    return t("gateway.kanban.ping.worker_note", note=note) if note else ""
+
+
 def _fmt_completed(ev, n) -> tuple:
     # Prefer the run summary from the event payload; fall back to task.result for legacy rows.
     wake_handoff = None
@@ -443,14 +477,15 @@ def _fmt_gave_up(ev, n) -> tuple:
     count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
              else t("gateway.kanban.ping.kept_failing"))
     last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
-    return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
+    return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id) \
+        + _last_worker_note(n), None, None
 
 
 def _fmt_timed_out(ev, n) -> tuple:
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
     span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
-    return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
+    return t("gateway.kanban.ping.timed_out", head=n.head, span=span) + _last_worker_note(n), None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but
@@ -463,7 +498,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
         None, None,
     ),
     "gave_up": _fmt_gave_up,
-    "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head), None, None),
+    "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head) + _last_worker_note(n), None, None),
     "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
     "review_requested": _fmt_review_requested,
@@ -490,6 +525,7 @@ class _KanbanNotification:
         self.sub_fail_counts = sub_fail_counts
         self.sub = sub = d["sub"]
         self.task = task = d["task"]
+        self.last_comment = d.get("last_comment")
         self.board_slug = d.get("board")
         self.platform_str = (sub["platform"] or "").lower()
         self.task_id = sub["task_id"]

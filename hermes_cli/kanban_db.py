@@ -100,7 +100,7 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 
 # --- Constants ---
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "approved", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
@@ -1797,6 +1797,21 @@ def _task_rows(conn: sqlite3.Connection, table: str, task_id: str, order: str) -
 
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
     return [Comment.from_row(r) for r in _task_rows(conn, "task_comments", task_id, "created_at ASC")]
+
+
+def get_last_comment(conn: sqlite3.Connection, task_id: str) -> Optional[Comment]:
+    """The task's most recent comment, or ``None`` when it has none.
+
+    Idempotent single-row read (``id DESC LIMIT 1``) for notification paths
+    that surface the worker's last documented findings; ``created_at`` alone
+    is not a stable ordering key for same-second bursts.
+    """
+    row = conn.execute(
+        "SELECT id, task_id, author, body, created_at FROM task_comments "
+        "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return Comment.from_row(row) if row else None
 
 
 def list_comments_after(

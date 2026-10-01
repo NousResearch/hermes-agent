@@ -250,6 +250,7 @@ gateway:
       timed_out: "⏱ Rith {head} thar {span} agus stopadh é; bainfear triail eile as go huathoibríoch."
       blocked: "⏸ {head} blocáilte{reason}"
       crashed: "✖ {head} — stop a oibrí go tobann; bainfear triail eile as go huathoibríoch."
+      worker_note: "📐 nóta deireanach an worker: {note}"
       status: "🔄 {head} → {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "

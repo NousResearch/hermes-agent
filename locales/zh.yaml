@@ -250,6 +250,7 @@ gateway:
       timed_out: "⏱ {head} 超过{span}已被停止；将自动重试。"
       blocked: "⏸ {head} 已阻塞{reason}"
       crashed: "✖ {head}——其工作进程意外停止；将自动重试。"
+      worker_note: "📎 工作代理的最后备注：{note}"
       status: "🔄 {head} → {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "

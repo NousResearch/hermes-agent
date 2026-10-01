@@ -250,6 +250,7 @@ gateway:
       timed_out: "⏱ {head}: перевищено {span}, роботу зупинено; спробу буде повторено автоматично."
       blocked: "⏸ {head} заблоковано{reason}"
       crashed: "✖ {head} — воркер несподівано зупинився; спробу буде повторено автоматично."
+      worker_note: "📐 остання нотатка воркера: {note}"
       status: "🔄 {head} → {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "

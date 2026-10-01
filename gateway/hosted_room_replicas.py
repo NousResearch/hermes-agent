@@ -17,7 +17,7 @@ import math
 import sqlite3
 from contextlib import contextmanager
 from functools import partial
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from gateway.hosted_rooms import (
     MAX_ACTOR_ID_CHARS, MAX_EVENT_ID_CHARS, MAX_GATEWAY_EVENT_BYTES, MAX_LOG_LIMIT, MAX_LOG_PAGE_BYTES,
@@ -192,12 +192,18 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _replica_transaction(db_path: DbPath) -> Iterator[sqlite3.Connection]:
+def _replica_transaction(
+    db_path: DbPath, _authorize: Callable[[sqlite3.Connection], None] | None = None,
+) -> Iterator[sqlite3.Connection]:
     """IMMEDIATE transaction over a current replica schema whose stored copies were just re-audited.
 
     A still-running older process can write replica rows after migration, so the audit runs inside
-    the same write transaction before every read, extension or takeover."""
+    the same write transaction before every read, extension or takeover. ``_authorize`` admits the
+    request first, inside the writer and before any schema or audit work, so a caller whose access
+    was withdrawn while it waited for the lock never starts replica maintenance."""
     with _transaction(db_path, immediate=True) as conn:
+        if _authorize is not None:
+            _authorize(conn)
         _initialize_replica_schema(conn)
         _audit_existing_replicas_locked(conn)
         yield conn

@@ -1271,7 +1271,7 @@ async def test_quoted_image_is_the_file_in_the_cache_of_a_routed_profile(
         monkeypatch.setattr(runner, "_enrich_message_with_vision", analyse)
         if move == "move-fails":
             monkeypatch.setattr(
-                "gateway.run_inbound.shutil.move", lambda *_args: (_ for _ in ()).throw(OSError("busy"))
+                "gateway.run_inbound_media.shutil.move", lambda *_args: (_ for _ in ()).throw(OSError("busy"))
             )
         turns = []
         expected = []

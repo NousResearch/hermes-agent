@@ -11673,18 +11673,13 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
 
 
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
-    """A TUI/Desktop turn binds its approval session key and holds its prompts open until answered:
-    the approval window inside the turn is unbounded even with a short ``approvals.timeout``."""
-    from tools import approval_context
     from tools.approval import get_current_session_key
 
     captured = {}
-    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"timeout": 1})
 
     class _Agent:
         def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             captured["session_key"] = get_current_session_key(default="")
-            captured["approval_wait"] = approval_context.approval_wait_seconds()
             return {
                 "final_response": "ok",
                 "messages": [{"role": "assistant", "content": "ok"}],
@@ -11713,8 +11708,6 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
 
     assert resp["result"]["status"] == "streaming"
     assert captured["session_key"] == "session-key"
-    assert captured["approval_wait"] > 1
-    assert approval_context.approval_wait_seconds() == 1  # unbound again once the turn ends
 
 
 def test_prompt_submit_expands_context_refs(monkeypatch):
@@ -21510,11 +21503,10 @@ def _capture_server_request(monkeypatch, result):
     return captured
 
 
-def test_clarify_callback_waits_until_answered(monkeypatch):
-    """The TUI/desktop clarify bridge sends a ``clarify`` server request with no deadline — even when
-    ``agent.clarify_timeout`` (the messaging-platform knob) is short — and returns the response's
-    ``answers`` and ``outcome``."""
-    monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: 1)
+def test_clarify_callback_uses_configured_timeout(monkeypatch):
+    """The TUI/desktop clarify bridge sends a ``clarify`` server request with the canonical clarify timeout
+    (via _clarify_timeout_seconds), and returns the response's ``answers`` and ``outcome``."""
+    monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
     reply = {"answers": {"q0": "a"}, "outcome": "submitted"}
     captured = _capture_server_request(monkeypatch, reply)
     questions = [{"qid": "q0", "question": "Pick one", "choices": ["a", "b"], "multi_select": False}]
@@ -21523,9 +21515,21 @@ def test_clarify_callback_waits_until_answered(monkeypatch):
 
     assert result == reply
     assert captured["method"] == "clarify" and captured["sid"] == "sid-1"
-    assert captured["timeout"] is None
+    assert captured["timeout"] == 42
     assert captured["params"] == {"questions": questions}
     assert captured["qids"] == ["q0"]
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [(0, None), (-1, None), (42, 42)],
+)
+def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, configured, expected):
+    """A ``<= 0`` clarify timeout means unlimited and reaches the server request as None
+    (wait(None) waits forever) rather than an immediate wait(0) skip."""
+    monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
+
+    assert server._clarify_timeout_seconds() == expected
 
 
 def test_build_persist_message_with_image_refs_without_images_returns_text(monkeypatch):

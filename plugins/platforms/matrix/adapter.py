@@ -2477,7 +2477,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             marker += "]"
             msg_event = await self._build_inbound_event(
                 room_id, sender, event_id, body, source_content, relates_to, ctx=ctx,
-                message_type=MessageType.TEXT, media_urls=None, media_types=None, media_msgtype=msgtype)
+                message_type=MessageType.TEXT, media_urls=[], media_types=[], media_msgtype=msgtype)
             if msg_event is not None:
                 msg_event.text = f"{msg_event.text}\n{marker}".strip()
                 await self.handle_message(msg_event)

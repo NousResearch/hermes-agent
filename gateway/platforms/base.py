@@ -1634,18 +1634,6 @@ async def cache_media_bytes_async(
     )
 
 
-@dataclass
-class TextDebounceState:
-    event: MessageEvent
-    task: asyncio.Task | None
-    first_ts: float
-    last_ts: float
-    earlier_events: list[MessageEvent] = field(default_factory=list)
-
-    def cancel_timer(self, *, unless: asyncio.Task | None = None) -> None:
-        """Cancel the pending flush timer (if live and not ``unless``)."""
-        if self.task is not None and self.task is not unless and not self.task.done():
-            self.task.cancel()
 
 
 @dataclass
@@ -1869,7 +1857,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-from gateway.platforms.base_text_debounce import BaseTextDebounceMixin
+from gateway.platforms.base_text_debounce import BaseTextDebounceMixin, TextDebounceState
 
 
 class BasePlatformAdapter(BaseTextDebounceMixin, BaseProcessingMixin, BaseBusyMixin, PendingWithdrawalMixin, ABC):

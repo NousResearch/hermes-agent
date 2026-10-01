@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import nullcontext
 from pathlib import Path
+import threading
 
 from gateway.session_contract import Principal
 from gateway.session_authorities import active_authority, all_authorities, owner_scope
@@ -16,6 +17,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
+        # Serializes a peer route's publication with Disband (session_group_peers.register).
+        self.peer_route_lock = threading.Lock()
         super().__init__(None, db_path=authority.db.db_path)
 
     def _make_rpc(self, server):
@@ -132,7 +135,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
     def _resolve_member_transport(self, binding, task):
         if self._member_is_peer(binding.room_id, str(task['payload'].get('target_member_id') or task['payload'].get('target_profile'))):
-            return super()._resolve_member_transport(binding, task)
+            from gateway.session_group_peers import refused_peer_turn
+            return refused_peer_turn(self, binding.room_id, task) or super()._resolve_member_transport(binding, task)
         from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
         payload = task['payload']
         member = str(payload.get('target_member_id') or payload.get('target_profile'))

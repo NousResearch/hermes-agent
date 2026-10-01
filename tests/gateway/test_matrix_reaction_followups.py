@@ -639,7 +639,8 @@ def test_reaction_watch_requires_its_original_conversation_at_claim_and_admissio
     from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.followup_mixin import _MatrixFollowupChoice
 
     async def exercise():
         current_session = ["old-session"]
@@ -802,7 +803,8 @@ def test_encrypted_streamed_reply_keeps_final_text_after_restart(tmp_path):
 
     from gateway.config import Platform, PlatformConfig
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.followup_mixin import _MatrixFollowupChoice
     from plugins.platforms.matrix.reply_context import MatrixEventContextCache
 
     async def exercise():
@@ -964,7 +966,8 @@ def test_streamed_final_arms_visible_original_and_split_events(tmp_path):
     from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.followup_mixin import _MatrixFollowupChoice
 
     async def exercise():
         adapter = object.__new__(MatrixAdapter)
@@ -1014,7 +1017,8 @@ def test_transformed_streamed_final_watches_edited_original_event(tmp_path):
     from gateway.platforms.base import SendResult
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.followup_mixin import _MatrixFollowupChoice
 
     async def exercise():
         adapter = object.__new__(MatrixAdapter)
@@ -1099,7 +1103,8 @@ def test_queued_first_response_arms_streamed_final_before_next_turn(tmp_path):
     from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.followup_mixin import _MatrixFollowupChoice
 
     async def exercise():
         adapter = object.__new__(MatrixAdapter)
@@ -1162,7 +1167,8 @@ def test_queued_reconciled_final_arms_edited_reply(tmp_path):
     from gateway.platforms.base import SendResult
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.followup_mixin import _MatrixFollowupChoice
 
     async def exercise():
         adapter = object.__new__(MatrixAdapter)
@@ -1360,7 +1366,8 @@ def test_armed_watch_is_purged_when_it_expires(tmp_path):
 
     from gateway.config import Platform
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.followup_mixin import _MatrixFollowupChoice
     from plugins.platforms.matrix.reaction_followups import WATCH_SECONDS
 
     async def exercise():

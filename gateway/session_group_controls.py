@@ -196,7 +196,7 @@ def _group(authority, actor, home, method, params):
     def state():
         room = rooms.room_state(db_path, **params)
         result = {'room': room}
-        if service is not None and room.get('disbanded_at') is None:
+        if service is not None:
             result['driver_status'] = service.status(room['room_id'])
         return result
 

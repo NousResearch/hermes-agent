@@ -33,11 +33,19 @@ class Model(BaseHTTPRequestHandler):
                 held.set()
                 release.wait(60)
         message = {'role': 'assistant', 'content': self.server.reply}
-        data = {'id': 'fixture', 'choices': [{'index': 0, 'message': message, 'finish_reason': 'stop'}],
+        messages = body.get('messages', [])
+        last_user = max((i for i, m in enumerate(messages) if m.get('role') == 'user'), default=-1)
+        if ('APPROVAL_WAIT' in _last_user_text(body)
+                and not any(m.get('role') == 'tool' for m in messages[last_user + 1:])):
+            message = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'index': 0, 'id': 'approval-call', 'type': 'function',
+                'function': {'name': 'terminal', 'arguments': json.dumps({
+                    'command': self.server.approval_command})}}]}
+        data = {'id': 'fixture', 'choices': [{'index': 0, 'message': message, 'finish_reason': 'tool_calls' if message.get('tool_calls') else 'stop'}],
                 'usage': {'prompt_tokens': 10, 'completion_tokens': 1, 'total_tokens': 11}}
         payload, kind = json.dumps(data).encode(), 'application/json'
         if body.get('stream'):
-            chunk = {'id': 'fixture', 'choices': [{'index': 0, 'delta': message, 'finish_reason': 'stop'}]}
+            chunk = {'id': 'fixture', 'choices': [{'index': 0, 'delta': message, 'finish_reason': 'tool_calls' if message.get('tool_calls') else 'stop'}]}
             payload, kind = ('data: ' + json.dumps(chunk) + '\n\ndata: [DONE]\n\n').encode(), 'text/event-stream'
         self.send_response(200)
         self.send_header('Content-Type', kind)
@@ -263,5 +271,71 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
         for model in (home_model, target_model):
             for _, release in model.gates.values():
                 release.set()
+            model.shutdown()
+            model.server_close()
+
+
+async def _join_pair(home_ws, target_ws):
+    async with asyncio.timeout(30):
+        while not (link := (await rpc(target_ws, 'groups.capabilities'))['result']['room_link'])['enabled']:
+            await asyncio.sleep(.1)
+    catalog = link['catalog']
+    pinned = {'kind': 'peer', 'peer_id': 'target-gateway', 'installation_id': catalog['installation_id'],
+              'profile': 'default', 'capability_digest': catalog['catalog_digest']}
+    members = [{'member_id': 'host', 'profile': 'default', 'handle': 'host'},
+               {'member_id': 'reviewer', 'profile': 'default', 'handle': 'reviewer', 'target': pinned}]
+    room = (await rpc(home_ws, 'groups.create', room_id='linked', name='Linked', members=members))['result']['room']
+    invited = (await rpc(target_ws, 'groups.peer.invite', room_id='linked', member_id='reviewer',
+        home_install_id=room['authority_gateway_id'], authority_gateway_id=room['authority_gateway_id'],
+        authority_epoch=room['authority_epoch']))['result']
+    registered = await rpc(home_ws, 'groups.peer.register', room_id='linked', member_id='reviewer',
+        target_url=link['endpoint']['url'], target_profile='default', grant=invited['grant'], catalog=catalog)
+    assert registered['result']['registered'], registered
+    return room, invited
+
+
+def test_peer_approval_wait_keeps_target_policy_and_stop_works(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    home, home_env = _gateway(tmp_path, 'home', home_model, root)
+    target, target_env = _gateway(tmp_path, 'target', target_model, root, api_port=port)
+    marker = target / 'approval-must-survive'
+    marker.mkdir()
+    (marker / 'evidence').write_text('not approved')
+    target_model.approval_command = 'rm -r ' + str(marker)
+    config = json.loads((target / 'config.yaml').read_text())
+    config['platform_toolsets'] = {'gui': [], 'bot_room': ['terminal'], 'api_server': ['terminal']}
+    config['approvals'] = {'mode': 'manual'}
+    (target / 'config.yaml').write_text(json.dumps(config))
+
+    async def exercise(home_desc, target_desc):
+        async with websocket(home, home_desc) as home_ws, websocket(target, target_desc) as target_ws:
+            await _join_pair(home_ws, target_ws)
+            await _send(home_ws, 'approval-stop', '@reviewer APPROVAL_WAIT')
+            async with asyncio.timeout(45):
+                while not (actions := (await rpc(home_ws, 'groups.state', room_id='linked'))[
+                        'result']['driver_status']['pending_actions']):
+                    await asyncio.sleep(.1)
+            action, = actions
+            assert action['kind'] == 'approval' and action['request_id'], action
+            assert action['approval']['choices'] == ['once', 'deny']
+            assert marker.is_dir()
+            assert (await rpc(home_ws, 'groups.stop', room_id='linked'))['result']['cancelled'] == 1
+            await _events(home_ws, 'turn.cancelled', timeout=10)
+            assert marker.is_dir()
+            # A repeated settled Stop leaves a successor usable.
+            assert (await rpc(home_ws, 'groups.stop', room_id='linked'))['result']['cancelled'] == 0
+            await _send(home_ws, 'after-stop', '@reviewer NEXT_AFTER_APPROVAL')
+            await _events(home_ws, 'message.member', timeout=30)
+            assert marker.is_dir()
+    try:
+        with daemon(root, target, target_env, barrier=False) as (_, td):
+            with daemon(root, home, home_env, barrier=False) as (_, hd):
+                asyncio.run(exercise(hd, td))
+    finally:
+        for model in (home_model, target_model):
             model.shutdown()
             model.server_close()

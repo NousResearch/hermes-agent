@@ -21,6 +21,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         self.peer_route_lock = threading.RLock()
         self._peer_renewals, self._peer_renewal_scans = {}, {}  # session_group_peer_routes
         super().__init__(None, db_path=authority.db.db_path)
+        for key, client in self.peer_clients.items():
+            client.proof_install_id = self.peer_routes[key].target_install_id
 
     def _make_rpc(self, server):
         # Member-specific canonical transports retain exact durable history. They
@@ -116,7 +118,31 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return result
 
 
+    def revoke_room_routes(self, room_id):
+        from gateway import hosted_room_links, hosted_rooms
+        from gateway import session_group_peer_cleanup as cleanup
+        with self.peer_route_lock:
+            routes = [link for link in hosted_room_links.load_room_links(self.db_path) if link.room_id == room_id]
+            # Journal all grants before contacting any target or removing any route.
+            with hosted_rooms._transaction(self.db_path) as conn:
+                for link in routes:
+                    cleanup.retain(self.db_path, link, mode='scope', conn=conn)
+            cleanup.drain(self, force=True, room_id=room_id)
+            hosted_rooms.delete_room_link_records(self.db_path, room_id=room_id)
+            with self._policy_lock:
+                for link in routes:
+                    key = (room_id, link.member_id)
+                    for table in (self.peer_routes, self._peer_route_status, self.peer_clients):
+                        table.pop(key, None)
+            return len(routes)
+
+    def status(self, room_id=None):
+        from gateway import session_group_peer_cleanup as cleanup
+        return {**super().status(room_id), 'peer_cleanup': cleanup.status(self.db_path, room_id)}
+
     def bindings(self):
+        from gateway import session_group_peer_cleanup as cleanup
+        cleanup.drain(self)
         with self.authority.db._read_ctx() as conn:
             owned = {r[0][len(_OWNER):] for r in conn.execute(
                 'SELECT key FROM state_meta WHERE key LIKE ?', (_OWNER + '%',))}

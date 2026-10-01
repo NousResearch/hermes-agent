@@ -26806,6 +26806,22 @@
             },
             "title": "Peer Routes",
             "type": "array"
+          },
+          "peer_cleanup": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Peer Cleanup"
           }
         },
         "required": [

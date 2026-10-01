@@ -67,6 +67,7 @@ class TestRunBackgroundTask:
         mock_adapter.send = AsyncMock()
         mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
         mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.toolsets_for_source = MagicMock(return_value=None)
         runner.adapters[Platform.TELEGRAM] = mock_adapter
 
         source = SessionSource(

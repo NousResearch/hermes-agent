@@ -273,7 +273,7 @@ def _evil_include(condition):
     pytest.param("README filter=evil\n",
                  lambda r, m: "".join(f'[filter "f{i}"]\n\tclean = cat\n' for i in range(300)), True,
                  id="filter_flood"),
-    # Malformed config: `git config` exits 3, which is neither "found" (0) nor "none" (1).
+    # Malformed config: `git config` dies (rc 128), which is neither "found" (0) nor "none" (1).
     pytest.param("README filter=evil\n", lambda r, m: _evil_filter(m) + '[filter "evil"\n', True,
                  id="broken_config"),
 ])

@@ -380,6 +380,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     for statement in _SCHEMA_DDL:
         conn.execute(statement)
     _migrate_legacy_columns(conn)
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_hosted_room_events_authority_claim
+                    ON hosted_room_events(room_id, authority_epoch, seq DESC)
+                    WHERE kind='authority.claimed'""")
+
     # Old schemas kept the final identity tombstone in hosted_rooms itself. Copy those identities before
     # bounded history pruning can remove their heavier room/event payloads. This compact registry is
     # intentionally permanent: a stale coordinate must never name a different Group Chat.
@@ -393,6 +397,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 def _schema_is_current(conn: sqlite3.Connection) -> bool:
     # Read every table first (fixed PRAGMA order), then compare.
     actual = [table_columns(conn, table) for table, _ in _REQUIRED_COLUMNS]
+    if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_authority_claim'"
+    ).fetchone() is None:
+        return False
+
     return all(
         required.issubset(columns)
         and (table != "hosted_room_remote_runs" or _remote_run_schema_current(conn, columns))

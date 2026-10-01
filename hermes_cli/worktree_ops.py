@@ -520,49 +520,31 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
         return True
 
 
-def _main_checkout_root(worktree_path: str, timeout: int = 10) -> Optional[Path]:
-    """Main checkout of *worktree_path*'s repo: first ``worktree`` line of ``git worktree list``.
-
-    Not ``--git-common-dir``'s parent: that is wrong for submodules and ``--separate-git-dir``.
-    For a submodule git lists its git dir (``.git/modules/<name>``) there, so resolve that entry
-    through ``rev-parse --show-toplevel`` (honours ``core.worktree``).
-    """
-    out = _git_out(["worktree", "list", "--porcelain"], worktree_path, timeout=timeout)
-    for line in (out or "").splitlines():
-        if line.startswith("worktree "):
-            first = line[len("worktree "):]
-            top = _git_out(["rev-parse", "--show-toplevel"], first, timeout=timeout)
-            return Path(top or first)
-    return None
-
-
-def _include_symlink_paths(worktree_path: str, repo_root=None, timeout: int = 10) -> set:
+def _include_symlink_paths(worktree_path: str, repo_root, timeout: int = 10) -> set:
     """Relative paths in *worktree_path* that are ``.worktreeinclude`` directory symlinks.
 
     ``_copy_worktree_includes`` symlinks included directories back to the main checkout
-    (*repo_root*; discovered from git when None). A trailing-slash gitignore pattern
+    (*repo_root*). A trailing-slash gitignore pattern
     (``node_modules/``) never matches a symlink, so git reports each one as untracked. Only a
     symlink at a listed entry that resolves to that same entry in the main repo qualifies —
     anything else is real user state.
     """
-    root = Path(repo_root) if repo_root else _main_checkout_root(worktree_path, timeout=timeout)
-    if root is None:
-        return set()
+    root = Path(repo_root)
     wt = Path(worktree_path)
     paths = set()
     for entry in _worktreeinclude_entries(root):
         dst = wt / entry
         if dst.is_symlink() and dst.resolve() == (root / entry).resolve():
-            paths.add(entry.rstrip("/"))
+            paths.add(Path(entry).as_posix().rstrip("/"))  # git status paths use "/" on Windows too
     return paths
 
 
-def _worktree_is_dirty(worktree_path: str, repo_root=None, timeout: int = 10) -> bool:
+def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool:
     """Whether a worktree has staged/unstaged/untracked changes. Fails SAFE toward True.
 
-    Untracked ``.worktreeinclude`` directory symlinks are ignored: they are our own scaffolding,
-    and counting them would keep every worktree of such a repo forever. Pass the main checkout
-    as *repo_root* when the caller knows it.
+    Untracked ``.worktreeinclude`` directory symlinks back to the main checkout *repo_root* are
+    ignored: they are our own scaffolding, and counting them would keep every worktree of such a
+    repo forever.
     """
     try:
         result = _git(["status", "--porcelain", "-z"], worktree_path, timeout=timeout)

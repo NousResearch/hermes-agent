@@ -3486,6 +3486,11 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
         "not available on the free tier", "model_not_supported_on_free_tier", "quota",
     )):
         return False
+    # Bedrock can reject one model under the account's retention policy. Changing
+    # transports cannot make it runnable; use the existing model-scoped fallback
+    # without relaxing the retention policy or quarantining the whole account.
+    if re.search(r"data retention mode\s+['\"][^'\"]+['\"]\s+is not available for this model", err_lower):
+        return True
     return _contains_any(err_lower, (
         "is not supported when using",   # codex/ChatGPT-account model gating
         "model is not supported", "not supported with this", "not supported for this account",

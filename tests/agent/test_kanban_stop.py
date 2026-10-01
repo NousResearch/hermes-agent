@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from agent.kanban_stop import (
+    consecutive_stop_attempts,
+    kanban_stop_max_attempts,
     build_kanban_stop_nudge,
     kanban_stop_nudge_enabled,
     session_called_kanban_terminal,
@@ -159,3 +161,72 @@ def test_nudge_still_fires_for_non_terminal_kanban_tool(clear_kanban_env):
     # The nudge offers every worker exit, not just close-out; a card that must go
     # through review must never be steered to ``kanban_complete`` alone.
     assert "kanban_request_review" in nudge and "kanban_block" in nudge
+
+
+# ── Budget: only consecutive narrated stops count; the last nudge is restrictive ──
+
+
+def _tc(name, i="1"):
+    return {"id": i, "type": "function", "function": {"name": name, "arguments": "{}"}}
+
+
+def _work(n):
+    """``n`` assistant tool-call rows (real progress) plus their tool results."""
+    rows = []
+    for i in range(n):
+        rows.append({"role": "assistant", "content": "", "tool_calls": [_tc("terminal", str(i))]})
+        rows.append({"role": "tool", "name": "terminal", "tool_call_id": str(i), "content": "ok"})
+    return rows
+
+
+def _nudge():
+    return {"role": "user", "content": "[System: nudge]", "_kanban_stop_synthetic": True}
+
+
+def test_budget_resets_when_worker_resumes_work(clear_kanban_env):
+    """Fleet pattern: nudge → 20 tool calls → nudge → 20 tool calls → narrated stop.
+    Before: attempts=2 ≥ max → None → rc=0 crash. Now the two mid-task nudges were answered
+    with work, so the streak is 0 and the guard still fires."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_c13ad517")
+    messages = [{"role": "user", "content": "work kanban task"}] + _work(5)
+    messages += [_nudge()] + _work(20) + [_nudge()] + _work(20)
+    messages.append({"role": "assistant", "content": "Let me find every required prop:"})
+    assert consecutive_stop_attempts(messages, attempts=2) == 0
+    nudge = build_kanban_stop_nudge(messages=messages, attempts=2)
+    assert nudge is not None
+    assert "FINAL" not in nudge
+
+
+def test_consecutive_narrated_stops_exhaust_budget(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_x")
+    messages = [{"role": "user", "content": "work"}] + _work(3)
+    messages += [_nudge(), {"role": "assistant", "content": "Now I'll finish."}]
+    # second nudge about to be issued: streak 1 → this is the last → restrictive text
+    assert consecutive_stop_attempts(messages, attempts=1) == 1
+    final = build_kanban_stop_nudge(messages=messages, attempts=1)
+    assert final is not None and "FINAL" in final and "Do NOT resume" in final
+    messages += [_nudge(), {"role": "assistant", "content": "Finishing now."}]
+    assert consecutive_stop_attempts(messages, attempts=2) == 2
+    assert build_kanban_stop_nudge(messages=messages, attempts=2) is None
+
+
+def test_one_board_poke_does_not_count_as_progress(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_x")
+    messages = [_nudge()] + _work(1) + [{"role": "assistant", "content": "ok, next:"}]
+    assert consecutive_stop_attempts(messages, attempts=1) == 1
+
+
+def test_bare_messages_fall_back_to_counter(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_x")
+    assert build_kanban_stop_nudge(messages=[], attempts=2) is None
+    assert build_kanban_stop_nudge(messages=[], attempts=0) is not None
+
+
+def test_max_attempts_env(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_x")
+    clear_kanban_env.setenv("HERMES_KANBAN_STOP_NUDGE_MAX", "4")
+    assert kanban_stop_max_attempts() == 4
+    assert build_kanban_stop_nudge(messages=[], attempts=3) is not None
+    assert build_kanban_stop_nudge(messages=[], attempts=4) is None
+    clear_kanban_env.setenv("HERMES_KANBAN_STOP_NUDGE_MAX", "junk")
+    assert kanban_stop_max_attempts() == 2

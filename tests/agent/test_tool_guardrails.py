@@ -506,8 +506,10 @@ def test_discovery_loop_cap_counts_builtin_file_discovery_calls():
     'Get-Content "clue.txt"',
     "rg needle .",
     "grep -R needle .",
+    r'C:\\Tools\\rg.exe needle .',
     """python -c "print(open('clue.txt').read())" """.strip(),
     """python -c "from pathlib import Path; print(Path('clue.txt').read_text())" """.strip(),
+    r'''"C:\\Python314\\python.exe" -c "print(open('clue.txt').read())"''',
 ])
 def test_discovery_loop_cap_counts_clear_terminal_reads_and_searches(command):
     controller = ToolCallGuardrailController(

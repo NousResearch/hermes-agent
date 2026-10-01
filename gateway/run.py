@@ -42,7 +42,13 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
-from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
+from hermes_cli.config import (
+    TERMINAL_CONFIG_ENV_MAP,
+    _is_ssh_remote_tilde_cwd,
+    _terminal_config_value_is_bridgeable,
+    _terminal_env_value,
+    cfg_get,
+)
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
 
@@ -2006,54 +2012,18 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
     """Bridge nested ``terminal.*`` config to TERMINAL_* env vars (config.yaml overrides .env here)."""
     _terminal_backend = str(
         _terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or "").strip().lower()
-    _terminal_env_map = {
-        "backend": "TERMINAL_ENV",
-        "degraded_mode": "TERMINAL_DEGRADED_MODE",
-        "cwd": "TERMINAL_CWD",
-        "timeout": "TERMINAL_TIMEOUT",
-        "home_mode": "TERMINAL_HOME_MODE",
-        "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-        "docker_image": "TERMINAL_DOCKER_IMAGE",
-        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-        "modal_image": "TERMINAL_MODAL_IMAGE",
-        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-        "vercel_image": "TERMINAL_VERCEL_IMAGE",
-        "ssh_host": "TERMINAL_SSH_HOST",
-        "ssh_user": "TERMINAL_SSH_USER",
-        "ssh_port": "TERMINAL_SSH_PORT",
-        "ssh_key": "TERMINAL_SSH_KEY",
-        "container_cpu": "TERMINAL_CONTAINER_CPU",
-        "container_memory": "TERMINAL_CONTAINER_MEMORY",
-        "container_disk": "TERMINAL_CONTAINER_DISK",
-        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-        "docker_env": "TERMINAL_DOCKER_ENV",
-        "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
-        "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
-        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-        "docker_network": "TERMINAL_DOCKER_NETWORK",
-        "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-        "docker_snap_compat": "TERMINAL_DOCKER_SNAP_COMPAT",
-        "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
-        "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
-        "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
-        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        "persistent_shell": "TERMINAL_PERSISTENT_SHELL"}
-    for _cfg_key, _env_var in _terminal_env_map.items():
+    for _cfg_key, _env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if _cfg_key not in _terminal_cfg:
             continue
         _val = _terminal_cfg[_cfg_key]
+        if not _terminal_config_value_is_bridgeable(_cfg_key, _val):
+            continue  # cwd placeholders resolve to Path.home() later; only explicit paths bridge
         if _cfg_key == "cwd":
-            # Placeholders (".", "auto", "cwd") resolve to Path.home() later; only explicit paths bridge.
-            if str(_val) in {".", "auto", "cwd"}:
-                continue
             # Expand "~" for local/container cwd so Popen never gets a literal "~/" (kernel rejects it);
             # SSH cwd is interpreted by the remote shell: keep "~". Predicate shared w/ terminal_tool.
             if isinstance(_val, str) and not _is_ssh_remote_tilde_cwd(_terminal_backend, _val.strip()):
                 _val = os.path.expanduser(_val)
-        os.environ[_env_var] = json.dumps(_val) if isinstance(_val, (list, dict)) else str(_val)
+        os.environ[_env_var] = _terminal_env_value(_val)
 
 
 def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:

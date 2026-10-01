@@ -149,10 +149,6 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
     const anchor =
       (message.rowId !== undefined ? existingRowIndices.get(message.rowId) : undefined) ??
       existingIdIndices.get(message.id) ??
-      // Either side of the match may be a folded part row: a fetched single
-      // row already held inside a live fold, or a fetched fold carrying a
-      // row the store already holds.
-      (message.rowId !== undefined ? existingPartRowIndices.get(message.rowId) : undefined) ??
       partRowAnchor(message)
 
     if (anchor === undefined) {

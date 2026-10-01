@@ -175,20 +175,29 @@ describe('mergeOlderTranscriptPage', () => {
   const toolCall = { type: 'tool-call', toolCallId: 't1', toolName: 'read_file', args: {} } as unknown as ChatMessage['parts'][number]
 
   it.each([
-    { name: 'drops a fold whose every row is already held live', liveParts: [narration, answer], foldParts: [narration, answer], kept: false },
-    { name: 'keeps a fold carrying a tool call and unheld narration', liveParts: [answer], foldParts: [toolCall, narration, answer], kept: true }
-  ])('$name (#123801)', ({ liveParts, foldParts, kept }) => {
-    const live: ChatMessage = { id: 'assistant-stream-1', role: 'assistant', parts: [...liveParts], rowId: 52203 }
-    const existing: ChatMessage[] = [chat('prompt', 52200), live]
+    {
+      name: 'drops a fold whose every row is already held live',
+      live: { parts: [narration, answer], rowId: 52203 },
+      foldParts: [narration, answer],
+      expected: ['prompt', 'assistant-stream-1']
+    },
+    {
+      name: 'keeps a fold carrying a tool call and unheld narration',
+      live: { parts: [answer], rowId: 52203 },
+      foldParts: [toolCall, narration, answer],
+      expected: ['prompt', '1770000000000-4-assistant', 'assistant-stream-1']
+    },
+    {
+      name: 'keeps a fold whose first row is held only as a part of another bubble',
+      live: { parts: [narration], rowId: 52202 },
+      foldParts: [narration, answer],
+      expected: ['prompt', '1770000000000-4-assistant', 'assistant-stream-1']
+    }
+  ])('$name (#123801)', ({ live, foldParts, expected }) => {
+    const existing: ChatMessage[] = [chat('prompt', 52200), { id: 'assistant-stream-1', role: 'assistant', ...live, parts: [...live.parts] }]
     const fold: ChatMessage = { id: '1770000000000-4-assistant', role: 'assistant', parts: [...foldParts], rowId: 52201 }
 
-    const merged = mergeOlderTranscriptPage(existing, [chat('prompt-refetch', 52200), fold])
-
-    if (kept) {
-      expect(merged.flatMap(message => message.parts)).toEqual(expect.arrayContaining([toolCall, narration]))
-    } else {
-      expect(merged).toBe(existing)
-    }
+    expect(mergeOlderTranscriptPage(existing, [chat('prompt-refetch', 52200), fold]).map(message => message.id)).toEqual(expected)
   })
 })
 

@@ -91,6 +91,10 @@ def close_tool_call(
         tc_id, name, result=str(result) if result is not None else None,
         function_args=meta.get("args"), snapshot=meta.get("snapshot"), is_error=is_error,
     ))
+    if name == "terminal" and not is_error:
+        from .background import track_background_process
+
+        track_background_process(conn, session_id, loop, tc_id, result)
     if not queue:
         tool_call_ids.pop(name, None)
     return tc_id

@@ -25,6 +25,7 @@ from acp.schema import (
 )
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
+from acp_adapter.background import BackgroundNotifier
 from acp_adapter.commands import SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
 from acp_adapter.events import (
@@ -255,6 +256,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._background = BackgroundNotifier(self.session_manager)
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -994,6 +996,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.is_running = False
                 state.current_prompt_text = ""
             await self._drain_queued_prompts(state, session_id, conn)
+            if conn and (background := getattr(self, "_background", None)) is not None:
+                # Background work that finished during the turn is reported now it is idle.
+                background.turn_ended(conn, asyncio.get_running_loop())
 
         usage = None
         if any(result.get(k) is not None for k in ("prompt_tokens", "completion_tokens", "total_tokens")):

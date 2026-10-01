@@ -388,6 +388,28 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
     from tools.async_delegation import dispatch_async_delegation_batch
     child_agents = [c for (_, _, c) in unit.children]
 
+    def _on_finalize(result, status):
+        """Terminal ``subagent.complete`` per child, including registry-synthesized crash/stall results
+        whose children never reported. ``_finalize`` runs under this dispatcher's context (the worker's
+        propagated copy, or the record's ``_context`` on a forced stall), so progress callbacks keep
+        their originating owner; relays drop a child already completed by its own worker."""
+        entries = {r["task_index"]: r for r in (result.get("results") or [])
+                   if isinstance(r, dict) and type(r.get("task_index")) is int}
+        for index, task, child in unit.children:
+            callback = getattr(child, "tool_progress_callback", None)
+            if not callable(callback):
+                continue
+            entry = entries.get(index, {})
+            summary = entry.get("summary") or result.get("error") or ""
+            error = entry.get("error") or result.get("error")
+            with _quiet("Final delegation progress failed: %s"):
+                callback(
+                    "subagent.complete", preview=summary or error or "",
+                    task_index=index, goal=task["goal"], model=entry.get("model") or getattr(child, "model", None),
+                    status=entry.get("status") or status, summary=summary, error=error,
+                    duration_seconds=entry.get("duration_seconds", result.get("total_duration_seconds")),
+                )
+
     def _interrupt():
         for c in child_agents:
             _signal_child_stop(c, "Async delegation cancelled")
@@ -404,7 +426,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         task_transcripts={str(i): str(unit.live_writers[i].path) for i, _, _ in unit.children
                           if i < len(unit.live_writers) and unit.live_writers[i] is not None
                           and unit.live_writers[i].path is not None},
-        progress_fn=lambda: _batch_progress_token(child_agents), **routing,
+        progress_fn=lambda: _batch_progress_token(child_agents), on_finalize=_on_finalize, **routing,
     )
 
 def _restore_parent_cancellation(unit: _Batch) -> None:

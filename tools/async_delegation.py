@@ -730,6 +730,7 @@ def _dispatch_admitted(
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
     task_transcripts: Optional[Dict[str, str]] = None,
+    on_finalize: Optional[Callable[[Dict[str, Any], str], None]] = None,
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -758,7 +759,8 @@ def _dispatch_admitted(
         # a forced finalization runs under the dispatcher's so it settles the same state.db.
         "_context": contextvars.copy_context(),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
-        "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
+        "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None,
+        "_on_finalize": on_finalize}
     with _records_lock:
         active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
         if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
@@ -843,12 +845,14 @@ def dispatch_async_delegation_batch(
     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
     task_transcripts: Optional[Dict[str, str]] = None,
+    on_finalize: Optional[Callable[[Dict[str, Any], str], None]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
     "total_duration_seconds": N}`` dict. The unit occupies ONE async slot — or joins the slot named
     by ``slot_key`` (in-unit parallelism is bounded separately) — and produces a SINGLE completion
-    event carrying per-task ``results``."""
+    event carrying per-task ``results``. ``on_finalize(result, status)`` observes the
+    winning terminal result, including forced stalls, outside the registry lock."""
     delegation_id = delegation_id or _new_delegation_id()
     # ``goals`` is the whole call (result task_index indexes it); the unit's own goals label the record.
     unit_goals = [goals[i] for i in task_indexes] if task_indexes is not None else list(goals)
@@ -860,7 +864,7 @@ def dispatch_async_delegation_batch(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
-        task_indexes=task_indexes, task_transcripts=task_transcripts,
+        task_indexes=task_indexes, task_transcripts=task_transcripts, on_finalize=on_finalize,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
@@ -886,8 +890,16 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
+        on_finalize = record.pop("_on_finalize", None)
         snapshot = dict(record)
-    _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
+    result = result(snapshot) if callable(result) else result
+    _push_completion_event(snapshot, result, status)
+    # Still "finalizing": observers drain before the record reads as terminal.
+    if on_finalize is not None:
+        try:
+            on_finalize(result, status)
+        except Exception:
+            logger.warning("Async delegation %s finalization observer failed", delegation_id, exc_info=True)
     with _records_lock:
         if delegation_id in _records:
             _records[delegation_id]["status"] = status

@@ -763,6 +763,7 @@ def _spawn_and_collect(
         os.name == "nt"
         and engine != "lightpanda"
         and (session_info.get("features") or {}).get("local")
+        and not _browser_in_sandbox()
         and "--cdp" not in cmd_parts
     ):
         elevation_error = _windows_browser_elevation_error()

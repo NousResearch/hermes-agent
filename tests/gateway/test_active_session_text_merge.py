@@ -480,3 +480,142 @@ async def test_third_sender_not_dropped_when_debounce_store_is_stuck(lifecycle, 
         assert (adapter._pending_messages, adapter._text_debounce) == ({}, {})
     adapter._discard_text_debounce(session_key)
     assert adapter._text_debounce == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending_sender", ["u1", None], ids=["other-sender-text", "empty-slot"])
+async def test_shared_session_text_that_cannot_join_the_slot_goes_to_the_runner_queue(pending_sender):
+    adapter = _make_adapter()
+    adapter._event_session_key = lambda event: "shared"  # type: ignore[method-assign]
+    queued: list[tuple[str, str]] = []
+    adapter.gateway_runner = types.SimpleNamespace(
+        _queue_or_replace_pending_event=lambda session_key, event: queued.append((session_key, event.text)),
+    )
+    adapter._active_sessions["shared"] = asyncio.Event()
+    if pending_sender is not None:
+        adapter._pending_messages["shared"] = _make_event("one", chat_type="group", user_id=pending_sender)
+
+    for text, sender in [("two", "u2"), ("three", "u3")]:
+        await adapter.handle_message(_make_event(text, chat_type="group", user_id=sender))
+    await adapter._flush_text_debounce_now("shared")
+
+    pending = adapter._pending_messages.get("shared")
+    assert (pending.text if pending else None, queued, adapter._text_debounce) == (
+        ("one", [("shared", "two"), ("shared", "three")], {}) if pending_sender is not None
+        else (None, [("shared", "two"), ("shared", "three")], {})
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["wecom", "weixin"])
+@pytest.mark.parametrize("quotes", [(None, "a"), ("a", "b"), ("a", "b", "c")])
+async def test_quote_batches_preserve_context_and_split_distinct_replies(
+    monkeypatch, platform, quotes
+):
+    from datetime import datetime
+
+    if platform == "wecom":
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        def payload(index, text, quote):
+            body = {
+                "msgid": str(index),
+                "chatid": "chat",
+                "chattype": "single",
+                "from": {"userid": "user"},
+                "msgtype": "text",
+                "text": {"content": text},
+            }
+            if quote:
+                body["quote"] = {"msgtype": "text", "text": {"content": quote}}
+            return {
+                "cmd": "aibot_msg_callback",
+                "headers": {"req_id": str(index)},
+                "body": body,
+            }
+
+        ingest = adapter._on_message
+    else:
+        from gateway.platforms import weixin
+
+        adapter = weixin.WeixinAdapter(
+            PlatformConfig(enabled=True, extra={"account_id": "account"})
+        )
+        adapter._poll_session = object()
+        adapter._token = None
+
+        def payload(index, text, quote):
+            item = {"type": weixin.ITEM_TEXT, "text_item": {"text": text}}
+            if quote:
+                item["ref_msg"] = {
+                    "message_item": {
+                        "type": weixin.ITEM_TEXT,
+                        "text_item": {"text": quote},
+                    }
+                }
+            return {
+                "from_user_id": "user",
+                "message_id": str(index),
+                "item_list": [item],
+            }
+
+        ingest = adapter._process_message
+
+    source = SessionSource(
+        platform=adapter.platform, chat_id="chat", chat_type="dm", user_id="user"
+    )
+    monkeypatch.setattr(
+        adapter,
+        "build_source",
+        lambda **kwargs: replace(source, message_id=kwargs.get("message_id")),
+    )
+    adapter._text_batch_delay_seconds = 3600
+    adapter.handle_message = AsyncMock()
+    stamp = datetime(2026, 1, 1)
+    messages = [
+        payload(index, "hello" if index == 0 else "", quote)
+        for index, quote in enumerate(quotes)
+    ]
+    expected = []
+    for index, (message, quote) in enumerate(zip(messages, quotes)):
+        if index and quotes[0] is None:
+            expected[0].reply_to_message_id = f"quote:{index}"
+            expected[0].reply_to_text = quote
+            expected[0].merged_message_ids.append(str(index))
+            continue
+        expected.append(
+            MessageEvent(
+                text="hello" if index == 0 else "",
+                source=replace(
+                    source, message_id=str(index) if platform == "wecom" else None
+                ),
+                raw_message=message,
+                message_id=str(index),
+                timestamp=stamp,
+                reply_to_message_id=f"quote:{index}" if quote else None,
+                reply_to_text=quote,
+            )
+        )
+    try:
+        for message in messages:
+            await ingest(message)
+        for task in adapter._pending_text_batch_tasks.values():
+            task.cancel()
+        await asyncio.gather(
+            *adapter._pending_text_batch_tasks.values(), return_exceptions=True
+        )
+        await adapter._flush_text_batch_now(next(iter(adapter._pending_text_batches)))
+        actual = [
+            replace(call.args[0], timestamp=stamp)
+            for call in adapter.handle_message.await_args_list
+        ]
+        assert actual == expected
+    finally:
+        for task in adapter._pending_text_batch_tasks.values():
+            task.cancel()
+        await asyncio.gather(
+            *adapter._pending_text_batch_tasks.values(), return_exceptions=True
+        )

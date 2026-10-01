@@ -87,6 +87,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes skin` | List, switch, and tweak display skins. |
 | `hermes console` | Open the safe Hermes command console. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
+| `hermes groups` | Allow, list or revoke the messaging chats that can control your Group Chats. |
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
 | `hermes bundles` | Group several skills under a single `/<name>` slash command. See [Skill Bundles](../user-guide/features/skills.md#skill-bundles). |
 | `hermes curator` | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md). |
@@ -1461,6 +1462,21 @@ hermes pairing <list|approve|revoke|clear-pending>
 | `approve <platform> <code>` | Approve a pairing code. |
 | `revoke <platform> <user-id>` | Revoke a user's access. |
 | `clear-pending` | Clear pending pairing codes. |
+
+## `hermes groups`
+
+```bash
+hermes groups <allow <code> [--yes]|chats|revoke <chat>>
+```
+
+Asks the running gateway; the local account that runs it becomes the owner of the chats it allows.
+See [Group Chats from messaging](../user-guide/messaging/group-chats.md).
+
+| Subcommand | Description |
+|------------|-------------|
+| `allow <code>` | Allow the chat that showed this code after `/group`. Shows the chat and its audience, then asks to confirm (`--yes` skips the question). |
+| `chats` | List the connected chats and the commands each always allows. |
+| `revoke <chat>` | Disconnect a chat (the ID from `chats`; a unique prefix is enough) and forget what it always allowed. |
 
 ## `hermes skills`
 

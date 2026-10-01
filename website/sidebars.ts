@@ -670,6 +670,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'user-guide/messaging/index',
+        'user-guide/messaging/group-chats',
         {
           type: 'category',
           label: 'Popular',

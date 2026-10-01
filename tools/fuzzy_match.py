@@ -339,8 +339,9 @@ def _strip_read_file_gutters(content: str, old_string: str, new_string: str) -> 
     """Remove read_file display gutters when the raw old text is absent.
 
     A numbered line may be a legitimate file value, so only normalize when the
-    gutter-free old string is present in the file and the supplied old string is
-    not.
+    supplied old string is not already present and every non-empty input line has
+    a read_file gutter. Once the caller has supplied guttered text, the gutter is
+    metadata even when whitespace drift prevents a literal match.
     """
     if old_string in content:
         return old_string, new_string
@@ -348,8 +349,6 @@ def _strip_read_file_gutters(content: str, old_string: str, new_string: str) -> 
     if not lines or any(not re.match(r"^\s*\d+\|", line) for line in lines if line.strip()):
         return old_string, new_string
     stripped_old = "\n".join(re.sub(r"^\s*\d+\|", "", line) for line in lines)
-    if stripped_old not in content:
-        return old_string, new_string
     stripped_new = "\n".join(re.sub(r"^\s*\d+\|", "", line) for line in new_string.split("\n"))
     return stripped_old, stripped_new
 

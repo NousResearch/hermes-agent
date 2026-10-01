@@ -11,6 +11,18 @@ class TestReadFileGutters:
         assert (new, count, strategy, error) == (
             "[server]\nport = 9090\nhost = localhost\n", 1, "exact", None)
 
+    def test_strips_gutters_before_fuzzy_matching_with_whitespace_drift(self):
+        content = "[server]\nport = 8080\nhost = localhost\n"
+        new, count, strategy, error = fuzzy_find_and_replace(
+            content, "1|[server]\n2|port  = 8080\n3|host = localhost ",
+            "1|[server]\n2|port  = 9090\n3|host = localhost ")
+        assert error is None
+        assert count == 1
+        assert strategy in {"block_anchor", "context_aware"}
+        assert "1|" not in new and "2|" not in new and "3|" not in new
+        assert "port  = 9090" in new
+        assert "host = localhost " in new
+
 
 class TestExactMatch:
     def test_single_replacement(self):

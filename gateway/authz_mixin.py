@@ -252,10 +252,11 @@ class GatewayAuthorizationMixin:
             return False
 
     def _cron_delivery_adapters(self, profile: Optional[str]):
-        """The adapters that *profile*'s cron output may leave through: ``_adapters_for_profile``, except
-        that a shared-bot satellite gets a ``SharedRouteAdapters`` view of the primary's bot, which serves
-        only the targets that a primary profile route maps to it. Call it inside *profile*'s scope: the
-        routes are read for the current home."""
+        """Return the delivery adapters authorised for the profile's cron output.
+
+        Shared-bot satellites can use the primary bot only for targets authorised by its routes.
+        Call this method inside the profile's scope because route lookup reads the current home.
+        """
         adapters = self._adapters_for_profile(profile)
         if profile is None or not self._is_shared_bot_satellite(profile):
             return adapters

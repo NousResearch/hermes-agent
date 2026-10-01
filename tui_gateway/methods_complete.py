@@ -42,6 +42,8 @@ def _catch(fail_code: int):
 def _(rid, params: dict) -> dict:
     global _paste_counter
     text = params.get("text", "")
+    if not isinstance(text, str):
+        return _err(rid, 4000, "text must be a string")
     if not text:
         return _err(rid, 4004, "empty paste")
     _paste_counter += 1

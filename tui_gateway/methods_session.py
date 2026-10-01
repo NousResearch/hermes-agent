@@ -115,13 +115,15 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
             "desktop_contract": DESKTOP_BACKEND_CONTRACT}
 
 
-def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None) -> dict:
-    """Compact session.list row; ``tip_row``/``resolved_id`` come from the compression tip."""
+def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None, db=None) -> dict:
+    """Compact session.list row; ``tip_row``/``resolved_id`` come from the compression tip.
+    ``db`` adds ``live_message_count`` (see ``_live_count_field``)."""
     tip_row = tip_row or row
     return {"id": row["id"], **({} if resolved_id is None else {"resolved_id": resolved_id}),
             "title": row.get("title") or "", "preview": tip_row.get("preview") or "",
             "started_at": row.get("started_at") or 0, "message_count": tip_row.get("message_count") or 0,
-            "source": row.get("source") or ""}
+            "source": row.get("source") or "",
+            **({} if db is None else _live_count_field(db, row["id"] if resolved_id is None else resolved_id))}
 
 
 from hermes_state_sessions import INTERNAL_LISTING_SOURCES
@@ -518,7 +520,7 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
         # Real compression continuation only: the resolver's unmarked-child fallback could redirect Bot Chat.
         tip = db.get_compression_tip(row["id"]) or row["id"]
     tip_row = (db.get_session(tip) or row) if tip != row["id"] else row
-    return _ok(rid, {"sessions": [_session_row_summary(row, tip_row=tip_row, resolved_id=tip)]})
+    return _ok(rid, {"sessions": [_session_row_summary(row, tip_row=tip_row, resolved_id=tip, db=db)]})
 
 
 @method("session.list")
@@ -540,6 +542,9 @@ def _(rid, params: dict, db) -> dict:
         include_subagents = bool(db_path) and show_subagent_sessions(Path(db_path).parent)
         rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
                              include_subagents=include_subagents)[:limit]
+        # No live_message_count here on purpose: the bulk listing serves rows whose open
+        # paths never demand history (expectHistory defaults false); the count is a
+        # per-session scan and would turn one listing call into hundreds of them.
         return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
     except Exception as e:
         return _err(rid, 5006, str(e))

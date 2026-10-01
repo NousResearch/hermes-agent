@@ -3899,6 +3899,10 @@ export interface Translations {
       editModels: string
       followDefault: string
       refreshModels: string
+      favorites: string
+      addFavorite: string
+      removeFavorite: string
+      favoriteShortcut: string
       fast: string
       free: string
       cacheRead: string

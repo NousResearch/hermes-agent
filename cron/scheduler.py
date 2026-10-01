@@ -543,7 +543,7 @@ from cron.jobs import (
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
-    recover_interrupted_executions)
+    recover_interrupted_executions, terminalize_dead_owner)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -2728,15 +2728,19 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            if _launch_external_cron_worker(job):
-                return True
+            handed_off = _launch_external_cron_worker(job)
         except Exception as handoff_error:
-            # Past the handoff the worker may have adopted the row, run side effects
-            # and sent its own notice: record bookkeeping only, never a false
-            # "dispatch failed" incident/ping.
+            # Arbitrary waiter errors must not claim dispatch failure or resend
+            # a worker's notice. A recovered unknown execution is different:
+            # its worker never committed a terminal outcome.
             post_handoff = isinstance(handoff_error, _ExternalWorkerPostHandoffError)
             stage = "failed after handoff" if post_handoff else "dispatch failed"
             error = f"Restart-safe cron worker {stage}: {handoff_error}"
+            if post_handoff:
+                from cron.scheduler_worker_failure import record_unknown_worker_outcome
+
+                if record_unknown_worker_outcome(job, error=str(handoff_error), adapters=adapters, loop=loop):
+                    return True
             logger.error("Job '%s': %s", job["id"], error)
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -2760,6 +2764,11 @@ def run_one_job(
                 finish_execution(
                     execution_id, success=False, error=error,
                     delivery_outcome=delivery_outcome)
+            return True
+        if handed_off:
+            from cron.scheduler_worker_failure import record_unknown_worker_outcome
+
+            record_unknown_worker_outcome(job, adapters=adapters, loop=loop)
             return True
     if extra_prompt is None:
         # Gateway-forwarded manual run stamps its prompt on the job via trigger_job; the fire that
@@ -3419,6 +3428,7 @@ def _wait_for_external_cron_worker_body(
     process: subprocess.Popen,
     *,
     execution_id: str,
+    stderr_path: Optional[Path] = None,
 ) -> bool:
     """Preserve ``run_one_job``'s synchronous contract after handoff.
 
@@ -3440,28 +3450,51 @@ def _wait_for_external_cron_worker_body(
         try:
             returncode = process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
-            if _is_terminal():
+            if not _is_terminal():
+                continue
+            # Recovery can win between the timeout and this ledger read. If
+            # the worker has since exited, consume its diagnostics below before
+            # cleanup; only a still-live terminal worker needs background reaping.
+            returncode = process.poll()
+            if returncode is None:
                 from cron.scheduler_detached_worker import reap_terminal_worker_in_background
 
                 reap_terminal_worker_in_background(process)
                 return True
-            continue
         # The worker can commit its terminal row and exit between the first
         # read and wait(). Re-read the exact attempt before declaring that
         # it died without terminalizing.
-        if _is_terminal():
+        current = get_execution(execution_id)
+        if current and current.get("status") in ("completed", "failed"):
             return True
         # If the adopted worker died without terminalizing, its owner is
         # now provably gone. Recover to ``unknown`` rather than routing the
         # exception through the pre-handoff dispatch-failure path, which
         # would falsely assert that no side effect could have happened.
-        recover_interrupted_executions()
-        if _is_terminal():
-            return True
-        raise RuntimeError(
-            "cron external worker exited before durable recovery could "
-            f"terminalize its execution state (exit {returncode})"
-        )
+        #
+        # Record the cause THIS waiter observed instead of letting the blanket
+        # sweep stamp "Scheduler restarted ...", and then RAISE: the sweep leaves
+        # the row terminal, so returning success here made run_one_job skip
+        # mark_job_run entirely and the job's fire claim outlived its lost
+        # execution, refusing the next manual fire with "Job is already being
+        # fired" (#128509). Raising routes the existing post-handoff bookkeeping
+        # instead: retire the claim and report the uncertain run, not a pre-dispatch failure.
+        from cron.scheduler_worker_failure import external_worker_exited_reason
+
+        reason = external_worker_exited_reason(returncode)
+        if not terminalize_dead_owner(execution_id, reason=reason):
+            recover_interrupted_executions()
+            # A concurrent sweep may have won the unknown transition. Still
+            # surface this waiter's exit code and stderr instead of discarding them.
+            current = get_execution(execution_id)
+            if current and current.get("status") in ("completed", "failed"):
+                return True
+        stderr_tail = ""
+        if stderr_path is not None:
+            from cron.scheduler_diagnostics import external_worker_stderr_tail
+
+            stderr_tail = external_worker_stderr_tail(stderr_path)
+        raise RuntimeError(f"{reason}{stderr_tail}")
 
 
 class _ExternalWorkerPostHandoffError(RuntimeError):
@@ -3474,10 +3507,11 @@ def _wait_for_external_cron_worker(
     execution_id: str,
     job_id: Optional[str] = None,
     handoff_files: tuple[Path, ...] = (),
+    stderr_path: Optional[Path] = None,
 ) -> bool:
     try:
         return _wait_for_external_cron_worker_body(
-            process, execution_id=execution_id
+            process, execution_id=execution_id, stderr_path=stderr_path
         )
     except Exception as wait_error:
         raise _ExternalWorkerPostHandoffError(str(wait_error)) from wait_error
@@ -3657,6 +3691,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id=execution_id,
                     job_id=job_id,
                     handoff_files=(payload_path, stderr_path),
+                    stderr_path=stderr_path,
                 )
             finally:
                 ack_path.unlink(missing_ok=True)
@@ -3674,6 +3709,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id=execution_id,
                     job_id=job_id,
                     handoff_files=(payload_path, stderr_path),
+                    stderr_path=stderr_path,
                 )
             logger.info(
                 "Cron job '%s' handed to restart-safe worker pid=%s execution=%s",
@@ -3689,6 +3725,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 execution_id=execution_id,
                 job_id=job_id,
                 handoff_files=(payload_path, stderr_path),
+                stderr_path=stderr_path,
             )
         returncode = process.poll()
         if returncode is not None:
@@ -3728,6 +3765,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         execution_id=execution_id,
         job_id=job_id,
         handoff_files=(payload_path, ack_path, stderr_path),
+        stderr_path=stderr_path,
     )
 
 
@@ -3817,17 +3855,17 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
-                return run_one_job(job, adapters=None, loop=None, verbose=False)
+                completed = run_one_job(job, adapters=None, loop=None, verbose=False)
+                # Successful return: the worker recorded its outcome. If it raises,
+                # retain fd 2's pathname until the waiter consumes the traceback.
+                with contextlib.suppress(OSError):
+                    ack_path.with_suffix(".stderr").unlink(missing_ok=True)
+                return completed
             finally:
                 if old_external_execution is None:
                     os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)
                 else:
                     os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = old_external_execution
-                # Post-ack the gateway never reads the stderr capture (it only
-                # serves the pre-ack death report) and may not outlive this run
-                # in the restart-safe topology, so the worker removes its own.
-                with contextlib.suppress(OSError):
-                    ack_path.with_suffix(".stderr").unlink(missing_ok=True)
     finally:
         if secret_token is not None:
             reset_secret_scope(secret_token)

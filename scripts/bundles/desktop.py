@@ -121,8 +121,10 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
     # The admitted checkout stays clean across the whole build: packaging reads
     # its artwork from the workspace, so the render lives there only while
     # electron-builder holds it, and the final check proves it was handed back.
+    # Stamp before the render lands: the stamp's git check would call the
+    # checkout dirty while the flavored icons sit over committed files.
+    run([node, "scripts/write-build-stamp.mjs"], cwd=desktop, env=env)
     with flavored_assets(icons / "apps/desktop/assets", desktop / "assets"):
-        run([node, "scripts/write-build-stamp.mjs"], cwd=desktop, env=env)
         run([node, "scripts/build/desktop.mjs", "--source", str(repo), "--icons", str(icons),
              "--stamp", str(desktop / "build/install-stamp.json"), "--native-deps", str(prepared.native),
              "--out", str(desktop / "dist")], cwd=repo, env=env)

@@ -142,9 +142,18 @@ class ChannelPublisher:
         self.authorize(action, record)
 
     def _stable_identity(self) -> dict:
-        """The identity installed stable clients already carry, read from its channel record."""
+        """The identity installed stable clients already carry, read from its channel record.
+
+        Before any stable release has published through channels there is no
+        record to read, so use the identity channel_publish holds the first
+        stable release to. A record without a head still refuses: once stable
+        exists on channels, its record is the only authority.
+        """
         current = self._read("stable")
-        if current is None or current[0]["head"] is None:
+        if current is None:
+            from scripts.releases.channel_releases import product_identity
+            return product_identity("v0.0.0")
+        if current[0]["head"] is None:
             raise ChannelError("Stable branding copies the published stable channel identity; none is published")
         return deepcopy(current[0]["identity"])
 

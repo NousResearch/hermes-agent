@@ -20,10 +20,10 @@ def obligation_key(grant, mode='exact', issuance_id=None):
     return _PREFIX + hashlib.sha256((mode + '\0' + grant).encode()).hexdigest()
 
 
-def retain(db_path, link, *, mode='exact', issuance_id=None, conn=None):
+def retain(db_path, link, *, mode='exact', issuance_id=None, request_body=None, conn=None):
     """Journal before a route write or remote effect, optionally in its transaction."""
     key = obligation_key(link.grant, mode, issuance_id)
-    value = json.dumps({'link': link.as_record(), 'mode': mode, 'issuance_id': issuance_id, 'attempts': 0, 'next_at': 0})
+    value = json.dumps({'link': link.as_record(), 'mode': mode, 'issuance_id': issuance_id, 'request_body': request_body, 'attempts': 0, 'next_at': 0})
     def write(writer):
         writer.execute('INSERT OR IGNORE INTO hosted_room_peer_cleanup(key,value) VALUES (?,?)', (key, value))
     if conn is not None:
@@ -34,14 +34,34 @@ def retain(db_path, link, *, mode='exact', issuance_id=None, conn=None):
     return key
 
 
+def prepare_issuance(db_path, link, requested_body):
+    """One durable frozen refresh request per old grant, shared by every home path."""
+    from gateway.hosted_room_proof import issuance_request_id
+    prefix = _PREFIX + 'issuance:' + hashlib.sha256(link.grant.encode()).hexdigest() + ':'
+    with hosted_rooms._transaction(db_path, immediate=True) as conn:
+        rows = conn.execute('SELECT key,value FROM hosted_room_peer_cleanup WHERE key LIKE ?', (prefix + '%',)).fetchall()
+        if rows:
+            if len(rows) != 1:
+                raise RuntimeError('multiple unresolved peer issuances require cleanup')
+            value = json.loads(rows[0]['value'])
+            body = value['request_body']
+            if not isinstance(body, dict) or set(body) != {'ttl_seconds'}:
+                raise RuntimeError('unreadable peer issuance custody')
+            return rows[0]['key'], value['issuance_id'], body
+        encoded = json.dumps(requested_body, separators=(',', ':')).encode()
+        request_id = issuance_request_id(link.grant, encoded)
+        key = retain(db_path, link, mode='issuance', issuance_id=request_id, request_body=requested_body, conn=conn)
+        return key, request_id, requested_body
+
+
 def release(conn, grant):
     """Publication and removing its provisional cleanup obligation are one write."""
     conn.execute('DELETE FROM hosted_room_peer_cleanup WHERE key=?', (obligation_key(grant),))
 
 
-def release_issuances(conn, grant):
-    prefix = _PREFIX + 'issuance:' + hashlib.sha256(grant.encode()).hexdigest() + ':'
-    conn.execute('DELETE FROM hosted_room_peer_cleanup WHERE key LIKE ?', (prefix + '%',))
+def release_issuance(conn, grant, issuance_id):
+    conn.execute('DELETE FROM hosted_room_peer_cleanup WHERE key=?',
+                 (obligation_key(grant, 'issuance', issuance_id),))
 
 
 def obligations(db_path):

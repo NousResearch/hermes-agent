@@ -24,6 +24,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         self._peer_cleanup_inflight = set()
         self._peer_renewals, self._peer_renewal_scans = {}, {}  # session_group_peer_routes
         super().__init__(None, db_path=authority.db.db_path)
+
+    def _load_stored_links(self):
+        super()._load_stored_links()
         for key, client in self.peer_clients.items():
             client.proof_install_id = self.peer_routes[key].target_install_id
 

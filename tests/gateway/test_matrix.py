@@ -4023,8 +4023,10 @@ class TestMatrixUploadAndSend:
         assert sent["file"]["url"] == "mxc://example.org/enc"
 
 
+    @pytest.mark.parametrize("msgtype", ["m.image", "m.file", "m.audio", "m.video"])
+    @pytest.mark.parametrize("caption", [None, "Chart caption"])
     @pytest.mark.asyncio
-    async def test_media_preserves_caption_and_thread(self):
+    async def test_media_preserves_caption_and_thread(self, msgtype, caption):
         adapter = _make_adapter()
         mock_client = MagicMock()
         mock_client.upload_media = AsyncMock(return_value="mxc://example.org/plain")
@@ -4036,17 +4038,24 @@ class TestMatrixUploadAndSend:
             b"image",
             "chart.png",
             "image/png",
-            "m.image",
-            caption="Chart caption",
+            msgtype,
+            caption=caption,
             metadata={"thread_id": "$root"},
         )
 
         assert result.success is True
         sent = mock_client.send_message_event.await_args.args[2]
-        assert sent["body"] == "Chart caption"
-        assert sent["m.relates_to"]["rel_type"] == "m.thread"
-        assert sent["m.relates_to"]["event_id"] == "$root"
-        assert sent["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+        assert sent == {
+            "msgtype": msgtype,
+            "body": caption or "chart.png",
+            "filename": "chart.png",
+            "url": "mxc://example.org/plain",
+            "info": {"mimetype": "image/png", "size": 5},
+            "m.relates_to": {
+                "rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+                "m.in_reply_to": {"event_id": "$root"},
+            },
+        }
 
 
     @pytest.mark.asyncio

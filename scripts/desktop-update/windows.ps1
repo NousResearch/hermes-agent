@@ -809,6 +809,7 @@ function Start-DesktopRelaunch {
 #
 # Overridable so the pipe-drain self-test does not have to sit out the real
 # grace; not documented as a user knob.
+$updateAttempted = $false
 $script:StepDrainGraceSeconds = 20
 if ($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS) {
     $parsedGrace = 0
@@ -1636,6 +1637,7 @@ try {
     }
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
+    $updateAttempted = $true
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
@@ -1650,6 +1652,7 @@ try {
         # Same request as the first attempt (--force included): the installation is still the
         # legacy one being converted until this run succeeds.
         $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
+        $updateAttempted = $true
         $res = Invoke-HermesStep $pythonExe $updateArgs 'update'
     }
 
@@ -1746,7 +1749,13 @@ try {
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg
             Close-ProgressWindow
-            [void](Start-DesktopRelaunch)
+            # Once the update command has run, the checkout and packaged output
+            # may be only partially updated. Relaunching the old executable here
+            # falsely reports recovery and can boot against the broken tree after
+            # a fetch/build failure. Leave the explicit failure result for the
+            # next manual launch instead; only pre-update hand-off failures may
+            # safely relaunch the existing Desktop.
+            if (-not $updateAttempted) { [void](Start-DesktopRelaunch) }
         } else {
             Publish-UiProgress "Opening Hermes"
             $cameBack = Start-DesktopRelaunch

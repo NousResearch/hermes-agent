@@ -3329,7 +3329,7 @@ class GatewayTurnMixin:
         Peek WITHOUT consuming: the event must stay for the post-run ``_dequeue_pending_event()``
         (popping races the agent finishing). Transcribe BEFORE signaling so voice interrupts carry
         the real transcript."""
-        from gateway.run import _build_media_placeholder
+        from gateway.run_inbound_media import _build_media_placeholder
         _peek_event = adapter._pending_messages.get(session_key)
         pending_text = None
         if _peek_event is not None:
@@ -3656,9 +3656,8 @@ class GatewayTurnMixin:
         """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
 
         Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
-        from gateway.run import (
-            _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
-        )
+        from gateway.run_inbound_media import _build_media_placeholder
+        from gateway.run import _dequeue_pending_event, _is_control_interrupt_message
         pending_event = None
         pending = None
         if result and adapter and session_key:

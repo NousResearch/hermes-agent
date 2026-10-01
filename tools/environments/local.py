@@ -34,6 +34,54 @@ _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
 
+# --- .env-declared secret names: keep them OUT of the session snapshot -------------------
+# The gateway exports the profile's ``.env`` into the process env, so the session-snapshot
+# bootstrap (``export -p``) would write a second plaintext copy of every credential to the
+# terminal temp dir — a 0600 file, but rewritten after EVERY command and readable by any
+# process running as the same user (2026-10-01: the live Notion token was found sitting in
+# ``~/.hermes/cache/scratch/hermes-snap-*.sh``). The provider blocklist does not cover these
+# names (they are API keys for skills/tools, not model providers). Excluding them from the
+# dump changes nothing a command can see: the values are re-inherited from the per-command
+# Popen env every time. Names are read from ``.env`` (not a hardcoded list) so a new key
+# added there is covered automatically; mtime-cached to keep it off the per-command path.
+_ENV_FILE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ENV_SECRET_NAME_RE = re.compile(
+    r"(_KEY|_TOKEN|_SECRET|_SECRETS|_PASSWORD|_PASSWD|_CREDENTIAL|_CREDENTIALS|_PRIVATE_KEY)$")
+_dotenv_secret_names_cache: tuple[float, tuple[str, ...]] | None = None
+
+
+def _dotenv_snapshot_secret_names() -> tuple[str, ...]:
+    """Secret-looking variable NAMES declared in the profile's ``.env``.
+
+    Returns ``()`` when the file is missing/unreadable — never raises, and never logs a value
+    (only names, and only the ones that matter for the snapshot exclusion).
+    """
+    global _dotenv_secret_names_cache
+    try:
+        path = Path(get_process_hermes_home()) / ".env"
+        mtime = path.stat().st_mtime
+    except Exception:
+        return ()
+    if _dotenv_secret_names_cache is not None and _dotenv_secret_names_cache[0] == mtime:
+        return _dotenv_secret_names_cache[1]
+    names: list[str] = []
+    try:
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            name = line.split("=", 1)[0].strip()
+            if _ENV_FILE_NAME_RE.match(name) and _ENV_SECRET_NAME_RE.search(name.upper()):
+                names.append(name)
+    except Exception:
+        logger.debug("Could not read .env for snapshot secret exclusions", exc_info=True)
+        return ()
+    result = tuple(sorted(set(names)))
+    _dotenv_secret_names_cache = (mtime, result)
+    return result
+
 # --- Terminal temp-cache pruning ---
 # get_temp_dir() defaults to HERMES_HOME/cache/terminal (real storage, not tmpfs), so
 # stale artifacts don't vanish on reboot: the gateway housekeeping loop prunes hourly
@@ -918,6 +966,16 @@ class LocalEnvironment(BaseEnvironment):
         return tuple(sorted(
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
+
+    def _additional_snapshot_secret_names(self) -> tuple[str, ...]:
+        """Names declared in this profile's ``.env`` whose value is a plaintext secret.
+
+        Excluded from the shared session snapshot so the dump file is not a second on-disk
+        copy of the credentials (see ``_dotenv_snapshot_secret_names``). Values are still
+        delivered to every command through the per-command Popen env, so ``printenv`` inside a
+        command is unaffected; only the snapshot stops carrying them.
+        """
+        return _dotenv_snapshot_secret_names()
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)

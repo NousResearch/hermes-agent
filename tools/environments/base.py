@@ -328,12 +328,28 @@ class BaseEnvironment(ABC):
         """Return backend-specific names that must not persist in snapshots."""
         return ()
 
+    def _additional_snapshot_secret_names(self) -> Iterable[str]:
+        """Backend-specific names whose values are plaintext secrets and must NEVER be written
+        into the session snapshot. Unlike ``_additional_profile_scoped_passthrough_names``
+        (consulted only under multiplex), this applies whenever the backend is profile-scoped,
+        because the snapshot file is a *second on-disk copy of the credentials* that gets
+        rewritten after EVERY command — and nothing needs it: each command's Popen env already
+        carries the values, so a command's ``printenv`` output is unchanged by the exclusion.
+        Local override: names declared in the profile ``.env`` (see local.py)."""
+        return ()
+
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
         """Profile-scoped names that must not persist in the snapshot. Monotonic for the
         environment lifetime: an allowlist can be cleared after a value was captured, and
         retaining the exclusion keeps that old value from leaking to a later profile."""
         if not self._profile_scoped_passthrough:
             return ()
+        try:
+            self._snapshot_passthrough_names.update(
+                name for name in self._additional_snapshot_secret_names()
+                if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name))
+        except Exception:
+            logger.debug("Could not refresh snapshot secret exclusions", exc_info=True)
         try:
             from agent.secret_scope import is_multiplex_active
             if is_multiplex_active():

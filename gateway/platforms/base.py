@@ -589,7 +589,7 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
 def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_name: str):
     """``(get_<kind>_cache_dir, cleanup_<kind>_cache)`` pair. The getter resolves fresh via
     get_hermes_dir (active profile) unless a test monkeypatched the module constant away from
-    its import-time default, and creates the directory; ``cleanup(max_age_hours=24)`` deletes
+    its import-time default, and creates the directory; ``cleanup(max_age_hours=MEDIA_CACHE_MAX_AGE_HOURS)`` deletes
     older files and returns the count."""
     def get_dir() -> Path:
         d = get_hermes_dir(new_subpath, old_name)

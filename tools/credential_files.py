@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import posixpath
+import stat
 import time
 from contextvars import ContextVar
 from pathlib import Path
@@ -385,23 +386,22 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     return mapped if mapped is not None else host_path
 
 
-def _recent_enough(item: Path, cutoff: Optional[float]) -> bool:
-    try:
-        return cutoff is None or item.stat().st_mtime >= cutoff
-    except OSError:
-        return False
-
-
 def iter_cache_files(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
     """Per-file cache entries (Modal upload/resync); skips symlinks. ``cache/generated`` is
     never swept, so only its files from the last ``MEDIA_CACHE_MAX_AGE_HOURS`` are synced —
     otherwise every remote sync would re-walk and upload the whole generation history."""
     generated_cutoff = time.time() - MEDIA_CACHE_MAX_AGE_HOURS * 3600
-    base = container_base.rstrip("/")
-    return [_mount(item, f"{root}/{item.relative_to(host_dir)}")
-            for host_dir, root in _cache_dir_roots(container_base, create_missing=False)
-            for item in host_dir.rglob("*") if not item.is_symlink() and item.is_file()
-            and _recent_enough(item, generated_cutoff if root == f"{base}/{_GENERATED_CACHE}" else None)]
+    gen_root = f"{container_base.rstrip('/')}/{_GENERATED_CACHE}"
+    entries: List[Dict[str, str]] = []
+    for host_dir, root in _cache_dir_roots(container_base, create_missing=False):
+        for item in host_dir.rglob("*"):
+            try:
+                st = item.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode) and (root != gen_root or st.st_mtime >= generated_cutoff):
+                entries.append(_mount(item, f"{root}/{item.relative_to(host_dir)}"))
+    return entries
 
 
 def clear_credential_files() -> None:

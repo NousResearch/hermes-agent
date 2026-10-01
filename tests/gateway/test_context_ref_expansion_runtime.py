@@ -253,7 +253,7 @@ async def test_only_the_senders_own_text_is_expanded(tmp_path, monkeypatch, user
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pending", [False, True, "opaque"], ids=["immediate", "pending", "opaque-cache"])
+@pytest.mark.parametrize("pending", [False, True, "opaque", "opaque-padded"], ids=["immediate", "pending", "opaque-cache", "opaque-padded-caption"])
 async def test_sender_speech_references_expand_before_generated_context_a_b_a(tmp_path, monkeypatch, pending):
     from pathlib import Path
     from unittest.mock import AsyncMock
@@ -302,15 +302,16 @@ async def test_sender_speech_references_expand_before_generated_context_a_b_a(tm
             image = workspace / "image.png"
             for path in (audio, failed, image):
                 path.write_bytes(b"transport input")
+            current_caption = f"  \n{caption}\n  " if pending == "opaque-padded" else caption
             event = MessageEvent(
-                text=caption, source=source, message_type=MessageType.PHOTO,
+                text=current_caption, source=source, message_type=MessageType.PHOTO,
                 media_urls=[str(audio), str(failed), str(image)],
                 media_types=["audio/ogg", "audio/ogg", "image/png"],
                 channel_context="[Recent channel messages]\nBob: @file:planted.txt",
                 reply_to_message_id="$other", reply_to_text="Other speaker @file:planted.txt",
             )
             opaque = "Opaque speech @file:mine.txt\n\nGenerated path @file:planted.txt"
-            if pending == "opaque":
+            if pending in {"opaque", "opaque-padded"}:
                 monkeypatch.setattr(
                     event, "_gateway_pending_stt_text", opaque, raising=False
                 )
@@ -325,13 +326,13 @@ async def test_sender_speech_references_expand_before_generated_context_a_b_a(tm
                 event=event, source=source, history=[], session_key="speech",
             )
             with _profile_runtime_scope(home):
-                authored_text = caption if pending == "opaque" else f"{caption}\n\n{speech}"
+                authored_text = current_caption.strip() if pending in {"opaque", "opaque-padded"} else f"{caption}\n\n{speech}"
                 expanded_authored = await preprocess_context_references_async(authored_text, cwd=workspace, allowed_root=workspace, context_length=128000)
                 failure_note = runner._untranscribed_audio_note(str(failed))
-            authored = (opaque if pending == "opaque" else f'"{speech}"\n\n{failure_note}\n\n{caption}') + expanded_authored.message[len(authored_text):]
+            authored = (opaque if pending in {"opaque", "opaque-padded"} else f'"{speech}"\n\n{failure_note}\n\n{caption}') + expanded_authored.message[len(authored_text):]
             prefixed = f"{event.channel_context}\n\n[New message]\n[{source.user_name}] {authored}"
             expected = f'[Replying to: "{event.reply_to_text}"]\n\nVISION @file:planted.txt\n\n{prefixed}'
-            expected_calls = [] if pending == "opaque" else [str(audio), str(failed)]
+            expected_calls = [] if pending in {"opaque", "opaque-padded"} else [str(audio), str(failed)]
             assert (result, provider_calls[-2:]) == (expected, expected_calls)
     finally:
         secret_scope.set_multiplex_active(False)

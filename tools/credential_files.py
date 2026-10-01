@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import posixpath
+import time
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
@@ -17,6 +18,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_dir, get_hermes_home
 
+from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 from agent.skill_utils import EXCLUDED_SKILL_DIRS
 
 try:  # pragma: no cover - exercised via the fail-closed test below
@@ -241,6 +243,7 @@ def iter_skills_files(container_base: str = "/root/.hermes") -> List[Dict[str, s
 # --- Cache directory mounts (documents, images, audio, videos, screenshots) ---
 
 # (new_subpath, old_name) pairs matching hermes_constants.get_hermes_dir().
+_GENERATED_CACHE = f"cache/{GENERATED_SUBDIR}"
 _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/documents", "document_cache"),
     ("cache/images", "image_cache"),
@@ -250,12 +253,9 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
     ("cache/spillover", "cache/spillover"),  # oversized tool results; host side is canonical
-    # Generated image/video deliverables (#126445). They are deliberately kept
-    # out of the swept inbound caches above, so they need their own mount/sync
-    # entry — without it Docker/SSH/Modal backends never see the file and the
-    # provider result loses ``agent_visible_image``. No legacy alias exists, so
-    # both tuple slots match. Parent entry: covers every generated media kind.
-    ("cache/generated", "cache/generated"),
+    # Unswept generated image/video deliverables (#126445) need their own mount/sync
+    # entry or remote backends never see them. No legacy alias exists.
+    (_GENERATED_CACHE, _GENERATED_CACHE),
     # Flat top-level desktop staging dirs (tui_gateway attach RPCs; no legacy alias),
     # mounted so vision/file tools in sandboxes reach uploads and dropped files.
     # Mount it so vision can reach uploads inside sandbox containers (#69575). No legacy alias exists, so
@@ -385,11 +385,23 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     return mapped if mapped is not None else host_path
 
 
+def _recent_enough(item: Path, cutoff: Optional[float]) -> bool:
+    try:
+        return cutoff is None or item.stat().st_mtime >= cutoff
+    except OSError:
+        return False
+
+
 def iter_cache_files(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
-    """Per-file cache entries (Modal upload/resync); skips symlinks."""
+    """Per-file cache entries (Modal upload/resync); skips symlinks. ``cache/generated`` is
+    never swept, so only its files from the last ``MEDIA_CACHE_MAX_AGE_HOURS`` are synced —
+    otherwise every remote sync would re-walk and upload the whole generation history."""
+    generated_cutoff = time.time() - MEDIA_CACHE_MAX_AGE_HOURS * 3600
+    base = container_base.rstrip("/")
     return [_mount(item, f"{root}/{item.relative_to(host_dir)}")
             for host_dir, root in _cache_dir_roots(container_base, create_missing=False)
-            for item in host_dir.rglob("*") if not item.is_symlink() and item.is_file()]
+            for item in host_dir.rglob("*") if not item.is_symlink() and item.is_file()
+            and _recent_enough(item, generated_cutoff if root == f"{base}/{_GENERATED_CACHE}" else None)]
 
 
 def clear_credential_files() -> None:

@@ -75,10 +75,7 @@ def normalize_reference_images(value: Any) -> Optional[List[str]]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()] or None
 
 
-# Generated deliverables live in ``cache/generated/<media>/``, OUTSIDE the
-# transient inbound caches the gateway housekeeping sweeps after 24h (#126445):
-# for base64-returning providers the cached file is the ONLY copy of the image.
-_GENERATED_IMAGE_KIND = "generated/images"
+_GENERATED_IMAGE_KIND = f"{provider_media.GENERATED_SUBDIR}/images"
 
 
 def save_b64_image(b64_data: str, *, prefix: str = "image", extension: str = "png") -> Path:

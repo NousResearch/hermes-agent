@@ -69,10 +69,7 @@ class VideoGenProvider(CatalogProviderBase):
         pass; providers that honor it report ``upscaled: True`` in ``extra``."""
 
 
-# Generated deliverables live in ``cache/generated/<media>/``, OUTSIDE the
-# transient inbound caches the gateway housekeeping sweeps after 24h (#126445):
-# for base64-returning providers the cached file is the ONLY copy of the video.
-_GENERATED_VIDEO_KIND = "generated/videos"
+_GENERATED_VIDEO_KIND = f"{provider_media.GENERATED_SUBDIR}/videos"
 
 
 def save_b64_video(b64_data: str,*, prefix: str="video", extension: str="mp4") -> Path:

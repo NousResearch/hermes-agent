@@ -434,6 +434,7 @@ from hermes_cli.observability.shared_metrics_gateway import records_delivery, st
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
@@ -599,7 +600,7 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         _secure_media_cache_dir(d)
         return d
 
-    def cleanup(max_age_hours: int = 24) -> int:
+    def cleanup(max_age_hours: int = MEDIA_CACHE_MAX_AGE_HOURS) -> int:
         return _cleanup_cache_dir(get_dir(), max_age_hours)
     get_dir.__name__ = get_dir.__qualname__ = f"get_{kind}_cache_dir"
     cleanup.__name__ = cleanup.__qualname__ = f"cleanup_{kind}_cache"
@@ -810,7 +811,8 @@ MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 # credential / system paths). Set true on public-facing gateways.
 MEDIA_DELIVERY_STRICT_ENV = "HERMES_MEDIA_DELIVERY_STRICT"
 # Canonical cache subdirs of deliverable artifacts; also enumerates per-profile cache roots.
-_MEDIA_DELIVERY_CACHE_SUBDIRS = ("images", "audio", "videos", "documents", "screenshots")
+_MEDIA_DELIVERY_CACHE_SUBDIRS = (
+    "images", "audio", "videos", "documents", "screenshots", GENERATED_SUBDIR)
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR, AUDIO_CACHE_DIR, VIDEO_CACHE_DIR, DOCUMENT_CACHE_DIR, SCREENSHOT_CACHE_DIR,
     *(_HERMES_HOME / d for d in (

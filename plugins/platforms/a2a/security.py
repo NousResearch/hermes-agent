@@ -99,10 +99,32 @@ class A2ASecurityContext:
             return f"ip:{client_ip or 'unknown'}"
         return None
 
-    def is_trusted_peer(self, identity: str) -> bool:
-        """Open when allow-all or localhost-only; else the allow-list (if any) must contain identity."""
-        if self.allow_all_users or self.localhost_only() or not self.trusted_peers:
+    def is_loopback_bind(self) -> bool:
+        """True when the resolved bind host is loopback."""
+        host = (self.resolve_bind_host() or "").strip()
+        if host.lower() in {"127.0.0.1", "localhost", "::1"}:
             return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    def is_trusted_peer(self, identity: str) -> bool:
+        """Fail closed on network-exposed binds with no allow-list; loopback
+        binds without an allow-list stay open for backward compatibility."""
+        if self.allow_all_users:
+            return True
+        if self.is_loopback_bind():
+            if not self.trusted_peers:
+                return True
+            return identity in self.trusted_peers
+        if not self.trusted_peers:
+            logger.error(
+                "A2A: adapter exposed on a non-loopback bind (%s) with no A2A_TRUSTED_PEERS; "
+                "refusing dispatch. Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.",
+                self.resolve_bind_host(),
+            )
+            return False
         return identity in self.trusted_peers
 
     def sign_push_payload(self, payload: dict) -> str:

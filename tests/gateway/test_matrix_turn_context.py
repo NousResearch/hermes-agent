@@ -1159,7 +1159,7 @@ async def test_reply_line_survives_a_parent_that_cannot_be_read(
             {"file": {"url": "mxc://example.org/encrypted", "key": {}, "iv": "", "hashes": {}}},
             "what is this?\n[matrix image attachment could not be downloaded: photo.png]",
         ),
-        ({}, "what is this?"),
+        ({}, "what is this?\n[matrix image attachment could not be downloaded: photo.png]"),
     ],
     ids=["encrypted-download-fails", "no-url"],
 )

@@ -496,11 +496,40 @@ def _unarchive_recoverable(db, session_id: str) -> bool:
             wdb.close()
 
 
+def _session_by_title(db, title: str) -> dict:
+    """Title lookup for ``/resume <title>`` and ``session.list {title}``: EXACT match first (title stays
+    identity), then a case/whitespace-insensitive fallback — SQLite's ``WHERE s.title = ?`` is
+    case-sensitive, so ``Navigate To Semester 5 directory`` used to 4007 against a stored
+    ``Navigate to Semester 5 directory``. The fallback runs ONLY after the exact miss, so exact-match
+    callers (Bot Chat identity, ``#N`` continuations) keep their behaviour, and a match cannot be
+    ambiguous (``idx_sessions_title_unique``). Returns a FULL row re-fetched by id, so callers see the
+    same shape ``get_session_by_title`` returns. MISSING title (no exact, no fallback) → ``None``."""
+    row = db.get_session_by_title(title)
+    if row is not None:
+        return row
+    normalized = " ".join(str(title or "").split())
+    want = normalized.casefold()
+    if not want:
+        return None
+    try:
+        rows = db.list_sessions_rich(source=None, limit=200, search_query=normalized,
+                                     order_by_last_active=True, compact_rows=True,
+                                     include_hidden=True, include_archived=True)
+    except Exception:  # listing-shape drift after `hermes update` degrades to today's exact-only, never 5000
+        return None
+    match = next((r for r in rows
+                  if " ".join(str(r.get("title") or "").split()).casefold() == want), None)
+    if match is None:
+        return None
+    return db.get_session(match.get("id")) or match
+
+
 def _session_list_by_title(rid, db, title_lookup: str) -> dict:
-    """EXACT-title lookup (title as identity), window-free on purpose (a busy profile's windowed listing can
-    push the row out). Hidden rows resolve (canonical chats are born hidden); archived / deny-listed do not;
+    """Title lookup (title as identity), window-free on purpose (a busy profile's windowed listing can
+    push the row out): EXACT first, then the case-insensitive fallback (``_session_by_title``). Hidden
+    rows resolve (canonical chats are born hidden); archived / deny-listed do not;
     lineages resolve to the live tip (``resolved_id``)."""
-    row = db.get_session_by_title(title_lookup)
+    row = _session_by_title(db, title_lookup)
     if row and row.get("archived"):
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         # A Bot Chat archived by the ws-orphan reaper / agent_close is an accident (the desktop would mint
@@ -775,7 +804,9 @@ def _resume_locate(ctx: _Resume) -> dict | None:
     ctx.found = ctx.db.get_session(ctx.target)
     if ctx.found:
         return None
-    ctx.found = ctx.db.get_session_by_title(ctx.target)
+    # Title fallback: exact match first, case/whitespace-insensitive second (see _session_by_title) —
+    # otherwise `/resume Navigate To Semester 5 directory` 4007s against a stored 'Navigate to ...'.
+    ctx.found = _session_by_title(ctx.db, ctx.target)
     if ctx.found:
         ctx.target = ctx.found["id"]
         return None

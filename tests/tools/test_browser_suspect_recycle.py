@@ -65,6 +65,7 @@ class TestTimeoutMarksSuspect:
         bt._active_sessions[TASK] = session_info
 
         process = Mock()
+        process.pid = 1234
         process.returncode = -9
         process.wait.side_effect = [subprocess.TimeoutExpired("agent-browser", 1), -9]
         _install_command_stubs(monkeypatch, tmp_path, process)
@@ -96,7 +97,7 @@ class TestTimeoutMarksSuspect:
         # Alive branch: session stays cached for the next-use recycle...
         assert bt._active_sessions[TASK] is session_info
         # ...and the daemon is NOT tree-killed.
-        assert kills == []
+        assert kills == [1234]
 
 
 class TestNextUseRecycles:
@@ -203,6 +204,7 @@ class TestWedgedDaemonTreeKill:
         (socket_dir / "wedged-session.pid").write_text(str(daemon_pid))
 
         process = Mock()
+        process.pid = 1234
         process.returncode = -9
         process.wait.side_effect = [subprocess.TimeoutExpired("agent-browser", 1), -9]
         _install_command_stubs(monkeypatch, tmp_path, process)
@@ -221,7 +223,7 @@ class TestWedgedDaemonTreeKill:
         result = bt_session._run_browser_command(TASK, "click", ["@e1"], timeout=1)
 
         assert result["success"] is False
-        assert kills == [daemon_pid]  # tree-kill hit the daemon PID
+        assert kills == [1234, daemon_pid]  # command and daemon trees are both reaped
         assert TASK not in bt._active_sessions  # evicted now, not at next use
         assert TASK not in bt._session_last_activity
         assert TASK not in bt._last_active_session_key

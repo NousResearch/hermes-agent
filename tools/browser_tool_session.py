@@ -237,10 +237,6 @@ def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, 
     cancels asyncio's running task on 3.11), STARTF_USESTDHANDLES + close_fds so the child
     gets ONLY our three handles (leaked console handles kill the Rust daemon grandchild).
     """
-    elevation_error = _windows_browser_elevation_error()
-    if elevation_error:
-        raise RuntimeError(elevation_error)
-
     fds = [os.open(os.path.join(socket_dir, f"_{slot}_{tag}"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
            for slot in ("stdout", "stderr")]
     stdin: Any = subprocess.DEVNULL
@@ -763,6 +759,15 @@ def _spawn_and_collect(
     stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
     stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
     cmd_parts, browser_env = _sandbox_wrap(cmd_parts, browser_env, task_socket_dir)
+    if (
+        os.name == "nt"
+        and engine != "lightpanda"
+        and (session_info.get("features") or {}).get("local")
+        and "--cdp" not in cmd_parts
+    ):
+        elevation_error = _windows_browser_elevation_error()
+        if elevation_error:
+            raise RuntimeError(elevation_error)
     proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command, stdin_payload)
 
     try:

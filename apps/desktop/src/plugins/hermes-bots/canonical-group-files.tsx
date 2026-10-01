@@ -314,7 +314,7 @@ export function CanonicalGroupFiles({ binding, roomName, latestFileSeq }: {
   const [open, setOpen] = useState(false)
 
   return <>
-    <Button onClick={() => setOpen(true)} type="button">{labels.files}</Button>
+    <Button onClick={() => setOpen(true)} size="sm" type="button" variant="ghost"><Codicon name="files" />{labels.files}</Button>
     {open && <FilesDialog binding={binding} latestFileSeq={latestFileSeq} onClose={() => setOpen(false)} roomName={roomName} />}
   </>
 }

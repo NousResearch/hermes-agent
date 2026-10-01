@@ -17,8 +17,16 @@ describe('previewHttpUrlTarget', () => {
     expect(previewHttpUrlTarget('http://0.0.0.0:8080/x')?.url).toBe('http://127.0.0.1:8080/x')
   })
 
-  it('rejects a non-http target', () => {
+  it('navigates a plain-http public page and a LAN host', () => {
+    expect(previewHttpUrlTarget('http://example.com/docs')?.url).toBe('http://example.com/docs')
+    expect(previewHttpUrlTarget('http://homeassistant.local:8123')?.url).toBe('http://homeassistant.local:8123/')
+  })
+
+  it('rejects every non-http scheme the pane must never navigate to', () => {
     expect(previewHttpUrlTarget('file:///tmp/a.html')).toBeNull()
+    expect(previewHttpUrlTarget('data:text/html,<script>alert(1)</script>')).toBeNull()
+    expect(previewHttpUrlTarget('javascript:alert(1)')).toBeNull()
+    expect(previewHttpUrlTarget('not a url')).toBeNull()
     expect(previewHttpUrlTarget('')).toBeNull()
   })
 })

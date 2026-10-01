@@ -1620,9 +1620,11 @@ async def test_thread_backfill_uses_root_and_prior_relations_with_author_trust()
 
 
 @pytest.mark.asyncio
-async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(tmp_path):
+@pytest.mark.parametrize("batch", ["ingress", "busy-debounce"])
+async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(tmp_path, batch):
     adapter = _make_room_adapter()
-    adapter._text_batch_delay_seconds = 60
+    adapter._text_batch_delay_seconds = 60 if batch == "ingress" else 0
+    adapter._busy_text_debounce_seconds = 60
     adapter._client.api.request = AsyncMock(return_value={"chunk": [
         {"event_id": event_id, "sender": "@alice:example.org",
          "content": {"msgtype": "m.text", "body": body}}
@@ -1642,11 +1644,21 @@ async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(tmp_path
                 "!room:example.org", "@alice:example.org", event_id, 0,
                 {"msgtype": "m.text", "body": body}, thread,
             )
-        (key,) = adapter._pending_text_batches
-        await adapter._flush_text_batch_now(key)
+        if batch == "ingress":
+            (key,) = adapter._pending_text_batches
+            await adapter._flush_text_batch_now(key)
+        else:
+            from gateway.session import build_session_key
+
+            key = build_session_key(dispatched[0].source)
+            for message in dispatched:
+                await adapter._queue_text_debounce(key, message)
+            await adapter._flush_text_debounce_now(key)
+            dispatched = [adapter._pending_messages.pop(key)]
     finally:
         for task in adapter._pending_text_batch_tasks.values():
             task.cancel()
+    adapter._discard_text_debounce(key)
     (event,) = dispatched
     store, _ = _room_session(tmp_path)
     runner = _room_context_runner(store, adapter)

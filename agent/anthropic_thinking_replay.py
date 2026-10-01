@@ -98,6 +98,8 @@ def _load_state(agent: Any) -> tuple[set[str], bool]:
     agent._anthropic_rejected_thinking_strip_all = strip_all
     agent._anthropic_rejected_thinking_loaded = True
     return fingerprints, strip_all
+
+
 def _persist_state(agent: Any, fingerprints: set[str], strip_all: bool) -> None:
     if getattr(agent, "_persist_disabled", False):
         return
@@ -124,9 +126,39 @@ def _should_remove(block: Any, fingerprints: set[str], strip_all: bool) -> bool:
     return fp is not None and fp in fingerprints
 
 
+def _mirrored_readable_thinking(message: Any) -> str | None:
+    """Readable thinking mirrored into canonical reasoning fields, if identifiable.
+
+    Anthropic normalization stores each signed thinking block in reasoning_details
+    and stores their readable text joined by a blank line in reasoning/reasoning_content.
+    Ordered blocks duplicate the same data only for interleaved tool turns. Prefer
+    reasoning_details so a rejected signed carrier cannot fall back through the generic
+    mirror after suppression.
+    """
+    if not isinstance(message, dict):
+        return None
+    for key in ("reasoning_details", "anthropic_content_blocks"):
+        blocks = message.get(key)
+        if not isinstance(blocks, list):
+            continue
+        readable = [
+            block.get("thinking")
+            for block in blocks
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "thinking"
+                and isinstance(block.get("thinking"), str)
+                and block.get("thinking")
+            )
+        ]
+        if readable:
+            return "\n\n".join(readable)
+    return None
+
 def _filter_message(message: Any, fingerprints: set[str], strip_all: bool) -> int:
     if not isinstance(message, dict):
         return 0
+    mirrored = _mirrored_readable_thinking(message)
     removed = 0
     for key in ("reasoning_details", "anthropic_content_blocks", "_anthropic_content_blocks"):
         blocks = message.get(key)
@@ -142,6 +174,15 @@ def _filter_message(message: Any, fingerprints: set[str], strip_all: bool) -> in
             message[key] = kept
         else:
             message.pop(key, None)
+
+    # Canonical Anthropic storage also keeps the same readable thinking in generic
+    # reasoning fields. If any signed block from that exact mirror was rejected,
+    # remove the mirror from this request copy too; otherwise context selection can
+    # resurrect the rejected thinking as an unsigned block after its carrier is gone.
+    if removed and mirrored is not None:
+        for key in ("reasoning", "reasoning_content"):
+            if message.get(key) == mirrored:
+                message.pop(key, None)
     return removed
 
 

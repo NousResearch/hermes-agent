@@ -237,8 +237,10 @@ def _first_body_part(msg: email_lib.message.Message, content_type: str) -> str:
     return ""
 
 
-def _extract_text_body(msg: email_lib.message.Message) -> str:
-    """Extract the plain-text body from a potentially multipart email."""
+def _extract_text_body(msg: email_lib.message.Message, *, preserve_html: bool = False) -> str:
+    """Prefer decoded HTML when opted in; otherwise retain plain-text extraction."""
+    if preserve_html and (html := _first_body_part(msg, "text/html")):
+        return html
     if msg.is_multipart():
         html = _first_body_part(msg, "text/html")
         return _first_body_part(msg, "text/plain") or (_strip_html(html) if html else "")
@@ -440,6 +442,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
+        self._preserve_html = is_truthy_value(extra.get("preserve_html"), default=False)
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
         if "require_authenticated_sender" in extra:
@@ -671,7 +674,7 @@ class EmailAdapter(BasePlatformAdapter):
         sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id)
         return {"uid": uid, "sender_addr": sender_addr, "sender_name": sender_name, "subject": subject,
                 "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
-                "body": _extract_text_body(msg),
+                "body": _extract_text_body(msg, preserve_html=self._preserve_html),
                 "attachments": _extract_attachments(msg, skip_attachments=self._skip_attachments),
                 "date": msg.get("Date", ""), "sender_authenticated": sender_authenticated, "auth_reason": auth_reason}
 

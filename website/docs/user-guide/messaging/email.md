@@ -138,6 +138,25 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
 - **Self-messages** are filtered out to prevent reply loops
 - **Automated/noreply senders** are silently ignored — `noreply@`, `mailer-daemon@`, `bounce@`, `no-reply@`, and emails with `Auto-Submitted`, `Precedence: bulk`, or `List-Unsubscribe` headers
 
+### Preserving Incoming HTML
+
+By default, Hermes prefers the plain-text body and strips tags from HTML-only
+messages. To let the agent see formatting such as colors, font sizes, and inline
+styles, opt in through `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    preserve_html: true
+```
+
+This prefers the decoded `text/html` body, excluding attachment parts, and falls
+back to plain text when no non-empty HTML body exists. The HTML is passed to the
+agent as text, not rendered; it is untrusted email content and may include hidden
+text or instructions. No remote images or stylesheets are fetched. Set the option
+to `false` (the default) to restore plain-text extraction. This does not change
+outbound replies, sender authorization, or attachment handling.
+
 ### Sending Replies
 
 Replies are sent via SMTP with proper email threading:

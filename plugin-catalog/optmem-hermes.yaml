@@ -1,6 +1,6 @@
 name: optmem-hermes
 repo: https://github.com/rarf/optmem-hermes-plugin
-sha: 125d859ddd1813930a871de2c5b3d213e3d09336
+sha: 759ce95706126ae0176601da4aa3518296fffab9
 subdir: optmem
 description: >-
   Independent Hermes integration of Victor Taelin's OptMem design: local,
@@ -15,9 +15,9 @@ description: >-
 maintainer: rarf
 tier: community
 category: memory
-docs_url: https://github.com/rarf/optmem-hermes-plugin/blob/125d859ddd1813930a871de2c5b3d213e3d09336/README.md
-version: "0.3.1"
-image: https://raw.githubusercontent.com/rarf/optmem-hermes-plugin/125d859ddd1813930a871de2c5b3d213e3d09336/docs/assets/catalog-banner-card.png
+docs_url: https://github.com/rarf/optmem-hermes-plugin/blob/759ce95706126ae0176601da4aa3518296fffab9/README.md
+version: "0.3.2"
+image: https://raw.githubusercontent.com/rarf/optmem-hermes-plugin/759ce95706126ae0176601da4aa3518296fffab9/docs/assets/catalog-banner-card.png
 screenshots: []
 readme: true
 platforms: [linux, windows]

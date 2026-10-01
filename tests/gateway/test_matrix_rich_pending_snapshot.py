@@ -46,11 +46,16 @@ async def test_pending_native_contributions_preserve_identity_and_live_revalidat
                 },
             ],
         }
+        from gateway.shutdown_pending_codec import decode_pending_event
+        restored = decode_pending_event(record, adapter=adapter)
+        assert [snapshot.pending_state() for snapshot in restored._inbound_context_dependencies] == record["context"]["snapshots"]
         adapter._event_context_cache.redact(event.source.chat_id, event.message_id)
+        dependency, = (snapshot for snapshot in restored._inbound_context_dependencies
+                           if isinstance(snapshot, MatrixRichContentSnapshot))
         assert (
             dependency.authored_text(event.text),
             dependency.media_event(event).media_urls,
-            event._inbound_context_dependencies[-1] is dependency,
+            restored._inbound_context_dependencies[-1] is dependency,
         ) == ("[redacted]", [], True)
     finally:
         runner.session_store.close_all_db_handles()

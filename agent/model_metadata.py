@@ -1914,15 +1914,20 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     # main-agent path normalizes it away before reaching here, but display/auxiliary callers pass it through
     # (#92797 review).
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
+    live_max: Dict[str, int] = {}
+
+    def _catalog_key(keys) -> Optional[str]:  # exact slug, then case-insensitive in case casing drifts
+        return lookup_bare if lookup_bare in keys else next((s for s in keys if s.lower() == lookup_bare.lower()), None)
+
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token, base_url=base_url)
         live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token, base_url), {})
-        # Exact slug, then case-insensitive in case casing drifts.
-        slug = lookup_bare if lookup_bare in live else next((s for s in live if s.lower() == lookup_bare.lower()), None)
+        slug = _catalog_key(live)
         if slug is not None:
             return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", live_max.get(slug))
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
-    return _apply_verified_bump(hit[1], "fallback") if hit else (None, "")
+    # A failed refresh past the TTL must not lift an already observed catalog cap.
+    return _apply_verified_bump(hit[1], "fallback", live_max.get(_catalog_key(live_max))) if hit else (None, "")
 
 
 def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = "") -> Tuple[Optional[int], str]:

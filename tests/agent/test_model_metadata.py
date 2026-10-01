@@ -428,6 +428,7 @@ class TestCodexOAuthContextLength:
     def setup_method(self):
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
+        mm._codex_oauth_max_context_cache = {}  # the fallback branch reads it too
 
 
     def test_live_catalogue_cache_is_scoped_to_access_token(self):
@@ -679,6 +680,23 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
         assert ctx == 272_000
+
+    def test_failed_refresh_past_ttl_keeps_the_observed_catalog_cap(self):
+        """A refresh that fails after the context TTL must not lift a cap the same token and
+        endpoint already published: no newer evidence, so the -900k alias stays at the old max."""
+        import agent.model_metadata as mm
+
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {"models": [{"slug": "GPT-5.6-Luna", "context_window": 272_000, "max_context_window": 600_000}]}
+        route = dict(base_url="https://chatgpt.com/backend-api/codex", api_key=_codex_jwt("fake-token"), provider="openai-codex")
+        with patch.object(mm, "_codex_oauth_context_cache", {}), patch.object(mm, "_codex_oauth_max_context_cache", {}), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            with patch("agent.model_metadata.model_metadata_http.get", return_value=ok):
+                assert mm.get_model_context_length(model="gpt-5.6-luna-900k", **route) == 600_000
+            with patch("agent.model_metadata.model_metadata_http.get", side_effect=OSError("catalog down")), \
+                 patch("agent.model_metadata.time.time", return_value=time.time() + mm._CODEX_OAUTH_CONTEXT_CACHE_TTL + 1):
+                assert mm.get_model_context_length(model="gpt-5.6-luna-900k", **route) == 600_000
 
     def test_catalog_max_is_published_before_the_context_entry(self):
         """A reader that sees a fresh context entry must already be able to see its cap, or a

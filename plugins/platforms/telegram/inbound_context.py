@@ -17,6 +17,13 @@ from plugins.platforms.telegram.telegram_entities import expand_link_entities
 
 import logging
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from plugins.platforms.telegram.adapter import Message, Update, ContextTypes
+if TYPE_CHECKING:
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
 
@@ -26,7 +33,7 @@ if TYPE_CHECKING:
 
 class TelegramInboundContextMixin:
     def _observe_unmentioned_group_message(
-        self, message: Message, msg_type: MessageType, update_id: Optional[int] = None, event: Optional[MessageEvent] = None) -> None:
+        self: TelegramAdapter, message: Message, msg_type: MessageType, update_id: Optional[int] = None, event: Optional[MessageEvent] = None) -> None:
         """Append skipped group chatter to the target session without dispatching."""
         store = getattr(self, "_session_store", None)
         if not store:
@@ -50,7 +57,7 @@ class TelegramInboundContextMixin:
             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
 
 
-    def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
+    def _merge_into_pending(self: TelegramAdapter, pending: dict, key: str, event: MessageEvent) -> None:
         """Merge ``event`` into ``pending[key]`` (media + caption) or seed it."""
         existing = pending.get(key)
         if existing is None:
@@ -61,7 +68,7 @@ class TelegramInboundContextMixin:
             existing.text = self._merge_caption(existing.text, event.text)
 
 
-    async def _cache_inbound_document(self, msg, event: MessageEvent) -> bool:
+    async def _cache_inbound_document(self: TelegramAdapter, msg, event: MessageEvent) -> bool:
         """Cache a document attachment (image → photo path, video, else generic media + text injection).
         Returns True when the event was already dispatched/routed so the caller must return."""
         from plugins.platforms.telegram.adapter import _TELEGRAM_IMAGE_EXTENSIONS, _TELEGRAM_IMAGE_EXT_TO_MIME, _TELEGRAM_IMAGE_MIME_TO_EXT, _redact_telegram_error_text
@@ -146,7 +153,7 @@ class TelegramInboundContextMixin:
         return False
 
 
-    async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_media_message(self: TelegramAdapter, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         from plugins.platforms.telegram.adapter import _redact_telegram_error_text
         msg = update.message
@@ -206,7 +213,7 @@ class TelegramInboundContextMixin:
         await self.handle_message(event)
 
 
-    def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:
+    def _build_message_event(self: TelegramAdapter, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:
         """Build a MessageEvent from a Telegram message. ``update_id`` lets ``/restart`` record the
         triggering offset so the new gateway process advances past it."""
         chat = message.chat

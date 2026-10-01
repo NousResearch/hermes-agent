@@ -12,6 +12,11 @@ from gateway.platforms.base_pending import (
 
 import logging
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gateway.platforms.base import BasePlatformAdapter
+
 logger = logging.getLogger("gateway.platforms.base")
 
 
@@ -19,12 +24,12 @@ if TYPE_CHECKING:
     from gateway.platforms.event import MessageEvent
 
 class BaseTextBatchingMixin:
-    def _text_batch_key(self, event: MessageEvent) -> str:
+    def _text_batch_key(self: BasePlatformAdapter, event: MessageEvent) -> str:
         """Session-scoped key for text batching (subclasses may override)."""
         return self._event_session_key(event)
 
 
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
+    def _enqueue_text_event(self: BasePlatformAdapter, event: MessageEvent) -> None:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""
         if self._drop_unresolved(event):
             return
@@ -41,30 +46,30 @@ class BaseTextBatchingMixin:
         self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
 
 
-    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+    def _text_batch_delay_for(self: BasePlatformAdapter, pending: Optional[MessageEvent]) -> float:
         """Quiet period before ``pending`` is dispatched; near-split chunks wait longer."""
         last_len = getattr(pending, "_last_chunk_len", 0) if pending is not None else 0
         return self._text_batch_split_delay_seconds if last_len >= self._SPLIT_THRESHOLD else self._text_batch_delay_seconds
 
 
-    def _pop_text_batch(self, key: str) -> Optional[MessageEvent]:
+    def _pop_text_batch(self: BasePlatformAdapter, key: str) -> Optional[MessageEvent]:
         """Remove and return the pending batch for ``key`` (adapters with side tables override)."""
         return self._pending_text_batches.pop(key, None)
 
 
-    async def _dispatch_text_batch(self, event: MessageEvent) -> None:
+    async def _dispatch_text_batch(self: BasePlatformAdapter, event: MessageEvent) -> None:
         """Hand a flushed batch to the pipeline (adapters with per-chat guards override)."""
         await self.handle_message(event)
 
 
-    async def _flush_text_batch_now(self, key: str) -> None:
+    async def _flush_text_batch_now(self: BasePlatformAdapter, key: str) -> None:
         """Dispatch the pending batch for ``key`` immediately (no quiet period)."""
         event = self._pop_text_batch(key)
         if event is not None:
             await self._dispatch_text_batch(event)
 
 
-    async def _flush_text_batch(self, key: str) -> None:
+    async def _flush_text_batch(self: BasePlatformAdapter, key: str) -> None:
         """Wait for the quiet period, then dispatch the batch for ``key``.
 
         Two races share this body. (1) ``_enqueue_text_event`` cancels the prior flush task

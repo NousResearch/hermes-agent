@@ -634,11 +634,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             const refreshed = await sessionTileDelegate()!.resumeTile(storedIdRef.current, {
               refreshTranscript: true
             })
+
             if (typeof refreshed === 'string' && refreshed && refreshed !== sessionId) {
               runtimeIdRef.current = refreshed
             }
 
             const freshMessages = readMessages()
+
             const retryPlan = planRestore(freshMessages, messageId, {
               text: target?.text ?? plan.sourceText,
               userOrdinal: target?.userOrdinal ?? plan.truncateOrdinal

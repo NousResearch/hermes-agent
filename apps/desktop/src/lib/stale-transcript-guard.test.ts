@@ -181,6 +181,7 @@ describe('surplusIsCompetingView', () => {
   // That residue is this window's own turn aftermath, not a competing view.
   it('turn-death residue with an unreconciled optimistic user row is not a competing view', () => {
     const local = [competingViewUserMessage('opt-old', 'deploy the schema')]
+
     const refreshed = [
       competingViewUserMessage('msg-10', 'deploy the schema', 10),
       competingViewAssistantMessage('msg-11', '⌛ Approval timed out after 5 minutes', 11)
@@ -193,6 +194,7 @@ describe('surplusIsCompetingView', () => {
     // Issue comment 2: a successful plain tool turn reproduces the refusal
     // single-window — the server folded rows this window never streamed back.
     const local = [competingViewUserMessage('opt-old', 'run the tests')]
+
     const refreshed = [
       competingViewUserMessage('msg-10', 'run the tests', 10),
       competingViewAssistantMessage('msg-11', 'checking', 11),
@@ -204,6 +206,7 @@ describe('surplusIsCompetingView', () => {
 
   it('rejects a repeated prompt from another view even when the text matches', () => {
     const local = [competingViewUserMessage('prior', 'run the tests')]
+
     const refreshed = [
       competingViewUserMessage('prior', 'run the tests', 10),
       competingViewUserMessage('peer', 'run the tests', 12)
@@ -214,6 +217,7 @@ describe('surplusIsCompetingView', () => {
 
   it('a user row with unknown text is a competing view', () => {
     const local = [competingViewUserMessage('opt-old', 'deploy the schema')]
+
     const refreshed = [
       competingViewUserMessage('msg-10', 'deploy the schema', 10),
       competingViewUserMessage('msg-12', 'typed in another window'),
@@ -225,20 +229,25 @@ describe('surplusIsCompetingView', () => {
 
   it('user rows matching by rowId or id are known', () => {
     const byRowId = [competingViewUserMessage('msg-10', 'deploy the schema', 10)]
-    expect(surplusIsCompetingView(byRowId, [
-      competingViewUserMessage('msg-10', 'deploy the schema', 10),
-      competingViewAssistantMessage('msg-11', 'done', 11)
-    ])).toBe(false)
+    expect(
+      surplusIsCompetingView(byRowId, [
+        competingViewUserMessage('msg-10', 'deploy the schema', 10),
+        competingViewAssistantMessage('msg-11', 'done', 11)
+      ])
+    ).toBe(false)
 
     const byId = [competingViewUserMessage('msg-10', 'deploy the schema')]
-    expect(surplusIsCompetingView(byId, [
-      competingViewUserMessage('msg-10', 'deploy the schema'),
-      competingViewAssistantMessage('msg-11', 'done')
-    ])).toBe(false)
+    expect(
+      surplusIsCompetingView(byId, [
+        competingViewUserMessage('msg-10', 'deploy the schema'),
+        competingViewAssistantMessage('msg-11', 'done')
+      ])
+    ).toBe(false)
   })
 
   it('assistant/tool-only surplus is never a competing view', () => {
     const local = [competingViewUserMessage('opt-old', 'deploy the schema')]
+
     const refreshed = [
       competingViewUserMessage('msg-10', 'deploy the schema', 10),
       competingViewAssistantMessage('msg-11', 'running the command', 11),

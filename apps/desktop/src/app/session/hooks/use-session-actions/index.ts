@@ -920,6 +920,7 @@ export function useSessionActions({
           } catch {
             releaseCreatingSessionGuard()
           }
+
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.
           broadcastSessionsChanged()
@@ -1025,7 +1026,14 @@ export function useSessionActions({
         releaseStoredSessionPins(pinOwner)
       }
     },
-    [ensureSessionState, getRouteToken, navigate, requestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef]
+    [
+      ensureSessionState,
+      getRouteToken,
+      navigate,
+      requestGateway,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionIdRef
+    ]
   )
 
   const selectSidebarItem = useCallback(

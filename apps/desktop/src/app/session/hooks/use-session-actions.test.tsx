@@ -108,11 +108,7 @@ import { deferred } from '../../../test/deferred'
 import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
-import {
-  pinnedOwnerCount,
-  pinnedStoredSessionIdsForOwner,
-  releaseStoredSessionPins
-} from './session-context-drift'
+import { pinnedOwnerCount, pinnedStoredSessionIdsForOwner, releaseStoredSessionPins } from './session-context-drift'
 import { applySessionInfoStatePatch, sessionInfoStatePatch } from './use-message-stream/utils'
 import { captureSteeringSession } from './use-prompt-actions/steering-session'
 import { useSessionActions } from './use-session-actions'
@@ -167,7 +163,8 @@ type HarnessHandle = Pick<
   | 'removeSession'
   | 'selectSidebarItem'
   | 'startFreshSessionDraft'
-> & Pick<ReturnType<typeof useSessionActions>, 'submitTextToNewSession'>
+> &
+  Pick<ReturnType<typeof useSessionActions>, 'submitTextToNewSession'>
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -233,7 +230,8 @@ function Harness({
     routedSessionId: null,
     runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefOverride ?? ref(new Map<string, string>()),
     selectedStoredSessionId,
-    selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride ?? ref(selectedStoredSessionId),    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride ?? ref(selectedStoredSessionId),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: updateSessionStateOverride ?? (() => ({}) as ClientSessionState)
   })
@@ -1184,9 +1182,7 @@ describe('submitTextToNewSession pin release', () => {
       const otherPins = observation[observation.promptOwner === 'owner-a' ? 'ownerB' : 'ownerA']
 
       expect(ownPins).toContain(storedByOwner[observation.promptOwner])
-      expect(ownPins).not.toContain(
-        storedByOwner[observation.promptOwner === 'owner-a' ? 'owner-b' : 'owner-a']
-      )
+      expect(ownPins).not.toContain(storedByOwner[observation.promptOwner === 'owner-a' ? 'owner-b' : 'owner-a'])
       expect(otherPins).not.toContain(storedByOwner[observation.promptOwner])
     }
 
@@ -1543,7 +1539,8 @@ function ResumeHarness({
     requestGateway,
     resetViewSync: vi.fn(),
     routedSessionId: null,
-    runtimeIdByStoredSessionIdRef: runtimeMapRef,    selectedStoredSessionId,
+    runtimeIdByStoredSessionIdRef: runtimeMapRef,
+    selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: stateMapRef,
     holdSessionTranscriptView: runtimeId => {
@@ -6378,6 +6375,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
     selectedStoredSessionIdRef: MutableRefObject<null | string>
   }) {
     const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
     const actions = useSessionActions({
       activeSessionId: null,
       activeSessionIdRef: ref<string | null>(null),
@@ -6420,6 +6418,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
     }
 
     let create: (() => Promise<string | null>) | null = null
+
     const { rerender } = render(
       <GuardHarness
         creatingSessionRef={creatingSessionRef}
@@ -6430,6 +6429,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}
       />
     )
+
     await waitFor(() => expect(create).not.toBeNull())
 
     await act(async () => {
@@ -6471,6 +6471,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
   it('clears creatingSessionRef when navigate throws', async () => {
     const creatingSessionRef: MutableRefObject<boolean> = { current: false }
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
     const navigate = vi.fn(() => {
       throw new Error('navigate failed')
     })
@@ -6516,6 +6517,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
     }
 
     let create: (() => Promise<string | null>) | null = null
+
     const { rerender } = render(
       <GuardHarness
         creatingSessionRef={creatingSessionRef}
@@ -6526,6 +6528,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}
       />
     )
+
     await waitFor(() => expect(create).not.toBeNull())
 
     await act(async () => {

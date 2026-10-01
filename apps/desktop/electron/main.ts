@@ -5764,7 +5764,6 @@ function filenameFromUrl(rawUrl, fallback = 'image') {
   }
 }
 
-
 async function resourceBufferFromUrl(rawUrl) {
   if (!rawUrl) {
     throw new Error('Missing URL')
@@ -7130,7 +7129,10 @@ function installMediaPermissions() {
 // the request's own `requestingUrl` — the URL the frame actually asked for —
 // whose origin is exact for both hub deployments and `null` for anything
 // sandboxed or opaque.
-function focusedFrameOrigin(webContents: { getURL?: () => string } | null | undefined, details?: { requestingUrl?: string }): string | null {
+function focusedFrameOrigin(
+  webContents: { getURL?: () => string } | null | undefined,
+  details?: { requestingUrl?: string }
+): string | null {
   try {
     if (details?.requestingUrl) {
       return new URL(details.requestingUrl).origin
@@ -7160,7 +7162,11 @@ function isHermesHubPickerUrl(url: string): boolean {
 }
 
 /** Look up a subframe by its process/routing id; never throws. */
-function findFrameByIdentifier(webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined, frameProcessId: number, frameRoutingId: number): { origin?: string; reload?: () => void } | null {
+function findFrameByIdentifier(
+  webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined,
+  frameProcessId: number,
+  frameRoutingId: number
+): { origin?: string; reload?: () => void } | null {
   const candidates = [...(webContents?.frames ?? []), ...(webContents?.framesInSubtree ?? [])] as Array<{
     processId?: number
     routingId?: number
@@ -7172,9 +7178,7 @@ function findFrameByIdentifier(webContents: { frames?: readonly unknown[]; frame
 
   return (
     candidates.find(
-      f =>
-        (f.frameProcessId ?? f.processId) === frameProcessId &&
-        (f.frameRoutingId ?? f.routingId) === frameRoutingId
+      f => (f.frameProcessId ?? f.processId) === frameProcessId && (f.frameRoutingId ?? f.routingId) === frameRoutingId
     ) ?? null
   )
 }
@@ -13491,13 +13495,10 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   // creates a window: it hands http/https/mailto opens from the EXACT hub
   // origin to the audited `openExternalUrl` as a deny side effect.
   win.webContents.setWindowOpenHandler(
-    createWindowOpenHandler(
-      origin => rememberLog(`[window-open] denied: ${origin}`),
-      {
-        getOpenerOrigin: () => win.webContents.getFocusedFrame?.()?.origin ?? null,
-        openExternalUrl: (url: string) => void openExternalUrl(url)
-      }
-    )
+    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`), {
+      getOpenerOrigin: () => win.webContents.getFocusedFrame?.()?.origin ?? null,
+      openExternalUrl: (url: string) => void openExternalUrl(url)
+    })
   )
   // The embedded Skills Hub picker must stay pinned to its picker URL
   // (#91612): the frame is free to navigate itself within the picker (search,
@@ -18101,9 +18102,11 @@ const quickEntrySubmitRelay = createQuickEntrySubmitRelay({
   },
   onSuccess: () => {
     hideQuickEntryWindow()
+
     if (process.platform === 'darwin') {
       app.dock?.show()
     }
+
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
       mainWindow.focus()
@@ -18143,6 +18146,7 @@ ipcMain.on('hermes:quick-entry:ack', (event, payload) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
     return
   }
+
   quickEntrySubmitRelay.acknowledge(payload?.correlationId, payload?.result)
 })
 

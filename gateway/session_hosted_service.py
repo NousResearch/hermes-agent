@@ -141,7 +141,16 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def _resolve_member_transport(self, binding, task):
         if self._member_is_peer(binding.room_id, str(task['payload'].get('target_member_id') or task['payload'].get('target_profile'))):
             from gateway.session_group_peers import refused_peer_turn
-            return refused_peer_turn(self, binding.room_id, task) or super()._resolve_member_transport(binding, task)
+            refused = refused_peer_turn(self, binding.room_id, task)
+            if refused is not None:
+                return refused
+            transport = super()._resolve_member_transport(binding, task)
+            if task.get('status') == 'queued':
+                # Bound before the dispatch is sent: Retry later requires this same authority.
+                from gateway.session_group_peer_controls import capture_retry_binding
+                transport.nonadmission_retry_binding = capture_retry_binding(
+                    self, binding, task, transport.route, transport.client)
+            return transport
         from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
         payload = task['payload']
         member = str(payload.get('target_member_id') or payload.get('target_profile'))

@@ -223,6 +223,7 @@ class RoomDriverStatus(Result):
     peer_routes: list[PeerRouteStatus]
     peer_cleanup: list[dict[str, JsonValue]] | None = None
     retiring: bool | None = None
+    replication: dict[str, JsonValue] | None = None
 
 
 class GroupsStateResult(Result):
@@ -463,6 +464,8 @@ class GroupsReplicaStateResult(Result):
     #: (``safety_reason`` names the first defect).
     safety_status: str | None = None
     safety_reason: str | None = None
+    work_records: dict[str, JsonValue] | None = None
+    copy_retired_at: float | None = None
 
 
 method("groups.replica_state", params=GroupsReplicaStateParams, result=GroupsReplicaStateResult,
@@ -520,6 +523,9 @@ class GroupsPeerInviteParams(ProfileParams):
     # How long the room's gateway may keep renewing the grant (canonical surface); defaults to
     # ``ttl_seconds``, so nothing is renewed unless the operator chooses a longer horizon.
     status_ttl_seconds: float | None = None
+    replication: bool | None = None
+    work_records: bool | None = None
+    passive_only: bool | None = None
 
 
 class GroupsPeerInviteResult(Result):
@@ -565,6 +571,55 @@ class GroupsPeerRegisterResult(Result):
 
 method("groups.peer.register", params=GroupsPeerRegisterParams, result=GroupsPeerRegisterResult,
        doc="Register and probe one scoped peer route on the room home.")
+
+
+class ReplicaRetirementEnrollment(Result):
+    enrollment_id: str
+    room_id: str
+    authority_gateway_id: str
+    authority_epoch: int
+    target_install_id: str
+    roster_sha256: str
+    commitment: str
+
+
+class GroupsReplicationPrepareParams(RoomParams):
+    target_install_id: str
+    endpoint: str
+    enrollment_id: str | None = None
+    replace_enrollment_id: str | None = None
+
+
+class GroupsReplicationPrepareResult(Result):
+    enrollment: ReplicaRetirementEnrollment
+
+
+class GroupsReplicationEnrollParams(ProfileParams):
+    enrollment: ReplicaRetirementEnrollment
+    expected_enrollment_id: str | None = None
+    expected_state: str | None = None
+
+
+class GroupsReplicationEnrollResult(ReplicaRetirementEnrollment):
+    state: str
+
+
+class GroupsReplicationRevokeParams(RoomParams):
+    enrollment_id: str
+
+
+class GroupsReplicationRevokeResult(Result):
+    room_id: str
+    enrollment_id: str
+    state: str
+
+
+method('groups.replication.prepare', params=GroupsReplicationPrepareParams, result=GroupsReplicationPrepareResult,
+       doc='Prepare public retirement verification material for an opted-in participant copy.')
+method('groups.replication.enroll', params=GroupsReplicationEnrollParams, result=GroupsReplicationEnrollResult,
+       doc='The participant operator enrolls retirement of one exact passive copy.')
+method('groups.replication.revoke', params=GroupsReplicationRevokeParams, result=GroupsReplicationRevokeResult,
+       doc='The participant operator withdraws one copy-retirement enrollment.')
 
 
 # ── bot relay ─────────────────────────────────────────────────────────────────────────────────

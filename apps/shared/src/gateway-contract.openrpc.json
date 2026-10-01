@@ -1357,6 +1357,60 @@
       }
     },
     {
+      "name": "groups.replication.enroll",
+      "summary": "The participant operator enrolls retirement of one exact passive copy.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsReplicationEnrollParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsReplicationEnrollResult"
+        }
+      }
+    },
+    {
+      "name": "groups.replication.prepare",
+      "summary": "Prepare public retirement verification material for an opted-in participant copy.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsReplicationPrepareParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsReplicationPrepareResult"
+        }
+      }
+    },
+    {
+      "name": "groups.replication.revoke",
+      "summary": "The participant operator withdraws one copy-retirement enrollment.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsReplicationRevokeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsReplicationRevokeResult"
+        }
+      }
+    },
+    {
       "name": "groups.retry",
       "summary": "Retry one eligible room task; canonical controls require exact proven nonadmission.",
       "params": [
@@ -14697,6 +14751,42 @@
             ],
             "default": null,
             "title": "Status Ttl Seconds"
+          },
+          "replication": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replication"
+          },
+          "work_records": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Work Records"
+          },
+          "passive_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Passive Only"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -15122,6 +15212,31 @@
             ],
             "default": null,
             "title": "Safety Reason"
+          },
+          "work_records": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Work Records"
+          },
+          "copy_retired_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Copy Retired At"
           }
         },
         "required": [
@@ -15214,6 +15329,232 @@
           "caught_up"
         ],
         "title": "GroupsReplicateResult",
+        "type": "object"
+      },
+      "GroupsReplicationEnrollParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "enrollment": {
+            "$ref": "#/components/schemas/ReplicaRetirementEnrollment"
+          },
+          "expected_enrollment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Enrollment Id"
+          },
+          "expected_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected State"
+          }
+        },
+        "required": [
+          "enrollment"
+        ],
+        "title": "GroupsReplicationEnrollParams",
+        "type": "object"
+      },
+      "GroupsReplicationEnrollResult": {
+        "additionalProperties": false,
+        "properties": {
+          "enrollment_id": {
+            "title": "Enrollment Id",
+            "type": "string"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "authority_gateway_id": {
+            "title": "Authority Gateway Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "target_install_id": {
+            "title": "Target Install Id",
+            "type": "string"
+          },
+          "roster_sha256": {
+            "title": "Roster Sha256",
+            "type": "string"
+          },
+          "commitment": {
+            "title": "Commitment",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enrollment_id",
+          "room_id",
+          "authority_gateway_id",
+          "authority_epoch",
+          "target_install_id",
+          "roster_sha256",
+          "commitment",
+          "state"
+        ],
+        "title": "GroupsReplicationEnrollResult",
+        "type": "object"
+      },
+      "GroupsReplicationPrepareParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "target_install_id": {
+            "title": "Target Install Id",
+            "type": "string"
+          },
+          "endpoint": {
+            "title": "Endpoint",
+            "type": "string"
+          },
+          "enrollment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enrollment Id"
+          },
+          "replace_enrollment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replace Enrollment Id"
+          }
+        },
+        "required": [
+          "room_id",
+          "target_install_id",
+          "endpoint"
+        ],
+        "title": "GroupsReplicationPrepareParams",
+        "type": "object"
+      },
+      "GroupsReplicationPrepareResult": {
+        "additionalProperties": false,
+        "properties": {
+          "enrollment": {
+            "$ref": "#/components/schemas/ReplicaRetirementEnrollment"
+          }
+        },
+        "required": [
+          "enrollment"
+        ],
+        "title": "GroupsReplicationPrepareResult",
+        "type": "object"
+      },
+      "GroupsReplicationRevokeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "enrollment_id": {
+            "title": "Enrollment Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "enrollment_id"
+        ],
+        "title": "GroupsReplicationRevokeParams",
+        "type": "object"
+      },
+      "GroupsReplicationRevokeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "enrollment_id": {
+            "title": "Enrollment Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "enrollment_id",
+          "state"
+        ],
+        "title": "GroupsReplicationRevokeResult",
         "type": "object"
       },
       "GroupsRetryParams": {
@@ -26492,6 +26833,50 @@
         "title": "ReloadMcpStatus",
         "type": "string"
       },
+      "ReplicaRetirementEnrollment": {
+        "additionalProperties": false,
+        "properties": {
+          "enrollment_id": {
+            "title": "Enrollment Id",
+            "type": "string"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "authority_gateway_id": {
+            "title": "Authority Gateway Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "target_install_id": {
+            "title": "Target Install Id",
+            "type": "string"
+          },
+          "roster_sha256": {
+            "title": "Roster Sha256",
+            "type": "string"
+          },
+          "commitment": {
+            "title": "Commitment",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enrollment_id",
+          "room_id",
+          "authority_gateway_id",
+          "authority_epoch",
+          "target_install_id",
+          "roster_sha256",
+          "commitment"
+        ],
+        "title": "ReplicaRetirementEnrollment",
+        "type": "object"
+      },
       "RepoDiscoveryPolicy": {
         "additionalProperties": false,
         "description": "``methods_projects._repo_discovery_policy`` \u2014 the effective ``desktop.repo_scan_*`` config.",
@@ -27291,6 +27676,19 @@
             ],
             "default": null,
             "title": "Retiring"
+          },
+          "replication": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replication"
           }
         },
         "required": [

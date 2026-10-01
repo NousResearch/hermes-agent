@@ -72,13 +72,20 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     from gateway.platforms.api_server_room_proof import wrap, cleanup_issuance
-    return [(method, path, wrap(self, handler)) for method, path, handler in [
+    from gateway.platforms import api_server_replica_retirement, api_server_room_replicas, api_server_room_work_records
+    from gateway.hosted_room_work_records import MAX_BYTES
+    limits = {'/v1/room-members/replica': api_server_room_replicas.MAX_REPLICA_HTTP_BYTES,
+              '/v1/room-members/work-records': MAX_BYTES + 1024,
+              '/v1/group-replicas/retire': api_server_replica_retirement.MAX_RETIREMENT_REQUEST_BYTES}
+    return [(method, path, wrap(self, handler, max_bytes=limits.get(path))) for method, path, handler in [
         ("POST", "/v1/room-members/invitations", self._handle_room_member_invitation),
         ("GET", "/v1/room-members/capabilities", self._handle_room_member_capabilities),
         ("POST", "/v1/room-members/grants/refresh", self._handle_room_member_grant_refresh),
         ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke),
         ("POST", "/v1/room-members/grants/revoke-exact", self._handle_room_member_grant_revoke_exact),
-        ("POST", "/v1/room-members/grants/cleanup-issuance", lambda request: cleanup_issuance(self, request))]]
+        ("POST", "/v1/room-members/grants/cleanup-issuance", lambda request: cleanup_issuance(self, request)),
+        *api_server_room_replicas.http_routes(self), *api_server_room_work_records.http_routes(self),
+        *api_server_replica_retirement.http_routes(self)]]
 
 
 def _room_grant_token(request: "web.Request") -> str:
@@ -158,7 +165,8 @@ async def _handle_room_member_invitation(
     if error:
         return error
     required = set(_ROOM_IDENTITY_FIELDS)
-    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds"}
+    allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication", "work_records",
+                          "passive_only"}
     if set(body) - allowed or not required <= set(body):
         return _json_error(
             _openai_error, "Invitation is missing required room authority fields.",
@@ -172,9 +180,18 @@ async def _handle_room_member_invitation(
 
 
 def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any]:
-    """Mint and reserve one room grant for *profile*: the API-key route and ``groups.peer.invite``."""
+    """Mint and reserve one room grant for *profile*: the API-key route and ``groups.peer.invite``.
+
+    ``replication: true`` opts this gateway in to keeping a passive copy of the room's history,
+    ``work_records: true`` adds its task evidence, and ``passive_only`` limits the grant to that
+    copy (no dispatch, Stop or approval).
+    """
     from gateway import hosted_rooms
-    from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+    from gateway.hosted_room_passive_protocol import passive_capabilities
+    from gateway.hosted_room_peer import decode_room_grant, invitation_permissions, issue_room_grant
+    permissions = invitation_permissions(
+        body.get("replication", False), body.get("work_records", False),
+        passive_only=body.get("passive_only", False))
     target_install_id = hosted_rooms.local_authority_gateway_id()
     ttl = float(body.get("ttl_seconds", 3600))
     if not 60 <= ttl <= 24 * 60 * 60:
@@ -187,14 +204,15 @@ def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any
         self._room_grant_secret(),
         grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
         **_room_identity(body, coerce=True),
-        target_install_id=target_install_id, target_profile=profile,
+        target_install_id=target_install_id, target_profile=profile, permissions=permissions,
         execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
         ttl_seconds=ttl, status_ttl_seconds=status_ttl)
     claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
     hosted_rooms.reserve_peer_room(
         _grant_db(self), claims=claims, expires_at=_hard_expiry(claims))
     return {"grant": token, "target_profile": profile, "catalog": catalog,
-            "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"])}
+            "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"]),
+            "passive_replication": passive_capabilities()}
 
 
 async def _handle_room_member_capabilities(
@@ -206,9 +224,19 @@ async def _handle_room_member_capabilities(
         _, catalog = _local_room_catalog(self, profile, installation_id)
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_openai_error)
+    from gateway.hosted_room_passive_protocol import passive_capabilities
+    enrollment = None
+    if "replicate" in claims.get("permissions", ()):
+        # The home confirms its copy-retirement setup from this, before it copies under it.
+        from gateway import hosted_rooms
+        from gateway.hosted_room_replica_retirement import current_target_enrollment
+        enrollment = current_target_enrollment(
+            _grant_db(self), room_id=claims["room_id"],
+            authority_gateway_id=claims["authority_gateway_id"], authority_epoch=claims["authority_epoch"])
     return web.json_response({
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
-        "target_profile": profile, "catalog": catalog})
+        "target_profile": profile, "catalog": catalog, "passive_replication": passive_capabilities(),
+        **({"retirement_enrollment": enrollment} if enrollment is not None else {})})
 
 
 async def _handle_room_member_grant_refresh(

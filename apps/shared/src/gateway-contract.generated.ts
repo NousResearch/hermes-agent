@@ -1373,6 +1373,7 @@ export interface RoomDriverStatus {
   peer_routes: PeerRouteStatus[]
   peer_cleanup?: Record<string, unknown>[] | null
   retiring?: boolean | null
+  replication?: Record<string, unknown> | null
 }
 export interface PeerRouteStatus {
   room_id: string
@@ -1560,6 +1561,8 @@ export interface GroupsReplicaStateResult {
   disbanded_at?: number | null
   safety_status?: string | null
   safety_reason?: string | null
+  work_records?: Record<string, unknown> | null
+  copy_retired_at?: number | null
 }
 export interface GroupsPromoteParams {
   profile?: string | null
@@ -1598,6 +1601,9 @@ export interface GroupsPeerInviteParams {
   grant_id?: string | null
   ttl_seconds?: number | null
   status_ttl_seconds?: number | null
+  replication?: boolean | null
+  work_records?: boolean | null
+  passive_only?: boolean | null
 }
 export interface GroupsPeerInviteResult {
   grant: string
@@ -1629,6 +1635,52 @@ export interface GroupsPeerRegisterResult {
   transport_security: string
   target_install_id: string
   target_profile: string
+}
+export interface GroupsReplicationPrepareParams {
+  profile?: string | null
+  room_id: string
+  target_install_id: string
+  endpoint: string
+  enrollment_id?: string | null
+  replace_enrollment_id?: string | null
+}
+export interface GroupsReplicationPrepareResult {
+  enrollment: ReplicaRetirementEnrollment
+}
+export interface ReplicaRetirementEnrollment {
+  enrollment_id: string
+  room_id: string
+  authority_gateway_id: string
+  authority_epoch: number
+  target_install_id: string
+  roster_sha256: string
+  commitment: string
+}
+export interface GroupsReplicationEnrollParams {
+  profile?: string | null
+  enrollment: ReplicaRetirementEnrollment
+  expected_enrollment_id?: string | null
+  expected_state?: string | null
+}
+export interface GroupsReplicationEnrollResult {
+  enrollment_id: string
+  room_id: string
+  authority_gateway_id: string
+  authority_epoch: number
+  target_install_id: string
+  roster_sha256: string
+  commitment: string
+  state: string
+}
+export interface GroupsReplicationRevokeParams {
+  profile?: string | null
+  room_id: string
+  enrollment_id: string
+}
+export interface GroupsReplicationRevokeResult {
+  room_id: string
+  enrollment_id: string
+  state: string
 }
 export interface BotRelayRosterSyncParams {
   profile?: string | null
@@ -4912,6 +4964,12 @@ export interface RpcMethods {
   'groups.replica_state': { params: GroupsReplicaStateParams; result: GroupsReplicaStateResult }
   /** Persist one authority-stamped replay page into the local replica store; idempotent. Refused (4116, reason replica_provenance_required) until exclusive-authority recovery exists. */
   'groups.replicate': { params: GroupsReplicateParams; result: GroupsReplicateResult }
+  /** The participant operator enrolls retirement of one exact passive copy. */
+  'groups.replication.enroll': { params: GroupsReplicationEnrollParams; result: GroupsReplicationEnrollResult }
+  /** Prepare public retirement verification material for an opted-in participant copy. */
+  'groups.replication.prepare': { params: GroupsReplicationPrepareParams; result: GroupsReplicationPrepareResult }
+  /** The participant operator withdraws one copy-retirement enrollment. */
+  'groups.replication.revoke': { params: GroupsReplicationRevokeParams; result: GroupsReplicationRevokeResult }
   /** Retry one eligible room task; canonical controls require exact proven nonadmission. */
   'groups.retry': { params: GroupsRetryParams; result: GroupsRetryResult }
   /** Append one inert message.user event idempotently; the actor is server-owned. */
@@ -5322,6 +5380,9 @@ export const RPC_METHODS = [
   'groups.rename',
   'groups.replica_state',
   'groups.replicate',
+  'groups.replication.enroll',
+  'groups.replication.prepare',
+  'groups.replication.revoke',
   'groups.retry',
   'groups.send',
   'groups.state',

@@ -399,9 +399,33 @@ _GRANT_SCOPE = (
 _GRANT_FIELDS = frozenset({
     "version", *_GRANT_SCOPE, "execution_policy_digest", "permissions", "issued_at", "expires_at"})
 _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
-_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop"}
+_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop", "replicate", "work_records"}
+# Observation and passive copies last until the status horizon; dispatch needs a fresh grant.
+_STATUS_HORIZON_PERMISSIONS = frozenset({"approve", "status", "stop", "replicate", "work_records"})
 MAX_DISPATCH_GRANT_TTL_SECONDS = 24 * 60 * 60
 MAX_STATUS_GRANT_TTL_SECONDS = 30 * 24 * 60 * 60
+_MEMBER_PERMISSIONS = ("approve", "dispatch", "status", "stop")
+
+
+def invitation_permissions(
+    replication: Any = False, work_records: Any = False, *, passive_only: Any = False,
+) -> tuple[str, ...]:
+    """Permissions for one invitation; the same opt-in rules on JSON-RPC and HTTP.
+
+    A copy is never implied: only an explicit ``replication: true`` adds ``replicate``, and task
+    evidence (``work_records``) comes only on top of that copy. A ``passive_only`` grant can be
+    observed and copied to, but never runs, stops or approves work.
+    """
+    if type(replication) is not bool:
+        raise HostedRoomGrantError("replication must be a boolean")
+    if type(passive_only) is not bool:
+        raise HostedRoomGrantError("passive_only must be a boolean")
+    if type(work_records) is not bool or (work_records and not replication):
+        raise HostedRoomGrantError("work_records requires an explicit replication opt-in")
+    if passive_only and not replication:
+        raise HostedRoomGrantError("passive_only requires explicit replication")
+    passive = ("replicate", *(("work_records",) if work_records else ())) if replication else ()
+    return ("status", *passive) if passive_only else (*_MEMBER_PERMISSIONS, *passive)
 
 
 def issue_room_grant(
@@ -486,7 +510,7 @@ def decode_room_grant(
     lifetimes = (issued_at, expires_at, status_expires_at)
     if not (all(map(math.isfinite, lifetimes)) and issued_at < expires_at <= status_expires_at):
         raise HostedRoomGrantError("room grant lifetime is invalid")
-    operation_expires_at = status_expires_at if permission in {"approve", "status", "stop"} else expires_at
+    operation_expires_at = status_expires_at if permission in _STATUS_HORIZON_PERMISSIONS else expires_at
     if not allow_expired_for_revocation and (checked_now < issued_at - 30 or checked_now >= operation_expires_at):
         raise HostedRoomGrantError("room grant is expired or not active")
     if not isinstance(permissions := payload.get("permissions"), list) or permission not in permissions:

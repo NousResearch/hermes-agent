@@ -3,6 +3,7 @@ import asyncio
 from contextlib import nullcontext
 from pathlib import Path
 import threading
+import time
 
 from gateway.session_contract import Principal
 from gateway.session_authorities import active_authority, all_authorities, owner_scope
@@ -24,6 +25,19 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         self._peer_cleanup_inflight = set()
         self._peer_renewals, self._peer_renewal_scans = {}, {}  # session_group_peer_routes
         super().__init__(None, db_path=authority.db.db_path)
+        from gateway.hosted_room_replication import HostedRoomReplicationPublisher
+        # Copies history to opted-in participant gateways; idle until such a route exists.
+        self.replication = HostedRoomReplicationPublisher(self.db_path)
+
+    def start(self):
+        super().start()
+        self.replication.start()
+
+    def stop(self, *, timeout=5.0):
+        deadline = time.monotonic() + max(0.0, timeout)
+        self.replication.stop(timeout=0)  # Signal first; the runtime's stop may take the budget.
+        runtime_stopped = super().stop(timeout=max(0.0, deadline - time.monotonic()))
+        return self.replication.stop(timeout=max(0.0, deadline - time.monotonic())) and runtime_stopped
 
     def _load_stored_links(self):
         super()._load_stored_links()
@@ -42,6 +56,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         publish_route(self, room_id=room_id, member_id=member_id, route=route, client=client,
                       target_url=target_url, catalog=catalog, expected_grant=expected_grant,
                       authorize=authorize)
+        from gateway.hosted_room_replica_retirement import bind_home_proof
+        bind_home_proof(self.db_path, room_id=room_id)
+        self.replication.wakeup()
 
     def _track_peer_client(self, binding, key, route, client):
         from gateway.session_group_peer_routes import CanonicalPeerClient
@@ -135,7 +152,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
 
     def begin_disband(self, room_id):
-        """Persist the admission fence before waiting for any remote Stop or cleanup."""
+        """Persist the admission fence and copy proof before remote Stop or route cleanup."""
+        from gateway.hosted_room_replica_retirement import bind_home_proof
+        bind_home_proof(self.db_path, room_id=room_id)
         import json
         gateway_id, epoch = self._owned_authority(room_id)
         self.authority.db._execute_write(lambda conn: conn.execute(
@@ -213,7 +232,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def status(self, room_id=None):
         from gateway import session_group_peer_cleanup as cleanup
         return {**super().status(room_id), 'peer_cleanup': cleanup.status(self.db_path, room_id),
-                'retiring': self.is_retiring(room_id) if room_id is not None else False}
+                'retiring': self.is_retiring(room_id) if room_id is not None else False,
+                'replication': self.replication.status(room_id)}
 
     def _maintain_peer_lifecycle(self):
         from gateway import session_group_peer_cleanup as cleanup

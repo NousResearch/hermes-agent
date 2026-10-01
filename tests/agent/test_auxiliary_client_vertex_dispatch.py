@@ -207,6 +207,55 @@ class TestVertexAnthropicDispatch:
             )
         assert isinstance(client, AnthropicAuxiliaryClient)
 
+    def test_bare_claude_slug_dispatches_to_anthropic_on_aux_path(self):
+        """``agent_init.py::normalize_model_for_provider`` strips the
+        ``anthropic/`` prefix from the runtime main model for
+        provider=vertex. ``set_runtime_main`` then stores the BARE form
+        (``claude-opus-4-8``), and every auxiliary read via
+        ``_read_main_model()`` sees that bare form.
+
+        The strict classifier ``is_anthropic_vertex_model`` intentionally
+        rejects bare ``claude-*`` so main-agent config typos surface as a
+        loud Vertex 404. The auxiliary vertex handler must widen
+        detection to also match bare ``claude-*`` — otherwise the
+        auxiliary path silently misroutes Claude calls to Vertex's
+        OpenAI-compat Gemini endpoint and 400s with "Malformed publisher
+        model" while the SAME session works fine on the main-agent path.
+        The gateway path is the one that hits it: agent init strips the
+        ``anthropic/`` prefix before recording runtime state, so auxiliary
+        tasks see the bare name."""
+        from agent.auxiliary_client import (
+            AnthropicAuxiliaryClient,
+            resolve_provider_client,
+        )
+
+        p1, p2, p3 = self._patched_anthropic_success()
+        with p1, p2, p3:
+            client, model = resolve_provider_client(
+                "vertex", "claude-opus-4-8", is_vision=True,
+            )
+        assert isinstance(client, AnthropicAuxiliaryClient), (
+            "Bare 'claude-opus-4-8' must dispatch to AnthropicVertex on "
+            "the auxiliary path — the runtime main model is stored bare "
+            "after agent_init normalization, and any Claude-on-Vertex "
+            "aux call reads that bare form."
+        )
+        assert model == "claude-opus-4-8"
+
+    def test_bare_claude_case_insensitive(self):
+        """Uppercase / mixed-case bare Claude slug also dispatches."""
+        from agent.auxiliary_client import (
+            AnthropicAuxiliaryClient,
+            resolve_provider_client,
+        )
+
+        p1, p2, p3 = self._patched_anthropic_success()
+        with p1, p2, p3:
+            client, _ = resolve_provider_client(
+                "vertex", "Claude-Opus-4-8",
+            )
+        assert isinstance(client, AnthropicAuxiliaryClient)
+
     def test_async_mode_wraps_in_async_client(self):
         """``async_mode=True`` must return the async wrapper so async
         callers (compression, session_search) don't need to switch
@@ -269,16 +318,12 @@ class TestVertexGeminiDispatch:
         assert isinstance(client, OpenAI)
         assert model.startswith("google/")
 
-    def test_bare_claude_slug_falls_to_gemini_and_will_404_loudly(self):
-        """Per ``is_anthropic_vertex_model``'s docstring, a bare
-        ``claude-*`` slug intentionally does NOT match. This routes
-        through the Gemini aggregator, where Vertex will 404 with
-        "publisher google — model claude-... not found". That loud
-        failure tells the user to add the ``anthropic/`` vendor prefix.
-
-        The auxiliary path must preserve that behaviour — it should NOT
-        silently dispatch a bare-claude request to the Anthropic wire
-        (which would work but hide the config mistake)."""
+    def test_bare_gemini_slug_still_falls_to_gemini_aggregator(self):
+        """Bare ``gemini-*`` (no ``google/`` prefix) still resolves to
+        the OpenAI-compat aggregator — the Anthropic widening only
+        matches ``claude-*``. Vertex's Gemini endpoint requires the
+        ``google/`` prefix and will 404 the bare form, which is the
+        intended loud-fail behaviour for the Gemini path."""
         from agent.auxiliary_client import resolve_provider_client
         from openai import OpenAI
 
@@ -288,12 +333,10 @@ class TestVertexGeminiDispatch:
                   return_value=("mocked-token", "https://aiplatform.googleapis.com/x")),
         ):
             client, model = resolve_provider_client(
-                "vertex", "claude-opus-4-8",
+                "vertex", "gemini-3.1-pro-preview",
             )
         assert isinstance(client, OpenAI)
-        # Model gets normalized but the bare form is preserved (no
-        # anthropic/ prefix added silently).
-        assert not model.startswith("anthropic/")
+        assert "claude" not in (model or "").lower()
 
     def test_missing_gcp_credentials_returns_none(self):
         from agent.auxiliary_client import resolve_provider_client

@@ -59,8 +59,9 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         from hermes_cli.auth import _load_auth_store
         pool_entries = (_load_auth_store().get("credential_pool") or {}).get("anthropic") or []
         now_ms = time.time() * 1000
-        for entry in sorted(pool_entries, key=lambda item: item.get("priority", 0)):
-            if not isinstance(entry, dict) or not entry.get("access_token"):
+        valid_entries = [entry for entry in pool_entries if isinstance(entry, dict)]
+        for entry in sorted(valid_entries, key=lambda item: item.get("priority", 0)):
+            if not entry.get("access_token"):
                 continue
             if entry.get("auth_type") != "oauth" and entry.get("source") != "manual:hermes_pkce":
                 continue

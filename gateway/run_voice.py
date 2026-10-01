@@ -33,6 +33,8 @@ _CALL_ENDED_MODE = "off"
 
 
 class GatewayVoiceMixin:
+    _voice_call_keys: set[str]
+
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
         share a key and one ``/voice`` flips the other's); default keeps ``<platform>:<chat>``.
@@ -72,8 +74,7 @@ class GatewayVoiceMixin:
         return {k: m for k, m in items.items() if ":" in k}
 
     def _save_voice_modes(self) -> None:
-        # A restart ends every call, and a crash skips the leave paths that reset the mode, so save
-        # a call's chat with the mode that ending the call sets.
+        # This file is restart state: call-bound modes are off even while the live call speaks.
         persisted = {**self._voice_mode, **dict.fromkeys(self._voice_call_keys, _CALL_ENDED_MODE)}
         try:
             self._VOICE_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -105,8 +106,7 @@ class GatewayVoiceMixin:
     def _apply_voice_mode(
         self, adapter, voice_key: str, chat_id: str, mode: str, *, in_call: bool = False
     ) -> None:
-        """Record+persist ``mode``; mirror into adapter sets (``off`` -> disabled, else enabled).
-        ``in_call`` marks a mode that lasts only as long as the voice call that set it."""
+        """Set the live mode and the adapter override. A call mode expires when the call ends."""
         self._voice_mode[voice_key] = mode
         if in_call:
             self._voice_call_keys.add(voice_key)

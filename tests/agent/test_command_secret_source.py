@@ -247,3 +247,31 @@ def test_multiline_secret_source_registers_each_line_for_terminal_redaction(tmp_
     )
     assert "body-line-one-secret" not in output
     assert "body-line-two-secret" not in output
+
+
+def test_large_multiline_secret_keeps_bounded_early_middle_and_late_fragments(tmp_path, monkeypatch):
+    from agent import redact
+    from agent.secret_sources.base import FetchResult, SecretSource
+    from agent.secret_sources import registry
+
+    class FakeSource(SecretSource):
+        name = "fake"
+        label = "fake"
+        shape = "mapped"
+        def fetch(self, cfg, home_path):
+            lines = [f"opaque-line-{i}-secret" for i in range(70)]
+            return FetchResult(secrets={"CMDTEST_KEY": "\n".join(lines)})
+
+    source = FakeSource()
+    monkeypatch.setattr(registry, "_ordered_enabled_sources", lambda *_args, **_kwargs: [source])
+    monkeypatch.setattr(registry, "_section", lambda *_args, **_kwargs: {"enabled": True})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    registry.apply_all({"fake": {"enabled": True}}, tmp_path, environ={})
+
+    output = redact.redact_terminal_output(
+        "opaque-line-0-secret opaque-line-35-secret opaque-line-69-secret",
+        command="env", force=True
+    )
+    assert "opaque-line-0-secret" not in output
+    assert "opaque-line-35-secret" not in output
+    assert "opaque-line-69-secret" not in output

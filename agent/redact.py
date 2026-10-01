@@ -44,12 +44,44 @@ def register_vault_redaction_value(value) -> None:
     can echo the value back into model context. Also registers the form a text input normalizes
     it to (CR/LF stripped), since that is what the page holds.
     """
-    if not isinstance(value, str) or not value:
+    register_vault_redaction_values((value,))
+
+
+def register_vault_redaction_values(values) -> None:
+    """Atomically register one or more related exact values.
+
+    A multiline secret is treated as one bounded registration unit: when its
+    fragments exceed the per-profile capacity, retain evenly spaced fragments
+    (including the first and last) rather than evicting the secret's own early
+    lines one by one.
+    """
+    if not values:
         return
-    normalized = value.replace("\r", "").replace("\n", "")
+    normalized_values = []
+    for value in values:
+        if not isinstance(value, str) or not value:
+            continue
+        normalized = value.replace("\r", "").replace("\n", "")
+        normalized_values.append((value, normalized))
+    if not normalized_values:
+        return
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(), {})
-        for v in (value, normalized):
+        candidates = []
+        for value, normalized in normalized_values:
+            lines = [line for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n") if line]
+            if len(lines) + 1 > _VAULT_REDACTION_MAX_PER_PROFILE:
+                slots = _VAULT_REDACTION_MAX_PER_PROFILE - 1
+                indices = {0, len(lines) // 2, len(lines) - 1}
+                step = (len(lines) - 1) / (slots - 1)
+                for i in range(slots):
+                    if len(indices) >= slots:
+                        break
+                    indices.add(round(i * step))
+                candidates = [value, *(lines[i] for i in sorted(indices))]
+                break
+            candidates.extend(v for v in (value, normalized, *lines) if v)
+        for v in candidates:
             if v:
                 bucket.pop(v, None)  # re-registering refreshes recency
                 bucket[v] = None

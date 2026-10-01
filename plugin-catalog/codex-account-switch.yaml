@@ -1,6 +1,6 @@
 name: codex-account-switch
 repo: https://github.com/SmelterLabs/hermes-account-switcher
-sha: eccb4e534000804098f9b93ce16cb46fc8ba5200
+sha: 91c6d04812e36c5e4bae981bc04086899ba72562
 subdir: ""
 description: Windows desktop plugin that switches which Codex login and which Claude subscription account
   every local Hermes profile uses, with one idle-only, verified restart of Hermes Desktop and the gateway.
@@ -12,7 +12,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/SmelterLabs/hermes-account-switcher#readme
-version: "1.2.0"
+version: "1.2.1"
 platforms: [windows]
 readme: true
 capabilities:

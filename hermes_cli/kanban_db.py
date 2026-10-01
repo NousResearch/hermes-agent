@@ -3425,6 +3425,12 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
             reviewer = _canonical_assignee(reviewer)
+            # A reviewer is stamped onto the row as its assignee, so this is a
+            # fifth assignee write path: reassigning into a reserved,
+            # unspawnable lane re-creates the dead letter the file-time gate
+            # exists to prevent (`--reviewer hermes` after a clean create).
+            from hermes_cli.kanban_assignee_gate import require_spawnable_assignee
+            require_spawnable_assignee(reviewer, surface="kanban request-review")
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is
             # whoever the operator assigned -- possibly the reviewer itself,

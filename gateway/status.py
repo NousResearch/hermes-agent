@@ -508,7 +508,14 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     the process table in-process (a ``sysctl`` on macOS) where ``ps`` costs a fork+exec — measured
     0.02ms against 4.2ms on macOS for the same string. It cannot always answer: on macOS it raises
     ``AccessDenied`` for a process owned by another user, which ``ps`` still reports, so ``ps``
-    stays as the fallback rather than being replaced."""
+    stays as the fallback rather than being replaced.
+
+    On Windows, the argv boundaries from psutil are significant. In particular, a Python
+    interpreter under a directory containing spaces must remain one token when the returned string
+    is parsed again by the gateway identity matchers. ``list2cmdline`` preserves those boundaries
+    using the same quoting convention as Windows process command lines. Keep the existing
+    space-joined representation on POSIX, where the inline source matcher expects its source to be
+    reconstructed from the command-line string."""
     with contextlib.suppress(OSError):
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
         if raw:
@@ -517,7 +524,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         import psutil  # type: ignore
         cmdline_parts = psutil.Process(pid).cmdline()
         if cmdline_parts:
-            return " ".join(cmdline_parts)
+            return subprocess.list2cmdline(cmdline_parts) if _IS_WINDOWS else " ".join(cmdline_parts)
     if not _IS_WINDOWS:
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             result = subprocess.run(

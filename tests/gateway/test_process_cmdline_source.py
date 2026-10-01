@@ -47,6 +47,32 @@ def test_psutil_answers_without_forking_ps(no_proc, monkeypatch):
     assert cmdline and sys.executable.split("/")[-1] in cmdline
 
 
+def test_psutil_preserves_spaces_in_argv_boundaries(no_proc, monkeypatch):
+    """A spaced interpreter path must stay one token for gateway identity parsing."""
+    import psutil
+
+    argv = [
+        r"D:\Hermes Agent\tools\python.exe",
+        "-I",
+        "-c",
+        "import sys; sys.argv = ['gateway'];",
+    ]
+
+    class _Process:
+        def cmdline(self):
+            return argv
+
+    monkeypatch.setattr(psutil, "Process", lambda _pid: _Process())
+    monkeypatch.setattr(status, "_IS_WINDOWS", True)
+    _no_fork(monkeypatch)
+
+    cmdline = status._read_process_cmdline(1234)
+
+    assert cmdline == subprocess.list2cmdline(argv)
+    assert cmdline is not None
+    assert '"D:\\Hermes Agent\\tools\\python.exe"' in cmdline
+
+
 def test_ps_still_answers_when_psutil_cannot(no_proc, monkeypatch):
     """macOS raises AccessDenied across users; ps still reports those, so it stays the fallback."""
     import psutil

@@ -14,7 +14,11 @@ import {
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
 import { toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
-import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
+import {
+  $voiceConversationStartRequest,
+  $voiceConversationStartSessionId,
+  takeVoiceConversationStart
+} from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $gateway } from '@/store/gateway'
@@ -98,6 +102,7 @@ export function useComposerVoice({
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
+  const voiceStartSessionId = useStore($voiceConversationStartSessionId)
 
   // eslint-disable-next-line no-restricted-syntax -- session-id adopt token, not an atom mirror
   useEffect(() => {
@@ -330,10 +335,15 @@ export function useComposerVoice({
   )
 
   useEffect(() => {
-    if (target === 'main' && !disabled && takeVoiceConversationStart(voiceStartRequest) && !voiceConversationActive) {
+    if (
+      !disabled &&
+      ((voiceStartSessionId === null && target === 'main') || voiceStartSessionId === sessionId) &&
+      takeVoiceConversationStart(voiceStartRequest) &&
+      !voiceConversationActive
+    ) {
       activateConversation()
     }
-  }, [activateConversation, disabled, target, voiceConversationActive, voiceStartRequest])
+  }, [activateConversation, disabled, sessionId, target, voiceConversationActive, voiceStartRequest, voiceStartSessionId])
 
   const resumeWakeIfPaused = useCallback(() => {
     if (!wakePausedRef.current) {

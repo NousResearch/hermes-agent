@@ -178,7 +178,9 @@ class GatewayVoiceMixin:
             adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
                 self._voice_key(Platform.DISCORD, str(chat_id), profile=voice_profile), "off")
         try:
-            success = await adapter.join_voice_channel(voice_channel)
+            success = await adapter.join_voice_channel(
+                voice_channel, text_channel_id=int(event.source.chat_id),
+                source=event.source.to_dict())
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
             adapter._voice_input_callback = None
@@ -188,15 +190,6 @@ class GatewayVoiceMixin:
         if not success:
             adapter._voice_input_callback = None
             return t("gateway.voice.channel_join_permissions")
-        text_channel_id = int(event.source.chat_id)
-        # Moving to another text channel drops speech buffered for the old one (a same-channel rejoin
-        # keeps it); nothing awaits between this and the binding write, so no poll sees the gap.
-        previous = adapter._voice_text_channels.get(guild_id)
-        if previous is not None and previous != text_channel_id and hasattr(adapter, "discard_pending_voice_input"):
-            adapter.discard_pending_voice_input(guild_id)
-        adapter._voice_text_channels[guild_id] = text_channel_id
-        if hasattr(adapter, "_voice_sources"):
-            adapter._voice_sources[guild_id] = event.source.to_dict()
         self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
                                event.source.chat_id, "all", in_call=True)
         return t("gateway.voice.channel_joined", name=voice_channel.name)

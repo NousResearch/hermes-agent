@@ -1,6 +1,7 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
 import asyncio
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -16,6 +17,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 def _ensure_discord_mock():
     """Install a lightweight discord mock when discord.py isn't available."""
     if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+        return
+
+    if importlib.machinery.PathFinder.find_spec("discord") is not None:
+        for module in ("discord", "discord.ext", "discord.ext.commands"):
+            sys.modules.pop(module, None)
+        importlib.import_module("discord")
         return
 
     discord_mod = MagicMock()
@@ -487,6 +494,11 @@ class TestVoiceChannelCommands:
         mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
         mock_adapter._voice_text_channels = {}
         mock_adapter._voice_sources = {}
+        async def join(channel, *, text_channel_id, source):
+            mock_adapter._voice_text_channels[111] = text_channel_id
+            mock_adapter._voice_sources[111] = source
+            return True
+        mock_adapter.join_voice_channel.side_effect = join
         mock_adapter._voice_input_callback = None
         event = self._make_discord_event()
         event.source.chat_type = "group"
@@ -1747,3 +1759,130 @@ class TestPcmToWav:
             assert w.getframerate() == 16000
             # 48kHz -> 16kHz is a 3x decimation of a 1s clip.
             assert w.getnframes() == 16000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["same", "move", "failed_move", "refused"])
+async def test_voice_rebind_expires_only_the_replaced_call(tmp_path, monkeypatch, outcome):
+    from gateway.config import Platform, PlatformConfig
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test"))
+    adapter._client = MagicMock()
+    monkeypatch.setattr(adapter, "_reset_voice_timeout", lambda guild_id: None)
+    runner = _make_runner(tmp_path)
+    runner._delivery_adapter_for = lambda source: adapter
+    runner._adapter_profile_for_source = lambda source: None
+    channel = SimpleNamespace(id=444, name="call", guild=SimpleNamespace(id=111))
+    old_channel = channel if outcome == "same" else SimpleNamespace(id=333)
+    vc = MagicMock()
+    vc.channel = old_channel
+    vc.is_connected.return_value = True
+    vc.move_to = AsyncMock(side_effect=RuntimeError("move refused") if outcome == "failed_move" else None)
+    adapter._voice_clients[111] = vc
+    adapter._voice_text_channels[111] = 123
+    adapter._voice_sources[111] = {"original": True}
+    adapter.get_user_voice_channel = AsyncMock(return_value=channel)
+    if outcome == "refused":
+        adapter.join_voice_channel = AsyncMock(return_value=False)
+    runner._apply_voice_mode(adapter, "discord:123", "123", "all", in_call=True)
+    runner._apply_voice_mode(adapter, "discord:999", "999", "voice_only")
+    event = _make_event("/voice join", chat_id="456")
+    event.source.platform = Platform.DISCORD
+    event.raw_message = SimpleNamespace(guild_id=111)
+
+    await runner._handle_voice_channel_join(event)
+
+    successful = outcome in {"same", "move"}
+    assert {
+        "modes": runner._voice_mode,
+        "calls": runner._voice_call_keys,
+        "binding": adapter._voice_text_channels,
+        "sources": adapter._voice_sources,
+        "persisted": json.loads(runner._VOICE_MODE_PATH.read_text()),
+    } == {
+        "modes": {"discord:123": "off" if successful else "all", "discord:999": "voice_only",
+                  **({"discord:456": "all"} if successful else {})},
+        "calls": {"discord:456"} if successful else {"discord:123"},
+        "binding": {111: 456 if successful else 123},
+        "sources": {111: event.source.to_dict() if successful else {"original": True}},
+        "persisted": {"discord:123": "off", "discord:999": "voice_only",
+                      **({"discord:456": "off"} if successful else {})},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["bot_left", "bot_moved", "member_left", "stale_channel", "replaced_call"])
+async def test_registered_voice_event_expires_the_bot_call_only(tmp_path, monkeypatch, change):
+    import discord
+    from discord.ext import commands
+    from gateway.config import PlatformConfig
+    from plugins.platforms.discord import adapter as discord_mod
+
+    adapter = discord_mod.DiscordAdapter(PlatformConfig(enabled=True, token="test"))
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
+    bot._connection.user = discord.ClientUser(state=bot._connection, data={
+        "id": "999", "username": "Hermes", "discriminator": "0", "avatar": None,
+    })
+    async def start(token):
+        await bot.on_ready()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(bot, "start", start)
+    monkeypatch.setattr(discord_mod.commands, "Bot", lambda **kwargs: bot)
+    monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args: True)
+    monkeypatch.setattr(adapter, "_release_platform_lock", lambda: None)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    monkeypatch.setattr(adapter, "_run_post_connect_initialization", AsyncMock())
+    monkeypatch.setattr(adapter, "_start_liveness_probe", lambda: None)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_enabled", lambda: False)
+    adapter._slash_commands = []
+    runner = _make_runner(tmp_path)
+    adapter._on_voice_disconnect = lambda chat_id: runner._handle_voice_timeout_cleanup(chat_id, adapter=adapter)
+    vc = MagicMock()
+    vc.channel = SimpleNamespace(id=555 if change == "stale_channel" else 444, name="call")
+    vc.is_connected.return_value = False
+    adapter._voice_clients[111] = vc
+    adapter._voice_text_channels[111] = 123
+    adapter._voice_sources[111] = {"original": True}
+    runner._apply_voice_mode(adapter, "discord:123", "123", "all", in_call=True)
+    runner._apply_voice_mode(adapter, "discord:999", "999", "voice_only")
+    member = discord.Member(guild=SimpleNamespace(id=111), state=bot._connection, data={
+        "user": {"id": "888" if change == "member_left" else "999", "username": "user",
+                 "discriminator": "0", "avatar": None}, "roles": [], "joined_at": None, "flags": 0,
+    })
+    before = discord.VoiceState(data={}, channel=SimpleNamespace(id=444, name="call"))
+    after = discord.VoiceState(data={}, channel=SimpleNamespace(id=555, name="next") if change == "bot_moved" else None)
+    try:
+        assert await adapter.connect() is True
+        if change == "replaced_call":
+            lock = adapter._voice_locks.setdefault(111, asyncio.Lock())
+            await lock.acquire()
+            started = asyncio.Event()
+            async def dispatch():
+                started.set()
+                await bot.on_voice_state_update(member, before, after)
+            event_task = asyncio.create_task(dispatch())
+            await asyncio.wait_for(started.wait(), timeout=10)
+            replacement = MagicMock()
+            replacement.channel = vc.channel
+            adapter._voice_clients[111] = replacement
+            lock.release()
+            await event_task
+        else:
+            await bot.on_voice_state_update(member, before, after)
+        ended = change == "bot_left"
+        assert {
+            "modes": runner._voice_mode, "calls": runner._voice_call_keys,
+            "binding": adapter._voice_text_channels, "sources": adapter._voice_sources,
+            "guilds": list(adapter._voice_clients),
+            "persisted": json.loads(runner._VOICE_MODE_PATH.read_text()),
+        } == {
+            "modes": {"discord:123": "off" if ended else "all", "discord:999": "voice_only"},
+            "calls": set() if ended else {"discord:123"},
+            "binding": {} if ended else {111: 123},
+            "sources": {} if ended else {111: {"original": True}},
+            "guilds": [] if ended else [111],
+            "persisted": {"discord:123": "off", "discord:999": "voice_only"},
+        }
+    finally:
+        await adapter.disconnect()

@@ -357,8 +357,13 @@ it('renames a gateway room with one event id across retries', async () => {
   ])
 })
 
-it('disbands a gateway room only after confirmation and keeps it unless the gateway confirms', async () => {
-  let disbandResult: unknown = {}
+it.each([
+  ['missing receipt', {}],
+  ['legacy boolean', { tombstone: true }],
+  ['another room', { tombstone: { room_id: 'other-room', disbanded_at: 123, idempotent: false } }],
+  ['missing timestamp', { tombstone: { room_id: 'leaving', idempotent: false } }]
+])('keeps a room for %s and accepts its canonical Disband receipt', async (_label, initial) => {
+  let disbandResult: unknown = initial
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
 
@@ -381,7 +386,7 @@ it('disbands a gateway room only after confirmation and keeps it unless the gate
   expect($canonicalGroupBindings.get()[key]).toEqual(binding)
   expect(onBack).not.toHaveBeenCalled()
 
-  disbandResult = { tombstone: true }
+  disbandResult = { tombstone: { room_id: binding.roomId, disbanded_at: 123, idempotent: false } }
   fireEvent.click(screen.getByRole('button', { name: 'Confirm disband' }))
   await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
   expect($canonicalGroupBindings.get()[key]).toBeUndefined()

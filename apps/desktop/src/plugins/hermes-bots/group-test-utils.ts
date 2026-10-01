@@ -23,12 +23,14 @@
 import type { PluginContext } from '@hermes/plugin-sdk'
 import { afterEach, vi } from 'vitest'
 
-// Appendix A, pinned #106742 base cb8d692: session_group_controls.py, not the legacy generated contract.
+// Appendix A, pinned #106742 base cb8d692: session_group_controls.py, not the legacy generated contract,
+// plus groups.attachment.list from #98072 (gateways advertise it in groups.capabilities methods).
 export const GROUP_METHODS = {
   'groups.capabilities': 'session:read', 'groups.list': 'session:read', 'groups.state': 'session:read',
   'groups.log': 'session:read', 'groups.create': 'session:control', 'groups.rename': 'session:control',
   'groups.disband': 'session:control', 'groups.send': 'session:submit',
   'groups.attachment.upload': 'session:submit', 'groups.attachment.download': 'session:read',
+  'groups.attachment.list': 'session:read',
   'groups.stop': 'session:control', 'groups.retry': 'session:control', 'groups.discard': 'session:control',
   'groups.approve': 'session:approve'
 }
@@ -43,6 +45,7 @@ export const _FIELDS: Record<string, readonly string[]> = {
   'groups.send': ['room_id', 'event_id', 'payload'],
   'groups.attachment.upload': ['room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'],
   'groups.attachment.download': ['room_id', 'event_id', 'attachment_id'],
+  'groups.attachment.list': ['room_id', 'cursor', 'limit', 'query', 'producer_member_id'],
   'groups.stop': ['room_id', 'cancel_id'],
   'groups.retry': ['room_id', 'member_id', 'task_id', 'execution_generation'],
   'groups.discard': ['room_id', 'member_id', 'task_id', 'execution_generation'],

@@ -41,6 +41,25 @@ export interface CanonicalGroupMessages {
   disbandWarning: string
   confirmDisband: string
   disbandUnconfirmed: string
+  files: string
+  searchFiles: string
+  filesLoading: string
+  filesError: string
+  filesExpired: string
+  filesUnavailable: string
+  filesAccess: string
+  filesEmpty: string
+  filesPageEmpty: string
+  filesNoResults: string
+  filesClearSearch: string
+  olderFiles: string
+  newerFiles: string
+  showLatest: string
+  refreshFiles: string
+  fileDownloadFailed: string
+  fileVerificationFailed: string
+  fileTimeout: string
+  filesYou: string
 }
 
 export const HOSTED_PROFILE_OWNERS_URL = 'https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners'
@@ -88,7 +107,26 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Disband',
     disbandWarning: 'Disbanding stops the room’s work and closes it on the gateway. This can’t be undone.',
     confirmDisband: 'Confirm disband',
-    disbandUnconfirmed: 'The gateway did not confirm the disband. The room was kept.'
+    disbandUnconfirmed: 'The gateway did not confirm the disband. The room was kept.',
+    files: 'Files',
+    searchFiles: 'Search files',
+    filesLoading: 'Loading files',
+    filesError: 'Files could not be loaded.',
+    filesExpired: 'This list is out of date. Show the latest files to continue.',
+    filesUnavailable: 'Files are temporarily unavailable.',
+    filesAccess: 'Files are unavailable for this Group Chat.',
+    filesEmpty: 'No files shared yet.',
+    filesPageEmpty: 'No files on this page.',
+    filesNoResults: 'No matching files.',
+    filesClearSearch: 'Clear search',
+    olderFiles: 'Older files',
+    newerFiles: 'Newer files',
+    showLatest: 'Show latest',
+    refreshFiles: 'Refresh list',
+    fileDownloadFailed: 'This file could not be downloaded.',
+    fileVerificationFailed: 'This file couldn’t be verified. Nothing was downloaded.',
+    fileTimeout: 'The download timed out.',
+    filesYou: 'You'
   },
   ja: {
     legacyRoom: 'これは従来のDesktopルームです。このメンバーでゲートウェイ管理のグループを開始できます。過去の履歴はここに残り、再実行されません。',
@@ -132,7 +170,26 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: '解散',
     disbandWarning: '解散するとルームの作業が停止し、ゲートウェイ上でルームが閉じられます。元に戻せません。',
     confirmDisband: '解散を確定',
-    disbandUnconfirmed: 'ゲートウェイが解散を確認しませんでした。ルームは残っています。'
+    disbandUnconfirmed: 'ゲートウェイが解散を確認しませんでした。ルームは残っています。',
+    files: 'ファイル',
+    searchFiles: 'ファイルを検索',
+    filesLoading: 'ファイルを読み込み中',
+    filesError: 'ファイルを読み込めませんでした。',
+    filesExpired: 'この一覧は最新ではありません。続けるには最新のファイルを表示してください。',
+    filesUnavailable: 'ファイルを一時的に利用できません。',
+    filesAccess: 'このグループチャットのファイルを利用できません。',
+    filesEmpty: '共有されたファイルはまだありません。',
+    filesPageEmpty: 'このページにファイルはありません。',
+    filesNoResults: '一致するファイルはありません。',
+    filesClearSearch: '検索をクリア',
+    olderFiles: '古いファイル',
+    newerFiles: '新しいファイル',
+    showLatest: '最新を表示',
+    refreshFiles: '一覧を更新',
+    fileDownloadFailed: 'このファイルをダウンロードできませんでした。',
+    fileVerificationFailed: 'このファイルを検証できませんでした。何もダウンロードされていません。',
+    fileTimeout: 'ダウンロードがタイムアウトしました。',
+    filesYou: 'あなた'
   },
   zh: {
     legacyRoom: '这是旧版Desktop群组。可使用这些成员创建由网关管理的群组；旧记录会保留在此处，不会重新执行。',
@@ -176,7 +233,26 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: '解散',
     disbandWarning: '解散会停止该群组的工作并在网关上关闭它。此操作无法撤销。',
     confirmDisband: '确认解散',
-    disbandUnconfirmed: '网关未确认解散。该群组已保留。'
+    disbandUnconfirmed: '网关未确认解散。该群组已保留。',
+    files: '文件',
+    searchFiles: '搜索文件',
+    filesLoading: '正在加载文件',
+    filesError: '无法加载文件。',
+    filesExpired: '此列表已过时。请显示最新文件以继续。',
+    filesUnavailable: '文件暂时不可用。',
+    filesAccess: '此群聊的文件不可用。',
+    filesEmpty: '尚未共享任何文件。',
+    filesPageEmpty: '此页没有文件。',
+    filesNoResults: '没有匹配的文件。',
+    filesClearSearch: '清除搜索',
+    olderFiles: '较早的文件',
+    newerFiles: '较新的文件',
+    showLatest: '显示最新内容',
+    refreshFiles: '刷新列表',
+    fileDownloadFailed: '无法下载此文件。',
+    fileVerificationFailed: '无法验证此文件。未下载任何内容。',
+    fileTimeout: '下载超时。',
+    filesYou: '你'
   },
   'zh-hant': {
     legacyRoom: '這是舊版Desktop群組。可使用這些成員建立由閘道管理的群組；舊記錄會保留在此處，不會重新執行。',
@@ -220,7 +296,26 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: '解散',
     disbandWarning: '解散會停止該群組的工作並在閘道上關閉它。此動作無法復原。',
     confirmDisband: '確認解散',
-    disbandUnconfirmed: '閘道未確認解散。該群組已保留。'
+    disbandUnconfirmed: '閘道未確認解散。該群組已保留。',
+    files: '檔案',
+    searchFiles: '搜尋檔案',
+    filesLoading: '正在載入檔案',
+    filesError: '無法載入檔案。',
+    filesExpired: '此清單已過時。請顯示最新檔案以繼續。',
+    filesUnavailable: '檔案暫時無法使用。',
+    filesAccess: '此群組聊天的檔案無法使用。',
+    filesEmpty: '尚未共享任何檔案。',
+    filesPageEmpty: '此頁沒有檔案。',
+    filesNoResults: '找不到相符的檔案。',
+    filesClearSearch: '清除搜尋',
+    olderFiles: '較舊的檔案',
+    newerFiles: '較新的檔案',
+    showLatest: '顯示最新內容',
+    refreshFiles: '重新整理清單',
+    fileDownloadFailed: '無法下載此檔案。',
+    fileVerificationFailed: '無法驗證此檔案。未下載任何內容。',
+    fileTimeout: '下載逾時。',
+    filesYou: '您'
   },
   ar: {
     legacyRoom: 'هذه غرفة Desktop قديمة. ابدأ مجموعة تديرها البوابة بهؤلاء الأعضاء؛ يبقى السجل القديم هنا ولا يُعاد تشغيله.',
@@ -264,7 +359,26 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'حلّ',
     disbandWarning: 'يؤدي حلّ الغرفة إلى إيقاف عملها وإغلاقها على البوابة. لا يمكن التراجع عن ذلك.',
     confirmDisband: 'تأكيد الحلّ',
-    disbandUnconfirmed: 'لم تؤكد البوابة حلّ الغرفة. تم الإبقاء عليها.'
+    disbandUnconfirmed: 'لم تؤكد البوابة حلّ الغرفة. تم الإبقاء عليها.',
+    files: 'الملفات',
+    searchFiles: 'البحث في الملفات',
+    filesLoading: 'جارٍ تحميل الملفات',
+    filesError: 'تعذر تحميل الملفات.',
+    filesExpired: 'هذه القائمة لم تعد محدّثة. اعرض أحدث الملفات للمتابعة.',
+    filesUnavailable: 'الملفات غير متاحة مؤقتاً.',
+    filesAccess: 'الملفات غير متاحة لهذه المحادثة الجماعية.',
+    filesEmpty: 'لم تتم مشاركة أي ملفات بعد.',
+    filesPageEmpty: 'لا توجد ملفات في هذه الصفحة.',
+    filesNoResults: 'لا توجد ملفات مطابقة.',
+    filesClearSearch: 'مسح البحث',
+    olderFiles: 'ملفات أقدم',
+    newerFiles: 'ملفات أحدث',
+    showLatest: 'عرض الأحدث',
+    refreshFiles: 'تحديث القائمة',
+    fileDownloadFailed: 'تعذر تنزيل هذا الملف.',
+    fileVerificationFailed: 'تعذر التحقق من هذا الملف. لم يتم تنزيل أي شيء.',
+    fileTimeout: 'انتهت مهلة التنزيل.',
+    filesYou: 'أنت'
   },
   ru: {
     legacyRoom: 'Это старая комната Desktop. Создайте группу под управлением шлюза с этими участниками; прежняя история останется здесь и не будет выполнена заново.',
@@ -311,7 +425,26 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Расформировать',
     disbandWarning: 'Расформирование останавливает работу комнаты и закрывает её на шлюзе. Это нельзя отменить.',
     confirmDisband: 'Подтвердить расформирование',
-    disbandUnconfirmed: 'Шлюз не подтвердил расформирование. Комната сохранена.'
+    disbandUnconfirmed: 'Шлюз не подтвердил расформирование. Комната сохранена.',
+    files: 'Файлы',
+    searchFiles: 'Поиск файлов',
+    filesLoading: 'Загрузка файлов',
+    filesError: 'Не удалось загрузить файлы.',
+    filesExpired: 'Этот список устарел. Чтобы продолжить, покажите последние файлы.',
+    filesUnavailable: 'Файлы временно недоступны.',
+    filesAccess: 'Файлы недоступны для этого группового чата.',
+    filesEmpty: 'Файлами ещё не делились.',
+    filesPageEmpty: 'На этой странице нет файлов.',
+    filesNoResults: 'Подходящие файлы не найдены.',
+    filesClearSearch: 'Очистить поиск',
+    olderFiles: 'Более старые файлы',
+    newerFiles: 'Более новые файлы',
+    showLatest: 'Показать последние',
+    refreshFiles: 'Обновить список',
+    fileDownloadFailed: 'Не удалось скачать этот файл.',
+    fileVerificationFailed: 'Не удалось проверить этот файл. Ничего не скачано.',
+    fileTimeout: 'Время ожидания скачивания истекло.',
+    filesYou: 'Вы'
   },
   fr: {
     legacyRoom: 'Ceci est un ancien salon Desktop. Démarrez un groupe géré par la passerelle avec ces membres ; l’ancien historique reste ici et n’est pas rejoué.',
@@ -357,7 +490,26 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Dissoudre',
     disbandWarning: 'La dissolution arrête le travail du salon et le ferme sur la passerelle. C’est irréversible.',
     confirmDisband: 'Confirmer la dissolution',
-    disbandUnconfirmed: 'La passerelle n’a pas confirmé la dissolution. Le salon est conservé.'
+    disbandUnconfirmed: 'La passerelle n’a pas confirmé la dissolution. Le salon est conservé.',
+    files: 'Fichiers',
+    searchFiles: 'Rechercher des fichiers',
+    filesLoading: 'Chargement des fichiers',
+    filesError: 'Impossible de charger les fichiers.',
+    filesExpired: 'Cette liste n’est plus à jour. Affichez les derniers fichiers pour continuer.',
+    filesUnavailable: 'Les fichiers sont temporairement indisponibles.',
+    filesAccess: 'Les fichiers ne sont pas disponibles pour ce groupe.',
+    filesEmpty: 'Aucun fichier partagé pour l’instant.',
+    filesPageEmpty: 'Aucun fichier sur cette page.',
+    filesNoResults: 'Aucun fichier correspondant.',
+    filesClearSearch: 'Effacer la recherche',
+    olderFiles: 'Fichiers plus anciens',
+    newerFiles: 'Fichiers plus récents',
+    showLatest: 'Afficher les plus récents',
+    refreshFiles: 'Actualiser la liste',
+    fileDownloadFailed: 'Impossible de télécharger ce fichier.',
+    fileVerificationFailed: 'Impossible de vérifier ce fichier. Rien n’a été téléchargé.',
+    fileTimeout: 'Le téléchargement a expiré.',
+    filesYou: 'Vous'
   },
   de: {
     legacyRoom: 'Dies ist ein alter Desktop-Raum. Starten Sie mit diesen Mitgliedern eine vom Gateway verwaltete Gruppe; der bisherige Verlauf bleibt hier und wird nicht erneut ausgeführt.',
@@ -404,7 +556,26 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Auflösen',
     disbandWarning: 'Das Auflösen stoppt die Arbeit des Raums und schließt ihn auf dem Gateway. Das lässt sich nicht rückgängig machen.',
     confirmDisband: 'Auflösen bestätigen',
-    disbandUnconfirmed: 'Das Gateway hat das Auflösen nicht bestätigt. Der Raum bleibt bestehen.'
+    disbandUnconfirmed: 'Das Gateway hat das Auflösen nicht bestätigt. Der Raum bleibt bestehen.',
+    files: 'Dateien',
+    searchFiles: 'Dateien durchsuchen',
+    filesLoading: 'Dateien werden geladen',
+    filesError: 'Dateien konnten nicht geladen werden.',
+    filesExpired: 'Diese Liste ist nicht mehr aktuell. Zeigen Sie die neuesten Dateien an, um fortzufahren.',
+    filesUnavailable: 'Dateien sind vorübergehend nicht verfügbar.',
+    filesAccess: 'Für diese Gruppe sind keine Dateien verfügbar.',
+    filesEmpty: 'Noch keine Dateien geteilt.',
+    filesPageEmpty: 'Keine Dateien auf dieser Seite.',
+    filesNoResults: 'Keine passenden Dateien.',
+    filesClearSearch: 'Suche löschen',
+    olderFiles: 'Ältere Dateien',
+    newerFiles: 'Neuere Dateien',
+    showLatest: 'Neueste anzeigen',
+    refreshFiles: 'Liste aktualisieren',
+    fileDownloadFailed: 'Diese Datei konnte nicht heruntergeladen werden.',
+    fileVerificationFailed: 'Diese Datei konnte nicht überprüft werden. Es wurde nichts heruntergeladen.',
+    fileTimeout: 'Der Download hat zu lange gedauert.',
+    filesYou: 'Sie'
   },
   es: {
     legacyRoom: 'Esta es una sala Desktop antigua. Inicia un grupo gestionado por la pasarela con estos miembros; el historial anterior permanece aquí y no se vuelve a ejecutar.',
@@ -450,6 +621,25 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Disolver',
     disbandWarning: 'Disolver detiene el trabajo de la sala y la cierra en la puerta de enlace. No se puede deshacer.',
     confirmDisband: 'Confirmar disolución',
-    disbandUnconfirmed: 'La puerta de enlace no confirmó la disolución. La sala se conserva.'
+    disbandUnconfirmed: 'La puerta de enlace no confirmó la disolución. La sala se conserva.',
+    files: 'Archivos',
+    searchFiles: 'Buscar archivos',
+    filesLoading: 'Cargando archivos',
+    filesError: 'No se pudieron cargar los archivos.',
+    filesExpired: 'Esta lista ya no está actualizada. Muestra los archivos más recientes para continuar.',
+    filesUnavailable: 'Los archivos no están disponibles temporalmente.',
+    filesAccess: 'Los archivos no están disponibles para este grupo.',
+    filesEmpty: 'Aún no se han compartido archivos.',
+    filesPageEmpty: 'No hay archivos en esta página.',
+    filesNoResults: 'No hay archivos que coincidan.',
+    filesClearSearch: 'Borrar búsqueda',
+    olderFiles: 'Archivos más antiguos',
+    newerFiles: 'Archivos más recientes',
+    showLatest: 'Mostrar lo más reciente',
+    refreshFiles: 'Actualizar lista',
+    fileDownloadFailed: 'No se pudo descargar este archivo.',
+    fileVerificationFailed: 'No se pudo verificar este archivo. No se descargó nada.',
+    fileTimeout: 'La descarga tardó demasiado.',
+    filesYou: 'Tú'
   }
 } satisfies Record<string, CanonicalGroupMessages>

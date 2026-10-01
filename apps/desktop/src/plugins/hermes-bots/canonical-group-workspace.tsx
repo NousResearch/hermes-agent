@@ -47,8 +47,10 @@ function roomStatus(status: DriverStatus, labels: Labels) {
   return parts.join(' · ')
 }
 
-/** Room controls rendered by the owner of the binding (rename, disband). */
-export type CanonicalRoomActions = (room: { name: string; refresh: () => void }) => ReactNode
+/** Room controls rendered by the owner of the binding (files, rename, disband). */
+export type CanonicalRoomActions = (room: {
+  name: string; refresh: () => void; latestFileSeq: number; visible: boolean
+}) => ReactNode
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack, actions }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void; actions?: CanonicalRoomActions
@@ -228,7 +230,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
       {onBack && <Button onClick={onBack}>{labels.back}</Button>}
       <h2>{state?.room.name || labels.loadingGroup}</h2>
       <Button disabled={stopping || !state?.driver_status} onClick={() => void stop()}>{labels.stop}</Button>
-      {state && actions?.({ name: state.room.name, refresh: () => void refresh().catch(e => setReadError(String(e))) })}
+      {state && actions?.({ name: state.room.name, refresh: () => void refresh().catch(e => setReadError(String(e))),
+        latestFileSeq: events.reduce((latest, event) => event.payload.attachments?.length ? Math.max(latest, event.seq) : latest, 0),
+        visible })}
     </header>
     {state?.driver_status && <p aria-live="polite">{roomStatus(state.driver_status, labels)}</p>}
     {notice && <p aria-live="polite">{notice}</p>}

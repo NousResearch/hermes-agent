@@ -105,6 +105,7 @@ A Group Chat is either a **gateway room** (the gateway owns its log and runs its
 - Never auto-replay a gateway-room action. Send resends only on the user's Retry, with the same journaled `event_id`; Retry, Discard and approvals send the exact identity from `driver_status.pending_actions`.
 - A 4001 with `invalid_params`, `permission_denied`, `unknown_execution` or `stale_generation` retires a Send; every other failure keeps it. A failed Send returns only to the room it was sent from.
 - Live status, Stop and polling come from the current `driver_status`, never from the last replayed event; unresolved members are listed beside live work, not instead of it.
+- Files is offered only when `groups.attachment.list` is advertised. A row names one exact version (`event_id` + `attachment_id`); Download fetches it with `groups.attachment.download` and saves only after its size and SHA-256 match.
 - A gateway room never falls back to classic execution, and a classic room is never converted silently: **Start gateway group** creates a fresh gateway room without replaying history.
 
 ## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)

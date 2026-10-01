@@ -1,13 +1,15 @@
 import { Button, gatewayActivationEpoch } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
+import { CanonicalGroupFiles } from './canonical-group-files'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { canonicalGroupRequest, readGroupExecutionMode } from './canonical-groups'
 import type { CanonicalGroupBinding } from './canonical-groups'
 
-/** Rename and disband for a gateway room, offered only when its gateway advertises them. */
-export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbanded }: {
-  binding: CanonicalGroupBinding; name: string; onChanged: () => void; onDisbanded?: () => void
+/** Files, rename and disband for a gateway room, each offered only when its gateway advertises it. */
+export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, visible = true, onChanged, onDisbanded }: {
+  binding: CanonicalGroupBinding; name: string; latestFileSeq?: number; visible?: boolean; onChanged: () => void
+  onDisbanded?: () => void
 }) {
   const labels = useCanonicalGroupLabels()
   const [methods, setMethods] = useState<string[]>([])
@@ -69,6 +71,8 @@ export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbande
   })
 
   return <>
+    {visible && methods.includes('groups.attachment.list') &&
+      <CanonicalGroupFiles binding={binding} latestFileSeq={latestFileSeq} roomName={name} />}
     {methods.includes('groups.rename') && (draft === null
       ? <Button disabled={busy} onClick={() => setDraft(name)}>{labels.rename}</Button>
       : <form className="flex gap-1" onSubmit={event => { event.preventDefault(); rename() }}>

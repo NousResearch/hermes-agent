@@ -580,8 +580,9 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const binding = bindings[props.group]
 
   if (binding) {
-    return <CanonicalGroupWorkspace actions={room => <CanonicalGroupRoomActions binding={binding} name={room.name}
-      onChanged={room.refresh} onDisbanded={() => { forgetCanonicalGroup(binding); props.onBack?.() }} />}
+    return <CanonicalGroupWorkspace actions={room => <CanonicalGroupRoomActions binding={binding}
+      latestFileSeq={room.latestFileSeq} name={room.name} onChanged={room.refresh}
+      onDisbanded={() => { forgetCanonicalGroup(binding); props.onBack?.() }} visible={room.visible} />}
     binding={binding} onBack={props.onBack} visible={props.visible} />
   }
 

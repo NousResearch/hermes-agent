@@ -599,7 +599,7 @@ _HERMES_BIN_DIR: "str | None | object" = _SENTINEL
 
 
 def _resolve_hermes_bin_dir() -> str | None:
-    """Directory holding the ``hermes`` console-script, or None (cached). A gateway
+    """Directory holding the ``hermes`` console-script (successes cached), or None. A gateway
     launched by systemd/cron/a desktop launcher lacks the install dir on PATH and bare
     ``hermes`` exits 127. Order: ``which``; absolute ``sys.argv[0]`` naming a real
     hermes executable; ``sys.executable``'s dir if it holds the shim."""
@@ -618,8 +618,12 @@ def _resolve_hermes_bin_dir() -> str | None:
         candidate = os.path.dirname(argv0)
     else:
         candidate = exe_dir if exe_dir and os.path.isfile(os.path.join(exe_dir, shim)) else None
-    _HERMES_BIN_DIR = candidate if candidate and os.path.isdir(candidate) else None
-    return _HERMES_BIN_DIR
+    # A launcher can appear after an early lookup (e.g. while an install is repaired).
+    # Leave misses unresolved so a long-lived gateway can recover without restarting.
+    if candidate and os.path.isdir(candidate):
+        _HERMES_BIN_DIR = candidate
+        return candidate
+    return None
 
 
 def _prepend_hermes_bin_dir(existing_path: str) -> str:

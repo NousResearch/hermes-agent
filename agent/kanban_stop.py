@@ -9,7 +9,8 @@ instead of exiting.
 from __future__ import annotations
 
 import os
-from typing import Any, Iterable, Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 
 from agent.delegation_context import owned_kanban_task
 
@@ -19,14 +20,80 @@ from agent.delegation_context import owned_kanban_task
 # finalize prompts tell builders to call it) and ``kanban_request_changes`` returns it to
 # ``ready`` (the sdlc-review skill tells reviewers to). Nudging after either asks a worker
 # that did the right thing to ``kanban_complete`` a card it must not close.
-_TERMINAL_KANBAN_TOOLS = frozenset({
+KANBAN_TERMINAL_HANDOFF_TOOLS = (
     "kanban_complete",
     "kanban_block",
     "kanban_request_review",
     "kanban_request_changes",
-})
+)
+_TERMINAL_KANBAN_TOOLS = frozenset(KANBAN_TERMINAL_HANDOFF_TOOLS)
 
-_DEFAULT_MAX_ATTEMPTS = 2
+KANBAN_STOP_MAX_ATTEMPTS = 2
+_DEFAULT_MAX_ATTEMPTS = KANBAN_STOP_MAX_ATTEMPTS
+
+
+@dataclass(frozen=True)
+class KanbanStopTarget:
+    """A board task/run pair whose lifecycle tools can still accept a handoff."""
+
+    task_id: str
+    run_id: int
+    status: str
+    terminal_handoff_accepted: bool = False
+
+
+def kanban_stop_target() -> Optional[KanbanStopTarget]:
+    """Resolve the current dispatcher-owned task and run from the existing board, read-only.
+
+    ``None`` means ownership, run identity, or board state could not be proved. The probe must
+    never initialize a board for an env-only task id. For a running task, the board's current
+    run must match this worker. A non-running status is accepted only when this exact run has a
+    closed, successful terminal handoff outcome and the card's resulting status agrees.
+    """
+    from agent.delegation_context import owned_kanban_task
+
+    task_id = owned_kanban_task()
+    # Lifecycle tools compare this env value verbatim; a stripped-but-different id cannot hand off.
+    if not task_id or os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    try:
+        run_id = int(raw_run_id)
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+
+        with kbc.connect_readonly_closing() as conn:
+            task = kb.get_task(conn, task_id)
+            run = kb.get_run(conn, run_id)
+    except Exception:
+        return None
+    if task is None:
+        return None
+    status = str(task.status or "")
+    if status not in kb.VALID_STATUSES:
+        return None
+    if status == "running":
+        if task.current_run_id != run_id:
+            return None
+        return KanbanStopTarget(task_id=task_id, run_id=run_id, status=status)
+
+    accepted_statuses = {
+        "completed": {"done"},
+        "review_requested": {"review"},
+        "changes_requested": {"ready"},
+        "blocked": {"blocked", "todo", "triage"},
+    }
+    expected_statuses = accepted_statuses.get(str(getattr(run, "outcome", "") or ""), set())
+    if (
+        run is None or run.task_id != task_id or run.ended_at is None
+        or status not in expected_statuses or task.current_run_id is not None
+    ):
+        return None
+    return KanbanStopTarget(task_id=task_id, run_id=run_id, status=status, terminal_handoff_accepted=True)
 
 
 def kanban_stop_nudge_enabled() -> bool:
@@ -66,24 +133,37 @@ def build_kanban_stop_nudge(
     attempts: int = 0,
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
     task_id: Optional[str] = None,
+    target: Optional[KanbanStopTarget] = None,
+    allow_after_terminal_attempt: bool = False,
 ) -> Optional[str]:
     """Synthetic follow-up when a kanban worker exits without a terminal tool; ``None`` when
     the guard should not fire (not a kanban worker, already completed/blocked, budget exhausted)."""
     if (
         not kanban_stop_nudge_enabled()
         or attempts >= max_attempts
-        or session_called_kanban_terminal(messages)
+        or (not allow_after_terminal_attempt and session_called_kanban_terminal(messages))
     ):
         return None
 
+    if target is not None:
+        # A caller that needs a stronger status requirement supplies a previously validated target.
+        task_id = target.task_id
+
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
-    # The transcript is the status source: this text is only reached when the session made no
-    # handoff call, so it never tells a worker to close a card it already sent to review.
+    # Native Hermes uses transcript handoff detection. The Codex app-server caller supplies a
+    # read-only validated target and may retry after a rejected terminal call only while that
+    # board read proves the run remains live.
+    if target is None:
+        task_state = (
+            "has not been handed off: this session made no terminal board call "
+            "(`kanban_complete` / `kanban_request_review` / `kanban_block`)."
+        )
+    else:
+        task_state = "is still running and has not been handed off."
     return (
         "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"
-        f"Task `{tid}` has not been handed off: this session made no terminal board "
-        "call (`kanban_complete` / `kanban_request_review` / `kanban_block`). Ending now "
+        f"Task `{tid}` {task_state} Ending now "
         "causes a protocol violation (clean exit with the card still `running`).\n\n"
         "Do this immediately in your next response — do not narrate intent:\n"
         "1. Finish any remaining deliverable (write the required file(s) now).\n"
@@ -97,4 +177,7 @@ def build_kanban_stop_nudge(
     )
 
 
-__all__ = ["build_kanban_stop_nudge", "kanban_stop_nudge_enabled", "session_called_kanban_terminal"]
+__all__ = [
+    "KANBAN_STOP_MAX_ATTEMPTS", "KANBAN_TERMINAL_HANDOFF_TOOLS", "KanbanStopTarget", "build_kanban_stop_nudge",
+    "kanban_stop_nudge_enabled", "kanban_stop_target", "session_called_kanban_terminal",
+]

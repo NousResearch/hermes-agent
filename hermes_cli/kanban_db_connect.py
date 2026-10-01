@@ -735,6 +735,32 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     return conn
 
 
+def connect_readonly(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
+    """Open an existing Kanban DB without initialization, migration, or writable PRAGMAs.
+
+    The tracked connection preserves this process's SQLite lock bookkeeping while the URI's
+    ``mode=ro`` prevents the inspection path from creating or changing board state.
+    """
+    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    if not path.is_file():
+        raise FileNotFoundError("Kanban board database does not exist")
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    conn = connect_tracked(
+        path.resolve().as_uri() + "?mode=ro",
+        connect_fn=sqlite3.connect,
+        uri=True,
+        isolation_level=None,
+        timeout=_resolve_busy_timeout_ms() / 1000.0,
+    )
+    conn.row_factory = sqlite3.Row
+    conn.text_factory = _kb._lossy_text
+    if not _schema_is_present(conn):
+        conn.close()
+        raise sqlite3.OperationalError("Kanban board schema is unavailable")
+    return conn
+
+
 @contextlib.contextmanager
 def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
     """Open a kanban DB connection and guarantee it is closed on exit. Use
@@ -745,6 +771,17 @@ def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = No
     See #33159 for the production incident.
     """
     conn = connect(db_path=db_path, board=board)
+    try:
+        yield conn
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+@contextlib.contextmanager
+def connect_readonly_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
+    """Open a strictly read-only Kanban connection and always close it."""
+    conn = connect_readonly(db_path=db_path, board=board)
     try:
         yield conn
     finally:

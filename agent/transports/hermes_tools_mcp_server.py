@@ -23,6 +23,8 @@ import os
 import sys
 from typing import Any, Optional
 
+from agent.kanban_stop import KANBAN_TERMINAL_HANDOFF_TOOLS
+
 logger = logging.getLogger(__name__)
 
 # The ``[mcp_servers.<name>]`` key under which the runtime migration registers this server. Every
@@ -60,11 +62,30 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "vision_analyze", "image_generate", "skill_view", "skills_list", "text_to_speech",
     # Kanban handoff tools: stateless (read HERMES_KANBAN_TASK, write kanban.db).
     # Without them a codex-runtime worker can't report completion and hangs.
-    "kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes", "kanban_comment",
+    *KANBAN_TERMINAL_HANDOFF_TOOLS, "kanban_comment",
     "kanban_heartbeat", "kanban_show", "kanban_list",
     # Orchestrator-only (the kanban tool gates them on HERMES_KANBAN_TASK unset).
     "kanban_create", "kanban_unblock", "kanban_link",
 )
+
+
+def kanban_handoff_tools_available(tool_names: Optional[set[str]] = None) -> bool:
+    """Whether the effective Hermes MCP registry exposes every terminal Kanban handoff."""
+    if not set(KANBAN_TERMINAL_HANDOFF_TOOLS).issubset(EXPOSED_TOOLS):
+        return False
+    if tool_names is None:
+        try:
+            from model_tools import get_tool_definitions
+
+            tool_names = {
+                item["function"]["name"]
+                for item in (get_tool_definitions(quiet_mode=True) or [])
+                if isinstance(item, dict) and item.get("type") == "function"
+                and isinstance(item.get("function"), dict)
+            }
+        except Exception:
+            return False
+    return set(KANBAN_TERMINAL_HANDOFF_TOOLS).issubset(tool_names)
 
 
 def _build_server() -> Any:
@@ -94,6 +115,13 @@ def _build_server() -> Any:
         for td in (get_tool_definitions(quiet_mode=True) or [])
         if isinstance(td, dict) and td.get("type") == "function"
     }
+
+    # A dispatcher-owned worker cannot satisfy its board protocol if any handoff callback is
+    # absent from the actual Hermes registry. Fail this MCP process closed instead of advertising
+    # a partial worker toolset that can only end in a clean-exit protocol violation.
+    from agent.kanban_stop import kanban_stop_nudge_enabled
+    if kanban_stop_nudge_enabled() and not kanban_handoff_tools_available(set(all_defs)):
+        raise RuntimeError("dispatcher-owned Kanban worker is missing a terminal handoff tool")
 
     def _make_handler(tool_name: str, schema: dict | None, description: str):
         # The SDK derives the input schema from the callable's signature, so synthesize it from the JSON Schema.

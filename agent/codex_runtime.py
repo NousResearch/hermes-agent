@@ -657,6 +657,45 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     return usage_result
 
 
+def _codex_kanban_stop_nudge(messages: List[Dict[str, Any]], *, attempts: int):
+    """Return the shared terminal-handoff nudge only for this live dispatcher-owned run."""
+    from agent.kanban_stop import (
+        KANBAN_STOP_MAX_ATTEMPTS,
+        build_kanban_stop_nudge,
+        kanban_stop_nudge_enabled,
+        kanban_stop_target,
+    )
+
+    if not kanban_stop_nudge_enabled():
+        return None, None
+    # Codex owns its turn loop and does not pass through turn_final_response's stop gates. Probe
+    # the board after each completed app-server turn and nudge only while this exact run is running.
+    target = kanban_stop_target()
+    if target is None:
+        # A worker that has an owner identity but cannot prove its board/run state is not
+        # allowed to return a clean app-server completion to the dispatcher.
+        raise RuntimeError("Codex Kanban worker task/run state could not be proven")
+    if target.status != "running":
+        if not target.terminal_handoff_accepted:
+            raise RuntimeError("Codex Kanban worker has no accepted terminal handoff for its run")
+        return None, None
+
+    from agent.transports.hermes_tools_mcp_server import kanban_handoff_tools_available
+
+    if not kanban_handoff_tools_available():
+        raise RuntimeError("Codex Kanban worker cannot reach the required terminal handoff tools")
+    nudge = build_kanban_stop_nudge(
+        messages=messages,
+        attempts=attempts,
+        max_attempts=KANBAN_STOP_MAX_ATTEMPTS,
+        target=target,
+        # The board is authoritative here: a terminal tool call that was rejected or failed
+        # leaves the task running and must not suppress another bounded handoff attempt.
+        allow_after_terminal_attempt=True,
+    )
+    return nudge, target
+
+
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: List[Dict[str, Any]],
                               effective_task_id: str, should_review_memory: bool = False) -> Dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
@@ -678,6 +717,46 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
             _consume_user_interrupt(agent), messages, api_calls=0, completed=False, error=str(exc),
             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
         )
+    flush_ok = False
+    current_turn_persisted = False
+    nudge_attempts = 0
+    from agent.kanban_stop import KANBAN_STOP_MAX_ATTEMPTS
+    # The app-server owns its own turn/completed lifecycle and returns before Hermes' native
+    # turn_stop_gates run. Keep the same bounded policy here, reusing its text/tool semantics.
+    while not turn.interrupted and turn.error is None:
+        try:
+            nudge, target = _codex_kanban_stop_nudge(messages, attempts=nudge_attempts)
+        except Exception as exc:
+            # Missing callbacks or an unreadable worker state cannot become a successful turn.
+            logger.warning("Codex Kanban terminal guard could not prove handoff availability: %s", type(exc).__name__)
+            turn.error = "Codex Kanban terminal handoff could not be proven available"
+            turn.final_text = ""
+            break
+        if nudge is None:
+            if target is not None and target.status == "running" and nudge_attempts >= KANBAN_STOP_MAX_ATTEMPTS:
+                turn.error = "Codex Kanban terminal handoff nudge budget exhausted while task remains running"
+                turn.final_text = ""
+            break
+
+        # Keep the current Codex turn ahead of its synthetic user handoff prompt. Ordinary
+        # Codex sessions take the existing single persistence path below.
+        if not current_turn_persisted:
+            flush_ok = _persist_projected_messages(agent, turn, messages)
+            current_turn_persisted = True
+        nudge_attempts += 1
+        from agent.message_metadata import append_message
+        append_message(messages, {"role": "user", "content": nudge, "_kanban_stop_synthetic": True})
+        # Codex owns a separate thread; persist the synthetic user row before asking that same
+        # thread to continue so a restart does not lose why the extra turn was requested.
+        if getattr(agent, "_session_db", None) is not None:
+            try:
+                agent._flush_messages_to_session_db(messages)
+            except Exception:
+                logger.warning("Codex Kanban stop-nudge transcript persistence failed")
+        logger.info("Codex app-server Kanban terminal handoff nudge issued (attempt %d)", nudge_attempts)
+        turn = agent._codex_session.run_turn(user_input=nudge)
+        current_turn_persisted = False
+
     interrupt = _consume_user_interrupt(agent, turn.interrupted)
     # Wedged client (turn deadline blown, OAuth refresh died, subprocess exited): retire it. Post-tool
     # silence alone no longer retires — it only logs a warning (#112928).
@@ -686,7 +765,9 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         _close_codex_session(agent)
     # The binding is published only once the transcript it belongs to is durable, and never for a
     # retired thread (the next agent would only resume into the same wedge).
-    if _persist_projected_messages(agent, turn, messages) and not getattr(turn, "should_retire", False):
+    if not current_turn_persisted:
+        flush_ok = _persist_projected_messages(agent, turn, messages)
+    if flush_ok and not getattr(turn, "should_retire", False):
         _store_codex_thread_id(agent, turn.thread_id)
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,

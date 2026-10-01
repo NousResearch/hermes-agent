@@ -36,14 +36,14 @@ _SHA_BRACKET = re.compile(r"\[(?P<sha>[^\]]+)\]")
 def _run_dump(image: str) -> str:
     """Return the stdout of ``docker run <image> dump``.
 
-    Relies on Docker's anonymous VOLUME for ``/opt/data`` (declared by the
-    Dockerfile) so the container's hermes user (UID 10000) can bootstrap
+    Mounts an anonymous volume at ``/opt/data`` so the container's
+    hermes user (UID 10000) can bootstrap
     its config.  Anonymous volumes are auto-cleaned by ``--rm``, so unlike
     a host bind-mount we don't have to chown anything to UID 10000 (which
     would break cleanup on non-root hosts).
     """
     r = subprocess.run(
-        ["docker", "run", "--rm", image, "dump"],
+        ["docker", "run", "--rm", "--volume", "/opt/data", image, "dump"],
         capture_output=True, text=True, timeout=120,
     )
     assert r.returncode == 0, (

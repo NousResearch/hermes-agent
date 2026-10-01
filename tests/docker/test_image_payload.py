@@ -4,6 +4,26 @@ from __future__ import annotations
 import subprocess
 
 
+def test_dashboard_child_command_loads_packaged_dependencies(built_image: str) -> None:
+    probe = """
+from pathlib import Path
+import subprocess
+from hermes_cli._launchers import runtime_command
+
+result = subprocess.run(runtime_command(Path('/opt/hermes'), ['gateway', 'restart', '--help']),
+                        capture_output=True, text=True, timeout=30)
+assert result.returncode == 0, result.stdout + result.stderr
+assert 'restart' in result.stdout
+"""
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--user", "hermes",
+         "--tmpfs", "/opt/data:mode=1777", "-e", "HOME=/opt/data",
+         "--entrypoint", "/opt/hermes/.venv/bin/python", built_image, "-c", probe],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_python_uses_pm_interpreter_as_runtime_user(built_image: str) -> None:
     probe = """
 from pathlib import Path

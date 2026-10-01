@@ -80,17 +80,28 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
+def _payload_manifest(project_root: Path) -> tuple[Path, dict] | None:
+    """Match both root-level Docker code and nested bundle code to their payload."""
+    root = Path(project_root).resolve()
+    for payload in (root, root.parent):
+        manifest_path = payload / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        if "repo" in manifest and (payload / manifest["repo"]).resolve() == root:
+            return payload, manifest
+    return None
+
+
 def payload_venv(project_root: Path) -> Path | None:
     """The environment a sealed payload ships beside its tree, or ``None``."""
-    root = Path(project_root).resolve()
-    manifest_path = root.parent / "manifest.json"
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-        if (root.parent / manifest.get("repo", "")).resolve() == root:
-            venv = (root.parent / manifest["venv"]).resolve()
-            if not venv.is_relative_to(root.parent):
-                raise RuntimeError("payload environment escapes its root")
-            return venv
+    matched = _payload_manifest(project_root)
+    if matched is not None:
+        payload, manifest = matched
+        venv = (payload / manifest["venv"]).resolve()
+        if not venv.is_relative_to(payload):
+            raise RuntimeError("payload environment escapes its root")
+        return venv
     return None
 
 
@@ -104,14 +115,13 @@ def store_root(project_root: Path) -> Path:
     if override:
         return Path(override).resolve()
     root = Path(project_root).resolve()
-    manifest_path = root.parent / "manifest.json"
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-        if (root.parent / manifest.get("repo", "")).resolve() == root:
-            store = (root.parent / manifest["store"]).resolve()
-            if not store.is_relative_to(root.parent):
-                raise RuntimeError("payload store escapes its root")
-            return store
+    matched = _payload_manifest(root)
+    if matched is not None:
+        payload, manifest = matched
+        store = (payload / manifest["store"]).resolve()
+        if not store.is_relative_to(payload):
+            raise RuntimeError("payload store escapes its root")
+        return store
     from pm.paths import install_stamp_path
 
     for directory in (root, *root.parents):

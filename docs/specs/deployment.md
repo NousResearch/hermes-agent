@@ -3,8 +3,9 @@
 Runtime scope: [approved divergence ledger](../downstream/scope.md). Browser
 implementation and administration are native; final deployment review is deferred.
 
-Status: deployment files and local protocol checks implemented; live validation
-pending. No deployment made. See [deployment instructions](../../deploy/railway/README.md). See [the master specification](employee.md).
+Deployment code and local protocol checks are implemented. Live readiness
+requires the acceptance checks in the [deployment instructions](../../deploy/railway/README.md),
+including account entitlement. See [the master specification](employee.md).
 
 ## Selected direction
 

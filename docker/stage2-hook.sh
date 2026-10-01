@@ -20,6 +20,10 @@ set -eu
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# s6-setuidgid preserves /init's HOME=/root. Match the runtime services so
+# boot-time downloads and bundled model seeding use the hermes user's cache.
+export HOME=/opt/data
+
 # Drop to hermes via s6-setuidgid, but skip it when already non-root.
 as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@"; }
 

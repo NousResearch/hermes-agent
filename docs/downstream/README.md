@@ -49,6 +49,8 @@ is removed or upstream satisfies it. Use this shape:
 
 ## Active entries
 
+- [Railway container storage](divergences/railway-storage.md) — explicit persistent mounts and service deployment settings.
+
 - [Scoped agent guidance](divergences/scoped-agent-guidance.md) — route agent guidance instead of growing one root file.
 
 - [Employee runtime defaults](divergences/employee-runtime-defaults.md) — preserve native defaults and explicit local transcription.

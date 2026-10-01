@@ -28,7 +28,7 @@ the explicit differences below.
 | Configuration | Native mutable configuration and credential handling. | Removed fork config/auth/guide write prohibitions. Review-only write scope remains. |
 | CLI/admin APIs | Native commands, personality, memory configuration and endpoints. | Reverted command filtering, authoring/API rejection and custom doctor behavior. Skills remain disabled in agent runtime. |
 | Dashboard/TUI/desktop | Hide selected native controls. Add the approved hosted settings UI over native config, auth and pairing owners. | [Hosted settings](../specs/hosted-settings.md): focused API, shared-admin rotation, chat-scoped silent topics and private Hindsight updates. Native administration remains available. |
-| Deployment | Keep Railway, Codex inference and Hindsight provisioning. Review live deployment after code decisions settle. | `deploy/railway`, Docker/s6, packaging. No live deployment yet. |
+| Deployment | Keep Railway, Codex inference and Hindsight provisioning. Verify live deployment and account access separately. | `deploy/railway`, Docker/s6, packaging; explicit persistent mounts. |
 | Repository workflow | Keep scoped AGENTS guidance, review script, specifications and this ledger. | `AGENTS.md`, `.codex`, `docs/`. |
 | Tests | Prefer native tests; add focused coverage for deliberate differences. | Revert tests changed solely for removed restrictions. |
 

@@ -294,6 +294,11 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
                 protected = os.path.realpath(os.path.join(str(base), sub))
                 if not _is_under(resolved, protected):
                     continue
+                if sub == "vault" and resolved in {
+                    os.path.realpath(os.path.join(protected, "vault.key")),
+                    os.path.realpath(os.path.join(protected, "vault.json.enc")),
+                }:
+                    return "credential"
                 # ``vault/`` is also a conventional name for user content (for
                 # example an Obsidian vault). Treat it as Hermes credential
                 # storage only when its credential markers are present; this

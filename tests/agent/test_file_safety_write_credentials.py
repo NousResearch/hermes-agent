@@ -66,6 +66,15 @@ def test_vault_directory_without_credential_markers_is_writable(hermes_layout):
         assert fs.is_write_denied(str(note)) is False
 
 
+def test_empty_vault_marker_files_remain_write_denied(hermes_layout):
+    root, profile = hermes_layout
+    for base in (profile, root):
+        vault = base / "vault"
+        vault.mkdir(parents=True, exist_ok=True)
+        for marker in ("vault.key", "vault.json.enc"):
+            assert fs.is_write_denied(str(vault / marker)) is True
+
+
 def test_vault_with_credential_markers_remains_write_denied(hermes_layout):
     root, profile = hermes_layout
     for base in (profile, root):

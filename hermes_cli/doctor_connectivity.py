@@ -285,7 +285,14 @@ def _probe_bedrock() -> ProbeResult:
         return _row(name, "warn", "(boto3 not installed)", [hint], label=label)
     except Exception as e:
         err_name = type(e).__name__
-        return _row(name, "warn", f"({err_name}: {e})", [f"AWS Bedrock: {err_name} — check IAM permissions for bedrock:ListFoundationModels"], label=label)
+        # MissingDependencyException means an optional botocore extra (e.g. the
+        # crt bindings the SSO/login credential provider needs) isn't installed —
+        # it has nothing to do with IAM, so don't tell the user to check permissions.
+        if err_name == "MissingDependencyException":
+            issue = f"AWS Bedrock: {err_name} — {e}"
+        else:
+            issue = f"AWS Bedrock: {err_name} — check IAM permissions for bedrock:ListFoundationModels"
+        return _row(name, "warn", f"({err_name}: {e})", [issue], label=label)
 
 
 def _probe_azure_entra() -> ProbeResult:

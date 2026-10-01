@@ -62,6 +62,7 @@ async def history_entry(
         before = retained
     state = await effective_event(client, raw, cache=cache, room_id=room_id)
     if state.plain_original_content.get(NON_CONVERSATIONAL_KEY) is True:
+        cache.store(room_id, event_id, MatrixEventContext(str(raw.get("sender") or ""), ""))
         return None
     content = state.content
     if content is None:
@@ -110,7 +111,7 @@ async def _thread_root(
         return cache.history_entry(room_id, thread_id) if is_previous_turn is None else None
     parsed = await history_entry(client, raw_root, cache, room_id, before=before)
     if parsed is None:
-        return cache.history_entry(room_id, thread_id) if is_previous_turn is None else None
+        return None
     root, content = parsed
     if ends_scan(is_previous_turn, root, content):
         return None

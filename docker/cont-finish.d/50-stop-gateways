@@ -1,0 +1,18 @@
+#!/bin/sh
+# Stop Hermes' dynamically registered gateway services before s6-overlay's
+# global shutdown deadline. These services live under /run/service rather than
+# s6-rc's legacy-services bundle, so the normal services-down phase does not
+# wait for them.
+set -u
+
+set --
+for slot in /run/service/gateway-*; do
+    [ -d "$slot" ] && set -- "$@" "$slot"
+done
+[ "$#" -gt 0 ] || exit 0
+
+# Keep desired_state untouched: this is container shutdown, not a user-requested
+# gateway stop. The next container boot must reconcile and restart the gateways.
+exec /command/s6-setuidgid hermes /bin/sh -c \
+    '/command/s6-svc -d -- "$@" && exec /command/s6-svwait -D -t 40000 -- "$@"' \
+    sh "$@"

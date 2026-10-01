@@ -425,6 +425,15 @@ RUN mkdir -p /etc/cont-init.d && \
     chmod +x /etc/cont-init.d/01-hermes-setup
 COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
 COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-reconcile-profiles
+# Dynamic gateway services live outside s6-rc's legacy service bundle. Stop
+# them explicitly during stage 3 so their teardown can complete before s6's
+# global shutdown deadline kills the container.
+COPY --chmod=0755 docker/cont-finish.d/50-stop-gateways /etc/cont-finish.d/50-stop-gateways
+
+# Allow the finish hook to wait for the supervised gateways to exit. The
+# hook exits early for idle gateways, so this is a maximum rather than a fixed
+# delay on normal container stops.
+ENV S6_KILL_FINISH_MAXTIME=45000
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

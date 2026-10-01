@@ -2635,6 +2635,7 @@ function WarmSwitchHarness({
     holdSessionTranscriptView: cache.holdSessionTranscriptView,
     navigate: vi.fn() as never,
     requestGateway,
+    routedSessionId: null,
     resetViewSync: cache.resetViewSync,
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,

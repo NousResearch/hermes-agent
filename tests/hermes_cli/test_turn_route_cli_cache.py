@@ -192,6 +192,23 @@ def test_routed_credentials_rotate_without_leaking_or_rebuilding_per_request_tok
         assert secret not in repr(route["signature"])
 
 
+def test_unchanged_route_decision_reaches_agent_and_clears_when_absent(routed_chat):
+    shell, selected, _credential, _agents, _turn_agents = routed_chat
+    assert selected == {"model": "alpha", "provider": "provider-a"}  # the configured route
+
+    route = shell._resolve_turn_agent_config("keep the configured route")
+    assert route["model"] == "alpha"
+    assert route["middleware_trace"] == [{"source": "test-router"}]
+    shell.chat("keep the configured route")
+    assert shell.agent._turn_route_middleware_trace == [{"source": "test-router"}]
+
+    from hermes_cli.plugins import _delivery_manager
+
+    _delivery_manager()._middleware["turn_route"] = []
+    shell.chat("no route decision")
+    assert shell.agent._turn_route_middleware_trace == []
+
+
 def test_same_provider_model_change_resolves_selected_model_wire(routed_chat, monkeypatch):
     """A model-only selection on the same provider must resolve the new model's api_mode/base_url."""
     from hermes_cli.plugins import PluginManager

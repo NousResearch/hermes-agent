@@ -625,7 +625,10 @@ class CLIAgentSetupMixin:
                     internal=False,
                     tool_continuation=False,
                 )
-                if result.changed and isinstance(result.payload, dict):
+                # An unchanged route is still a decision; observers need its reason.
+                if not result.changed:
+                    route["middleware_trace"] = list(result.trace or [])
+                elif isinstance(result.payload, dict):
                     selected_model = result.payload.get("model")
                     selected_runtime = result.payload.get("runtime")
                     selected_runtime = selected_runtime if isinstance(selected_runtime, dict) else {}

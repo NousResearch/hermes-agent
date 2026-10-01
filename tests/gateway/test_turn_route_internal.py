@@ -170,8 +170,9 @@ def test_turn_route_trace_reaches_api_observer_and_refreshes_on_reuse(monkeypatc
     )
     monkeypatch.setattr(plugins, "_delivery_manager", lambda: manager)
     observed, resolver_calls = [], []
+    decision = {"model": "selected-model", "reason": "route-decision"}
     context.register_middleware("turn_route", lambda route, **kw: {
-        "route": {**route, "model": "selected-model"}, "reason": "route-decision",
+        "route": {**route, "model": decision["model"]}, "reason": decision["reason"],
     })
     context.register_middleware("llm_request", lambda request, **kw: {
         "request": dict(request), "reason": "request-decision",
@@ -234,8 +235,6 @@ def test_turn_route_trace_reaches_api_observer_and_refreshes_on_reuse(monkeypatc
     assert {"reason": "request-decision"} in observed[0]["middleware_trace"]
     assert observed[0]["middleware_trace"] == [route_entry, {"reason": "request-decision"}]
 
-    # Reuse refreshes the trace: a later turn without a route decision must not keep the old reason.
-    next_route = {"model": "selected-model", "runtime": route["runtime"], "middleware_trace": []}
     monkeypatch.setattr(TurnRunner, "_skip_context_files", lambda self, platform_key: False)
     monkeypatch.setattr(TurnRunner, "_cached_sid_is_dead", lambda self, lock, cache: (None, False))
     monkeypatch.setattr(TurnRunner, "_current_message_count", lambda self: 0)
@@ -246,13 +245,31 @@ def test_turn_route_trace_reaches_api_observer_and_refreshes_on_reuse(monkeypatc
     runner._agent_config_signature = lambda *args, **kw: "sig"
     runner._extract_cache_busting_config = lambda cfg: {}
     runner._apply_fallback_chain_to_agent = lambda agent, chain: None
-    reused, was_reused = TurnRunner(runner, ctx)._resolve_turn_agent(next_route, "telegram", "", 1, None, {})
-    assert reused is agent and was_reused
-    observed.clear()
-    build_api_request(
-        agent, api_messages=messages, _moa_prepared_request=None, tools_for_api=[],
-        system_message="", messages=messages, original_user_message="hello",
-        approx_tokens=1, total_chars=5, retry_count=0, api_call_count=2,
-        api_request_id="request-2", api_start_time=0.0, effective_task_id="task", turn_id="turn-2",
+
+    def reused_turn_trace(next_route, turn):
+        reused, was_reused = TurnRunner(runner, ctx)._resolve_turn_agent(next_route, "telegram", "", 1, None, {})
+        assert reused is agent and was_reused
+        observed.clear()
+        build_api_request(
+            agent, api_messages=messages, _moa_prepared_request=None, tools_for_api=[],
+            system_message="", messages=messages, original_user_message="hello",
+            approx_tokens=1, total_chars=5, retry_count=0, api_call_count=turn,
+            api_request_id=f"request-{turn}", api_start_time=0.0, effective_task_id="task", turn_id=f"turn-{turn}",
+        )
+        return observed[0]["middleware_trace"]
+
+    # A router that keeps the configured route still made a decision; its reason must reach observers.
+    decision.update(model="configured-model", reason="keep-configured-route")
+    resolver_calls.clear()
+    kept = host._resolve_turn_agent_config(
+        "hello", "configured-model", runtime, session_id="physical", session_key="durable",
+        source=source, conversation_history=[{"role": "user", "content": "hello"}], internal=False,
     )
-    assert observed[0]["middleware_trace"] == [{"reason": "request-decision"}]
+    keep_entry = {"plugin": "review-router", "reason": "keep-configured-route"}
+    assert kept["model"] == "configured-model" and resolver_calls == []
+    assert kept["middleware_trace"] == [keep_entry]
+    assert reused_turn_trace(kept, 2) == [keep_entry, {"reason": "request-decision"}]
+
+    # Reuse refreshes the trace: a later turn without a route decision must not keep the old reason.
+    absent = {"model": "configured-model", "runtime": runtime, "middleware_trace": []}
+    assert reused_turn_trace(absent, 3) == [{"reason": "request-decision"}]

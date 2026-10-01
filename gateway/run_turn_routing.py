@@ -71,7 +71,10 @@ class GatewayTurnRoutingMixin:
                     internal=False,
                     tool_continuation=False,
                 )
-                if result.changed and isinstance(result.payload, dict):
+                # An unchanged route is still a decision; observers need its reason.
+                if not result.changed:
+                    route["middleware_trace"] = list(result.trace or [])
+                elif isinstance(result.payload, dict):
                     selected_model = result.payload.get("model")
                     public_runtime = result.payload.get("runtime")
                     public_runtime = public_runtime if isinstance(public_runtime, dict) else {}

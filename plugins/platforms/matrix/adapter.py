@@ -2281,7 +2281,7 @@ class MatrixAdapter(MatrixIntakeMixin, MatrixRedactionMixin, MatrixFollowupMixin
                 room_id, sender, event_id, event_ts, source_content, relates_to,
                 reply_parent=reply_parent)
         elif msgtype == "m.emote":
-            await self._handle_emote_message(
+            return await self._handle_emote_message(
                 room_id, sender, event_id, event_ts, source_content, relates_to,
                 reply_parent=reply_parent)
 

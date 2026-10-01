@@ -883,6 +883,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._free_rooms: Set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
         self._allowed_rooms: Set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
+        # Bot-authored senders, by user id. Matrix carries no client-readable per-user bot flag
+        # (Synapse's users.user_type is admin-only and unset on most deployments), so a fleet
+        # declares its own. This feeds SessionSource.is_bot — the BotLoopGuard budget and the
+        # {PLATFORM}_ALLOW_BOTS gate — and the reply-expectation policy below; without it two
+        # Hermes bots in one room answer each other forever.
+        self._bot_users: Set[str] = _extra_csv_set(config, "bot_users", "MATRIX_BOT_USERS")
         self._allow_room_mentions: bool = _env_truthy("MATRIX_ALLOW_ROOM_MENTIONS", "false")
         # Extra-first: the YAML bridge seeds these into extra and skips the env write under a
         # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
@@ -1476,6 +1482,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 "allowed_user_count": len(self._allowed_user_ids), "allowed_room_count": len(self._allowed_room_ids),
                 "ignored_user_pattern_count": len(self._ignored_user_patterns),
                 "require_mention": self._require_mention, "free_response_room_count": len(self._free_rooms),
+                "bot_user_count": len(self._bot_users),
                 "allow_room_mentions": self._allow_room_mentions, "process_notices": self._process_notices,
                 "allow_public_rooms": _env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS")},
             "media": {"max_media_bytes": self._max_media_bytes}}
@@ -2044,7 +2051,7 @@ class MatrixAdapter(BasePlatformAdapter):
         relates_to: dict, mention_claimed: bool = False,
         voice_gate: Optional[VoiceGate] = None) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
-        display_name, source) or None when the message should be dropped. ``mention_claimed``
+        display_name, source, reply_expected) or None when the message should be dropped. ``mention_claimed``
         marks a parked voice claimed by the sender's follow-up bare @mention; ``voice_gate`` is
         the in-flight mark of a parkable voice, released once the park decision is made."""
         identity = await self._resolve_room_identity(room_id)
@@ -2099,14 +2106,17 @@ class MatrixAdapter(BasePlatformAdapter):
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
+        is_bot_sender = bool(self._bot_users) and sender in self._bot_users
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
-            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id,
+            is_bot=is_bot_sender)
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
-        return body, is_dm, chat_type, thread_id, display_name, source
+        return (body, is_dm, chat_type, thread_id, display_name, source,
+                self._matrix_reply_expected(is_bot_sender, is_mentioned, body.startswith("/")))
 
     async def _extract_reply_context(
         self, room_id: str, body: str, relates_to: dict
@@ -2135,7 +2145,7 @@ class MatrixAdapter(BasePlatformAdapter):
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
-        body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
+        body, _is_dm, _chat_type, _thread_id, display_name, source, reply_expected = ctx
         body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
             await self._extract_reply_context(room_id, body, relates_to))
         media_msgtype = extra.pop("media_msgtype", None)
@@ -2148,7 +2158,7 @@ class MatrixAdapter(BasePlatformAdapter):
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
-            reply_to_author_name=reply_to_author_name,
+            reply_to_author_name=reply_to_author_name, reply_expected=reply_expected,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
 
@@ -2944,6 +2954,21 @@ class MatrixAdapter(BasePlatformAdapter):
         return self._is_bot_mentioned(
             body, content.get("formatted_body"), mentions.get("user_ids") if isinstance(mentions, dict) else None)
 
+    def _matrix_reply_expected(self, is_bot_sender: bool, is_mentioned: bool, is_command: bool) -> Optional[bool]:
+        """``MessageEvent.reply_expected`` for an admitted Matrix message.
+
+        ``False`` lets the agent answer with silence (``NO_REPLY``) instead of the gateway
+        rewriting it to a visible fallback (``gateway/run_turn.py``). A declared bot sender
+        that did not address this bot — no @mention, not a command — gets ``False``, so a
+        correct NO_REPLY stands and a bot-to-bot exchange dies at the first sign-off instead
+        of ping-ponging forever. A bot that *does* address us (mention/command) gets ``True``.
+        Human senders keep ``None``: their messages fall back to the gateway's existing
+        display-kind heuristic, unchanged. Mirrors Slack's ``_slack_reply_expected``.
+        """
+        if not is_bot_sender:
+            return None
+        return bool(is_mentioned or is_command)
+
     def _user_localpart(self) -> str:
         """``@bot:server`` -> ``bot``; empty when the user ID has no server part."""
         return self._user_id.split(":")[0].lstrip("@") if self._user_id and ":" in self._user_id else ""
@@ -3191,6 +3216,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
+    ("bot_users", "MATRIX_BOT_USERS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
 )
 

@@ -140,7 +140,7 @@ def _patch_local_interrupt(monkeypatch, session):
     monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
     monkeypatch.setattr(server, "_sess", lambda params, rid: (session, None))
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda current: False)
-    monkeypatch.setattr(server, "_clear_pending", lambda sid=None: None)
+    monkeypatch.setattr(server, "_clear_pending", lambda sid=None, **_kwargs: None)
 
 
 def test_interrupt_ack_retires_marker_before_run_thread_exits(monkeypatch, marker_home):

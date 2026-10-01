@@ -446,14 +446,14 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
         if toolset:
             result[display_name] = toolset
     # Static names an MCP server also aliases show the merged view get_toolset() resolves.
-    for name in TOOLSETS.keys() & aliases.keys():
+    for name in set(TOOLSETS) & set(aliases):
         result[name] = get_toolset(name) or result[name]
     return result
 
 
 def get_toolset_names() -> List[str]:
     """Sorted names of all toolsets (static + plugin), excluding aliases."""
-    return sorted(set(TOOLSETS.keys()) | set(_plugin_display_names()))
+    return sorted(set(TOOLSETS) | set(_plugin_display_names()))
 
 
 def profile_role_toolsets(profile_home: Optional[Path] = None) -> Tuple[Set[str], Set[str]]:
@@ -463,8 +463,8 @@ def profile_role_toolsets(profile_home: Optional[Path] = None) -> Tuple[Set[str]
     from hermes_cli.profiles import read_profile_meta
     from hermes_constants import get_hermes_home
     role = read_profile_meta(Path(profile_home or get_hermes_home())).get("role")
-    granted = {name for name, spec in TOOLSETS.items() if role is not None and spec.get("role") == role}
-    denied = {name for name, spec in TOOLSETS.items() if spec.get("role") not in (None, role)}
+    granted = {name for name, spec in TOOLSETS.copy().items() if role is not None and spec.get("role") == role}
+    denied = {name for name, spec in TOOLSETS.copy().items() if spec.get("role") not in (None, role)}
     return granted, denied
 
 

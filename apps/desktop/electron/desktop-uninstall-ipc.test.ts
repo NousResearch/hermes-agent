@@ -31,7 +31,8 @@ function captureIpc(stamp: DesktopUninstallIpcDeps['stamp']): CapturedIpc {
   const probeSummary: CapturedIpc['probeSummary'] = vi.fn(async (): Promise<DesktopUninstallSummary> => ({
     ...fallbackSummary,
     probe: 'python',
-    code_removal_allowed: true
+    code_removal_allowed: true,
+    native_removal_instructions: null
   }))
 
   const runUninstall: CapturedIpc['runUninstall'] = vi.fn<DesktopUninstallIpcDeps['runUninstall']>(
@@ -110,7 +111,12 @@ test('self-managed installs retain summary and uninstall IPC behavior under Elec
   for (const stamp of [null, { payload: 'bootstrap', updateMechanism: 'self' }] as const) {
     const ipc: CapturedIpc = captureIpc(stamp)
 
-    ipc.probeSummary.mockResolvedValue({ ...fallbackSummary, probe: 'python', code_removal_allowed: false })
+    ipc.probeSummary.mockResolvedValue({
+      ...fallbackSummary,
+      probe: 'python',
+      code_removal_allowed: false,
+      native_removal_instructions: null
+    })
     expect(await ipc.invoke('hermes:uninstall:summary')).toEqual({
       ...fallbackSummary,
       probe: 'python',

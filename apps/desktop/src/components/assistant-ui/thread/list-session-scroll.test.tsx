@@ -227,6 +227,133 @@ describe('list session-scroll restore', () => {
     }
   })
 
+  it('re-pins a bottom-parked IDLE transcript when deferred layout grows it after the restore protection ends', async () => {
+    // The blink: deferred markdown/images/measurements grow the transcript
+    // after the settle loop hands back; the settle loop's own resize observer
+    // is gone (input or the library's subpixel writes cancelled it) and the
+    // resize leg was gated on streaming — so an idle session drifted for a
+    // frame, visibly showing mid-transcript content.
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const deliverContentResize = () => {
+      for (const observer of observers) {
+        const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+        if (targets.length) {
+          observer.callback(
+            targets.map(target => ({ target, contentRect: { height: scrollHeightValue } })) as ResizeObserverEntry[],
+            observer as unknown as ResizeObserver
+          )
+        }
+      }
+    }
+
+    const { container, unmount } = render(<ScrollHarness messages={sessionMessages('idle-grow')} sessionKey="idle-grow" />)
+    const vp = viewportEl(container)
+
+    try {
+      await settleScroll(10)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(scrollHeightValue - CLIENT_H - 1)
+
+      // Input ends the settle loop's restore protection, leaving only the
+      // resize leg to close deferred-growth frames — the exact state the
+      // blink was observed in.
+      act(() => vp.dispatchEvent(new Event('pointerdown')))
+
+      act(() => {
+        scrollHeightValue += 400
+        deliverContentResize()
+      })
+
+      expect(vp.scrollTop).toBe(scrollHeightValue - CLIENT_H)
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
+  it('keeps restore protection through the library subpixel follow writes', async () => {
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const deliverContentResize = () => {
+      for (const observer of observers) {
+        const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+        if (targets.length) {
+          observer.callback(
+            targets.map(target => ({ target, contentRect: { height: scrollHeightValue } })) as ResizeObserverEntry[],
+            observer as unknown as ResizeObserver
+          )
+        }
+      }
+    }
+
+    const { container, unmount } = render(<ScrollHarness messages={sessionMessages('subpixel')} sessionKey="subpixel" />)
+    const vp = viewportEl(container)
+
+    try {
+      await settleScroll(10)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(scrollHeightValue - CLIENT_H - 1)
+
+      // The library's follow re-pin can land a subpixel short of our computed
+      // target. That scroll event must not read as a user scroll.
+      act(() => {
+        vp.scrollTop = scrollHeightValue - CLIENT_H - 0.3
+        vp.dispatchEvent(new Event('scroll'))
+      })
+
+      act(() => {
+        scrollHeightValue += 400
+        deliverContentResize()
+      })
+
+      expect(vp.scrollTop).toBe(scrollHeightValue - CLIENT_H)
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
   it('does not follow a composer-only resize while a turn is running (#118482)', async () => {
     // Typing in the composer grows the clearance spacer, not the transcript.
     // The follow is keyed on transcript height, so it must not pull the reader.

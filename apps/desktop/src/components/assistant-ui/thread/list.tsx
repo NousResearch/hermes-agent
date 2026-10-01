@@ -592,10 +592,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const windowCommitRef = useRef<string | null>(null)
   const jumpRestoreRef = useRef<(() => void) | null>(null)
   const isRunning = useAuiState(s => s.thread.isRunning)
-  // Read by the resize-pin callback so a turn boundary doesn't rebuild its
-  // scroll listener and ResizeObserver.
-  const isRunningRef = useRef(isRunning)
-  isRunningRef.current = isRunning
   const clearanceRef = useRef<HTMLDivElement>(null)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
@@ -848,7 +844,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // so a busy streamed turn can grow the content before that callback runs:
     // the viewport paints at the stale scrollTop, visibly drifting up before
     // the re-pin (#118482). The RO leg closes that frame, synchronously before
-    // paint.
+    // paint. Not gated on streaming: deferred layout (markdown, images,
+    // virtualized-row measurements) also grows an IDLE transcript after the
+    // session-switch settle loop has handed back, and the settle loop's own
+    // resize protection can be disconnected by then (the library's subpixel
+    // scroll writes are treated as input) — leaving a one-frame drift that
+    // reads as "the session opened mid-transcript". The pre-growth bottom
+    // check below keeps a scrolled-up reader untouched.
     const resizeMetrics = () => readThreadScrollResizeMetrics(el, clearanceRef.current)
 
     // ponytail: previous-metrics precision is load-bearing — the predicate must
@@ -872,10 +874,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // An open inline edit holds the viewport (beginEditHold), so its growing
       // bubble is never followed.
       if (
-        isRunningRef.current &&
         !el.hasAttribute('data-editing') &&
         shouldReapplyFrozenThreadScrollOffset(THREAD_SCROLL_BOTTOM, true, previousResizeMetrics, nextResizeMetrics) &&
-        threadScrollStateFromMetrics({ ...previousResizeMetrics, scrollTop: el.scrollTop }).kind === 'bottom' &&
+        liveScrollStateRef.current.kind === 'bottom' &&
         !hasTranscriptTextSelection(el)
       ) {
         el.scrollTop = threadScrollTargetTop(THREAD_SCROLL_BOTTOM, nextResizeMetrics)
@@ -1166,7 +1167,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // restore like wheel input does — otherwise the next ResizeObserver tick
     // would rewrite scrollTop over a genuine scroll.
     const onScroll = () => {
-      if (el.scrollTop === ownScrollTop || el.scrollTop === threadScrollTargetTop(target, el)) {
+      // A write the library made for us (its follow re-pins) can land a
+      // subpixel away from our own computed target — treat the epsilon band
+      // as ours so the library's follow never reads as a user scroll and
+      // disconnects the restore protection.
+      if (
+        el.scrollTop === ownScrollTop ||
+        Math.abs(el.scrollTop - threadScrollTargetTop(target, el)) <= SCROLL_TARGET_EPSILON_PX
+      ) {
         return
       }
 

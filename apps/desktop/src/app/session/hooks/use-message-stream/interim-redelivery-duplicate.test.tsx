@@ -9,14 +9,14 @@ import { STREAM_DELTA_FLUSH_MS } from './utils'
 
 // A turn whose reply was sealed as an interim BEFORE the client had it on
 // screen (the interim materialized its own bubble because a superseded
-// attempt's frames had cleared the live stream) paints the reply twice on
-// current main: the sealed interim above, and the settled bubble the same text
-// streams into below — while the store holds one row (#123801).
+// attempt's frames had cleared the live stream) used to paint the reply twice:
+// the sealed interim above, and the settled bubble the same text streams into
+// below — while the store holds one row (#123801).
 //
 // No user prompt row is mounted here on purpose: the duplicate is a
 // render-side artifact of the interim/delta/complete ordering, not of the
 // prompt row, and this keeps the fixture to the frames that matter. The
-// boundary cases that must still paint twice have their own specs below.
+// message.start boundary case, which must still paint twice, is the second spec.
 const SID = 'interim-redelivery-duplicate'
 
 const REPLY =
@@ -31,7 +31,8 @@ const mountStream = () => {
 
 const start = () => act(() => stream.handleEvent({ payload: {}, session_id: SID, type: 'message.start' }))
 
-const delta = (text: string) => act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.delta' }))
+const delta = (text: string) =>
+  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.delta' }))
 
 const interim = (text: string) =>
   act(() => stream.handleEvent({ payload: { text, already_streamed: true }, session_id: SID, type: 'message.interim' }))

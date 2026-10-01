@@ -148,6 +148,30 @@ async def test_status_command_includes_live_agent_model_and_context():
     assert "**Lifetime tokens billed:** 1,250" in result
 
 
+def test_status_model_route_reads_the_routed_profile_config(monkeypatch, tmp_path):
+    from gateway import run as gateway_run
+    from gateway.slash_commands_status import _status_model_route
+
+    config_path = tmp_path / "profiles" / "telegram" / "config.yaml"
+    seen = {}
+
+    def load_gateway_config(*, config_path=None):
+        seen["path"] = config_path
+        return {"model": {"default": "profile-model", "provider": "profile-provider"}}
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", load_gateway_config)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_gateway_model", lambda config: config["model"]["default"]
+    )
+
+    model, provider, *_ = _status_model_route(
+        None, {}, {}, {}, SimpleNamespace(), config_path=config_path
+    )
+
+    assert (model, provider) == ("profile-model", "profile-provider")
+    assert seen["path"] == config_path
+
+
 @pytest.mark.asyncio
 async def test_status_command_uses_most_recent_persisted_model_route(tmp_path):
     """Persisted status uses the latest coherent route, not the lifetime-dominant route."""

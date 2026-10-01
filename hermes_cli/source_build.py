@@ -99,6 +99,96 @@ def source_frontends(project_root: Path) -> tuple[str, ...]:
     return tuple(name for name in ("ui-tui", "web") if (project_root / name / "package.json").is_file())
 
 
+# Workspace dir -> `components:` config key (#123828).
+_FRONTEND_COMPONENT_KEYS = {"ui-tui": "tui", "web": "web"}
+
+# Every `components:` key the update gate reads, in `components:` spelling.
+_COMPONENT_KEYS = ("desktop", "tui", "web")
+
+
+def _component_enabled(value) -> bool:
+    """True unless *value* is an explicit opt-out; unknown shapes fail open."""
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "no", "off", "0"}
+    return True
+
+
+def _home_components(home: Path) -> dict:
+    """One home's ``components:`` mapping; ``{}`` when absent, unreadable or malformed.
+
+    The process home goes through ``load_config_readonly()`` (defaults merged, env refs
+    expanded); a sibling profile — which that process-global loader cannot address — is parsed
+    off its own file, the same split ``env_loader._load_secrets_config`` makes.
+    """
+    try:
+        from hermes_constants import hermes_home_key
+
+        if hermes_home_key(home) == hermes_home_key():
+            from hermes_cli.config import load_config_readonly
+
+            configured = (load_config_readonly() or {}).get("components")
+        else:
+            from utils import load_yaml_file_readonly
+
+            configured = (load_yaml_file_readonly(home / "config.yaml") or {}).get("components")
+    except Exception:  # noqa: BLE001 — a config read must never fail an update
+        return {}
+    return configured if isinstance(configured, dict) else {}
+
+
+def _components_gate() -> dict[str, bool]:
+    """``{component key: may build}`` unioned over every live home sharing this install.
+
+    The artifacts the gate skips (``ui-tui/dist``, ``hermes_cli/web_dist``,
+    ``apps/desktop/dist``) live in the checkout, not in a home, and every profile home sharing
+    the venv builds from that same checkout — so one profile must not narrow a tree its siblings
+    still use: a component is skipped only when EVERY live home disables it. Fail-open at every
+    step (home that cannot be enumerated, missing key, malformed value): building too much costs
+    a stall, building too little ships a product nobody rebuilt.
+    """
+    try:
+        from pm.plugins_state import dependency_homes
+
+        homes = dependency_homes()
+    except Exception:  # noqa: BLE001 — cannot enumerate the homes: build everything, as before
+        homes = []
+    if not homes:
+        return {key: True for key in _COMPONENT_KEYS}
+    gate = {key: False for key in _COMPONENT_KEYS}
+    for home in homes:
+        configured = _home_components(home)
+        for key in _COMPONENT_KEYS:
+            if _component_enabled(configured.get(key, True)):
+                gate[key] = True
+    return gate
+
+
+def update_enabled_products(
+    frontends: tuple[str, ...], *, desktop: bool
+) -> tuple[tuple[str, ...], bool, tuple[str, ...]]:
+    """Split *frontends* into ``(enabled, desktop_enabled, skipped_labels)`` per the
+    user-declared ``components:`` config set (#123828), unioned over the live homes (#124495).
+    Fail-open: any missing or malformed config builds everything, so an update never breaks on
+    config."""
+    gate = _components_gate()
+    enabled = tuple(
+        name for name in frontends
+        if gate.get(_FRONTEND_COMPONENT_KEYS.get(name, name), True)
+    )
+    desktop_enabled = desktop and gate.get("desktop", True)
+    skipped = tuple(sorted(
+        [name for name in ("desktop",) if desktop and not desktop_enabled]
+        + [_FRONTEND_COMPONENT_KEYS.get(name, name) for name in frontends if name not in enabled]
+    ))
+    return enabled, desktop_enabled, skipped
+
+
 def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once; a failed product aborts the update."""
     # Both current updates and historical takeover reach this in a fresh target
@@ -110,10 +200,17 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     frontends = source_frontends(project_root)
     if not frontends:
         return
+    # ponytail: config-gated skip; per-product freshness checks if skips ever need nuance.
+    frontends, desktop, skipped = update_enabled_products(frontends, desktop=desktop)
+    for label in skipped:
+        print(
+            f"  ↷ Skipping {label} (components: disables it in every profile sharing this install)"
+        )
     env = source_build_env(explicit=True)
     workspaces = frontends + (("apps/desktop",) if desktop else ())
-    publish_stage("Updating Node dependencies")
-    prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
+    if workspaces:
+        publish_stage("Updating Node dependencies")
+        prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
     if "ui-tui" in frontends:
         publish_stage("Building the TUI")
         build_source_tui(project_root, env=env)

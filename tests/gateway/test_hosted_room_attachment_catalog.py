@@ -279,8 +279,10 @@ def test_revoked_room_or_changed_authority_lists_nothing(tmp_path):
     with pytest.raises(AttachmentNotFoundError):
         _page(db, authority_gateway_id="gateway-b")
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS hosted_room_quarantine (room_id TEXT PRIMARY KEY)")
-        conn.execute("INSERT INTO hosted_room_quarantine VALUES (?)", (ROOM_ID,))
+        conn.execute("""CREATE TABLE IF NOT EXISTS hosted_room_quarantine (
+            room_id TEXT PRIMARY KEY, reason TEXT NOT NULL, detected_at REAL NOT NULL)""")
+        conn.execute("INSERT INTO hosted_room_quarantine (room_id, reason, detected_at) VALUES (?, ?, ?)",
+                     (ROOM_ID, "imported_unsafe_history", 1))
     with pytest.raises(AttachmentNotFoundError):
         _page(db)
     with sqlite3.connect(db) as conn:

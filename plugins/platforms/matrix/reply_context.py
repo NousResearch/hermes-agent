@@ -87,8 +87,8 @@ _MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^> (?:\* )?<(@[^>\s]+)>\s*(.*)")
 def _split_reply_fallback(body: str) -> tuple[str, str]:
     """Split a fallback into its quote block and reply text without changing bytes.
 
-    The separator belongs to the quote block, so joining both halves reproduces
-    the original body when callers transform only the reply text.
+    The separator belongs to the quote block. Callers can transform the reply
+    text while preserving the fallback bytes.
     """
     if not body or not body.startswith("> "):
         return "", body

@@ -1327,15 +1327,10 @@ def restore_primary_runtime(agent) -> bool:
     (long-lived CLI agents and the gateway's cached agents)."""
     if not agent._fallback_activated:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
-        # _fallback_index past the chain end and silently block future fallbacks.
+        # _fallback_index past the chain end and silently block future fallbacks (#20465).
         agent._fallback_index = 0
         _revert_credential_rotation(agent)
         return False
-    # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
-    # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
-    # leaves _fallback_index >= len(_fallback_chain) while _fallback_activated stays False. The next turn
-    # skips this block entirely, stranding the index and silently blocking all future fallback attempts for
-    # the session. Fixes #20465.
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()

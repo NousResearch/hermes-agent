@@ -157,3 +157,41 @@ def make_stored_link(
         "room_id": room_id, "member_id": member_id, "target_url": target_url, "target_profile": target_profile,
         "grant": grant, "catalog": catalog.as_mapping(), "cancellation_scope_id": cancellation_scope_id,
         "trace_id": trace_id, "transport_security": transport_security, "status": "ready", "updated_at": time.time()})
+
+
+def route_binding_digest(link):
+    """The exact stored authorization/transport binding, independent of health and clock."""
+    import hashlib
+    record = {k: v for k, v in link.as_record().items() if k not in {'status', 'updated_at'}}
+    return hashlib.sha256(json.dumps(record, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def remember_verified_renewal(conn, previous, renewed, *, horizon):
+    """Record only a verified same-scope/policy/horizon renewal, with route publication."""
+    old = {k: v for k, v in previous.as_record().items() if k not in {'grant', 'status', 'updated_at'}}
+    new = {k: v for k, v in renewed.as_record().items() if k not in {'grant', 'status', 'updated_at'}}
+    if old != new:
+        raise HostedRoomPeerError('renewal changed the pinned route')
+    key = (previous.room_id, previous.member_id, route_binding_digest(previous))
+    digest = route_binding_digest(renewed)
+    conn.execute('DELETE FROM hosted_room_link_renewals WHERE expires_at<=?', (time.time(),))
+    row = conn.execute('SELECT new_digest FROM hosted_room_link_renewals WHERE room_id=? AND member_id=? AND old_digest=?', key).fetchone()
+    if row is not None and row[0] != digest:
+        raise HostedRoomPeerError('renewal conflicts with retained authorization lineage')
+    conn.execute('INSERT OR IGNORE INTO hosted_room_link_renewals VALUES (?,?,?,?,?)', (*key, digest, horizon))
+
+
+def is_verified_renewal(conn, *, room_id, member_id, original_digest, current_digest):
+    """Follow bounded durable renewal evidence; a manual replacement has no such edge."""
+    seen = set()
+    while original_digest != current_digest and len(seen) < 1024:
+        if original_digest in seen:
+            return False
+        seen.add(original_digest)
+        row = conn.execute("""SELECT new_digest FROM hosted_room_link_renewals
+            WHERE room_id=? AND member_id=? AND old_digest=? AND expires_at>?""",
+            (room_id, member_id, original_digest, time.time())).fetchone()
+        if row is None:
+            return False
+        original_digest = row[0]
+    return original_digest == current_digest

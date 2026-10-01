@@ -132,11 +132,12 @@ def _read_bounded_response(response: Any, *, max_bytes: int, deadline: float) ->
     raise _PeerResponseTooLarge
 
 
-def _read_body(response: Any, *, max_bytes: int, deadline: float, kind: str, **flags: Any) -> str:
+def _read_body(response: Any, *, max_bytes: int, deadline: float, kind: str, as_bytes: bool = False,
+               **flags: Any) -> str | bytes:
     """Read a bounded body as text; budget overruns become classified ``PeerRunsHTTPError``."""
     try:
-        return _read_bounded_response(
-            response, max_bytes=max_bytes, deadline=deadline).decode("utf-8", "replace")
+        raw = _read_bounded_response(response, max_bytes=max_bytes, deadline=deadline)
+        return raw if as_bytes else raw.decode("utf-8", "replace")
     except _PeerResponseTooLarge as exc:
         raise PeerRunsHTTPError(_BUDGET_MESSAGES["size"].format(kind=kind), **flags) from exc
     except _PeerResponseDeadlineExceeded as exc:
@@ -370,7 +371,7 @@ class PeerRunsHTTPClient:
             with _open_roomlink_url(request, timeout=timeout, reject_redirects=reject_redirects) as response:
                 raw = _read_body(
                     response, max_bytes=MAX_PEER_RESPONSE_BYTES, deadline=deadline, kind="",
-                    ambiguous=ambiguous)
+                    ambiguous=ambiguous, as_bytes=proof_state is not None)
                 self._verify_proof_response(proof_state, response, raw, ambiguous=ambiguous)
         except urllib.error.HTTPError as exc:
             try:
@@ -380,10 +381,10 @@ class PeerRunsHTTPClient:
                 if proof_state is not None:
                     import io
                     raw_error = _read_body(exc, max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES,
-                                           deadline=deadline, kind=" error", ambiguous=ambiguous)
+                                           deadline=deadline, kind=" error", ambiguous=ambiguous, as_bytes=True)
                     self._verify_proof_response(proof_state, exc, raw_error, ambiguous=ambiguous)
                     exc = urllib.error.HTTPError(exc.url, exc.code, exc.msg, exc.headers,
-                                                 io.BytesIO(raw_error.encode('utf-8')))
+                                                 io.BytesIO(raw_error))
                 self._raise_http_error(exc, method=method, path=path, deadline=deadline)
             except PeerRunsHTTPError as failure:
                 if probe_key is not None and exc.code in {401, 403}:
@@ -409,7 +410,8 @@ class PeerRunsHTTPClient:
             return
         from gateway.hosted_room_proof import verify_response, RESPONSE_HEADER
         try:
-            verify_response(*state, response.status, body.encode('utf-8'), response.headers.get(RESPONSE_HEADER))
+            verify_response(*state, response.status, body if isinstance(body, bytes) else body.encode('utf-8'),
+                            response.headers.get(RESPONSE_HEADER))
         except ValueError as exc:
             # An unverified endpoint's 4xx is no evidence that the intended target rejected admission.
             raise PeerRunsHTTPError('peer installation response proof failed', ambiguous=ambiguous) from exc

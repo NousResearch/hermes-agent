@@ -39,13 +39,7 @@ def _dispatched(adapter):
     return [(call.args[0].message_id, call.args[0].text) for call in adapter.handle_message.await_args_list]
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("redacted_by, in_content, expected", [
-    (ALICE, False, [("$one", "first")]),
-    (ALICE, True, [("$one", "first")]),
-    ("@mallory:example.org", False, [("$one", "first\nsecond")]),
-])
-async def test_sender_redaction_withdraws_a_batched_message(monkeypatch, redacted_by, in_content, expected):
+async def _assert_batched_redaction(monkeypatch, redacted_by, in_content, expected):
     monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
     adapter = _make_adapter()
@@ -60,8 +54,8 @@ async def test_sender_redaction_withdraws_a_batched_message(monkeypatch, redacte
     assert _dispatched(adapter) == expected
 
 
-@pytest.mark.asyncio
-async def test_redacted_parked_voice_is_not_claimed_by_a_later_mention(monkeypatch):
+
+async def _assert_parked_voice_redaction(monkeypatch):
     """Under require_mention an unmentioned voice waits for its sender's bare @mention. If the
     sender redacts the voice first, the mention is answered on its own."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
@@ -78,3 +72,14 @@ async def test_redacted_parked_voice_is_not_claimed_by_a_later_mention(monkeypat
         "@hermes:example.org", "$mention", **{"m.mentions": {"user_ids": ["@hermes:example.org"]}}))
 
     assert _dispatched(adapter) == [("$mention", "")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("check, args", [
+    (_assert_batched_redaction, (ALICE, False, [("$one", "first")])),
+    (_assert_batched_redaction, (ALICE, True, [("$one", "first")])),
+    (_assert_batched_redaction, ("@mallory:example.org", False, [("$one", "first\nsecond")])),
+    (_assert_parked_voice_redaction, ()),
+])
+async def test_redaction_preserves_only_the_authorised_remaining_input(monkeypatch, check, args):
+    await check(monkeypatch, *args)

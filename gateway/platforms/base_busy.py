@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from agent.i18n import t
 from gateway.platforms import base_pending_merge
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.base_pending import pending_dispatch_scope, reserve_pending_dispatch, release_pending_dispatch_record
 
 if TYPE_CHECKING:
     from gateway.platforms.base import BasePlatformAdapter
@@ -84,55 +85,64 @@ class BaseBusyMixin:
                 except Exception as e:
                     logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, e, exc_info=True)
                 return
-        if self._busy_session_handler is not None:
-            try:
-                handled = await self._busy_session_handler(event, session_key)
-            except Exception as e:
-                logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
-                # It may have stored the event before raising: queuing or starting it again below
-                # would run it twice.
-                handled = event._gateway_accepted is True
-            # The handler awaits (profile scope load, compression-lock read). If the owner task
-            # finished meanwhile, it found the slot empty and released the guard, so nothing would
-            # drain what the handler queued: start that now. If the handler left this event to the
-            # base path instead (returned False, or raised before storing it) and nothing is
-            # queued, start this event.
-            if session_key not in self._active_sessions:
-                orphan = self._pending_messages.pop(session_key, None)
-                if orphan is not None:
-                    self._stage_next_queued_event(session_key, orphan)
-                    self._start_session_processing(orphan, session_key)
-                elif not handled:
-                    event._gateway_accepted = self._start_session_processing(event, session_key)
+        reservation = reserve_pending_dispatch(self, session_key, event, accepted=False)
+        reservation.task = asyncio.current_task()
+        try:
+            with pending_dispatch_scope(self, session_key, event):
+                if self._busy_session_handler is not None:
+                    try:
+                        handled = await self._busy_session_handler(event, session_key)
+                    except Exception as e:
+                        logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+                        # It may have stored the event before raising: queuing or starting it again below
+                        # would run it twice.
+                        handled = event._gateway_accepted is True
+                    if reservation.withdrawn:
+                        return
+                    # The handler awaits (profile scope load, compression-lock read). If the owner task
+                    # finished meanwhile, it found the slot empty and released the guard, so nothing would
+                    # drain what the handler queued: start that now. If the handler left this event to the
+                    # base path instead (returned False, or raised before storing it) and nothing is
+                    # queued, start this event.
+                    if session_key not in self._active_sessions:
+                        orphan = self._pending_messages.pop(session_key, None)
+                        if orphan is not None:
+                            self._stage_next_queued_event(session_key, orphan)
+                            self._start_session_processing(orphan, session_key)
+                        elif not handled:
+                            event._gateway_accepted = self._start_session_processing(event, session_key)
+                            return
+                    if handled:
+                        return
+                # Without a runner FIFO, do not merge a wake into an occupied human slot
+                # (or collapse distinct wakes into one turn). Its caller can retry admission.
+                if event.internal and session_key in self._pending_messages:
                     return
-            if handled:
-                return
-        # Without a runner FIFO, do not merge a wake into an occupied human slot
-        # (or collapse distinct wakes into one turn). Its caller can retry admission.
-        if event.internal and session_key in self._pending_messages:
-            return
-        # Photo bursts/albums: queue without interrupting; they run after the current task.
-        if event.message_type == MessageType.PHOTO:
-            logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-            base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event)
-            event._gateway_accepted = True
-            return
-        if self._is_queue_text_debounce_candidate(event):
-            logger.debug("[%s] New text message while session %s is active — "
-                         "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
-                         session_key, self._busy_text_debounce_seconds)
-            event._gateway_accepted = await self._queue_text_debounce(session_key, event)
-            if not event._gateway_accepted:
-                notify = getattr(self.gateway_runner, "_send_pending_queue_refusal", None)
-                if callable(notify):
-                    await notify(event, self)
+                # Photo bursts/albums: queue without interrupting; they run after the current task.
+                if event.message_type == MessageType.PHOTO:
+                    logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
+                    base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event)
+                    event._gateway_accepted = True
+                    return
+                if self._is_queue_text_debounce_candidate(event):
+                    logger.debug("[%s] New text message while session %s is active — "
+                                 "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
+                                 session_key, self._busy_text_debounce_seconds)
+                    event._gateway_accepted = await self._queue_text_debounce(session_key, event)
+                    if not event._gateway_accepted:
+                        notify = getattr(self.gateway_runner, "_send_pending_queue_refusal", None)
+                        if callable(notify):
+                            await notify(event, self)
+                        else:
+                            await self._send_with_retry(
+                                chat_id=event.source.chat_id, content=t("gateway.queue.full"),
+                                reply_to=event.message_id, metadata=_thread_metadata_for_event(event))
                 else:
-                    await self._send_with_retry(
-                        chat_id=event.source.chat_id, content=t("gateway.queue.full"),
-                        reply_to=event.message_id, metadata=_thread_metadata_for_event(event))
-        else:
-            logger.debug("[%s] New message while session %s is active — queuing follow-up "
-                         "(no interrupt, will cascade after current turn)", self.name, session_key)
-            base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event,
-                                        merge_text=event.message_type == MessageType.TEXT)
-            event._gateway_accepted = True
+                    logger.debug("[%s] New message while session %s is active — queuing follow-up "
+                                 "(no interrupt, will cascade after current turn)", self.name, session_key)
+                    base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event,
+                                                merge_text=event.message_type == MessageType.TEXT)
+                    event._gateway_accepted = True
+        finally:
+            if reservation.task is asyncio.current_task():
+                release_pending_dispatch_record(self, session_key, reservation)

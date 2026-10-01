@@ -22,6 +22,18 @@ from tools.file_operations_common import ExecuteResult, SearchMatch, SearchResul
 _MACOS_TCC_PROTECTED_HOME_DIRS = (
     "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures",
 )
+# Since Catalina /Users is firmlinked to the APFS Data volume: the same home
+# directory (same st_dev/st_ino) is also reachable below this mount point.
+_MACOS_DATA_VOLUME = Path("/System/Volumes/Data")
+
+
+def _macos_home_spellings(home_path: Path) -> List[Path]:
+    """``$HOME`` and its Data-volume spelling, so a search of ``/`` (which walks
+    ``/System/Volumes/Data`` too) cannot reach a protected folder by the back door."""
+    try:
+        return [home_path, Path("/") / home_path.relative_to(_MACOS_DATA_VOLUME)]
+    except ValueError:
+        return [home_path, _MACOS_DATA_VOLUME / home_path.relative_to(home_path.anchor)]
 
 
 def _macos_protected_search_exclusions(
@@ -29,9 +41,9 @@ def _macos_protected_search_exclusions(
 ) -> List[str]:
     """Protected home dirs (relative to ``path``) below a broad macOS search root.
 
-    Only an ANCESTOR search (``$HOME``, ``/Users``) gets exclusions, so recursive
-    tools never trigger unattended TCC prompts; a search rooted inside a
-    protected dir stays allowed.
+    Only an ANCESTOR search (``$HOME``, ``/Users``, ``/``) gets exclusions, so
+    recursive tools never trigger unattended TCC prompts; a search rooted inside
+    a protected dir stays allowed.
     """
     if (platform or sys.platform) != "darwin":
         return []
@@ -41,13 +53,14 @@ def _macos_protected_search_exclusions(
     root = Path(os.path.normpath(str(root)))
     home_path = Path(os.path.normpath(str(Path(home or Path.home()).expanduser())))
     exclusions: List[str] = []
-    for dirname in _MACOS_TCC_PROTECTED_HOME_DIRS:
-        try:
-            relative = (home_path / dirname).relative_to(root)
-        except ValueError:
-            continue
-        if relative.parts:
-            exclusions.append(relative.as_posix())
+    for home_spelling in _macos_home_spellings(home_path):
+        for dirname in _MACOS_TCC_PROTECTED_HOME_DIRS:
+            try:
+                relative = (home_spelling / dirname).relative_to(root)
+            except ValueError:
+                continue
+            if relative.parts:
+                exclusions.append(relative.as_posix())
     return exclusions
 
 
@@ -244,6 +257,15 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
         matches=matches[offset:offset + limit], total_count=total,
         truncated=total > offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning,
     )
+
+
+def _respell_under_root(path: str, spellings: List[tuple[str, str]]) -> str:
+    """``path`` re-rooted from the longest matching physical root to that root's
+    caller spelling (``spellings`` is longest-first); unmatched paths are kept."""
+    for physical, spelled in spellings:
+        if path == physical or path.startswith(physical.rstrip("/") + "/"):
+            return posixpath.normpath(posixpath.join(spelled, posixpath.relpath(path, physical)))
+    return path
 
 
 def _posix_roots(roots: List[str]) -> bool:
@@ -459,7 +481,8 @@ class SearchMixin:
 
     @staticmethod
     def _macos_protected_search_warning(paths: List[str]) -> str:
-        skipped = ", ".join(os.path.basename(item) for item in paths)
+        # One name per folder, however many spellings of it were pruned.
+        skipped = ", ".join(dict.fromkeys(os.path.basename(item) for item in paths))
         return ("Skipped macOS protected folders during broad search to avoid "
                 f"an unattended privacy prompt: {skipped}. Search a protected "
                 "folder directly when access is intentional.")
@@ -558,12 +581,15 @@ class SearchMixin:
             # One global traversal across roots so modified ordering and pagination
             # are exact; root admission wraps the actual rg/find invocation.
             merged = self._search_files(pattern, existing, limit, offset, order)
+            sub_warnings = [merged.warning] if merged.warning else []
         else:
-            merged = SearchResult()
+            merged, sub_warnings = SearchResult(), []
             for root in existing:
                 sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context)
                 if sub.error:
                     return sub
+                if sub.warning:  # zero-match hints / multiline note of that root
+                    sub_warnings.append(sub.warning)
                 merged.matches.extend(sub.matches)
                 merged.files.extend(sub.files)
                 merged.counts.update(sub.counts)
@@ -576,7 +602,7 @@ class SearchMixin:
             note += "; skipped missing: " + ", ".join(missing[:3])
             if len(missing) > 3:
                 note += f" (+{len(missing) - 3} more)"
-        warning_parts = [note]
+        warning_parts = [note, *dict.fromkeys(sub_warnings)]
         if not merged.error:
             protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(existing)]
             if protected_paths:
@@ -807,8 +833,15 @@ class SearchMixin:
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
         if scoped_common:
+            # rg answered below the PHYSICAL scope (/private/tmp/...); report each hit
+            # under the root spelling the caller passed (/tmp/...), as unscoped rg does.
+            cwd = getattr(self.env, "cwd", None) or self.cwd
+            spellings = sorted(
+                ((physical, posixpath.normpath(posixpath.join(cwd, root)))
+                 for root, physical in zip(roots, absolute_roots)),
+                key=lambda pair: len(pair[0]), reverse=True)
             all_files = [
-                f if posixpath.isabs(f) else posixpath.normpath(posixpath.join(scoped_common, f))
+                _respell_under_root(posixpath.normpath(posixpath.join(scoped_common, f)), spellings)
                 for f in all_files]
         bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
         if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:

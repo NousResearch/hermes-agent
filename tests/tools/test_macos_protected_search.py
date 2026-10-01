@@ -265,3 +265,88 @@ def test_rg_zero_match_hints_share_protected_scope(tmp_path, monkeypatch, native
     hint = ops._zero_match_probe("needle", str(home), None)
     assert "hidden or gitignored" in hint
     assert str(hidden) in hint
+
+
+@pytest.mark.platforms("posix")
+def test_data_volume_spelling_of_home_is_pruned_from_root_searches():
+    """/ walks /System/Volumes/Data as well: the firmlinked spelling of the home
+    folders must be pruned too, or rg opens ~/Downloads by the back door."""
+    def excluded(root):
+        return set(_macos_protected_search_exclusions(root, home="/Users/alice", platform="darwin"))
+
+    assert {"Users/alice/Downloads", "System/Volumes/Data/Users/alice/Downloads"} <= excluded("/")
+    assert "Users/alice/Downloads" in excluded("/System/Volumes/Data")
+    assert "Downloads" in excluded("/System/Volumes/Data/Users/alice")
+    assert excluded("/System/Volumes/Data/Users/alice/Downloads") == set()
+    # Same rule the other way round for a home spelled on the Data volume.
+    assert "Users/alice/Downloads" in set(_macos_protected_search_exclusions(
+        "/", home="/System/Volumes/Data/Users/alice", platform="darwin"))
+
+
+@pytest.mark.platforms("macos")
+def test_root_search_prunes_data_volume_spelling_and_names_each_folder_once(monkeypatch):
+    env = RecordingEnvironment("/")
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
+
+    result = ops.search("*.txt", path="/", target="files")
+
+    command = _rg_files_commands(env.commands)[0]
+    assert "'!/Users/alice/Downloads'" in command
+    assert "'!/System/Volumes/Data/Users/alice/Downloads'" in command
+    assert result.warning.count("Downloads") == 1, result.warning
+
+
+def _broad_home_with_hints(tmp_path, monkeypatch, native):
+    home = tmp_path.resolve() / "home"
+    (home / "Downloads").mkdir(parents=True)
+    code = home / "Code"
+    code.mkdir()
+    (code / ".hidden.txt").write_text("needle\n")
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(code)))
+    assert ops._has_command("rg"), "real ripgrep required"
+    return home, code, ops
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_broad_search_keeps_zero_match_hint_next_to_protected_notice(tmp_path, monkeypatch, native):
+    """The protected-folder notice used to REPLACE result.warning, so a broad
+    search that found nothing lost the hint telling the model why."""
+    home, code, ops = _broad_home_with_hints(tmp_path, monkeypatch, native)
+    other = tmp_path.resolve() / "other"
+    other.mkdir()
+
+    for root in (str(home), f"{home}, {other}"):
+        result = ops.search("needle", path=root, target="content")
+        assert result.total_count == 0, result.to_dict()
+        assert "hidden or gitignored" in result.warning, result.warning
+        assert str(code / ".hidden.txt") in result.warning
+        assert "Skipped macOS protected folders" in result.warning
+
+    result = ops.search("needle\\nmore", path=str(home), target="content")
+    assert "multiline mode" in result.warning, result.warning
+    assert "Skipped macOS protected folders" in result.warning
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_scoped_multi_root_results_keep_the_callers_root_spelling(tmp_path, monkeypatch, native):
+    """Scoping runs rg from the physical common ancestor; hits must still come
+    back under the root as the caller spelled it (/tmp, not /private/tmp)."""
+    home, code, ops = _broad_home_with_hints(tmp_path, monkeypatch, native)
+    (code / "mine.txt").write_text("x\n")
+    real = tmp_path.resolve() / "real"
+    real.mkdir()
+    (real / "theirs.txt").write_text("x\n")
+    link = tmp_path.resolve() / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    result = ops.search("*.txt", path=f"{home}, {link}", target="files")
+
+    assert not result.error, result.to_dict()
+    assert str(code / "mine.txt") in result.files
+    assert str(link / "theirs.txt") in result.files
+    assert str(real / "theirs.txt") not in result.files

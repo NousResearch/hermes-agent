@@ -140,6 +140,39 @@ class TestRegistration:
 
 
 class TestApplyAll:
+    @pytest.mark.parametrize("existing", [None, "", "shell-value"])
+    @pytest.mark.parametrize("override", [False, True])
+    @pytest.mark.parametrize("preserve", [False, True])
+    def test_existing_value_presence_controls_override(
+        self, tmp_path, existing, override, preserve
+    ):
+        reg.register_source(_make_source(secrets={"API_KEY": "vault-value"}, override=override))
+        env = {} if existing is None else {"API_KEY": existing}
+        cfg = {"dummy": {"enabled": True}, "profile_alias": False}
+        if preserve:
+            cfg["preserve_existing"] = ["API_KEY"]
+
+        report = reg.apply_all(cfg, tmp_path, environ=env)
+
+        kept = existing is not None and (preserve or not override)
+        assert env["API_KEY"] == (existing if kept else "vault-value")
+        assert report.sources[0].skipped_existing == (["API_KEY"] if kept else [])
+        if kept:
+            assert "API_KEY" not in report.provenance
+        else:
+            assert report.provenance["API_KEY"].overrode_env is (existing is not None)
+
+    def test_empty_canonical_profile_alias_is_preserved(self, tmp_path):
+        home = tmp_path / "profiles" / "worker"
+        reg.register_source(_make_source(secrets={"API_KEY_WORKER": "vault-value"}))
+        env = {"API_KEY": ""}
+
+        report = reg.apply_all({"dummy": {"enabled": True}}, home, environ=env)
+
+        assert env == {"API_KEY": "", "API_KEY_WORKER": "vault-value"}
+        assert report.sources[0].skipped_existing == ["API_KEY"]
+        assert "API_KEY" not in report.provenance
+
     def test_disabled_sources_do_not_run(self, tmp_path):
         called = []
 

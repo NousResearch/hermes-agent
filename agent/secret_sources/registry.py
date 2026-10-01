@@ -366,7 +366,7 @@ class _Applier:
                                          f"{source.name} also supplies it (first source wins — "
                                          "remove one binding or reorder secrets.sources)")
             return False
-        existed = bool(self.env.get(var))
+        existed = self.env.get(var) is not None
         if existed and (var in self.preserve or not override):
             sr.skipped_existing.append(var)
             return False

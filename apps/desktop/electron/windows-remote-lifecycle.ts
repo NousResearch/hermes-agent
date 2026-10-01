@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 
 import { resolveReadyTimeoutMs } from './remote-lifecycle'
+import { attachSpawnLogDetail } from './spawn-log-excerpt'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -469,6 +470,15 @@ async function terminateOwnedWindowsDashboardForUpdate(ssh, runtime, expected) {
 
 async function waitReady(ssh, runtime, ownershipId, lock, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs
+  let lastContent = ''
+
+  const readSpawnLog = async () => {
+    try {
+      return (await helper(ssh, runtime, 'read-log', [ownershipId, lock.spawnNonce]))?.content || ''
+    } catch {
+      return ''
+    }
+  }
 
   while (Date.now() < deadline) {
     assertBootstrapNotSuperseded(signal)
@@ -483,33 +493,20 @@ async function waitReady(ssh, runtime, ownershipId, lock, timeoutMs, signal) {
     }
 
     if (!state.indeterminate && (!state.alive || !state.owned)) {
-      let detail = ''
-
-      try {
-        detail = (await helper(ssh, runtime, 'read-log', [ownershipId, lock.spawnNonce]))?.content || ''
-      } catch {
-        void 0
-      }
-
+      lastContent = await readSpawnLog()
       const error: any = new Error(
-        `Remote Windows backend exited before announcing its port. state=${JSON.stringify(state)} ${detail.slice(-2000)}`
+        `Remote Windows backend exited before announcing its port. state=${JSON.stringify(state)}`
       )
 
       error.kind = 'spawn-failed'
+      attachSpawnLogDetail(error, lastContent)
       throw error
     }
 
-    let content = ''
-
-    try {
-      content = (await helper(ssh, runtime, 'read-log', [ownershipId, lock.spawnNonce]))?.content || ''
-    } catch {
-      void 0
-    }
-
+    lastContent = await readSpawnLog()
     let port
 
-    for (const match of content.matchAll(READY_RE)) {
+    for (const match of lastContent.matchAll(READY_RE)) {
       port = Number(match[1])
     }
 
@@ -522,6 +519,7 @@ async function waitReady(ssh, runtime, ownershipId, lock, timeoutMs, signal) {
 
   const error: any = new Error(`Timed out waiting for the remote Windows backend (${timeoutMs}ms).`)
   error.kind = 'ready-timeout'
+  attachSpawnLogDetail(error, lastContent)
   throw error
 }
 
@@ -781,5 +779,6 @@ export {
   psLiteral,
   reusableWindowsLock,
   terminateOwnedWindowsDashboardForUpdate,
-  validLock
+  validLock,
+  waitReady
 }

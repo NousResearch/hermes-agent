@@ -51,6 +51,7 @@ import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { presentSshSettingsError } from './ssh-settings-error'
 
 type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
 type AuthMode = 'oauth' | 'token'
@@ -612,10 +613,18 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
       }
 
       if (state.mode === 'ssh' && sshError) {
+        const presented = presentSshSettingsError({
+          sshError,
+          mapped: errors,
+          unknown: g.sshErrUnknown,
+          detail: err && typeof err === 'object' && 'detail' in err ? (err as { detail?: unknown }).detail : undefined
+        })
+
         notify({
           kind: 'error',
           title: apply ? g.applyFailed : g.saveFailed,
-          message: (errors as Record<string, string>)[sshError] || g.sshErrUnknown
+          message: presented.message,
+          detail: presented.detail
         })
       } else {
         notifyError(err, apply ? g.applyFailed : g.saveFailed)
@@ -1020,7 +1029,19 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           unknown: g.sshErrUnknown
         }
 
-        throw new Error(errors[result.sshError || 'unknown'] || result.error || g.sshErrUnknown)
+        const presented = presentSshSettingsError({
+          sshError: result.sshError || 'unknown',
+          mapped: errors,
+          unknown: g.sshErrUnknown,
+          detail: result.detail
+        })
+        const error = new Error(presented.message) as Error & { detail?: string }
+
+        if (presented.detail) {
+          error.detail = presented.detail
+        }
+
+        throw error
       }
 
       const message = g.sshReachable(result.host || state.sshHost, result.remotePlatform || '?')
@@ -1028,7 +1049,21 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
       notify({ kind: 'success', title: g.reachableTitle, message })
     } catch (err) {
       if (seq === sshTestSeq.current) {
-        notifyError(err, g.testFailed)
+        const detail =
+          err && typeof err === 'object' && 'detail' in err && typeof (err as { detail?: unknown }).detail === 'string'
+            ? String((err as { detail: string }).detail).trim()
+            : ''
+
+        if (detail) {
+          notify({
+            kind: 'error',
+            title: g.testFailed,
+            message: err instanceof Error ? err.message : g.sshErrUnknown,
+            detail
+          })
+        } else {
+          notifyError(err, g.testFailed)
+        }
       }
     } finally {
       if (seq === sshTestSeq.current) {

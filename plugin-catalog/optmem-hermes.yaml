@@ -1,0 +1,39 @@
+name: optmem-hermes
+repo: https://github.com/rarf/optmem-hermes-plugin
+sha: 125d859ddd1813930a871de2c5b3d213e3d09336
+subdir: optmem
+description: >-
+  Independent Hermes integration of Victor Taelin's OptMem design: local,
+  append-only memory with regex/BM25 recall and a bounded wake digest.
+  Hybrid and guarded OptMem-only modes; verified migration and rollback.
+  Local by default. Compaction is manual unless auto_nap is enabled.
+  Optional LLM summaries run only when both auto_nap and llm_summary are
+  on; they send memory blocks to the configured provider via host-owned
+  authentication and may incur token costs. Summaries are lossy,
+  raw records remain recoverable, and conflicts are not resolved automatically.
+  Wake consumes model context. See README for upstream attribution.
+maintainer: rarf
+tier: community
+category: memory
+docs_url: https://github.com/rarf/optmem-hermes-plugin/blob/125d859ddd1813930a871de2c5b3d213e3d09336/README.md
+version: "0.3.1"
+image: https://raw.githubusercontent.com/rarf/optmem-hermes-plugin/125d859ddd1813930a871de2c5b3d213e3d09336/docs/assets/catalog-banner-card.png
+screenshots: []
+readme: true
+platforms: [linux, windows]
+capabilities:
+  provides_tools:
+    - optmem_note
+    - optmem_recall
+    - optmem_nap
+    - optmem_wake
+    - optmem_zoom
+    - optmem_forget
+    - optmem_config
+    - optmem_import
+    - optmem_init
+  provides_hooks:
+    - on_memory_write
+    - on_turn_start
+  provides_middleware: []
+  requires_env: []

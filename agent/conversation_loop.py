@@ -1735,6 +1735,21 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
             return
         if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) != "user":
             return
+        files_snapshot = getattr(agent, '_files_safe_results', False) is True
+        canonical = getattr(agent, '_session_messages', None)
+        if files_snapshot:
+            # finalize_turn exports an independent safe snapshot. Only this
+            # turn's complete canonical projection may gain our generated close;
+            # never adopt alternate/partial result history as canonical rows.
+            if (not isinstance(canonical, list) or messages != canonical
+                    or (messages is not canonical
+                        and result.get('turn_id') != getattr(agent, '_current_turn_id', None))):
+                return
+            from agent.files_live_context import require_current_files_context
+            entry = require_current_files_context(agent, canonical)
+            if entry is not None and entry.turn_id != getattr(agent, '_current_turn_id', None):
+                return
+            messages = canonical
         # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
         # hedge over the whole list rather than under-report a possible side effect.
         start = result.get("current_turn_user_idx")
@@ -1743,6 +1758,11 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
             "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
         })
         agent._flush_messages_to_session_db(messages)
+        if files_snapshot:
+            from agent.files_live_context import safe_files_result
+            projected = safe_files_result(agent, {**result, 'messages': messages})
+            result.clear()
+            result.update(projected)
     except Exception:
         logger.debug("failed-turn boundary not written", exc_info=True)
 

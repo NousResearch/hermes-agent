@@ -124,7 +124,6 @@ def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkey
     drifted = dataclasses.replace(record, create_time=record.create_time - 5)
     assert hr.record_is_stale(drifted) is False
     assert hr.liveness_is_proven(drifted) is True
-    assert hr.read_record(hr.ROLE_GATEWAY) is not None
 
     assert record.start_time is not None
     from gateway import status

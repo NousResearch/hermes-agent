@@ -460,6 +460,7 @@ class KreaImageGenProvider(StaticImageGenProvider):
         return {
             "modalities": ["text", "image"], "max_reference_images": _MAX_STYLE_REFERENCES,
             "supports_upscale": True, "creative_controls": ["creativity", *_K2_SLIDERS],
+            "source_image_role": "style",
         }
 
     def generate(

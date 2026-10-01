@@ -131,6 +131,17 @@ class TestDynamicParamGating(unittest.TestCase):
         for model in (self._t2i_only(), self._edit_multi_ref()):
             self.assertFalse(set(ig._CREATIVE_CONTROL_PARAMS) & set(self._schema_for(model)["parameters"]["properties"]))
 
+    def test_style_reference_backend_describes_image_inputs_as_style_not_edit(self):
+        """A backend declaring source_image_role "style" gets the style wording; FAL keeps the edit wording."""
+        with patch.object(ig, "_read_configured_image_provider", return_value="nous"), \
+             patch.object(ig, "_read_configured_image_model", return_value="krea-2-medium"):
+            krea = _build_dynamic_image_schema()
+        fal = self._schema_for(self._edit_multi_ref())
+        self.assertIs(krea["parameters"]["properties"]["image_url"], ig._STYLE_IMAGE_URL_PARAM)
+        self.assertIs(fal["parameters"]["properties"]["image_url"], ig._IMAGE_URL_PARAM)
+        self.assertNotIn("edit", krea["parameters"]["properties"]["reference_image_urls"]["description"])
+        self.assertIn("edit", fal["parameters"]["properties"]["reference_image_urls"]["description"])
+
     def test_static_schema_carries_no_capability_args(self):
         """The registration-time placeholder must stay minimal — dynamic
         overrides own the capability args (do-not-re-add guard)."""

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server_runs import _RunStream
@@ -75,8 +75,7 @@ def _make_adapter(api_key: str = "") -> APIServerAdapter:
 
 def _claim_run(adapter: APIServerAdapter, run_id: str) -> None:
     """Stamp *run_id* as owned by the unprefixed (default) request scope."""
-    request = MagicMock()
-    request.headers = {}
+    request = make_mocked_request('POST', '/v1/runs')
     adapter._run_owners[run_id] = adapter._run_idempotency_scope(request)
 
 
@@ -2457,10 +2456,7 @@ class TestHostedRoomRuns:
             grant = (await invitation.json())["grant"]
             room_headers = {"Authorization": f"HermesRoom {grant}"}
             run_id = "run_room_stream"
-            scope_request = MagicMock()
-            scope_request.headers = room_headers
-            scope_request.path = f"/v1/runs/{run_id}/events"
-            scope_request.method = "GET"
+            scope_request = make_mocked_request('GET', f'/v1/runs/{run_id}/events', headers=room_headers)
             adapter._run_owners[run_id] = adapter._run_idempotency_scope(scope_request)
             adapter._run_streams[run_id] = _RunStream()
             adapter._run_streams_created[run_id] = time.time()

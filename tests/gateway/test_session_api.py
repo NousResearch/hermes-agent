@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
@@ -324,9 +324,8 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
             if write_calls["count"] >= 3:
                 raise ConnectionResetError("simulated client disconnect")
 
-    request = MagicMock()
-    request.headers = {}
-    request.match_info = {"session_id": session_id}
+    request = make_mocked_request('POST', f'/api/sessions/{session_id}/chat/stream',
+                                  match_info={"session_id": session_id})
 
     def _create_agent(**kwargs):
         return FakeAgent(kwargs["stream_delta_callback"])
@@ -1190,9 +1189,8 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
             if write_calls["count"] >= 3:
                 raise ConnectionResetError("simulated client disconnect")
 
-    request = MagicMock()
-    request.headers = {}
-    request.match_info = {"session_id": session_id}
+    request = make_mocked_request('POST', f'/api/sessions/{session_id}/chat/stream',
+                                  match_info={"session_id": session_id})
 
     with patch.object(
         adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)
@@ -1222,9 +1220,7 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
     assert record.get("output") == "the answer worth keeping"
 
     # And it is reachable through the documented read path, not just the dict.
-    get_request = MagicMock()
-    get_request.headers = {}
-    get_request.match_info = {"run_id": run_id}
+    get_request = make_mocked_request('GET', f'/v1/runs/{run_id}', match_info={"run_id": run_id})
     response = await adapter._handle_get_run(get_request)
     assert response.status == 200
     assert "the answer worth keeping" in response.text

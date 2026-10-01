@@ -17,6 +17,10 @@ Slash commands: handlers are looked up by name through `_command_handler_table`;
 listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`. No
 `if canonical == ...` chains. Registry + adding a command: `hermes_cli/AGENTS.md`.
 
+Matrix room-message sends, reactions and redactions are defined in
+`plugins/platforms/matrix/send_retry.py`. The adapter includes their mixin;
+SDK bindings are resolved through the adapter when each method runs.
+
 ## The gateway has TWO message guards — both must bypass approval/control commands
 
 While an agent is running, an inbound message passes two sequential guards: (1) the **base

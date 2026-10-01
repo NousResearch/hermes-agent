@@ -95,7 +95,7 @@ def _live_gateway_in_cgroup(cgroup_path: str) -> bool:
 def reap_cgroup(cgroup_path: str | None = None) -> int:
     """SIGKILL every PID in the cgroup other than the caller. Returns the count killed.
 
-    Refuses (returns 0, no signals) when a live gateway process is still in
+    Refuses (returns -1, no signals) when a live gateway process is still in
     the cgroup — the reaper must never signal the live gateway, no matter
     how it was invoked.
     """
@@ -110,7 +110,7 @@ def reap_cgroup(cgroup_path: str | None = None) -> int:
             "the gateway process has exited.",
             file=sys.stderr,
         )
-        return 0
+        return -1
     killed = 0
     for pid in _read_cgroup_pids(cgroup_path):
         if pid == os.getpid():
@@ -133,8 +133,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    reap_cgroup()
-    return 0
+    return 1 if reap_cgroup() < 0 else 0
 
 
 if __name__ == "__main__":

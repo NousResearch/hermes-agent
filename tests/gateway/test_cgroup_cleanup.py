@@ -71,7 +71,8 @@ class TestLiveGatewayGuard:
         # Regression: a live gateway PID still in cgroup.procs (gateway is PID 1
         # in a plain container, a targeted reap of a running service, or an
         # in-process `gateway restart` on a host without a service manager)
-        # must abort the reap before any signal.
+        # must abort the reap before any signal — even under a systemd parent —
+        # and main() must report the refusal with a non-zero exit.
         import gateway.status
 
         cgroup_path = "/some.slice/some-gateway.service"
@@ -89,7 +90,10 @@ class TestLiveGatewayGuard:
             pytest.fail("os.kill must not signal a cgroup holding a live gateway")
 
         monkeypatch.setattr(cgroup_cleanup.os, "kill", _explode)
-        assert cgroup_cleanup.reap_cgroup(cgroup_path) == 0
+        assert cgroup_cleanup.reap_cgroup(cgroup_path) == -1
+        monkeypatch.setattr(cgroup_cleanup, "_parent_is_systemd", lambda: True)
+        monkeypatch.setattr(cgroup_cleanup, "_own_cgroup_path", lambda: cgroup_path)
+        assert cgroup_cleanup.main() == 1
 
     def test_reap_proceeds_when_only_orphans_in_cgroup(self, monkeypatch):
         # Allow-path contract: orphans with non-gateway command lines must

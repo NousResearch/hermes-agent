@@ -1539,6 +1539,23 @@ class GatewayShutdownMixin:
         except Exception:
             return 0
 
+    def _restart_safe_cron_count(self) -> int:
+        """Cron runs whose worker owns a restart-safe systemd scope; 0 if cron can't import.
+
+        Such a worker runs outside the gateway cgroup, so neither the tool-process sweep nor
+        ``mark_running_jobs_interrupted`` reaches it, and its final send rides the durable delivery
+        queue for whichever gateway is live next. The restart after-turn wait must therefore not
+        hold the gateway in ``draining`` for it: waiting buys the run nothing and refuses new turns
+        for up to the whole cap (observed live: a 100-minute job held the gateway ~30 minutes).
+        Degraded (no user bus) workers are NOT in this set — they share the cgroup and die with a
+        systemd stop, so they keep holding the wait.
+        """
+        try:
+            from cron.scheduler import get_restart_safe_external_job_ids
+            return len(get_restart_safe_external_job_ids())
+        except Exception:
+            return 0
+
     def _wedged_chat_agent_count(self) -> int:
         """Running chat agents with no activity for ``agent.gateway_timeout`` (0 when disabled);
         an unreadable activity summary means "not wedged".
@@ -1566,8 +1583,19 @@ class GatewayShutdownMixin:
         )
 
     def _awaitable_work_count(self) -> int:
-        """Active work minus wedged turns — what the restart wait waits on."""
-        return max(0, self._active_work_count() - self._wedged_agent_count())
+        """Active work minus the units the restart wait must not hold for.
+
+        Two disjoint exclusions, both subtracted here so a unit in both sets is never dropped
+        twice: wedged turns (idle past ``agent.gateway_timeout`` / past the cron in-flight
+        allowance — restart is their remedy, #115469) and cron runs executing in a restart-safe
+        external worker (``_restart_safe_cron_count``), which outlives this process either way.
+        """
+        return max(
+            0,
+            self._active_work_count()
+            - self._wedged_agent_count()
+            - self._restart_safe_cron_count(),
+        )
 
     def _describe_active_work(self) -> list:
         """One dict per in-flight work unit the restart wait is holding for, so an observer
@@ -1597,12 +1625,18 @@ class GatewayShutdownMixin:
                         unit["idle_s"] = summary.get("seconds_since_activity")
             units.append(unit)
         with suppress(Exception):
-            from cron.scheduler import get_running_job_details, get_wedged_job_ids
+            from cron.scheduler import (
+                get_restart_safe_external_job_ids,
+                get_running_job_details,
+                get_wedged_job_ids,
+            )
             wedged = get_wedged_job_ids()
+            restart_safe = get_restart_safe_external_job_ids()
             for job in get_running_job_details():
                 units.append({"kind": "cron", "job_id": job["job_id"], "elapsed_s": job["elapsed_s"],
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
-                              "wedged": job["job_id"] in wedged})
+                              "wedged": job["job_id"] in wedged,
+                              "restart_safe": job["job_id"] in restart_safe})
         for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
@@ -1618,9 +1652,11 @@ class GatewayShutdownMixin:
             return True
         if self._awaitable_work_count() <= 0:
             logger.warning(
-                "Restart requested with %d active work unit(s), all wedged "
-                "past the inactivity timeout; skipping the after-turn wait "
-                "and proceeding to stop()/drain which will interrupt them", active,
+                "Restart requested with %d active work unit(s), none awaitable "
+                "(%d wedged past the inactivity timeout, %d in restart-safe external cron "
+                "workers that outlive this process); skipping the after-turn wait and "
+                "proceeding to stop()/drain", active,
+                self._wedged_agent_count(), self._restart_safe_cron_count(),
             )
             return False
         timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
@@ -1651,8 +1687,10 @@ class GatewayShutdownMixin:
             if (now - last_status_at) >= 30.0:
                 logger.info(
                     "Restart deferred: waiting on %d active work unit(s) "
-                    "(%d wedged and excluded; %.0fs remaining before force drain): %s",
-                    self._awaitable_work_count(), self._wedged_agent_count(), deadline - now,
+                    "(%d wedged and excluded, %d restart-safe and excluded; "
+                    "%.0fs remaining before force drain): %s",
+                    self._awaitable_work_count(), self._wedged_agent_count(),
+                    self._restart_safe_cron_count(), deadline - now,
                     self._describe_active_work(),
                 )
                 self._scale_to_zero_status("draining", "restart wait: status mark failed")
@@ -1660,8 +1698,10 @@ class GatewayShutdownMixin:
             await asyncio.sleep(0.1)
         if self._active_work_count() > 0:
             logger.warning(
-                "Restart deferred wait: %d wedged work unit(s) remain; "
-                "proceeding to stop()/drain which will interrupt them", self._active_work_count(),
+                "Restart deferred wait: %d excluded work unit(s) remain "
+                "(%d wedged, %d restart-safe external cron); proceeding to stop()/drain",
+                self._active_work_count(), self._wedged_agent_count(),
+                self._restart_safe_cron_count(),
             )
             return False
         logger.info("Restart deferred wait complete — active work drained; proceeding to stop()")

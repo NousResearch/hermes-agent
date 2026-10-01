@@ -623,3 +623,68 @@ def test_wedged_cron_check_parses_jobs_once_per_run(monkeypatch, tmp_path):
         for jid in ("job-a", "job-b", "job-c"):
             sched.release_running_job(jid)
     assert not sched._running_allowance_s
+
+
+@pytest.mark.asyncio
+async def test_request_restart_skips_wait_for_scope_isolated_cron_worker(monkeypatch, tmp_path):
+    """A cron run in its own restart-safe systemd scope outlives the restart: the wait must skip it.
+
+    Its worker lives outside the gateway cgroup, so the shutdown drain deliberately leaves it
+    unmarked (``mark_running_jobs_interrupted``) and its final send rides the durable delivery queue
+    for the next gateway. Holding the after-turn wait for it therefore only kept the gateway in
+    "draining" — refusing new turns for up to the whole ``agent.restart_after_turn_timeout`` — while
+    the worker kept running (observed live: a 100-minute job held the gateway ~30 minutes).
+    """
+    import cron.scheduler as sched
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 300.0  # would hang the test without the scope bypass
+    assert sched.try_register_running_job("scoped-screening-job")
+    try:
+        sched._record_external_cron_worker("scoped-screening-job", 4321, scope_isolated=True)
+        # Counted as work (the drain still sees it), but not awaited.
+        assert runner._active_work_count() == 1
+        assert runner._restart_safe_cron_count() == 1
+        assert runner._awaitable_work_count() == 0
+        cron_units = [u for u in runner._describe_active_work() if u["kind"] == "cron"]
+        assert cron_units[0]["job_id"] == "scoped-screening-job"
+        assert cron_units[0]["external"] is True and cron_units[0]["restart_safe"] is True
+
+        assert runner.request_restart(detached=False, via_service=True) is True
+        await asyncio.wait_for(runner._restart_task, timeout=5.0)
+        runner.stop.assert_awaited_once()
+    finally:
+        sched.release_running_job("scoped-screening-job")
+        assert sched.get_restart_safe_external_job_ids() == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_request_restart_still_waits_for_worker_without_its_own_scope(monkeypatch, tmp_path):
+    """Control: an external worker WITHOUT its own scope dies with the gateway, so the wait holds.
+
+    A ``degraded`` dispatch (no reachable user D-Bus) is still an external subprocess but stays in
+    the gateway cgroup — a systemd stop kills it mid-run. The fix must not degrade into "never wait
+    for a cron worker".
+    """
+    import cron.scheduler as sched
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    runner, _adapter = make_restart_runner()
+    runner._restart_after_turn_timeout = 300.0
+    runner._scale_to_zero_status = MagicMock()
+    assert sched.try_register_running_job("degraded-job")
+    try:
+        sched._record_external_cron_worker("degraded-job", 4322, scope_isolated=False)
+        assert runner._restart_safe_cron_count() == 0
+        assert runner._awaitable_work_count() == 1
+        cron_units = [u for u in runner._describe_active_work() if u["kind"] == "cron"]
+        assert cron_units[0]["external"] is True and cron_units[0]["restart_safe"] is False
+        # Still awaited: the wait does not return while this run is in flight.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(runner._await_active_work_before_restart(), timeout=0.5)
+    finally:
+        sched.release_running_job("degraded-job")

@@ -627,6 +627,12 @@ _restart_safe_waiter_job_ids: set = set()
 # in-flight key -> pid of the restart-safe external worker executing it (absent for in-process
 # runs), so a drain observer can name the process holding the gateway open.
 _running_worker_pids: dict[tuple, int] = {}
+# In-flight keys whose external worker runs in its OWN transient systemd scope
+# (``GatewayChildDispatch.mode == "scoped"``). Only that worker outlives a gateway restart: a
+# systemd stop kills the service cgroup, so a ``degraded`` direct subprocess (no reachable user
+# bus) dies with the gateway even though it is external. The gateway's restart after-turn wait
+# skips exactly this set — see ``get_restart_safe_external_job_ids``.
+_scope_isolated_job_ids: set = set()
 _running_lock = threading.Lock()
 
 # Per in-flight id: time.time() claim instant + the future owning its release (``_FUTURE_PENDING``
@@ -749,6 +755,30 @@ def get_wedged_job_ids() -> "frozenset[str]":
         key[1] for key, age in ages.items() if age >= max(allowances[key], floor_seconds))
 
 
+def get_restart_safe_external_job_ids() -> "frozenset[str]":
+    """In-flight job IDs executing in a restart-safe external worker of its OWN systemd scope.
+
+    A ``scoped`` worker runs in a transient user scope outside the gateway cgroup, so a systemd
+    stop/restart cannot reach it: the shutdown drain deliberately leaves it unmarked
+    (``mark_running_jobs_interrupted``) and its final send rides the durable delivery queue, drained
+    by whichever gateway is live next. The gateway restart after-turn wait reads this to skip those
+    runs — holding for work that provably outlives the process only keeps the gateway in
+    ``draining`` (refusing new turns) for up to ``agent.restart_after_turn_timeout`` while the
+    worker keeps going regardless.
+
+    A ``degraded`` worker (external subprocess, no reachable user bus) is deliberately NOT listed:
+    it stays in the gateway cgroup and dies with a systemd stop, so the wait must still hold for it.
+    Runs already reported as wedged by :func:`get_wedged_job_ids` are excluded here as well — the
+    gateway subtracts both counts, and a run in both sets would be subtracted twice.
+    """
+    with _running_lock:
+        keys = set(_scope_isolated_job_ids)
+    if not keys:
+        return frozenset()
+    wedged = get_wedged_job_ids()
+    return frozenset(key[1] for key in keys if key[1] not in wedged)
+
+
 def is_job_running(job_id: str, home: Optional[Union[Path, str]] = None) -> bool:
     """True when THIS process has an in-flight run of ``job_id`` FOR ``home`` (default: the active
     cron scope's home).
@@ -761,6 +791,24 @@ def is_job_running(job_id: str, home: Optional[Union[Path, str]] = None) -> bool
     key = _inflight_key(job_id, home)
     with _running_lock:
         return key in _running_job_ids or key in _running_fire_owners
+
+
+def _record_external_cron_worker(job_id: str, pid: Any, *, scope_isolated: bool) -> None:
+    """Record the external worker holding *job_id* so a drain observer can name it, and whether
+    its scope isolates it from this process.
+
+    ``scope_isolated`` is the strong form of restart-safety: only a ``scoped`` dispatch
+    (``GatewayChildDispatch``) puts the worker in its own transient systemd scope, outside the
+    gateway cgroup. A ``degraded`` worker is still external but shares the cgroup and dies with a
+    systemd stop, so it must NOT be listed as restart-safe. Called once per accepted handoff;
+    both maps are cleared by ``release_running_job`` and by the worker waiter's ``finally``.
+    """
+    key = _inflight_key(job_id)
+    with _running_lock:
+        with contextlib.suppress(TypeError, ValueError):
+            _running_worker_pids[key] = int(pid)
+        if scope_isolated:
+            _scope_isolated_job_ids.add(key)
 
 
 def try_register_running_job(job_id: str) -> bool:
@@ -805,6 +853,7 @@ def release_running_job(job_id: str, home: Optional[Union[Path, str]] = None) ->
         _running_allowance_s.pop(key, None)
         _running_futures.pop(key, None)
         _running_worker_pids.pop(key, None)
+        _scope_isolated_job_ids.discard(key)
 
 
 def _inflight_min_allowance_minutes() -> float:
@@ -3536,8 +3585,10 @@ def _wait_for_external_cron_worker(
         raise _ExternalWorkerPostHandoffError(str(wait_error)) from wait_error
     finally:
         if job_id is not None:
+            _key = _inflight_key(job_id)
             with _running_lock:
-                _restart_safe_waiter_job_ids.discard(_inflight_key(job_id))
+                _restart_safe_waiter_job_ids.discard(_key)
+                _scope_isolated_job_ids.discard(_key)
         # The execution is terminal or its worker is dead: nobody will read a
         # payload or acknowledgement left behind by a late/unread handoff.
         for stale in handoff_files:
@@ -3731,14 +3782,17 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     stderr_path=stderr_path,
                 )
             logger.info(
-                "Cron job '%s' handed to restart-safe worker pid=%s execution=%s",
+                "Cron job '%s' handed to restart-safe worker pid=%s execution=%s dispatch=%s",
                 job_id,
                 acknowledgement.get("pid"),
                 execution_id,
+                dispatch.mode,
             )
-            with _running_lock, contextlib.suppress(TypeError, ValueError):
-                _running_worker_pids[_inflight_key(job_id)] = int(
-                    acknowledgement.get("pid") or process.pid)
+            _record_external_cron_worker(
+                job_id,
+                acknowledgement.get("pid") or process.pid,
+                scope_isolated=dispatch.mode == "scoped",
+            )
             return _wait_for_external_cron_worker(
                 process,
                 execution_id=execution_id,

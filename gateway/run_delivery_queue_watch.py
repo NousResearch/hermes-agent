@@ -98,5 +98,6 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             continue
         with _profile_runtime_scope(profile_home or get_hermes_home()):
             profile_adapters = cron_delivery_adapters(
-                profile_name, adapters, profile_adapters={profile_name: profile_adapters})
+                profile_name, adapters, profile_adapters={profile_name: profile_adapters},
+                profile_failed_platforms=getattr(runner, "_profile_failed_platforms", None))
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)

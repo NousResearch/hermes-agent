@@ -1913,6 +1913,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         # default's. Absent (no multiplexed adapters), delivery for a secondary profile falls
         # back to the primary's routed adapters or fails closed — the job still FIRES.
         cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
+        cron_start_kwargs["profile_failed_platforms"] = getattr(runner, "_profile_failed_platforms", None)
         # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
         # name); naming it keeps the ticker from routing a secondary's cron through that bot
         # and lets a named multiplexer's own jobs reuse its live adapters.

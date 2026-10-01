@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
-from typing import Any
+from typing import Any, Collection
 import asyncio
 import logging
 from urllib.parse import quote
@@ -21,7 +21,7 @@ _FIELD_TYPES = {"encrypted": bool, "tombstoned": bool}
 
 async def fetch_room_entries(
     client: Any, cache: MatrixEventContextCache, room_id: str, event_id: str, *, limit: int,
-    is_previous_turn: PreviousTurnCheck | None = None,
+    is_previous_turn: PreviousTurnCheck | None = None, exclude_event_ids: Collection[str] = (),
 ) -> list[MatrixEventContext]:
     if client is None or limit <= 0:
         return []
@@ -57,6 +57,8 @@ async def fetch_room_entries(
     newest_first: list[MatrixEventContext] = []
     for raw in earlier[:limit]:
         if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
+            continue
+        if raw["event_id"] == event_id or raw["event_id"] in exclude_event_ids:
             continue
         parsed = await history_entry(client, raw)
         if parsed is None:

@@ -1574,7 +1574,9 @@ def _save_jobs_unlocked(
         for attempt in range(_SAVE_JOBS_MERGE_ATTEMPTS + 1):
             if not replace:
                 jobs = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
-            tmp_path = _stage_jobs_payload(jobs_file, jobs)
+            # Stage beside the resolved store: a temp next to a symlink on another filesystem
+            # makes the rename EXDEV, and atomic_replace's copy fallback rewrites in place.
+            tmp_path = _stage_jobs_payload(Path(os.path.realpath(jobs_file)), jobs)
             # Verify-after-stage: a sibling landing during serialization forces another merge round.
             if (
                 not replace

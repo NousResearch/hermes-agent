@@ -967,6 +967,7 @@ test('buildSpawnCommand never pins a non-slug profile into the remote argv', () 
   const bad = buildSpawnCommand('/x/hermes', 0 as unknown as string, {
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
   })
+
   assert.ok(!bad.includes('--profile'), 'a non-string profile must not be pinned')
 
   const empty = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })

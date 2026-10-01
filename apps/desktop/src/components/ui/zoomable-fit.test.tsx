@@ -86,9 +86,10 @@ describe('Zoomable overlay fit', () => {
       FakeResizeObserver.deliver()
     })
 
-    // 1000/4758 ≈ 0.2102 — below the old MIN_SCALE floor of 0.25, so this
+    // The 1000×600 stage minus its 32px/64px fit insets leaves 936×472, so
+    // 936/4758 ≈ 0.197 — below the old MIN_SCALE floor of 0.25, so this
     // also pins the lower clamp.
-    expect(content.style.transform).toBe('translate(0px, 0px) scale(0.2101723413198823)')
+    expect(content.style.transform).toBe(`translate(0px, 0px) scale(${936 / 4758})`)
   })
 
   it('does not scale content that already fits beyond 100%', () => {
@@ -154,10 +155,10 @@ describe('Zoomable overlay fit', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
-    expect(content.style.transform).not.toBe('translate(0px, 0px) scale(0.2101723413198823)')
+    expect(content.style.transform).not.toBe(`translate(0px, 0px) scale(${936 / 4758})`)
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
-    expect(content.style.transform).toBe('translate(0px, 0px) scale(0.2101723413198823)')
+    expect(content.style.transform).toBe(`translate(0px, 0px) scale(${936 / 4758})`)
 
     // After reset the view is the fitted one again, so a later geometry
     // change must re-fit rather than leave the reset scale behind.
@@ -166,7 +167,7 @@ describe('Zoomable overlay fit', () => {
       FakeResizeObserver.deliver()
     })
 
-    expect(content.style.transform).toBe('translate(0px, 0px) scale(0.4203446826397646)')
+    expect(content.style.transform).toBe(`translate(0px, 0px) scale(${936 / 2379})`)
   })
 
   it('keeps the fitted view tracking later geometry changes', () => {
@@ -194,6 +195,6 @@ describe('Zoomable overlay fit', () => {
       FakeResizeObserver.deliver()
     })
 
-    expect(content.style.transform).toBe('translate(0px, 0px) scale(0.4203446826397646)')
+    expect(content.style.transform).toBe(`translate(0px, 0px) scale(${936 / 2379})`)
   })
 })

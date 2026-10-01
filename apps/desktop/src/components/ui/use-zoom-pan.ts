@@ -20,6 +20,10 @@ const MIN_SCALE = 0.25
 const MAX_SCALE = 8
 const WHEEL_STEP = 1.1
 const BUTTON_STEP = 1.25
+// Breathing room around fitted content. Vertical clears the floating toolbar
+// at the stage's bottom edge; symmetric so the grid centering stays exact.
+const FIT_INSET_X = 32
+const FIT_INSET_Y = 64
 // A fitted diagram can shrink far below the interactive zoom-out floor, so
 // surfaces that fit content (see `setContentEl`) pass this via `minScale`.
 export const FIT_MIN_SCALE = 0.05
@@ -94,17 +98,18 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
     [clamp]
   )
 
-  // Shrink the content so it fits the stage, never upscale it. The stage grid
-  // centers the content, so the fit transform needs no translation. Content
-  // with no measurable size yet (async render, e.g. mermaid) stays as-is — a
-  // zero scale would blank the overlay instead of waiting for geometry.
+  // Shrink the content so it fits the stage, inset from its edges, and never
+  // upscale it. The stage grid centers the content, so the fit transform needs
+  // no translation. Content with no measurable size yet (async render, e.g.
+  // mermaid) stays as-is — a zero scale would blank the overlay instead of
+  // waiting for geometry.
   const fit = useCallback(() => {
     if (!node || !contentEl) {
       return
     }
 
-    const availableW = node.clientWidth
-    const availableH = node.clientHeight
+    const availableW = node.clientWidth - FIT_INSET_X * 2
+    const availableH = node.clientHeight - FIT_INSET_Y * 2
     const contentW = contentEl.scrollWidth
     const contentH = contentEl.scrollHeight
 
@@ -173,7 +178,10 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
 
   // Native, non-passive wheel so we can preventDefault page scroll. Attached to
   // the surface node (ref) only while the viewer is enabled, so it never
-  // hijacks wheel events when the lightbox/dialog is closed.
+  // hijacks wheel events when the lightbox/dialog is closed. The handler's
+  // `fittedRef.current = false` is not an atom-mirror — a one-way gesture flag
+  // marking the view as manually zoomed.
+  // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
     if (!node || !enabled) {
       return

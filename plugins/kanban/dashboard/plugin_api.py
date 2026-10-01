@@ -739,6 +739,9 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             (task_id,)).fetchone()
         if prev is None:
             return False
+        gate = kanban_db.latest_human_gate(conn, task_id)
+        if gate is not None and gate[2] != "approve":
+            return False
         if prev["status"] == "running" and new_status == "ready":
             resume_status = kanban_db._retry_status_for_run(conn, task_id, prev["current_run_id"])
             if resume_status == "review":

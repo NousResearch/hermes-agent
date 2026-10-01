@@ -118,6 +118,36 @@ def _make_runner(*, platform_extra: dict | None = None,
     return runner
 
 
+@pytest.mark.asyncio
+async def test_kanban_human_decision_requires_admin_and_binds_sender(monkeypatch):
+    """A chat command cannot provide its own approver identity."""
+    from hermes_cli import kanban
+
+    runner = _make_runner(platform_extra={
+        "allow_admin_from": ["admin"], "user_allowed_commands": ["kanban"],
+    })
+    calls = []
+
+    def run_slash(rest, *, operator_actor=None, gateway_call=False):
+        calls.append((rest, operator_actor, gateway_call))
+        return "accepted"
+
+    monkeypatch.setattr(kanban, "run_slash", run_slash)
+    commands = [
+        "/kanban decide t_123 --gate-event-id 4 --gate-target abc --approve",
+        "/kanban --bo=default decide t_123 --gate-event-id 4 --gate-target abc --approve",
+    ]
+    for command in commands:
+        assert await runner._handle_kanban_command(
+            _make_event(command, _make_source(user_id="user1"))
+        ) == "accepted"
+        assert calls[-1] == (command[len("/kanban "):], None, True)
+        assert await runner._handle_kanban_command(
+            _make_event(command, _make_source(user_id="admin"))
+        ) == "accepted"
+        assert calls[-1] == (command[len("/kanban "):], "discord:admin", True)
+
+
 # ---------------------------------------------------------------------------
 # /whoami response shape — proves the handler is reachable AND uses the
 # resolver. We use /whoami because it's deterministic and short-circuits

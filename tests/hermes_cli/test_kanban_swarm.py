@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from hermes_cli import kanban_db as kb
@@ -259,5 +261,30 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         synthesizer = kb.get_task(conn, created.synthesizer_id)
         assert synthesizer is not None
         assert synthesizer.status == "ready"
+    finally:
+        conn.close()
+
+def test_existing_swarm_root_with_human_gate_cannot_be_reactivated(tmp_path):
+    conn = kbc.connect(tmp_path / "kanban.db")
+    kwargs = dict(
+        goal="Collect evidence.",
+        workers=[SwarmWorkerSpec(profile="researcher", title="Evidence", body="Find proof")],
+        verifier_assignee="reviewer",
+        synthesizer_assignee="writer",
+        idempotency_key="swarm-human-gate",
+    )
+    try:
+        created = create_swarm(conn, **kwargs)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (created.root_id,))
+        assert kb.block_task(
+            conn, created.root_id, kind="human_gate", reason="operator approval",
+            human_gate={"operation": "merge", "target": "a" * 40, "expires_at": int(time.time()) + 3600},
+        )
+        gate_before = kb.latest_human_gate(conn, created.root_id)
+        with pytest.raises(RuntimeError, match="could not activate"):
+            create_swarm(conn, **kwargs)
+        assert kb.get_task(conn, created.root_id).status == "blocked"
+        assert kb.latest_human_gate(conn, created.root_id) == gate_before
     finally:
         conn.close()

@@ -81,6 +81,8 @@ def _activate_root_inline(
     would run while the outer txn can still roll back). The caller runs
     ``recompute_ready`` after the outer commit.
     """
+    if kb.latest_human_gate(conn, root_id) is not None:
+        return False
     cur = conn.execute(
         """
         UPDATE tasks

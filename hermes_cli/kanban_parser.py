@@ -322,6 +322,9 @@ _SPECS = [
                   "blocked for a human; 'transient' marks a maybe-flaky failure. "
                   "Repeated same-kind re-blocks after unblock route the task to "
                   "triage to break unblock loops. Omit for a generic block."),
+        _arg("--gate-operation", help="Exact operation requiring a human decision (single task only)."),
+        _arg("--gate-target", help="Immutable operation target, e.g. a candidate SHA."),
+        _arg("--gate-expires-at", type=int, help="Decision deadline as a Unix timestamp."),
     ], help="Mark one or more tasks blocked"),
     _cmd("schedule", [
         _TASK_ID,
@@ -332,6 +335,13 @@ _SPECS = [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
+    _cmd("decide", [
+        _TASK_ID,
+        _arg("--gate-event-id", required=True, type=int, help="Exact blocked event ID being decided."),
+        _arg("--gate-target", required=True, help="Repeat the immutable target displayed in the gate."),
+        _arg("--approve", action="store_true", help="Authorize one continuation."),
+        _arg("--deny", action="store_true", help="Record a final denial; keep the task blocked."),
+    ], help="Resolve an opt-in human gate on the same task"),
     _cmd("request-review", [
         _TASK_ID,
         _arg("--summary", help="What was implemented and how it was verified — shown to the reviewer."),

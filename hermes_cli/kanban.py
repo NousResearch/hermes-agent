@@ -983,6 +983,12 @@ def _cmd_block(args: argparse.Namespace) -> int:
     kind = getattr(args, "kind", None)
     author = _profile_author()
     ids = _bulk_ids(args)
+    gate_values = tuple(getattr(args, name, None) for name in
+                        ("gate_operation", "gate_target", "gate_expires_at"))
+    gated = any(value is not None for value in gate_values) or kind == "human_gate"
+    if gated and (kind != "human_gate" or len(ids) != 1 or any(v is None for v in gate_values)):
+        return _err("human gate requires one task, --kind human_gate, operation, target and expiry", 2)
+    gate = (dict(zip(("operation", "target", "expires_at"), gate_values)) if gated else None)
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
         def ok_msg(tid):
@@ -998,10 +1004,15 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 verdict = ("needs a human decision" if (landed.block_kind if landed else kind) == "needs_input"
                            else "orchestration attention needed")
                 return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
+            if gated:
+                active = kb.latest_human_gate(conn, tid)
+                return f"Blocked {tid} for human decision (event {active[0]}){suffix}"
             return f"Blocked {tid}{suffix}"
 
-        op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
+        block = lambda tid: kb.block_task(
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid),
+            human_gate=gate)
+        op = block if gated else _commented(conn, reason, author, "BLOCKED", block)
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 
@@ -1029,6 +1040,32 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
         op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+
+
+def _cmd_decide(args: argparse.Namespace) -> int:
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return _err("kanban decide is operator-only")
+    if args.approve == args.deny:
+        return _err("choose exactly one of --approve or --deny", 2)
+    actor = getattr(args, "_operator_actor", None)
+    if not actor:
+        if getattr(args, "_gateway_call", False):
+            return _err("human gate decision requires a configured admin identity")
+        actor = f"local-uid:{os.geteuid()}" if hasattr(os, "geteuid") else "local-cli"
+    with kbc.connect_closing() as conn:
+        changed = kb.unblock_task(
+            conn, args.task_id, gate_event_id=args.gate_event_id,
+            decision="approve" if args.approve else "deny", actor=actor,
+            expected_target=args.gate_target,
+        )
+        if args.approve and changed:
+            print(f"Approved human gate {args.gate_event_id}; resumed {args.task_id}")
+            return 0
+        gate = kb.latest_human_gate(conn, args.task_id)
+        if args.deny and gate and gate[0] == args.gate_event_id and gate[2] == "deny":
+            print(f"Denied human gate {args.gate_event_id}; {args.task_id} remains blocked")
+            return 0
+        return _err("human gate absent, stale, expired or already decided")
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:
@@ -1326,7 +1363,7 @@ _HANDLERS = {
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
-    "schedule": _cmd_schedule, "unblock": _cmd_unblock,
+    "schedule": _cmd_schedule, "unblock": _cmd_unblock, "decide": _cmd_decide,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
@@ -1352,6 +1389,7 @@ Common subcommands:
   `comment <id> <msg>`  Append a comment
   `attach <id> <path>`  Attach a local file; `attachments <id>` to list
   `complete <id>…`      Mark task(s) done
+  `decide <id> …`        Approve or deny an opt-in human gate
   `request-review <id>` Enter first-class review; `request-changes <id> <reason>` returns an active review to its implementer
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
@@ -1366,7 +1404,9 @@ Read-only commands are safe while an agent is running.\
 """
 
 
-def run_slash(rest: str) -> str:
+def run_slash(
+    rest: str, *, operator_actor: Optional[str] = None, gateway_call: bool = False,
+) -> str:
     """Execute a ``/kanban …`` string (``rest`` = everything after ``/kanban``) and return captured
     stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical."""
     import io
@@ -1412,6 +1452,8 @@ def run_slash(rest: str) -> str:
     try:
         with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
             args = kanban_parser.parse_args(tokens)
+            args._operator_actor = operator_actor
+            args._gateway_call = gateway_call
     except SystemExit as exc:
         out, err = buf_out.getvalue().rstrip(), buf_err.getvalue().rstrip()
         if exc.code in {0, None} and out:  # ``-h`` help dump

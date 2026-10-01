@@ -359,7 +359,20 @@ class GatewaySlashCommandsMixin(
                 action = tok
                 break
         try:
-            output = await asyncio.to_thread(run_slash, text)
+            # Authorization is bound to the parsed command in run_slash, not
+            # this lightweight parser (which only supports auto-subscribe).
+            from gateway.slash_access import policy_for_runner_source
+            source = event.source
+            policy = policy_for_runner_source(self, source)
+            user_id = getattr(source, "user_id", None)
+            actor = None
+            if policy.enabled and user_id and policy.is_admin(user_id):
+                platform = getattr(source, "platform", None)
+                platform_id = getattr(platform, "value", str(platform))
+                actor = f"{platform_id}:{user_id}"
+            output = await asyncio.to_thread(
+                run_slash, text, operator_actor=actor, gateway_call=True,
+            )
         except Exception as exc:  # pragma: no cover - defensive
             return t("gateway.kanban.error_prefix", error=exc)
 

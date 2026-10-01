@@ -104,7 +104,7 @@ VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", 
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "human_gate"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
@@ -2279,6 +2279,9 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        gate = latest_human_gate(conn, task_id)
+        if gate is not None and gate[2] != "approve":
+            return None
         # Single enforcement point: never ready -> running with an undone
         # parent, whichever writer set 'ready'. Demote to 'todo';
         # recompute_ready re-promotes when the parents finish.
@@ -2312,6 +2315,9 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        gate = latest_human_gate(conn, task_id)
+        if gate is not None and gate[2] != "approve":
+            return None
         if not _parents_satisfied(conn, task_id):
             demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' "
@@ -2770,6 +2776,9 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
+        gate = latest_human_gate(conn, task_id)
+        if gate is not None and gate[2] != "approve":
+            return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
@@ -3216,6 +3225,7 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    human_gate: Optional[dict] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3233,6 +3243,16 @@ def block_task(
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
+    if (kind == "human_gate") != (human_gate is not None):
+        raise ValueError("human_gate block kind requires exact gate details")
+    if human_gate is not None:
+        if (not isinstance(human_gate, dict)
+                or set(human_gate) != {"operation", "target", "expires_at"}
+                or not all(isinstance(human_gate[k], str) and human_gate[k].strip()
+                           for k in ("operation", "target"))
+                or type(human_gate["expires_at"]) is not int
+                or human_gate["expires_at"] <= int(time.time())):
+            raise ValueError("human gate requires operation, target and future expiry")
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
@@ -3247,6 +3267,8 @@ def block_task(
         # asserting run ownership (``expected_run_id``) cannot own a parked
         # card -- its run is over -- so it is refused like any stale worker.
         if cur_row["status"] == "blocked":
+            if human_gate is not None:
+                return False
             if kind is None or expected_run_id is not None or _row_get(cur_row, "block_kind") is not None:
                 return False
             classified = conn.execute(
@@ -3278,6 +3300,12 @@ def block_task(
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
+        if human_gate is not None:
+            # The existing blocked event is the durable gate identity. It is
+            # written in the same transaction as the waiting state.
+            if new_status != "blocked":
+                return False
+            payload["human_gate"] = human_gate
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
@@ -3604,10 +3632,16 @@ def promote_task(
             f"`hermes kanban unlink <parent_id> {task_id}`)"
         )
 
+    gate = latest_human_gate(conn, task_id)
+    if gate is not None and gate[2] != "approve":
+        return False, "human decision gate is unresolved"
     if dry_run:
         return True, None
 
     with write_txn(conn):
+        gate = latest_human_gate(conn, task_id)
+        if gate is not None and gate[2] != "approve":
+            return False, "human decision gate is unresolved"
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
@@ -3649,11 +3683,62 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def latest_human_gate(conn: sqlite3.Connection, task_id: str) -> Optional[tuple[int, dict, Optional[str]]]:
+    """Newest opt-in gate and its durable decision, if any.
+
+    Ordinary needs_input blocks have no gate and retain their existing behavior.
+    A later ordinary block cannot erase an unresolved gate from the event log.
+    """
+    row = conn.execute("SELECT block_kind FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if row is None or row["block_kind"] != "human_gate":
+        return None
+    rows = conn.execute(
+        "SELECT id, payload FROM task_events WHERE task_id=? AND kind='blocked' ORDER BY id DESC",
+        (task_id,),
+    )
+    for row in rows:
+        gate = _json_dict(row["payload"]).get("human_gate")
+        if not isinstance(gate, dict):
+            continue
+        decisions = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='human_decision' "
+            "AND id>? ORDER BY id DESC", (task_id, row["id"]),
+        )
+        for decision in decisions:
+            payload = _json_dict(decision["payload"])
+            if payload.get("gate_event_id") == row["id"]:
+                return int(row["id"]), gate, payload.get("decision")
+        return int(row["id"]), gate, None
+    return None
+
+
+def unblock_task(conn: sqlite3.Connection, task_id: str, *, gate_event_id: Optional[int] = None,
+                 decision: Optional[str] = None, actor: Optional[str] = None,
+                 expected_target: Optional[str] = None) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first. An opt-in
+    human gate requires a fresh exact-event decision in the same transaction."""
     now = int(time.time())
     with write_txn(conn):
+        gate = latest_human_gate(conn, task_id)
+        if gate is None:
+            if (gate_event_id is not None or decision is not None or actor is not None
+                    or expected_target is not None):
+                return False
+        else:
+            event_id, request, prior_decision = gate
+            if (prior_decision is not None or gate_event_id != event_id
+                    or expected_target != request.get("target")
+                    or decision not in {"approve", "deny"}
+                    or not isinstance(actor, str) or not actor.strip()
+                    or (decision == "approve" and now >= request.get("expires_at", 0))
+                    or _task_status(conn, task_id) != "blocked"):
+                return False
+            if decision == "deny":
+                _append_event(conn, task_id, "human_decision", {
+                    "gate_event_id": event_id, "decision": "deny", "actor": actor.strip(),
+                })
+                return False
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"
@@ -3670,18 +3755,26 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             if landing_status == "ready" and resume_status == "review"
             else landing_status
         )
-        # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
-        # resetting them is the amnesia that let cron-unblock <-> re-block loop
-        # unbounded; only complete_task clears them. ``consecutive_failures``
+        # Ordinary ``block_kind``/``block_recurrences`` survive unblock to
+        # detect loops. A decided human gate is consumed here; its events stay
+        # durable, but its kind must not block a later unrelated schedule.
+        # ``consecutive_failures``
         # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
         # is a fresh start for the retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "block_kind = CASE WHEN ? THEN NULL ELSE block_kind END, "
+            "block_recurrences = CASE WHEN ? THEN 0 ELSE block_recurrences END "
+            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            (new_status, gate is not None, gate is not None, task_id),
         )
         if cur.rowcount != 1:
             return False
+        if gate is not None:
+            _append_event(conn, task_id, "human_decision", {
+                "gate_event_id": gate_event_id, "decision": "approve", "actor": actor.strip(),
+            })
         _append_event(
             conn, task_id, "unblocked",
             (
@@ -3964,6 +4057,8 @@ def schedule_task(
     """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
     until ``unblock_task`` re-gates it."""
     with write_txn(conn):
+        if latest_human_gate(conn, task_id) is not None:
+            return False
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks

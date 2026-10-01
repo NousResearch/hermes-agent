@@ -554,6 +554,10 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
                            ("create_service_tier_override", "service_tier_override")):
             if kwarg not in kwargs and session.get(pin) is not None:
                 kwargs[kwarg] = session[pin]
+        # Carry the gateway_session_key from the old agent so a rebuilt session (model switch,
+        # /new, Bot Chat capability sync) keeps the same memory scope as its messaging origin (#128675).
+        if "gateway_session_key" not in kwargs and old_agent is not None:
+            kwargs["gateway_session_key"] = getattr(old_agent, "_gateway_session_key", None)
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:

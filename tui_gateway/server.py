@@ -1015,6 +1015,10 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
         kw.update({k: v for k, v in (("reasoning_config_override", current.get("create_reasoning_override")),
                                      ("service_tier_override", current.get("create_service_tier_override")))
                    if v is not None})
+        # gateway_session_key is not part of model/runtime overrides; always pass it when present so memory
+        # providers scope to the messaging chat even when no provider override is routable (#128675).
+        if isinstance(resume_overrides, dict) and resume_overrides.get("gateway_session_key"):
+            kw["gateway_session_key"] = resume_overrides["gateway_session_key"]
     return kw
 
 
@@ -1665,6 +1669,14 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         overrides["reasoning_config_override"] = reasoning_config
     if service_tier:  # None = "inherit the profile" at _make_agent; "" = real override "no priority tier"
         overrides["service_tier_override"] = "" if service_tier.lower() == "normal" else service_tier
+    # gateway_session_key: the stable per-chat routing key stored on the row by the messaging gateway
+    # (e.g. agent:main:telegram:dm:123). Restoring it here lets a desktop/TUI resume of a messaging-origin
+    # chat keep the same memory scope as its messaging half (#128675). Server-minted stored ids
+    # (20260930_184450_abcdef) are NOT gateway keys — skip those so native desktop sessions don't get
+    # a bogus per-chat scope.
+    row_session_key = str(row.get("session_key") or "").strip()
+    if row_session_key and not _is_server_minted_key(row_session_key):
+        overrides["gateway_session_key"] = row_session_key
     return overrides
 
 
@@ -2595,12 +2607,29 @@ def _session_auth_user_id(session: dict | None) -> str | None:
     return _transport_auth_user_id(session.get("transport"))
 
 
+def _session_gateway_key(session: dict | None) -> str | None:
+    """The stable per-chat gateway routing key (``agent:main:telegram:dm:123``) for a live session record,
+    read from the in-memory ``gateway_session_key`` slot when present (eager resume) or from the stored
+    session row's ``session_key`` column (deferred build). Returns None for native desktop/TUI sessions that
+    were never routed through a messaging gateway — those have no per-chat memory scope to inherit (#128675)."""
+    session = session or {}
+    if session.get("gateway_session_key"):
+        return session["gateway_session_key"]
+    # The live record's session_key is the server-minted stored id (e.g. 20260930_184450_abcdef),
+    # NOT the gateway routing key — only the stored row carries the latter.
+    key = str(session.get("session_key") or "").strip()
+    if not key or _is_server_minted_key(key):
+        return None
+    return key
+
+
 def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
-    cwd_override: str | None = None, auth_user_id: str | None = None):
+    cwd_override: str | None = None, auth_user_id: str | None = None,
+    gateway_session_key: str | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2644,6 +2673,11 @@ def _make_agent(
         # The dashboard login identity reaches memory providers as the runtime user, like a gateway user id.
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
+        # gateway_session_key: the stable per-chat routing key (e.g. agent:main:telegram:dm:123).
+        # The gateway passes it so memory providers scope to the messaging chat; the desktop app must
+        # restore it from the stored session row so a chat continued on desktop keeps the same memory scope
+        # as its messaging origin (#128675). Falls back to the session key when not supplied.
+        gateway_session_key=gateway_session_key if gateway_session_key is not None else _session_gateway_key(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),

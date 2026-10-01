@@ -99,7 +99,7 @@ jobs:
     outputs:
       build: ${{ steps.gate.outputs.build }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Detect affected areas
         id: classify
@@ -110,10 +110,10 @@ jobs:
       - name: Decide whether to build
         id: gate
         env:
-          # The docker lane derives from python_prod (not python: the image
-          # copies installed code, never tests/, so tests-only PRs skip the
-          # build), frontend and docker_meta. classify_changes.py owns the
-          # formula so this gate and the nix lane cannot drift apart.
+          # The docker lane is a slow lane: on a pull request it runs only
+          # for docker meta, the dependency manifests, PM and tests/docker
+          # (or the run-e2e label). Every push to main builds the image.
+          # classify_changes.py owns the formula.
           DOCKER: ${{ steps.classify.outputs.docker }}
         run: |
           set -euo pipefail
@@ -161,7 +161,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # Release calls are dispatched on the stable tag: pin to the exact
           # candidate commit, never a mutable branch ref.
@@ -300,7 +300,7 @@ jobs:
 
       - name: Upload tested image archive (release test)
         if: needs.mode.outputs.phase == 'test'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docker-test-image-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
           path: |
@@ -344,7 +344,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout trusted source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           fetch-depth: 0
 
@@ -404,7 +404,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: digest-${{ matrix.variant }}-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -439,7 +439,7 @@ jobs:
             suffix: "-desktop"
     steps:
       - name: Download digests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: /tmp/digests
           pattern: digest-${{ matrix.variant }}-*
@@ -526,12 +526,12 @@ jobs:
       SUFFIX: ${{ matrix.variant == 'desktop' && '-desktop' || '' }}
     steps:
       - name: Checkout release code (helper scripts only, no build)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
 
       - name: Download tested image archive from the test phase (same run)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: docker-test-image-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
           path: /tmp/image-artifacts
@@ -595,7 +595,7 @@ jobs:
           cat "/tmp/digests/${ARCH}.digest"
 
       - name: Upload per-arch digest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docker-publish-digest-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
           path: /tmp/digests/${{ matrix.arch }}.digest
@@ -617,12 +617,12 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - name: Checkout release code (helper scripts only)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
 
       - name: Download per-arch digests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: /tmp/digests
           pattern: docker-publish-digest-*-${{ inputs.tag }}
@@ -725,7 +725,7 @@ jobs:
             --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" /tmp/manifest/manifest.json
 
       - name: Upload release manifest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docker-publish-manifest-${{ inputs.tag }}
           path: /tmp/manifest/manifest.json

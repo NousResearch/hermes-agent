@@ -413,7 +413,9 @@ describe('AppContextMenu', () => {
     const unregister = registerTerminalContextMenu(host.querySelector('[data-terminal]')!, {
       getSelection: () => 'picked text',
       paste,
-      selectAll: vi.fn()
+      reload: vi.fn(),
+      selectAll: vi.fn(),
+      wordErase: null
     })
 
     fireEvent.contextMenu(host.querySelector('canvas')!)
@@ -432,7 +434,9 @@ describe('AppContextMenu', () => {
     const unregister = registerTerminalContextMenu(host.querySelector('[data-terminal]')!, {
       getSelection: () => '',
       paste: null,
-      selectAll: vi.fn()
+      reload: vi.fn(),
+      selectAll: vi.fn(),
+      wordErase: null
     })
 
     fireEvent.contextMenu(host.querySelector('canvas')!)

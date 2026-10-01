@@ -266,17 +266,17 @@ def _sanitize_gemini_tool_content(content: Any) -> Any:
     if not isinstance(content, str):
         return content
     decoder = json.JSONDecoder()
-    start = next((i for i, char in enumerate(content) if char in "[{"), None)
-    if start is None:
-        return content
-    try:
-        value, end = decoder.raw_decode(content[start:])
-    except (TypeError, ValueError):
-        return content
-    rewritten = _reencode_deep_json(value)
-    if rewritten == value:
-        return content
-    return content[:start] + json.dumps(rewritten, ensure_ascii=False) + content[start + end:]
+    for start, char in enumerate(content):
+        if char not in "[{":
+            continue
+        try:
+            value, end = decoder.raw_decode(content[start:])
+        except (TypeError, ValueError):
+            continue
+        rewritten = _reencode_deep_json(value)
+        if rewritten != value:
+            return content[:start] + json.dumps(rewritten, ensure_ascii=False) + content[start + end:]
+    return content
 
 
 def _sanitize_gemini_tool_message(msg: Any, model: Any) -> dict | None:

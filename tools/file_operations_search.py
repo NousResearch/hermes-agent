@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 from tools import interrupt as tool_interrupt
@@ -260,12 +260,23 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
 
 
 def _respell_under_root(path: str, spellings: List[tuple[str, str]]) -> str:
-    """``path`` re-rooted from the longest matching physical root to that root's
-    caller spelling (``spellings`` is longest-first); unmatched paths are kept."""
+    """``path`` re-rooted from the longest matching physical root to that root as the
+    caller spelled it (``./x`` for ``.``, as unscoped rg prints); ``spellings`` is
+    longest-first and unmatched paths are kept."""
     for physical, spelled in spellings:
         if path == physical or path.startswith(physical.rstrip("/") + "/"):
-            return posixpath.normpath(posixpath.join(spelled, posixpath.relpath(path, physical)))
+            rest = posixpath.relpath(path, physical)
+            return spelled if rest == "." else posixpath.join(spelled, rest)
     return path
+
+
+def _respell_search_result(result: SearchResult, respell: Callable[[str], str]) -> SearchResult:
+    """Re-root every path of a scoped content search (matches, files, counts)."""
+    for match in result.matches:
+        match.path = respell(match.path)
+    result.files = [respell(path) for path in result.files]
+    result.counts = {respell(path): count for path, count in result.counts.items()}
+    return result
 
 
 def _posix_roots(roots: List[str]) -> bool:
@@ -445,7 +456,34 @@ class SearchMixin:
             return []
         from tools import file_operations as _fo  # lazy: _HOME is monkeypatched there
         cwd = getattr(self.env, "cwd", None) or self.cwd
-        return _macos_protected_search_exclusions(path, cwd=cwd, home=_fo._HOME, platform=sys.platform)
+        exclusions = _macos_protected_search_exclusions(path, cwd=cwd, home=_fo._HOME, platform=sys.platform)
+        if exclusions or sys.platform != "darwin":
+            return exclusions
+        return self._macos_exclusions_by_identity(path, cwd, _fo._HOME)
+
+    @staticmethod
+    def _macos_exclusions_by_identity(path: str, cwd: str, home: str) -> List[str]:
+        """Exclusions for a root naming $HOME or an ancestor in ANOTHER spelling (a
+        symlink to it, a case variant on case-insensitive APFS): the string match
+        misses it while rg walks straight into the protected folders. Matched by
+        (st_dev, st_ino) against $HOME's ancestors; stat() of an entry is not
+        TCC-gated, only listing it is."""
+        try:
+            root_stat = os.stat(os.path.join(cwd, os.path.expanduser(path)))
+        except OSError:
+            return []
+        home_path = Path(os.path.normpath(os.path.expanduser(home)))
+        for home_spelling in dict.fromkeys([
+                *_macos_home_spellings(home_path), *_macos_home_spellings(Path(os.path.realpath(home_path)))]):
+            for ancestor in (home_spelling, *home_spelling.parents):
+                try:
+                    same = os.path.samestat(root_stat, os.stat(ancestor))
+                except OSError:
+                    continue
+                if same:
+                    return _macos_protected_search_exclusions(
+                        str(ancestor), home=str(home_spelling), platform="darwin")
+        return []
 
     def _protected_prune_paths(self, path: str) -> List[str]:
         """Absolute-ish protected paths for find's ``-path ... -prune``."""
@@ -504,26 +542,35 @@ class SearchMixin:
         root = _normalized_filename_search_root(self.env, path or ".", self.cwd)
         return any(part.startswith(".") and part not in (".", "..") for part in root.replace("\\", "/").split("/"))
 
-    def _rg_protected_scope(self, roots: List[str]) -> tuple[Optional[str], List[str], List[str]]:
+    def _rg_protected_scope(
+            self, roots: List[str]) -> tuple[Optional[str], List[str], List[str], Callable[[str], str]]:
         """Anchor literal protected-directory globs to one physical working directory.
 
-        rg resolves leading-slash globs against its cwd, not each search operand.
-        Prune the entry itself before opendir; a contents-only glob is too late for
-        macOS TCC. Leave remote paths and searches without exclusions untouched.
+        rg resolves leading-slash globs against its cwd, not each search operand, and
+        only strips its getcwd() (real case, symlinks resolved) from ABSOLUTE paths, so
+        operands go in relative to the scope and ``respell`` maps each printed path
+        back under the root as the caller spelled it. Prune the entry itself before
+        opendir; a contents-only glob is too late for macOS TCC. Leave remote paths
+        and searches without exclusions untouched.
         """
         exclusions = self._effective_macos_search_exclusions(roots)
         if not exclusions:
-            return None, roots, []
+            return None, roots, [], lambda printed: printed
         cwd = getattr(self.env, "cwd", None) or self.cwd
-        absolute_roots = [os.path.realpath(os.path.join(cwd, root)) for root in roots]
-        scope = os.path.commonpath(absolute_roots)
+        physical_roots = [os.path.realpath(os.path.join(cwd, root)) for root in roots]
+        scope = os.path.commonpath(physical_roots)
         globs: List[str] = []
         for _root, _relative, absolute in exclusions:
             relative = os.path.relpath(os.path.realpath(absolute), scope)
             # A username/search ancestor may contain glob metacharacters.
             literal = re.sub(r"([\\*?\[\]{}])", r"\\\1", relative)
             globs.extend(["--glob", self._escape_shell_arg(f"!/{literal}")])
-        return scope, absolute_roots, globs
+        spellings = sorted(zip(physical_roots, roots), key=lambda pair: len(pair[0]), reverse=True)
+
+        def respell(printed: str) -> str:
+            return _respell_under_root(posixpath.normpath(posixpath.join(scope, printed)), spellings)
+
+        return scope, [os.path.relpath(root, scope) for root in physical_roots], globs, respell
 
     def _path_exists_probe(self, path: str) -> ExecuteResult:
         """Existence probe; stdout contains "exists" or "not_found" (or the probe's
@@ -644,7 +691,7 @@ class SearchMixin:
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
-        scope, roots, exclusions = self._rg_protected_scope([path])
+        scope, operands, exclusions, respell = self._rg_protected_scope([path])
         for flags, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
@@ -655,14 +702,14 @@ class SearchMixin:
             else:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe, *exclusions,
-                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(roots[0])]
+                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(operands[0])]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30, cwd=scope)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
                 p, _sep, n = line.rpartition(":")
                 if n.isdigit():
                     total += int(n)
-                    per_file.append(p)
+                    per_file.append(respell(p))
             if total > 0:
                 extra = len(per_file) - 5
                 paths = ", ".join(per_file[:5]) + (f" (+{extra} more)" if extra > 0 else "")
@@ -811,9 +858,7 @@ class SearchMixin:
         glob_pattern = f"*{pattern}" if ('/' not in pattern and not pattern.startswith('*')) else pattern
         roots = [path] if isinstance(path, str) else path
         fetch_limit = limit + offset + 1
-        scoped_common, absolute_roots, exclusion_globs = self._rg_protected_scope(roots)
-        command_roots = ([os.path.relpath(root, scoped_common) for root in absolute_roots]
-                         if scoped_common else roots)
+        scoped_common, command_roots, exclusion_globs, respell = self._rg_protected_scope(roots)
         exclusion_args = " " + " ".join(exclusion_globs) if exclusion_globs else ""
         rg_executable = rg_executable or self._resolve_command("rg")
         if not rg_executable:
@@ -833,16 +878,7 @@ class SearchMixin:
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
         if scoped_common:
-            # rg answered below the PHYSICAL scope (/private/tmp/...); report each hit
-            # under the root spelling the caller passed (/tmp/...), as unscoped rg does.
-            cwd = getattr(self.env, "cwd", None) or self.cwd
-            spellings = sorted(
-                ((physical, posixpath.normpath(posixpath.join(cwd, root)))
-                 for root, physical in zip(roots, absolute_roots)),
-                key=lambda pair: len(pair[0]), reverse=True)
-            all_files = [
-                _respell_under_root(posixpath.normpath(posixpath.join(scoped_common, f)), spellings)
-                for f in all_files]
+            all_files = [respell(f) for f in all_files]
         bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
         if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:
             if order == "modified":
@@ -923,7 +959,7 @@ class SearchMixin:
             cmd_parts.append("--multiline")
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
-        scope, roots, exclusions = self._rg_protected_scope([path])
+        scope, operands, exclusions, respell = self._rg_protected_scope([path])
         if file_glob:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         cmd_parts.extend(exclusions)
@@ -931,12 +967,14 @@ class SearchMixin:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
         cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
-        cmd_parts.append(self._escape_native_tool_arg(roots[0]))
+        cmd_parts.append(self._escape_native_tool_arg(operands[0]))
         ml_note = (
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
         ) if multiline else None
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note, cwd=scope)
+        result = self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context,
+                                           warning=ml_note, cwd=scope)
+        return _respell_search_result(result, respell) if scope else result
 
     def _grep_cmd(self, head: List[str], pattern: str, output_mode: str, context: int,
                   file_glob: Optional[str] = None) -> List[str]:

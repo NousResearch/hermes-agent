@@ -226,7 +226,8 @@ def test_rg_prunes_only_protected_entries_from_any_cwd(tmp_path, monkeypatch, na
                 result = ops.search(pattern, path=root, target=target, file_glob="*.txt")
                 assert not result.error, result.to_dict()
                 paths = result.files if target == "files" else [m.path for m in result.matches]
-                assert {Path(p).resolve() for p in paths} == {visible}, result.to_dict()
+                # A relative root reports paths relative to the session cwd, as unscoped rg does.
+                assert {(project / p).resolve() for p in paths} == {visible}, result.to_dict()
                 assert "Skipped macOS protected" in result.warning
         assert env.cwd == str(project), "search must not move the session cwd"
     finally:
@@ -350,3 +351,36 @@ def test_scoped_multi_root_results_keep_the_callers_root_spelling(tmp_path, monk
     assert str(code / "mine.txt") in result.files
     assert str(link / "theirs.txt") in result.files
     assert str(real / "theirs.txt") not in result.files
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_other_spellings_of_a_broad_root_still_prune_and_keep_their_spelling(tmp_path, monkeypatch, native):
+    """A symlink to $HOME, a case variant of it (APFS is case-insensitive by default)
+    or a relative root names the same folders: the protected ones stay pruned, and
+    hits come back under the root as spelled (a case-variant absolute operand used to
+    defeat the anchored globs: rg only strips its real-case getcwd() prefix)."""
+    home = tmp_path.resolve() / "a" / "home"
+    (home / "Code").mkdir(parents=True)
+    (home / "Code" / "keep.txt").write_text("needle\n")
+    (home / "Downloads").mkdir()
+    (home / "Downloads" / "private.txt").write_text("needle\n")
+    link = tmp_path.resolve() / "home-link"
+    link.symlink_to(home, target_is_directory=True)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(home)))
+    assert ops._has_command("rg"), "real ripgrep required"
+
+    spellings = [str(link), "."]
+    variant = home.parent / "HOME"
+    if variant.exists() and variant.samefile(home):  # case-insensitive volume
+        spellings.append(str(variant))
+    for root in spellings:
+        for target, pattern in (("files", "*.txt"), ("content", "needle")):
+            result = ops.search(pattern, path=root, target=target)
+            paths = result.files if target == "files" else [m.path for m in result.matches]
+            assert paths == [f"{root}/Code/keep.txt"], (root, result.to_dict())
+            assert "Skipped macOS protected folders" in result.warning
+        hint = ops.search("NEEDLE", path=root, target="content").warning
+        assert f"{root}/Code/keep.txt" in hint and "private.txt" not in hint, hint

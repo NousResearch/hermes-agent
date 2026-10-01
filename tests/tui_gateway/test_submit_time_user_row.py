@@ -188,7 +188,9 @@ def test_failed_submit_persistence_releases_client_ack_reservation(monkeypatch, 
         db.close()
 
 
-def test_exact_client_ack_with_survivor_rebind_fields_is_not_evicted():
+def test_live_client_acks_replay_exactly_and_only_settled_ones_are_capped():
+    """A retry gets the exact ack (survivor rebind fields included); the live map is bounded by
+    evicting the oldest SETTLED acks, never a pending admission a duplicate may be waiting on."""
     session = {"history_lock": threading.RLock()}
     client_message_id = "truncate-original"
     exact_ack = {
@@ -199,18 +201,28 @@ def test_exact_client_ack_with_survivor_rebind_fields_is_not_evicted():
         "survivor_user_row_ids": [17, None, 29],
         "survivor_row_id_map": {"17": 117, "29": None},
     }
+    cap = server._CLIENT_MESSAGE_ADMISSION_CAP
+
+    def remember(n):
+        server._remember_client_message_ack_locked(
+            session, f"sent-{n}", {"status": "streaming", "client_message_id": f"sent-{n}", "user_row_id": n + 1})
+
     with session["history_lock"]:
         server._remember_client_message_ack_locked(session, client_message_id, exact_ack)
+        pending = server._reserve_client_message_admission_locked(session, "still-admitting")
         for n in range(128):
-            server._remember_client_message_ack_locked(
-                session,
-                f"sent-{n}",
-                {"status": "streaming", "client_message_id": f"sent-{n}", "user_row_id": n + 1},
-            )
-        replay, pending = server._live_client_message_admission_locked(session, client_message_id)
+            remember(n)
+        assert server._live_client_message_admission_locked(session, client_message_id) == (exact_ack, None)
 
-    assert pending is None
-    assert replay == exact_ack
+        for n in range(128, 128 + cap + 8):
+            remember(n)
+        admissions = session["_client_message_admissions"]
+        assert len(admissions) <= cap + 1
+        assert server._live_client_message_admission_locked(session, "still-admitting") == (None, pending)
+        assert not pending.ready.is_set()
+        # Evicted from the live map; a durable send falls back to its DB row
+        # (test_retried_idle_client_message_id_returns_original_ack_from_live_and_durable_state).
+        assert server._live_client_message_admission_locked(session, client_message_id) == (None, None)
 
 
 def test_concurrent_idle_retries_share_one_admission_and_original_ack(monkeypatch, tmp_path):

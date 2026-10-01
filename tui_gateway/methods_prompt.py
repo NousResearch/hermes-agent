@@ -670,6 +670,11 @@ class _Admission:
     error: dict | None = None
 
 
+# Settled acks only dedupe in-process retries (a durable send falls back to its DB row);
+# pending reservations are live admissions and are never evicted.
+_CLIENT_MESSAGE_ADMISSION_CAP = 256
+
+
 def _live_client_message_admission_locked(
     session: dict, client_message_id: str | None
 ) -> tuple[dict | None, _Admission | None]:
@@ -722,6 +727,10 @@ def _remember_client_message_ack_locked(session: dict, client_message_id: str | 
     admission = admissions.setdefault(client_message_id, _Admission())
     admission.ack = dict(ack)
     admission.ready.set()
+    if (excess := len(admissions) - _CLIENT_MESSAGE_ADMISSION_CAP) > 0:
+        # Oldest first (insertion order); skipping pending entries keeps every live admission.
+        for key in [key for key, entry in admissions.items() if entry.ack is not None][:excess]:
+            del admissions[key]
 
 
 def _lock_in_submit_turn(

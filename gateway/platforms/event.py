@@ -137,6 +137,11 @@ class MessageEvent:
     merged_message_ids: List[str] = field(default_factory=list)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
+    if TYPE_CHECKING:
+        _gateway_pending_stt_echoed_paths: set[str] = field(
+            default_factory=set, init=False, repr=False, compare=False
+        )
+
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)

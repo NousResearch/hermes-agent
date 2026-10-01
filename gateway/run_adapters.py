@@ -70,6 +70,9 @@ UNRESOLVED_PROFILE_HOME = _UnresolvedProfileHome()
 class GatewayAdapterLifecycleMixin:
     """Adapter lifecycle: connect/teardown, fatal recovery, reconnect watcher, multiplex profiles."""
 
+    if TYPE_CHECKING:
+        _withdraw_queued_followups = GatewayRunner._withdraw_queued_followups
+
     _startup_connect_task: Optional[asyncio.Task] = None
     _startup_connect_cleanup_started: bool = False
 

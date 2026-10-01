@@ -476,6 +476,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
+| `post_gateway_admission` | Directive/control | Admitted idle business message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed slot after FIFO rescue; first decisive `consumed`/`failed` wins, `pass` runs the agent. | `event`, `gateway`, `session_store`, `source`, `session_key`, `context` (v1 immutable snapshot) | Trusted in-process consumer; `context.text` is untrusted inbound data, destinations never come from plugin fields. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
@@ -1271,6 +1272,33 @@ def buffer_or_rewrite(event, **kwargs):
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
 ```
+
+---
+
+### `post_gateway_admission`
+
+Fires **once per admitted idle business message** in the gateway, after core owns routing, authorization, bot admission, pause/drain, pending-reply ownership, running-session steering and slash-command dispatch. Commands, approvals, clarification replies and busy steering never reach it; rejected, ignored-channel, unserved-profile, bot-loop and internal/system events never invoke it. The consumer runs inside the claimed session slot after FIFO orphan rescue, so the selected event (with its own reply anchor) is presented and concurrent arrivals serialize through the busy path.
+
+```python
+def consume(event, source, session_key, context, **kwargs):
+    # context is v1 and immutable: version, profile, platform, session_key,
+    # conversation {chat_id, thread_id, chat_type}, event_id, sender, reply_anchor, text.
+    if not _is_follow_up(context["text"]):
+        return None  # or {"action": "pass"}: ordinary agent flow runs once
+    receipt = _commit_request(context)  # durable commit BEFORE consumed
+    return {"action": "consumed", "receipt": receipt, "reply": "Got it — queued."}
+
+def register(ctx):
+    ctx.register_hook("post_gateway_admission", consume)
+```
+
+| Return | Effect |
+|--------|--------|
+| `None` / `{"action": "pass"}` (also `"allow"`) | Ordinary agent flow runs once. |
+| `{"action": "consumed", "receipt": "<id>", "reply": "<optional>"}` | Agent flow suppressed; `reply` (when a non-empty string) is delivered through the normal core-owned route. `receipt` is required — a missing/invalid receipt fails closed. Commit durable state before returning consumed; reconcile replays by receipt. |
+| `{"action": "failed", "reply": "<optional>"}` (also `"fail"`, `"error"`, `"block"`, `"deny"`) | Agent flow suppressed with a short failure notice (`reply` when a string, else a generic notice); a sanitized operator diagnostic is logged. |
+
+Fail-closed: unknown/malformed results, exceptions and timeouts suppress the agent turn, never silently permit inline execution. No registered consumer means ordinary flow (deliberately disabled is distinct from failing). The hook is bounded by `plugins.hook_callback_timeout` (default 30s); a timeout suppresses the turn. Do not do slow build/model work in the callback; do not send via adapters directly — return `reply` and let core deliver it. Destination metadata is snapshot before invocation and restored when mutated. Durable acceptance, dedupe and response reconciliation are plugin responsibilities; core claims no exactly-once external delivery. Only the routed profile's consumers run.
 
 ---
 

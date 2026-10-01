@@ -390,6 +390,24 @@ class TestJobCRUD:
         assert remove_job(job["id"]) is True
         assert get_job(job["id"]) is None
 
+    def test_remove_job_still_deletes_a_record_with_an_unsafe_id(self, tmp_cron_dir):
+        """A poisoned store entry (id containing a separator, e.g. from a
+        hand-edited jobs.json) must be removable: output cleanup is skipped
+        but the record goes, or the entry could never be deleted via the API."""
+        from cron.jobs import job_output_dir
+        save_jobs([{"id": "../evil", "name": "poison", "schedule": "every 1h",
+                    "prompt": "x", "created_at": "2026-01-01T00:00:00",
+                    "next_run_at": "2026-01-01T00:00:00"}])
+        with pytest.raises(ValueError):
+            job_output_dir("../evil")
+        assert remove_job("poison") is True
+        assert get_job("../evil") is None
+
+    def test_save_job_output_rejects_unsafe_id(self, tmp_cron_dir):
+        from cron.jobs import save_job_output
+        with pytest.raises(ValueError, match="Invalid cron job id"):
+            save_job_output("../evil", "content")
+
 
     def test_auto_repeat_for_once(self, tmp_cron_dir):
         job = create_job(prompt="One-shot", schedule="in 1h")

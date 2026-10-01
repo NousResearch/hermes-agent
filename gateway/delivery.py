@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 from hermes_cli.config import get_hermes_home
+from hermes_constants import safe_path_component
 
 from .config import Platform, GatewayConfig, PlatformConfig
 from .session import SessionSource
@@ -202,7 +203,8 @@ class DeliveryRouter:
                        metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Save content to local files."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = self.output_dir / (job_id or "misc") / f"{timestamp}.md"
+        output_path = self.output_dir / safe_path_component(
+            str(job_id or "").strip() or "misc", what="delivery job id") / f"{timestamp}.md"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         lines = [f"# {job_name}" if job_name else "# Delivery Output", "",
                  f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
@@ -214,7 +216,8 @@ class DeliveryRouter:
     def _save_full_output(self, content: str, job_id: str) -> Path:
         """Save full cron output to disk and return the file path."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = get_hermes_home() / "cron" / "output" / f"{job_id}_{timestamp}.txt"
+        path = get_hermes_home() / "cron" / "output" / (
+            f"{safe_path_component(job_id, what='delivery job id')}_{timestamp}.txt")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path
@@ -267,7 +270,7 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         adapter = transport.adapter
-        content = self._cap_oversized_output(adapter, content, (metadata or {}).get("job_id", "unknown"))
+        content = self._cap_oversized_output(adapter, content, (metadata or {}).get("job_id") or "unknown")
 
         # Substrate-level anti-loop guard: drop hallucinated "silence narration" (*(silent)*, 🔇, a bare ".")
         # before it reaches any adapter — in bot-to-bot channels these mirror back and forth until a model

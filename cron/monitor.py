@@ -59,9 +59,9 @@ def build_monitor_diff(old: str, new: str) -> str:
 
 
 def _snapshot_path(job_id: str):
-    from cron.jobs import _job_output_dir
+    from cron.jobs import job_output_dir
 
-    return _job_output_dir(job_id) / _SNAPSHOT_FILENAME
+    return job_output_dir(job_id) / _SNAPSHOT_FILENAME
 
 
 def _read_last_output(job_id: str) -> str:

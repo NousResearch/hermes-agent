@@ -1,4 +1,8 @@
-"""Shared path validation helpers for tool implementations (skills, cron, credential files)."""
+"""Shared path validation helpers for tool implementations (skills, cron, credential files).
+
+These validate multi-component relative paths inside a root. For rejecting a
+single path *component* outright (no separators at all), see
+``hermes_constants.safe_path_component``."""
 
 import re
 from pathlib import Path

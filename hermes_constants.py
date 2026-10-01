@@ -23,6 +23,22 @@ INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
 
+def safe_path_component(value: str, *, what: str = "path component") -> str:
+    """Return *value* as a single safe path component: rejects traversal (``..``),
+    separators, absolute paths, drive-qualified names, control characters, names
+    Windows would strip to nothing or a dot (``".. ."``, ``"... "``), and
+    components over 255 chars. Raises ValueError on empty/blank input; returns
+    the stripped text. ``what`` names the value in the error."""
+    text = str(value or "").strip()
+    if (
+        not text.strip(" .") or "/" in text or "\\" in text
+        or Path(text).is_absolute() or Path(text).drive
+        or len(text) > 255 or any(ord(c) < 32 or ord(c) == 127 for c in text)
+    ):
+        raise ValueError(f"Invalid {what}: {str(value)[:120]!r}")
+    return text
+
+
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.
 

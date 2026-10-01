@@ -664,3 +664,34 @@ class TestProjectVenvDirOutOfTree:
         assert hermes_constants.project_venv_dir(other) is None
         (checkout / ".venv").mkdir()
         assert hermes_constants.project_venv_dir(checkout) == checkout / ".venv"
+
+
+class TestSafePathComponent:
+    @pytest.mark.parametrize("value,expected", [
+        ("abc123", "abc123"),
+        ("misc", "misc"),
+        ("my-job_1.2", "my-job_1.2"),
+        ("  padded  ", "padded"),      # stripped on return
+        (123, "123"),                  # coerced
+        ("a..b", "a..b"),              # interior dots are a literal name
+    ])
+    def test_accepts_single_component(self, value, expected):
+        assert hermes_constants.safe_path_component(value) == expected
+
+    @pytest.mark.parametrize("value", [
+        "", "   ", None, 0, False,     # empty/blank/falsy
+        ".", "..", "...", ".. .", ". .", "... ",  # exact and Windows-collapse dot names
+        "a/b", "a\\b", "..\\x", "/abs",
+        "a\x00b", "a\nb",              # control characters incl NUL and newline
+        "a" * 300,                     # over NAME_MAX
+    ])
+    def test_rejects_unsafe_components(self, value):
+        with pytest.raises(ValueError, match="Invalid path component"):
+            hermes_constants.safe_path_component(value)
+
+    def test_error_names_the_value_and_truncates(self):
+        with pytest.raises(ValueError, match="Invalid delivery job id"):
+            hermes_constants.safe_path_component("../x", what="delivery job id")
+        with pytest.raises(ValueError) as ei:
+            hermes_constants.safe_path_component("a" * 500)
+        assert len(str(ei.value)) < 200  # bounded repr, not the full input

@@ -56,6 +56,16 @@ class TestRecordAuxiliaryUsage:
         assert r["output_tokens"] == 50
         assert r["api_call_count"] == 1
 
+    def test_records_cost_classification(self, db):
+        db.create_session("s1", source="cli")
+        db.record_auxiliary_usage(
+            "s1", "vision", model="gemini-3-flash", estimated_cost_usd=0.25,
+            cost_status="estimated", cost_source="official_docs_snapshot",
+        )
+        row = _usage_rows(db, "s1")[0]
+        assert row["cost_status"] == "estimated"
+        assert row["cost_source"] == "official_docs_snapshot"
+
     def test_accumulates_same_task_and_model(self, db):
         db.create_session("s1", source="cli")
         for _ in range(3):

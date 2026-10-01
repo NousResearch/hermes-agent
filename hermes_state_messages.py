@@ -62,7 +62,6 @@ _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND 
 # the in-transaction delete fence must refuse (not project) any session this probe still matches.
 _DISPLAY_INDEX_MISSING_SQL = ("SELECT 1 FROM messages WHERE session_id = ?" + _DISPLAY_ACTIVE_CLAUSE
                               + " AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
-_DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?"
 # Read-modify-write seam (set_message_reaction) reads the raw BLOB: CAST defeats the connection's
 # tolerant text_factory so an undecodable cell fails AT THE SEAM instead of degrading to U+FFFD,
 # parsing away to {} and letting the write drop the row's unrelated metadata (#109465 review).

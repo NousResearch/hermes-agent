@@ -550,19 +550,26 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str) ->
     return "\n".join(out_lines)
 
 
-def _preserve_unicode_in_replacement(content: str, matches: list[Span],
-                                     old_string: str, new_string: str) -> str:
-    """Apply only the old->new edits onto the file's original (Unicode) text, so a
-    unicode_normalized match doesn't flatten the file's em-dashes/smart quotes."""
-    file_region = _matched_regions(content, matches)
+def _unicode_edit_plan(old_string: str, new_string: str) -> tuple[str, list]:
+    """``(normalized old, old->new opcodes)``: independent of the file region, so
+    a replace_all computes it once for every match."""
     norm_old = _unicode_normalize(old_string)
+    return norm_old, SequenceMatcher(None, norm_old, new_string).get_opcodes()
+
+
+def _preserve_unicode_in_replacement(file_region: str, old_string: str, new_string: str,
+                                     plan: Optional[tuple[str, list]] = None) -> str:
+    """Apply only the old->new edits onto ``file_region``'s original (Unicode) text,
+    so a unicode_normalized match doesn't flatten the file's em-dashes/smart quotes.
+    ``plan`` is a precomputed ``_unicode_edit_plan(old_string, new_string)``."""
+    norm_old, opcodes = plan or _unicode_edit_plan(old_string, new_string)
     if norm_old != _unicode_normalize(file_region):
         return new_string  # strategy shouldn't have fired; fall back
 
     file_orig_to_norm = _build_orig_to_norm_map(file_region)
 
     result_parts: list[str] = []
-    for tag, i1, i2, j1, j2 in SequenceMatcher(None, norm_old, new_string).get_opcodes():
+    for tag, i1, i2, j1, j2 in opcodes:
         if tag == "equal":
             # The original char owning norm index i1, even one inside a multi-char expansion (em-dash -> '--').
             orig_start = bisect.bisect_right(file_orig_to_norm, i1) - 1
@@ -579,15 +586,16 @@ def _apply_replacements(content: str, matches: list[Span],
     """Splice ``new_string`` over each span (end-to-start so offsets stay valid);
     ``old_string`` non-None (non-exact match) re-indents it per region."""
     result = content
+    plan = _unicode_edit_plan(old_string, new_string) if preserve_unicode and old_string is not None else None
     for start, end in sorted(matches, key=lambda x: x[0], reverse=True):
         adjusted = new_string
         if old_string is not None:
-            if preserve_unicode:
+            region = content[start:end]
+            if plan is not None:
                 # Each occurrence may use different typographic characters even
                 # though all normalize to the same old_string.
-                adjusted = _preserve_unicode_in_replacement(
-                    content, [(start, end)], old_string, adjusted)
-            adjusted = _reindent_replacement(content[start:end], old_string, adjusted)
+                adjusted = _preserve_unicode_in_replacement(region, old_string, adjusted, plan)
+            adjusted = _reindent_replacement(region, old_string, adjusted)
         result = result[:start] + adjusted + result[end:]
     return result
 

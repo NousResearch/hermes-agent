@@ -34,13 +34,30 @@ def _positive_env(name: str, default, cast):
     return val if val > 0 else default
 
 
+def _nonneg_env(name: str, default, cast):
+    """``cast(env)`` when set, parseable and >= 0; else *default*.
+
+    Unlike ``_positive_env`` this accepts ``0`` (a valid "disable" value),
+    which httpx supports as ``max_keepalive_connections=0``; negative values
+    are rejected and fall back to the default.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = cast(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val >= 0 else default
+
+
 def platform_httpx_limits() -> "httpx.Limits | None":
     """``httpx.Limits`` tuned for persistent platform-adapter clients; ``None`` without httpx."""
     if httpx is None:
         return None
     # max_connections stays at the httpx default (100) — plenty of headroom.
     return httpx.Limits(
-        max_keepalive_connections=_positive_env(
+        max_keepalive_connections=_nonneg_env(
             "HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", _DEFAULT_MAX_KEEPALIVE, int),
         keepalive_expiry=_positive_env(
             "HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", _DEFAULT_KEEPALIVE_EXPIRY_S, float),

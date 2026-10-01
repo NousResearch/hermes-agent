@@ -348,3 +348,38 @@ async def test_oversized_cron_output_reaches_twilio_in_1600_char_chunks():
     assert result.success
     assert len(bodies) > 1 and max(map(len, bodies)) <= 1600
     assert "line 39 " in bodies[-1]
+
+
+@pytest.mark.asyncio
+async def test_failure_after_delivered_chunks_is_never_resent_whole():
+    """Twilio rejects chunk 3 of a long reply. The chunks already on the phone must not arrive again
+    via the retry/plain-text fallback, which would also drop the tail (it resends content[:3500])."""
+    from plugins.platforms.sms.adapter import SmsAdapter
+
+    with patch.dict(os.environ, {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "tok",
+                                 "TWILIO_PHONE_NUMBER": "+15550001111"}):
+        adapter = SmsAdapter(PlatformConfig(enabled=True, api_key="tok"))
+    bodies = []
+
+    class _Resp:
+        def __init__(self, status):
+            self.status = status
+        async def json(self):
+            return {"sid": f"SM{len(bodies)}"} if self.status < 400 else {"message": "rejected"}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        def post(self, url, data, headers):
+            bodies.append(next(value for opts, _, value in data._fields if opts["name"] == "Body"))
+            return _Resp(400 if len(bodies) == 3 else 201)
+
+    adapter._http_session = _Session()
+    content = "\n\n".join(f"para {i:02d} " + "y" * 300 for i in range(20))
+    result = await adapter._send_with_retry("+15550002222", content)
+
+    assert not result.success
+    assert result.raw_response["partial_overflow"] and result.raw_response["delivered_chunks"] == 2
+    assert all("".join(bodies).count(f"para {i:02d} ") <= 1 for i in range(20)), "a delivered chunk was re-sent"

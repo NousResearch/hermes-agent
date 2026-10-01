@@ -34,7 +34,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, send_chunks
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -190,12 +190,8 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """One text message per MAX_MESSAGE_LENGTH-byte chunk; stops at the first failure."""
         app = self._resolve_app_for_chat(chat_id)
-        result = SendResult(success=False, error="nothing to send")
-        for chunk in self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=_utf8_len):
-            result = await self._send_text(app, chat_id, chunk)
-            if not result.success:
-                break
-        return result
+        chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=_utf8_len)
+        return await send_chunks(chunks, lambda chunk: self._send_text(app, chat_id, chunk))
 
     async def _send_text(self, app: Dict[str, Any], chat_id: str, content: str) -> SendResult:
         try:

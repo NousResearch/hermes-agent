@@ -28,7 +28,7 @@ AIOHTTP_AVAILABLE = aiohttp is not None
 HTTPX_AVAILABLE = httpx is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, bounded_put
+from gateway.platforms.helpers import MessageDeduplicator, bounded_put, send_chunks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -600,12 +600,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         # Approval *confirmations* must not consume the req_id the stream consumer still needs.
         force_proactive = bool(metadata.pop("force_proactive_send", False))
         # One queued send per chunk so each one draws a token from the 30 msgs/min bucket.
-        result = SendResult(success=False, error="nothing to send")
-        for chunk in self.truncate_message(content, self.MAX_MESSAGE_LENGTH):
-            result = await self._enqueue_chat_send(chat_id, lambda c=chunk: self._send_inner(chat_id, c, reply_to, force_proactive=force_proactive), is_control=is_control)
-            if not result.success:
-                break
-        return result
+        return await send_chunks(self.truncate_message(content, self.MAX_MESSAGE_LENGTH), lambda chunk: self._enqueue_chat_send(
+            chat_id, lambda: self._send_inner(chat_id, chunk, reply_to, force_proactive=force_proactive), is_control=is_control))
 
     async def _send_inner(self, chat_id: str, content: str, reply_to: Optional[str] = None, *, force_proactive: bool = False) -> SendResult:
         """Send under the per-chat queue; force_proactive skips passive reply except in groups."""

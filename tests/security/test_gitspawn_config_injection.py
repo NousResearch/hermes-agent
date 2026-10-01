@@ -254,10 +254,14 @@ def _evil_filter(marker: str, name: str = "evil") -> str:
             f'\tclean = touch \'{marker}.clean\'; cat\n\trequired = true\n')
 
 
-def _evil_include(condition):
+def _evil_include(condition, nested: bool = False):
     def config(repo: Path, marker: str) -> str:
         (repo / ".git" / "evil.inc").write_text(_evil_filter(marker))
-        return f'[includeIf "{condition(repo)}"]\n\tpath = evil.inc\n'
+        target = "evil.inc"
+        if nested:
+            (repo / ".git" / "outer.inc").write_text("[include]\n\tpath = evil.inc\n")
+            target = "outer.inc"
+        return f'[includeIf "{condition(repo)}"]\n\tpath = {target}\n'
     return config
 
 
@@ -266,10 +270,13 @@ def _evil_include(condition):
     pytest.param("README filter=Evil\n",
                  lambda r, m: '[filter "evil"]\n\tsmudge = cat\n\tclean = cat\n' + _evil_filter(m, "Evil"),
                  False, id="case_collision"),
-    pytest.param("README filter=evil\n", _evil_include(lambda r: "onbranch:safe"), True, id="onbranch_include"),
+    pytest.param("README filter=evil\n", _evil_include(lambda r: "onbranch:safe"), False, id="onbranch_include"),
     pytest.param("README filter=evil\n",
-                 _evil_include(lambda r: f"gitdir:{(r / '.git' / 'worktrees').as_posix()}/"), True,
+                 _evil_include(lambda r: f"gitdir:{(r / '.git' / 'worktrees').as_posix()}/"), False,
                  id="gitdir_include"),
+    # An include inside an include target is not walked again: refuse.
+    pytest.param("README filter=evil\n", _evil_include(lambda r: "onbranch:safe", nested=True), True,
+                 id="nested_include"),
     pytest.param("README filter=evil\n",
                  lambda r, m: "".join(f'[filter "f{i}"]\n\tclean = cat\n' for i in range(300)), True,
                  id="filter_flood"),
@@ -281,10 +288,10 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, c
     """A filter driver is named by ``.gitattributes``, so the fixed env pins cannot reach it:
     ``worktree add`` runs its smudge command and ``status`` its clean command. Subsection names are
     case-sensitive, so ``[filter "Evil"]`` must be neutralized next to a benign ``[filter "evil"]``.
-    Discovery that cannot be trusted refuses the git call: any ``includeIf`` (``onbranch:`` matches the
-    new branch, ``gitdir:`` the ``.git/worktrees/<name>`` dir of ``worktree add``) loads filters
-    discovery never saw, a huge filter inventory would overflow the argv/env limit (E2BIG), and a
-    config git cannot parse yields no trustworthy inventory at all."""
+    An ``includeIf`` target is read whatever its condition (``onbranch:`` matches the new branch,
+    ``gitdir:`` the ``.git/worktrees/<name>`` dir of ``worktree add``), so its filters are neutralized
+    too. Discovery that cannot be trusted refuses the git call: an include nested in an include
+    target, a huge filter inventory (argv/env E2BIG), or a config git cannot parse."""
     from hermes_cli import kanban_db_workspace as kw
     from hermes_cli import worktree_gc
     from tools.async_delegation_recovery_hints import git_state_hint

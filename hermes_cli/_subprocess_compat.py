@@ -470,11 +470,13 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
 
 
 _FILTER_COMMAND_KEY = re.compile(r"^filter\..+\.(?:clean|smudge|process)$", re.IGNORECASE)
-# Any ``includeIf`` is evaluated against the CURRENT checkout: ``onbranch:`` against the current
-# branch, ``gitdir:`` against the current git dir (``.git/worktrees/<name>`` during ``worktree add``),
-# so the spawned git can load filters this discovery never saw; refuse rather than half-harden.
+# ``includeIf`` is evaluated against the CURRENT checkout: ``onbranch:`` against the current branch,
+# ``gitdir:`` against the current git dir (``.git/worktrees/<name>`` during ``worktree add``), so
+# the spawned git can load an include this discovery's ``--includes`` skipped. Every include target
+# is therefore read directly, whatever its condition, and its filter names are neutralized too.
 # Global/system config is already /dev/null, so only repo-local includes reach this.
 _INCLUDE_IF_KEY = re.compile(r"^includeif\..*\.path$", re.IGNORECASE)
+_FILTER_OR_INCLUDE_RE = r"^(filter\..*\.(clean|smudge|process)|include\.path|includeif\..*\.path)$"
 # Each discovered key costs two env entries; a repo with tens of thousands of filters would make
 # every spawn fail with E2BIG ("Argument list too long"), so refuse past a generous cap.
 _MAX_FILTER_KEYS = 256
@@ -498,25 +500,47 @@ def noninteractive_repo_git_env(
     env = noninteractive_git_env(base)
     # bounded_probe_run, not subprocess.run: Windows' post-timeout communicate() can deadlock and
     # a bare spawn flashes a console. (Not bounded_git_probe: rc 1 = "no filters" is a verdict.)
+    # One probe lists the filter keys and the include paths with their origin file: -z --show-origin
+    # yields "file:<origin>", "<key>\n<value>" pairs.
     proc = bounded_probe_run(
-        [
-            "git", "-C", str(cwd), "config", "--includes", "--name-only", "-z",
-            "--get-regexp", r"^(filter\..*\.(clean|smudge|process)|includeif\..*\.path)$",
-        ],
+        ["git", "-C", str(cwd), "config", "--includes", "--show-origin", "-z", "--get-regexp",
+         r"^(filter\..*\.(clean|smudge|process)|includeif\..*\.path)$"],
         timeout=2, env=env,
     )
     if proc is None or proc.returncode not in (0, 1):
         return None
+    names: list[str] = []
+    fields = proc.stdout.split("\0")
+    for origin, entry in zip(fields[0::2], fields[1::2]):
+        key, _, value = entry.partition("\n")
+        if not _INCLUDE_IF_KEY.fullmatch(key):
+            names.append(key)
+            continue
+        if not origin.startswith("file:"):
+            return None
+        # A relative include path resolves against the directory of the config file naming it.
+        target = (Path(cwd) / origin[len("file:"):]).parent / os.path.expanduser(value)
+        if not target.exists():
+            continue  # git skips a missing include file
+        probe = bounded_probe_run(
+            ["git", "config", "--file", str(target), "--name-only", "-z", "--get-regexp", _FILTER_OR_INCLUDE_RE],
+            timeout=2, env=env,
+        )
+        if probe is None or probe.returncode not in (0, 1):
+            return None
+        found = [name.strip() for name in probe.stdout.split("\0")]
+        # An include inside an include target would need the same walk again; refuse instead.
+        if any(name.lower() == "include.path" or _INCLUDE_IF_KEY.fullmatch(name) for name in found):
+            return None
+        names.extend(found)
 
     keys: list[str] = []
     required: list[str] = []
     seen: set[str] = set()
     # Dedup on the exact name ``--name-only`` prints: git lowercases section and variable but keeps
     # the subsection's case, and ``[filter "Evil"]`` is a different driver from ``[filter "evil"]``.
-    for raw in proc.stdout.split("\0"):
+    for raw in names:
         key = raw.strip()
-        if _INCLUDE_IF_KEY.fullmatch(key):
-            return None
         if not key or key in seen or not _FILTER_COMMAND_KEY.fullmatch(key):
             continue
         seen.add(key)

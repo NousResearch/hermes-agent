@@ -88,7 +88,7 @@ def retained_destination(adapter, chat_id):
     envelope = payload['native_text_v1']
     event = restore_native(payload, runner)
     _validate_native(runner, event, envelope.get('provenance'))
-    if runner._adapter_for_source(event.source) is not adapter:
+    if runner._intake_adapter_for(event.source) is not adapter:
         raise RuntimeStoreError('permission_denied')
     if envelope.get('webhook_route') != route_digest(adapter, chat_id):
         raise RuntimeStoreError('admission_conflict')

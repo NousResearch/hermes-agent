@@ -85,7 +85,7 @@ async def probe(peer):
             from gateway.session_policy import policy_for_source
             from hermes_state_runtime import RuntimeStoreError
             live_source = authority.sessions[sid].source
-            adapter = runner._adapter_for_source(live_source)
+            adapter = runner._delivery_adapter_for(live_source)
             saved_policy = adapter.policies.pop(live_source.chat_id)
             try:
                 policy_for_source(runner, live_source)

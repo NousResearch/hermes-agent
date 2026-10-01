@@ -237,7 +237,7 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
         monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 30)
         runner = SimpleNamespace(_resolve_session_agent_runtime=_resolve,
                                  _get_system_prompt_for_channel=lambda *a, **k: "",
-                                 _ephemeral_system_prompt="", _adapter_for_source=lambda _s: None)
+                                 _ephemeral_system_prompt="", _intake_adapter_for=lambda _s: None, _delivery_adapter_for=lambda _s: None)
         for platform, chat_id in ((Platform.LOCAL, "local-1"), (Platform.SLACK, "C1")):
             ctx = TurnContext(source=SessionSource(platform=platform, chat_id=chat_id, chat_type="dm"),
                               session_key=f"{platform.value}:{chat_id}", user_config={}, message="Hi")

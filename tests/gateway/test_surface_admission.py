@@ -22,7 +22,7 @@ async def _authority(tmp_path, monkeypatch, answer):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
-                             _handle_message=answer, _adapter_for_source=lambda source: None)
+                             _handle_message=answer, _intake_adapter_for=lambda source: None, _delivery_adapter_for=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner')
     store._db.create_session('s', source='telegram')
     authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='c'), 's')

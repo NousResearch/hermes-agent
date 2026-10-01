@@ -33,7 +33,7 @@ async def _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed):
         return 'ACK_' + event.text
 
     runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False,
-                             _handle_message=answer, _adapter_for_source=lambda source: None)
+                             _handle_message=answer, _intake_adapter_for=lambda source: None, _delivery_adapter_for=lambda source: None)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='unknown-head')
     db.create_session('s', source='telegram')
     first = await initialize_session_authority(runner, profile_id='p', instance_id='owner-1')

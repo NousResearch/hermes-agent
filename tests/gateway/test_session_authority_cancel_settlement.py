@@ -19,7 +19,7 @@ def _authority(tmp_path, monkeypatch, platform=None):
     db.create_session('s', source='test')
     epoch = begin_runtime_epoch(db, instance_id='current')
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
-                             _adapter_for_source=lambda source: None)
+                             _intake_adapter_for=lambda source: None, _delivery_adapter_for=lambda source: None)
     authority = SessionAuthority(runner, profile_id='owned', instance_id='current', db=db, epoch=epoch)
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=platform, user_id='human'), 'route')
     return db, authority

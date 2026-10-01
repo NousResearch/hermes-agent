@@ -18,6 +18,7 @@ def _clear_jwt_cache():
     yield
     mod._jwt_cache.clear()
     mod._exchange_failure_cache.clear()
+    mod._exchange_locks.clear()
 
 
 class TestExchangeCopilotToken:
@@ -230,3 +231,158 @@ class TestExchangeFailureFastPath:
         mod._exchange_failure_cache[fp] = time.time() + 999
         evict_cached_exchanged_token("gho_stale")
         assert fp not in mod._exchange_failure_cache
+
+
+class TestPurgeStaleExchangeCaches:
+    """Rotated-away credentials must not be retained for the life of the process."""
+
+    def test_expired_jwt_dropped_and_fresh_jwt_kept(self):
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import _purge_stale_exchange_caches
+
+        stale, live = "fp_stale", "fp_live"
+        mod._jwt_cache[stale] = ("tid=old", 1000.0, None)
+        # Past the refresh margin, so the read path could no longer serve it.
+        mod._jwt_cache[live] = ("tid=new", 1000.0 + 10 * mod._JWT_REFRESH_MARGIN_SECONDS, None)
+
+        _purge_stale_exchange_caches(1000.0 + mod._JWT_REFRESH_MARGIN_SECONDS)
+
+        assert stale not in mod._jwt_cache
+        assert live in mod._jwt_cache
+
+    def test_jwt_inside_refresh_margin_survives(self):
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import _purge_stale_exchange_caches
+
+        fp = "fp_within_margin"
+        expires_at = 1000.0
+        mod._jwt_cache[fp] = ("tid=soon", expires_at, None)
+
+        # Still servable right up to the margin, so it must not be swept yet.
+        _purge_stale_exchange_caches(expires_at - mod._JWT_REFRESH_MARGIN_SECONDS - 1)
+
+        assert fp in mod._jwt_cache
+
+    def test_expired_failure_entry_dropped_and_live_one_kept(self):
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import _purge_stale_exchange_caches
+
+        stale, live = "fp_failed_past", "fp_failed_pending"
+        mod._exchange_failure_cache[stale] = 900.0
+        mod._exchange_failure_cache[live] = 5000.0
+
+        _purge_stale_exchange_caches(1000.0)
+
+        assert stale not in mod._exchange_failure_cache
+        assert live in mod._exchange_failure_cache
+
+    def test_lock_retired_once_nothing_is_cached_for_it(self):
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import (
+            _purge_stale_exchange_caches,
+            _token_fingerprint,
+        )
+
+        rotated = _token_fingerprint("gho_rotated_away")
+        mod._jwt_cache[rotated] = ("tid=old", 1.0, None)
+        mod._exchange_locks[rotated] = mod.threading.Lock()
+
+        _purge_stale_exchange_caches(1000.0)
+
+        # The JWT expired, so nothing is cached for this credential and its lock has no
+        # single-flight work left to serialize.
+        assert rotated not in mod._jwt_cache
+        assert rotated not in mod._exchange_locks
+
+    def test_lock_kept_while_its_credential_is_still_cached(self):
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import (
+            _purge_stale_exchange_caches,
+            _token_fingerprint,
+        )
+
+        live = _token_fingerprint("gho_still_in_use")
+        mod._jwt_cache[live] = ("tid=new", 1000.0 + 10 * mod._JWT_REFRESH_MARGIN_SECONDS, None)
+        mod._exchange_locks[live] = mod.threading.Lock()
+
+        _purge_stale_exchange_caches(1000.0)
+
+        assert live in mod._exchange_locks
+
+    def test_lock_kept_while_a_failure_is_still_negative_cached(self):
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import (
+            _purge_stale_exchange_caches,
+            _token_fingerprint,
+        )
+
+        rejected = _token_fingerprint("gho_rejected")
+        mod._exchange_failure_cache[rejected] = 5000.0
+        mod._exchange_locks[rejected] = mod.threading.Lock()
+
+        _purge_stale_exchange_caches(1000.0)
+
+        assert rejected in mod._exchange_locks
+
+    @patch("urllib.request.urlopen")
+    def test_exchange_sweeps_stale_entries(self, mock_urlopen):
+        from hermes_cli.copilot_auth import _token_fingerprint, exchange_copilot_token
+
+        import hermes_cli.copilot_auth as mod
+
+        stale = _token_fingerprint("gho_previously_rotated")
+        mod._jwt_cache[stale] = ("tid=old", time.time() - 10, None)
+
+        resp_data = json.dumps(
+            {"token": "tid=fresh;exp=1", "expires_at": time.time() + 1800}
+        ).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = resp_data
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        api_token, _, _ = exchange_copilot_token("gho_current")
+
+        assert api_token == "tid=fresh;exp=1"
+        assert stale not in mod._jwt_cache
+
+    @patch("urllib.request.urlopen")
+    def test_exchange_retires_lock_of_rotated_credential(self, mock_urlopen):
+        from hermes_cli.copilot_auth import _token_fingerprint, exchange_copilot_token
+
+        import hermes_cli.copilot_auth as mod
+
+        rotated = _token_fingerprint("gho_previously_rotated")
+        mod._exchange_locks[rotated] = mod.threading.Lock()
+
+        resp_data = json.dumps(
+            {"token": "tid=fresh;exp=1", "expires_at": time.time() + 1800}
+        ).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = resp_data
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        exchange_copilot_token("gho_current")
+
+        # Nothing is cached for the rotated credential, so its single-flight lock has no
+        # remaining work and should not outlive the exchange.
+        assert rotated not in mod._exchange_locks
+
+    @patch("urllib.request.urlopen")
+    def test_live_credential_survives_an_unrelated_exchange(self, mock_urlopen):
+        from hermes_cli.copilot_auth import _token_fingerprint, exchange_copilot_token
+
+        import hermes_cli.copilot_auth as mod
+
+        live = _token_fingerprint("gho_long_lived")
+        expires_at = time.time() + 1800
+        mod._jwt_cache[live] = ("tid=still_valid", expires_at, None)
+        mod._exchange_locks[live] = mod.threading.Lock()
+
+        # A different token's exchange must not disturb the credential still in use.
+        assert exchange_copilot_token("gho_long_lived")[0] == "tid=still_valid"
+        assert live in mod._jwt_cache
+        assert live in mod._exchange_locks

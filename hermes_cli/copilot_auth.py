@@ -258,6 +258,44 @@ def _token_fingerprint(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode()).hexdigest()[:16]
 
 
+def _purge_stale_exchange_caches(now: float) -> None:
+    """Drop entries no future call can act on, so a long-lived process tracks live tokens.
+
+    Every cache here is keyed by a fingerprint of the *raw* token, and re-auth hands us a new
+    token value each time — so a rotated-away credential is never presented again and nothing
+    ever removes its entry. The TTLs bound how long an entry may be *reused*, never how long it
+    *lives*, which leaves each rotation holding its exchanged Copilot API token (and base URL)
+    for the life of the process. Sweeping here keeps retention tied to the tokens actually in
+    use.
+    """
+    # A cached JWT stays actionable until it crosses the refresh margin — before that the read
+    # path would still serve it, so dropping it earlier would only force a needless exchange.
+    expired_jwts = [
+        fp for fp, (_, expires_at, _) in _jwt_cache.items()
+        if now >= expires_at - _JWT_REFRESH_MARGIN_SECONDS
+    ]
+    for fp in expired_jwts:
+        _jwt_cache.pop(fp, None)
+    # A negative-cache deadline in the past already reads as a miss; the entry is dead weight.
+    expired_failures = [fp for fp, fail_until in _exchange_failure_cache.items() if now >= fail_until]
+    for fp in expired_failures:
+        _exchange_failure_cache.pop(fp, None)
+    # The single-flight lock is a memory optimisation, not state: recreating one for a live
+    # fingerprint is free, so retiring locks for fingerprints with nothing cached tracks the
+    # credentials in use instead of every credential the process has ever been handed. A holder
+    # whose fingerprint has no cache entry is mid-exchange and about to write one, and
+    # recreating its lock merely lets a second caller exchange in parallel — a duplicated
+    # request, never a corrupted entry, since the write is keyed and idempotent.
+    retired_locks = [
+        fp for fp in _exchange_locks
+        if fp not in _jwt_cache and fp not in _exchange_failure_cache
+    ]
+    if retired_locks:
+        with _exchange_locks_guard:
+            for fp in retired_locks:
+                _exchange_locks.pop(fp, None)
+
+
 def _read_jwt_store(path: Path) -> Optional[dict]:
     """Bounded read of the on-disk JWT store → dict, or None if missing/unusable (a store over
     the 1 MiB cap or non-dict can't balloon memory or get rewritten back out)."""
@@ -427,6 +465,7 @@ def exchange_copilot_token(
     # Fast paths outside the lock: a valid in-process JWT needs no exchange, and a recent failure
     # means queueing behind the in-flight holder (up to ~50 s) would only park an executor thread
     # to learn the same answer.
+    _purge_stale_exchange_caches(time.time())
     cached = _jwt_cache.get(fp)
     if _cache_entry_fresh(cached):
         return cached

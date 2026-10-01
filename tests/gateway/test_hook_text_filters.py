@@ -14,9 +14,9 @@ from typing import Any, cast
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import GatewayRunner
-from gateway.run_turn import apply_collectable_text_filter
+from gateway.run_turn import apply_collectable_text_filter, filter_model_history
 from gateway.session import SessionSource
 
 # Reused harness: it drives the REAL in-band queued (/queue) drain through
@@ -160,12 +160,14 @@ class _FunnelStub:
     def __init__(self, hooks):
         self.hooks = hooks
         self.seen: list = []
+        self.model_histories: list = []
 
     def _profile_scope_for_source(self, source):
         return contextlib.nullcontext()
 
     async def _run_agent_inner(self, message, context_prompt, history, source, session_id, **turn_kwargs):
         self.seen.append(message)
+        self.model_histories.append(history)
         return {"final_response": f"done:{message}"}
 
 
@@ -260,9 +262,110 @@ async def test_a_queued_followup_is_filtered_too(monkeypatch, tmp_path):
     events = [event for event, _ in runner.hooks.events]
     # One inbound filter per turn (two turns ran)...
     assert events.count("agent:message:filter") == 2
-    # ...and exactly one outbound pass over the delivered reply: the terminal turn's text is
-    # filtered by the frame that opened the chain, never twice by the nested one.
-    assert events.count("agent:response:filter") == 1
+    # Every delivered turn in the chain is filtered exactly once: first reply before recursion,
+    # terminal reply before normal completion. Neither response is filtered twice by a parent frame.
+    assert events.count("agent:response:filter") == 2
+
+
+
+
+class _SentinelRedactor(_RecordingFilterHooks):
+    """Redact a test sentinel in both live messages and persisted model history."""
+
+    SECRET = "SENTINEL-PII-938475"
+
+    async def emit_collect(self, event_type, context):
+        self.events.append((event_type, dict(context)))
+        value = context.get("message")
+        if event_type == "agent:message:filter" and isinstance(value, str) and self.SECRET in value:
+            return [{"message": value.replace(self.SECRET, "[REDACTED]")}]
+        return []
+
+
+@pytest.mark.asyncio
+async def test_filtered_user_text_never_reenters_model_history_on_turn_two():
+    """Two-turn PII regression: the transcript may retain raw text, but model history may not.
+
+    Turn one filters the live user message. Turn two is given the exact raw transcript row a store
+    can replay (including api_content, the byte-fidelity sidecar) and must hand only redacted text
+    to the model. Filtering operates on a view/copy: it does not rewrite the caller's persisted rows.
+    """
+    hooks = _SentinelRedactor()
+    stub = _FunnelStub(hooks)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="4242", chat_type="dm")
+    raw = "my secret is " + hooks.SECRET
+
+    await _run_agent_unbound(
+        stub, message=raw, context_prompt="", history=[], source=source, session_id="s-two-turn-pii",
+    )
+    persisted_history = [{"role": "user", "content": raw, "api_content": raw, "timestamp": 1}]
+    snapshot = [dict(row) for row in persisted_history]
+    await _run_agent_unbound(
+        stub, message="continue", context_prompt="", history=persisted_history,
+        source=source, session_id="s-two-turn-pii",
+    )
+
+    model_history_turn_two = stub.model_histories[1]
+    assert hooks.SECRET not in repr(model_history_turn_two)
+    assert model_history_turn_two[0]["content"] == "my secret is [REDACTED]"
+    assert model_history_turn_two[0].get("api_content", "").find(hooks.SECRET) == -1
+    assert persisted_history == snapshot, "model-view filtering must not mutate stored transcript rows"
+    assert stub.seen == ["my secret is [REDACTED]", "continue"]
+    assert any(ctx.get("history") is True for event, ctx in hooks.events if event == "agent:message:filter")
+
+
+@pytest.mark.asyncio
+async def test_history_api_content_sidecar_is_filtered_even_when_display_content_is_clean():
+    """A stale/raw API sidecar must not bypass a clean-looking display content field."""
+    hooks = _SentinelRedactor()
+    secret = hooks.SECRET
+    history = [{
+        "role": "user", "content": "already safe", "api_content": f"hidden {secret}",
+    }]
+    filtered = await filter_model_history(hooks, "agent:message:filter", {}, history)
+    assert secret not in repr(filtered)
+    assert filtered[0]["content"] == "already safe"
+    assert filtered[0]["api_content"] == "hidden [REDACTED]"
+    assert history[0]["api_content"] == f"hidden {secret}"
+
+
+@pytest.mark.asyncio
+async def test_model_history_filter_is_identity_without_a_hook_registry():
+    history = [{"role": "user", "content": "keep exactly"}]
+    assert await filter_model_history(None, "agent:message:filter", {}, history) is history
+
+
+@pytest.mark.asyncio
+async def test_queued_first_response_is_filtered_before_its_send(monkeypatch, tmp_path):
+    """The first response of a queued chain is a real delivery and must not escape raw."""
+    class _CaptureAdapter(HookRecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.sent_texts = []
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.sent_texts.append(content)
+            return SendResult(success=True, message_id=f"sent-{len(self.sent_texts)}")
+
+    _TwoTurnAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _TwoTurnAgent)
+    adapter = _CaptureAdapter()
+    runner = _make_runner(adapter)
+    runner.hooks = _RecordingFilterHooks(response_prefix="filtered:")
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+        text="queued next", message_type=MessageType.TEXT, source=_source(), message_id="queued-first-filter",
+    )
+
+    result = await runner._run_agent(
+        message="opening", context_prompt="", history=[], source=_source(),
+        session_id="s-queued-first-response", session_key=SESSION_KEY,
+    )
+
+    assert result["final_response"] == "filtered:done-2"
+    assert "filtered:done-1" in adapter.sent_texts
+    assert not any(text == "done-1" for text in adapter.sent_texts)
+    assert adapter.sent_texts.count("filtered:done-1") == 1
+    assert [event for event, _ in runner.hooks.events].count("agent:response:filter") == 2
 
 
 # ── Puntos de la revisión del mantenedor (30-09-2026) ────────────────────────────────────

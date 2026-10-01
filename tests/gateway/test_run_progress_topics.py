@@ -1075,6 +1075,7 @@ async def _run_with_agent(
     adapter_cls=ProgressCaptureAdapter,
     user_id=None,
     scope_id=None,
+    hooks=None,
 ):
     if config_data:
         import hermes_yaml as yaml
@@ -1091,6 +1092,8 @@ async def _run_with_agent(
 
     adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
+    if hooks is not None:
+        runner.hooks = hooks
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
@@ -1514,6 +1517,60 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
     assert any("[plugin appended this]" in text for text in edited_texts), (
         f"expected transformed text in adapter.edits, got: {edited_texts!r}"
     )
+
+
+class CollectableFilterStreamAgent:
+    """Streams its unfiltered final; the gateway response filter must replace it in-place."""
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("raw answer")
+        return {
+            "final_response": "raw answer",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class _CollectableResponseReplacement:
+    loaded_hooks = True
+
+    async def emit_collect(self, event_type, context):
+        if event_type == "agent:response:filter":
+            return [{"response": "redacted answer"}]
+        return []
+
+
+@pytest.mark.asyncio
+async def test_collectable_response_filter_edits_the_actual_streamed_message(monkeypatch, tmp_path):
+    """Observe adapter edit, not only response flags: the transformed final must reach the user."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CollectableFilterStreamAgent,
+        session_id="sess-collectable-filter-stream",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+        hooks=_CollectableResponseReplacement(),
+    )
+
+    assert result["final_response"] == "redacted answer"
+    assert any(edit["content"] == "redacted answer" for edit in adapter.edits), (
+        f"expected replacement in adapter edit calls; got {adapter.edits!r}"
+    )
+    assert result.get("already_sent") is True
 
 
 @pytest.mark.asyncio

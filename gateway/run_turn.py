@@ -21,6 +21,7 @@ from agent.session_activity import format_iteration_progress
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
+from types import SimpleNamespace
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
@@ -38,7 +39,7 @@ from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -129,6 +130,87 @@ async def apply_collectable_text_filter(
         if isinstance(candidate, dict) and isinstance(candidate.get(key), str):
             return candidate[key]
     return value
+
+
+async def _run_agent_filter_response_before_delivery_unbound(
+    runner: Any, response: Any, source: SessionSource, session_id: str,
+) -> Any:
+    """Call the mixin helper unbound so light test doubles without it still back-fill the seam."""
+    return await GatewayTurnMixin._run_agent_filter_response_before_delivery(
+        runner, response, source, session_id,
+    )
+
+
+_RUN_AGENT_FILTER_UNBOUND = _run_agent_filter_response_before_delivery_unbound
+
+
+async def filter_model_history(
+    hooks: Any, event_type: str, context: dict, history: List[Any],
+) -> List[Any]:
+    """Filter user text in a COPY of the transcript history before the model reads it.
+
+    Each user-row candidate (display ``content``, its ``api_content`` sidecar, and string parts of
+    multimodal payloads) is emitted with ``{"history": True, "history_field": ...}``; the first
+    valid ``{"message": ...}`` replacement wins, per row. Fail-open per row.
+
+    The input rows are NEVER mutated — the caller may pass the persisted transcript itself. This
+    is a model-view shadow: the durable transcript keeps the raw text; every replay to the model
+    is filtered. Returns the original list object when nothing changed (byte-identical replay).
+    """
+    if not history or hooks is None or not callable(getattr(hooks, "emit_collect", None)):
+        return history
+
+    async def _filter(text: str, field: str) -> str:
+        return await apply_collectable_text_filter(
+            hooks, event_type, {**context, "history": True, "history_field": field}, "message", text,
+        )
+
+    out: List[Any] = []
+    changed = False
+    for msg in history:
+        if isinstance(msg, str) and msg:
+            filtered = await _filter(msg, "content")
+            out.append(filtered)
+            changed |= filtered != msg
+            continue
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            out.append(msg)
+            continue
+        content = msg.get("content")
+        sidecar = msg.get("api_content")
+        new_content, new_sidecar = content, sidecar
+        if isinstance(content, str) and content:
+            new_content = await _filter(content, "content")
+        elif isinstance(content, list):
+            parts, part_changed = [], False
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"]:
+                    filtered = await _filter(part["text"], "content_part")
+                    if filtered != part["text"]:
+                        parts.append({**part, "text": filtered})
+                        part_changed = True
+                    else:
+                        parts.append(part)
+                else:
+                    parts.append(part)
+            if part_changed:
+                new_content = parts
+        if isinstance(sidecar, str) and sidecar:
+            # Same bytes as content: reuse that single hook call, so a non-idempotent
+            # transform applies once, identically, to both fields.
+            new_sidecar = new_content if (
+                isinstance(content, str) and sidecar == content
+            ) else await _filter(sidecar, "api_content")
+        if new_content != content or new_sidecar != sidecar:
+            row = dict(msg)
+            row["content"] = new_content
+            if "api_content" in msg:
+                row["api_content"] = new_sidecar
+            out.append(row)
+            changed = True
+        else:
+            out.append(msg)
+    return out if changed else history
 
 
 # Setup/prefix rows rather than conversation: the agent rebuilds its own system prompt, and a
@@ -2951,7 +3033,7 @@ class GatewayTurnMixin:
             "proxy response: url=%s session=%s time=%.1fs response=%d chars",
             proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
         )
-        return {
+        proxy_result = {
             "final_response": full_response or "(No response from remote agent)",
             "messages": [
                 {"role": "user", "content": message},
@@ -2963,6 +3045,66 @@ class GatewayTurnMixin:
             "session_id": session_id,
             "response_previewed": _stream_consumer is not None and bool(full_response),
         }
+        # The proxy turn has no _run_agent_inner to host the pre-delivery filter: before the
+        # streamed-delivery reconciliation, replace the body with the filter's replacement (or arm
+        # the post-stream edit seam if the body already streamed to the user).
+        proxy_result = await self._run_agent_filter_response_before_delivery(
+            proxy_result, source, session_id, stream_consumer=_stream_consumer,
+        )
+        await self._run_agent_mark_streamed_delivery(proxy_result, cast(
+            "TurnContext", SimpleNamespace(
+                stream_consumer_holder=[_stream_consumer], source=source, session_key=session_id,
+            ),
+        ))
+        return proxy_result
+
+    async def _run_agent_filter_response_before_delivery(
+        self, response: Any, source: SessionSource, session_id: str, *, turn_ctx: Any = None,
+        stream_consumer: Any = None,
+    ) -> Any:
+        """Apply the response text filter BEFORE stream reconciliation or queued early delivery.
+
+        The wrapper cannot do this: by the time ``_run_agent`` regains control,
+        ``_run_agent_mark_streamed_delivery`` has already decided whether the streamed body can be
+        suppressed, and a queued turn may already have sent its first response. Filtering the
+        response here protects both consumers. ``response_transformed`` is armed BEFORE
+        ``_run_agent_mark_streamed_delivery`` reads the result, so a streamed body is edited to the
+        filtered text instead of the user keeping the raw one. The marker guards double-filtering
+        (non-idempotent obfuscate/reveal hooks).
+        """
+        if not isinstance(response, dict):
+            return response
+        if response.get("_collectable_response_filter_applied"):
+            return response
+        hooks = getattr(self, "hooks", None)
+        response_text = response.get("final_response")
+        if isinstance(response_text, str) and response_text:
+            context = {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "chat_id": source.chat_id or "",
+                "thread_id": str(source.thread_id) if getattr(source, "thread_id", None) else "",
+                "chat_type": getattr(source, "chat_type", "") or "",
+                "session_id": session_id,
+            }
+            filtered = await apply_collectable_text_filter(
+                hooks, "agent:response:filter", context, "response", response_text,
+            )
+            if filtered != response_text:
+                response["final_response"] = filtered
+                sc = stream_consumer
+                if sc is None and turn_ctx is not None:
+                    sc = turn_ctx.stream_consumer_holder[0]
+                if (
+                    response.get("already_sent")
+                    or response.get("response_previewed")
+                    or (sc is not None and getattr(sc, "final_content_delivered", False))
+                ):
+                    # A streamed body already carries the unfiltered text: arm the post-stream
+                    # seam so the delivery step EDITS that message to the filtered text.
+                    response["response_transformed"] = True
+        response["_collectable_response_filter_applied"] = True
+        return response
 
     async def _run_agent(
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
@@ -2971,11 +3113,17 @@ class GatewayTurnMixin:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off).
 
-        The collectable text filters live HERE, on the single funnel every turn passes through.
-        The in-band queued (``/queue``) follow-up re-enters a turn through this method without
-        ever reaching the hook block in ``_handle_message_with_agent``, so a filter emitted in
-        that caller would be silently skipped for exactly the messages a user typed while the
-        agent was still busy — the PII case this pair exists for.
+        The inbound message and model-view history filters live HERE, on the single funnel every
+        turn passes through. The in-band queued (``/queue``) follow-up re-enters a turn through this
+        method without ever reaching the hook block in ``_handle_message_with_agent``.
+
+        The OUTBOUND filter does NOT run here: by the time the wrapper regains control the inner
+        turn has already served both early-delivery consumers (streamed-message reconciliation and
+        the queued first-response send), and a filter applied only afterwards would drop the
+        replacement on a streamed turn and on the queued chain's first reply. It therefore runs
+        inside ``_run_agent_inner``, on every response dict it is about to return — see
+        ``_run_agent_filter_response_before_delivery``. This wrapper only back-fills the same seam
+        for lightweight doubles whose ``_run_agent_inner`` is a stub (via the once-only marker).
 
         ``_filter_outbound`` is False only for that in-band re-entry: its turn's reply is returned
         to the frame that opened the chain, which filters it once on the way out. Filtering in
@@ -3004,31 +3152,21 @@ class GatewayTurnMixin:
             message = await apply_collectable_text_filter(
                 hooks, "agent:message:filter", filter_ctx, "message", message,
             )
-            result = await self._run_agent_inner(
-                message, context_prompt, history, source, session_id, **turn_kwargs,
+            # PII durability: the live-message filter above is not enough — the next turn rebuilds
+            # model history from the persisted transcript and would re-send the raw secret. Filter
+            # the model-view history too, on a copy (the input may be the persisted transcript).
+            filtered_history = await filter_model_history(
+                hooks, "agent:message:filter", filter_ctx, history,
             )
-            # Outbound mirror: a subscriber may return {"response": ...} to replace what goes out
-            # (e.g. revealing the PII obfuscated on the way in). Same funnel, so a queued follow-up's
-            # reply is filtered too. This filter has the LAST WORD on the delivered text: the turn's
-            # own transform_llm_output hooks run earlier, inside the turn finalizer, and the shaping
-            # steps that run later (hidden-reasoning exhaustion, intentional-silence, sanitising)
-            # consume whatever this returns — so when a replacement is offered it wins.
-            if _filter_outbound and isinstance(result, dict):
-                response = result.get("final_response")
-                if isinstance(response, str) and response:
-                    filtered = await apply_collectable_text_filter(
-                        hooks, "agent:response:filter", filter_ctx, "response", response,
-                    )
-                    if filtered != response:
-                        # Punto 2: on a streamed turn the body already reached the user and the
-                        # delivery step suppresses the normal final send (already_sent was computed
-                        # from the PRE-filter text). Without re-arming the existing post-stream seam
-                        # the replacement would never be sent. response_transformed makes the
-                        # consumer edit the streamed message with this filtered text instead (#71643
-                        # seam, same one the plugin transform hooks use).
-                        if result.get("already_sent") or result.get("response_previewed"):
-                            result["response_transformed"] = True
-                        result["final_response"] = filtered
+            result = await self._run_agent_inner(
+                message, context_prompt, filtered_history, source, session_id, **turn_kwargs,
+            )
+            # Production _run_agent_inner applies the response filter BEFORE its delivery consumers
+            # (streamed-delivery reconciliation, queued first-response send). This fallback keeps
+            # lightweight test doubles on the same contract while never double-filtering (the
+            # per-response marker records an already-applied filter).
+            if isinstance(result, dict) and not result.get("_collectable_response_filter_applied") and _filter_outbound:
+                result = await _RUN_AGENT_FILTER_UNBOUND(self, result, source, session_id)
         return result
 
     def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
@@ -3814,6 +3952,14 @@ class GatewayTurnMixin:
                 logger.debug("Stream consumer wait before queued message failed: %s", e)
         # Delivery uses the finalized task result (empty/failure normalization), not raw ``result``.
         _delivery_result = response if isinstance(response, dict) else (result or {})
+        # First reconcile any post-filter transform (the queued first response is a real delivery:
+        # without this edit the user keeps the streamed/unfiltered text when the response filter
+        # fired between the agent result and this send). Conversely, when a REPLACEMENT lands here
+        # and the streamed body was not yet confirmed, this send must deliver the FILTERED text.
+        await self._run_agent_filter_response_before_delivery(
+            _delivery_result, turn_ctx.source, turn_ctx.session_id,
+            turn_ctx=turn_ctx,
+        )
         first_response = _delivery_result.get("final_response", "")
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
@@ -4425,6 +4571,9 @@ class GatewayTurnMixin:
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
             )
 
+        response = await self._run_agent_filter_response_before_delivery(
+            response, source, session_id, turn_ctx=turn_ctx,
+        )
         await self._run_agent_mark_streamed_delivery(response, turn_ctx)
         self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
         return response

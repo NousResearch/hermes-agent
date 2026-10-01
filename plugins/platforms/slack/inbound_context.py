@@ -5,7 +5,7 @@ from __future__ import annotations
 from gateway.platforms.event import attributed_context
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
 
@@ -205,6 +205,117 @@ class SlackInboundContextMixin:
                 section = f"{section}\n   _{att_footer}_"
             att_parts.append(section)
         return att_parts
+
+
+    async def _handle_slack_message(self: SlackAdapter, event: dict, payload: Optional[dict] = None) -> None:
+        """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
+        turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
+        so a retry/edit can re-drive it. Pre-existing claims stay."""
+        _ts = str((event or {}).get("ts") or "")
+        # getattr: bare test doubles (object.__new__) may lack the map.
+        _claims = getattr(self, "_processed_message_ts", None)
+        _was_claimed = bool(_ts) and _claims is not None and _ts in _claims
+        try:
+            return await self._handle_slack_message_impl(event, payload)
+        except BaseException:
+            _claims = getattr(self, "_processed_message_ts", None)
+            if _ts and not _was_claimed and _claims is not None and _ts in _claims:
+                _claims.pop(_ts, None)
+                logger.warning(
+                    "[%s] handler failed after claiming ts=%s; claim released "
+                    "so a retry or edit can re-drive the turn", self.name, _ts)
+            raise
+
+    async def _drop_bot_sender(self: SlackAdapter, event: dict) -> bool:
+        """allow_bots gate: ``none`` drops all bot posts (default), ``mentions`` those not
+        @mentioning us, ``all`` accepts — own posts always drop (echo loops). Unlabeled events
+        without ``client_msg_id`` are probed via users.info (humans carry it, stray bots don't)."""
+        from plugins.platforms.slack.adapter import _slack_mention_detection_text
+
+        msg_user = event.get("user", "")
+        sender_is_bot = self._event_declares_bot_sender(event)
+        if not sender_is_bot and msg_user and not event.get("client_msg_id"):
+            sender_is_bot = await self._resolve_user_is_bot(
+                msg_user, chat_id=event.get("channel", ""),
+                team_id=str(event.get("team") or event.get("team_id") or ""))
+        if not sender_is_bot:
+            return False
+        allow_bots = self._slack_allow_bots()
+        if allow_bots == "none":
+            return True
+        if allow_bots == "mentions":
+            # Mentions may live only in Block Kit, not the flat text.
+            # See #52387.
+            text_check = _slack_mention_detection_text(event)
+            if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+                logger.debug(
+                    "[Slack] Dropping bot message under allow_bots=mentions: "
+                    "no <@%s> mention in flat text or blocks", self._bot_user_id)
+                return True
+        return bool(msg_user and self._bot_user_id and msg_user == self._bot_user_id)
+
+    async def _prefilter_inbound(
+        self: SlackAdapter, event: dict, payload: Optional[dict]) -> Optional[tuple[dict, str, str]]:
+        """Normalize edits, then drop replays / ignored channels / bot posts / deletions.
+        Returns ``(event, team_id, channel_id)`` for messages the handler should consider."""
+        # Entry log BEFORE any filtering so operators can tell "dropped here"
+        # from "never subscribed in the manifest". Metadata only, never text.
+        # DEBUG entry log — fires BEFORE any filtering so users debugging bot-to-bot interop, allow_bots
+        # config, or SLACK_ALLOWED_USERS drops can confirm whether the event actually arrived from Slack
+        # (vs. being silently filtered upstream by the app's event subscriptions — Socket Mode will not
+        # deliver events the app manifest hasn't subscribed to). See #30091.
+        if logger.isEnabledFor(logging.DEBUG):
+            _bot_profile = event.get("bot_profile") or {}
+            logger.debug(
+                "[Slack] event received type=%s subtype=%s user=%s bot_id=%s bot_name=%s "
+                "channel=%s ts=%s thread_ts=%s", event.get("type"), event.get("subtype"),
+                event.get("user", "") or "", event.get("bot_id", "") or "",
+                (_bot_profile.get("name") if isinstance(_bot_profile, dict) else "") or "",
+                event.get("channel", ""), event.get("ts", ""), event.get("thread_ts", ""))
+        if event.get("subtype") == "message_changed":
+            normalized_event = self._normalize_changed_message(event)
+            if normalized_event is None:
+                return None
+            event = normalized_event
+        # Socket Mode redelivers after reconnects. Scope by workspace: ts is only unique per team.
+        # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777) Scope the dedup id by
+        # workspace: Slack event ts values are only unique within one workspace, so two teams' events with
+        # the same ts must not suppress each other.
+        event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
+        dedup_team_id = self._event_team_id(event, payload)
+        if event_ts and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts)):
+            return None
+        channel_id = event.get("channel", "")
+        if self._is_ignored_channel(channel_id):
+            logger.info("[Slack] Ignoring message in configured ignored channel %s", channel_id)
+            return None
+        if await self._drop_bot_sender(event):
+            return None
+        # Edits were normalized above so an @mention added by edit can wake the bot once;
+        # the normalized event retains the edited message's own subtype.
+        # Housekeeping subtypes (joins/leaves, topic/name/purpose changes, convert_to_private/
+        # public, pins, deletions, file comments...) are not a person speaking, so they must
+        # not start a turn in free-response channels (#110778). Allowlist rather than denylist
+        # so subtypes Slack adds later are dropped instead of silently readmitted.
+        # ``file_share`` passes: a human attaching a file is a person speaking, and the
+        # ``file_shared`` fallback synthesizes exactly this subtype. ``thread_broadcast``
+        # passes: a human sharing a threaded reply into the channel carries user/text.
+        # ``me_message`` passes: ``/me`` is a person speaking.
+        # ``bot_message`` already passed allow_bots above; document_mention is an
+        # explicit app mention from a Slack canvas, not a lifecycle notification.
+        # ``file_comment`` stays in the drop set deliberately (triage decision on
+        # #110778): a comment left on a file is not the owner talking to the bot.
+        subtype = event.get("subtype")
+        if subtype not in (
+            None, "", "file_share", "thread_broadcast", "me_message",
+            "bot_message", "document_mention",
+        ):
+            logger.debug(
+                "[Slack] Dropping non-conversational message subtype=%s in channel %s",
+                subtype, channel_id)
+            return None
+        return event, dedup_team_id, channel_id
+
 
 
 

@@ -419,6 +419,9 @@ class PendingWithdrawalMixin:
                 and source.user_id == sender_id
             )
 
+        return self._withdraw_pending_where(matches)
+
+    def _withdraw_pending_where(self, matches: Callable[[MessageEvent], bool]) -> bool:
         def withdraw(event: Any) -> Tuple[bool, Any]:
             return withdraw_from_event(event, matches)
 

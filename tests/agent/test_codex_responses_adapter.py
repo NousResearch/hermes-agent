@@ -7,12 +7,10 @@ from agent.codex_responses_adapter import (
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
     _classify_responses_issuer,
-    _format_responses_error,
     _normalize_codex_response,
     _neutralize_harmony_tokens,
     _preflight_codex_api_kwargs,
     _preflight_codex_input_items,
-    _responses_tools,
 )
 
 
@@ -182,6 +180,7 @@ def test_preflight_rewrites_raw_assistant_images_to_text_markers():
     }]
 
     assert _preflight_codex_input_items(raw) == [{
+        "type": "message",
         "role": "assistant",
         "content": [{
             "type": "output_text",
@@ -888,9 +887,6 @@ def test_preflight_passes_native_web_search_tool_through():
 # ---------------------------------------------------------------------------
 
 
-def test_format_responses_error_message_only():
-    err = {"message": "Upstream model unavailable"}
-    assert _format_responses_error(err, "failed") == "Upstream model unavailable"
 
 
 def _final_text_response(text):
@@ -999,3 +995,27 @@ def test_codex_preflight_passes_text_verbosity_through():
     assert _preflight_codex_api_kwargs(dict(kwargs))["text"] == {"verbosity": "low"}
     # An empty block is dropped, like the other optional fields, instead of rejected.
     assert "text" not in _preflight_codex_api_kwargs({**kwargs, "text": {}})
+
+
+@pytest.mark.parametrize("issuer", [None, "codex_backend"])
+def test_converter_role_items_are_typed_and_survive_preflight(issuer):
+    """llama.cpp's /v1/responses rejects typeless message items; preflight must accept every
+    item the converter emits, including user image parts."""
+    items = _chat_messages_to_responses_input([
+        {"role": "user", "content": [
+            {"type": "text", "text": "what is this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]},
+        {"role": "assistant", "content": "a cat"},
+        {"role": "assistant", "content": "", "codex_reasoning_items": [
+            {"type": "reasoning", "encrypted_content": "opaque", "summary": []},
+        ]},
+        {"role": "user", "content": "thanks"},
+    ], current_issuer_kind=issuer)
+
+    normalized = _preflight_codex_input_items(items)
+
+    role_items = [i for i in normalized if i.get("role")]
+    assert role_items and all(i["type"] == "message" for i in role_items)
+    assert {"type": "input_image", "image_url": "data:image/png;base64,AAAA"} in role_items[0]["content"]
+    assert normalized == items

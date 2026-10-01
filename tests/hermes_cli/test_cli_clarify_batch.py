@@ -14,6 +14,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from agent.i18n import t
 
 
 def _make_cli_stub():
@@ -32,7 +33,6 @@ def _q(index, question, choices=None, multi_select=False):
     """One normalized batch entry, shaped like _normalize_questions output."""
     return {
         "qid": f"q{index}",
-        "id": None,
         "question": question,
         "choices": list(choices) if choices else None,
         "choices_offered": list(choices) if choices else None,
@@ -45,7 +45,7 @@ def _start_batch(cli, questions):
     result = {}
 
     def _run():
-        result["value"] = cli._clarify_callback("", None, questions=questions)
+        result["value"] = cli._clarify_callback(questions)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -80,7 +80,7 @@ class TestClarifyBatchPanel:
         cli._clarify_batch_enter(state)
 
         thread.join(timeout=2)
-        assert result["value"] == {"answers": {"q0": "red", "q1": "large"}}
+        assert result["value"] == {"answers": {"q0": "red", "q1": "large"}, "outcome": "submitted"}
         assert cli._clarify_state is None
 
     def test_any_order_answering_via_tab_cycle(self):
@@ -110,7 +110,7 @@ class TestClarifyBatchPanel:
 
         thread.join(timeout=2)
         assert result["value"] == {
-            "answers": {"q0": "b", "q1": "c", "q2": "e"}
+            "answers": {"q0": "b", "q1": "c", "q2": "e"}, "outcome": "submitted"
         }
 
     def test_reanswer_overwrites_before_completion(self):
@@ -138,26 +138,29 @@ class TestClarifyBatchPanel:
 
         thread.join(timeout=2)
         assert result["value"] == {
-            "answers": {"q0": "thorough", "q1": "narrow"}
+            "answers": {"q0": "thorough", "q1": "narrow"}, "outcome": "submitted"
         }
 
-    def test_timeout_returns_partials_with_timed_out_flag(self):
+    def test_panel_waits_for_an_answer_past_the_messaging_clarify_timeout(self):
+        """The CLI is attended: a short ``agent.clarify_timeout`` (the messaging knob) must not time the
+        panel out — it stays up with locked answers intact until the last question is locked."""
         cli = _make_cli_stub()
         questions = [
             _q(0, "Answered?", ["yes", "no"]),
-            _q(1, "Never answered?", ["x", "y"]),
+            _q(1, "Answered later?", ["x", "y"]),
         ]
-        with patch(
-            "tools.clarify_gateway.resolve_clarify_timeout", return_value=1
-        ):
+        with patch("cli.CLI_CONFIG", {"agent": {"clarify_timeout": 1}}):
             thread, result = _start_batch(cli, questions)
             state = cli._clarify_state
             cli._clarify_batch_enter(state)  # lock q0 only
-            thread.join(timeout=5)
+            thread.join(timeout=2.5)
+            assert thread.is_alive()
+            assert cli._clarify_state is state and cli._clarify_deadline is None
+            cli._clarify_batch_enter(state)  # lock q1
+            thread.join(timeout=2)
 
         assert not thread.is_alive()
-        assert result["value"] == {"answers": {"q0": "yes"}, "timed_out": True}
-        assert cli._clarify_state is None
+        assert result["value"] == {"answers": {"q0": "yes", "q1": "x"}, "outcome": "submitted"}
 
     def test_multi_select_lock_produces_json_array_string(self):
         cli = _make_cli_stub()
@@ -196,7 +199,7 @@ class TestClarifyBatchPanel:
 
         thread.join(timeout=2)
         assert result["value"] == {
-            "answers": {"q0": "custom words", "q1": "a"}
+            "answers": {"q0": "custom words", "q1": "a"}, "outcome": "submitted"
         }
 
     def test_locked_question_persists_scrollback_summary(self):
@@ -217,28 +220,8 @@ class TestClarifyBatchPanel:
         assert calls[0].args == ("?", "Clarify", "Color?", "red")
         assert calls[1].args == ("?", "Clarify", "Size?", "small")
 
-    def test_single_question_path_returns_plain_string(self):
+    def test_connection_callback_masks_secret_and_submits_env(self):
         cli = _make_cli_stub()
-        result = {}
-
-        def _run():
-            result["value"] = cli._clarify_callback("Pick?", ["a", "b"])
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-
-        deadline = time.time() + 2
-        while cli._clarify_state is None and time.time() < deadline:
-            time.sleep(0.01)
-        assert cli._clarify_state is not None
-        assert "questions" not in cli._clarify_state
-
-        cli._clarify_state["response_queue"].put("a")
-        thread.join(timeout=2)
-        assert result["value"] == "a"
-
-        # The connection modal uses the same agent-thread queue handoff. Connect sends the
-        # approved target and env directly to the backend, while rendering masks secrets.
         cli._connection_state = None
         cli._capture_modal_input_snapshot = MagicMock()
         cli._restore_modal_input_snapshot = MagicMock()
@@ -265,15 +248,14 @@ class TestClarifyBatchPanel:
                 target=lambda: connection_result.setdefault("value", cli._connection_callback(payload)), daemon=True
             )
             connection_thread.start()
-            deadline = time.time() + 2
-            while cli._connection_state is None and time.time() < deadline:
-                time.sleep(0.01)
+            connection_thread.join(timeout=2)
+            assert not connection_thread.is_alive()
+            assert connection_result["value"] is None
             state = cli._connection_state
             state["drafts"]["asana"]["CLIENT_SECRET"] = "never-render-this"
             assert "never-render-this" not in "\n".join(cli._connection_render_lines())
-            assert "Client secret*: Set" in cli._connection_render_lines()
+            assert f"Client secret*: {t('cli.connect.secret_set')}" in cli._connection_render_lines()
             cli._connection_answer(approve=True)
-            connection_thread.join(timeout=2)
 
         sent = json.loads(apply_answer.call_args.args[1])
         assert sent == {"targets": [{
@@ -281,7 +263,6 @@ class TestClarifyBatchPanel:
             "status": "approved",
             "env": {"CLIENT_ID": "default-id", "CLIENT_SECRET": "never-render-this"},
         }]}
-        assert connection_result["value"] == "approved"
         cli._connection_close()
 
 
@@ -304,7 +285,7 @@ class TestClarifyBatchNavigation:
         cli._clarify_batch_set_active(state, (state["active"] - 1) % 3)
         assert state["active"] == 1
 
-        state["response_queue"].put("cancel")
+        state["response_queue"].put(None)
         thread.join(timeout=2)
 
     def test_revisit_choice_answer_restores_cursor(self):
@@ -325,7 +306,7 @@ class TestClarifyBatchNavigation:
         cli._clarify_batch_set_active(state, 0)
         assert state["selected"] == 1
 
-        state["response_queue"].put("cancel")
+        state["response_queue"].put(None)
         thread.join(timeout=2)
 
     def test_revisit_other_answer_highlights_other_and_prefills_edit(self):
@@ -358,7 +339,7 @@ class TestClarifyBatchNavigation:
         assert cli._clarify_freetext is True
         assert cli._clarify_prefill == "chartreuse"
 
-        state["response_queue"].put("cancel")
+        state["response_queue"].put(None)
         thread.join(timeout=2)
 
     def test_reanswer_overwrites_and_updates_meta(self):
@@ -386,7 +367,7 @@ class TestClarifyBatchNavigation:
         cli._clarify_batch_set_active(state, 1)
         cli._clarify_batch_enter(state)
         thread.join(timeout=2)
-        assert result["value"] == {"answers": {"q0": "red", "q1": "small"}}
+        assert result["value"] == {"answers": {"q0": "red", "q1": "small"}, "outcome": "submitted"}
 
 
 
@@ -400,18 +381,16 @@ class TestClarifyBellOnPrompt:
         cli = _make_cli_stub()
         cli.bell_on_prompt = bell_on_prompt
         out = io.StringIO()
-        with patch("cli.sys.stdout", out), patch(
-            "tools.clarify_gateway.resolve_clarify_timeout", return_value=60
-        ):
+        with patch("cli.sys.stdout", out):
             thread = threading.Thread(
-                target=cli._clarify_callback, args=("Color?", ["red", "blue"]), daemon=True
+                target=cli._clarify_callback, args=([_q(0, "Color?", ["red", "blue"])],), daemon=True
             )
             thread.start()
             deadline = time.time() + 2
             while cli._clarify_state is None and time.time() < deadline:
                 time.sleep(0.01)
             assert cli._clarify_state is not None
-            cli._clarify_state["response_queue"].put("red")
+            cli._clarify_state["response_queue"].put(None)
             thread.join(timeout=2)
         return out.getvalue()
 

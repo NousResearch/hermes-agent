@@ -152,16 +152,24 @@ The plugin is fail-open: no SDK installed, no credentials, or a transient Langfu
 hermes tools          # → Langfuse Observability → Cloud or Self-Hosted
 ```
 
-The wizard collects your keys, `pip install`s the `langfuse` SDK, and adds `observability/langfuse` to `plugins.enabled` for you. Restart Hermes and the next turn ships a trace.
+The wizard collects your keys, prepares the declared `langfuse` extra through PM
+when needed, and enables `observability/langfuse`. Restart Hermes and the next
+turn ships a trace. If preparation fails, retry through `hermes tools`; do not
+install the SDK into the selected environment with pip.
 
 **Setup (manual):**
 
+For a source checkout, first follow the [PM developer workflow](../../reference/package-management.md#developer-workflow)
+with the intended Hermes home. Use the checkout's prepared Python:
+
 ```bash
-pip install langfuse
-hermes plugins enable observability/langfuse
+python -c "import pm; pm.sync_venv(['langfuse'], explicit=True)"
+source ./activate
+python hermes plugins enable observability/langfuse
 ```
 
-Then put the credentials in `~/.hermes/.env`:
+Use `. .\activate.ps1` for PowerShell activation. Then put the credentials in
+the active home's `.env` (`$HERMES_HOME/.env`, normally `~/.hermes/.env`):
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
@@ -207,9 +215,9 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 
 NeMo Relay is no longer a bundled Hermes plugin. Do not run `hermes plugins enable observability/nemo_relay`; Hermes core now owns the Relay session, turn, LLM, and tool lifecycles.
 
-To opt into Relay middleware or exporters, create a standard Relay `plugins.toml`, then set `HERMES_NEMO_RELAY_PLUGINS_TOML` to that file before starting Hermes. The policy is process-wide for every profile hosted by that Hermes process. See the [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about) for ATOF, ATIF, and OpenTelemetry options.
+Configure Relay middleware or exporters through a standard Relay `plugins.toml`. Hermes loads Relay's user configuration (`~/.config/nemo-relay/plugins.toml`) and then its machine-wide system configuration (`/etc/nemo-relay/plugins.toml`, or `%ProgramData%\nemo-relay\plugins.toml` on Windows). Set `HERMES_NEMO_RELAY_PLUGINS_TOML` before starting Hermes only when you want an explicit file to replace the user configuration; the system configuration still has higher precedence. The policy is process-wide for every profile hosted by that Hermes process. Run `hermes doctor` to see which files apply. See the [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about) for ATOF, ATIF, and OpenTelemetry options.
 
-The old `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` settings no longer activate exporters — a `.env` that still carries them (and no `HERMES_NEMO_RELAY_PLUGINS_TOML`) exports **nothing**, and the gateway logs one warning saying so. `hermes doctor` reports these stale settings when no replacement `plugins.toml` is selected.
+The old `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` settings no longer configure exporters. When `HERMES_NEMO_RELAY_PLUGINS_TOML` is unset, the gateway warns about remaining legacy variables and `hermes doctor` reports them. Independently discovered Relay user or system exporters still apply.
 
 **Automatic migration.** `hermes update` (and `hermes migrate relay`, or `hermes migrate relay --all-profiles` for every profile home) converts the legacy variables into `<hermes home>/relay-plugins.toml`, sets `HERMES_NEMO_RELAY_PLUGINS_TOML` in that profile's `.env`, and comments the legacy lines out (nothing is deleted). Under a multiplexed gateway every profile home gets its own file. The generated file is validated through Relay before it is written; this is the shape it produces (note the `type = "file"` sink discriminator — a sink without it is rejected):
 
@@ -361,7 +369,7 @@ Bundled plugins are written exactly like any other Hermes plugin — see [Build 
 
 A plugin is a good candidate for bundling when:
 
-- It has no optional dependencies (or they're already `pip install .[all]` deps)
+- It has no optional dependencies (or they are already in the declared `all` extra)
 - The behaviour benefits most users and is opt-out rather than opt-in
 - The logic ties into lifecycle hooks that the agent would otherwise have to remember to invoke
 - It complements a core capability without expanding the model-visible tool surface

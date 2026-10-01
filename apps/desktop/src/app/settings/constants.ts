@@ -466,7 +466,6 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     maxSnapshots: 'Checkpoint Limit'
   },
   voice: {
-    recordKey: 'Voice Shortcut',
     maxRecordingSeconds: 'Max Recording Length',
     autoTts: 'Read Responses Aloud',
     voiceChatMode: 'Voice Chat Mode',
@@ -622,7 +621,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   fileReadMaxChars: 'Maximum characters Hermes can read from one file request.',
   approvals: {
     mode: 'How Hermes handles commands that need explicit approval.',
-    timeout: 'How long approval prompts wait before timing out.'
+    timeout:
+      'How long approval prompts on messaging platforms wait before timing out. The app and the terminal wait until you answer.'
   },
   security: {
     redactSecrets: 'Hide detected secrets from model-visible content when possible.'
@@ -805,7 +805,6 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
-      'voice.record_key',
       'voice.max_recording_seconds',
       'voice.client_direct'
     ]

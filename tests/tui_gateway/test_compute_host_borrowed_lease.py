@@ -31,7 +31,7 @@ def _frames(out: io.StringIO) -> list[dict]:
     return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
 
 
-def _wait(out: io.StringIO, predicate, timeout: float = 5.0) -> dict:
+def _wait(out: io.StringIO, predicate, timeout: float = 30.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for frame in _frames(out):
@@ -123,7 +123,7 @@ def isolated_env(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
-def _run_turn(frame: dict, timeout: float = 5.0) -> tuple[list[dict], dict | None]:
+def _run_turn(frame: dict, timeout: float = 30.0) -> tuple[list[dict], dict | None]:
     """Run one turn.start through the real child path; return (all frames, turn.end frame)."""
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)

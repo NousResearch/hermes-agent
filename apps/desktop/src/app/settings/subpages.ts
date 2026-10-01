@@ -29,9 +29,10 @@ import {
   Wrench
 } from '@/lib/icons'
 
-import { APPEARANCE_SUBPAGES, appearanceSubpageForSetting } from './appearance-subpages'
+import { APPEARANCE_SUBPAGES } from './appearance-subpages'
 import { CONFIG_SUBPAGES, configSubpageForField } from './config-subpages'
 import { OTHER_SUBPAGES } from './other-subpages'
+import { settingDefinition } from './settings-manifest'
 import type { SettingsView } from './types'
 
 export interface SettingsSubpage {
@@ -75,6 +76,7 @@ const SUBPAGE_ICONS: Record<string, IconComponent> = {
   gatewayDevices: Network,
   gatewayManagedUpdates: Download,
   keyboardShortcuts: Keyboard,
+  hudGesture: Keyboard,
   screenCapture: FileImage,
   notificationAlerts: Bell,
   notificationSounds: Volume2,
@@ -104,8 +106,8 @@ export function settingsSubpages(view: SettingsView): readonly SettingsSubpage[]
 
 /** Shared by search serialization and saved links that predate subpages. */
 export function settingsSubpageForTarget(view: SettingsView, field?: string, setting?: string): string | undefined {
-  if (view === 'config:appearance' && setting) {
-    return appearanceSubpageForSetting(setting)
+  if (setting) {
+    return settingDefinition(view, setting)?.subpage
   }
 
   if (view.startsWith('config:') && field) {

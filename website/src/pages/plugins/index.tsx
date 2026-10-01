@@ -13,6 +13,7 @@ import {
   SUBMIT_PLUGIN_URL,
   TIER_CONFIG,
   authorPagePath,
+  capToolChips,
   categoryOf,
   desktopInstallLink,
   formatDate,
@@ -24,11 +25,14 @@ import {
   tierOf,
 } from "../../components/PluginCatalog/catalog";
 import CopyButton from "../../components/PluginCatalog/CopyButton";
+import { groupCatalogPlugins, sortCatalogPlugins } from "../../../../apps/shared/src/catalog-browse";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
 const PLUGINS_URL = "/docs/api/plugins.json";
 const META_URL = "/docs/api/plugins-meta.json";
+/** Mirrors the `max-width: 600px` blocks in styles.module.css. */
+const MOBILE_PANEL_QUERY = "(max-width: 600px)";
 
 const TIER_ORDER = ["all", "official", "community"];
 
@@ -42,17 +46,8 @@ const SORT_OPTIONS: { key: SortKey; label: string; title: string }[] = [
   { key: "updated", label: "Recently updated", title: "Most recently re-pinned or edited first" },
 ];
 
-function dateMs(iso?: string | null): number {
-  const t = iso ? new Date(iso).getTime() : NaN;
-  return Number.isFinite(t) ? t : -Infinity;
-}
-
 function sortPlugins(list: CatalogPlugin[], sort: SortKey): CatalogPlugin[] {
-  if (sort === "stars") return list;
-  const field = sort === "newest" ? "addedAt" : "updatedAt";
-  return [...list].sort(
-    (a, b) => dateMs(b[field]) - dateMs(a[field]) || a.name.localeCompare(b.name),
-  );
+  return sortCatalogPlugins(list, sort);
 }
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -88,6 +83,12 @@ function PluginCard({
   const toolCount = caps.providesTools?.length || 0;
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
+  const toolChips = capToolChips(caps.providesTools);
+  const description = plugin.description || "No description available.";
+  // A broken banner URL swaps to the placeholder instead of collapsing, so the card keeps its
+  // height (every card in a grid row shares one height; see .grid in styles.module.css).
+  const [imageBroken, setImageBroken] = useState(false);
+  const showImage = Boolean(plugin.image) && !imageBroken;
   const pagePath = pluginPagePath(plugin.name);
   const history = useHistory();
   const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
@@ -111,7 +112,7 @@ function PluginCard({
     >
       <div className={styles.cardAccent} style={{ background: tier.color }} />
 
-      {plugin.image && (
+      {showImage ? (
         <img
           className={styles.cardImage}
           src={plugin.image}
@@ -119,34 +120,27 @@ function PluginCard({
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={(e) => { e.currentTarget.style.display = "none"; }}
+          onError={() => setImageBroken(true)}
         />
+      ) : (
+        <div
+          className={styles.cardImagePlaceholder}
+          aria-hidden="true"
+          style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${tier.color} 12%, transparent), transparent 70%)` }}
+        >
+          <span className={styles.cardImagePlaceholderIcon}>{category.icon}</span>
+        </div>
       )}
 
       <div className={styles.cardInner}>
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle}>
+            <h3 className={styles.cardTitle} title={plugin.name}>
               <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
                 {highlightMatch(plugin.name, query)}
               </Link>
             </h3>
-            <span
-              className={styles.tierPill}
-              style={{
-                color: tier.color,
-                background: tier.bg,
-                borderColor: tier.border,
-              }}
-            >
-              {tier.icon} {tier.label}
-            </span>
-            {plugin.version && (
-              <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
-                v{plugin.version.replace(/^v/i, "")}
-              </span>
-            )}
             {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
@@ -162,11 +156,26 @@ function PluginCard({
           </div>
         </div>
 
-        <p className={styles.cardDesc}>
-          {highlightMatch(plugin.description || "No description available.", query)}
+        <p className={styles.cardDesc} title={description}>
+          {highlightMatch(description, query)}
         </p>
 
         <div className={styles.cardMeta}>
+          <span
+            className={styles.tierPill}
+            style={{
+              color: tier.color,
+              background: tier.bg,
+              borderColor: tier.border,
+            }}
+          >
+            {tier.icon} {tier.label}
+          </span>
+          {plugin.version && (
+            <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
+              v{plugin.version.replace(/^v/i, "")}
+            </span>
+          )}
           <button
             className={styles.categoryChip}
             onClick={(e) => {
@@ -204,22 +213,23 @@ function PluginCard({
           ))}
         </div>
 
-        {/* Updated is omitted while it equals Added: a fresh entry has nothing to say yet. */}
-        {plugin.addedAt && (
-          <div className={styles.cardDates}>
+        {/* Always rendered (empty when undated) so every card keeps the same row layout.
+            Updated is omitted while it equals Added: a fresh entry has nothing to say yet. */}
+        <div className={styles.cardDates}>
+          {plugin.addedAt && (
             <span title={`Added to the catalog ${formatDate(plugin.addedAt)}`}>
               Added {formatRelativeTime(plugin.addedAt) ?? formatDate(plugin.addedAt)}
             </span>
-            {plugin.updatedAt && plugin.updatedAt !== plugin.addedAt && (
-              <>
-                <span aria-hidden="true" className={styles.cardDatesSep}>·</span>
-                <span title={`Last catalog change ${formatDate(plugin.updatedAt)}`}>
-                  Updated {formatRelativeTime(plugin.updatedAt) ?? formatDate(plugin.updatedAt)}
-                </span>
-              </>
-            )}
-          </div>
-        )}
+          )}
+          {plugin.addedAt && plugin.updatedAt && plugin.updatedAt !== plugin.addedAt && (
+            <>
+              <span aria-hidden="true" className={styles.cardDatesSep}>·</span>
+              <span title={`Last catalog change ${formatDate(plugin.updatedAt)}`}>
+                Updated {formatRelativeTime(plugin.updatedAt) ?? formatDate(plugin.updatedAt)}
+              </span>
+            </>
+          )}
+        </div>
 
         {onPick ? (
           <button
@@ -244,55 +254,56 @@ function PluginCard({
 
         {
           <div className={styles.cardDetail}>
-            {plugin.maintainer && (
-              <div className={styles.metaRow}>
-                <span className={styles.metaLabel}>Maintainer</span>
-                <span className={styles.metaValue}>
-                  {plugin.maintainerSlug ? (
-                    <Link to={authorPagePath(plugin.maintainerSlug)} onClick={(e) => e.stopPropagation()}>
-                      {plugin.maintainer}
-                    </Link>
-                  ) : (
-                    plugin.maintainer
-                  )}
-                </span>
-              </div>
-            )}
-            {plugin.requiresHermes && (
-              <div className={styles.metaRow}>
-                <span className={styles.metaLabel}>Requires</span>
-                <span className={styles.metaValue}>
-                  <code>hermes {plugin.requiresHermes}</code>
-                </span>
-              </div>
-            )}
+            {/* Exactly three fixed-height fact rows so the install box and links land on the same
+                edge in every card: Maintainer, Pinned (+ Requires), Tools (capped, or a dash). */}
+            <div className={styles.metaRow}>
+              <span className={styles.metaLabel}>Maintainer</span>
+              <span className={styles.metaValue} title={plugin.maintainer || undefined}>
+                {plugin.maintainerSlug ? (
+                  <Link to={authorPagePath(plugin.maintainerSlug)} onClick={(e) => e.stopPropagation()}>
+                    {plugin.maintainer}
+                  </Link>
+                ) : (
+                  plugin.maintainer || <span className={styles.metaEmpty}>—</span>
+                )}
+              </span>
+            </div>
             <div className={styles.metaRow}>
               <span className={styles.metaLabel}>Pinned</span>
-              <span className={styles.metaValue}>
+              <span
+                className={styles.metaValue}
+                title={plugin.requiresHermes ? `${plugin.sha} · requires hermes ${plugin.requiresHermes}` : plugin.sha}
+              >
                 <a
                   href={pinUrl(plugin)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                   className={styles.shaLink}
-                  title={plugin.sha}
                 >
                   <code>{plugin.version ? `${plugin.version} @ ${plugin.shaShort}` : plugin.shaShort}</code> ↗
                 </a>
+                {plugin.requiresHermes && (
+                  <>
+                    <span aria-hidden="true" className={styles.cardDatesSep}> · </span>
+                    <code>hermes {plugin.requiresHermes}</code>
+                  </>
+                )}
               </span>
             </div>
-            {caps.providesTools?.length ? (
-              <div className={styles.metaRow}>
-                <span className={styles.metaLabel}>Tools</span>
-                <span className={styles.chipList}>
-                  {caps.providesTools.map((t) => (
-                    <code key={t} className={styles.envChip}>
-                      {t}
-                    </code>
-                  ))}
+            <div className={styles.metaRow}>
+              <span className={styles.metaLabel}>Tools</span>
+              {toolChips.shown.length ? (
+                <span className={styles.chipList} title={caps.providesTools?.join(", ")}>
+                  <code className={styles.toolList}>{toolChips.shown.join(", ")}</code>
+                  {toolChips.hidden > 0 && (
+                    <code className={`${styles.envChip} ${styles.moreChip}`}>+{toolChips.hidden}</code>
+                  )}
                 </span>
-              </div>
-            ) : null}
+              ) : (
+                <span className={`${styles.metaValue} ${styles.metaEmpty}`}>—</span>
+              )}
+            </div>
             <div className={styles.installHint}>
               <code>{plugin.installCommand}</code>
               <CopyButton text={plugin.installCommand} />
@@ -385,7 +396,9 @@ export default function PluginCatalogPage() {
   const [tierFilter, setTierFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [sort, setSort] = useState<SortKey>("stars");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const filterPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -414,16 +427,44 @@ export default function PluginCatalogPage() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const isEditable =
+        target?.matches("input, textarea, select") ||
+        target?.isContentEditable ||
+        Boolean(target?.closest("[contenteditable='true']"));
+      if (e.key === "/" && !isEditable) {
         e.preventDefault();
+        e.stopImmediatePropagation();
         searchRef.current?.focus();
       }
       if (e.key === "Escape") {
         searchRef.current?.blur();
+        setFiltersOpen(false);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // Reveal the panel once it opens. `block: "nearest"` leaves the page alone
+  // when the panel is already in view; `start` scrolled the hero off-screen.
+  useEffect(() => {
+    if (!filtersOpen) return;
+    const frame = requestAnimationFrame(() => {
+      filterPanelRef.current?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [filtersOpen]);
+
+  // The panel only exists in the mobile band, so leaving it should drop the
+  // state too — otherwise `aria-expanded` stays "true" on a hidden toggle.
+  useEffect(() => {
+    const media = window.matchMedia(MOBILE_PANEL_QUERY);
+    const sync = () => {
+      if (!media.matches) setFiltersOpen(false);
+    };
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
   }, []);
 
   const allPlugins: CatalogPlugin[] = data?.plugins ?? [];
@@ -445,12 +486,7 @@ export default function PluginCatalogPage() {
   // than one undifferentiated wall. Filtering or searching flattens to a grid.
   const grouped = useMemo(() => {
     if (search.trim() || categoryFilter !== "all") return null;
-    const buckets = new Map<string, CatalogPlugin[]>();
-    for (const p of filtered) {
-      const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
-      (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(p);
-    }
-    return CATEGORY_ORDER.filter((c) => buckets.has(c)).map((c) => [c, buckets.get(c)!] as const);
+    return groupCatalogPlugins(filtered);
   }, [filtered, search, categoryFilter]);
 
   const categoryCounts = useMemo(() => {
@@ -463,13 +499,11 @@ export default function PluginCatalogPage() {
     return counts;
   }, [allPlugins, tierFilter]);
 
-  useEffect(() => {
-  }, [search, tierFilter, categoryFilter]);
-
   const clearAll = useCallback(() => {
     setSearch("");
     setTierFilter("all");
     setCategoryFilter("all");
+    setFiltersOpen(false);
   }, []);
 
   const pickCategory = useCallback((c: string) => {
@@ -544,11 +578,17 @@ export default function PluginCatalogPage() {
                 </span>
               </p>
             )}
+            <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.85 }}>
+              <a href="https://portal.nousresearch.com/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+              {" • "}
+              <a href="https://portal.nousresearch.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            </p>
           </div>
         </header>
 
         {!catalogEmpty && (
           <div className={styles.controlsBar}>
+            <div className={styles.controlsTopRow}>
             <div className={styles.searchWrap}>
               <svg
                 className={styles.searchIcon}
@@ -566,7 +606,7 @@ export default function PluginCatalogPage() {
               <input
                 ref={searchRef}
                 type="text"
-                placeholder="Search plugins by name or by what you want Hermes to do"
+                placeholder="Search plugins"
                 title='Tip: press "/" to jump here'
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -585,6 +625,50 @@ export default function PluginCatalogPage() {
               )}
             </div>
 
+            <button
+              type="button"
+              className={styles.filterToggle}
+              aria-expanded={filtersOpen}
+              aria-controls="plugin-directory-filters"
+              onClick={() => setFiltersOpen((open) => !open)}
+            >
+              Filters
+              {(tierFilter !== "all" || categoryFilter !== "all") && (
+                <span className={styles.activeFilterCount}>
+                  {Number(tierFilter !== "all") + Number(categoryFilter !== "all")}
+                </span>
+              )}
+            </button>
+            <label className={styles.compactSelect}>
+              <span>Source</span>
+              <select value={tierFilter} onChange={(e) => setTierFilter(e.target.value)}>
+                {TIER_ORDER.map((tier) => (
+                  <option key={tier} value={tier}>{tier === "all" ? "All sources" : TIER_CONFIG[tier]?.label || tier}</option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.compactSelect}>
+              <span>Category</span>
+              <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                <option value="all">All categories</option>
+                {CATEGORY_ORDER.filter((c) => categoryCounts[c]).map((c) => (
+                  <option key={c} value={c}>{CATEGORY_CONFIG[c].label}</option>
+                ))}
+              </select>
+            </label>
+            <label className={`${styles.compactSelect} ${styles.compactSort}`}>
+              <span>Sort</span>
+              <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+                {SORT_OPTIONS.map((opt) => <option key={opt.key} value={opt.key}>{opt.label}</option>)}
+              </select>
+            </label>
+            </div>
+
+            <div
+              id="plugin-directory-filters"
+              ref={filterPanelRef}
+              className={`${styles.filterPanel} ${filtersOpen ? styles.filterPanelOpen : ""}`}
+            >
             <div className={styles.tierPills}>
               {TIER_ORDER.map((tier) => {
                 const active = tierFilter === tier;
@@ -660,6 +744,7 @@ export default function PluginCatalogPage() {
                   </button>
                 );
               })}
+            </div>
             </div>
           </div>
         )}

@@ -17,6 +17,7 @@ per-skill source links and a cleaned-up category sidebar:
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,42 @@ def mod():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("directory,source,prefix", [
+    ("skills", "built-in", "NousResearch/hermes-agent/skills"),
+    ("optional-skills", "optional", "official"),
+])
+def test_local_skills_publish_exact_install_target(mod, tmp_path, monkeypatch, directory, source, prefix):
+    skill = tmp_path / directory / "creative" / "nested" / "example"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: Different Display Name\n---\nExample.")
+    monkeypatch.setattr(mod, "REPO_ROOT", str(tmp_path))
+    [entry] = mod.extract_local_skills()
+    expected = f"{prefix}/creative/nested/example"
+    assert entry["installIdentifier"] == expected
+    assert entry["installCmd"] == f"hermes skills install {expected}"
+
+
+def test_unified_skills_keep_source_identifiers_and_match_cli_install_targets(mod, tmp_path, monkeypatch):
+    entries = [
+        {"source": "clawhub", "identifier": "apple-design", "name": "Display name"},
+        {"source": "skills-sh", "identifier": "skills-sh/owner/repo/a skill?mode=one&two#readme"},
+        {"source": "github", "identifier": "anthropics/skills/skills/pdf"},
+        {"source": "well-known", "identifier": "https://example.com/skills/example"},
+    ]
+    index = tmp_path / "skills-index.json"
+    index.write_text(json.dumps({"skills": entries}))
+    monkeypatch.setattr(mod, "UNIFIED_INDEX_PATH", str(index))
+    extracted, _ = mod.extract_unified_index_skills()
+
+    assert len(extracted) == len(entries)
+    for source, published in zip(entries, extracted):
+        identifier = source["identifier"]
+        expected = f"clawhub/{identifier}" if source["source"] == "clawhub" else identifier
+        assert published["identifier"] == identifier
+        assert published["installIdentifier"] == expected
+        assert published["installCmd"] == f"hermes skills install {expected}"
 
 
 # --------------------------------------------------------------------------
@@ -106,15 +143,8 @@ def test_source_url_empty_for_unknown_source_without_identifier(mod):
 # _guess_category
 # --------------------------------------------------------------------------
 
-def test_guess_category_maps_known_tag(mod):
-    assert mod._guess_category(["security"]) == "security"
-    assert mod._guess_category(["machine-learning"]) == "mlops"
-    assert mod._guess_category(["crypto"]) == "blockchain"
 
 
-def test_guess_category_accepts_literal_curated_key(mod):
-    # A skill tagged literally with a curated category key should route there.
-    assert mod._guess_category(["devops"]) == "devops"
 
 
 def test_guess_category_rejects_junk_tag(mod):

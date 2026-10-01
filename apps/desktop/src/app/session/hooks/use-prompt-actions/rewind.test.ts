@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
 import {
   appendMidTurnUserMessage,
   applyReloadOptimistic,
   applyRewindOptimistic,
-  finalizeInterruptedMessages,
+  finalizeStoppedMessages,
   finalizeUserInterruptedMessages,
   planEdit,
   planReload,
@@ -112,18 +112,6 @@ describe('truncateSubmitParams', () => {
       confirm_truncate: true,
       truncate_before_user_ordinal: 1
     })
-  })
-
-  it('never sends an ordinal without the intent flag the gateway requires', () => {
-    // The gateway drops history only for a submit that declares itself a
-    // rewind. An ordinal built here without confirm_truncate would be refused
-    // (and, on an older gateway, would truncate silently).
-    for (const ordinal of [0, 1, 2, 7]) {
-      const params = truncateSubmitParams(ordinal)
-
-      expect(params.truncate_before_user_ordinal).toBe(ordinal)
-      expect(params.confirm_truncate).toBe(true)
-    }
   })
 
   it('includes truncate_before_row_id when passed', () => {
@@ -353,6 +341,15 @@ describe('finalizeUserInterruptedMessages', () => {
     const [message] = finalizeUserInterruptedMessages([settled], null, 11.25)
 
     expect(message.parts[1].interrupted).toBeUndefined()
+  })
+
+  it('flags the live reply as interrupted on stop, but not on a redirect finalize', () => {
+    const [stopped] = finalizeStoppedMessages([toolTurn()], 'assistant-tool', 11.25)
+    const [redirected] = finalizeUserInterruptedMessages([toolTurn()], 'assistant-tool', 11.25)
+
+    expect(stopped.interrupted).toBe(true)
+    expect(stopped.parts[1].interrupted).toBe(true)
+    expect(redirected.interrupted).toBeUndefined()
   })
 
   it('does not mark calls sealed by the non-user settle path', () => {

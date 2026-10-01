@@ -21,6 +21,8 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from agent.i18n import t
+from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
 
 logger = logging.getLogger(__name__)
@@ -177,10 +179,15 @@ def _reply_anchor_for_event(event) -> str | None:
     return getattr(event, "message_id", None)
 
 
+_MEDIA_KIND_KEYS = frozenset({"audio", "video", "file", "image"})
+
+
 def _media_failure_text(kind: str, file_name: "str | None" = None) -> str:
     """User-facing "couldn't deliver" notice; ``file_name`` is the only name ever shown."""
-    suffix = f" ({file_name})" if file_name else ""
-    return f"⚠️ Couldn't deliver the {kind} attachment{suffix}."
+    kind_label = t(f"gateway.notify.media_kind.{kind}") if kind in _MEDIA_KIND_KEYS else kind
+    if file_name:
+        return t("gateway.notify.media_delivery_failed_with_name", kind=kind_label, file_name=file_name)
+    return t("gateway.notify.media_delivery_failed", kind=kind_label)
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
@@ -259,25 +266,56 @@ def is_network_accessible(host: str) -> bool:
         return True
 
 
+# ``scutil --proxy`` is a fork+exec (~11 ms measured) and resolve_proxy_url runs it on the SEND path —
+# per chunk of an outbound message and per media attachment, not once per adapter. The answer is an
+# OS-level network setting that changes when someone edits Network Settings or joins a VPN, so it is
+# cached briefly rather than per call. The TTL is the staleness a proxy change can suffer; a send that
+# goes out on a stale answer fails and is retried, which is the same outcome as any transient proxy error.
+# No lock: a race costs one extra fork and both answers are equally current.
+_MACOS_PROXY_TTL_SECONDS = 60.0
+_macos_proxy_cache: "tuple[float, str | None] | None" = None
+
+
 def _detect_macos_system_proxy() -> str | None:
     """Read the macOS system HTTP(S) proxy via ``scutil --proxy``: ``http://host:port``
-    when an HTTP(S) proxy is enabled, else None (non-macOS or any subprocess error)."""
+    when an HTTP(S) proxy is enabled, else None (non-macOS or any subprocess error).
+
+    Memoised for ``_MACOS_PROXY_TTL_SECONDS``; call :func:`reset_macos_proxy_cache` to force a re-read.
+    """
+    global _macos_proxy_cache
+
     if sys.platform != "darwin":
         return None
+    cached = _macos_proxy_cache
+    now = time.monotonic()
+    if cached is not None and (now - cached[0]) < _MACOS_PROXY_TTL_SECONDS:
+        return cached[1]
     try:
         out = subprocess.check_output(["scutil", "--proxy"], timeout=3, text=True, encoding='utf-8',
                                       errors='replace', stderr=subprocess.DEVNULL)
     except Exception:
+        # Cache the failure too: a broken/slow scutil must not re-fork on every chunk.
+        _macos_proxy_cache = (now, None)
         return None
     props = {
         key.strip(): val.strip()
         for key, sep, val in (line.strip().partition(" : ") for line in out.splitlines()) if sep}
     # Prefer HTTPS, fall back to HTTP
+    resolved = None
     for enable_key, host_key, port_key in (
         ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"), ("HTTPEnable", "HTTPProxy", "HTTPPort")):
         if props.get(enable_key) == "1" and props.get(host_key) and props.get(port_key):
-            return f"http://{props[host_key]}:{props[port_key]}"
-    return None
+            resolved = f"http://{props[host_key]}:{props[port_key]}"
+            break
+    _macos_proxy_cache = (now, resolved)
+    return resolved
+
+
+def reset_macos_proxy_cache() -> None:
+    """Drop the memoised ``scutil --proxy`` answer so the next call re-reads it."""
+    global _macos_proxy_cache
+
+    _macos_proxy_cache = None
 
 
 def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[str] | None) -> bool:
@@ -324,7 +362,7 @@ def _aiohttp_socks_connector(proxy_url: str):
     except ImportError:
         if proxy_url.lower().startswith("socks"):
             logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Run: pip install aiohttp-socks", proxy_url)
+                           "Use an HTTP proxy instead.", proxy_url)
         return None
 
 
@@ -388,9 +426,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
-    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
+    approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
+    ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
+from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -453,9 +493,10 @@ UNAUTHORIZED_ACTION_NOTICE = (
 
 
 def unauthorized_action_notice(platform: Any) -> str:
-    """``UNAUTHORIZED_ACTION_NOTICE`` for a ``Platform`` member or its string name."""
+    """Localized ``UNAUTHORIZED_ACTION_NOTICE`` for a ``Platform`` member or its string name.
+    Call it per refusal — never bind the result at import, or the language freezes."""
     name = getattr(platform, "value", platform)
-    return UNAUTHORIZED_ACTION_NOTICE.format(platform=str(name or "<platform>"))
+    return t("gateway.unauthorized.action_notice", platform=str(name or "<platform>"))
 
 
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
@@ -555,7 +596,7 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         default = _CACHE_DIR_IMPORT_DEFAULTS.get(constant_name)
         if current is not None and default is not None and current != default:
             d = Path(current)
-        d.mkdir(parents=True, exist_ok=True)
+        _secure_media_cache_dir(d)
         return d
 
     def cleanup(max_age_hours: int = 24) -> int:
@@ -576,10 +617,60 @@ def _looks_like_image(data: bytes) -> bool:
                or (data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP"))
 
 
+def _secure_media_cache_dir(cache_dir: Path) -> None:
+    """Create/reconcile a gateway media-cache dir owner-only (0700), except managed.
+
+    Inbound media (photos, voice notes, documents a user sent through a
+    messaging platform) is user content, not regenerable cache: the
+    umask-derived 0755 these dirs inherited made them readable by every other
+    local account whenever ``HERMES_HOME`` is traversable — the documented
+    ``HERMES_HOME_MODE=0701`` web-server hatch. The mode is passed to ``mkdir``
+    so it is set at creation, then reconciled by the house policy helper
+    ``hermes_cli.config._secure_dir`` (managed/NixOS installs keep their
+    group-share design: these lazily-created dirs are not covered by the
+    module's ``systemd.tmpfiles`` rules, so the mode is left to the
+    configured umask/setgid). Best-effort: never fails a media write.
+    """
+    try:
+        managed = False
+        try:
+            from hermes_cli.config import is_managed
+
+            managed = bool(is_managed())
+        except Exception:  # pragma: no cover - defensive
+            pass
+        if managed:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            return
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            from hermes_cli.config import _secure_dir
+
+            _secure_dir(cache_dir)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("media cache dir chmod skipped: %s", exc)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("media cache dir creation failed for %s: %s", cache_dir, exc)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+
 def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
-    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string."""
+    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string.
+
+    The file is written owner-only (0600) — inbound media is private user
+    content and the cache dir is hardened to 0700 by ``_secure_media_cache_dir``;
+    one directory should not carry two file-mode conventions. Best-effort on
+    platforms where POSIX mode bits are advisory (Windows): falls back to a
+    plain write rather than failing the media write.
+    """
     filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
-    filepath.write_bytes(data)
+    try:
+        fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    except OSError:
+        filepath.write_bytes(data)
+        return str(filepath)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
     return str(filepath)
 
 
@@ -1458,14 +1549,17 @@ async def cache_document_from_bytes_async(data: bytes, filename: str) -> str:
 @dataclass
 class CachedMedia:
     """Result of caching one attachment's bytes."""
-    path: str                 # absolute cache path, agent-visible (sandbox-translated)
+    path: str                 # absolute HOST cache path (same coordinate system as cache_*_from_bytes)
     media_type: str           # MIME type recorded on the MessageEvent
     kind: str                 # "image" | "video" | "audio" | "document"
     display_name: str         # human-readable name for transcript notes
 
     def context_note(self) -> str:
-        """One-line transcript annotation pointing the agent at the file."""
-        return f"[{self.kind} '{self.display_name}' saved at: {self.path}]"
+        """One-line transcript annotation pointing the agent at the file (sandbox-translated at
+        render time, never baked into ``path``: ``event.media_urls`` must hold one coordinate
+        system so the routed turn can re-home and translate every entry alike, #101134)."""
+        from tools.credential_files import to_agent_visible_cache_path
+        return f"[{self.kind} '{self.display_name}' saved at: {to_agent_visible_cache_path(self.path)}]"
 
 
 # MIME -> extension reverse lookup; FIRST match across image, video, document tables wins
@@ -1487,7 +1581,6 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
     """Classify and cache raw attachment bytes -> CachedMedia (None only for images failing
     validation). ``default_kind`` biases ambiguous ext/MIME (Telegram native photo, no name);
     anything not image/video/audio is a document."""
-    from tools.credential_files import to_agent_visible_cache_path
     ext = _resolve_media_ext(filename, mime_type)
     mime = (mime_type or "").lower()
     display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
@@ -1506,13 +1599,13 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
                 raise
             return None
         out_mime = mime if passthrough and mime.startswith(f"{kind}/") else table[kind_ext]
-        return CachedMedia(to_agent_visible_cache_path(path), out_mime, kind, display)
+        return CachedMedia(path, out_mime, kind, display)
     # Any other type is cached and surfaced as a path — an authorized user's uploads must never be
     # silently dropped. Unknown types get octet-stream so the agent reaches for terminal tools.
     fallback_name = filename or (f"document{ext}" if ext else "document.bin")
     path = cache_document_from_bytes(data, fallback_name)
     out_mime = SUPPORTED_DOCUMENT_TYPES.get(ext) or mime or "application/octet-stream"
-    return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+    return CachedMedia(path, out_mime, "document", display or fallback_name)
 
 
 async def cache_media_bytes_async(
@@ -1734,6 +1827,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            existing.absorb_reply_expected(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
             elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
@@ -1748,6 +1842,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
+            existing.absorb_reply_expected(event)
             return
     pending_messages[session_key] = event
 
@@ -1892,6 +1987,9 @@ class BasePlatformAdapter(ABC):
         # could drop a newer guard.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        # Consecutive in-band drains per session of the just-dispatched event bouncing straight
+        # back into the queue (session busy elsewhere); drives the drain back-off (#123229).
+        self._requeue_counts: Dict[str, int] = {}
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
@@ -2018,22 +2116,23 @@ class BasePlatformAdapter(ABC):
         if not isinstance(event, ToolCallChunk):
             return None
         from agent.display import get_tool_emoji, prepare_tool_preview
-        head = f"{get_tool_emoji(event.tool_name, default='⚙️')} {event.tool_name}"
+        emoji, tool = get_tool_emoji(event.tool_name, default='⚙️'), event.tool_name
         if mode == "verbose" and event.args:
             import json
             args_str = json.dumps(event.args, ensure_ascii=False, default=str)
             if preview_max_len > 0 and len(args_str) > preview_max_len:
                 args_str = args_str[:preview_max_len - 3] + "..."
-            return f"{head}({list(event.args.keys())})\n{args_str}"
+            return t("gateway.progress.tool_verbose", emoji=emoji, tool=tool, keys=list(event.args.keys()), args=args_str)
         if not event.preview:
-            return f"{head}..."
+            return t("gateway.progress.tool_pending", emoji=emoji, tool=tool)
         if mode == "verbose":
-            return f'{head}: "{event.preview}"'
+            return t("gateway.progress.tool_preview", emoji=emoji, tool=tool, preview=event.preview)
         # "all" / "new": short capped preview (default 40; progress bubbles persist as messages).
         cap = preview_max_len if preview_max_len > 0 else 40
         prepared = prepare_tool_preview(
             event.tool_name, event.args, fallback=event.preview, max_len=cap)
-        return f'{head}: "{self.format_tool_preview(prepared)}"'
+        return t("gateway.progress.tool_preview", emoji=emoji, tool=tool, preview=self.format_tool_preview(prepared))
+
 
     def format_tool_preview(self, preview: "ToolPreview") -> str:
         """Platform-native formatting of a compact tool preview; rich-text adapters may use
@@ -2198,10 +2297,20 @@ class BasePlatformAdapter(ABC):
         release_scoped_lock(self._platform_lock_scope, identity)
         self._platform_lock_identity = None
 
+    # Plugin handler factories wired on the live native client: ``(plugin, qualname)`` keys, reset when
+    # the native client is rebuilt. ``None`` = ``connect()`` has not wired yet (class defaults so
+    # subclasses that skip ``super().__init__`` still re-wire safely).
+    _plugin_handler_native: Any = None
+    _plugin_handlers_wired: Optional[set] = None
+
     def _wire_plugin_handlers(self, native: Any = None) -> None:
         """Invoke plugin-registered native handler factories (``ctx.register_platform_handler``)
         with ``(native, adapter)``; adapters call this from ``connect()`` once the native
-        client exists. Each factory is isolated so a bad plugin can't block connecting."""
+        client exists and :meth:`rewire_plugin_handlers` re-runs it for plugins loaded later.
+        Idempotent per native client: a factory is keyed by ``(plugin, qualname)`` and skipped once
+        wired on this ``native`` (a force re-discovery hands back NEW function objects for the same
+        plugin, so identity alone would double-register). Each factory is isolated so a bad plugin
+        can't block connecting."""
         try:
             from hermes_cli.plugins import get_plugin_manager
             factories = get_plugin_manager().get_platform_handler_factories(
@@ -2209,13 +2318,32 @@ class BasePlatformAdapter(ABC):
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[%s] Could not load plugin handler factories: %s", self.name, e)
             return
+        if self._plugin_handler_native is not native or self._plugin_handlers_wired is None:
+            # A rebuilt native client (transient-init rebuild, reconnect) starts with nothing wired.
+            self._plugin_handler_native = native
+            self._plugin_handlers_wired = set()
         for factory, plugin_name in factories:
+            key = (plugin_name, getattr(factory, "__qualname__", None) or repr(factory))
+            if key in self._plugin_handlers_wired:
+                continue
             try:
                 factory(native, self)
                 logger.info("[%s] Wired native handlers from plugin '%s'", self.name, plugin_name)
             except Exception as exc:
                 logger.error("[%s] Plugin '%s' handler factory raised: %s", self.name, plugin_name,
                              exc, exc_info=True)
+            # A raising factory is recorded too: re-wire must not re-raise it on every plugin load.
+            self._plugin_handlers_wired.add(key)
+
+    def rewire_plugin_handlers(self) -> None:
+        """Register handlers of plugins loaded AFTER ``connect()`` wired the first batch (#87770);
+        the gateway runner calls this on every plugin-loaded event. Safe to call repeatedly: only
+        factories not yet wired on the live native client run. Before ``connect()`` has wired once
+        there is nothing to re-wire — connect will pick everything up. Adapters with extra plugin
+        registries (Slack action handlers) extend this."""
+        if self._plugin_handlers_wired is None:
+            return
+        self._wire_plugin_handlers(self._plugin_handler_native)
 
     @property
     def name(self) -> str:
@@ -2455,6 +2583,7 @@ class BasePlatformAdapter(ABC):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
@@ -2659,14 +2788,26 @@ class BasePlatformAdapter(ABC):
     # ── ``_format_exec_approval`` templates; adapters override only the MARKUP (bold, HTML,
     # fences) — the words come from ``gateway.platforms.base_exec_approval`` so every surface
     # says the same thing.
-    _EA_HEADER: str = f"⚠️ {EA_HEADER_TEXT}\n\n"
+    # ``_EA_HEADER`` / ``_EA_REASON_LABEL`` / ``_EA_SMART_DENY_LINE`` / ``_EA_ACTION_LABELS`` are
+    # properties (not class attrs) so the active ``display.language`` is read per render;
+    # subclasses may still shadow them with plain class attributes carrying their own markup.
     _EA_CODE_OPEN: str = "```\n"
     _EA_CODE_CLOSE: str = "\n```\n"
-    _EA_REASON_LABEL: str = f"{EA_REASON_LABEL_TEXT}: "
     _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
-    _EA_SMART_DENY_LINE: str = "\n\nSmart DENY: owner override applies to this one operation only."
     _EA_CMD_BUDGET: int = 3000
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
+
+    @property
+    def _EA_HEADER(self) -> str:  # noqa: N802 — adapter-override contract name
+        return f"⚠️ {ea_header_text()}\n\n"
+
+    @property
+    def _EA_REASON_LABEL(self) -> str:  # noqa: N802
+        return f"{ea_reason_label_text()}: "
+
+    @property
+    def _EA_SMART_DENY_LINE(self) -> str:  # noqa: N802
+        return f"\n\n{ea_smart_deny_line_text()}"
 
     @staticmethod
     def _truncate_preview(text: str, budget: int, suffix: str = "...") -> str:
@@ -2706,10 +2847,12 @@ class BasePlatformAdapter(ABC):
         return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
 
     def _format_exec_approval(
-        self, command: str, description: str = "dangerous command", smart_denied: bool = False) -> str:
+        self, command: str, description: Optional[str] = None, smart_denied: bool = False) -> str:
         """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
         flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
-        platform-local."""
+        platform-local. ``description=None`` renders the localized default reason."""
+        if description is None:
+            description = ea_default_reason_text()
         if self._EA_REASON_BUDGET:
             description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
         cmd_preview = self._ea_fit(
@@ -2722,9 +2865,11 @@ class BasePlatformAdapter(ABC):
 
     # ── Exec-approval prompt (template method). The choice set is one rule for every button
     # surface — three separate "same fix × N adapters" commits motivated lifting it here.
-    _EA_ACTION_LABELS: Dict[str, str] = {
-        "once": "Allow Once", "session": "Allow Session", "always": "Always Allow", "deny": "Deny"}
     _EA_ACTION_STYLES: Dict[str, str] = {"once": "primary", "deny": "danger"}
+
+    @property
+    def _EA_ACTION_LABELS(self) -> Dict[str, str]:  # noqa: N802 — adapter-override contract name
+        return ea_action_labels()
 
     def _exec_approval_actions(
             self, *, allow_permanent: bool, allow_session: bool, smart_denied: bool) -> List[Tuple[str, str, str]]:
@@ -2746,13 +2891,15 @@ class BasePlatformAdapter(ABC):
         return cls._send_exec_approval_prompt is not BasePlatformAdapter._send_exec_approval_prompt
 
     async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
+        self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
         render them natively in ``_send_exec_approval_prompt``."""
+        if description is None:
+            description = ea_default_reason_text()
         prompt = ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
             description=description, smart_denied=smart_denied,
@@ -2774,7 +2921,7 @@ class BasePlatformAdapter(ABC):
         total_pages = max(1, (total + per_page - 1) // per_page)
         page = max(0, min(page, total_pages - 1))
         start, end = page * per_page, min(page * per_page + per_page, total)
-        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        page_info = t("gateway.picker.page_info", start=start + 1, end=end, total=total) if total_pages > 1 else ""
         meta: Dict[str, Any] = {"page": page, "total_pages": total_pages, "start": start,
                    "end": end, "total": total, "page_info": page_info}
         return options[start:end], meta
@@ -2808,17 +2955,15 @@ class BasePlatformAdapter(ABC):
                     _is_multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
             except Exception:
                 _is_multi = False
-            hint = "Reply with the number, the option text, or your own answer."
-            if _is_multi:
-                hint = ("Multiple selections allowed — reply with the numbers separated by commas "
-                        "or spaces (e.g. \"1, 3\"), the option text, or your own answer.")
-            numbered = [f"  {i}. {choice}" for i, choice in enumerate(choices, start=1)]
-            text = "\n".join([f"❓ {question}", "", *numbered, "", hint])
+            hint = t("gateway.clarify.hint_multi") if _is_multi else t("gateway.clarify.hint_single")
+            numbered = [t("gateway.clarify.option_line", index=i, choice=choice)
+                        for i, choice in enumerate(choices, start=1)]
+            text = "\n".join([t("gateway.clarify.question", question=question), "", *numbered, "", hint])
             # Text fallback: let the gateway intercept capture the typed reply.
             from tools.clarify_gateway import mark_awaiting_text
             mark_awaiting_text(clarify_id)
         else:
-            text = f"❓ {question}"
+            text = t("gateway.clarify.question", question=question)
         return await self.send(chat_id=chat_id, content=text, metadata=metadata)
 
     async def send_private_notice(
@@ -2862,7 +3007,6 @@ class BasePlatformAdapter(ABC):
         (Signal). Returns success when at least one image was delivered — the outcome
         the turn-level delivery tracker records; every override must return the same
         aggregate, or a media-only turn on that platform reports FAILURE (#106153)."""
-        from urllib.parse import unquote as _unquote
         delivered = False
         for image_url, alt_text in images:
             if human_delay > 0:
@@ -2871,7 +3015,8 @@ class BasePlatformAdapter(ABC):
                 logger.info("[%s] Sending image: %s (alt=%s)", self.name,
                             safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
                 if image_url.startswith("file://"):
-                    sender, url_kw = self.send_image_file, {"image_path": _unquote(image_url[7:])}
+                    from urllib.request import url2pathname
+                    sender, url_kw = self.send_image_file, {"image_path": url2pathname(image_url[7:])}
                 elif self._is_animation_url(image_url):
                     sender, url_kw = self.send_animation, {"animation_url": image_url}
                 else:
@@ -3498,6 +3643,7 @@ class BasePlatformAdapter(ABC):
             return live_adapter
         return self
 
+    @records_delivery
     async def _send_with_retry(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Any = None,
         max_retries: int = 2, base_delay: float = 2.0) -> "SendResult":
@@ -3601,9 +3747,7 @@ class BasePlatformAdapter(ABC):
                     return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
                 # Not a diagnostic: the requested result itself was lost and this is its only signal.
-                notice = (
-                    "\u26a0\ufe0f Message delivery failed after multiple attempts. "
-                    "Please try again \u2014 your request was processed but the response could not be sent.")
+                notice = t("gateway.notify.delivery_failed_retry")
                 try:
                     await _send(notice)
                 except Exception as notify_err:
@@ -3648,7 +3792,7 @@ class BasePlatformAdapter(ABC):
         likely culprit override it (Photon drops rich links instead of adding the banner)."""
         return await self.send(
             chat_id=chat_id, content=self.warning_text(
-                f"(Response formatting failed, plain text:)\n\n{content[:3500]}", content[:3500],
+                t("gateway.notify.plain_fallback_prefix", content=content[:3500]), content[:3500],
                 chat_id=chat_id, metadata=metadata),
             reply_to=reply_to, metadata=metadata)
 
@@ -3724,6 +3868,7 @@ class BasePlatformAdapter(ABC):
         else:
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
+            state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
@@ -3795,6 +3940,7 @@ class BasePlatformAdapter(ABC):
                        self.name, session_key)
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
+        self._requeue_counts.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
         return True
@@ -3832,6 +3978,7 @@ class BasePlatformAdapter(ABC):
         """Cancel in-flight processing for one session. ``release_guard=False`` keeps the guard so
         reset-like commands finish atomically; the await is bounded (5s) so a wedged finally can't
         stall."""
+        self._requeue_counts.pop(session_key, None)
         task = self._session_tasks.pop(session_key, None)
         if task is not None and not task.done():
             logger.debug("[%s] Cancelling active processing for session %s", self.name, session_key)
@@ -3977,10 +4124,26 @@ class BasePlatformAdapter(ABC):
                 return
         if self._busy_session_handler is not None:
             try:
-                if await self._busy_session_handler(event, session_key):
-                    return
+                handled = await self._busy_session_handler(event, session_key)
             except Exception as e:
                 logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+                # It may have stored the event before raising: queuing or starting it again below
+                # would run it twice.
+                handled = event._gateway_accepted is True
+            # The handler awaits (profile scope load, compression-lock read). If the owner task
+            # finished meanwhile, it found the slot empty and released the guard, so nothing would
+            # drain what the handler queued: start that now. If the handler left this event to the
+            # base path instead (returned False, or raised before storing it) and nothing is
+            # queued, start this event.
+            if session_key not in self._active_sessions:
+                orphan = self._pending_messages.pop(session_key, None)
+                if orphan is not None:
+                    self._start_session_processing(orphan, session_key)
+                elif not handled:
+                    event._gateway_accepted = self._start_session_processing(event, session_key)
+                    return
+            if handled:
+                return
         # Without a runner FIFO, do not merge a wake into an occupied human slot
         # (or collapse distinct wakes into one turn). Its caller can retry admission.
         if event.internal and session_key in self._pending_messages:
@@ -4207,11 +4370,21 @@ class BasePlatformAdapter(ABC):
                     len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        if obligation_id is not None:
+            await self._release_turn_marker(event)  # the ledger now owns the crash recovery
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter
+
+    async def _release_turn_marker(self, event: MessageEvent) -> None:
+        """Clear the crash-recovery marker the runner handed to this delivery lifecycle
+        (``_turn_marker_handoff``): only once the final reply is ledgered or nothing more is owed,
+        so no kill leaves a persisted reply with neither marker nor ledger row. Idempotent."""
+        if getattr(event, "_turn_marker_handoff", False) and getattr(event, "_gateway_active_turn_token", None):
+            await self.gateway_runner._clear_durable_active_turn(event)
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
@@ -4230,14 +4403,13 @@ class BasePlatformAdapter(ABC):
         _thread_metadata = None
         try:
             _thread_metadata = _thread_metadata_for_event(event)
-            error_detail = str(e)[:300] if str(e) else "no details available"
+            error_detail = str(e)[:300] if str(e) else t("gateway.notify.turn_error_no_details")
             # Only the policy reads bind the routed profile; the send stays in the launch scope
             # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
             with self._media_delivery_scope(event.source):
                 content = None if diagnostic_wake_muted(event) else self.warning_text(
-                    f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
-                    "Try again or use /reset to start a fresh session.",
-                    "Sorry, I encountered an error.",
+                    t("gateway.notify.turn_error_detailed", error_type=type(e).__name__, error_detail=error_detail),
+                    t("gateway.notify.turn_error"),
                     logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
             if content is None:
                 return _thread_metadata
@@ -4382,6 +4554,7 @@ class BasePlatformAdapter(ABC):
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
+            event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
@@ -4441,6 +4614,7 @@ class BasePlatformAdapter(ABC):
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
+            await self._release_turn_marker(event)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
@@ -4453,11 +4627,14 @@ class BasePlatformAdapter(ABC):
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
             if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
+                pending_event = self._pending_messages[session_key]
+                delay = self._requeue_backoff_delay(session_key, pending_event, event)
+                if not delay:  # a backed-off event stays queued until the drain task wakes
+                    self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-                self._spawn_drain_task(pending_event, session_key)
+                self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
@@ -4473,6 +4650,8 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            await self._release_turn_marker(event)
+            event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
@@ -4484,14 +4663,67 @@ class BasePlatformAdapter(ABC):
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)
 
-    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str) -> None:
+    _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
+    # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
+    # meanwhile waits out the remainder; 1 dispatch/s is still ~250x below the unbounded loop.
+    _REQUEUE_BACKOFF_MAX_SECONDS = 1.0
+
+    def _requeue_backoff_delay(self, session_key: str, pending_event: MessageEvent,
+                               dispatched_event: MessageEvent) -> float:
+        """Delay before re-dispatching the queued follow-up.
+
+        Only the event this task just dispatched coming straight back backs off: the same
+        ``message_id``, or for an id-less event the same ``timestamp`` (rewrite-hook
+        ``dataclasses.replace`` copies keep both; a genuine new message gets a fresh timestamp).
+        The handler put it back because the session is busy elsewhere, and re-dispatching it at
+        once hot-loops for the whole busy window (#123229). Any other follow-up resets the counter
+        and runs immediately. The first bounce stays immediate (restart auto-resume relies on one
+        self-bounce), then back off exponentially to a cap. Defers, never drops."""
+        # The identical object always matches too: its id equals itself, and when empty the
+        # timestamp comparison does.
+        same = (pending_event.message_id == dispatched_event.message_id
+                and (bool(pending_event.message_id)
+                     or pending_event.timestamp == dispatched_event.timestamp))
+        if not same:
+            self._requeue_counts.pop(session_key, None)
+            return 0.0
+        attempts = self._requeue_counts.get(session_key, 0)
+        self._requeue_counts[session_key] = attempts + 1
+        if attempts == 0:
+            return 0.0
+        delay = jittered_backoff(attempts, base_delay=self._REQUEUE_BACKOFF_INITIAL_SECONDS,
+                                 max_delay=self._REQUEUE_BACKOFF_MAX_SECONDS, jitter_ratio=0.0)
+        (logger.info if attempts == 1 else logger.debug)(
+            "[%s] Handler re-queued a pending event for %s again (session busy elsewhere); "
+            "backing off %.2fs", self.name, session_key, delay)
+        return delay
+
+    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str,
+                          delay: float = 0.0) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained
         follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
-        live for concurrent inbound; ownership moves so stale-lock detection works."""
+        live for concurrent inbound; ownership moves so stale-lock detection works. With ``delay``
+        the event stays in ``_pending_messages`` and the new owner task pops the slot only after
+        sleeping, so a cancel/discard during the back-off needs no put-back and can't drop a
+        newer message."""
         self._clear_session_guard(session_key)
+        # Capture the guard this drain owns now: a /stop//new guard swapped in during the
+        # back-off must survive the slot-empty exit (#48300).
+        guard = self._active_sessions.get(session_key)
         self._track_session_task(
             session_key,
-            asyncio.create_task(self._process_message_background(pending_event, session_key)))
+            asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
+
+    async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
+                           guard: Optional[asyncio.Event]) -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
+            await self._flush_text_debounce_now(session_key)  # as every other task exit does
+            pending_event = self._pending_messages.pop(session_key, None)
+            if pending_event is None:  # consumed elsewhere during the back-off
+                self._cleanup_finished_session_task(session_key, guard)
+                return
+        await self._process_message_background(pending_event, session_key)
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""
@@ -4516,6 +4748,7 @@ class BasePlatformAdapter(ABC):
         self._release_session_guard(session_key, guard=interrupt_event)
         if session_key not in self._active_sessions:
             self._session_tasks.pop(session_key, None)
+            self._requeue_counts.pop(session_key, None)
 
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
@@ -4544,7 +4777,8 @@ class BasePlatformAdapter(ABC):
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
-                       self._pending_messages, self._active_sessions, self._text_debounce_store()):
+                       self._pending_messages, self._active_sessions, self._requeue_counts,
+                       self._text_debounce_store()):
             bucket.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:

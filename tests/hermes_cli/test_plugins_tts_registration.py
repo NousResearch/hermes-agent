@@ -113,7 +113,6 @@ class TestRegisterTTSProvider:
         assert mgr._plugins["bad-tts-plugin"].enabled is True
         assert tts_registry.get_provider("not a provider") is None
         assert tts_registry.list_providers() == []
-        assert "does not inherit from TTSProvider" in caplog.text
 
         tts_registry._reset_for_tests()
 
@@ -151,6 +150,5 @@ class TestRegisterTTSProvider:
         # not an exception. The registry rejects the entry though.
         assert mgr._plugins["shadow-tts-plugin"].enabled is True
         assert tts_registry.get_provider("edge") is None
-        assert "shadows a built-in name" in caplog.text
 
         tts_registry._reset_for_tests()

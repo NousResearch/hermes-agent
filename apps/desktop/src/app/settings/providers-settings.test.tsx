@@ -9,19 +9,31 @@ import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
 const getEnvVars = vi.fn()
+const setEnvVar = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
 
+vi.mock('@/store/profile', () => ({
+  $activeGatewayProfile: atom('alpha'),
+  $profiles: atom([]),
+  refreshProfiles: async () => {},
+  normalizeProfileKey: (p: string | null) => p || 'default',
+  profileLabel: (p: { display_name?: string; name: string }) => p.display_name || p.name
+}))
+
 vi.mock('@/hermes', () => ({
-  disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
-  getEnvVars: () => getEnvVars(),
-  listOAuthProviders: () => listOAuthProviders()
+  setApiRequestProfile: vi.fn(),
+  getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
+  setEnvVar: (key: string, value: string, profile?: string) => setEnvVar(key, value, profile),
+  disconnectOAuthProvider: (...args: unknown[]) => disconnectOAuthProvider(...args),
+  getEnvVars: (...args: unknown[]) => getEnvVars(...args),
+  listOAuthProviders: (...args: unknown[]) => listOAuthProviders(...args)
 }))
 
 vi.mock('@/store/onboarding', () => ({
   $desktopOnboarding: onboarding,
-  startManualProviderOAuth: (providerId: string) => startManualProviderOAuth(providerId),
+  startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args),
   startManualLocalEndpoint: (reason: null | string) => startManualLocalEndpoint(reason)
 }))
 
@@ -93,6 +105,65 @@ async function renderProvidersSettings() {
 }
 
 describe('ProvidersSettings', () => {
+  it('reads and saves API keys for the shared Settings target and reloads when it changes', async () => {
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
+    $activeGatewayProfile.set('profile-a')
+    $settingsScopeOverride.set('profile-b')
+    $profiles.set(
+      ['profile-a', 'profile-b'].map(name => ({
+        name,
+        has_env: false,
+        is_default: false,
+        model: null,
+        path: '',
+        provider: null,
+        skill_count: 0
+      }))
+    )
+    getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
+    const { ProvidersSettings } = await import('./providers-settings')
+
+    try {
+      const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+      await screen.findByText('Widget')
+      expect(getEnvVars).toHaveBeenLastCalledWith('profile-b')
+      expect(screen.getByText('Applies to')).toBeTruthy()
+      const input = container.querySelector('input[type="password"]')!
+      fireEvent.focus(input)
+      fireEvent.change(input, { target: { value: 'fixture-key' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', 'profile-b'))
+      fireEvent.click(screen.getByRole('button', { name: 'profile-a' }))
+      // Back onto the app's active profile: no override is stored, but the
+      // request must still name it (#118432).
+      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith('profile-a'))
+    } finally {
+      cleanup()
+      $settingsScopeOverride.set(null)
+      $activeGatewayProfile.set('default')
+      $profiles.set([])
+    }
+  })
+
+  it('uses the settings target for account reads, removal and sign-in', async () => {
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    $settingsScopeOverride.set('beta')
+
+    try {
+      await renderProvidersSettings()
+      expect(getEnvVars).toHaveBeenCalledWith('beta')
+      expect(listOAuthProviders).toHaveBeenCalledWith('beta')
+      fireEvent.click(await screen.findByText('Nous Portal'))
+      expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', 'beta')
+      fireEvent.click(await screen.findByRole('button', { name: 'Remove Nous Portal' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
+      await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', 'beta'))
+    } finally {
+      $settingsScopeOverride.set(null)
+    }
+  })
+
   it('disconnects a connected provider account and refreshes the accounts list', async () => {
     await renderProvidersSettings()
 
@@ -109,7 +180,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
     })
 
-    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous'))
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', 'default'))
     expect(listOAuthProviders).toHaveBeenCalledTimes(2)
   })
 
@@ -124,17 +195,6 @@ describe('ProvidersSettings', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     })
 
-    expect(disconnectOAuthProvider).not.toHaveBeenCalled()
-  })
-
-  it('keeps provider selection separate from account removal', async () => {
-    await renderProvidersSettings()
-
-    await act(async () => {
-      fireEvent.click(await screen.findByText('Nous Portal'))
-    })
-
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous')
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 
@@ -155,7 +215,6 @@ describe('ProvidersSettings', () => {
 
     expect(await screen.findByText('Qwen Code')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
-    expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
   })
 
   it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
@@ -228,7 +287,6 @@ describe('ProvidersSettings', () => {
     render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
 
     const row = await screen.findByText('Local / custom endpoint')
-    expect(screen.getByText(/OpenAI-compatible endpoint/)).toBeTruthy()
 
     fireEvent.click(row)
 

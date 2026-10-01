@@ -27,6 +27,7 @@ import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
@@ -44,7 +45,7 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles } from '@/store/session-states'
+import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -415,6 +416,10 @@ function useSessionActions({
                   label: t.zones.closeAll,
                   onSelect: () => {
                     triggerHaptic('selection')
+                    // Persist-close session tiles before dismissing the
+                    // remaining tree panes, or Bot Mode rehydrates them
+                    // from the shared tile bucket (#94137).
+                    closeAllOpenSessionTiles(tabPaneId)
                     closeAllTreeTabs(tabPaneId)
                   }
                 })
@@ -691,7 +696,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
           disabled={submitting}
           onChange={event => setValue(event.target.value)}
           onKeyDown={event => {
-            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+            if (isSubmitEnter(event)) {
               event.preventDefault()
               void submit()
             } else if (event.key === 'Escape') {

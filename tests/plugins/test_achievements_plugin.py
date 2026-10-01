@@ -100,7 +100,7 @@ class _FakeSessionDB:
             for i in range(effective)
         ]
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_messages(self, session_id: str, include_compacted: bool = False) -> List[Dict[str, Any]]:
         self.messages_calls += 1
         return [
             {"role": "user", "content": f"ask {session_id}"},
@@ -123,7 +123,7 @@ def _install_fake_session_db(plugin_api, fake_db):
     and cannot leak into unrelated tests in the same xdist worker.
     """
     fake_module = type(sys)("hermes_state")
-    fake_module.SessionDB = lambda: fake_db
+    fake_module.SessionDB = lambda **_kw: fake_db
     plugin_api._test_monkeypatch.setitem(sys.modules, "hermes_state", fake_module)
 
 
@@ -301,3 +301,35 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, monkeypatch):
+    """The scan is a pure read that runs inside the dashboard process (per background scan,
+    per /rescan). A writable ``SessionDB()`` there was one more writer connection on the
+    dashboard's own state.db each time — the same-process handle leak behind the
+    ``N live SessionDB handles`` precursor (#100896). Real store, real open, no fakes."""
+    import hermes_state
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    seed = SessionDB(db_path=tmp_path / "state.db")
+    seed.create_session("s1", source="cli")
+    seed.append_message("s1", "user", "hello")
+    seed.close()
+
+    writable_opens = []
+    real_init = SessionDB.__init__
+
+    def spy(self, *args, **kwargs):
+        if not kwargs.get("read_only"):
+            writable_opens.append(kwargs)
+        return real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(SessionDB, "__init__", spy)
+
+    result = plugin_api.scan_sessions()
+
+    assert result.get("error") is None
+    assert [s["session_id"] for s in result["sessions"]] == ["s1"]
+    assert writable_opens == [], "the achievements scan must attach read-only"

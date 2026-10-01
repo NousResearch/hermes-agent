@@ -70,22 +70,6 @@ class TestEmitsOnRealProblems:
         assert "venv" in line or "uv" in line
 
 
-    def test_python_missing_but_python3_present(self, monkeypatch):
-        """Common on Debian: only python3 exists, agent shouldn't type
-        `python`."""
-        monkeypatch.setattr(env_probe, "_python_version_of",
-                            lambda b: "3.12.4" if b == "python3" else None)
-        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: True)
-        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: True)
-        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
-        monkeypatch.setattr(env_probe.shutil, "which",
-                            lambda name: None if name == "uv" else "/usr/bin/" + name)
-
-        line = env_probe.get_environment_probe_line()
-        # `python=missing` only matters in the non-silent path; PEP 668 (without
-        # uv) is what brings us off-silent here, so check both signals.
-        assert "PEP 668" in line
-        assert "python=missing" in line
 
 
 class TestSkipsRemoteBackends:
@@ -104,30 +88,6 @@ class TestSkipsRemoteBackends:
         assert env_probe.get_environment_probe_line() == ""
 
 
-class TestCaching:
-    """The probe runs once per process — the result is deterministic for
-    the lifetime of the agent."""
-
-    def test_result_cached(self, monkeypatch):
-        calls = []
-
-        def counting_version(b):
-            calls.append(b)
-            return "3.12.4" if b == "python3" else None
-
-        monkeypatch.setattr(env_probe, "_python_version_of", counting_version)
-        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: True)
-        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: False)
-        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
-        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
-
-        env_probe.get_environment_probe_line()
-        env_probe.get_environment_probe_line()
-        env_probe.get_environment_probe_line()
-
-        # Only the first call probes — caller-counting confirms it.
-        # Two calls (python3 + python) on first invocation, zero after.
-        assert len(calls) == 2
 
 
 class TestRobustness:

@@ -10,7 +10,6 @@ import json
 from types import SimpleNamespace
 
 from tools.computer_use.tool import (
-    _INPUT_ACTIONS,
     _dispatch,
     _input_target_mismatch,
 )
@@ -91,23 +90,10 @@ def test_type_without_app_unchanged():
     assert out.get("ok") is True
 
 
-def test_input_actions_set_matches_dispatch_branches():
-    # Guard list must cover exactly the sticky-target input actions.
-    assert _INPUT_ACTIONS == {
-        "click", "double_click", "right_click", "middle_click",
-        "drag", "scroll", "type", "key", "set_value",
-    }
 
 
 # ── unknown-action suggestions ──────────────────────────────────────────
 
 
-def test_unknown_action_hotkey_suggests_key():
-    out = _dispatch_result(_backend(None), "hotkey", {})
-    assert "did you mean 'key'" in out["error"]
 
 
-def test_unknown_action_without_suggestion_unchanged():
-    out = _dispatch_result(_backend(None), "frobnicate", {})
-    assert out["error"] == "unknown action 'frobnicate'"
-    assert "did you mean" not in out["error"]

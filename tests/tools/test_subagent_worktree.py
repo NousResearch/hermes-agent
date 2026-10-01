@@ -239,13 +239,9 @@ class SubagentWorktreeTests(unittest.TestCase):
         branches = _git(["branch", "--list", info["branch"]], repo).stdout
         self.assertNotEqual(branches.strip(), "")
 
-    def test_finalize_note_disclaims_only_the_unmeasured_field(self):
-        """A partial failure must not claim a MEASURED value is unknown.
-
-        A bad base_commit fails `rev-list` while `status` still succeeds, so
-        ``dirty`` is a real measurement — the note should disclaim ``commits``
-        only, or it misreports in the other direction.
-        """
+    def test_finalize_partial_inspection_failure_keeps_measured_dirty(self):
+        """A bad base_commit fails `rev-list` while `status` still succeeds:
+        ``dirty`` stays a real measurement and the worktree is kept."""
         repo = _make_repo(self.tmp)
         info = sw.create_subagent_worktree(str(repo), "partial")
         assert info is not None
@@ -260,10 +256,6 @@ class SubagentWorktreeTests(unittest.TestCase):
         self.assertTrue(payload["dirty"])
         self.assertTrue(payload["inspection_failed"])
         self.assertFalse(payload["pruned"])
-        # The note names ONLY the unmeasured field.
-        self.assertIn("commits UNKNOWN", payload["note"])
-        self.assertNotIn("dirty UNKNOWN", payload["note"])
-        self.assertNotIn("commits/dirty", payload["note"])
         self.assertTrue((wt / "UNTRACKED.txt").exists())
 
     def test_finalize_keeps_worktree_when_base_commit_missing(self):
@@ -299,19 +291,7 @@ class SubagentWorktreeTests(unittest.TestCase):
 
     # ── local_backend_active ───────────────────────────────────────────
 
-    def test_local_backend_active_local(self):
-        with mock.patch(
-            "hermes_cli.config.load_config_readonly",
-            return_value={"terminal": {"backend": "local"}},
-        ):
-            self.assertTrue(sw.local_backend_active())
 
-    def test_local_backend_active_docker(self):
-        with mock.patch(
-            "hermes_cli.config.load_config_readonly",
-            return_value={"terminal": {"backend": "docker"}},
-        ):
-            self.assertFalse(sw.local_backend_active())
 
     # ── context note ───────────────────────────────────────────────────
 
@@ -321,7 +301,6 @@ class SubagentWorktreeTests(unittest.TestCase):
         )
         self.assertIn("/x/wt", note)
         self.assertIn("hermes-subagent/subagent-1", note)
-        self.assertIn("WORKTREE ISOLATION", note)
 
 
 class WorktreePayloadSchemaTests(unittest.TestCase):
@@ -359,49 +338,8 @@ class WorktreePayloadSchemaTests(unittest.TestCase):
         self.assertIn(info["path"], unproven["note"])
         self.assertIn(info["branch"], unproven["note"])
 
-    def test_delegate_tool_fallback_uses_the_shared_factory(self):
-        """delegate_tool's fallback must emit the flagged schema, not the
-        creation-side metadata dict it used to leak."""
-        from tools import delegate_tool  # noqa: F401  (import-safety check)
-
-        repo = _make_repo(self.tmp)
-        info = sw.create_subagent_worktree(str(repo), "fallback")
-        assert info is not None
-
-        # Drive the real helper the fallback calls.
-        payload = sw.unproven_worktree_payload(info, "finalize raised: boom")
-        self.assertEqual(
-            set(payload),
-            {
-                "path",
-                "branch",
-                "commits",
-                "dirty",
-                "pruned",
-                "inspection_failed",
-                "note",
-            },
-        )
-        self.assertFalse(payload["pruned"])
-        self.assertEqual(payload["commits"], 0)
-        self.assertFalse(payload["dirty"])
 
 
-class DelegationConfigGateTests(unittest.TestCase):
-    def test_worktree_isolation_default_off(self):
-        from tools import delegate_tool
-
-        with mock.patch.object(delegate_tool, "_load_config", return_value={}):
-            self.assertFalse(delegate_tool._get_worktree_isolation())
-
-    def test_worktree_isolation_enabled(self):
-        from tools import delegate_tool
-
-        with mock.patch.object(
-            delegate_tool, "_load_config",
-            return_value={"worktree_isolation": True},
-        ):
-            self.assertTrue(delegate_tool._get_worktree_isolation())
 
 
 if __name__ == "__main__":

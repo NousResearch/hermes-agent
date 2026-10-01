@@ -1,0 +1,26 @@
+name: openalex
+repo: https://github.com/Adolanium/hermes-plugin-openalex
+sha: 47aafae87256ef634f32c18a69bf35d39c2c5682
+description: Scholarly search, citation traversal, grouped counts, and fulltext access through OpenAlex with session spending limits.
+maintainer: Adolanium
+tier: community
+category: tools
+docs_url: https://github.com/Adolanium/hermes-plugin-openalex#readme
+capabilities:
+  provides_tools:
+    - openalex_resolve
+    - openalex_get
+    - openalex_count
+    - openalex_search
+    - openalex_related
+    - openalex_account
+    - openalex_fields
+    - openalex_fulltext
+    - openalex_classify
+    - openalex_harvest
+  provides_hooks:
+    - on_session_start
+    - on_session_reset
+  provides_middleware: []
+  requires_env:
+    - OPENALEX_API_KEY

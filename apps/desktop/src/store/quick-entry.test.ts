@@ -39,17 +39,6 @@ const connect: QuickComposerEvent = {
 }
 
 describe('quickComposerReducer', () => {
-  it('starts visible, empty, DISCONNECTED, and targeting the current chat', () => {
-    expect(initialQuickComposerState).toEqual({
-      connected: false,
-      draft: '',
-      sessions: [],
-      submitting: false,
-      target: QUICK_TARGET_CURRENT,
-      visible: true
-    })
-  })
-
   it('submit sends the trimmed draft with the target, clears it, and hides', () => {
     const { sent, state } = run([connect, { draft: '  ship it  ', type: 'edit' }, { type: 'submit' }])
 
@@ -183,27 +172,6 @@ describe('quickComposerReducer', () => {
     // The gateway did not disconnect just because the window was re-opened.
     expect(state.connected).toBe(true)
     expect(state.sessions).toHaveLength(2)
-  })
-
-  it('re-summoning after a dismiss never carries the old draft back', () => {
-    const dismissed = run([connect, { draft: 'stale text', type: 'edit' }, { type: 'dismiss' }]).state
-    const reopened = quickComposerReducer(dismissed, { type: 'shown' }).state
-
-    expect(reopened.draft).toBe('')
-    expect(reopened.visible).toBe(true)
-  })
-
-  it('editing keeps the window open and never sends', () => {
-    const { sent, state } = run([
-      connect,
-      { draft: 'a', type: 'edit' },
-      { draft: 'ab', type: 'edit' },
-      { draft: 'abc', type: 'edit' }
-    ])
-
-    expect(sent).toEqual([])
-    expect(state.draft).toBe('abc')
-    expect(state.visible).toBe(true)
   })
 
   it('a full summon → type → submit → summon cycle sends exactly once per round', () => {

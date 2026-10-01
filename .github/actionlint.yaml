@@ -1,0 +1,9 @@
+# actionlint knows only GitHub-hosted runner labels. An org admin names the
+# larger runners. Each one therefore reads as "unknown runner label" and hides
+# the real findings, unless this file declares it.
+self-hosted-runner:
+  labels:
+    - ubuntu-latest-96-core
+    - ubuntu-latest-32-core
+    - ubuntu-latest-32-arm-core
+    - windows-latest-32-core

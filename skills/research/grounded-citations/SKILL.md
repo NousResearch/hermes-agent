@@ -1,7 +1,7 @@
 ---
 name: grounded-citations
 description: "Ground answers and documents in cited, verifiable sources."
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [Research, Citations, Grounding, Sources, Web, Reports]
     category: research
-    related_skills: [research-paper-writing, arxiv, ocr-and-documents]
+    related_skills: [arxiv, pdf, reddit-reading, rss-feeds, youtube-content]
 ---
 
 # Grounded Citations
@@ -26,7 +26,7 @@ and `verify --evidence` fails any draft whose cited sources carry no evidence.
 
 This skill covers answers in chat, written documents (markdown, PDF, docx,
 slides), and research reports. It does not cover academic BibTeX pipelines —
-for conference papers use the `research-paper-writing` skill, which this skill
+for conference papers use the `arxiv` skill, which this skill
 feeds (see `references/citation-formats.md`).
 
 ## When to Use
@@ -125,6 +125,31 @@ unknown ids, on a Sources block that disagrees with the ledger, or (with
 sources, cite inline, end with the rendered `Sources:` list. For a short answer
 you may render the block from `sources.py render --only <ids>` instead of
 writing to a file.
+
+## Multi-Platform Sweeps
+
+"What are people saying about X" / "research X across the web" is not one
+`web_search`. Fan out across source types, collect in parallel, then synthesise
+with every claim attributed to the platform it came from:
+
+| Source type | Route | What it adds |
+|---|---|---|
+| Open web | `web_search` → `web_extract` | official docs, articles, announcements |
+| Community discussion | `reddit-reading` (`search`, `thread`) | real user experience, complaints, workarounds |
+| Blogs / releases / changelogs | `rss-feeds` (`read`, `discover`) | dated primary posts, version history |
+| Video | `youtube-content` | walkthroughs, demos, talks |
+| Code | `terminal` with `gh search repos` / `gh search issues` | implementations, open bugs |
+| X/Twitter | `xurl` (needs API access) | announcements, developer chatter |
+
+The `reddit-reading` and `rss-feeds` skills are optional. If absent, install with
+`hermes skills install official/social-media/reddit-reading` or
+`hermes skills install official/research/rss-feeds` before using them.
+
+Register every URL from every route in the ledger as it arrives (step ②). Keep
+opinion and measurement apart: a Reddit thread is evidence that users *report*
+something, not that it is true; pair it with a primary source or label it as
+sentiment. Report per-platform coverage gaps ("Reddit search returned nothing
+newer than March") rather than silently narrowing to what worked.
 
 ## Fact-Checking Mode
 

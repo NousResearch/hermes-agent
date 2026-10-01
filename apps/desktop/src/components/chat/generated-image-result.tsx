@@ -1,17 +1,17 @@
 'use client'
 
-import { type FC, useEffect, useState } from 'react'
+import { type FC, useState } from 'react'
 
 import { DiffusionCanvas } from '@/components/chat/image-generation-placeholder'
 import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-image'
 import { useImageDownload } from '@/hooks/use-image-download'
+import { useMediaImage } from '@/hooks/use-media-image'
 import { useI18n } from '@/i18n'
-import { generatedImageFromResult } from '@/lib/generated-images'
-import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway, mediaExternalUrl, mediaName } from '@/lib/media'
+import { generatedImageDimensionsFromResult, generatedImageFromResult } from '@/lib/generated-images'
+import { mediaExternalUrl, mediaName } from '@/lib/media'
 import { cn } from '@/lib/utils'
 
-// Aspect hint from the tool args sizes the frame *before* the image loads, so
-// the placeholder and the resolved image occupy the same box — no layout shift.
+// A hint is only a placeholder shape, not a promise about the delivered image.
 const ASPECT_HINTS: Record<string, number> = {
   landscape: 16 / 9,
   square: 1,
@@ -28,64 +28,20 @@ function hintedRatio(aspectRatio?: string): number {
   )
 }
 
-function isInlineSrc(path: string): boolean {
-  return /^(?:https?|data):/i.test(path)
-}
-
-async function resolveImageSrc(path: string): Promise<string> {
-  if (isInlineSrc(path)) {
-    return path
-  }
-
-  if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
-  }
-
-  if (!window.hermesDesktop?.readFileDataUrl) {
-    return mediaExternalUrl(path)
-  }
-
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
-}
-
 export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({ aspectRatio, result }) => {
   const { t } = useI18n()
   const copy = t.desktop
   const image = result === undefined ? null : generatedImageFromResult(result)
   const pending = result === undefined
 
-  const [ratio, setRatio] = useState(() => hintedRatio(aspectRatio))
-  const [src, setSrc] = useState(() => (image && isInlineSrc(image) ? image : ''))
-  const [loaded, setLoaded] = useState(false)
-  const [canvasGone, setCanvasGone] = useState(false)
-  const [failed, setFailed] = useState(false)
-  const [lightboxOpen, setLightboxOpen] = useState(false)
+  const media = useMediaImage(image ?? '', hintedRatio(aspectRatio), generatedImageDimensionsFromResult(result), {
+    preservePendingFrame: true
+  })
+
+  const { src, loaded, failed } = media
+  const [canvasGone, setCanvasGone] = useState<string | null>(null)
+  const [lightboxOpen, setLightboxOpen] = useState<string | null>(null)
   const { download, saving } = useImageDownload(src)
-
-  useEffect(() => setRatio(hintedRatio(aspectRatio)), [aspectRatio])
-
-  // Resolve the deliverable path (local read / gateway proxy / remote URL). The
-  // <img> stays mounted under the placeholder and only fades in once it decodes,
-  // so the frame keeps its hinted size and never jumps.
-  useEffect(() => {
-    let cancelled = false
-    setFailed(false)
-    setLoaded(false)
-    setCanvasGone(false)
-    setSrc(image && isInlineSrc(image) ? image : '')
-
-    if (!image || isInlineSrc(image)) {
-      return
-    }
-
-    void resolveImageSrc(image)
-      .then(resolved => !cancelled && setSrc(resolved))
-      .catch(() => !cancelled && setFailed(true))
-
-    return () => {
-      cancelled = true
-    }
-  }, [image])
 
   // Completed but no usable image (generation failed): the agent's prose carries
   // the explanation, so render nothing here.
@@ -93,6 +49,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
     return null
   }
 
+  // Nothing will fill the frame, so collapse to the link line.
   if (failed && image) {
     return (
       <a
@@ -113,30 +70,24 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
       <span
         aria-label={pending ? t.assistant.tool.renderingImage : undefined}
         aria-live={pending ? 'polite' : undefined}
-        className="group/image relative block max-w-full overflow-hidden rounded-2xl transition-[width,height] duration-300 ease-out"
+        className="group/image relative block max-w-full overflow-hidden rounded-2xl"
         data-slot="aui_generated-image"
         role={pending ? 'status' : undefined}
-        style={{
-          aspectRatio: ratio,
-          // Width is capped so the derived height (width / ratio) never exceeds
-          // --image-preview-height; the box then matches the image exactly with
-          // no letterboxing.
-          width: `min(calc(var(--image-preview-height) * ${ratio}), var(--image-preview-max-width), 100%)`
-        }}
+        style={media.frameStyle}
       >
-        {!canvasGone && (
+        {canvasGone !== media.key && (
           <div
             className={cn('absolute inset-0 transition-opacity duration-500 ease-out', loaded && 'opacity-0')}
-            onTransitionEnd={() => loaded && setCanvasGone(true)}
+            onTransitionEnd={() => loaded && setCanvasGone(media.key)}
           >
             <DiffusionCanvas />
           </div>
         )}
         {src && (
           <button
+            aria-label={copy.openImage}
             className="absolute inset-0 block size-full cursor-zoom-in"
-            onClick={() => setLightboxOpen(true)}
-            title={copy.openImage}
+            onClick={() => setLightboxOpen(media.key)}
             type="button"
           >
             <img
@@ -146,16 +97,8 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
                 loaded && 'opacity-100'
               )}
               draggable={false}
-              onError={() => setFailed(true)}
-              onLoad={event => {
-                const { naturalHeight, naturalWidth } = event.currentTarget
-
-                if (naturalWidth && naturalHeight) {
-                  setRatio(naturalWidth / naturalHeight)
-                }
-
-                setLoaded(true)
-              }}
+              onError={media.onError}
+              onLoad={event => media.onLoad(event.currentTarget)}
               src={src}
             />
           </button>
@@ -169,8 +112,8 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
           alt="Generated image"
           copy={copy}
           onClick={download}
-          onOpenChange={setLightboxOpen}
-          open={lightboxOpen}
+          onOpenChange={open => setLightboxOpen(open ? media.key : null)}
+          open={lightboxOpen === media.key}
           saving={saving}
           src={src}
         />

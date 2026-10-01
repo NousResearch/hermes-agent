@@ -17,7 +17,7 @@ from gateway.pairing import (
     RATE_LIMIT_SECONDS,
     MAX_PENDING_PER_PLATFORM,
     MAX_FAILED_ATTEMPTS,
-    _secure_write,
+    _save_json_file,
 )
 
 
@@ -82,11 +82,11 @@ class TestProfileScopedDiscovery:
 
 
 # ---------------------------------------------------------------------------
-# _secure_write
+# _save_json_file
 # ---------------------------------------------------------------------------
 
 
-class TestSecureWrite:
+class TestSaveJsonFile:
 
     @pytest.mark.skipif(
         sys.platform.startswith("win"),
@@ -94,7 +94,7 @@ class TestSecureWrite:
     )
     def test_sets_file_permissions(self, tmp_path):
         target = tmp_path / "secret.json"
-        _secure_write(target, "data")
+        _save_json_file(target, {"data": 1})
         mode = oct(target.stat().st_mode & 0o777)
         assert mode == "0o600"
 
@@ -274,6 +274,25 @@ class TestApprovalFlow:
         assert "user_name" in result
         assert result["user_id"] == "user1"
         assert result["user_name"] == "Alice"
+
+    def test_approve_code_with_internal_spacing(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            spaced_code = "   ".join(code)
+            result = store.approve_code("telegram", f"  {spaced_code}  ")
+
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
+
+    def test_approve_code_with_words_still_fails(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            result = store.approve_code("telegram", f"code {code}")
+
+        assert result is None
 
     def test_approved_user_is_approved(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
@@ -574,6 +593,31 @@ class TestProfileScopedStorage:
         assert store._dir == tmp_path
         assert store._approved_path("weixin") == tmp_path / "weixin-approved.json"
 
+    def test_default_store_is_not_frozen_at_first_use(self, tmp_path, monkeypatch):
+        """Regression test for #93449.
+
+        PairingStore() (no profile) must not freeze its directory to
+        whatever HERMES_HOME resolved to the first time this module's
+        default path was computed. A long-lived process (the gateway,
+        started once at container/process boot) can construct a
+        PairingStore before HERMES_HOME/profile context is fully
+        established; a later store in the same process must still pick up
+        the real, current value instead of being stuck with a stale one.
+        Deliberately does not patch PAIRING_DIR directly, unlike the sibling
+        test above -- this exercises the real (unpatched) lazy-resolution
+        path itself.
+        """
+        first_home = tmp_path / "first"
+        second_home = tmp_path / "second"
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: first_home)
+        first_store = PairingStore()
+        assert first_store._dir == first_home / "platforms" / "pairing"
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: second_home)
+        second_store = PairingStore()
+        assert second_store._dir == second_home / "platforms" / "pairing"
+
     def test_profile_store_uses_profiles_subdir(self, tmp_path, monkeypatch):
         """Explicit profile stores use that profile's normal Hermes layout."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -678,3 +722,52 @@ class TestProfileScopedStorage:
         )
 
 
+
+
+def test_approval_cache_reuses_parse_and_observes_replacement(tmp_path, monkeypatch):
+    store = _make_store(tmp_path)
+    other = _make_store(tmp_path)
+    path = store._approved_path("telegram")
+    store._save_json(path, {"user1": {"user_name": "Alice", "approved_at": 1.0}})
+    with patch("gateway.pairing.json.load", wraps=json.load) as parse:
+        for _ in range(5):
+            assert store.is_approved("telegram", "user1")
+        assert parse.call_count == 1
+        assert other.revoke("telegram", "user1")
+        assert not store.is_approved("telegram", "user1")
+        other._save_json(path, {"user1": {"user_name": "Alice", "approved_at": 1.0}})
+        assert store.is_approved("telegram", "user1")
+        before = path.stat()
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(path.read_bytes().replace(b"user1", b"user2"))
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        replacement.replace(path)
+        assert path.stat().st_size == before.st_size
+        assert not store.is_approved("telegram", "user1")
+        assert store.is_approved("telegram", "user2")
+        path.unlink()
+        assert not store.is_approved("telegram", "user2")
+        other._save_json(path, {"user3": {}})
+        assert store.is_approved("telegram", "user3")
+
+
+def test_approval_cache_isolated_and_unreadable_files_fail_closed(tmp_path, monkeypatch):
+    first = _make_store(tmp_path / "first")
+    second = _make_store(tmp_path / "second")
+    path = first._approved_path("telegram")
+    first._save_json(path, {"user1": {}})
+    assert first.is_approved("telegram", "user1")
+    assert not second.is_approved("telegram", "user1")
+    original = Path.open
+
+    def unreadable(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("permission revoked")
+        return original(self, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "open", unreadable)
+        assert not first.is_approved("telegram", "user1")
+    first._save_json(path, {"user2": {}})
+    assert not first.is_approved("telegram", "user1")
+    assert first.is_approved("telegram", "user2")

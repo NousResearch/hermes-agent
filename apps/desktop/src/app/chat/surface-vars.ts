@@ -30,14 +30,24 @@ export const COMPOSER_SURFACE_HEIGHT_VAR = '--composer-surface-measured-height'
 /**
  * The surface owning `el`, or null when `el` is detached or outside one.
  *
- * Null is the honest answer, not a failure to be papered over. Every publisher
- * lives inside a `[data-chat-surface]` for its whole visible life (a
- * popped-out composer is `position: fixed`, still a descendant), so the only
- * way to miss is a node React already removed — whose measurement is stale by
- * definition.
+ * Floating editors are portaled outside the pane's clipping/filter layer.
+ * Their stable host carries the exact owning surface id; missing owners never
+ * publish measurements to another pane or the document root.
  */
 export function chatSurfaceRoot(el: Element | null): HTMLElement | null {
-  return el?.closest<HTMLElement>('[data-chat-surface]') ?? null
+  const local = el?.closest<HTMLElement>('[data-chat-surface]')
+
+  if (local) {
+    return local
+  }
+
+  const owner = el?.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
+
+  return owner
+    ? ([...document.querySelectorAll<HTMLElement>('[data-chat-surface]')].find(
+        surface => surface.dataset.composerSurfaceId === owner
+      ) ?? null)
+    : null
 }
 
 /** Publish a measured-height var on the surface owning `el`. No owner, no write. */

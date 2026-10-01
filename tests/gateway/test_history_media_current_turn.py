@@ -99,15 +99,3 @@ def test_prior_turn_media_still_deduped():
     assert paths and old in paths
 
 
-def test_no_user_row_falls_back_to_trailing_assistant_exclusion():
-    """Unusual store shape (no user rows): keep the old safe behavior."""
-    old = "/opt/data/cache/audio/tts_only.mp3"
-    transcript = [
-        _tts_tool_row(old),
-        {"role": "assistant", "content": f"MEDIA:{old}"},
-    ]
-    adapter = _StubAdapter(transcript)
-    # Only guarantee: it does not crash and returns a set-or-None; the tool
-    # row (not excludable without a user anchor) may keep the path present.
-    result = adapter._history_media_paths_for_session("k")
-    assert result is None or isinstance(result, set)

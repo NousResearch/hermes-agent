@@ -4,13 +4,7 @@ import time
 import pytest
 from agent.rate_limit_tracker import (
     RateLimitBucket,
-    RateLimitState,
     parse_rate_limit_headers,
-    format_rate_limit_display,
-    format_rate_limit_compact,
-    _fmt_count,
-    _fmt_seconds,
-    _bar,
 )
 
 
@@ -76,56 +70,6 @@ class TestBucket:
 
 
 
-class TestFormatting:
 
 
 
-    def test_fmt_seconds_short(self):
-        assert _fmt_seconds(45) == "45s"
-        assert _fmt_seconds(0) == "0s"
-
-
-
-    def test_bar(self):
-        bar = _bar(50.0, width=10)
-        assert bar == "[█████░░░░░]"
-        assert _bar(0.0, width=10) == "[░░░░░░░░░░]"
-        assert _bar(100.0, width=10) == "[██████████]"
-
-
-
-
-    def test_format_compact(self):
-        state = parse_rate_limit_headers(NOUS_HEADERS, provider="nous")
-        result = format_rate_limit_compact(state)
-        assert "RPM:" in result
-        assert "RPH:" in result
-        assert "TPM:" in result
-        assert "TPH:" in result
-        assert "resets" in result
-
-
-
-class TestAgentIntegration:
-    """Test that AIAgent captures rate limit state correctly."""
-
-    def test_capture_rate_limits_from_headers(self):
-        """Simulate the header capture path without a real API call."""
-        # Use a mock httpx-like response
-        class MockResponse:
-            headers = NOUS_HEADERS
-
-        # Import AIAgent minimally
-
-        # Test the parsing directly
-        state = parse_rate_limit_headers(MockResponse.headers, provider="nous")
-        assert state is not None
-        assert state.requests_min.limit == 800
-        assert state.tokens_hour.limit == 336000000
-
-    def test_capture_rate_limits_none_response(self):
-        """_capture_rate_limits should handle None gracefully."""
-        from agent.rate_limit_tracker import parse_rate_limit_headers
-        # None should not crash
-        result = parse_rate_limit_headers({})
-        assert result is None

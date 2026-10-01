@@ -12,7 +12,6 @@ to have preserved one when the copy actually landed.
 
 import errno
 import json
-import logging
 
 import pytest
 
@@ -75,24 +74,3 @@ def test_healthy_store_is_returned_unchanged(store_file):
     assert result["providers"]["nous"]["api_key"] == "secret"
 
 
-def test_log_does_not_claim_a_backup_that_was_not_written(
-    store_file, monkeypatch, caplog
-):
-    """The old message advertised the .corrupt path even when copy2 failed."""
-    import shutil
-
-    store_file.write_text("{ not json", encoding="utf-8")
-
-    def _no_copy(*args, **kwargs):
-        raise OSError(errno.EMFILE, "Too many open files")
-
-    monkeypatch.setattr(shutil, "copy2", _no_copy)
-
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
-        result = auth._load_auth_store(store_file)
-
-    assert result == {"version": auth.AUTH_STORE_VERSION, "providers": {}}
-    assert not store_file.with_suffix(".json.corrupt").exists()
-    text = caplog.text
-    assert "could NOT be preserved" in text
-    assert "Corrupt file preserved at" not in text

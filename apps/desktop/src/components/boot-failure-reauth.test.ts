@@ -7,7 +7,7 @@ import {
   isRemoteConfig,
   isRemoteReauthError,
   isRemoteReauthFailure,
-  signInLabel,
+  shouldApplyPostBootProgressError,
   sshFailureMessage
 } from './boot-failure-reauth'
 
@@ -114,6 +114,19 @@ describe('isRemoteReauthError', () => {
   })
 })
 
+describe('shouldApplyPostBootProgressError', () => {
+  it('applies only confirmed reauth after a healthy boot — not transient ticket blips', () => {
+    expect(shouldApplyPostBootProgressError('Your remote gateway session has expired.')).toBe(true)
+    expect(
+      shouldApplyPostBootProgressError(
+        'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+      )
+    ).toBe(false)
+    expect(shouldApplyPostBootProgressError('Lost connection to the gateway')).toBe(false)
+    expect(shouldApplyPostBootProgressError(null)).toBe(false)
+  })
+})
+
 describe('sshFailureMessage', () => {
   it('localizes SSH failures without changing non-SSH errors', () => {
     const copy = { sshErrAuth: 'localized auth', sshErrUnknown: 'localized unknown' }
@@ -157,23 +170,5 @@ describe('deriveProviderShape', () => {
     expect(deriveProviderShape([{ name: 'basic', displayName: '', supportsPassword: true }]).providerLabel).toBe(
       'basic'
     )
-  })
-})
-
-describe('signInLabel', () => {
-  it('password gateway gets the plain "Sign in to remote gateway" copy', () => {
-    expect(signInLabel({ url: 'x', isPassword: true, providerLabel: 'Username & Password' })).toBe(
-      'Sign in to remote gateway'
-    )
-  })
-
-  it('OAuth gateway names the provider', () => {
-    expect(signInLabel({ url: 'x', isPassword: false, providerLabel: 'Nous Research' })).toBe(
-      'Sign in with Nous Research'
-    )
-  })
-
-  it('null reauth falls back to the generic provider phrase', () => {
-    expect(signInLabel(null)).toBe('Sign in with your identity provider')
   })
 })

@@ -2,35 +2,20 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   clearsEnabledToolsets,
+  diffConfig,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
   providerGroup,
   sectionFieldEntries,
   setNested,
-  stripToolsetLabel,
-  toolsetDisplayLabel
+  stripToolsetLabel
 } from './helpers'
 
 describe('settings helpers', () => {
-  it('surfaces repository discovery config in Workspace with user-facing copy', () => {
-    const workspace = SECTIONS.find(section => section.id === 'workspace')
-
-    expect(workspace?.keys).toEqual(
-      expect.arrayContaining([
-        'desktop.repo_scan_enabled',
-        'desktop.repo_scan_roots',
-        'desktop.repo_scan_exclude_paths'
-      ])
-    )
-    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'desktop.repo_scan_enabled')).toBeTruthy()
-    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
-  })
-
   it('does not shadow the backend schema options for memory.provider', () => {
     // memory.provider options are discovery-driven and served by the backend
     // config schema (merged per-request); enumOptionsFor must return undefined
@@ -67,18 +52,6 @@ describe('settings helpers', () => {
 
       expect(copy[['display', 'personality'].join('.')]).toBe('Personality')
       expect(copy[['stt', 'elevenlabs', 'language_code'].join('.')]).toBe('Language')
-    })
-
-    it('keeps top-level flat field keys', () => {
-      expect(
-        defineFieldCopy({
-          model_context_length: 'Context Window',
-          file_read_max_chars: 'File Read Limit'
-        })
-      ).toEqual({
-        model_context_length: 'Context Window',
-        file_read_max_chars: 'File Read Limit'
-      })
     })
 
     it('maps schema keys to camelCase translation keys', () => {
@@ -152,20 +125,7 @@ describe('settings helpers', () => {
     })
   })
 
-  describe('toolsetDisplayLabel', () => {
-    it('strips emoji from toolset rows', () => {
-      expect(toolsetDisplayLabel({ name: 'cronjob', label: '⏰ Cron Jobs' })).toBe('Cron Jobs')
-    })
-  })
-
   describe('providerGroup', () => {
-    it('maps a provider env var to its labeled group', () => {
-      expect(providerGroup('XAI_API_KEY')).toBe('xAI')
-      expect(providerGroup('NOUS_API_KEY')).toBe('Nous Portal')
-      expect(providerGroup('FIREWORKS_API_KEY')).toBe('Fireworks AI')
-      expect(providerGroup('OPENROUTER_API_KEY')).toBe('OpenRouter')
-    })
-
     it('prefers the longest matching prefix so CN/regional buckets win', () => {
       // MINIMAX_CN_ must beat the generic MINIMAX_ prefix.
       expect(providerGroup('MINIMAX_CN_API_KEY')).toBe('MiniMax (China)')
@@ -185,30 +145,6 @@ describe('settings helpers', () => {
 
   describe('enumOptionsFor — backend selector dropdowns', () => {
     const config: HermesConfigRecord = {}
-
-    it('renders a dropdown for the TTS provider including xAI (Grok)', () => {
-      const opts = enumOptionsFor('tts.provider', 'edge', config)
-      expect(opts).toBeDefined()
-      expect(opts).toContain('xai')
-      expect(opts).toContain('edge')
-      expect(opts).toContain('elevenlabs')
-    })
-
-    it('renders a dropdown for the STT provider including xAI (Grok)', () => {
-      const opts = enumOptionsFor('stt.provider', 'local', config)
-      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'])
-    })
-
-    it('renders dropdowns for per-backend model/device sub-fields', () => {
-      expect(enumOptionsFor('stt.openai.model', 'whisper-1', config)).toContain('gpt-4o-transcribe')
-      expect(enumOptionsFor('tts.openai.model', 'gpt-4o-mini-tts', config)).toContain('tts-1-hd')
-      expect(enumOptionsFor('tts.neutts.device', 'cpu', config)).toEqual(['cpu', 'cuda', 'mps'])
-    })
-
-    it('renders a dropdown for the terminal execution backend', () => {
-      const opts = enumOptionsFor('terminal.backend', 'local', config)
-      expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
-    })
 
     it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {
       // gpt-4o-mini-tts (and unset/unknown models): full 13-voice set.
@@ -402,6 +338,46 @@ describe('settings helpers', () => {
       const next: HermesConfigRecord = { model: 'b', toolsets: ['memory'] }
 
       expect(clearsEnabledToolsets(prev, next)).toBe(false)
+    })
+  })
+
+  describe('diffConfig', () => {
+    it('omits a top-level key the draft never touched', () => {
+      // The autosave baseline is a snapshot taken when Settings opened. A key
+      // an agent set via `hermes config set` while the page sat open must not
+      // come back in the patch just because it's still present in the draft.
+      const baseline: HermesConfigRecord = { fallback_providers: ['nara1'], timezone: 'UTC' }
+      const draft: HermesConfigRecord = { fallback_providers: ['nara1'], timezone: 'America/New_York' }
+
+      expect(diffConfig(baseline, draft)).toEqual({ timezone: 'America/New_York' })
+    })
+
+    it('includes a nested key only when it actually changed, leaving siblings out', () => {
+      const baseline: HermesConfigRecord = { display: { personality: 'default', show_reasoning: true } }
+      const draft: HermesConfigRecord = { display: { personality: 'default', show_reasoning: false } }
+
+      expect(diffConfig(baseline, draft)).toEqual({ display: { show_reasoning: false } })
+    })
+
+    it('sends a new key that was absent from the baseline', () => {
+      const baseline: HermesConfigRecord = {}
+      const draft: HermesConfigRecord = { timezone: 'UTC' }
+
+      expect(diffConfig(baseline, draft)).toEqual({ timezone: 'UTC' })
+    })
+
+    it('returns an empty object when the draft matches the baseline exactly', () => {
+      const baseline: HermesConfigRecord = { toolsets: ['memory'], display: { personality: 'default' } }
+      const draft: HermesConfigRecord = { toolsets: ['memory'], display: { personality: 'default' } }
+
+      expect(diffConfig(baseline, draft)).toEqual({})
+    })
+
+    it('treats an array as a whole value, not diffed element by element', () => {
+      const baseline: HermesConfigRecord = { toolsets: ['memory', 'terminal'] }
+      const draft: HermesConfigRecord = { toolsets: ['memory'] }
+
+      expect(diffConfig(baseline, draft)).toEqual({ toolsets: ['memory'] })
     })
   })
 })

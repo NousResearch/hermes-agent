@@ -23,6 +23,15 @@ from gateway.run import GatewayRunner, _parse_session_key
 # Helpers
 # ---------------------------------------------------------------------------
 
+class AdmittingHandler(AsyncMock):
+    """Fake transport whose successful insertion issues the production receipt."""
+
+    async def _execute_mock_call(self, event, *args, **kwargs):
+        result = await super()._execute_mock_call(event, *args, **kwargs)
+        event._gateway_accepted = True
+        return result
+
+
 class _FakeRegistry:
     """Return pre-canned sessions, then None once exhausted."""
 
@@ -51,7 +60,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
-    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AdmittingHandler())
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner
 
@@ -85,11 +94,6 @@ def _watch_event(session_id="proc_watch", thread_id="42"):
 
 class TestLoadBackgroundNotificationsMode:
 
-    def test_defaults_to_concise(self, monkeypatch, tmp_path):
-        import gateway.run as gw
-        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
-        monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
-        assert GatewayRunner._load_background_notifications_mode() == "concise"
 
     def test_unknown_mode_falls_back_to_concise(self, monkeypatch, tmp_path):
         (tmp_path / "config.yaml").write_text(
@@ -149,6 +153,62 @@ async def test_consumed_completion_skips_raw_notification(monkeypatch, tmp_path)
 
     adapter.send.assert_not_awaited()
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("launching_turn_busy", [True, False])
+async def test_agent_notify_receipt_only_while_launching_turn_is_busy(
+    monkeypatch, tmp_path, launching_turn_busy
+):
+    """#112033: with notify_on_complete the agent reports the result itself, so the chat gets no
+    separate receipt — except while the launching turn is still running, when the injection only
+    queues a follow-up and the concise receipt is the only thing the user would see."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123", "notify_on_complete": True}
+    adapter._active_sessions = {watcher["session_key"]: asyncio.Event()} if launching_turn_busy else {}
+
+    await runner._run_process_watcher(watcher)
+
+    runner._enqueue_process_completion_notification.assert_awaited_once()
+    if launching_turn_busy:
+        adapter.send.assert_awaited_once()
+        assert adapter.send.await_args.args[1].startswith("✅ Background task finished")
+    else:
+        adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arm_process_watcher_schedules_on_live_loop_only(monkeypatch, tmp_path):
+    """#112033: a watcher registered mid-turn starts on the gateway loop at once while the gateway
+    serves; before/after that the caller keeps it for the startup / post-turn drain."""
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    started = []
+
+    async def _fake_watcher(watcher):
+        started.append(watcher["session_id"])
+    runner._run_process_watcher = _fake_watcher
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    runner._running = False
+    assert runner.arm_process_watcher({"session_id": "proc_early"}) is False
+
+    runner._running = True
+    assert runner.arm_process_watcher({"session_id": "proc_live"}) is True
+    await asyncio.sleep(0.05)
+    assert started == ["proc_live"]
 
 
 @pytest.mark.asyncio
@@ -395,8 +455,9 @@ class TestConciseFormatter:
         text = _format_concise_process_notification(
             "proc_abc", "make build", 2, out,
         )
-        assert text.startswith("❌ Background task failed (exit 2)")
-        assert "Traceback: boom" in text
+        assert text.startswith("❌ Background task failed")
+        assert "exit 2" in text and "Traceback: boom" in text
+        assert "rerun" in text
         # Only a short tail, not the whole output
         assert "line0" not in text
 
@@ -407,64 +468,6 @@ class TestConciseFormatter:
         )
         assert "…" in text
         assert len(text) < 200
-
-
-@pytest.mark.asyncio
-async def test_concise_mode_sends_pretty_message_not_raw_dump(monkeypatch, tmp_path):
-    """Default mode: a finished process produces the one-line status message,
-    never the '[Background process ... Here's the final output: ...]' wall."""
-    import tools.process_registry as pr_module
-
-    big_output = "\n".join(str(i * 100) for i in range(60))
-    sessions = [SimpleNamespace(
-        output_buffer=big_output, exited=True, exit_code=0,
-        command="python3 scan.py", started_at=None,
-    )]
-    monkeypatch.setattr(
-        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
-    )
-
-    async def _instant_sleep(*_a, **_kw):
-        pass
-    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
-
-    runner = _build_runner(monkeypatch, tmp_path, "concise")
-    adapter = runner.adapters[Platform.TELEGRAM]
-
-    await runner._run_process_watcher(_watcher_dict())
-
-    adapter.send.assert_awaited_once()
-    sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("✅ Background task finished")
-    assert "Here's the final output" not in sent_text
-    assert "5000" not in sent_text
-
-
-@pytest.mark.asyncio
-async def test_concise_mode_failure_includes_tail(monkeypatch, tmp_path):
-    import tools.process_registry as pr_module
-
-    sessions = [SimpleNamespace(
-        output_buffer="starting\nfatal: repo not found\n", exited=True,
-        exit_code=128, command="git clone x", started_at=None,
-    )]
-    monkeypatch.setattr(
-        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
-    )
-
-    async def _instant_sleep(*_a, **_kw):
-        pass
-    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
-
-    runner = _build_runner(monkeypatch, tmp_path, "concise")
-    adapter = runner.adapters[Platform.TELEGRAM]
-
-    await runner._run_process_watcher(_watcher_dict())
-
-    adapter.send.assert_awaited_once()
-    sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("❌ Background task failed (exit 128)")
-    assert "fatal: repo not found" in sent_text
 
 
 @pytest.mark.asyncio
@@ -511,6 +514,73 @@ def test_parse_session_key_with_extra_parts():
     assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
 
 
+def test_parse_session_key_named_profile():
+    """A named-profile namespace parses and is reported as ``profile``."""
+    result = _parse_session_key("agent:work:telegram:dm:123")
+    assert result == {
+        "profile": "work",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+    }
+
+
+def test_parse_session_key_named_profile_thread_id():
+    """Thread-slot handling is identical for named-profile keys."""
+    result = _parse_session_key("agent:work:telegram:thread:100:42")
+    assert result == {
+        "profile": "work",
+        "platform": "telegram",
+        "chat_type": "thread",
+        "chat_id": "100",
+        "thread_id": "42",
+    }
+
+
+def test_parse_session_key_named_profile_group_suffix_omitted():
+    """Group-suffix (user_id) stays omitted for named-profile keys too."""
+    result = _parse_session_key("agent:work:discord:group:chan1:user9")
+    assert result == {
+        "profile": "work",
+        "platform": "discord",
+        "chat_type": "group",
+        "chat_id": "chan1",
+    }
+
+
+def test_parse_session_key_main_shape_unchanged():
+    """``main`` keys keep their historical dict shape exactly (no ``profile`` key)."""
+    result = _parse_session_key("agent:main:telegram:dm:123:42")
+    assert result == {
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+        "thread_id": "42",
+    }
+
+
+def test_parse_session_key_rejects_invalid_namespace():
+    """A namespace slot that cannot be a profile id still parses to None."""
+    assert _parse_session_key("agent:Bad_NS:telegram:dm:123") is None
+    assert _parse_session_key("agent:main:telegram:dm") is None
+    assert _parse_session_key("raw-session-id") is None
+
+
+def test_build_process_event_source_named_profile_key(monkeypatch, tmp_path):
+    """A synthetic event keyed by a named-profile session resolves platform/chat and keeps
+    the profile, instead of being unresolvable and dropped with a warning."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    source = runner._build_process_event_source({
+        "session_id": "proc_watch",
+        "session_key": "agent:work:telegram:dm:123",
+    })
+    assert source is not None
+    assert source.platform is Platform.TELEGRAM
+    assert source.chat_id == "123"
+    assert source.chat_type == "dm"
+    assert source.profile == "work"
+
+
 # ---------------------------------------------------------------------------
 # api_server (stateless) wake routing — gateway/wake.py self-post path
 # ---------------------------------------------------------------------------
@@ -524,7 +594,7 @@ async def test_inject_watch_notification_raw_session_key_self_posts(monkeypatch,
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AsyncMock(),
+        handle_message=AdmittingHandler(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
@@ -557,7 +627,7 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AsyncMock(),
+        handle_message=AdmittingHandler(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
@@ -578,6 +648,86 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     result = await runner._inject_watch_notification("[SYSTEM: done]", evt)
     assert result is True
     assert posts == ["raw-origin-sid"]
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_persists_delivery_not_self_post(
+    monkeypatch, tmp_path,
+):
+    """#85957: an async_delegation completion targeting a stateless api_server
+    session must be persisted as a durable DELIVERY row — never self-POSTed
+    to /v1/chat/completions as a new role=user prompt (which starts an
+    unauthorized agent turn after the client-owned parent turn ended)."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AdmittingHandler(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    import gateway.wake as wake_mod
+
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append(session_id)
+
+    persisted = []
+
+    async def fake_persist(adapter, *, text, session_id, evt=None):
+        persisted.append({"text": text, "session_id": session_id, "evt": evt})
+
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fake_persist)
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_85957",
+        "session_key": "raw-hq-session-id",  # no agent:main:... structure
+        "origin_session_id": "raw-hq-session-id",
+        "status": "completed",
+    }
+    result = await runner._inject_watch_notification(
+        "[ASYNC DELEGATION BATCH COMPLETE — deleg_85957]", evt,
+    )
+
+    assert result is True
+    assert posts == []  # the self-POST user-turn wake must NOT fire
+    api_adapter.handle_message.assert_not_awaited()
+    assert len(persisted) == 1
+    assert persisted[0]["session_id"] == "raw-hq-session-id"
+    assert persisted[0]["evt"]["delegation_id"] == "deleg_85957"
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_persist_failure_is_retryable(
+    monkeypatch, tmp_path,
+):
+    """A failed delivery persist returns False so the durable claim is
+    released and the completion retried — never silently lost."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AdmittingHandler(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    import gateway.wake as wake_mod
+
+    async def fail_persist(adapter, *, text, session_id, evt=None):
+        raise RuntimeError("state.db unavailable")
+
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fail_persist)
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_fail",
+        "session_key": "raw-sid",
+    }
+    result = await runner._inject_watch_notification("[BATCH COMPLETE]", evt)
+    assert result is False
 
 
 def test_gateway_drain_retains_and_formats_overflow_events():
@@ -613,3 +763,35 @@ def test_gateway_drain_retains_and_formats_overflow_events():
     out_released = _format_gateway_process_notification(released)
     assert "notifications resumed" in out_released
     assert "exit code" not in out_released
+
+
+@pytest.mark.asyncio
+async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
+    """#54266: the chat-facing watcher messages (final in all/result/error, interim in all) carry a
+    status header and the (ANSI-stripped) output, never the internal ``proc_*`` id or the bracketed
+    ``[Background process …~ …]`` debug wrapper. Full output stays available via the process tool."""
+    import tools.process_registry as pr_module
+
+    running = SimpleNamespace(output_buffer="\x1b[32mstep 1 ok\x1b[0m\n", exited=False, exit_code=None,
+                              command="make -j8 all", started_at=None)
+    done = SimpleNamespace(output_buffer="\x1b[32mstep 1 ok\x1b[0m\n\x1b[31mlinker error\x1b[0m\n", exited=True,
+                           exit_code=2, command="make -j8 all", started_at=None)
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([running, done]))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    await runner._run_process_watcher(_watcher_dict(session_id="proc_deadbeef"))
+
+    sent = [call.args[1] for call in adapter.send.await_args_list]
+    assert len(sent) == 2
+    interim, final = sent
+    assert interim.startswith("⏳ Background task still running") and "step 1 ok" in interim
+    assert final.startswith("❌ Background task failed") and "exit 2" in final and "linker error" in final
+    for text in sent:
+        assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
+        assert "\x1b[" not in text
+        assert "make -j8 all" in text

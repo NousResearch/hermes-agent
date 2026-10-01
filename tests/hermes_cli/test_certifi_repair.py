@@ -20,9 +20,11 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
 
 import hermes_cli._early_recovery as er
+import subprocess
+from hermes_cli import doctor_platform
+from hermes_cli import main_install_repair
 
 
 def _fake_certifi(monkeypatch, bundle_path: Path):
@@ -76,8 +78,6 @@ class TestUpdateProbeScriptChecksBundle:
     def _run_probe_script(self, monkeypatch, tmp_path, bundle_path):
         """Extract the generated probe script and run it in-process against a
         fake certifi that points at bundle_path."""
-        from hermes_cli import main as main_mod
-
         captured = {}
 
         def fake_run(cmd, **kwargs):
@@ -90,11 +90,11 @@ class TestUpdateProbeScriptChecksBundle:
 
             return _R()
 
-        monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(main_install_repair.subprocess, "run", fake_run)
         monkeypatch.setattr(
-            main_mod, "_resolve_install_target_python", lambda *a, **k: sys.executable
+            main_install_repair, "_resolve_install_target_python", lambda *a, **k: sys.executable
         )
-        main_mod._detect_broken_lazy_refresh_imports(["pip"])
+        main_install_repair._detect_broken_lazy_refresh_imports(["pip"])
         script = captured["script"]
 
         # Execute the probe script with a fake certifi installed.
@@ -130,18 +130,16 @@ class TestUpdateProbeScriptChecksBundle:
 
 class TestDoctorCertificates:
     def test_broken_bundle_fails_without_fix(self, monkeypatch, capsys, tmp_path):
-        from hermes_cli import doctor as doctor_mod
 
         monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
         issues = []
-        doctor_mod.check_certificates(should_fix=False, issues=issues)
+        doctor_platform.check_certificates(should_fix=False, issues=issues)
         out = capsys.readouterr().out
         assert "broken" in out.lower()
         assert issues, "a broken bundle must be funneled into the action list"
         assert any("doctor --fix" in i for i in issues)
 
     def test_fix_reinstalls_certifi_and_reverifies(self, monkeypatch, capsys, tmp_path):
-        from hermes_cli import doctor as doctor_mod
 
         # First verification fails, post-reinstall verification succeeds.
         calls = {"verify": 0, "pip": []}
@@ -164,12 +162,12 @@ class TestDoctorCertificates:
             return _R()
 
         monkeypatch.setattr(
-            "agent.ssl_guard.verify_ca_bundle_with_fallback", fake_verify
+            "agent.ssl_guard.verify_ca_bundle", fake_verify
         )
-        monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(subprocess, "run", fake_run)
 
         issues = []
-        doctor_mod.check_certificates(should_fix=True, issues=issues)
+        doctor_platform.check_certificates(should_fix=True, issues=issues)
         out = capsys.readouterr().out
 
         assert calls["pip"], "--fix must run a pip force-reinstall of certifi"
@@ -181,13 +179,12 @@ class TestDoctorCertificates:
 
 
     def test_healthy_bundle_never_touches_pip(self, monkeypatch, capsys):
-        from hermes_cli import doctor as doctor_mod
 
         def _fail_run(*a, **k):
             raise AssertionError("healthy bundle must not trigger a reinstall")
 
-        monkeypatch.setattr(doctor_mod.subprocess, "run", _fail_run)
-        doctor_mod.check_certificates(should_fix=True, issues=[])
+        monkeypatch.setattr(subprocess, "run", _fail_run)
+        doctor_platform.check_certificates(should_fix=True, issues=[])
         out = capsys.readouterr().out
         assert "valid" in out.lower()
 
@@ -197,16 +194,3 @@ class TestDoctorCertificates:
 # =========================================================================
 
 
-class TestSslGuardRepairHint:
-    def test_missing_bundle_error_mentions_doctor_fix(self, monkeypatch, tmp_path):
-        import certifi
-
-        from agent.errors import SSLConfigurationError
-        from agent.ssl_guard import verify_ca_bundle
-
-        monkeypatch.setattr(certifi, "where", lambda: str(tmp_path / "gone.pem"))
-        with pytest.raises(SSLConfigurationError) as excinfo:
-            verify_ca_bundle()
-        message = str(excinfo.value)
-        assert "hermes doctor --fix" in message
-        assert "certifi" in message

@@ -53,6 +53,9 @@ def _patch_daytona_imports(monkeypatch):
 @pytest.fixture()
 def daytona_sdk(monkeypatch):
     """Provide a mock daytona SDK module and return it for assertions."""
+    # The SDK itself is faked below.  Do not ask lazy_deps to install the
+    # optional package while exercising that fake.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
     return _patch_daytona_imports(monkeypatch)
 
 
@@ -186,21 +189,6 @@ class TestExecute:
         assert result["returncode"] == 0
 
 
-    def test_daytona_error_triggers_retry(self, make_env, daytona_sdk):
-        sb = _make_sandbox()
-        sb.state = "started"
-        sb.process.exec.side_effect = [
-            _make_exec_response(result="/root"),  # $HOME
-            _make_exec_response(result="", exit_code=0),  # init_session
-            daytona_sdk.DaytonaError("transient"),  # first attempt fails
-            _make_exec_response(result="ok", exit_code=0),  # retry succeeds
-        ]
-        env = make_env(sandbox=sb)
-
-        result = env.execute("echo retry")
-        # DaytonaError now surfaces directly through _ThreadedProcessHandle
-        # (no retry logic) — the error becomes returncode=1
-        assert result["returncode"] == 1
 
 
 # ---------------------------------------------------------------------------

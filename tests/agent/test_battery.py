@@ -11,8 +11,6 @@ from agent import battery as battery_mod
 from agent.battery import (
     BatteryStatus,
     battery_category,
-    battery_glyph,
-    format_battery,
     read_battery,
 )
 
@@ -77,12 +75,3 @@ def test_battery_category_thresholds(percent, plugged, expected):
 
 
 
-def test_format_and_glyph():
-    on_battery = BatteryStatus(available=True, percent=82, plugged=False)
-    charging = BatteryStatus(available=True, percent=82, plugged=True)
-
-    assert battery_glyph(on_battery) == "\U0001f50b"  # 🔋
-    assert battery_glyph(charging) == "\u26a1"  # ⚡
-    assert format_battery(on_battery) == "\U0001f50b 82%"
-    assert format_battery(charging) == "\u26a1 82%"
-    assert format_battery(BatteryStatus(available=False)) == ""

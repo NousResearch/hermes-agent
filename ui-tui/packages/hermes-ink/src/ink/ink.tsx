@@ -104,6 +104,7 @@ import {
   type MouseTrackingMode,
   SHOW_CURSOR
 } from './termio/dec.js'
+import { isDashboardHosted } from './termio/host.js'
 import {
   CLEAR_ITERM2_PROGRESS,
   CLEAR_TAB_STATUS,
@@ -634,12 +635,21 @@ export default class Ink {
     // watchdog's next 2s probe. reassertTerminalModes(false) is the
     // non-destructive form — extended keys + mouse preset, no alt-screen
     // re-entry, no erase — so it costs a few idempotent bytes and no flicker.
+    //
+    // Under the dashboard the emulator is xterm.js over a WebSocket: it never
+    // drops hidden-tab writes, so the clear+repaint is only a flash on every
+    // OS app-switch. Re-assert modes and stop; the focus report still reaches
+    // TerminalFocusProvider.
     queueMicrotask(() => {
       if (this.isUnmounted || this.isPaused || !this.options.stdout.isTTY || this.currentNode === null) {
         return
       }
 
       this.reassertTerminalModes(false)
+
+      if (isDashboardHosted()) {
+        return
+      }
 
       if (this.altScreenActive) {
         this.resetFramesForAltScreen()

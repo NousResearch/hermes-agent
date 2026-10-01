@@ -6,31 +6,11 @@ Covers the threading behavior control for multi-chunk replies:
 - "all": All chunks thread to original message
 """
 import os
-import sys
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
 from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides, load_gateway_config
-
-
-def _ensure_telegram_mock():
-    """Mock the telegram package if it's not installed."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    mod = MagicMock()
-    mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
-    mod.constants.ChatType.PRIVATE = "private"
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, mod)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 

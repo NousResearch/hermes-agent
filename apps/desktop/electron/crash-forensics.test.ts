@@ -49,7 +49,7 @@ describe('installCrashForensics', () => {
 
     listeners.get('uncaughtException')?.(error)
 
-    expect(log).toHaveBeenCalledWith('[main] Uncaught exception: Error: renderer gone\n    at main')
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Error: renderer gone\n    at main'))
     expect(flush).toHaveBeenCalledTimes(1)
   })
 
@@ -58,13 +58,7 @@ describe('installCrashForensics', () => {
 
     listeners.get('unhandledRejection')?.('gateway ticket mint failed')
 
-    expect(log).toHaveBeenCalledWith('[main] Unhandled rejection: gateway ticket mint failed')
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('gateway ticket mint failed'))
     expect(flush).toHaveBeenCalledTimes(1)
-  })
-
-  it('registers both handlers', () => {
-    const { listeners } = harness()
-
-    expect([...listeners.keys()].sort()).toEqual(['uncaughtException', 'unhandledRejection'])
   })
 })

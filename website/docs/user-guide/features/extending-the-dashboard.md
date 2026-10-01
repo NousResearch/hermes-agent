@@ -17,7 +17,7 @@ All three are **drop-in at runtime**: no repo clone, no `npm run build`, no patc
 If you just want to use the dashboard, see [Web Dashboard](./web-dashboard). If you want to reskin the terminal CLI (not the web dashboard), see [Skins & Themes](./skins) — the CLI skin system is unrelated to dashboard themes.
 
 :::note Not the desktop app
-This page covers the **web dashboard** (`hermes dashboard`) plugin system — `window.__HERMES_PLUGIN_SDK__`, a `manifest.json`, and a pre-built JS bundle. The **native desktop app** (`hermes desktop`) has its own, unrelated SDK — `@hermes/plugin-sdk`, a single ESM file, no build step — documented at [Desktop Plugin SDK](/developer-guide/desktop-plugin-sdk). Only the backend `plugin_api.py` namespace (`/api/plugins/<name>`) is shared between them.
+This page covers the **web dashboard** (`hermes dashboard`) plugin system — `window.__HERMES_PLUGIN_SDK__`, a `manifest.json`, and a pre-built JS bundle. The **native desktop app** (`hermes desktop`) has its own, unrelated SDK — `@hermes/plugin-sdk`, a single ESM file, no build step — documented at [Desktop Plugin SDK](../../developer-guide/desktop-plugin-sdk.md). Only the backend `plugin_api.py` namespace (`/api/plugins/<name>`) is shared between them.
 :::
 
 :::note How the pieces compose

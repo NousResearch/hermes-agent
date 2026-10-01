@@ -15,7 +15,10 @@ There are TWO on-disk doors, same contract and hot reload:
   unified agent-plugin package: the same folder that carries the Python
   plugin (`plugin.yaml`) and its `dashboard/plugin_api.py` backend ships its
   desktop UI beside them, so one feature installs/uninstalls as one folder.
-  This half is OPT-IN: it inventories in Settings → Plugins but stays off
+  The Electron shell copies that half into `desktop-plugins/<id>/` (with a
+  `.hermes-package.json` marker) — the ONLY root the renderer loads from — so
+  the pane is app-level and does not come and go with the selected profile.
+  This half is OPT-IN: it inventories in Capabilities → Plugins but stays off
   until the user toggles it (matching the Python half's `plugins.enabled`
   gate). Tell the user to flip it on after installing — don't debug a
   "plugin not appearing" report before checking that toggle.
@@ -81,7 +84,13 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `'panes'` (layout zones — set `title` and
   `data: { placement, dock?, width?, height? }`; the pane auto-joins a
   matching zone), `PALETTE_AREA` (⌘K commands), `KEYBINDS_AREA` (rebindable
-  actions).
+  actions), `THEMES_AREA` (`data` is a full `DesktopTheme`).
+- THEMES: registering one only lists it in the picker. Select it with
+  `useTheme().setTheme(name)` from a component, or `requestTheme(name)` from a
+  callback with no component around it (a gateway event, a socket handler).
+  `requestTheme` returns `false` for a name that doesn't resolve and leaves the
+  appearance alone, so use it as the availability check instead of coercing the
+  user back to the default skin.
 - Pane placement: `placement: 'left'|'right'|'bottom'|'main'` is the
   semantic role — the pane stacks (tabs) with existing panes of that role.
   To land on a specific EDGE instead, add `dock: { pane, pos }` — the same

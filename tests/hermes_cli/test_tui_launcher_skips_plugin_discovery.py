@@ -14,6 +14,7 @@ import sys
 import types
 
 from hermes_cli import main as main_mod
+from hermes_cli import mcp_startup
 
 
 def _install_discover_spy(monkeypatch):
@@ -31,6 +32,16 @@ def _install_discover_spy(monkeypatch):
             # entry points count as "discovery work happened in the launcher".
             start_background_plugin_discovery=_discover,
         ),
+    )
+    # The plain-chat path also arms MCP discovery. Its config probe imports
+    # ``hermes_cli.plugins`` (replaced by the stub above), fails, and falls
+    # back to "assume configured", which spawned a REAL ``cli-mcp-discovery``
+    # daemon thread that was still importing ``tools.mcp_tool`` when pytest
+    # exited. A daemon thread inside a C-extension import at interpreter
+    # finalization dies via pthread_exit → glibc "FATAL: exception not
+    # rethrown" → SIGABRT. Plugin discovery is the only subject here.
+    monkeypatch.setattr(
+        mcp_startup, "start_background_mcp_discovery", lambda **_kw: None
     )
     return calls
 

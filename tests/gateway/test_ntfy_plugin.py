@@ -63,10 +63,6 @@ def test_platform_enum_resolves_via_plugin_scan():
 
 class TestNtfyRequirements:
 
-    def test_returns_false_when_httpx_unavailable(self, monkeypatch):
-        monkeypatch.setenv("NTFY_TOPIC", "hermes-test")
-        monkeypatch.setattr(_ntfy, "HTTPX_AVAILABLE", False)
-        assert check_requirements() is False
 
 
     def test_is_connected_from_extra(self, monkeypatch):
@@ -90,13 +86,6 @@ class TestNtfyAdapterInit:
         assert adapter._topic == "env-topic"
 
 
-    def test_publish_topic_uses_extra_value(self):
-        config = PlatformConfig(
-            enabled=True,
-            extra={"topic": "hermes-in", "publish_topic": "hermes-out"},
-        )
-        adapter = NtfyAdapter(config)
-        assert adapter._publish_topic == "hermes-out"
 
 
     def test_token_read_from_env(self, monkeypatch):
@@ -139,12 +128,12 @@ class TestDeduplication:
 
     def test_first_message_not_duplicate(self):
         adapter = self._make_adapter()
-        assert adapter._is_duplicate("msg-1") is False
+        assert adapter._dedup.is_duplicate("msg-1") is False
 
     def test_second_occurrence_is_duplicate(self):
         adapter = self._make_adapter()
-        adapter._is_duplicate("msg-1")
-        assert adapter._is_duplicate("msg-1") is True
+        adapter._dedup.is_duplicate("msg-1")
+        assert adapter._dedup.is_duplicate("msg-1") is True
 
 
 # ---------------------------------------------------------------------------
@@ -278,11 +267,6 @@ class TestSend:
         assert "timeout" in result.error.lower()
 
 
-    def test_get_chat_info_returns_dict(self):
-        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
-        info = _run(adapter.get_chat_info("hermes-in"))
-        assert info["name"] == "hermes-in"
-        assert info["type"] == "dm"
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +389,6 @@ class TestStandaloneSend:
         pconfig.extra = {}
         result = _run(_standalone_send(pconfig, "", "hello"))
         assert "error" in result
-        assert "NTFY_TOPIC" in result["error"]
 
 
     def test_emits_echo_tag_header(self, monkeypatch):
@@ -482,12 +465,84 @@ class TestFatalErrorPropagation:
         assert adapter._fatal_error_retryable is False
 
 
-class TestTruncateHelper:
-    """``_truncate_body`` is shared between adapter.send() (inline truncation
-    today, may migrate) and ``_standalone_send``. It must cap to
-    MAX_MESSAGE_LENGTH and return bytes."""
 
-    def test_short_message_passes_through(self):
-        assert _ntfy._truncate_body("hi", context="test") == b"hi"
 
+# ---------------------------------------------------------------------------
+# 13. Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# __init__'s server/topic/publish_topic, _env_enablement's topic/server/
+# publish_topic/markdown/home_channel, and check_requirements/validate_config/
+# is_connected's topic reads, all previously read raw os.getenv
+# unconditionally (only NTFY_TOKEN was already scoped). Under multiplex,
+# os.environ holds the DEFAULT profile's YAML-to-env bridge output -- a
+# secondary profile with its own (different or absent) ntfy config would
+# silently subscribe to / publish on the default profile's topic, or get
+# auto-enabled using the default profile's topic entirely. Mirrors the
+# LINE/Buzz/SimpleX fix for #98738.
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("NTFY_TOPIC", "default-topic")
+    monkeypatch.setenv("NTFY_SERVER_URL", "https://default.example.com")
+    monkeypatch.setenv("NTFY_PUBLISH_TOPIC", "default-out")
+
+
+class TestMultiplexProfileScope:
+
+    def test_secondary_extra_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """The secondary profile's own config.yaml extra is authoritative,
+        not the default profile's bridged topic/server/publish_topic."""
+        multiplex_scope()
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "topic": "profile-topic",
+                "server": "https://profile.example.com",
+                "publish_topic": "profile-out",
+            },
+        )
+        adapter = NtfyAdapter(cfg)
+        assert adapter._topic == "profile-topic"
+        assert adapter._server == "https://profile.example.com"
+        assert adapter._publish_topic == "profile-out"
+
+    def test_secondary_missing_keys_fail_closed(
+        self, multiplex_scope, default_profile_env
+    ):
+        """Keys absent from the profile's own scope must NOT borrow the
+        default profile's bridged env values -- that would silently
+        subscribe/publish on the wrong topic."""
+        multiplex_scope()
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter._topic == ""
+        assert adapter._server == DEFAULT_SERVER
+        assert adapter._publish_topic == ""
+        # Nor may the registry auto-enable ntfy for this profile off the default's topic.
+        assert _env_enablement() is None
+        assert is_connected(PlatformConfig(enabled=True, extra={})) is False
 

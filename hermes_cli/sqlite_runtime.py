@@ -1,8 +1,7 @@
 """Import-safe helpers for inspecting a Python interpreter's linked SQLite.
 
-This module intentionally depends only on the standard library.  Installer and
-update code must be able to use it before Hermes' third-party dependencies are
-healthy.
+This module intentionally depends only on the standard library. Installer and update code must be
+able to use it before Hermes' third-party dependencies are healthy.
 """
 
 from __future__ import annotations
@@ -21,20 +20,14 @@ def _version_tuple(parts: Iterable[object]) -> tuple[int, int, int]:
     return tuple(values[:3])
 
 
-def is_sqlite_wal_reset_vulnerable(
-    version_info: tuple[int, ...],
-) -> bool:
+def is_sqlite_wal_reset_vulnerable(version_info: tuple[int, ...]) -> bool:
     """Return whether *version_info* contains SQLite's WAL-reset bug."""
     info = _version_tuple(version_info)
-    if info < (3, 7, 0):
-        return False
-    if info >= (3, 51, 3):
-        return False
-    if (3, 50, 7) <= info < (3, 51, 0):
-        return False
-    if (3, 44, 6) <= info < (3, 45, 0):
-        return False
-    return True
+    return not (
+        info < (3, 7, 0)
+        or info >= (3, 51, 3)
+        or (3, 50, 7) <= info < (3, 51, 0)
+        or (3, 44, 6) <= info < (3, 45, 0))
 
 
 @dataclass(frozen=True)
@@ -54,58 +47,37 @@ class SQLiteRuntimeInfo:
 
 
 _PROBE_SCRIPT = """
-import json
-import sqlite3
-import sys
-
+import json, sqlite3, sys
 conn = sqlite3.connect(":memory:")
 try:
     row = conn.execute("SELECT sqlite_source_id()").fetchone()
 finally:
     conn.close()
-
 print(json.dumps({
-    "base_prefix": sys.base_prefix,
-    "executable": sys.executable,
-    "python_version": list(sys.version_info[:3]),
-    "sqlite_version": list(sqlite3.sqlite_version_info),
+    "base_prefix": sys.base_prefix, "executable": sys.executable,
+    "python_version": list(sys.version_info[:3]), "sqlite_version": list(sqlite3.sqlite_version_info),
     "sqlite_version_string": sqlite3.sqlite_version,
     "sqlite_source_id": str(row[0]) if row and row[0] is not None else "",
 }))
 """
 
 
-def probe_sqlite_runtime(
-    python: str | Path,
-    *,
-    timeout: float = 30.0,
-) -> SQLiteRuntimeInfo | None:
-    """Probe SQLite in *python*, never the caller's linked SQLite.
-
-    ``None`` means the interpreter could not be executed or returned malformed
-    data.  The child runs isolated from inherited Python path overrides.
-    """
-    executable = Path(python)
+def isolated_interpreter_env() -> dict[str, str]:
+    """Copy of ``os.environ`` with conda/uv/venv/PYTHON* overrides stripped, so a child interpreter
+    reports its *own* runtime rather than the caller's."""
     env = dict(os.environ)
-    for key in (
-        "CONDA_DEFAULT_ENV",
-        "CONDA_PREFIX",
-        "PYTHONHOME",
-        "PYTHONPATH",
-        "UV_PROJECT_ENVIRONMENT",
-        "UV_PYTHON",
-        "VIRTUAL_ENV",
-    ):
+    for key in ("CONDA_DEFAULT_ENV", "CONDA_PREFIX", "PYTHONHOME", "PYTHONPATH", "UV_PROJECT_ENVIRONMENT",
+                "UV_PYTHON", "VIRTUAL_ENV"):
         env.pop(key, None)
+    return env
+
+
+def probe_sqlite_runtime(python: str | Path, *, timeout: float = 30.0) -> SQLiteRuntimeInfo | None:
+    """Probe SQLite in *python*, never the caller's linked SQLite."""
     try:
         result = subprocess.run(
-            [str(executable), "-I", "-c", _PROBE_SCRIPT],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            env=env,
-        )
+            [str(python), "-I", "-c", _PROBE_SCRIPT], capture_output=True, text=True, timeout=timeout,
+            check=False, env=isolated_interpreter_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
@@ -113,12 +85,10 @@ def probe_sqlite_runtime(
     try:
         payload = json.loads(result.stdout)
         return SQLiteRuntimeInfo(
-            executable=Path(str(payload["executable"])),
-            base_prefix=Path(str(payload["base_prefix"])),
+            executable=Path(str(payload["executable"])), base_prefix=Path(str(payload["base_prefix"])),
             python_version=_version_tuple(payload["python_version"]),
             sqlite_version=_version_tuple(payload["sqlite_version"]),
             sqlite_version_string=str(payload["sqlite_version_string"]),
-            sqlite_source_id=str(payload.get("sqlite_source_id", "")),
-        )
+            sqlite_source_id=str(payload.get("sqlite_source_id", "")))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None

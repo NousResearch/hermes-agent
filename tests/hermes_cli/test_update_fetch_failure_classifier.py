@@ -51,11 +51,40 @@ class TestClassifyFetchFailure:
         )
         assert msg.startswith("✗ Network error")
 
+    def test_username_prompt_401_reports_github_not_user_credentials(self):
+        # What GitHub's HTTP 401 looks like once the terminal prompt is
+        # disabled — must NOT be blamed on the user's credentials.
+        msg = update_cmd._classify_fetch_failure(
+            "fatal: could not read Username for 'https://github.com':"
+            " terminal prompts disabled"
+        )
+        assert "GitHub" in msg and "outage" in msg
+        assert "check your git credentials" not in msg
+
     def test_auth_failure(self):
         msg = update_cmd._classify_fetch_failure(
             "fatal: Authentication failed for 'https://github.com/x.git/'"
         )
         assert "Authentication failed" in msg
+
+    def test_ssh_publickey_denial_reports_ssh_auth_not_generic(self):
+        # git wraps OpenSSH's own rejection as "Could not read from remote
+        # repository" — never "Authentication failed" — so this needs its
+        # own rule ahead of the generic fallback (#82169).
+        msg = update_cmd._classify_fetch_failure(
+            "git@github.com: Permission denied (publickey).\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "SSH authentication failed" in msg
+        assert "https://github.com/NousResearch/hermes-agent.git" in msg
+
+    def test_ssh_host_key_failure_reports_ssh_auth(self):
+        msg = update_cmd._classify_fetch_failure(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+            "Host key verification failed.\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "SSH authentication failed" in msg
 
     def test_unknown_falls_back_to_generic(self):
         msg = update_cmd._classify_fetch_failure("fatal: something novel")
@@ -75,3 +104,20 @@ class TestPrintFetchFailure:
         update_cmd._print_fetch_failure("")
         out = capsys.readouterr().out.strip().splitlines()
         assert out == ["✗ Failed to fetch updates from origin."]
+
+
+def test_update_network_git_calls_never_prompt_for_credentials():
+    """Every `git fetch`/`pull`/`push` in the updater runs with prompts disabled.
+
+    Live incident (Sep 2026): a GitHub-side 401 made `hermes update` sit on
+    ``Username for 'https://github.com':`` instead of failing with a diagnosis.
+    """
+    import os
+    import subprocess
+
+    kw = update_cmd._no_prompt_git_kwargs()
+    assert kw["stdin"] is subprocess.DEVNULL
+    assert kw["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    # Only the prompt is disabled — credential helpers / askpass stay
+    # configured so a private-fork origin still authenticates.
+    assert "GIT_CONFIG_COUNT" not in kw["env"] or kw["env"]["GIT_CONFIG_COUNT"] == os.environ.get("GIT_CONFIG_COUNT")

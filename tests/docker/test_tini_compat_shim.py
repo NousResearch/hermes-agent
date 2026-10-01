@@ -1,80 +1,35 @@
 """Runtime smoke test for the Docker tini compatibility shim (#34192, #66679).
 
-Build the real image and verify:
-
-  1. /usr/bin/tini exists as an executable shim (not a bare symlink to
-     /init — that forwarded tini's ``-g`` into s6 and boot-looped)
-  2. The actual ENTRYPOINT is /init (s6-overlay), not /usr/bin/tini
-  3. Legacy ``tini -g -- <cmd>`` entrypoints boot without
-     ``rc.init: -g: not found``
+Build the real image and verify that legacy ``/usr/bin/tini -g -- <cmd>``
+entrypoints still boot the image (no ``rc.init: -g: not found`` boot loop).
 """
 from __future__ import annotations
 
 import subprocess
 
 
-def test_tini_compat_shim_exists(built_image: str) -> None:
-    """/usr/bin/tini must be an executable shim script.
+def test_legacy_tini_entrypoint_boots(built_image: str) -> None:
+    """``--entrypoint /usr/bin/tini <image> -g -- --help`` must run hermes.
 
     Regression for #34192 / #66679: orchestration templates (e.g.
     Hostinger's 'Hermes WebUI' catalog, NAS compose projects that keep
     an old entrypoint across image updates) still pin /usr/bin/tini as
-    the entrypoint, often with ``-g --``. The shim must exist *and*
-    strip those flags before exec'ing /init.
+    the entrypoint, often with ``-g --``. A missing shim fails to exec; a
+    bare symlink to /init forwards ``-g`` into s6 and boot-loops. The shim
+    must strip the tini flags and hand the remaining args to /init +
+    main-wrapper, so the requested command runs normally.
     """
     r = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "sh",
-         built_image, "-c",
-         'test -x /usr/bin/tini && '
-         # Must NOT be a raw symlink to /init — that reintroduces #66679.
-         'if [ -L /usr/bin/tini ]; then '
-         '  target="$(readlink -f /usr/bin/tini)"; '
-         '  test "$target" != "/init"; '
-         'fi && '
-         'head -n1 /usr/bin/tini | grep -q "^#!"'],
-        capture_output=True, text=True, timeout=60,
+        ["docker", "run", "--rm", "--entrypoint", "/usr/bin/tini",
+         built_image, "-g", "--", "--help"],
+        capture_output=True, text=True, timeout=120,
+    )
+    combined = r.stdout + r.stderr
+    assert "-g: not found" not in combined, (
+        f"tini flags leaked into s6 rc.init (#66679): {combined[-2000:]!r}"
     )
     assert r.returncode == 0, (
-        f"/usr/bin/tini is not a usable tini shim: "
-        f"stdout={r.stdout[-500:]!r} stderr={r.stderr[-500:]!r}"
+        f"legacy tini entrypoint failed (exit {r.returncode}): "
+        f"stdout={r.stdout[-2000:]!r} stderr={r.stderr[-2000:]!r}"
     )
-
-
-def test_entrypoint_is_dispatcher_not_tini(built_image: str) -> None:
-    """The image's actual ENTRYPOINT must be the PID-1 dispatcher.
-
-    Since #38349 the ENTRYPOINT is ``entrypoint-dispatch.sh``, which
-    exec's the canonical ``/init`` (s6-overlay) when the image owns
-    PID 1 and falls back to a direct bootstrap on wrapped runtimes
-    (Fly Machines, ``docker run --init``). The tini shim is only for
-    legacy external wrappers; the image's own runtime must route
-    through the dispatcher, never through /usr/bin/tini.
-    """
-    r = subprocess.run(
-        ["docker", "inspect", built_image,
-         "--format", "{{json .Config.Entrypoint}}"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert r.returncode == 0, f"docker inspect failed: {r.stderr}"
-    entrypoint = r.stdout.strip()
-    assert "entrypoint-dispatch.sh" in entrypoint, (
-        f"ENTRYPOINT is not the PID-1 dispatcher: {entrypoint!r}"
-    )
-    # /usr/bin/tini should NOT be in the entrypoint.
-    assert "tini" not in entrypoint.lower(), (
-        f"ENTRYPOINT references tini instead of the dispatcher: {entrypoint!r}"
-    )
-    # The dispatcher must still hand PID-1 execution to /init inside
-    # the image, preserving the supervision tree.
-    r2 = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "sh", built_image, "-c",
-         "grep -q 'exec /init /opt/hermes/docker/main-wrapper.sh' "
-         "/opt/hermes/docker/entrypoint-dispatch.sh"],
-        capture_output=True, text=True, timeout=60,
-    )
-    assert r2.returncode == 0, (
-        "entrypoint-dispatch.sh in the image does not delegate the "
-        f"PID-1 path to /init: stderr={r2.stderr[-500:]!r}"
-    )
-
-
+    assert "Traceback" not in r.stderr

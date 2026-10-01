@@ -139,7 +139,7 @@ class TestMistralSttPythonpathFallback:
             "mistralai.client": mock_mistralai,
         }), patch("tools.lazy_deps.ensure",
                   side_effect=FeatureUnavailable("stt.mistral", (), "test")), \
-             patch("tools.transcription_tools.get_env_value",
+             patch("hermes_cli.config.get_env_value",
                    return_value="test-key"):
             result = _transcribe_mistral(str(audio_file), "mistral-large-latest")
 

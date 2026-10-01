@@ -78,4 +78,38 @@ describe('terminal error message.complete frames', () => {
     const bubble = lastAssistant()
     expect(bubble?.error).toBe('Error: something broke')
   })
+
+  it('attaches the structured error_surface descriptor to the failed bubble', async () => {
+    mountStream()
+    await start()
+    await delta('…')
+
+    await completeWithError({
+      text: 'Error: rate limited',
+      error: 'rate limited',
+      error_surface: { layer: 'provider', code: 'rate_limit', retryable: true },
+      recoverable: true
+    })
+
+    const bubble = lastAssistant()
+    expect(bubble?.error).toBe('rate limited')
+    expect(bubble?.errorSurface).toEqual({ layer: 'provider', code: 'rate_limit', retryable: true })
+  })
+
+  it('ignores a garbled error_surface payload (older/foreign backends)', async () => {
+    mountStream()
+    await start()
+    await delta('…')
+
+    await completeWithError({
+      text: 'Error: kaput',
+      error: 'kaput',
+      error_surface: { layer: 'not-a-layer', code: 42 },
+      recoverable: true
+    })
+
+    const bubble = lastAssistant()
+    expect(bubble?.error).toBe('kaput')
+    expect(bubble?.errorSurface).toBeUndefined()
+  })
 })

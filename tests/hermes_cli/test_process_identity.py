@@ -15,6 +15,8 @@ Runs on any host: psutil interactions go through a fake module.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
 import types
 from pathlib import Path
@@ -131,6 +133,35 @@ def test_register_self_writes_and_prunes_dead(tmp_path):
     assert me["create_time"] == pytest.approx(50.0, abs=0.01)
 
 
+def test_register_self_survives_non_utf8_argv(tmp_path):
+    ledger = tmp_path / "spawn-ledger.json"
+    fake = _fake_psutil({999: 50.0})
+    bad_argv = ["hermes", "serve", os.fsdecode(b"/tmp/project-\xff")]  # surrogate-escaped path
+    with patch.dict(sys.modules, {"psutil": fake}), \
+         patch.object(pi, "_ledger_path", return_value=ledger), \
+         patch.object(pi.os, "getpid", return_value=999), \
+         patch.object(sys, "argv", bad_argv):
+        assert pi.register_self("serve", project_root=Path("/x/install")) is True
+    me = next(e for e in json.loads(ledger.read_text(encoding="utf-8")) if e["pid"] == 999)
+    assert me["argv"] == " ".join(bad_argv)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
+def test_register_self_writes_ledger_with_0600(tmp_path):
+    ledger = tmp_path / "spawn-ledger.json"
+    fake = _fake_psutil({999: 50.0})
+    old_umask = os.umask(0o022)  # permissive umask: the mode must come from the writer, not the env
+    try:
+        with patch.dict(sys.modules, {"psutil": fake}), \
+             patch.object(pi, "_ledger_path", return_value=ledger), \
+             patch.object(pi.os, "getpid", return_value=999):
+            assert pi.register_self("serve", project_root=Path("/x/install")) is True
+    finally:
+        os.umask(old_umask)
+
+    assert stat.S_IMODE(os.stat(ledger).st_mode) == 0o600
+
+
 def test_register_self_inherits_spawn_tag_lineage(tmp_path):
     ledger = tmp_path / "spawn-ledger.json"
     fake = _fake_psutil({999: 50.0})
@@ -230,11 +261,6 @@ def test_updater_reaps_ledger_proven_orphans():
         assert cli_main._ledger_reapable_backend_pids(_holders(200, 201, 202, 203)) == [200]
 
 
-def test_updater_ledger_rung_empty_without_ledger():
-    from hermes_cli import main as cli_main
-
-    with patch.object(pi, "ledger_entries", return_value=[]):
-        assert cli_main._ledger_reapable_backend_pids(_holders(200)) == []
 
 
 def test_updater_ledger_rung_never_raises():
@@ -242,3 +268,19 @@ def test_updater_ledger_rung_never_raises():
 
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
         assert cli_main._ledger_reapable_backend_pids(_holders(200)) == []
+
+
+def test_desktop_ssh_backend_spawn_shape_is_desktop_owned(monkeypatch):
+    """Desktop's SSH spawn is ``env HERMES_DESKTOP=1 hermes serve --isolated ... --ssh-session-token-file F``
+    with NO token env var (its tests assert the var name never appears on the wire). Missing that
+    shape made the SSH child claim ROLE_SERVE on the remote host (the #119824 shape there)."""
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    ssh_argv = ["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
+                "--ssh-session-token-file", "/home/u/.hermes/desktop-ssh/abc.token"]
+
+    assert pi.is_desktop_owned_backend(ssh_argv) is True
+    monkeypatch.setattr(sys, "argv", ["hermes", *ssh_argv])
+    assert pi.is_desktop_owned_backend() is True
+    # The bare inherited flag (a Desktop terminal pane running `hermes serve`) is still not ownership.
+    assert pi.is_desktop_owned_backend(["serve", "--host", "127.0.0.1", "--port", "0"]) is False

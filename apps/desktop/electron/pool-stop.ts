@@ -22,6 +22,8 @@
  * directly instead of grepping main.ts source text.
  */
 
+import type { WaitableChild } from './backend-child'
+
 export interface PoolStopEntry {
   process?: unknown
 }
@@ -33,14 +35,21 @@ export interface PoolStopperDeps {
   stopChild: (child: unknown) => void
   /** Bounded wait: resolves when the child exits, escalating to SIGKILL. */
   waitForExit: (child: unknown) => Promise<void>
+  /**
+   * Extra per-key work that must finish before a replacement may spawn.
+   * Held on the same in-flight promise as child exit (SSH teardown, etc.).
+   */
+  afterStop?: (key: string) => Promise<void>
 }
 
 export interface PoolStopper {
   /** The in-flight stop for a key, if any — await before respawning it. */
   inFlight: (key: string) => Promise<void> | undefined
+  /** Whether the pool has a local child or an already-evicted stop in flight. */
+  hasPending: () => boolean
   /** Stop one pooled backend; concurrent calls share the same promise. */
   stop: (key: string) => Promise<void>
-  /** Stop every pooled backend currently in the pool. */
+  /** Stop every pooled backend and join stops already in flight. */
   stopAll: () => Promise<void>
 }
 
@@ -64,11 +73,31 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
     // below retains the process handle until the bounded exit completes.
     deps.pool.delete(key)
 
+    const clear = () => {
+      if (stops.get(key) === stopping) {
+        stops.delete(key)
+      }
+    }
+
     const stopping = (async () => {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
-    })().finally(() => {
-      stops.delete(key)
+
+      if (deps.afterStop) {
+        await deps.afterStop(key)
+      }
+    })().then(clear, error => {
+      const child = entry.process as Partial<WaitableChild> | undefined
+
+      if (child?.once && child.exitCode === null && child.signalCode === null) {
+        // Keep rejecting reuse of this profile while the old child is alive.
+        // The real late exit, not the teardown deadline, releases this fence.
+        child.once('exit', clear)
+      } else {
+        clear()
+      }
+
+      throw error
     })
 
     stops.set(key, stopping)
@@ -78,9 +107,12 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
 
   return {
     inFlight: key => stops.get(key),
+    hasPending: () => stops.size > 0 || [...deps.pool.values()].some(entry => entry.process != null),
     stop,
     stopAll: async () => {
-      await Promise.all([...deps.pool.keys()].map(stop))
+      const currentStops = [...deps.pool.keys()].map(stop)
+
+      await Promise.all(new Set([...stops.values(), ...currentStops]))
     }
   }
 }

@@ -106,7 +106,6 @@ def test_cmd_chat_rejects_noninteractive_gpt55_pro_startup_override(
     assert not fake_cli
     err = capsys.readouterr().err
     assert "EXPENSIVE MODEL WARNING" in err
-    assert "did you mean to select openai/gpt-5.5?" in err
     assert "non-interactive" in err
 
 

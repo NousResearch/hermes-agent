@@ -305,16 +305,33 @@ describe.each([
     expect(chunks.join('')).not.toContain(ERASE_SCROLLBACK)
   })
 
+  it('under the dashboard PTY, re-asserts modes but never clears or repaints', async () => {
+    // xterm.js fed by the dashboard WebSocket never drops hidden-tab writes,
+    // so there is no stale row to heal — the clear+repaint is only a flash on
+    // every OS app-switch (hermes-agent#94337). The focus report itself must
+    // still be processed (this handler runs), only the repaint is skipped.
+    const { beforeFocus, afterFocus, chunks } = await focusRegain(altScreen, { HERMES_PTY_HOST: 'dashboard' })
+
+    const out = chunks.join('')
+
+    expect(out).not.toContain(ERASE_SCREEN)
+    expect(out).not.toContain('hello')
+    expect(afterFocus).toBe(beforeFocus)
+
+    if (altScreen) {
+      expect(out).toContain(DISABLE_MOUSE_TRACKING)
+    }
+  })
+})
+
+describe('Ink focus recovery — alt screen modes', () => {
   it('re-asserts terminal modes so mouse tracking survives a hidden pane', async () => {
     // An emulator that dropped the DEC mouse modes while hidden would
     // otherwise stay dead until the DECRQM watchdog's next probe. Mouse
     // tracking is alt-screen-scoped (reassertTerminalModes returns early on
-    // main screen, where altScreenMouseTracking is always 'off'), so only
-    // assert the re-arm where tracking exists.
-    const { chunks } = await focusRegain(altScreen)
+    // main screen, where altScreenMouseTracking is always 'off').
+    const { chunks } = await focusRegain(true)
 
-    if (altScreen) {
-      expect(chunks.join('')).toContain(DISABLE_MOUSE_TRACKING)
-    }
+    expect(chunks.join('')).toContain(DISABLE_MOUSE_TRACKING)
   })
 })

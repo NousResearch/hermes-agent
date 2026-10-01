@@ -165,6 +165,10 @@ export const de: Translations = {
     failedToDeleteSelected: "Ausgewählte Sitzungen konnten nicht gelöscht werden",
     resumeInChat: "Im Chat fortsetzen",
     newChat: "Neuer Chat",
+    workspace: "Arbeitsbereich",
+    workspaceDefault: "Standard",
+    workspaceRescan: "Repositories neu scannen",
+    workspaceCustom: "Anderer Pfad…",
     previousPage: "Vorherige Seite",
     nextPage: "Nächste Seite",
     roles: {
@@ -324,6 +328,8 @@ export const de: Translations = {
     disableRuntime: "Deaktivieren",
     enableAfterInstall: "Nach Installation aktivieren",
     enableRuntime: "Aktivieren",
+    toggleTakesEffectAfterRestart:
+      "Gespeichert — Gateway neu starten, um die Änderung anzuwenden.",
     forceReinstall: "Neuinstallation erzwingen (bestehenden Ordner zuerst löschen)",
     headline:
       "Hermes-Plugins entdecken, installieren, aktivieren und aktualisieren (entspricht `hermes plugins`).",
@@ -469,6 +475,8 @@ export const de: Translations = {
     copyCliCommand: "CLI-Befehl kopieren (für extern / Fallback)",
     connect: "Verbinden",
     sessionExpires: "Sitzung läuft in {time} ab",
+    sessionExpiredNoError:
+      "Die Anmeldung ist abgelaufen, ohne den Anbieter zu erreichen. Das bedeutet meist, dass die Anmeldeseite im geöffneten Tab hängen geblieben ist (serverseitiges Problem) — schließen Sie die Anmeldung dort ab und klicken Sie dann auf Erneut versuchen. Wenn es weiterhin fehlschlägt, verwenden Sie stattdessen einen API-Schlüssel oder die CLI.",
     initiatingLogin: "Login-Ablauf wird gestartet…",
     exchangingCode: "Code wird gegen Tokens getauscht…",
     connectedClosing: "Verbunden! Wird geschlossen…",

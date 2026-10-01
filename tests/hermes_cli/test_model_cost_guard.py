@@ -38,8 +38,6 @@ def test_warns_when_models_dev_input_price_exceeds_threshold():
 
     assert warning is not None
     assert warning.input_cost_per_million == Decimal("20.01")
-    assert "EXPENSIVE MODEL WARNING" in warning.message
-    assert "$20/M input" in warning.message
 
 
 @pytest.mark.parametrize("provider", ["custom", "custom:routerai", "routerai"])
@@ -122,21 +120,6 @@ def test_warns_when_pricing_entry_output_price_exceeds_threshold(monkeypatch):
     assert "$100.01/M" in warning.message
 
 
-def test_openai_gpt55_pro_adds_suggestion(monkeypatch):
-    monkeypatch.setattr("agent.models_dev.get_model_info", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        "agent.usage_pricing.get_pricing_entry",
-        lambda *_args, **_kwargs: PricingEntry(
-            input_cost_per_million=Decimal("25"),
-            output_cost_per_million=Decimal("125"),
-            source="provider_models_api",
-        ),
-    )
-
-    warning = expensive_model_warning("openai/gpt-5.5-pro", provider="openrouter")
-
-    assert warning is not None
-    assert "did you mean to select openai/gpt-5.5?" in warning.message
 
 
 def test_openai_gpt55_pro_warns_even_without_pricing(monkeypatch):

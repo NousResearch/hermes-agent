@@ -5,7 +5,6 @@ import json
 import pytest
 
 from tools import close_preview_tool as cp, desktop_ui
-from tools.registry import registry
 
 
 @pytest.fixture(autouse=True)
@@ -16,15 +15,6 @@ def _reset_emitter():
     desktop_ui.set_emitter(None)
 
 
-def test_lives_in_the_gui_surface_toolset(monkeypatch):
-    """Reaches a desktop client on ANY backend, including one with no
-    HERMES_DESKTOP in its environment (URL / cloud gateways)."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    entry = registry.get_entry("close_preview")
-
-    assert entry is not None
-    assert entry.toolset == "desktop_ui"
-    assert entry.check_fn is None
 
 
 def test_emits_preview_close_for_the_whole_pane():

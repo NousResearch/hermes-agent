@@ -38,26 +38,6 @@ test('gitFor accepts an internally resolved git binary path containing spaces', 
   assert.doesNotThrow(() => gitFor(process.cwd(), 'C:\\Program Files\\Git\\cmd\\git.exe'))
 })
 
-test('gitFor runs git through a spaced binary path', async () => {
-  if (process.platform !== 'win32') {
-    return
-  }
-
-  const gitBin = path.join(process.env.ProgramFiles || String.raw`C:\Program Files`, 'Git', 'cmd', 'git.exe')
-
-  if (!fs.existsSync(gitBin)) {
-    return
-  }
-
-  const repo = makeRepo()
-
-  fs.writeFileSync(path.join(repo, 'changed.txt'), 'review me\n')
-
-  const status = await gitFor(repo, gitBin).status()
-
-  assert.equal(status.not_added.includes('changed.txt'), true)
-})
-
 test('resolveRenamePath: simple rename resolves to the new path', () => {
   assert.equal(resolveRenamePath('old.ts => new.ts'), 'new.ts')
 })

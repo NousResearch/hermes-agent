@@ -74,23 +74,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Two images per arch. `slim` is what :latest has always been; `desktop`
+        # adds the Bot Screen packages and a headed Chromium (+1.4 GB) for the
+        # tier that offers a screen. Both are built on a PR so a change that only
+        # breaks the gated layers cannot reach publish.
+        arch: [amd64, arm64]
+        variant: [slim, desktop]
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-latest-32-core
             platform: linux/amd64
-            cache-from: type=gha,scope=docker-amd64
-            cache-to: type=gha,mode=max,scope=docker-amd64
+          # arm64 builds on the native arm64 larger runner. A build of
+          # linux/arm64 on an x64 host uses emulation.
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-latest-32-arm-core
             platform: linux/arm64
-            cache-from: type=gha,scope=docker-arm64
-            cache-to: type=gha,mode=max,scope=docker-arm64
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Reject profile exports in the build context
+        run: python3 scripts/ci/check_profile_archive_boundary.py
 
       # Retry once on transient Docker Hub / buildkit pull failures
       # (connection reset, auth token timeout, rate limiting). The action
@@ -119,8 +126,11 @@ jobs:
           tags: ${{ env.IMAGE_NAME }}:test
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
-          cache-from: ${{ matrix.cache-from }}
-          cache-to: ${{ (github.event_name != 'pull_request') && matrix.cache-to || '' }}
+            HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
+          # Slim owns the scope; desktop is slim plus two RUN steps, so it reads
+          # and writes nothing — a 5.5 GB mode=max scope would blow the 10 GB cap.
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: ${{ (github.event_name != 'pull_request' && matrix.variant == 'slim') && format('type=gha,mode=max,scope=docker-{0}', matrix.arch) || '' }}
 
 
       # Run the docker-integration test suite against the freshly-built
@@ -169,7 +179,11 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
         run: |
-          scripts/run_tests.sh tests/docker/ --file-timeout 600
+          # Each of these tests drives a container, so the docker daemon sets
+          # the limit and not the processor. This caps the workers. The
+          # default from run_tests.sh is cpu_count*2, which starts 64
+          # containers together on the 32-core amd64 runner.
+          HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/ --file-timeout 600
 
   # ---------------------------------------------------------------------------
   # Rebuild and push each architecture only after the unprivileged build/test
@@ -182,22 +196,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        arch: [amd64, arm64]
+        variant: [slim, desktop]
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-latest-32-core
             platform: linux/amd64
-            cache-from: type=gha,scope=docker-amd64
-            cache-to: type=gha,mode=max,scope=docker-amd64
+          # Native arm64 for the same reason as the build matrix above.
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-latest-32-arm-core
             platform: linux/arm64
-            cache-from: type=gha,scope=docker-arm64
-            cache-to: type=gha,mode=max,scope=docker-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - name: Checkout trusted source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Reject profile exports in the build context
+        run: python3 scripts/ci/check_profile_archive_boundary.py
 
       # Retry once on transient Docker Hub / buildkit pull failures.
       # See build job for rationale; same pattern.
@@ -229,9 +245,10 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
+            HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: ${{ matrix.cache-from }}
-          cache-to: ${{ matrix.cache-to }}
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: ${{ matrix.variant == 'slim' && format('type=gha,mode=max,scope=docker-{0}', matrix.arch) || '' }}
 
       - name: Export digest
         run: |
@@ -242,7 +259,7 @@ jobs:
       - name: Upload digest artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: digest-${{ matrix.arch }}
+          name: digest-${{ matrix.variant }}-${{ matrix.arch }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -256,17 +273,30 @@ jobs:
   # On releases: tags :<release_tag_name>.
   # ---------------------------------------------------------------------------
   merge:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    # `needs` is the whole 4-leg matrix and a failed need skips the job, so a
+    # transient desktop push would take slim's :latest with it. Guard below.
+    if: ${{ !cancelled() && github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release') }}
     runs-on: ubuntu-latest
     needs: [publish]
     timeout-minutes: 10
     environment: container-publish
+    strategy:
+      fail-fast: false
+      matrix:
+        # One manifest list per variant. `slim` keeps the unsuffixed tags it has
+        # always had, so nothing that pulls :latest today changes; `desktop`
+        # publishes the same digests under a -desktop suffix.
+        include:
+          - variant: slim
+            suffix: ""
+          - variant: desktop
+            suffix: "-desktop"
     steps:
       - name: Download digests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: /tmp/digests
-          pattern: digest-*
+          pattern: digest-${{ matrix.variant }}-*
           merge-multiple: true
 
       # Retry once on transient Docker Hub / buildkit pull failures.
@@ -291,16 +321,25 @@ jobs:
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          SUFFIX: ${{ matrix.suffix }}
         run: |
           set -euo pipefail
+          # Without nullglob an empty dir yields the literal `*`: one bogus entry.
+          shopt -s nullglob
           args=()
           for digest_file in *; do
             args+=("${IMAGE_NAME}@sha256:${digest_file}")
           done
+          # One per arch in the publish matrix; a short set means a leg failed, and
+          # stitching it would publish a single-arch :latest. Keep in step with it.
+          if [ "${#args[@]}" -ne 2 ]; then
+            echo "::error::variant ${{ matrix.variant }}: want 2 digests, found ${#args[@]} (a publish leg failed)"
+            exit 1
+          fi
           if [ "${{ github.event_name }}" = "release" ]; then
-            tags=(-t "${IMAGE_NAME}:${RELEASE_TAG}")
+            tags=(-t "${IMAGE_NAME}:${RELEASE_TAG}${SUFFIX}")
           else
-            tags=(-t "${IMAGE_NAME}:main" -t "${IMAGE_NAME}:latest")
+            tags=(-t "${IMAGE_NAME}:main${SUFFIX}" -t "${IMAGE_NAME}:latest${SUFFIX}")
           fi
           # Retry: Docker Hub API + just-pushed digest eventual consistency
           # can transiently fail the create; the operation is idempotent.
@@ -320,9 +359,10 @@ jobs:
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          SUFFIX: ${{ matrix.suffix }}
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
-            docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}"
+            docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}${SUFFIX}"
           else
-            docker buildx imagetools inspect "${IMAGE_NAME}:main"
+            docker buildx imagetools inspect "${IMAGE_NAME}:main${SUFFIX}"
           fi

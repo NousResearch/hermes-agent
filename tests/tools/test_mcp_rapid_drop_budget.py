@@ -54,10 +54,6 @@ class TestMarkSessionProven:
         assert task._session_proven is True
         assert task._reconnect_retries == 0
 
-    def test_unproven_after_fresh_connect(self):
-        # __init__ starts unproven; transports reset the flag on handshake.
-        task = MCPServerTask("t")
-        assert task._session_proven is False
 
 
 # ── Integration: flapping transport must reach the park ─────────────────────

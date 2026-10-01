@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, hermes_home: str | None, active_profile: str | None,
-    argv: list[str] | None = None,
+    argv: list[str] | None = None, extra_env: dict[str, str] | None = None,
 ):
     """Run _apply_profile_override in isolation.
 
@@ -34,6 +34,7 @@ def _run_apply_profile_override(
 
     if active_profile and active_profile != "default":
         (hermes_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / active_profile / "config.yaml").write_text("{}\n")  # identity marker
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     if hermes_home is not None:
@@ -42,6 +43,19 @@ def _run_apply_profile_override(
         monkeypatch.delenv("HERMES_HOME", raising=False)
 
     monkeypatch.setattr(sys, "argv", argv or ["hermes", "gateway", "start"])
+
+    # Scrub supervisor markers the host environment may carry (systemd-run
+    # CI runners export INVOCATION_ID) so each test controls them explicitly.
+    for var in (
+        "HERMES_SUPERVISED_CHILD",
+        "HERMES_S6_SUPERVISED_CHILD",
+        "INVOCATION_ID",
+        "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    for key, value in (extra_env or {}).items():
+        monkeypatch.setenv(key, value)
 
     from hermes_cli.main import _apply_profile_override
     _apply_profile_override()
@@ -92,6 +106,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         user_home = tmp_path / "home" / "hermes"
         profile_dir = user_home / ".hermes" / "profiles" / "elias"
         profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "config.yaml").write_text("{}\n")  # identity marker: a bare dir does not resolve
         (root_home / ".hermes").mkdir(parents=True, exist_ok=True)
 
         monkeypatch.setattr(Path, "home", lambda: root_home)
@@ -104,11 +119,14 @@ class TestApplyProfileOverrideHermesHomeGuard:
 
         monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(user_home)))
 
-        from hermes_cli.main import _apply_profile_override
+        from hermes_cli.main import _apply_profile_override, _resolve_sudo_user_profile_env
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") == str(profile_dir)
         assert sys.argv == ["hermes", "gateway", "install", "--system"]
+        # Same identity gate as ``-p`` without sudo: a marker-less shell is not a profile.
+        (user_home / ".hermes" / "profiles" / "ghost" / "cron").mkdir(parents=True)
+        assert _resolve_sudo_user_profile_env("ghost") is None
 
 
 
@@ -149,8 +167,9 @@ class TestSupervisedChildIgnoresStickyProfile:
         hermes_root = tmp_path / ".hermes"
         hermes_root.mkdir(parents=True, exist_ok=True)
         (hermes_root / "active_profile").write_text("briefer")
-        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
-        (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
+        for name in ("briefer", "coder"):
+            (hermes_root / "profiles" / name).mkdir(parents=True, exist_ok=True)
+            (hermes_root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -164,3 +183,155 @@ class TestSupervisedChildIgnoresStickyProfile:
         assert result is not None
         assert result.endswith("coder")
 
+
+
+class TestGeneralizedSupervisorMarkers:
+    """Regression tests for issue #74872.
+
+    A systemd/launchd/Scheduled-Task supervised gateway launch pins its
+    profile identity via the unit's HERMES_HOME (root home for the default
+    profile). It must NEVER follow the sticky ``active_profile`` file —
+    otherwise the default-profile gateway silently assumes another profile's
+    identity (logs + Telegram bot token) and double-polls that profile's
+    token. Markers: HERMES_SUPERVISED_CHILD (generalized, exported by
+    generated units), INVOCATION_ID (systemd, gateway commands only), and
+    HERMES_GATEWAY_EXTERNAL_SUPERVISOR (explicit opt-in).
+    """
+
+    def _root_home(self, tmp_path):
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        return hermes_root
+
+    def test_supervised_child_marker_skips_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """HERMES_SUPERVISED_CHILD=1 + root HERMES_HOME must keep the
+        default profile's home even when active_profile names another
+        profile (the #74872 identity-assumption vector)."""
+        hermes_root = self._root_home(tmp_path)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="telegram_nick",
+            argv=["hermes", "gateway", "run"],
+            extra_env={"HERMES_SUPERVISED_CHILD": "1"},
+        )
+        assert result == str(hermes_root), (
+            f"supervised default gateway was redirected to {result!r}"
+        )
+
+    def test_systemd_invocation_id_skips_active_profile_for_gateway(
+        self, tmp_path, monkeypatch
+    ):
+        """INVOCATION_ID (systemd service child) must suppress the sticky
+        redirect for gateway commands — covers units installed before the
+        HERMES_SUPERVISED_CHILD marker existed."""
+        hermes_root = self._root_home(tmp_path)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="telegram_nick",
+            argv=["hermes", "gateway", "run"],
+            extra_env={"INVOCATION_ID": "deadbeef" * 4},
+        )
+        assert result == str(hermes_root)
+
+    def test_invocation_id_does_not_affect_non_gateway_commands(
+        self, tmp_path, monkeypatch
+    ):
+        """INVOCATION_ID leaks into every descendant of a systemd-launched
+        process (CI runners, user services). Non-gateway commands must keep
+        honoring the sticky active_profile."""
+        hermes_root = self._root_home(tmp_path)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+            argv=["hermes", "chat"],
+            extra_env={"INVOCATION_ID": "deadbeef" * 4},
+        )
+        assert result is not None
+        assert result.endswith("coder")
+
+    def test_external_supervisor_marker_skips_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_root = self._root_home(tmp_path)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="telegram_nick",
+            argv=["hermes", "gateway", "run"],
+            extra_env={"HERMES_GATEWAY_EXTERNAL_SUPERVISOR": "1"},
+        )
+        assert result == str(hermes_root)
+
+    def test_desktop_ssh_serve_child_skips_active_profile(self, tmp_path, monkeypatch):
+        """A Desktop-owned `serve --ssh-session-token-file` child names its profile explicitly
+        (or none for the root home); the remote host's sticky active_profile must not re-home
+        it, or Settings read one profile's config.yaml while the user edits another."""
+        hermes_root = self._root_home(tmp_path)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="telegram_nick",
+            argv=["hermes", "serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
+                  "--ssh-session-token-file", "/tmp/x/y.token"],
+        )
+        assert result == str(hermes_root)
+
+    def test_generated_systemd_unit_exports_supervised_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """The generated systemd unit must carry the marker so fresh installs
+        are protected without relying on the INVOCATION_ID heuristic."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        from hermes_cli.gateway import generate_systemd_unit
+
+        unit = generate_systemd_unit()
+        assert 'Environment="HERMES_SUPERVISED_CHILD=1"' in unit
+
+    def test_generated_launchd_plist_exports_supervised_marker(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        from hermes_cli.gateway import generate_launchd_plist
+
+        plist = generate_launchd_plist()
+        assert "<key>HERMES_SUPERVISED_CHILD</key>" in plist
+
+
+class TestS6ContainerGatewayRun:
+    """Inside the s6 image a bare ``gateway run`` (the image's CMD) redirects to the supervised
+    ``gateway-default`` slot. It must keep that root identity whatever ``active_profile`` says;
+    otherwise every container boot starts the named slot the reconciler registered down."""
+
+    def test_the_redirected_run_keeps_the_root_home_despite_the_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("hermes_cli.service_manager._s6_running", lambda: True)
+        root = tmp_path / ".hermes"
+        result = _run_apply_profile_override(
+            tmp_path, monkeypatch, hermes_home=str(root), active_profile="coder",
+            argv=["hermes", "gateway", "run"],
+        )
+        assert result == str(root)
+
+    def test_a_foreground_run_and_other_verbs_still_follow_the_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("hermes_cli.service_manager._s6_running", lambda: True)
+        root = tmp_path / ".hermes"
+        for argv in (["hermes", "gateway", "run", "--no-supervise"], ["hermes", "chat"]):
+            result = _run_apply_profile_override(
+                tmp_path, monkeypatch, hermes_home=str(root), active_profile="coder", argv=argv,
+            )
+            assert result == str(root / "profiles" / "coder"), argv

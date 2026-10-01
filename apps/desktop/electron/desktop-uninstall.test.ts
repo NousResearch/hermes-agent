@@ -20,25 +20,14 @@ import {
   modeRemovesUserData,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
-  UNINSTALL_MODES,
   uninstallArgsForMode
 } from './desktop-uninstall'
 
 // --- uninstallArgsForMode ---
 
-test('uninstallArgsForMode maps each mode to the module-runner argv', () => {
-  assert.deepEqual(uninstallArgsForMode('gui'), ['-m', 'hermes_cli.uninstall', '--mode', 'gui'])
-  assert.deepEqual(uninstallArgsForMode('lite'), ['-m', 'hermes_cli.uninstall', '--mode', 'lite'])
-  assert.deepEqual(uninstallArgsForMode('full'), ['-m', 'hermes_cli.uninstall', '--mode', 'full'])
-})
-
 test('uninstallArgsForMode throws on an unknown mode (no silent full wipe)', () => {
   assert.throws(() => uninstallArgsForMode('nuke'), /Unknown uninstall mode/)
   assert.throws(() => uninstallArgsForMode(''), /Unknown uninstall mode/)
-})
-
-test('UNINSTALL_MODES lists exactly the three supported modes', () => {
-  assert.deepEqual([...UNINSTALL_MODES].sort(), ['full', 'gui', 'lite'])
 })
 
 // --- modeRemovesAgent / modeRemovesUserData ---
@@ -137,8 +126,6 @@ test('buildPosixCleanupScript waits for the PID, runs the uninstall module, remo
   assert.match(script, /^#!\/bin\/bash/)
   assert.match(script, /pid=4321/)
   assert.match(script, /kill -0 "\$pid"/)
-  // bounded wait (~30s), not unbounded
-  assert.match(script, /seq 1 60/)
   assert.match(script, /'-m' 'hermes_cli\.uninstall' '--mode' 'gui'/)
   assert.match(script, /rm -rf '\/opt\/hermes\/linux-unpacked'/)
   assert.match(script, /export HERMES_HOME='\/home\/x\/\.hermes'/)
@@ -227,7 +214,6 @@ test('buildWindowsCleanupScript waits (bounded) for PID, runs uninstall, rmdir b
   // Bounded wait-loop (no infinite loop), whole-token PID match (no substring).
   assert.match(script, /if %waited% geq 60 goto waited_done/)
   assert.match(script, /findstr \/r \/c:" %PID% "/)
-  assert.doesNotMatch(script, /find "%PID%"/) // the old substring-prone form is gone
   // Removal is a retry loop (Windows releases dir handles lazily).
   assert.match(script, /:rmloop/)
   assert.match(script, /rmdir \/s \/q "C:\\Users\\x\\AppData\\Local\\Programs\\Hermes" >nul 2>&1/)

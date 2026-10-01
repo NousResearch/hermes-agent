@@ -24,7 +24,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcp.shared.auth import OAuthMetadata
+pytest.importorskip("mcp.shared.auth", reason="MCP SDK not installed")
+
+from mcp.shared.auth import OAuthMetadata  # noqa: E402
 
 from tools.mcp_oauth import HermesTokenStorage
 from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
@@ -108,7 +110,7 @@ class TestManagerOAuthProviderMetadata:
         provider = _manager_provider_with_context(storage, oauth_metadata=None)
 
         with patch.object(
-            _HERMES_PROVIDER_CLS.__bases__[0], "_initialize", new=AsyncMock()
+            _HERMES_PROVIDER_CLS.__bases__[-1], "_initialize", new=AsyncMock()
         ):
             asyncio.run(provider._initialize())
 
@@ -136,7 +138,7 @@ class TestManagerOAuthProviderMetadata:
         manager.invalidate_if_disk_changed = AsyncMock(return_value=False)
 
         with patch.object(
-            _HERMES_PROVIDER_CLS.__bases__[0],
+            _HERMES_PROVIDER_CLS.__bases__[-1],
             "async_auth_flow",
             new=fake_parent_flow,
         ), patch("tools.mcp_oauth_manager.get_manager", return_value=manager):

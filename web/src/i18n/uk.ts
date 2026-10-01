@@ -165,6 +165,10 @@ export const uk: Translations = {
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
     newChat: "Новий чат",
+    workspace: "робоча папка",
+    workspaceDefault: "За замовчуванням",
+    workspaceRescan: "Пересканувати репозиторії",
+    workspaceCustom: "Інший шлях…",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
     roles: {
@@ -325,6 +329,8 @@ export const uk: Translations = {
     disableRuntime: "Вимкнути",
     enableAfterInstall: "Увімкнути після встановлення",
     enableRuntime: "Увімкнути",
+    toggleTakesEffectAfterRestart:
+      "Збережено — перезапустіть шлюз, щоб застосувати зміну.",
     forceReinstall: "Примусово перевстановити (спершу видалити наявну теку)",
     headline:
       "Знаходьте, встановлюйте, вмикайте та оновлюйте плагіни Hermes (паритет з `hermes plugins`).",
@@ -470,6 +476,8 @@ export const uk: Translations = {
     copyCliCommand: "Скопіювати CLI-команду (для зовнішнього / резервного варіанту)",
     connect: "Підключити",
     sessionExpires: "Сесія завершиться через {time}",
+    sessionExpiredNoError:
+      "Час входу минув, не досягнувши провайдера. Зазвичай це означає, що сторінка входу зависла у відкритій вкладці (проблема на боці сервера) — завершіть вхід там, потім натисніть «Повторити». Якщо помилка повторюється, скористайтеся API-ключем або CLI.",
     initiatingLogin: "Запуск процесу входу…",
     exchangingCode: "Обмін коду на токени…",
     connectedClosing: "Підключено! Закриття…",

@@ -165,6 +165,10 @@ export const it: Translations = {
     failedToDeleteSelected: "Impossibile eliminare le sessioni selezionate",
     resumeInChat: "Riprendi nella chat",
     newChat: "Nuova chat",
+    workspace: "area di lavoro",
+    workspaceDefault: "Predefinito",
+    workspaceRescan: "Riesamina i repository",
+    workspaceCustom: "Altro percorso…",
     previousPage: "Pagina precedente",
     nextPage: "Pagina successiva",
     roles: {
@@ -324,6 +328,8 @@ export const it: Translations = {
     disableRuntime: "Disabilita",
     enableAfterInstall: "Abilita dopo l'installazione",
     enableRuntime: "Abilita",
+    toggleTakesEffectAfterRestart:
+      "Salvato: riavvia il gateway per applicare la modifica.",
     forceReinstall: "Forza reinstallazione (elimina prima la cartella esistente)",
     headline:
       "Scopri, installa, abilita e aggiorna i plugin Hermes (parità con `hermes plugins`).",
@@ -469,6 +475,8 @@ export const it: Translations = {
     copyCliCommand: "Copia comando CLI (per uso esterno / fallback)",
     connect: "Connetti",
     sessionExpires: "La sessione scade tra {time}",
+    sessionExpiredNoError:
+      "L'accesso è scaduto senza raggiungere il provider. Di solito significa che la pagina di accesso si è bloccata nella scheda aperta (problema lato server): completa l'accesso lì, poi fai clic su Riprova. Se continua a fallire, usa una chiave API o la CLI.",
     initiatingLogin: "Avvio del flusso di accesso…",
     exchangingCode: "Scambio del codice per i token…",
     connectedClosing: "Connesso! Chiusura…",

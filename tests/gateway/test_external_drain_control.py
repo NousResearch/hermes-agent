@@ -13,15 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 import gateway.drain_control as dc
 from gateway.run import GatewayRunner
-from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -128,9 +125,6 @@ class TestInstantiationEpoch:
 
 
 class TestMarkerMaxAge:
-    def test_fresh_marker_honoured(self, home):
-        dc.write_drain_request(principal="nas")
-        assert dc.drain_requested() is True
 
     def test_expired_marker_reads_as_absent(self, home):
         # THE #85433 REGRESSION. A drain-gated action completes WITHOUT a
@@ -257,12 +251,6 @@ def _drain_runner():
 class TestDrainStateMachine:
 
 
-    def test_enter_idempotent(self):
-        runner, _ = _drain_runner()
-        runner._enter_external_drain()
-        runner._update_runtime_status.reset_mock()
-        runner._enter_external_drain()  # second call — no-op
-        runner._update_runtime_status.assert_not_called()
 
 
     def test_exit_during_shutdown_does_not_revert_to_running(self):

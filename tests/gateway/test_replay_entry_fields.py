@@ -17,7 +17,7 @@ These tests pin the expanded whitelist so it doesn't regress.
 from __future__ import annotations
 
 
-from gateway.run import _ASSISTANT_REPLAY_FIELDS, _build_replay_entry
+from gateway.run import _build_replay_entry
 
 
 class TestBuildReplayEntry:
@@ -88,16 +88,6 @@ class TestBuildReplayEntry:
         assert entry["finish_reason"] == "stop"
 
 
-    def test_replay_fields_constant_is_stable(self):
-        """Pin the whitelist explicitly so accidental renames are caught."""
-        assert _ASSISTANT_REPLAY_FIELDS == (
-            "reasoning",
-            "reasoning_content",
-            "reasoning_details",
-            "codex_reasoning_items",
-            "codex_message_items",
-            "finish_reason",
-        )
 
     def test_unrelated_keys_are_ignored(self):
         """Random keys on the message must not leak into the replay entry."""
@@ -143,3 +133,19 @@ class TestGatewayHistoryBuildForwardsSidecar:
         agent_history, _obs = _build_gateway_agent_history(history)
         assert agent_history[0]["api_content"] == "hi\n\nCTX"
 
+
+
+def test_gateway_history_keeps_sidecar_only_assistant_row():
+    """A reasoning-only clean stop persists content="" with the promoted reply in ``api_content``
+    (agent/turn_final_response.py); the gateway rebuild must replay it, not drop it (user->user)."""
+    from gateway.run import _build_gateway_agent_history
+
+    history = [
+        {"role": "user", "content": "2+2?"},
+        {"role": "assistant", "content": "", "reasoning": "The answer is 4.", "api_content": "The answer is 4."},
+        {"role": "user", "content": "thanks"},
+    ]
+    agent_history, _ = _build_gateway_agent_history(history)
+    assert [m["role"] for m in agent_history] == ["user", "assistant", "user"]
+    assert agent_history[1]["api_content"] == "The answer is 4."
+    assert agent_history[1]["reasoning"] == "The answer is 4."

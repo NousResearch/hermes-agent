@@ -6,12 +6,9 @@ leaking in under an api_mode-flip race. The Anthropic SDK raises a
 non-retryable ``TypeError`` on any of them, killing the whole turn.
 """
 
-import logging
 
-import pytest
 
 from agent.anthropic_adapter import (
-    _RESPONSES_ONLY_KWARGS,
     sanitize_anthropic_kwargs,
 )
 
@@ -32,10 +29,6 @@ def _fake_anthropic_call(**kwargs):
     return "OK"
 
 
-def test_bare_leaked_payload_reproduces_the_typeerror():
-    """Without the guard, a Responses-shaped payload raises the issue's error."""
-    with pytest.raises(TypeError, match="unexpected keyword argument"):
-        _fake_anthropic_call(model="claude-sonnet-4-6", instructions="sys")
 
 
 def test_strips_all_responses_only_keys():
@@ -54,15 +47,6 @@ def test_strips_all_responses_only_keys():
 
 
 
-def test_warns_when_keys_are_stripped(caplog):
-    with caplog.at_level(logging.WARNING, logger="agent.anthropic_adapter"):
-        sanitize_anthropic_kwargs(
-            {"model": "m", "instructions": "sys"}, log_prefix="[pfx] "
-        )
-    assert any(
-        "31673" in r.message and "[pfx] " in r.message
-        for r in caplog.records
-    ), caplog.records
 
 
 

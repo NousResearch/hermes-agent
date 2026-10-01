@@ -9,6 +9,7 @@ import { SplitButton } from '@/components/ui/split-button'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { isSubmitEnter } from '@/lib/ime'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { notifyError } from '@/store/notifications'
 import {
@@ -85,7 +86,7 @@ export function ReviewShipBar() {
           disabled={generating}
           onChange={event => setMessage(event.target.value)}
           onKeyDown={event => {
-            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+            if ((event.metaKey || event.ctrlKey) && isSubmitEnter(event)) {
               event.preventDefault()
               runCommit(commitDefault)
             }

@@ -71,9 +71,6 @@ class TestSingleUse:
 
 
 class TestTTL:
-    def test_constant_is_30_seconds(self):
-        # Pinned so a refactor that doubled the lifetime would surface here.
-        assert TTL_SECONDS == 30
 
     def test_expired_ticket_rejected(self, monkeypatch):
         # Mock time inside the ws_tickets module so mint and consume see

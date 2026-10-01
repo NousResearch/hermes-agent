@@ -94,6 +94,59 @@ def test_rejects_invalid_manifests(tmp_path: Path, manifest: object) -> None:
         load_agent_plugin(tmp_path, tmp_path / "data")
 
 
+def test_server_declaration_joins_mcp_and_preserves_liveness(tmp_path: Path) -> None:
+    app = tmp_path / "example-app"
+    app.write_text("", encoding="utf-8")
+    _write_json(
+        tmp_path / "plugin.json",
+        _manifest(extensions={
+            "com.nousresearch.hermes": {"servers": {"worker": {
+                "app": {"darwin": {"presence": "executable", "location": str(app)}},
+                "requires": {"app": True},
+                "liveness": {"kind": "static"},
+            }}}
+        }),
+    )
+    _write_json(
+        tmp_path / "mcp.json",
+        {"$schema": MCP_SCHEMA_V1, "mcpServers": {"worker": {"type": "stdio", "command": "python"}}},
+    )
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    server = package.server_declarations["worker"]
+    assert server.declaration.requires_app
+    assert server.liveness == {"kind": "static"}
+
+
+def test_orphan_server_declaration_disables_package(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "plugin.json",
+        _manifest(extensions={
+            "com.nousresearch.hermes": {"servers": {"orphan": {"requires": {"app": False}}}}
+        }),
+    )
+
+    with pytest.raises(AgentPluginError, match="orphan.*no matching mcp.json server"):
+        load_agent_plugin(tmp_path, tmp_path / "data")
+
+
+def test_liveness_without_declaration_disables_package(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "plugin.json",
+        _manifest(extensions={
+            "com.nousresearch.hermes": {"servers": {"worker": {"liveness": {"kind": "static"}}}}
+        }),
+    )
+    _write_json(
+        tmp_path / "mcp.json",
+        {"$schema": MCP_SCHEMA_V1, "mcpServers": {"worker": {"type": "stdio", "command": "python"}}},
+    )
+
+    with pytest.raises(AgentPluginError, match="liveness without app or requires"):
+        load_agent_plugin(tmp_path, tmp_path / "data")
+
+
 def test_unknown_fields_and_non_object_extensions_are_nonfatal(tmp_path: Path) -> None:
     _write_json(
         tmp_path / "plugin.json",

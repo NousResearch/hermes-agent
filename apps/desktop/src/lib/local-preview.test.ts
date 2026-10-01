@@ -9,12 +9,31 @@ vi.mock('@/lib/desktop-fs', () => ({
 }))
 
 import {
+  isLoopbackPreviewUrl,
   localPreviewTarget,
   normalizeOrLocalPreviewTarget,
   openPreviewTargetInBrowser,
   remoteHtmlPreviewDocument,
   validatedRemoteHtmlDataUrl
 } from './local-preview'
+
+describe('isLoopbackPreviewUrl', () => {
+  it.each(['http://localhost:5173', 'https://127.0.0.2:8443/app', 'http://0.0.0.0:3000', 'http://[::1]:4173'])(
+    'accepts loopback origin %s',
+    url => {
+      expect(isLoopbackPreviewUrl(url)).toBe(true)
+    }
+  )
+
+  // mDNS and LAN names are other devices (homeassistant.local), not the dev
+  // server the agent is building.
+  it.each(['https://x.com', 'https://localhost.example.com', 'http://homeassistant.local:8123', 'not a URL'])(
+    'rejects non-loopback or malformed origin %s',
+    url => {
+      expect(isLoopbackPreviewUrl(url)).toBe(false)
+    }
+  )
+})
 
 const remoteTarget = {
   kind: 'file' as const,
@@ -127,6 +146,19 @@ describe('remote HTML previews', () => {
 
   it('preserves backslashes in POSIX local file paths', () => {
     expect(localPreviewTarget('/tmp/report\\draft.html')?.url).toBe('file:///tmp/report%5Cdraft.html')
+  })
+
+  // #85132: a Windows absolute path is absolute; joining it onto cwd made
+  // `/repo/C:\\Users\\...` which no filesystem has.
+  it.each(['C:\\Users\\me\\report.html', 'C:/Users/me/report.html', '\\\\server\\share\\report.html'])(
+    'treats Windows absolute path %s as absolute instead of joining it onto cwd',
+    raw => {
+      expect(localPreviewTarget(raw, '/repo')).toMatchObject({ label: 'report.html', path: raw, previewKind: 'html' })
+    }
+  )
+
+  it('still joins relative paths onto cwd', () => {
+    expect(localPreviewTarget('out/report.html', '/repo')?.path).toBe('/repo/out/report.html')
   })
 
   it('preserves POSIX double-slash file paths', () => {

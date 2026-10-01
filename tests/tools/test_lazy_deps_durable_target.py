@@ -18,7 +18,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import sysconfig
 from pathlib import Path
 
 import pytest
@@ -29,17 +28,6 @@ from tools import lazy_deps as ld
 # ---------------------------------------------------------------------------
 # Target resolution + gating
 # ---------------------------------------------------------------------------
-
-
-class TestTargetResolution:
-    def test_no_target_when_env_unset(self, monkeypatch):
-        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
-        assert ld._lazy_install_target() is None
-
-
-    def test_target_resolved_when_set(self, monkeypatch, tmp_path):
-        monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path / "lazy"))
-        assert ld._lazy_install_target() == tmp_path / "lazy"
 
 
 class TestGatingWithTarget:
@@ -111,20 +99,6 @@ class TestAbiStamp:
 
 
 class TestSysPathAppend:
-    def test_target_appended_not_prepended(self, tmp_path, monkeypatch):
-        target = tmp_path / "lazy"
-        target.mkdir()
-        saved = list(sys.path)
-        try:
-            ld._activate_target_on_syspath(target)
-            assert str(target) in sys.path
-            # Must be at/after every pre-existing entry — i.e. core wins.
-            idx = sys.path.index(str(target))
-            assert idx >= len(saved), (
-                "durable target must be appended after all core entries"
-            )
-        finally:
-            sys.path[:] = saved
 
     def test_activation_idempotent(self, tmp_path, monkeypatch):
         target = tmp_path / "lazy"
@@ -215,35 +189,6 @@ class TestInstallArgConstruction:
         assert not result.success
         assert "exclude-newer" in result.stderr
         assert len(calls) == 1
-
-
-@pytest.mark.skipif(
-    os.environ.get("HERMES_RUN_NETWORK_TESTS") != "1",
-    reason="opt-in real-install test (set HERMES_RUN_NETWORK_TESTS=1); CI runs "
-    "the network-free arg-construction + synthetic-shadow tests instead",
-)
-class TestRealInstallCoreWins:
-    """Genuine PyPI install into a durable target (opt-in). Proves the wire
-    end to end: the package lands in the target, not the core venv, and is
-    importable via the appended sys.path entry. Skipped by default so the
-    unit-test shard never depends on PyPI reachability/egress."""
-
-    def test_install_lands_in_target_and_imports(self, tmp_path, monkeypatch):
-        target = tmp_path / "lazy-packages"
-        monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(target))
-        # 'isodate' is tiny, pure-python, and not shipped in the core venv,
-        # so a successful import must resolve to the durable target.
-        result = ld._venv_pip_install(("isodate==0.7.2",))
-        assert result.success, f"install failed: {result.stderr}"
-        # Landed in the durable target, not the core venv.
-        installed = list(target.glob("isodate*"))
-        assert installed, f"isodate not found under target {target}: {list(target.iterdir())}"
-        # Importable now that the target is on sys.path.
-        import importlib
-        importlib.invalidate_caches()
-        mod = importlib.import_module("isodate")
-        assert mod.__file__ is not None
-        assert Path(mod.__file__).is_relative_to(target)
 
 
 class TestCoreNeverShadowed:

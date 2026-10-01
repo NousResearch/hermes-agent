@@ -1,0 +1,59 @@
+@keyframes intro-caret {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  56%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes intro-dot {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes intro-float-a {
+  from {
+    transform: translateY(-5px);
+  }
+  to {
+    transform: translateY(6px);
+  }
+}
+@keyframes intro-float-b {
+  from {
+    transform: translateY(4px);
+  }
+  to {
+    transform: translateY(-7px);
+  }
+}
+@keyframes intro-float-c {
+  from {
+    transform: translateY(-3px);
+  }
+  to {
+    transform: translateY(5px);
+  }
+}
+@keyframes intro-hover-a {
+  from {
+    translate: 0 -4px;
+  }
+  to {
+    translate: 0 5px;
+  }
+}
+@keyframes intro-hover-b {
+  from {
+    translate: 0 4px;
+  }
+  to {
+    translate: 0 -6px;
+  }
+}

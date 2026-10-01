@@ -5,6 +5,7 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
+import { setRpcErrorLogSink } from './app/userMessages.js'
 import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
@@ -50,6 +51,8 @@ if (TERMUX_TUI_MODE) {
 
 const gw = new GatewayClient()
 
+// describeRpcError replaces raw wire errors with plain copy; keep the original in /logs.
+setRpcErrorLogSink(line => gw.recordLog(line))
 gw.start()
 
 const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>

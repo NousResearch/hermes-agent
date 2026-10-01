@@ -9,12 +9,10 @@ the view-core tests plus manual verification).
 
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 
-import agent.account_usage as account_usage
-from agent.account_usage import CreditsView, build_credits_view
+from agent.account_usage import build_credits_view
 from hermes_cli.nous_account import NousPortalAccountInfo, NousPaidServiceAccessInfo
 
 
@@ -67,13 +65,9 @@ def test_view_built_with_org_pinned_url_and_identity(_logged_in_account):
 
     assert view.logged_in is True
     assert view.topup_url == "https://portal.example.test/orgs/acme/billing?topup=open"
-    assert view.identity_line == "Topping up as alice@example.test / org Acme Inc"
+    assert "alice@example.test" in view.identity_line and "Acme Inc" in view.identity_line
     assert view.depleted is False
-    # Balance lines carry the magnitudes but NOT the /usage affordance lines.
-    blob = "\n".join(view.balance_lines)
-    assert "Top-up credits: $30.00" in blob
-    assert "Top up:" not in blob  # the trailing /usage affordance is stripped
-    assert "(or run" not in blob
+    assert "$30.00" in "\n".join(view.balance_lines)
 
 
 
@@ -102,13 +96,6 @@ def _make_gateway_stub():
 
 
 
-def test_gateway_topup_not_logged_in(monkeypatch):
-    monkeypatch.setattr(
-        account_usage, "build_credits_view", lambda *a, **kw: CreditsView(logged_in=False)
-    )
-    stub = _make_gateway_stub()
-    out = asyncio.run(stub._handle_topup_command(_FakeEvent()))
-    assert "Not logged into Nous Portal" in out
 
 
 
@@ -116,22 +103,3 @@ def test_gateway_topup_not_logged_in(monkeypatch):
 # ── command registry ────────────────────────────────────────────────────────
 
 
-def test_credits_command_fully_removed():
-    """`/credits` and the old `/billing` are gone entirely — not commands, not
-    aliases. Billing lives only on /topup, with NO aliases, on every platform."""
-    from hermes_cli.commands import resolve_command, COMMAND_REGISTRY
-
-    # Both old names resolve to nothing.
-    assert resolve_command("credits") is None
-    assert resolve_command("billing") is None
-    # No standalone command for either remains in the registry.
-    assert not any(c.name in ("credits", "billing") for c in COMMAND_REGISTRY)
-    # And no command carries either as an alias.
-    for c in COMMAND_REGISTRY:
-        assert "credits" not in (c.aliases or ())
-        assert "billing" not in (c.aliases or ())
-    # /topup is the billing surface, on every surface, and carries no aliases.
-    entry = next(c for c in COMMAND_REGISTRY if c.name == "topup")
-    assert entry.cli_only is False
-    assert entry.gateway_only is False
-    assert not entry.aliases

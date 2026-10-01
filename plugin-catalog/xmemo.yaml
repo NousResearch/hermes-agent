@@ -1,0 +1,22 @@
+name: xmemo
+repo: https://github.com/yonro/hermes-xmemo-plugin
+sha: 637fc30dfe746901cd8ba3e22aed2057cf7ca6b3
+subdir: src/hermes_xmemo/xmemo
+description: >-
+  Native XMemo memory provider for Hermes Agent — durable, identity-aware cross-session memory with semantic search.
+  Disclosure — cloud memory provider: sends each user prompt (for recall), model-written memories and mirrored
+  built-in Hermes memory writes, plus a stable install ID, to xmemo.dev (Yonro Co., Ltd.); reuses the xmemo login
+  token from ~/.config/xmemo if present.
+maintainer: yonro
+tier: community
+category: memory
+requires_hermes: '>=0.19'
+docs_url: https://github.com/yonro/hermes-xmemo-plugin#readme
+version: '1.1.2'
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - XMEMO_KEY

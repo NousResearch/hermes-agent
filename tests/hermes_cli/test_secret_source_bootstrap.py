@@ -42,7 +42,7 @@ def test_refresh_secret_sources_noop_without_plugin_sources(monkeypatch):
     monkeypatch.setattr(reg, "list_plugin_sources", lambda: [])
     monkeypatch.setattr(
         "hermes_cli.env_loader.reset_secret_source_cache",
-        lambda: called.__setitem__("reset", called["reset"] + 1),
+        lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.load_hermes_dotenv",
@@ -68,7 +68,7 @@ def test_refresh_secret_sources_noop_when_only_builtins(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.reset_secret_source_cache",
-        lambda: called.__setitem__("reset", called["reset"] + 1),
+        lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.load_hermes_dotenv",
@@ -92,7 +92,7 @@ def test_refresh_secret_sources_repulls_when_plugin_enabled(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.reset_secret_source_cache",
-        lambda: called.__setitem__("reset", called["reset"] + 1),
+        lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.load_hermes_dotenv",
@@ -120,7 +120,7 @@ def test_refresh_respects_custom_is_enabled(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.reset_secret_source_cache",
-        lambda: called.__setitem__("reset", called["reset"] + 1),
+        lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.load_hermes_dotenv",
@@ -147,7 +147,7 @@ def test_refresh_skips_custom_source_when_not_activated(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.reset_secret_source_cache",
-        lambda: called.__setitem__("reset", called["reset"] + 1),
+        lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.load_hermes_dotenv",
@@ -175,7 +175,7 @@ def test_refresh_skips_source_whose_is_enabled_raises(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.reset_secret_source_cache",
-        lambda: called.__setitem__("reset", called["reset"] + 1),
+        lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
         "hermes_cli.env_loader.load_hermes_dotenv",
@@ -186,17 +186,6 @@ def test_refresh_skips_source_whose_is_enabled_raises(monkeypatch):
     assert called == {"reset": 0, "load": 0}
 
 
-def test_discover_and_load_invokes_refresh(monkeypatch):
-    mgr = PluginManager()
-    hits = {"n": 0}
-    monkeypatch.setattr(PluginManager, "_discover_and_load_inner", lambda self: None)
-    monkeypatch.setattr(
-        PluginManager,
-        "_refresh_secret_sources_after_discovery",
-        lambda self: hits.__setitem__("n", hits["n"] + 1),
-    )
-    mgr.discover_and_load()
-    assert hits["n"] == 1
 
 
 def test_real_plugin_source_discovery_applies_dotenv(monkeypatch, tmp_path):

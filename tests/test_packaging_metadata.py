@@ -1,4 +1,3 @@
-import ast
 import re
 import tomllib
 from pathlib import Path
@@ -46,14 +45,6 @@ def test_packaging_declared_as_core_dependency():
     )
 
 
-def test_faster_whisper_is_not_a_base_dependency():
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    deps = data["project"]["dependencies"]
-
-    assert not any(dep.startswith("faster-whisper") for dep in deps)
-
-    voice_extra = data["project"]["optional-dependencies"]["voice"]
-    assert any(dep.startswith("faster-whisper") for dep in voice_extra)
 
 
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
@@ -209,31 +200,6 @@ def _pyproject_pinned_specs():
     return specs
 
 
-def _lazy_deps_pinned_specs():
-    """Extract every string literal inside the LAZY_DEPS dict via AST.
-
-    Parsing rather than importing keeps this test free of
-    tools/lazy_deps.py's runtime imports and side effects.
-    """
-    src = (REPO_ROOT / "tools" / "lazy_deps.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    specs: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        else:
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "LAZY_DEPS" for t in targets):
-            continue
-        for sub in ast.walk(node.value):
-            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-                specs.append(sub.value)
-    assert specs, "could not extract specs from LAZY_DEPS — the AST parser drifted"
-    return specs
-
-
 def test_pyproject_pins_are_internally_consistent():
     """No package may be exact-pinned to two different versions in pyproject.
 
@@ -286,38 +252,69 @@ def test_build_system_requires_exempt_from_exclude_newer():
     )
 
 
+def test_exact_pinned_deps_exempt_from_exclude_newer():
+    """Regression guard for the release-day brick class.
+
+    Every release exact-pins at least one dependency to a version published
+    days before the release (v0.20.6: snowballstemmer==3.1.1,
+    psutil==7.2.2). For two weeks after release the relative
+    ``exclude-newer`` cutoff filters those versions out, so any venv that
+    predates the release cannot resolve the new pins at all ("no version of
+    snowballstemmer==3.1.1" — observed 2026-08-29 updating three production
+    installs v0.20.0 -> v0.20.6, one Termux and two Linux servers). The pin
+    bump WAS the review, so the cutoff adds zero float protection for an
+    exact pin and can only brick.
+
+    Every exact-pinned package in [project].dependencies and
+    optional-dependencies must therefore appear in the
+    ``exclude-newer-package`` whitelist (set to ``false``) for as long as a
+    relative ``exclude-newer`` cutoff is configured.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data.get("tool", {}).get("uv", {})
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+    whitelist = {
+        _canonical(name)
+        for name, enabled in uv_cfg.get("exclude-newer-package", {}).items()
+        if enabled is False
+    }
+    missing = sorted(set(_pins_from_specs(_pyproject_pinned_specs())) - whitelist)
+    assert not missing, (
+        "exact-pinned packages are subject to the exclude-newer cutoff but "
+        "missing from the [tool.uv].exclude-newer-package whitelist — "
+        "release-day updates brick while the pinned version is younger than "
+        f"the cutoff: {missing}"
+    )
+
+
+
+def test_build_system_requires_wheel_for_isolated_builds():
+    """Regression for #96488 — PEP 517 isolation must include wheel.
+
+    ``setuptools.build_meta`` and our ``setup.py`` bdist_wheel guard import
+    ``wheel`` during editable builds. uv's build-isolation sandbox is seeded
+    only from ``[build-system].requires``; without ``wheel`` there, Windows
+    ``uv sync`` / ``uv pip install -e .`` fails with
+    ``ModuleNotFoundError: No module named 'wheel.cli'`` even when the real
+    venv already has wheel installed.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    names = {
+        _distribution_name(req)
+        for req in data.get("build-system", {}).get("requires", [])
+    }
+    assert "wheel" in names, (
+        "wheel must be listed in [build-system].requires so PEP 517 isolated "
+        "builds can import wheel.cli / bdist_wheel — see #96488"
+    )
 
 
 def _lazy_deps_by_feature():
-    """Parse LAZY_DEPS into {feature_name: [spec, ...]} via AST.
+    """{feature_name: [spec, ...]} from the runtime LAZY_DEPS allowlist."""
+    from tools.lazy_deps import LAZY_DEPS
 
-    Same parse-don't-import rationale as _lazy_deps_pinned_specs, but keeps the
-    feature -> specs grouping so per-feature coverage can be asserted.
-    """
-    src = (REPO_ROOT / "tools" / "lazy_deps.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        targets = (
-            node.targets if isinstance(node, ast.Assign)
-            else [node.target] if isinstance(node, ast.AnnAssign)
-            else []
-        )
-        if not any(isinstance(t, ast.Name) and t.id == "LAZY_DEPS" for t in targets):
-            continue
-        if not isinstance(node.value, ast.Dict):
-            continue
-        by_feature: dict[str, list[str]] = {}
-        for key, value in zip(node.value.keys, node.value.values):
-            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
-                continue
-            by_feature[key.value] = [
-                sub.value
-                for sub in ast.walk(value)
-                if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
-            ]
-        assert by_feature, "could not extract features from LAZY_DEPS — AST parser drifted"
-        return by_feature
-    raise AssertionError("LAZY_DEPS dict literal not found in tools/lazy_deps.py")
+    return {feature: list(specs) for feature, specs in LAZY_DEPS.items()}
 
 
 # Security-critical packages whose patched floor must be enforced on EVERY
@@ -378,3 +375,41 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
     )
+
+
+def _extra_closure(extras: dict, name: str) -> set:
+    """Names of every extra reachable from ``hermes-agent[name]`` self-references."""
+    seen, todo = set(), [name]
+    while todo:
+        cur = todo.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        for spec in extras.get(cur, ()):
+            if _distribution_name(spec) == "hermes-agent":
+                todo.extend(spec.split("[", 1)[1].split("]", 1)[0].split(","))
+    return seen
+
+
+def test_termux_install_paths_never_request_uvloop():
+    """uvloop's bundled libuv does not configure on Android/Termux (#116016).
+
+    Core must not request ``uvicorn[standard]`` (that extra pulls uvloop on
+    every non-Windows CPython), and neither Termux profile may reach the
+    opt-in ``uvloop`` extra through any chain of ``hermes-agent[...]``
+    self-references. The lazy dashboard install mirrors the same rule.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    extras = project["optional-dependencies"]
+    for group in (project["dependencies"], extras["web"], LAZY_DEPS["tool.dashboard"]):
+        for spec in group:
+            assert _distribution_name(spec) != "uvloop", spec
+            assert not (_distribution_name(spec) == "uvicorn" and "[" in spec), (
+                f"{spec!r} requests a uvicorn extra; uvicorn[standard] drags uvloop onto Termux"
+            )
+    for profile in ("termux", "termux-all"):
+        assert "uvloop" not in _extra_closure(extras, profile), profile
+
+

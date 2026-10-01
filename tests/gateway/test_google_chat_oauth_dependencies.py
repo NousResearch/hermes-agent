@@ -27,11 +27,8 @@ def test_stale_google_transitives_are_reported_missing(monkeypatch):
 
     monkeypatch.setattr(oauth, "_distribution_version", fake_version)
 
-    assert oauth._missing_required_packages() == [
-        "google-auth==2.55.1",
-        "httplib2==0.32.0",
-        "pyasn1==0.6.4",
-    ]
+    stale = {spec.split("==")[0] for spec in oauth._missing_required_packages()}
+    assert {"google-auth", "httplib2", "pyasn1"} <= stale
 
 
 def test_installer_repairs_stale_transitives(monkeypatch):
@@ -47,17 +44,33 @@ def test_installer_repairs_stale_transitives(monkeypatch):
     )
     monkeypatch.setattr(oauth, "_missing_required_packages", lambda: next(states))
     calls = []
+    pip_calls = []
+
+    def fake_ensure(feature, prompt=False):
+        calls.append((feature, prompt))
+
+    monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
     monkeypatch.setattr(
         "hermes_cli.tools_config._pip_install",
-        lambda argv: calls.append(argv) or SimpleNamespace(returncode=0, stderr=""),
+        lambda argv: pip_calls.append(argv) or SimpleNamespace(returncode=0, stderr=""),
     )
 
     assert oauth.install_deps() is True
-    assert calls == [
-        [
-            "--quiet",
-            "google-auth==2.55.1",
-            "httplib2==0.32.0",
-            "pyasn1==0.6.4",
-        ]
-    ]
+    assert calls == [("platform.google_chat", False)]
+    assert pip_calls == []
+
+
+def test_ensure_deps_surfaces_install_reason(monkeypatch):
+    """A blocked lazy install must reach the registry's log with its reason, not a bare False."""
+    from tools.lazy_deps import FeatureUnavailable
+    import pytest
+    from plugins.platforms.google_chat import adapter
+
+    monkeypatch.setattr(adapter, "GOOGLE_CHAT_AVAILABLE", False)
+
+    def blocked(feature, prompt=False):
+        raise FeatureUnavailable(feature, ("google-cloud-pubsub==2.39.0",), "lazy install target /x is not writable")
+
+    monkeypatch.setattr("tools.lazy_deps.ensure", blocked)
+    with pytest.raises(FeatureUnavailable, match="not writable"):
+        adapter.ensure_google_chat_deps()

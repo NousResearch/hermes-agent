@@ -210,3 +210,66 @@
     animation: none;
   }
 }
+
+/* THE ACCENT-LIT POPOVER (`accent: true` on a step).
+
+   For the one moment in a run that is worth more than a step — right now, the
+   signpost that lands with the handoff. It has to read as different from the
+   four steps that came before it without becoming a second visual language, so
+   it is the SAME travelling arc the kanban cards use for live agent work
+   (plugins/kanban/kanban.css), re-tuned for this radius: a conic gradient
+   rotating behind the popover, masked down to the border band so only a ring
+   of it shows and the glass body underneath is untouched.
+
+   Slower than the kanban arc on purpose. That one reports work in progress and
+   wants to catch the eye across a board; this one is being read from a foot
+   away and only needs to say "this one matters". */
+
+@property --tour-arc-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+/* The hairline stays put and the arc rides ON it (inset -1px lands the ring
+   exactly on the border line). Dropping the border for the ring instead left
+   three quarters of the popover with no edge at all, which read as LESS
+   defined than an ordinary step — the opposite of the point. */
+.driver-popover.tour-pop-accent::before {
+  animation: tour-arc-spin 4.5s linear infinite;
+  background: conic-gradient(
+    from var(--tour-arc-angle),
+    transparent 0deg,
+    var(--ui-accent-secondary) 70deg,
+    transparent 150deg
+  );
+  border-radius: inherit;
+  content: '';
+  inset: -1px;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  /* Arc thickness. Sits on the hairline the border above gave up. */
+  padding: 1.5px;
+  pointer-events: none;
+  position: absolute;
+}
+
+@keyframes tour-arc-spin {
+  to {
+    --tour-arc-angle: 360deg;
+  }
+}
+
+/* Still lit, no travel — the ring reads as emphasis on its own. */
+@media (prefers-reduced-motion: reduce) {
+  .driver-popover.tour-pop-accent::before {
+    animation: none;
+    background: var(--ui-accent-secondary);
+  }
+}

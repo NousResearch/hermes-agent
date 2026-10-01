@@ -107,7 +107,7 @@ def test_environment_creation_import_error_redacts_exception_text(monkeypatch):
     def fail_create_environment(**kwargs):
         raise ImportError(f"backend import failed with {SECRET}")
 
-    monkeypatch.setattr(terminal_tool, "_create_environment", fail_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fail_create_environment)
 
     result = json.loads(terminal_tool.terminal_tool(command="echo ok"))
 

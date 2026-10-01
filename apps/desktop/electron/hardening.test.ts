@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 
 import { test } from 'vitest'
 
@@ -14,10 +14,12 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
+  homeRelativeAttachmentCandidates,
   readFileDataUrlForIpc,
   resolveDirectoryForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
+  resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   SAFE_STORAGE_ENCODING,
@@ -82,11 +84,6 @@ test('clampDataUrlReadMaxMb defaults and bounds the attach size preference', () 
   assert.equal(clampDataUrlReadMaxMb(256), 256)
   assert.equal(clampDataUrlReadMaxMb(99999), 4096)
   assert.equal(dataUrlReadMaxBytesFromMb(16), 16 * 1024 * 1024)
-})
-
-test('attachment upload cap is bounded above the preview default', () => {
-  assert.equal(ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES, 256 * 1024 * 1024)
-  assert.ok(ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES > dataUrlReadMaxBytesFromMb(DATA_URL_READ_DEFAULT_MAX_MB))
 })
 
 test('attachment data URL helper reads bytes above the preview default without changing that limit', async () => {
@@ -379,6 +376,66 @@ test('resolvePersistedRemoteToken keeps the existing token when no new token is 
     existingToken
   )
   assert.equal(called, false, 'an empty incoming token must not re-encrypt anything')
+})
+
+test('resolveRemoteTokenPlainText stays silent in the keychain-opt-out default', () => {
+  // #117269: with encryption opted out (the default), plain text is the CHOSEN
+  // mode and probeSecureTokenStorage reports availability on purpose — every
+  // saved token is plain here, so warning off the encoding alone would fire for
+  // every default user.
+  assert.equal(
+    resolveRemoteTokenPlainText({
+      envOverride: false,
+      token: { encoding: 'plain', value: 'token' },
+      secureTokenStorage: true
+    }),
+    false
+  )
+})
+
+test('resolveRemoteTokenPlainText warns only when the token is plain and the machine cannot secure it', () => {
+  // The genuine degraded state the banner is for: the keyring has gone away
+  // (secureTokenStorage false) while a plain token sits on disk.
+  assert.equal(
+    resolveRemoteTokenPlainText({
+      envOverride: false,
+      token: { encoding: 'plain', value: 'token' },
+      secureTokenStorage: false
+    }),
+    true
+  )
+
+  // An encrypted token never warns, whatever availability reports.
+  for (const secureTokenStorage of [true, false]) {
+    assert.equal(
+      resolveRemoteTokenPlainText({
+        envOverride: false,
+        token: { encoding: 'safeStorage', value: 'blob' },
+        secureTokenStorage
+      }),
+      false
+    )
+  }
+
+  // A missing token, or an absent availability signal, never manufactures a
+  // warning — the strict `=== false` match.
+  assert.equal(resolveRemoteTokenPlainText({ envOverride: false, token: undefined, secureTokenStorage: false }), false)
+  assert.equal(
+    resolveRemoteTokenPlainText({ envOverride: false, token: { encoding: 'plain' }, secureTokenStorage: undefined }),
+    false
+  )
+  assert.equal(resolveRemoteTokenPlainText({}), false)
+
+  // The env override supplies its token from the environment, never the saved
+  // block, so a plain stored blob must not warn while the override is active.
+  assert.equal(
+    resolveRemoteTokenPlainText({
+      envOverride: true,
+      token: { encoding: 'plain', value: 'token' },
+      secureTokenStorage: false
+    }),
+    false
+  )
 })
 
 test('writeSecretFileAtomic does not inherit loose bits from a stale temp file', () => {
@@ -910,110 +967,59 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () 
   }
 })
 
-// main.ts has no module.exports, so the wiring of the extracted keyring-less
-// helpers into the main process follows the repo's source-assertion pattern
-// (see windows-hermes-resolution.test.ts). These pin the propagation the PR
-// reviewer flagged as untested: the connection-config IPC path forwarding
-// allowPlainTextToken through resolvePersistedRemoteToken, and the whenReady
-// --password-store=basic startup branch.
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
+// ---------------------------------------------------------------------------
+// homeRelativeAttachmentCandidates (#115609)
+// ---------------------------------------------------------------------------
 
-function readMain() {
-  return fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
-}
-
-test('registry JSON helpers retain native OAuth bearer authentication', () => {
-  const source = readMain()
-  const postStart = source.indexOf('async function postJsonForBackend(')
-  const fetchStart = source.indexOf('async function fetchJsonForBackend(', postStart)
-  const helpers = source.slice(postStart, fetchStart)
-
-  assert.notEqual(postStart, -1)
-  assert.notEqual(fetchStart, -1)
-  assert.match(
-    helpers,
-    /return fetchJsonForBackend\(descriptor, path, \{ \.\.\.opts, body: body \?\? \{\}, method: 'POST' \}\)/
+test('homeRelativeAttachmentCandidates tries the home dir and the HERMES_HOME attachments dir', () => {
+  const candidates = homeRelativeAttachmentCandidates(
+    'AppData/Local/hermes/attachments/foo.xlsx',
+    '/Users/alice',
+    '/Users/alice/AppData/Local/hermes'
   )
-  assert.match(helpers, /return fetchJsonForBackend\(descriptor, path, opts\)/)
-  assert.doesNotMatch(helpers, /fetchJsonViaOauthSession/)
+
+  assert.deepEqual(candidates, [
+    path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'),
+    path.join('/Users/alice/AppData/Local/hermes', 'attachments', 'foo.xlsx')
+  ])
 })
 
-test('coerceDesktopConnectionConfig routes token persistence through resolvePersistedRemoteToken', () => {
-  const source = readMain()
-  const fnStart = source.indexOf('function coerceDesktopConnectionConfig(')
-  assert.notEqual(fnStart, -1, 'coerceDesktopConnectionConfig must exist in main.ts')
-  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
-  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+test('homeRelativeAttachmentCandidates normalizes Windows backslashes before joining', () => {
+  const candidates = homeRelativeAttachmentCandidates(
+    'AppData\\Local\\hermes\\attachments\\foo.xlsx',
+    '/Users/alice',
+    '/Users/alice/.hermes'
+  )
 
-  assert.match(
-    body,
-    /const nextToken = resolvePersistedRemoteToken\(\{/,
-    'the persist decision must go through the shared hardening helper'
-  )
-  // The opt-in must be forwarded RAW (no `=== true` at the call site): the
-  // helper owns the strict coercion so it is asserted in exactly one place.
-  assert.match(
-    body,
-    /allowPlainText: input\.allowPlainTextToken\b/,
-    'allowPlainTextToken must reach the helper so the IPC opt-in propagates'
-  )
-  assert.doesNotMatch(
-    body,
-    /allowPlainText: input\.allowPlainTextToken === true/,
-    'the strict coercion must live in the helper, not be duplicated at the call site'
-  )
-  assert.match(body, /encryptSecret: encryptDesktopSecret\b/, 'the helper must encrypt via encryptDesktopSecret')
+  assert.equal(candidates[0], path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'))
 })
 
-test('connection-config save and apply IPC handlers route payloads through coerceDesktopConnectionConfig', () => {
-  const source = readMain()
-
-  for (const channel of ['hermes:connection-config:save', 'hermes:connection-config:apply']) {
-    const handlerStart = source.indexOf(`ipcMain.handle('${channel}'`)
-    assert.notEqual(handlerStart, -1, `${channel} handler must exist`)
-    const handlerBody = source.slice(handlerStart, handlerStart + 400)
-    assert.match(
-      handlerBody,
-      /coerceDesktopConnectionConfig\(payload\)/,
-      `${channel} must coerce its payload (the propagation seam) before persisting`
-    )
-  }
-})
-
-test('whenReady enables basic password-store encryption before createWindow', () => {
-  const source = readMain()
-  const enableIndex = source.indexOf('enableBasicPasswordStoreEncryption({')
-  assert.notEqual(enableIndex, -1, 'whenReady must call enableBasicPasswordStoreEncryption')
-
-  const call = source.slice(enableIndex, enableIndex + 240)
-  assert.match(call, /platform: process\.platform/, 'the real platform must be forwarded')
-  assert.match(
-    call,
-    /passwordStoreSwitch: app\.commandLine\.getSwitchValue\('password-store'\)/,
-    'the real --password-store switch value must be forwarded'
-  )
-  assert.match(call, /safeStorageApi: safeStorage/, 'the real safeStorage must be forwarded')
-
-  // Ordering matters: the switch must take effect before anything touches
-  // safeStorage, so the enable call must precede the first createWindow().
-  const createWindowIndex = source.indexOf('createWindow()', enableIndex)
-  assert.notEqual(createWindowIndex, -1, 'whenReady must call createWindow after enabling encryption')
-  assert.ok(
-    enableIndex < createWindowIndex,
-    'enableBasicPasswordStoreEncryption must run before createWindow() so the switch is applied first'
+test('homeRelativeAttachmentCandidates returns nothing for an absolute path', () => {
+  assert.deepEqual(
+    homeRelativeAttachmentCandidates('/already/absolute/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    []
   )
 })
 
-test('sanitizeDesktopConnectionConfig exposes secureTokenStorage and remoteTokenPlainText', () => {
-  const source = readMain()
-  const fnStart = source.indexOf('async function sanitizeDesktopConnectionConfig(')
-  assert.notEqual(fnStart, -1, 'sanitizeDesktopConnectionConfig must exist in main.ts')
-  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
-  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+test('homeRelativeAttachmentCandidates returns nothing for a file: URL', () => {
+  assert.deepEqual(
+    homeRelativeAttachmentCandidates('file:///already/resolved/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    []
+  )
+})
 
-  const returnIndex = body.indexOf('return {')
-  assert.notEqual(returnIndex, -1, 'sanitizeDesktopConnectionConfig must return a sanitized object')
-  const returned = body.slice(returnIndex)
-  assert.match(returned, /\bsecureTokenStorage\b/, 'the renderer needs the secure-storage availability signal')
-  assert.match(returned, /\bremoteTokenPlainText\b/, 'the renderer needs the plain-text token signal')
+test('homeRelativeAttachmentCandidates returns nothing for empty input', () => {
+  assert.deepEqual(homeRelativeAttachmentCandidates('', '/Users/alice', '/Users/alice/.hermes'), [])
+  assert.deepEqual(homeRelativeAttachmentCandidates('   ', '/Users/alice', '/Users/alice/.hermes'), [])
+})
+
+test('homeRelativeAttachmentCandidates second candidate falls back to basename only', () => {
+  // A ref that lost its directory prefix entirely still has a shot via the
+  // well-known attachments dir + basename, matching the reported repro shape.
+  const candidates = homeRelativeAttachmentCandidates('foo.xlsx', '/Users/alice', '/Users/alice/.hermes')
+
+  assert.deepEqual(candidates, [
+    path.join('/Users/alice', 'foo.xlsx'),
+    path.join('/Users/alice/.hermes', 'attachments', 'foo.xlsx')
+  ])
 })

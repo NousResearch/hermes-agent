@@ -1,0 +1,15 @@
+name: session-dashboard
+repo: https://github.com/tommulkins/hermes-plugin-session-analyzer
+sha: ae81c5b8d8f00c8ed634a15ce3267142572a82c5
+description: 'Session Analyzer — per-session analytics for the Hermes desktop app: full page at /session-dashboard with token/cache/cost aggregates, tool-call breakdown, file changes, failure groups, and Ask AI (copies a ready-to-run analysis prompt into a fresh draft chat). Read-only over state.db.'
+maintainer: tommulkins
+tier: community
+category: desktop
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/tommulkins/hermes-plugin-session-analyzer
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

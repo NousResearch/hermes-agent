@@ -57,7 +57,3 @@ def test_empty_preset_is_an_error():
     assert "preset is required" in out
 
 
-def test_reports_desktop_only_without_emitter():
-    out = al.apply_layout_tool("focus")
-
-    assert "desktop app" in out

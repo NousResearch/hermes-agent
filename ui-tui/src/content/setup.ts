@@ -8,10 +8,13 @@ export const buildSetupRequiredSections = (): PanelSection[] => [
   },
   {
     rows: [
-      ['/model', 'configure provider + model in-place'],
-      ['/setup', 'run full first-time setup wizard in-place'],
+      ['/setup', 'run the first-time setup wizard in-place (adds a provider)'],
+      ['/model', 'pick a model (needs a session — add a provider first)'],
       ['Ctrl+C', 'exit and run `hermes setup` manually']
     ],
     title: 'Actions'
+  },
+  {
+    text: 'In the dashboard the Models page sets the profile default; on Desktop it is Settings -> Models.'
   }
 ]

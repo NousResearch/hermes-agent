@@ -20,17 +20,6 @@ def test_dump_cron_summary_accepts_utf8_bom(tmp_path):
     assert _cron_summary(tmp_path) == "1 active / 2 total"
 
 
-def test_dump_cron_summary_bomless_regression(tmp_path):
-    from hermes_cli.dump import _cron_summary
-
-    cron = tmp_path / "cron"
-    cron.mkdir()
-    (cron / "jobs.json").write_text(
-        '{"jobs": [{"id": "j1", "enabled": true}]}',
-        encoding="utf-8",
-    )
-
-    assert _cron_summary(tmp_path) == "1 active / 1 total"
 
 
 def test_status_scheduled_jobs_accepts_utf8_bom(monkeypatch, capsys, tmp_path):

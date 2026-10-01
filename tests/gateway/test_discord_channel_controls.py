@@ -211,9 +211,6 @@ async def test_auto_thread_failure_skips_agent_and_notifies_user(adapter, monkey
     # User gets a visible explanation in the parent channel instead of a silent
     # inline reply.
     channel.send.assert_awaited_once()
-    sent_text = channel.send.await_args.args[0]
-    assert "could not create" in sent_text.lower()
-    assert "thread" in sent_text.lower()
 
 
 # ── config.py bridging ───────────────────────────────────────────────

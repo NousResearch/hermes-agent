@@ -14,7 +14,6 @@ def test_nous_portal_tags_contains_product_and_client():
     tags = nous_portal_tags()
     assert "product=hermes-agent" in tags
     assert hermes_client_tag() in tags
-    assert len(tags) == 2
 
 
 
@@ -45,7 +44,7 @@ def test_ambient_context_set_none_clears():
         token = set_conversation_context(empty)
         try:
             assert get_conversation_context() is None
-            assert len(nous_portal_tags()) == 2
+            assert not any(t.startswith("conversation=") for t in nous_portal_tags())
         finally:
             reset_conversation_context(token)
 

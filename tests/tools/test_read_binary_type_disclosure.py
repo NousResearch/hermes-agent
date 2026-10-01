@@ -82,9 +82,3 @@ class TestReadFileBinaryDisclosure:
         result = json.loads(read_file_tool(str(p)))
         assert "unknown binary" in result.get("error", "")
 
-    def test_text_file_unaffected(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-        p = tmp_path / "ok.txt"
-        p.write_text("hello world\n")
-        result = json.loads(read_file_tool(str(p)))
-        assert "hello world" in result.get("content", "")

@@ -3,13 +3,10 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import threading
-import time
 from base64 import b64encode
 from pathlib import Path
 from typing import Any, Dict
-from unittest import mock
 
 import pytest
 
@@ -340,16 +337,13 @@ def test_credential_summary_no_secret_leak(
         project_secret="secret-bbbbbbbbbbb",
         dashboard_project_id="dash-uuid",
     )
-    summary = photon_auth.credential_summary()
-    blob = "\n".join(summary.values())
+    lines: list[str] = []
+    photon_auth.print_credential_summary(lines.append)
+    blob = "\n".join(lines)
     assert "token-aaaa" not in blob
     assert "secret-bbbb" not in blob
-    assert summary["device_token"].startswith("✓")
-    assert summary["project_key"].startswith("✓")
-    # Unified id: dashboard id == Spectrum id, surfaced as one project id.
-    assert summary["project_id"] == "sp-uuid"
-    assert summary["phone_number"].startswith("✗ missing")
-    assert summary["assigned_phone_number"].startswith("✗ missing")
+    # Non-secret identifiers are still surfaced.
+    assert "sp-uuid" in blob
 
 
 # ---------------------------------------------------------------------------

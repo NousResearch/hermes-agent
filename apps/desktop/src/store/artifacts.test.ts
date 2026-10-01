@@ -114,7 +114,9 @@ describe('artifacts store', () => {
 
     openArtifact(result.artifactId)
 
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBe('[]')
+    // Artifact tabs are never persistable, so the profile's bucket stays empty
+    // and the key is removed rather than stored as an empty list.
+    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
   })
 
   it('tracks version selection and snaps back to latest', () => {

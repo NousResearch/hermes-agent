@@ -5,8 +5,8 @@ import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { useIsDark } from '@/components/assistant-ui/embeds/use-is-dark'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { readDesktopFileText } from '@/lib/desktop-fs'
 import { localPreviewTarget } from '@/lib/local-preview'
-import { isRemoteGateway } from '@/lib/media'
 
 /**
  * `::preview{file="…"}` — a workspace HTML file rendered LIVE inside the
@@ -253,10 +253,13 @@ export function InlinePreviewDirective({
 }) {
   const file = attrs.file ?? ''
 
-  // Not renderable inline: hand the whole leaf to the classic card. Remote
-  // gateways lack a local-file door; non-HTML has nothing to frame.
-  if (!file || isRemoteGateway() || !HTML_FILE_RE.test(file)) {
-    return file ? <PreviewAttachment source="explicit-link" target={file} /> : null
+  // Not renderable inline: hand the leaf to the classic card. Non-HTML has
+  // nothing to frame. (Remote gateways used to bail here too — that predates
+  // the mode-aware fs bridge; the frame now reads through readDesktopFileText,
+  // which fetches over the authenticated /api/fs bridge in remote mode, so a
+  // URL connection — including a same-machine `hermes serve` — renders live.)
+  if (!file || !HTML_FILE_RE.test(file)) {
+    return file ? <PreviewAttachment target={file} /> : null
   }
 
   return <InlineHtmlFrame file={file} initialHeight={directiveFrameHeight(attrs.height)} streaming={streaming} />
@@ -297,7 +300,7 @@ function InlineHtmlFrame({
 
     let alive = true
 
-    void Promise.resolve(window.hermesDesktop?.readFileText(path))
+    void Promise.resolve(readDesktopFileText(path))
       .then(result => {
         if (!alive) {
           return
@@ -379,7 +382,7 @@ function InlineHtmlFrame({
   }, [doc, token])
 
   if (!path || failed) {
-    return <PreviewAttachment source="explicit-link" target={file} />
+    return <PreviewAttachment target={file} />
   }
 
   const height = measured ?? initialHeight ?? DEFAULT_HEIGHT

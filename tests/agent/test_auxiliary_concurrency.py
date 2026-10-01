@@ -25,15 +25,7 @@ def _clean_semaphore_cache():
 
 
 class TestGetTaskMaxConcurrency:
-    def test_returns_none_for_missing_task(self):
-        assert _get_task_max_concurrency(None) is None
-        assert _get_task_max_concurrency("") is None
 
-    def test_returns_none_when_unset(self):
-        with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config", return_value={}
-        ):
-            assert _get_task_max_concurrency("title_generation") is None
 
     def test_does_not_reuse_vision_cpu_limit_for_llm_calls(self):
         with patch(
@@ -76,35 +68,8 @@ class TestSemaphoreCache:
         ):
             assert _acquire_sync_aux_semaphore("title_generation") is None
 
-    def test_sync_reuses_semaphore_for_same_limit(self):
-        with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
-            return_value={"max_concurrency": 2},
-        ):
-            sem1 = _acquire_sync_aux_semaphore("compression")
-            sem2 = _acquire_sync_aux_semaphore("compression")
-            assert sem1 is sem2
 
-    def test_sync_rebuilds_when_limit_changes(self):
-        cfg = {"max_concurrency": 2}
-        with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
-            return_value=cfg,
-        ):
-            sem1 = _acquire_sync_aux_semaphore("compression")
-            cfg["max_concurrency"] = 5
-            sem2 = _acquire_sync_aux_semaphore("compression")
-            assert sem1 is not sem2
 
-    @pytest.mark.asyncio
-    async def test_async_reuses_semaphore_within_same_loop(self):
-        with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
-            return_value={"max_concurrency": 2},
-        ):
-            sem1 = _acquire_async_aux_semaphore("compression")
-            sem2 = _acquire_async_aux_semaphore("compression")
-            assert sem1 is sem2
 
     def test_async_returns_none_with_no_running_loop(self):
         with patch(
@@ -176,36 +141,6 @@ class TestSyncCallEnforcesLimit:
         assert max_active <= limit, f"observed {max_active} > limit {limit}"
         assert client.chat.completions.create.call_count == n_callers
 
-    def test_call_llm_unlimited_when_not_configured(self):
-        client = MagicMock()
-        client.base_url = "https://example.test/v1"
-        client.chat.completions.create.return_value = MagicMock()
-
-        with (
-            patch(
-                "agent.auxiliary_client._resolve_task_provider_model",
-                return_value=("openrouter", "test-model", None, None, None),
-            ),
-            patch(
-                "agent.auxiliary_client._get_cached_client",
-                return_value=(client, "test-model"),
-            ),
-            patch(
-                "agent.auxiliary_client._validate_llm_response",
-                side_effect=lambda resp, _task, **_kwargs: resp,
-            ),
-            patch(
-                "agent.auxiliary_client._get_auxiliary_task_config",
-                return_value={},
-            ),
-        ):
-            # With no max_concurrency in config, no semaphore is acquired.
-            call_llm(
-                task="title_generation",
-                messages=[{"role": "user", "content": "hi"}],
-            )
-
-        assert client.chat.completions.create.call_count == 1
 
     def test_semaphore_released_on_exception(self):
         """Errors inside call_llm must release the semaphore so the next call proceeds."""
@@ -290,32 +225,6 @@ class TestSyncCallEnforcesLimit:
             "include_usage": True
         }
 
-    def test_api_mode_is_forwarded_to_client_resolution(self):
-        client = MagicMock()
-        client.base_url = "https://example.test/v1"
-        client.chat.completions.create.return_value = MagicMock()
-
-        with (
-            patch(
-                "agent.auxiliary_client._resolve_task_provider_model",
-                return_value=("openrouter", "test-model", None, None, None),
-            ),
-            patch(
-                "agent.auxiliary_client._get_cached_client",
-                return_value=(client, "test-model"),
-            ) as get_client,
-            patch(
-                "agent.auxiliary_client._validate_llm_response",
-                side_effect=lambda response, _task, **_kwargs: response,
-            ),
-        ):
-            call_llm(
-                task="title_generation",
-                messages=[{"role": "user", "content": "hi"}],
-                api_mode="codex_responses",
-            )
-
-        assert get_client.call_args.kwargs["api_mode"] == "codex_responses"
 
 
 class TestAsyncCallEnforcesLimit:

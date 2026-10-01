@@ -47,16 +47,3 @@ def test_format_bytes_never_raises():
     assert format_bytes("2048") == "2.0 KB"  # numeric strings accepted
 
 
-def test_migrated_sites_render_through_the_shared_helper():
-    """Behavior contract for the aliased call sites: the module-local names
-    must render byte-identically to the shared helper (how they delegate is
-    an implementation detail — only the rendering is pinned)."""
-    from hermes_cli.backup import _format_size as backup
-    from hermes_cli.checkpoints import _fmt_bytes as checkpoints
-    from hermes_cli.doctor import _human_bytes as doctor
-
-    for n in (0, 512, 2048, 1234567, 1024**3, 1024**4):
-        expected = format_bytes(n)
-        assert backup(n) == expected
-        assert checkpoints(n) == expected
-        assert doctor(n) == expected

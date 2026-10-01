@@ -532,21 +532,6 @@ class TestHealth:
 # Mixin contract — gating still works on the cloud adapter
 # ---------------------------------------------------------------------------
 
-class TestMixinInherited:
-    """Sanity-check: the Cloud adapter inherits the same gating behavior
-    as the Baileys adapter via WhatsAppBehaviorMixin.
-    """
-
-
-    def test_should_process_message_dm_open(self):
-        adapter = _make_adapter()
-        adapter._dm_policy = "open"
-        assert adapter._should_process_message({
-            "chatId": "15551234567@c.us",
-            "senderId": "15551234567@c.us",
-            "isGroup": False,
-            "body": "hi",
-        }) is True
 
 
 # ---------------------------------------------------------------------------
@@ -873,6 +858,30 @@ class TestInboundMediaDispatch:
         # File still available in media_urls for the agent's other tools
         assert len(event.media_urls) == 1
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, tmp_path, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        adapter = _make_adapter(app_secret="key")
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(side_effect=[
+            MagicMock(status_code=200, json=MagicMock(return_value={
+                "url": "https://lookaside.fbsbx.com/whatsapp/m/doc", "mime_type": "text/plain"})),
+            MagicMock(status_code=200, content=content),
+        ])
+        raw_message = {
+            "from": "1555", "id": "wamid.doc2", "timestamp": "0", "type": "document",
+            "document": {"id": "media_doc_abc", "mime_type": "text/plain", "filename": "notes.txt"},
+        }
+        from gateway.platforms import whatsapp_cloud as wac
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            event = await adapter._build_message_event_from_cloud(
+                raw_message, {"1555": "U"}, {"phone_number_id": "1"})
+
+        assert ("[Content of" in (event.text or "")) is inlined
+        assert event.media_text_inlined == [inlined]
+
 
 # ---------------------------------------------------------------------------
 # Group-shaped message guard
@@ -888,7 +897,7 @@ class TestGroupMessageGuard:
     group)."""
 
     @pytest.mark.asyncio
-    async def test_group_shaped_message_dropped_with_warning(self, caplog):
+    async def test_group_shaped_message_dropped(self):
         adapter = _make_adapter()
         adapter.handle_message = AsyncMock()
         raw = {
@@ -899,18 +908,71 @@ class TestGroupMessageGuard:
             "text": {"body": "hi from a group"},
             "chat": "120363012345678901@g.us",  # presence of `chat` = group
         }
-        with caplog.at_level("WARNING"):
-            event = await adapter._build_message_event_from_cloud(
-                raw, {"15551234567": "Alice"}, {}
-            )
-        assert event is None
-        # Warning surfaced so the operator knows group messages are being dropped
-        assert any(
-            "group-shaped" in rec.message
-            for rec in caplog.records
+        event = await adapter._build_message_event_from_cloud(
+            raw, {"15551234567": "Alice"}, {}
         )
+        assert event is None
         # Defensive: handler not invoked
         adapter.handle_message.assert_not_called()
+
+
+class TestContentlessEnvelopeGuard:
+    """Meta delivers non-conversational payloads on the same ``messages``
+    webhook field: ``system`` (user_changed_number, and since Aug 11 2026
+    user_changed_user_id BSUID-rotation events), ``reaction`` (emoji taps),
+    and ``unsupported``/``unknown``. None carry a user utterance — without
+    the guard they'd become MessageEvents with empty text and trigger a
+    blank agent turn."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("msg_type,extra", [
+        (
+            "system",
+            {"system": {
+                "type": "user_changed_user_id",
+                "previous_user_id": "bsuid-old",
+                "user_id": "bsuid-new",
+            }},
+        ),
+        (
+            "system",
+            {"system": {"type": "user_changed_number", "body": "changed number"}},
+        ),
+        ("reaction", {"reaction": {"message_id": "wamid.orig", "emoji": "👍"}}),
+        ("unsupported", {"errors": [{"code": 131051, "title": "Unsupported message type"}]}),
+        ("unknown", {}),
+    ])
+    async def test_contentless_envelope_dropped(self, msg_type, extra):
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        raw = {
+            "from": "15551234567",
+            "id": f"wamid.{msg_type}1",
+            "timestamp": "0",
+            "type": msg_type,
+            **extra,
+        }
+        event = await adapter._build_message_event_from_cloud(
+            raw, {"15551234567": "Alice"}, {}
+        )
+        assert event is None
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plain_text_still_processed(self):
+        adapter = _make_adapter()
+        raw = {
+            "from": "15551234567",
+            "id": "wamid.text1",
+            "timestamp": "0",
+            "type": "text",
+            "text": {"body": "hello"},
+        }
+        event = await adapter._build_message_event_from_cloud(
+            raw, {"15551234567": "Alice"}, {}
+        )
+        assert event is not None
+        assert event.text == "hello"
 
 
 # =========================================================================
@@ -1292,27 +1354,6 @@ class TestSendTyping:
         assert payload["typing_indicator"] == {"type": "text"}
 
 
-    @pytest.mark.asyncio
-    async def test_send_typing_stale_message_logged_at_info(self, caplog):
-        """Graph error 131009 = wamid > 30 days old. Common after a
-        long-quiet conversation — log at INFO so it doesn't pollute
-        WARNING-level monitoring dashboards."""
-        adapter = _make_adapter()
-        adapter._last_inbound_wamid_by_chat["15551234567"] = "wamid.OLD"
-        adapter._http_client = MagicMock()
-        adapter._http_client.post = AsyncMock(
-            return_value=_mock_httpx_response(
-                400, {"error": {"code": 131009, "message": "Parameter value is not valid"}}
-            )
-        )
-
-        with caplog.at_level("INFO"):
-            await adapter.send_typing("15551234567")
-
-        assert any(
-            "older than 30 days" in rec.message
-            for rec in caplog.records
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1332,14 +1373,12 @@ class TestBoundedInteractiveState:
     def test_bounded_put_evicts_oldest(self):
         from collections import OrderedDict
 
-        from gateway.platforms.whatsapp_cloud import (
-            INTERACTIVE_STATE_CACHE_SIZE,
-            WhatsAppCloudAdapter,
-        )
+        from gateway.platforms.helpers import bounded_put
+        from gateway.platforms.whatsapp_cloud import INTERACTIVE_STATE_CACHE_SIZE
 
         cache: OrderedDict = OrderedDict()
         for i in range(INTERACTIVE_STATE_CACHE_SIZE + 10):
-            WhatsAppCloudAdapter._bounded_put(cache, f"id-{i}", "sess")
+            bounded_put(cache, f"id-{i}", "sess", INTERACTIVE_STATE_CACHE_SIZE)
         assert len(cache) == INTERACTIVE_STATE_CACHE_SIZE
         assert "id-0" not in cache
         assert f"id-{INTERACTIVE_STATE_CACHE_SIZE + 9}" in cache
@@ -1399,4 +1438,30 @@ class TestReplyContextResolution:
         assert event.reply_to_message_id is None
         assert event.reply_to_text is None
         assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_sent_image_attaches_the_file(self, tmp_path):
+        """The bot sends an uncaptioned image (a cron job delivering a chart); the user quotes it
+        and asks "what is this?". Meta's ``context`` carries only the wamid, so the bytes must come
+        from the outbound index written at send time — otherwise the agent never sees the image."""
+        adapter = _make_adapter()
+        image = tmp_path / "chart.png"
+        image.write_bytes(b"\x89PNG fake")
+        adapter._upload_media = AsyncMock(return_value=("MEDIA-ID", None))
+        adapter._post_messages = AsyncMock(return_value=([{"id": "wamid.BOT_IMG"}], None))
+        adapter._http_client = MagicMock()
+
+        sent = await adapter.send_image_file("15551234567", str(image))
+        assert sent.success and sent.message_id == "wamid.BOT_IMG"
+
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.REPLY", "type": "text",
+             "text": {"body": "what is this?"},
+             "context": {"id": "wamid.BOT_IMG", "from": "15550000000"}},
+            {"15551234567": "Alice"}, {"display_phone_number": "15550000000"},
+        )
+        assert event is not None
+        assert event.reply_to_is_own_message is True
+        assert event.media_urls == [str(image)]
+        assert event.media_types == ["image/png"]
 

@@ -1,0 +1,15 @@
+name: clinepass
+repo: https://github.com/Adolanium/hermes-clinepass
+sha: 022bf7244cafb3e651f9b844f2783e28d0b5b40f
+subdir: clinepass
+description: ClinePass model provider with live model discovery and a curated fallback catalog.
+maintainer: Adolanium
+tier: community
+category: models
+docs_url: https://github.com/Adolanium/hermes-clinepass#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CLINE_API_KEY

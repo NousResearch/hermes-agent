@@ -11,22 +11,6 @@ These tests cover both paths plus the failure modes (no git, no baked file).
 from unittest.mock import MagicMock, patch
 
 
-def test_get_git_commit_uses_live_git_when_available(tmp_path):
-    """Source install: ``git rev-parse --short=8 HEAD`` wins; no fallback."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    git_result = MagicMock(returncode=0, stdout="deadbeef\n")
-    # build_info should NOT be consulted when live git succeeds.
-    with patch("hermes_cli.dump.subprocess.run", return_value=git_result) as mock_run, \
-         patch("hermes_cli.build_info.get_build_sha") as mock_build:
-        commit = dump._get_git_commit(repo_dir)
-
-    assert commit == "deadbeef"
-    mock_run.assert_called_once()
-    mock_build.assert_not_called()
 
 
 def test_get_git_commit_output_format_identical_between_sources(tmp_path):

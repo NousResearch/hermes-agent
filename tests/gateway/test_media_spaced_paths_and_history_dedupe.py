@@ -15,19 +15,13 @@ Covers the follow-up wave after PR #72170:
 
 import os
 
-import pytest
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MEDIA_DELIVERY_EXTS,
 )
 from gateway.run import _collect_history_media_paths
 
 
-class TestGisExtensions:
-    def test_gis_extensions_in_delivery_set(self):
-        for ext in (".kmz", ".kml", ".geojson", ".gpx"):
-            assert ext in MEDIA_DELIVERY_EXTS
 
 
 class TestSpacedPaths:

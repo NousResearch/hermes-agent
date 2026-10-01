@@ -13,6 +13,7 @@ flip pending → running, and finishes with ``complete_handoff`` or
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -107,21 +108,24 @@ class TestHandoffStateDB:
         assert db.get_handoff_state(sid)["state"] == "completed"
         assert db.list_pending_handoffs() == []
 
+    def test_handoff_reads_use_read_context_during_reconnect(self, db, monkeypatch):
+        """Handoff polling must not borrow the reconnectable writer handle."""
+        sid = "sess-read-path"
+        self._make_session(db, sid)
+        db.request_handoff(sid, "discord")
 
-class TestHandoffCommandRegistration:
-    """Slash-command surface checks."""
+        entered = []
+        original = db._read_ctx
 
-    def test_command_registered(self):
-        from hermes_cli.commands import resolve_command
-        cmd = resolve_command("handoff")
-        assert cmd is not None
-        assert cmd.name == "handoff"
-        assert cmd.category == "Session"
+        @contextmanager
+        def traced_read_ctx():
+            entered.append(True)
+            with original() as conn:
+                yield conn
 
-    def test_command_is_cli_only(self):
-        """`/handoff` is initiated from the CLI; gateway shouldn't expose it."""
-        from hermes_cli.commands import resolve_command, GATEWAY_KNOWN_COMMANDS
-        cmd = resolve_command("handoff")
-        assert cmd is not None
-        assert cmd.cli_only is True
-        assert "handoff" not in GATEWAY_KNOWN_COMMANDS
+        monkeypatch.setattr(db, "_read_ctx", traced_read_ctx)
+        assert db.get_handoff_state(sid)["state"] == "pending"
+        assert [row["id"] for row in db.list_pending_handoffs()] == [sid]
+        assert len(entered) == 2
+
+

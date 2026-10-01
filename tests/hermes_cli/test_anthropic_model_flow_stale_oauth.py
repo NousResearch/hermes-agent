@@ -27,7 +27,7 @@ class TestStaleOAuthTokenDetection:
 
         # No valid Claude Code credentials available (expired, no refresh token)
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials",
+            "agent.anthropic_credentials.read_claude_code_credentials",
             lambda: {
                 "accessToken": "expired-cc-token",
                 "refreshToken": "",          # No refresh — can't recover
@@ -36,16 +36,16 @@ class TestStaleOAuthTokenDetection:
             },
         )
         monkeypatch.setattr(
-            "agent.anthropic_adapter.is_claude_code_token_valid",
+            "agent.anthropic_credentials.is_claude_code_token_valid",
             lambda creds: False,             # Explicitly expired
         )
         monkeypatch.setattr(
-            "agent.anthropic_adapter._is_oauth_token",
+            "agent.anthropic_credentials._is_oauth_token",
             lambda key: key.startswith("sk-ant-"),
         )
         # _resolve_claude_code_token_from_credentials has no valid path
         monkeypatch.setattr(
-            "agent.anthropic_adapter._resolve_claude_code_token_from_credentials",
+            "agent.anthropic_credentials._resolve_claude_code_token_from_credentials",
             lambda creds=None: None,
         )
 
@@ -53,7 +53,7 @@ class TestStaleOAuthTokenDetection:
         monkeypatch.setattr("builtins.input", lambda _: "3")
         monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _: "")
 
-        from hermes_cli.main import _model_flow_anthropic
+        from hermes_cli.model_setup_flows import _model_flow_anthropic
         cfg = {}
 
         _model_flow_anthropic(cfg)
@@ -64,82 +64,4 @@ class TestStaleOAuthTokenDetection:
             f"Expected auth method menu but got: {output!r}"
         )
 
-    def test_valid_api_key_skips_stale_check(self, tmp_path, monkeypatch, capsys):
-        """
-        A non-OAuth ANTHROPIC_API_KEY (regular pay-per-token key) must NOT be
-        flagged as stale even when cc_creds are invalid. Regular API keys don't
-        expire the same way OAuth tokens do.
-        """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        # Regular API key — NOT an OAuth token
-        save_env_value("ANTHROPIC_API_KEY", "sk-ant-api03-RegularPayPerTokenKey")
-        save_env_value("ANTHROPIC_TOKEN", "")
-
-        monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials",
-            lambda: None,   # No CC creds
-        )
-        monkeypatch.setattr(
-            "agent.anthropic_adapter.is_claude_code_token_valid",
-            lambda creds: False,
-        )
-        monkeypatch.setattr(
-            "agent.anthropic_adapter._is_oauth_token",
-            lambda key: key.startswith("sk-ant-") and "oat" in key,
-        )
-
-        # Simulate user picks "1" (use existing)
-        monkeypatch.setattr("builtins.input", lambda _: "1")
-
-        from hermes_cli.main import _model_flow_anthropic
-        cfg = {}
-
-        _model_flow_anthropic(cfg)
-
-        output = capsys.readouterr().out
-        # Should show "Use existing credentials" menu, NOT auth method choice
-        assert "Use existing" in output or "credentials" in output.lower()
-
-
-class TestStaleOAuthGuardLogic:
-    """Unit-level test of the stale-OAuth detection guard logic."""
-
-    def test_stale_oauth_flag_logic_no_cc_creds(self):
-        """
-        When existing_key is OAuth and cc_available is False,
-        existing_is_stale_oauth should be True → has_creds = False.
-        """
-        existing_key = "sk-ant-oat-expiredtoken123"
-        _is_oauth_token = lambda k: k.startswith("sk-ant-")
-        cc_available = False
-
-        existing_is_stale_oauth = (
-            bool(existing_key) and
-            _is_oauth_token(existing_key) and
-            not cc_available
-        )
-        has_creds = (bool(existing_key) and not existing_is_stale_oauth) or cc_available
-
-        assert existing_is_stale_oauth is True
-        assert has_creds is False
-
-    def test_stale_oauth_flag_logic_with_valid_cc_creds(self):
-        """
-        When existing_key is OAuth but cc_available is True (valid creds exist),
-        has_creds should be True — the cc_creds will be used instead.
-        """
-        existing_key = "sk-ant-oat-sometoken"
-        _is_oauth_token = lambda k: k.startswith("sk-ant-")
-        cc_available = True
-
-        existing_is_stale_oauth = (
-            bool(existing_key) and
-            _is_oauth_token(existing_key) and
-            not cc_available
-        )
-        has_creds = (bool(existing_key) and not existing_is_stale_oauth) or cc_available
-
-        assert existing_is_stale_oauth is False
-        assert has_creds is True
 

@@ -1,3 +1,5 @@
+import { types } from 'node:util'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $rightRailActiveTabId } from '@/store/layout'
@@ -18,7 +20,7 @@ describe('actOnActivePreview (drive_preview tool)', () => {
   let cleanups: Array<() => void> = []
 
   const openBrowserTab = () => {
-    openPreview(urlTarget('https://example.com'), 'tool-result')
+    openPreview(urlTarget('https://example.com'))
 
     return $rightRailActiveTabId.get()!
   }
@@ -45,24 +47,6 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.error).toContain('open_preview')
   })
 
-  it('injects the engine and returns the page’s answer', async () => {
-    let injected = ''
-
-    withRunner(async code => {
-      injected = code
-
-      return JSON.stringify({ acted: 'clicked button "Save"', success: true })
-    })
-
-    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
-
-    expect(result).toMatchObject({ acted: 'clicked button "Save"', success: true })
-    // Self-contained payload: the engine source and the action travel together,
-    // and the holder keeps refs alive across calls on the same page.
-    expect(injected).toContain('__hermesActHolder')
-    expect(injected).toContain('"ref":"@e1"')
-  })
-
   it('re-inventories after a mutating action so the next ref is current', async () => {
     const actions: string[] = []
 
@@ -87,17 +71,63 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.url).toBe('https://example.com/app')
   })
 
-  it('does not pay the settle delay for a plain inventory', async () => {
-    let injected = ''
-    withRunner(async code => {
-      injected = code
+  it('awaits page-owned thenables for inventories and settled actions before crossing Electron IPC', async () => {
+    // Zone.js replaces Promise with a non-native thenable. Electron awaits
+    // native V8 promises only; otherwise IPC delivers the object's state,
+    // losing its prototype and then() instead of delivering the result.
+    class PagePromise<T> {
+      private pending: Promise<T>
 
-      return JSON.stringify({ elements: [], success: true })
+      constructor(executor: ConstructorParameters<typeof Promise<T>>[0]) {
+        this.pending = new Promise(executor)
+      }
+
+      static resolve<T>(value: T) {
+        return new PagePromise<T>(resolve => resolve(value))
+      }
+
+      then(onFulfilled: (value: T) => unknown, onRejected?: (reason: unknown) => unknown) {
+        return new PagePromise((resolve, reject) => {
+          this.pending.then(onFulfilled, onRejected).then(resolve, reject)
+        })
+      }
+    }
+
+    document.body.innerHTML = '<button id="save">Save</button>'
+    const clicked = vi.fn()
+    document.getElementById('save')!.addEventListener('click', clicked)
+
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 40,
+      top: 0,
+      width: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
     })
 
-    await actOnActivePreview({ kind: 'elements' })
+    withRunner(async code => {
+      const raw = new Function('Promise', 'return ' + code)(PagePromise)
 
-    expect(injected).toContain('0 <= 0')
+      return types.isPromise(raw) ? await raw : JSON.parse(JSON.stringify(raw))
+    })
+
+    try {
+      const inventory = await actOnActivePreview({ kind: 'elements' })
+      expect(inventory.success).toBe(true)
+      const save = inventory.elements!.find(element => element.label === 'Save')!
+      expect(save).toBeDefined()
+      expect(await actOnActivePreview({ kind: 'click', ref: save.ref })).toMatchObject({ success: true })
+      expect(clicked).toHaveBeenCalledOnce()
+      expect(await actOnActivePreview({ kind: 'click', ref: 'missing-ref' })).toMatchObject({ success: false })
+    } finally {
+      rect.mockRestore()
+      document.body.replaceChildren()
+      delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+    }
   })
 
   it('reports a page that answers with nothing', async () => {

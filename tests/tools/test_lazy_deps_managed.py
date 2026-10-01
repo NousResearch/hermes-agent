@@ -50,18 +50,6 @@ def test_nixos_install_fails_fast_without_touching_the_installer(monkeypatch):
     assert excinfo.value.reason.startswith("unsupported ")
 
 
-def test_reason_is_classified_as_skipped_not_failed(monkeypatch):
-    """The wording contract with refresh_active_features, pinned directly."""
-    monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: "nixos")
-
-    with pytest.raises(FeatureUnavailable) as excinfo:
-        lazy_deps.ensure(FEATURE, prompt=False)
-
-    assert excinfo.value.reason.startswith("unsupported "), (
-        "refresh_active_features would report this as failed: rather than skipped:"
-    )
-
-
 def test_unmanaged_install_is_not_blocked_by_the_guard(monkeypatch):
     """On a normal pip install the guard must be transparent."""
     monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: None)

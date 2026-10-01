@@ -5,7 +5,7 @@ author: NousResearch
 requires_env:
   - HERMES_LANGFUSE_PUBLIC_KEY
   - HERMES_LANGFUSE_SECRET_KEY
-hooks:
+provides_hooks:
   - pre_api_request
   - post_api_request
   - api_request_error

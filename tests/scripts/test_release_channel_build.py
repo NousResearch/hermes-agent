@@ -42,6 +42,9 @@ def test_dispatch_names_channel_and_binds_to_pushed_source(source):
     assert "build_commit=" + dry["commit"] in command
     assert any(value.startswith("bundle_env=") for value in command)
     assert "--ref" in command and command[command.index("--ref") + 1] == "main"
+    assert not any(value.startswith("branding=") for value in command)
+    stable = prepare_build(**options, branding="stable")
+    assert "branding=stable" in stable["command"] and stable["branding"] == "stable"
     admitted = prepare_build(**options, publish=True)
     assert calls == [command]
     assert admitted["commit"] == dry["commit"]
@@ -105,3 +108,10 @@ def test_release_parser_preserves_plain_oneoff_dispatch(monkeypatch):
     with pytest.raises(SystemExit) as incompatible:
         release.main()
     assert incompatible.value.code == 2
+    monkeypatch.setattr(sys, "argv", ["release.py", "--branding", "stable", "--build-commit", "main"])
+    with pytest.raises(SystemExit) as orphan:
+        release.main()
+    assert orphan.value.code == 2
+    monkeypatch.setattr(sys, "argv", ["release.py", "--channel", "unknown-name", "--branding", "stable", "--build-commit", "main"])
+    release.main()
+    assert calls[-1] == ("channel", "unknown-name")

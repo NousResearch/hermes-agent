@@ -286,6 +286,8 @@ method("groups.log", params=GroupsLogParams, result=GroupsLogResult,
 
 class GroupsDisbandParams(RoomParams):
     cancel_id: str | None = None
+    #: Required to disband a quarantined room, which then only ends on this gateway (its history is kept).
+    confirm_quarantined: bool | None = None
 
 
 class RoomTombstone(Result):
@@ -301,7 +303,8 @@ class GroupsDisbandResult(Result):
 
 
 method("groups.disband", params=GroupsDisbandParams, result=GroupsDisbandResult,
-       doc="Permanently tombstone a hosted room id after stopping its work and revoking peer routes.")
+       doc="Permanently tombstone a hosted room id after stopping its work and revoking peer routes. "
+           "A quarantined room needs confirm_quarantined=true and only ends on this gateway, history kept.")
 
 
 class GroupsStopParams(RoomParams):

@@ -318,6 +318,13 @@ reason `room_authority_quarantined`. A stored copy whose history fails validatio
 reported as `safety_status: "quarantined"` by `groups.replica_state`. Quarantined history is never
 pruned.
 
+To end such a room on this gateway, call `groups.disband` with `confirm_quarantined: true`; without it
+the call is refused with reason `room_authority_quarantined`. The confirmed Disband only tombstones the
+room here: it leaves the room lists, its id is never reused, and its history stays readable through
+`groups.log` (with `include_disbanded: true`) and is still never pruned. It doesn't lift the
+quarantine, stop or start work, change the room's recorded authority, or contact other gateways: peer
+routes aren't revoked, and grants other gateways issued for the room simply expire.
+
 Authority takeover is an **operator recovery procedure**, not an atomic handover.
 Use the existing JSON-RPC methods `groups.promote` and `groups.demote` on the
 appropriate gateway. There are no `groups.peer.promote` or `groups.peer.demote`

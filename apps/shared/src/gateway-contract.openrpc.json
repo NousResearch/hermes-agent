@@ -1124,7 +1124,7 @@
     },
     {
       "name": "groups.disband",
-      "summary": "Permanently tombstone a hosted room id after stopping its work and revoking peer routes.",
+      "summary": "Permanently tombstone a hosted room id after stopping its work and revoking peer routes. A quarantined room needs confirm_quarantined=true and only ends on this gateway, history kept.",
       "params": [
         {
           "name": "params",
@@ -14010,6 +14010,18 @@
             ],
             "default": null,
             "title": "Cancel Id"
+          },
+          "confirm_quarantined": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Quarantined"
           }
         },
         "required": [

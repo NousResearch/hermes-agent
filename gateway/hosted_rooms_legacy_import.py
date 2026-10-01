@@ -31,15 +31,15 @@ _SKIP_TABLES = frozenset({
 # Current shipped durable schemas only, parents first. Source-owned DDL is never executed.
 _TABLE_ORDER = (
     "hosted_rooms", "hosted_room_replicas", "hosted_room_events", "hosted_room_replica_events",
-    "hosted_room_retired_ids", "hosted_room_quarantine", "hosted_room_links", "hosted_room_remote_runs",
-    "hosted_room_peer_reservations", "hosted_room_id_reservations", "hosted_room_revoked_grants",
-    "hosted_room_driver_tasks",
+    "hosted_room_retired_ids", "hosted_room_quarantine", "hosted_room_quarantine_disbands", "hosted_room_links",
+    "hosted_room_remote_runs", "hosted_room_peer_reservations", "hosted_room_id_reservations",
+    "hosted_room_revoked_grants", "hosted_room_driver_tasks",
 )
 _ALLOWED_TABLES = frozenset(_TABLE_ORDER)
 _GLOBAL_IDEMPOTENT_TABLES = frozenset({"hosted_room_revoked_grants"})
 _AUTHORITY_ONLY_TABLES = frozenset({
-    "hosted_room_events", "hosted_room_links", "hosted_room_remote_runs", "hosted_room_peer_reservations",
-    "hosted_room_driver_tasks"})
+    "hosted_room_events", "hosted_room_quarantine_disbands", "hosted_room_links", "hosted_room_remote_runs",
+    "hosted_room_peer_reservations", "hosted_room_driver_tasks"})
 _REPLICA_ONLY_TABLES = frozenset({"hosted_room_replica_events"})
 # Sources this process could not import (unreadable file, rows the target refused). Every store open
 # re-checks readiness, so without this a broken legacy file would re-run the copy and re-warn on

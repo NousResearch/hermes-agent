@@ -9,6 +9,11 @@ Installed on every room store, the legacy ``shared-state.db`` and each canonical
   payload is pruned, so a copied room is never recreated as a local one.
 * ``hosted_room_event_budget`` counts room and replica events against one byte budget.
 
+A quarantined room never becomes writable again. The one change it accepts is an operator-confirmed
+Disband on this gateway (``hosted_room_quarantine_disbands``): a tombstone that appends nothing to its
+history and leaves its authority untouched. Its rows and events can't be deleted, so no pruning, not even
+an older process's, removes that evidence.
+
 The guards are SQLite triggers, so they also hold for writers that predate them, such as an older
 gateway process still sharing the store.
 """
@@ -51,6 +56,8 @@ _REPLICA_EVENT_SCHEMA_COLUMNS = frozenset({
 
 _EVENT_BUDGET_SCHEMA_COLUMNS = frozenset({"singleton", "event_bytes"})
 
+_QUARANTINE_DISBAND_SCHEMA_COLUMNS = frozenset({"room_id", "confirmed_at"})
+
 _ROOM_SAFETY_TRIGGERS = frozenset({
     "trg_hosted_rooms_reject_reserved_insert",
     "trg_hosted_rooms_reserve_insert",
@@ -64,6 +71,9 @@ _ROOM_SAFETY_TRIGGERS = frozenset({
     "trg_hosted_events_budget_account_delete",
     "trg_hosted_replica_events_budget_account_insert",
     "trg_hosted_replica_events_budget_account_delete",
+    "trg_hosted_rooms_quarantined_tombstone",
+    "trg_hosted_rooms_keep_quarantined",
+    "trg_hosted_events_keep_quarantined",
 })
 
 
@@ -103,6 +113,12 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
         """CREATE TABLE IF NOT EXISTS hosted_room_event_budget (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
             event_bytes INTEGER NOT NULL DEFAULT 0 CHECK (event_bytes >= 0)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS hosted_room_quarantine_disbands (
+            room_id TEXT PRIMARY KEY,
+            confirmed_at REAL NOT NULL
         )"""
     )
     conn.execute(
@@ -324,6 +340,43 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
                   )
                 WHERE singleton=1;
            END""",
+        # A quarantined room takes one change only: the tombstone of a Disband an operator confirmed,
+        # recorded in the same transaction, which leaves its authority and history untouched.
+        """CREATE TRIGGER IF NOT EXISTS trg_hosted_rooms_quarantined_tombstone
+           BEFORE UPDATE OF disbanded_at ON hosted_rooms
+           WHEN NEW.disbanded_at IS NOT OLD.disbanded_at
+             AND EXISTS (
+                 SELECT 1 FROM hosted_room_quarantine WHERE room_id=OLD.room_id
+             )
+             AND NOT (
+                 OLD.disbanded_at IS NULL AND NEW.disbanded_at IS NOT NULL
+                 AND EXISTS (
+                     SELECT 1 FROM hosted_room_quarantine_disbands WHERE room_id=OLD.room_id
+                 )
+                 AND NEW.authority_gateway_id IS OLD.authority_gateway_id
+                 AND NEW.authority_epoch IS OLD.authority_epoch
+                 AND NEW.next_seq IS OLD.next_seq
+                 AND NEW.event_bytes IS OLD.event_bytes
+             )
+           BEGIN
+               SELECT RAISE(ABORT, 'room authority is quarantined');
+           END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_hosted_rooms_keep_quarantined
+           BEFORE DELETE ON hosted_rooms
+           WHEN EXISTS (
+               SELECT 1 FROM hosted_room_quarantine WHERE room_id=OLD.room_id
+           )
+           BEGIN
+               SELECT RAISE(ABORT, 'quarantined room history is kept');
+           END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_hosted_events_keep_quarantined
+           BEFORE DELETE ON hosted_room_events
+           WHEN EXISTS (
+               SELECT 1 FROM hosted_room_quarantine WHERE room_id=OLD.room_id
+           )
+           BEGIN
+               SELECT RAISE(ABORT, 'quarantined room history is kept');
+           END""",
     ):
         conn.execute(trigger)
     # Audits every stored copy, re-deriving its byte count, before compacting any.
@@ -337,6 +390,7 @@ def safety_schema_is_current(conn: sqlite3.Connection) -> bool:
         "hosted_room_replicas": _REPLICA_SCHEMA_COLUMNS,
         "hosted_room_replica_events": _REPLICA_EVENT_SCHEMA_COLUMNS,
         "hosted_room_event_budget": _EVENT_BUDGET_SCHEMA_COLUMNS,
+        "hosted_room_quarantine_disbands": _QUARANTINE_DISBAND_SCHEMA_COLUMNS,
     }
     triggers = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
     return all(columns.issubset(table_columns(conn, table)) for table, columns in tables.items()) and (
@@ -411,15 +465,23 @@ def _quarantine_reason_locked(conn: sqlite3.Connection, room_id: str) -> str | N
     return str(row["reason"]) if row is not None else None
 
 
-def _raise_if_quarantined(conn: sqlite3.Connection, room_id: str) -> None:
+def _raise_if_quarantined(conn: sqlite3.Connection, room_id: str, *, hint: str = "") -> None:
     from gateway.hosted_rooms import RoomQuarantinedError
 
     reason = _quarantine_reason_locked(conn, room_id)
     if reason is not None:
         raise RoomQuarantinedError(
             "This Group Chat has an unverified authority takeover and is read-only "
-            f"until its history is reconciled ({reason})."
+            f"until its history is reconciled ({reason}).{hint}"
         )
+
+
+def _record_quarantine_disband_locked(conn: sqlite3.Connection, room_id: str, now: float) -> None:
+    """Record an operator's confirmation; the tombstone trigger accepts nothing else."""
+    conn.execute(
+        "INSERT OR IGNORE INTO hosted_room_quarantine_disbands (room_id, confirmed_at) VALUES (?, ?)",
+        (room_id, now),
+    )
 
 
 def _replica_reserves_room_id_locked(conn: sqlite3.Connection, room_id: str) -> bool:

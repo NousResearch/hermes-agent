@@ -402,11 +402,16 @@ def _(rid, params: dict, service) -> dict:
     "groups.disband", code=5114, room_code=4113, service_code=4123,
     service_message=_WORKER_UNAVAILABLE)
 def _(rid, params: dict, service) -> dict:
-    """Permanently tombstone a hosted room id."""
+    """Permanently tombstone a hosted room id. A quarantined room needs ``confirm_quarantined: true``
+    and only ends on this gateway: no Stop, no route revocation, nothing appended to its history."""
     from gateway.hosted_rooms import (
-        AuthorityConflictError, RoomHistoryExpiredError, disband_room, local_authority_gateway_id,
-        room_state)
+        AuthorityConflictError, RoomHistoryExpiredError, disband_quarantined_room, disband_room,
+        local_authority_gateway_id, quarantine_reason, room_state)
     room_id = str(params.get("room_id") or "")
+    if quarantine_reason(service.db_path, room_id=params.get("room_id")) is not None:
+        return _ok(rid, {"tombstone": disband_quarantined_room(
+            service.db_path, room_id=params.get("room_id"),
+            confirmed=params.get("confirm_quarantined") is True)})
 
     def disband_with_state(state: dict | None = None) -> dict:
         local_gateway_id = local_authority_gateway_id()

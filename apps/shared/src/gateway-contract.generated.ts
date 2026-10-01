@@ -1420,6 +1420,7 @@ export interface GroupsDisbandParams {
   profile?: string | null
   room_id: string
   cancel_id?: string | null
+  confirm_quarantined?: boolean | null
 }
 export interface GroupsDisbandResult {
   tombstone: RoomTombstone
@@ -4825,7 +4826,7 @@ export interface RpcMethods {
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
   /** Fence this gateway's stale room authority against a proven newer epoch. Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists. */
   'groups.demote': { params: GroupsDemoteParams; result: GroupsDemoteResult }
-  /** Permanently tombstone a hosted room id after stopping its work and revoking peer routes. */
+  /** Permanently tombstone a hosted room id after stopping its work and revoking peer routes. A quarantined room needs confirm_quarantined=true and only ends on this gateway, history kept. */
   'groups.disband': { params: GroupsDisbandParams; result: GroupsDisbandResult }
   /** List rooms hosted by this gateway, most recently changed first. */
   'groups.list': { params: GroupsListParams; result: GroupsListResult }

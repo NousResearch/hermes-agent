@@ -1168,7 +1168,7 @@ def disband_room(
     _require_positive_int(expected_epoch, "expected_epoch")
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
-        room_safety._raise_if_quarantined(conn, room_id)
+        room_safety._raise_if_quarantined(conn, room_id, hint=_QUARANTINED_DISBAND_HINT)
         room = conn.execute("""SELECT authority_gateway_id, authority_epoch, next_seq, event_bytes, disbanded_at
                 FROM hosted_rooms WHERE room_id=?""", (room_id,)).fetchone()
         if (replay := _disband_replay(conn, room_id, room)) is not None:
@@ -1191,6 +1191,51 @@ def disband_room(
         _prune_disbanded_rooms_locked(conn, now=now, max_gateway_event_bytes=max(
             0, MAX_GATEWAY_EVENT_BYTES - room_safety._replica_event_bytes_locked(conn)))
     return {"room_id": room_id, "disbanded_at": now, "idempotent": False, "event": _event_from_row(event)}
+
+
+_QUARANTINED_DISBAND_HINT = (
+    " To end it on this gateway only, call groups.disband again with confirm_quarantined set to true;"
+    " its history stays readable through groups.log.")
+
+
+def quarantine_reason(db_path: DbPath, *, room_id: Any) -> str | None:
+    """Why ``room_id`` is quarantined, or ``None`` when it is not."""
+    room_id = _room_id(room_id)
+    with closing(_read_connection(db_path)) as conn:
+        return room_safety._quarantine_reason_locked(conn, room_id)
+
+
+def disband_quarantined_room(
+    db_path: DbPath, *, room_id: Any, confirmed: bool, now: float | None = None
+) -> dict[str, Any]:
+    """End a quarantined room on this gateway only, once an operator has confirmed it.
+
+    The room gets a tombstone: it leaves the active lists and its id stays retired and reserved. Nothing
+    else changes. No event is appended and its authority is left as recorded, so this gateway never acts
+    as the room's authority, and the quarantine stays: the history remains readable through
+    ``read_events(include_disbanded=True)`` and is never pruned. Nothing here runs or stops work, or
+    contacts another gateway. A room that isn't quarantined is refused; it takes ``disband_room``.
+    """
+    room_id = _room_id(room_id)
+    now = _now(now)
+    with _transaction(db_path, immediate=True) as conn:
+        if room_safety._quarantine_reason_locked(conn, room_id) is None:
+            raise RoomConflictError("This Group Chat is not quarantined; disband it normally.")
+        if confirmed is not True:
+            room_safety._raise_if_quarantined(conn, room_id, hint=_QUARANTINED_DISBAND_HINT)
+        room = conn.execute("SELECT disbanded_at FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+        if room is None:
+            raise RoomNotFoundError("hosted room not found")
+        if room["disbanded_at"] is not None:
+            conn.execute(_INSERT_RETIRED, (room_id, float(room["disbanded_at"])))
+            return {"room_id": room_id, "disbanded_at": float(room["disbanded_at"]), "idempotent": True}
+        room_safety._record_quarantine_disband_locked(conn, room_id, now)
+        _fenced_update(
+            conn, "UPDATE hosted_rooms SET disbanded_at=?, updated_at=?, revision=revision+1 "
+            "WHERE room_id=? AND disbanded_at IS NULL", (now, now, room_id),
+            RoomConflictError("quarantined room disband lost its fence"))
+        conn.execute(_INSERT_RETIRED, (room_id, now))
+    return {"room_id": room_id, "disbanded_at": now, "idempotent": False}
 
 
 def read_events(

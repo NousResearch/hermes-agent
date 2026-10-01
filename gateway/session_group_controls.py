@@ -28,7 +28,7 @@ _FIELDS = {
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
-    'groups.disband': {'room_id', 'cancel_id'},
+    'groups.disband': {'room_id', 'cancel_id', 'confirm_quarantined'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
     'groups.attachment.download': {'room_id', 'event_id', 'attachment_id'},
@@ -153,6 +153,11 @@ def _group(authority, actor, home, method, params):
 
     def disband():
         from gateway.hosted_room_driver import list_tasks
+        if rooms.quarantine_reason(db_path, room_id=params.get('room_id')) is not None:
+            # Stop and route revocation would act as the room's authority: a quarantined room only
+            # ends here, after explicit confirmation, with its history kept.
+            return {'tombstone': rooms.disband_quarantined_room(
+                db_path, room_id=params.get('room_id'), confirmed=params.get('confirm_quarantined') is True)}
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
         if service is not None and state.get('disbanded_at') is None:
             service.stop_room(params.get('room_id'),

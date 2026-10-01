@@ -205,6 +205,8 @@ hermes peer stop spark run_abc123
 
 如果一个群聊的历史中已经记录了提升或降级（发生在这些方法被停用之前，或由共享同一存储的旧版 gateway 执行），它会被保持为**只读**：在没有独占权威的情况下，Hermes 无法判断是否有两个 gateway 都在继续写入。`groups.list` 会用 `safety_status: "authority_quarantined"` 和 `safety_reason` 标记这样的房间，`groups.log` 仍会返回完整历史，但 `groups.state`、发送、重命名和解散都会以原因 `room_authority_quarantined` 被拒绝。历史未通过校验的已存储副本同样会由 `groups.replica_state` 报告为 `safety_status: "quarantined"`。被隔离的历史永远不会被清理。
 
+要在这个 gateway 上结束这样的房间，请调用 `groups.disband` 并传入 `confirm_quarantined: true`；不带该参数时，调用会以原因 `room_authority_quarantined` 被拒绝。确认后的解散只会在本 gateway 上为房间留下墓碑：它会从房间列表中移除，其 ID 永远不会被复用，其历史仍可通过 `groups.log`（带 `include_disbanded: true`）读取，并且依然永远不会被清理。它不会解除隔离，不会停止或启动任何工作，不会改变房间记录的权威，也不会联系其他 gateway：对端路由不会被撤销，其他 gateway 为该房间签发的授权会自行过期。
+
 权威接管是一项**运维恢复流程**，而不是原子化的交接。请在相应的 gateway 上使用现有的 JSON-RPC 方法 `groups.promote` 和 `groups.demote`。不存在 `groups.peer.promote` 或 `groups.peer.demote` 方法；`groups.capabilities` 会列出你的 gateway 支持的方法。
 
 :::warning 提升之前先隔离旧的写入方

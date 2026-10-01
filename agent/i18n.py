@@ -12,8 +12,8 @@ Every layer may be partial. Language resolution: explicit ``lang=`` > ``HERMES_L
 ``display.language`` > ``en``; any id that some layer supplies is accepted, so a pack-only language
 (``pl``) works the moment its plugin loads. ``t()`` is a hot path: one cached merged dict per
 ``(home, lang)``, invalidated by :func:`reset_language_cache` (which every pack registration calls).
-A bundled file is parsed once per process and reused by every home and after every reset, because
-the pure-Python YAML parse takes hundreds of milliseconds and ``t()`` runs on the gateway's event loop.
+Parsed bundled files are cached by file identity and reused across homes and language-cache resets.
+The pure-Python YAML parse takes hundreds of milliseconds and ``t()`` runs on the gateway's event loop.
 """
 
 from __future__ import annotations

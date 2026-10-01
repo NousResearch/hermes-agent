@@ -209,6 +209,20 @@ def test_unchanged_route_decision_reaches_agent_and_clears_when_absent(routed_ch
     assert shell.agent._turn_route_middleware_trace == []
 
 
+def test_unusable_route_falls_back_to_configured_route_with_warning(routed_chat):
+    shell, selected, _credential, agents, _turn_agents = routed_chat
+    selected.update(model="   ")
+    cli_mod = _import_cli()
+    with patch.object(cli_mod.logger, "warning") as warning:
+        route = shell._resolve_turn_agent_config("blank model")
+    assert route["model"] == "alpha" and route["runtime"]["provider"] == "provider-a"
+    assert "middleware_trace" not in route
+    assert "unusable route" in warning.call_args.args[0]
+    shell.chat("blank model")
+    assert shell.agent.model == "alpha"
+    assert shell.agent._turn_route_middleware_trace == []
+
+
 def test_same_provider_model_change_resolves_selected_model_wire(routed_chat, monkeypatch):
     """A model-only selection on the same provider must resolve the new model's api_mode/base_url."""
     from hermes_cli.plugins import PluginManager

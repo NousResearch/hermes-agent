@@ -273,3 +273,48 @@ def test_turn_route_trace_reaches_api_observer_and_refreshes_on_reuse(monkeypatc
     # Reuse refreshes the trace: a later turn without a route decision must not keep the old reason.
     absent = {"model": "configured-model", "runtime": runtime, "middleware_trace": []}
     assert reused_turn_trace(absent, 3) == [{"reason": "request-decision"}]
+
+
+def test_unusable_turn_route_falls_back_to_configured_route_with_warning(monkeypatch, tmp_path, caplog):
+    """A changed but unusable route is rejected visibly: configured route, no trace, a warning."""
+    import logging
+
+    from gateway.config import Platform
+    from gateway.run_turn_routing import GatewayTurnRoutingMixin
+    from gateway.session import SessionSource
+    from hermes_cli import plugins
+
+    manager = plugins.PluginManager(scope_key=str(tmp_path / "plugin-home"))
+    manager._discovered = True
+    context = plugins.PluginContext(
+        plugins.PluginManifest(name="review-router", key="review-router", source="user"),
+        manager,
+    )
+    monkeypatch.setattr(plugins, "_delivery_manager", lambda: manager)
+    context.register_middleware("turn_route", lambda route, **kw: {
+        "route": {**route, "model": "   "}, "reason": "blank-model",
+    })
+    resolver_calls = []
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        lambda *args, **kw: resolver_calls.append(args) or {},
+    )
+    runtime = {
+        "provider": "custom", "requested_provider": "custom:local",
+        "api_mode": "chat_completions", "base_url": "https://route-test.invalid/v1",
+        "api_key": "inert-placeholder", "command": None, "args": [],
+        "credential_pool": None,
+    }
+    host = GatewayTurnRoutingMixin()
+    host._service_tier = None
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        route = host._resolve_turn_agent_config(
+            "hello", "configured-model", runtime, session_id="physical", session_key="durable",
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="user"),
+            conversation_history=[], internal=False,
+        )
+    assert route["model"] == "configured-model"
+    assert route["runtime"]["requested_provider"] == "custom:local"
+    assert "middleware_trace" not in route
+    assert resolver_calls == []
+    assert "unusable route" in caplog.text

@@ -666,6 +666,10 @@ class CLIAgentSetupMixin:
                         route["model"] = selected_model
                         route["runtime"] = runtime
                         route["middleware_trace"] = result.trace
+                if result.changed and "middleware_trace" not in route:
+                    # A rejected route falls back like a failed middleware; say so instead of silently.
+                    from cli import logger
+                    logger.warning("Turn-route middleware returned an unusable route; using the configured route")
             except Exception as exc:
                 from cli import logger
                 logger.warning("Turn-route middleware failed open: %s", exc)

@@ -964,7 +964,9 @@ test('buildSpawnCommand never pins a non-slug profile into the remote argv', () 
   // The roster/SSH bridge hands the profile verbatim; a numeric id or display
   // label must never cross into the remote serve argv, where the CLI used to
   // str()-coerce it into a phantom profiles/0/ directory (#88842).
-  const bad = buildSpawnCommand('/x/hermes', 0 as unknown as string, { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  const bad = buildSpawnCommand('/x/hermes', 0 as unknown as string, {
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
   assert.ok(!bad.includes('--profile'), 'a non-string profile must not be pinned')
 
   const empty = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })

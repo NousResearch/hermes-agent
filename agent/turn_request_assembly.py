@@ -13,7 +13,10 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from agent.message_sanitization import _sanitize_messages_surrogates
+from agent.message_sanitization import (
+    _sanitize_messages_surrogates,
+    native_anthropic_accounting_projection,
+)
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
@@ -35,43 +38,6 @@ class AssembledRequest:
     approx_tokens: Any
     request_pressure_tokens: Any
     total_chars: Any
-
-
-def _native_anthropic_accounting_projection(messages: Any) -> Any:
-    """Project selected Anthropic request messages into the rough estimator.
-
-    Native conversion replays readable thinking from one of two mutually exclusive
-    carriers: ordered anthropic_content_blocks (preferred by the converter), or
-    reasoning_details. The generic estimator intentionally ignores reasoning_details
-    and otherwise would count ordered blocks wholesale, including opaque signatures/data
-    and duplicate text/tool material. This projection charges only readable thinking once.
-    """
-    if not isinstance(messages, list):
-        return messages
-    projected = []
-    for message in messages:
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            projected.append(message)
-            continue
-        shadow = dict(message)
-        ordered = shadow.pop("anthropic_content_blocks", None)
-        details = shadow.pop("reasoning_details", None)
-        shadow.pop("_anthropic_content_blocks", None)
-        carrier = ordered if isinstance(ordered, list) and ordered else details
-        readable = []
-        if isinstance(carrier, list):
-            for block in carrier:
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "thinking"
-                    and isinstance(block.get("thinking"), str)
-                    and block.get("thinking")
-                ):
-                    readable.append(block["thinking"])
-        if readable:
-            shadow["_anthropic_readable_thinking_estimate"] = "\n".join(readable)
-        projected.append(shadow)
-    return projected
 
 
 def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original_user_message: Any) -> None:
@@ -285,7 +251,7 @@ def assemble_api_request(
             if native_anthropic_preserves_prior_thinking(
                 getattr(agent, "base_url", ""), getattr(agent, "model", "")
             ):
-                _estimate_messages = _native_anthropic_accounting_projection(api_messages)
+                _estimate_messages = native_anthropic_accounting_projection(api_messages)
         approx_tokens = estimate_messages_tokens_rough(_estimate_messages)
     else:
         approx_tokens = estimate_messages_tokens_rough(api_messages, charge_stale_thinking=False)

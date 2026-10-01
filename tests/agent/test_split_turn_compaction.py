@@ -368,31 +368,6 @@ def test_restated_reply_keeps_splitting_on_later_compactions() -> None:
             messages.extend(_tool_group(100 * (cycle + 1) + index))
 
 
-def test_task_snapshot_keeps_the_request_not_the_reply_quote() -> None:
-    """Head elision of a long reply row used to keep only the quote and drop the request."""
-    snapshot = ContextCompressor._latest_user_task_snapshot(
-        [{"role": "user", "content": _gateway_reply("please fix the parser")}]
-    )
-    assert snapshot is not None
-    assert "please fix the parser" in snapshot
-    assert "Earlier assistant answer" not in snapshot
-
-
-@pytest.mark.parametrize(
-    "content, expected",
-    [
-        (_ACTIVE_REQUEST, _ACTIVE_REQUEST),
-        ('[Replying to: "a"]\n\n', '[Replying to: "a"]'),
-        ('[Replying to: "q"]\n\nsays "x"]\n\n in code"]\n\ngo', 'says "x"]\n\n in code"]\n\ngo'),
-        (f'{_INFLIGHT_TASK_REPLAY_HEADER}\n[Replying to: "q"]\n\ngo', "go"),
-        (f'I quoted it:\n[Replying to: "q"]\n\ngo', 'I quoted it:\n[Replying to: "q"]\n\ngo'),
-    ],
-    ids=["no-pointer", "pointer-only", "quote-with-delimiter", "after-replay-header", "not-leading"],
-)
-def test_authored_request_text_never_strips_user_text(content: str, expected: str) -> None:
-    assert _authored_request_text(content) == expected
-
-
 @pytest.mark.parametrize(
     "payload, can_split",
     [

@@ -228,3 +228,84 @@ def test_switch_model_agrees_with_rebuild_anthropic_client(spies):
             f"_rebuild_anthropic_client disagree on SDK dispatch "
             f"({via_switch} vs {via_rebuild})"
         )
+
+
+def _switch_strict(agent, new_model, new_provider, base_url, api_mode="anthropic_messages"):
+    """Same stubs as ``_switch`` but propagates instead of swallowing.
+
+    The empty-base_url guard raises before any client is rebuilt, so the
+    spy-based helper above cannot see it — it swallows the very exception
+    these tests are about.
+    """
+    from agent import agent_runtime_helpers as arh
+    from run_agent import AIAgent
+
+    with (
+        patch.object(AIAgent, "_ensure_lmstudio_runtime_loaded", lambda self, *a, **k: None, create=True),
+        patch.object(AIAgent, "_lmstudio_load_was_unverified", lambda self, *a, **k: False, create=True),
+        patch.object(AIAgent, "_effective_lmstudio_context_length", lambda self, *a, **k: None, create=True),
+        patch.object(AIAgent, "_anthropic_prompt_cache_policy", lambda self, *a, **k: (False, False), create=True),
+        patch.object(AIAgent, "_apply_client_headers_for_base_url", lambda self, *a, **k: None, create=True),
+        patch.object(AIAgent, "_create_openai_client", lambda self, *a, **k: MagicMock(), create=True),
+        patch("agent.credential_pool.load_pool", lambda *a, **k: None, create=True),
+    ):
+        arh.switch_model(
+            agent, new_model, new_provider,
+            api_key="", base_url=base_url, api_mode=api_mode,
+        )
+
+
+class TestSwitchModelEmptyBaseUrlGuard:
+    """The #47828 stale-base_url guard must not block Claude on Vertex/Bedrock.
+
+    That guard raises when a provider change resolves an empty ``base_url``, on
+    the premise that empty means upstream resolution failed. The premise does
+    not hold for the Anthropic cloud partner SDKs: ``AnthropicVertex`` and
+    ``AnthropicBedrock`` derive their endpoint from project/region internally,
+    so a caller legitimately has no URL to pass.
+
+    Reachability note, so nobody mistakes these for a live-bug regression test:
+    every shipping caller DOES supply a base_url for Claude-on-Vertex —
+    ``resolve_runtime_provider`` puts the display-only publisher URL from
+    ``build_anthropic_vertex_base_url()`` in the runtime dict, and cli.py,
+    gateway/run.py and tui_gateway all forward it. The guard is therefore
+    unreachable on the ``/model`` path today. These tests pin the behaviour for
+    a direct caller and for the day a caller stops supplying it.
+    """
+
+    def test_vertex_anthropic_switch_survives_empty_base_url(self, spies):
+        """No base_url at all must still switch, and via the Vertex SDK."""
+        agent = _agent("anthropic", "https://api.anthropic.com")
+        _switch_strict(agent, "anthropic/claude-opus-4-8", "vertex", "")
+        assert agent.provider == "vertex"
+        assert agent.model == "anthropic/claude-opus-4-8"
+        assert spies["vertex"] == [{"project_id": "proj-1", "region": "global"}]
+        assert spies["direct"] == []
+
+    def test_bedrock_anthropic_switch_survives_empty_base_url(self, spies):
+        """Bedrock derives its endpoint from the region, same as Vertex."""
+        agent = _agent("anthropic", "https://api.anthropic.com")
+        _switch_strict(agent, "claude-opus-4-8", "bedrock", "")
+        assert agent.provider == "bedrock"
+        # Which region a URL-less switch lands on is upstream's
+        # ``bind_bedrock_runtime`` policy; this test only pins that the guard
+        # lets the switch through onto the Bedrock SDK.
+        assert len(spies["bedrock"]) == 1
+        assert spies["direct"] == []
+
+    def test_guard_still_fires_for_a_non_cloud_provider(self, spies):
+        """The exemption must stay scoped — an ordinary provider change with no
+        resolved base_url is still the bug #47828 was written to catch."""
+        agent = _agent("openrouter", "https://openrouter.ai/api/v1")
+        with pytest.raises(ValueError, match="no base_url resolved"):
+            _switch_strict(agent, "minimax/minimax-m2", "minimax", "")
+
+    def test_guard_still_fires_for_vertex_outside_anthropic_messages(self, spies):
+        """Gemini-on-Vertex goes through the OpenAI-compat aggregator and DOES
+        need a real base_url, so the exemption must not cover it."""
+        agent = _agent("openrouter", "https://openrouter.ai/api/v1")
+        with pytest.raises(ValueError, match="no base_url resolved"):
+            _switch_strict(
+                agent, "google/gemini-3.5-flash", "vertex", "",
+                api_mode="chat_completions",
+            )

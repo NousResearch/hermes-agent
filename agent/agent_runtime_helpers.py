@@ -2192,9 +2192,24 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     # Empty base_url while the provider changes means upstream resolution failed; falling back to
     # the old provider's URL pairs the wrong host and persists via _primary_runtime. Fail loud.
     # Same-provider re-select (credential refresh) may keep the URL.
+    #
+    # Exception: the cloud partner-model SDKs genuinely have no base_url.
+    # ``AnthropicVertex`` and ``AnthropicBedrock`` derive their endpoint
+    # from project/region internally
+    # (``…/publishers/anthropic/models/<model>:rawPredict``), so
+    # ``switch_model()`` correctly resolves an empty base_url for them and
+    # the guard's premise — "empty means resolution failed" — does not
+    # hold. Raising here would make ``/model anthropic/claude-*`` on
+    # ``provider: vertex`` unusable. Nothing is inherited in this case
+    # either: the branch below leaves ``agent.base_url`` untouched, and
+    # the Anthropic client is rebuilt from project/region rather than from
+    # ``agent.base_url``.
+    cloud_sdk_derives_endpoint = (api_mode or "") == "anthropic_messages" and (
+        new_norm in {"vertex", "bedrock"}
+    )
     if base_url:
         agent.base_url = base_url
-    elif old_norm != new_norm:
+    elif old_norm != new_norm and not cloud_sdk_derives_endpoint:
         raise ValueError(
             f"switch_model: no base_url resolved for provider "
             f"'{new_provider}' (switching from '{old_provider}'); "

@@ -6053,6 +6053,20 @@ class SlackAdapter(BasePlatformAdapter):
         text = self._slash_command_text(command)
         thread_id = self._slash_thread_id(command)
         is_dm = str(channel_id).startswith("D")
+
+        if self._is_ignored_channel(channel_id):
+            logger.info(
+                "[Slack] Ignoring slash command from ignored channel: channel=%s user=%s",
+                channel_id, user_id)
+            return
+
+        allowed_channels = self._slack_allowed_channels()
+        if allowed_channels and channel_id not in allowed_channels and not is_dm:
+            logger.info(
+                "[Slack] Ignoring slash command from non-allowed channel: channel=%s user=%s",
+                channel_id, user_id)
+            return
+
         if is_dm and self._slack_disable_dms():
             logger.info(
                 "[Slack] Ignoring slash command from DM because Slack DMs are disabled: channel=%s user=%s",

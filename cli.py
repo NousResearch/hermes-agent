@@ -588,7 +588,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         return
     _active_worktree = None
 
-    if _worktree_is_dirty(wt_path, timeout=10):
+    if _worktree_is_dirty(wt_path, repo_root, timeout=10):
         # Uncommitted work: say so, and don't hint at `remove --force`, which would destroy it.
         _cprint(f"\n\033[33m{_t('cli.worktree.uncommitted_keeping', path=wt_path)}\033[0m")
         return

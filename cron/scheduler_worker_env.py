@@ -34,10 +34,10 @@ def _installed_purelib() -> Path | None:
         return None
 
 
-def _committed_dependency_site_packages(project_root: Path) -> Path | None:
-    """The dependency ``site-packages`` PM committed for this install, or ``None``.
+def _runtime_site_packages(project_root: Path) -> Path | None:
+    """The dependency ``site-packages`` selected for this install, or ``None``.
 
-    Asked of PM's own committed selection -- the record ``activate_dependencies`` resolves
+    Asked of PM's own selection -- the record ``activate_dependencies`` resolves
     at process boot -- rather than re-derived from this process's ``sys.path``: the record
     belongs to this install (``install_state_dir``, shared by every profile it serves). A
     runner that owns its dependencies (wheel / pipx / developer venv / Nix: no committed
@@ -45,14 +45,14 @@ def _committed_dependency_site_packages(project_root: Path) -> Path | None:
     is invented.
     """
     try:
-        from pm.environments import committed_venv, site_packages
+        from pm.environments import selected_venv, site_packages
 
-        environment = committed_venv(project_root)
+        environment = selected_venv(project_root)
     except Exception as exc:
         # An unreadable record: pin the tree only. The cron worker's own boot re-reads it and
         # fails the dispatch with PM's error.
         logger.warning(
-            "cron worker: could not read the committed dependency environment: %s", exc
+            "cron worker: could not read the runtime dependency environment: %s", exc
         )
         return None
     if environment is None:
@@ -62,7 +62,7 @@ def _committed_dependency_site_packages(project_root: Path) -> Path | None:
 
 
 def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
-    """Prepend ``repo_root`` -- and, when this runner has one, the committed dependency
+    """Prepend ``repo_root`` -- and, when this runner has one, the runtime dependency
     generation's ``site-packages`` -- to the worker env's own PYTHONPATH (never
     ``os.environ``'s).
 
@@ -79,7 +79,7 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     if _installed_purelib() == Path(root).resolve():
         return worker_env
     existing = [e for e in worker_env.get("PYTHONPATH", "").split(os.pathsep) if e]
-    dependency = _committed_dependency_site_packages(Path(root))
+    dependency = _runtime_site_packages(Path(root))
     pinned = [root, *([str(dependency)] if dependency is not None else [])]
     worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([*pinned, *existing]))
     return worker_env

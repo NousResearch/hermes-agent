@@ -4211,6 +4211,14 @@ from cron.scheduler_preflight import (  # noqa: E402
 # `python -m cron.scheduler` entry: MUST stay below the split-module imports so the worker /
 # tick paths see every name they need.
 if __name__ == "__main__":
+    from cron.jobs import _ensure_croniter
+    if not _ensure_croniter():
+        logger.error(
+            "cron worker startup failed: cannot import 'croniter'. "
+            "The worker is missing its runtime dependencies."
+        )
+        sys.exit(1)
+
     if "--external-worker-file" in sys.argv:
         import argparse
 

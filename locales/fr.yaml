@@ -668,6 +668,8 @@ gateway:
     channel_join_failed: "Échec de la connexion au canal vocal : {error}"
     channel_deps_missing: "Les dépendances vocales sont manquantes (PyNaCl / davey). Lancez : `{hint}`"
     channel_join_permissions: "Échec de la connexion au canal vocal. Vérifiez les permissions du bot (Connect + Speak)."
+    channel_joined_voice_only: "J’ai rejoint le canal vocal **{name}**. Je répondrai vocalement uniquement aux messages vocaux. Utilisez /voice leave pour quitter."
+    channel_joined_off: "J’ai rejoint le canal vocal **{name}**. Les réponses restent textuelles. Utilisez /voice on pour activer les réponses vocales ou /voice leave pour quitter."
     channel_joined: |-
       Canal vocal **{name}** rejoint.
       Je lirai mes réponses à voix haute et je vous écouterai. Utilisez /voice leave pour me déconnecter.

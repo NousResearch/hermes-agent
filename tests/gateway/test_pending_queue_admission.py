@@ -69,7 +69,7 @@ def _setup(depth):
 @pytest.mark.parametrize("path", [
     "fifo", "normal", "queue", "steer", "grace", "debounce", "reserved", "redispatch",
     "redispatch-arrival", "redispatch-rewrite", "redispatch-idless", "cancel-before",
-    "cancel-admission", "cancel-claimed", "cancel-claim-race", "cancel-claim-complete", "reservation-replaced",
+    "cancel-admission", "cancel-claimed", "cancel-claim-race", "cancel-claim-complete", "cancel-claim-replaced", "reservation-replaced",
 ])
 async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypatch, tmp_path):
     adapter, runner, expected = _setup(31 if path == "reserved" else 32)
@@ -95,12 +95,14 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
                 entered.set()
                 await asyncio.Event().wait()
 
-            if path in {"cancel-claim-race", "cancel-claim-complete"}:
+            if path in {"cancel-claim-race", "cancel-claim-complete", "cancel-claim-replaced"}:
                 async def admit(event):
                     entered.set()
                     try:
                         await asyncio.Event().wait()
                     except asyncio.CancelledError:
+                        if path == "cancel-claim-replaced":
+                            reserve_pending_dispatch(adapter, "shared", incoming)
                         return event, event.source, True
 
                 runner._hm_admit_event = admit
@@ -114,8 +116,20 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
                 runner._hm_rescue_orphaned_fifo = lambda event, source, internal, key: (event, source, internal)
                 runner._persist_active_agents = lambda: None
                 runner._begin_session_run_generation = lambda key: 1
-                runner._handle_message_with_agent = (AsyncMock(side_effect=asyncio.CancelledError)
-                                                     if path == "cancel-claim-race" else AsyncMock(return_value=None))
+                async def persist_claimed_input(event, *args):
+                    entry = runner.session_store.get_or_create_session(event.source)
+                    owner = "claimed:" + str(event.message_id)
+                    bind_pending_dispatch_input(entry.session_id, owner)
+                    runner.session_store.append_to_transcript(entry.session_id, {
+                        "role": "user", "content": event.text,
+                        "display_metadata": {"gateway_input_owner": owner},
+                    })
+                    assert runner.session_store.has_input_owner(entry.session_id, owner)
+                    if path != "cancel-claim-complete":
+                        raise asyncio.CancelledError
+                    return None
+
+                runner._handle_message_with_agent = persist_claimed_input
                 runner._run_post_turn_hooks = AsyncMock()
                 runner._restore_pending_one_turn_model_override = lambda *args: None
                 runner._clear_durable_active_turn = AsyncMock()
@@ -128,8 +142,9 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
             if path != "cancel-before":
                 await asyncio.wait_for(entered.wait(), 2)
             await adapter.cancel_session_processing("shared", discard_pending=False)
-            assert (_events(adapter, runner), adapter._pending_dispatch_reservations) == (
-                expected[1:] if path in {"cancel-claimed", "cancel-claim-race", "cancel-claim-complete"} else expected, {})
+            assert (_events(adapter, runner), {key: record.event for key, record in adapter._pending_dispatch_reservations.items()}) == (
+                expected[1:] if path in {"cancel-claimed", "cancel-claim-race", "cancel-claim-complete", "cancel-claim-replaced"} else expected,
+                {"shared": incoming} if path == "cancel-claim-replaced" else {})
             return
         if path == "reserved":
             buffered = _make_event("reserved", chat_type="group", user_id="buffered-user")

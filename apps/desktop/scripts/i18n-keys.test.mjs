@@ -12,6 +12,7 @@ test('flattenKeys lists every leaf as a sorted dotted path, functions included, 
     flattenKeys({ z: { count: n => `${n}`, a: 'x', 'dotted.key': 'y' }, list: ['a'], b: 'c' }),
     ['b', 'list', 'z.a', 'z.count', 'z.dotted.key']
   )
+  assert.deepEqual(flattenKeys({ object: () => ({ before: 'x' }), throwing: () => { throw new Error('nope') }, text: () => 'text' }), ['text'])
   assert.equal(renderKeysFile(['a']), `{\n  "surface": "${SURFACE}",\n  "keys": [\n    "a"\n  ]\n}\n`)
 })
 

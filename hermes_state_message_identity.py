@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from hermes_state_common import _placeholders, _sql_json_extract
+from hermes_state_common import QUEUED_PROMPT_METADATA_KEY, _placeholders, _sql_json_extract
 
 
 class SessionMessageIdentityMixin:
@@ -31,12 +31,14 @@ class SessionMessageIdentityMixin:
             (session_id, platform_message_id)) is not None
 
     def find_user_message_by_client_message_id(self, session_id: str, client_message_id: str) -> Optional[Dict[str, Any]]:
-        """Return the user row the transcript currently shows for ``client_message_id`` across the resume
-        lineage (active or compaction-archived, newest first), or None.
+        """Return the newest visible (active or compaction-archived) user row for ``client_message_id``
+        across the resume lineage that does not carry the never-drained marker, or None.
 
-        The row is the acknowledgment a retry after a restart receives. An accept-time row that
-        ``reopen_session`` retired (#125577) is a prompt that never ran, so it is no acknowledgment and
-        the retry must run; after a drain the live replacement row is the acknowledgment.
+        The row is the acknowledgement a retry receives when the in-memory queue cannot answer (a
+        restart, or the prompt already drained). A row still carrying the marker (#125577) is a prompt
+        nothing will run — ``reopen_session`` retires the tip's, but a compression rotation leaves the
+        parent's original active and an in-place compaction without coverage archives it — so it is
+        never an acknowledgement; the drain's unmarked replacement row is.
         """
         session_ids = self._resume_lineage_ids(session_id)
         if not session_ids or not client_message_id:
@@ -45,6 +47,7 @@ class SessionMessageIdentityMixin:
             f"SELECT id, timestamp, display_metadata FROM messages "
             f"WHERE session_id IN ({_placeholders(session_ids)}) AND role = 'user' "
             "AND (active = 1 OR compacted = 1) "
+            f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) != 1 "
             f"AND {_sql_json_extract('display_metadata', '$.client_message_id')} = ? "
             "ORDER BY id DESC LIMIT 1",
             (*session_ids, client_message_id),

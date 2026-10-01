@@ -1097,7 +1097,8 @@ class SessionMessagesMixin:
         if covered_ids is None:
             return None
         from agent.context_compressor import _DB_PERSISTED_MARKER
-        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_ROW
+        from agent.conversation_compression_archive import (
+            MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_DURABLE_ROWS, RETIRED_ROW)
 
         proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
         merged_away: Set[int] = set()
@@ -1113,6 +1114,10 @@ class SessionMessagesMixin:
                 proved.extend(matches)
                 if not message.get(OWN_ROW):
                     merged_away.update(matches)
+                continue
+            # A folded assistant's own row is named by its OWN_ROW record above. Its combined text never
+            # existed in storage, so matching it by content could only claim another surface's row.
+            if any(isinstance(row, dict) and row.get(OWN_ROW) for row in message.get(RETIRED_DURABLE_ROWS) or ()):
                 continue
             # The stamp is provenance and text is not: a surface may have re-rendered the dict since the
             # repair (gateway timestamps), and a later row can equal the merged text. So the run is

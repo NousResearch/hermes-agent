@@ -89,3 +89,22 @@ def test_git_consumers_fall_back_to_system_git(tmp_path, monkeypatch, consumer, 
         assert result["success"] is True
         assert "+system git content" in result["diff"]
     assert calls
+
+
+def test_failed_git_environment_lookup_is_reused(monkeypatch):
+    from hermes_cli._subprocess_compat import selected_git_env
+
+    calls = []
+    base = {"PATH": "/missing", "HERMES_GIT_CACHE_TEST": "unique"}
+
+    def unavailable(name, *, base_env):
+        calls.append(name)
+        raise RuntimeError("managed Git unavailable")
+
+    monkeypatch.setattr(pm, "ensure", unavailable)
+    first = selected_git_env(base)
+    second = selected_git_env(base)
+
+    assert calls == ["git"]
+    assert second == first
+    assert second is not first

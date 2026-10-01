@@ -1,5 +1,6 @@
 """Release-channel checks and updates against actual repositories and HTTP feeds."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.client
 import json
 from threading import Thread
 from types import SimpleNamespace
@@ -117,6 +118,51 @@ def test_stable_resolution_uses_promoted_pointer_not_highest_tag(releases, git_c
         releases.tags["stable"], releases.commits[1],
     )
     assert releases.requests
+
+
+def test_truncated_source_release_response_is_unavailable_on_public_path(monkeypatch):
+    from hermes_cli import source_releases
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            raise http.client.IncompleteRead(b'{"tag":', 12)
+
+    def urlopen(request, timeout=30):
+        assert request.full_url.endswith("/releases/stable/release-candidates.json")
+        assert timeout == 30
+        return Response()
+
+    monkeypatch.setattr(source_releases.urllib.request, "urlopen", urlopen)
+    assert resolve_source_release("stable") == (None, None)
+
+
+@pytest.mark.parametrize("rev_list_returncode,rev_list_stdout,pattern", [
+    (0, "d" * 40 + "\n", "downgrade"),
+    (128, "", "cannot verify"),
+])
+def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, tmp_path,
+                                                                    rev_list_returncode, rev_list_stdout, pattern):
+    from hermes_cli.source_releases import _refuse_retirement_downgrade
+
+    class Result:
+        returncode = rev_list_returncode
+        stdout = rev_list_stdout
+
+    def run(argv, **_kwargs):
+        assert argv[1:3] == ["rev-list", "--ancestry-path"]
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", run)
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 2}}
+    with pytest.raises(ValueError, match=pattern):
+        _refuse_retirement_downgrade(request, terminal, ["git"], tmp_path)
 
 
 @pytest.mark.parametrize("channel", ["stable", "canary"])

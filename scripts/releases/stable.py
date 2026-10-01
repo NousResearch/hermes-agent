@@ -493,11 +493,18 @@ def check_claim(env: dict, run=output) -> dict:
 
 
 def stable_context(env: dict, run=output) -> tuple[str, str, dict]:
+    """Return the payload identity derived from the admitted claim.
+
+    Stable workflow inputs carry the attempt ref because that is the custody
+    and archive authority. Native metadata and channel admission consume the
+    corresponding payload tag derived from that same claim; they must not take
+    an independent tag from the caller.
+    """
     claim = check_claim(env, run=run)
-    tag = env.get("RELEASE_TAG")
-    if not isinstance(tag, str) or tag != claim["tag"]:
-        raise ValueError("Stable payload tag differs from the admitted claim")
-    return tag, claim["commit"], claim
+    supplied = env.get("RELEASE_TAG")
+    if supplied not in {claim["claim_tag"], claim["tag"]}:
+        raise ValueError("Stable release tag differs from the admitted claim")
+    return claim["tag"], claim["commit"], claim
 
 
 def final_context(env: dict, run=output) -> tuple[str, str, dict]:

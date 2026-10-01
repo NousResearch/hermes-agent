@@ -17,7 +17,7 @@ from scripts.releases.draft_warning import (
 )
 from scripts.releases.stable import (
     check_claim, ensure_final_tag, plan_receipt_transitions, plan_transitions, read_manifest,
-    require_stable_identity, require_success, validate_candidates, validate_receipt,
+    require_stable_identity, require_success, stable_context, validate_candidates, validate_receipt,
 )
 
 BASE = "https://releases.example"
@@ -356,6 +356,15 @@ def test_manifest_origin_checks_with_real_https(https_origin):
     with pytest.raises(ValueError, match='origin'):
         read_manifest(f'https://localhost:{server.server_port}/manifest', expected_origin=base, opener=opener)
     assert server.requests == []
+
+
+def test_stable_context_derives_payload_tag_from_attempt_authority(monkeypatch):
+    claim = {"claim_tag": "rc.2-v1.2.3", "tag": "v1.2.3", "commit": "a" * 40}
+    monkeypatch.setattr("scripts.releases.stable.check_claim", lambda env, run=None: claim)
+    payload, commit, _ = stable_context({"RELEASE_TAG": claim["claim_tag"]})
+    assert (payload, commit) == (claim["tag"], claim["commit"])
+    with pytest.raises(ValueError, match="differs"):
+        stable_context({"RELEASE_TAG": "v9.9.9"})
 
 
 def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkeypatch):

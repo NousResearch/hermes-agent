@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from html.parser import HTMLParser
+import http.client
 import json
 import logging
 import re
@@ -140,19 +141,10 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
         if result.returncode == 0 and result.stdout.strip():
             raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
         if terminal["head"]["sequence"] > request["sequence"]:
-            # Shallow checkouts may lack the qualified commit, even when HEAD is
-            # today's stable build. Read it with the protocol's full digest checks.
-            current_manifest = _resolve_channel(terminal["name"], request["repository"]).manifest
-            if current_manifest is None:
-                raise ValueError("Source retirement cannot verify the current destination build")
-            current = current_manifest["request"]
-            installed = subprocess.run(
-                [*git_cmd, "rev-parse", "HEAD"], cwd=cwd, check=True,
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-                stdin=subprocess.DEVNULL, env=source_git_env(),
-            ).stdout.strip()
-            if installed == current["commit"] and installed != request["commit"]:
-                raise ValueError("Source retirement would downgrade the newer destination build; select the destination channel explicitly")
+            # A missing qualified commit is expected in shallow checkouts, but
+            # it is not evidence that the installed source is safe to retire.
+            # Keep the decision conservative until ancestry can be verified.
+            raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly")
 
 
 def _read(url: str, *, missing_ok: bool = False) -> str | None:
@@ -167,6 +159,8 @@ def _read(url: str, *, missing_ok: bool = False) -> str | None:
         if missing_ok and exc.code == 404:
             return None
         raise
+    except http.client.HTTPException as exc:
+        raise OSError("source release response was incomplete") from exc
 
 
 class _BuildMetadata(HTMLParser):

@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "goedkeuring"
     label: "Goedkeuring"
-    timeout_denying: "⏱ Tyd verstreke — opdrag word geweier"
-    timed_out_no_response: "tyd verstreke (geen antwoord)"
     outcome_once: "eenmalig toegelaat"
     outcome_session: "vir sessie toegelaat"
     outcome_always: "by toelaatlys gevoeg"

@@ -2269,8 +2269,6 @@ cli:
   approval:
     bell_context: "jóváhagyás"
     label: "Jóváhagyás"
-    timeout_denying: "⏱ Időtúllépés — a parancs elutasítva"
-    timed_out_no_response: "időtúllépés (nem jött válasz)"
     outcome_once: "egyszer engedélyezve"
     outcome_session: "a munkamenetre engedélyezve"
     outcome_always: "engedélyezőlistára téve"

@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "批准"
     label: "批准"
-    timeout_denying: "⏱ 逾時 — 拒絕指令"
-    timed_out_no_response: "已逾時（無回應）"
     outcome_once: "允許一次"
     outcome_session: "本工作階段允許"
     outcome_always: "已加入允許清單"

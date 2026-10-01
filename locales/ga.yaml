@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "cead"
     label: "Cead"
-    timeout_denying: "⏱ Teorainn ama — ag diúltú don ordú"
-    timed_out_no_response: "imithe thar am (gan freagra)"
     outcome_once: "ceadaithe uair amháin"
     outcome_session: "ceadaithe don seisiún"
     outcome_always: "curtha leis an liosta ceadaithe"

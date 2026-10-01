@@ -1050,10 +1050,9 @@ class CLIModalMixin:
         """Dangerous-command approval through the prompt_toolkit UI (agent thread).
 
         Choices: once / session / always / deny (see ``_approval_choices``), plus 'view' for long
-        commands. The panel stays up until the user answers (Ctrl+C interrupts the turn), except in
-        ``chat -q``: no prompt_toolkit app can answer there, so it keeps the ``approvals.timeout``
-        deadline and returns ``"timeout"``. ``_approval_lock`` serializes concurrent requests
-        (parallel delegation subtasks) so the shared ``_approval_state`` isn't clobbered.
+        commands. The panel stays up until the user answers (Ctrl+C interrupts the turn).
+        ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks) so the
+        shared ``_approval_state`` isn't clobbered.
         """
         with self._approval_lock:
             response_queue = queue.Queue()
@@ -1068,9 +1067,6 @@ class CLIModalMixin:
                 "selected": 0,
                 "response_queue": response_queue}
             self._approval_deadline = None
-            if getattr(self, "_single_query_mode", False):
-                from tools.approval_context import approval_wait_seconds
-                self._approval_deadline = _time.monotonic() + approval_wait_seconds()
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)
             self._paint_now()
 
@@ -1078,12 +1074,6 @@ class CLIModalMixin:
             self._approval_state = None
             self._approval_deadline = 0
             self._paint_now()
-            if result is _TIMED_OUT:
-                from cli import _DIM, _RST, _cprint
-                _cprint(f"\n{_DIM}  {t('cli.approval.timeout_denying')}{_RST}")
-                self._persist_prompt_summary(
-                    "⚠", t("cli.approval.label"), command, t("cli.approval.timed_out_no_response"))
-                return "timeout"
             self._persist_prompt_summary(
                 "⚠", t("cli.approval.label"), command, _approval_outcome_label(result))
             return result

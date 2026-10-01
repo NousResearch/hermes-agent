@@ -109,11 +109,6 @@ export function checkDistBuilt(distDir) {
 // stalled process creation on Windows (AV, memory pressure) used to abort the
 // whole update — the guard must not be the least reliable step in the build.
 function verifyChunksParse(assetsDir) {
-  const chunks = readdirSync(assetsDir).filter(name => name.endsWith(".js"))
-  if (chunks.length === 0) {
-    return { ok: true }
-  }
-
   const nodeBin = process.env.NODE || process.execPath || "node"
   const checker = join(import.meta.dirname, "check-chunks-parse.mjs")
   const probe = spawnSync(nodeBin, ["--experimental-vm-modules", checker, assetsDir], {

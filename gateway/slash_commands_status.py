@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import contextlib
 import hashlib
 import os
 import re
@@ -96,7 +97,8 @@ def _quiet_sync(call, default=None):
 
 
 def _status_model_route(
-    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
+    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry,
+    *, config_path=None,
 ):
     """``(model, provider, context_used, context_total, route)`` for /status.
 
@@ -130,7 +132,7 @@ def _status_model_route(
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
     user_config: dict[str, Any] = {}
     if not model_name or not provider_name:
-        user_config = _quiet_sync(_load_gateway_config, {})
+        user_config = _quiet_sync(lambda: _load_gateway_config(config_path=config_path), {})
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
     model_name = model_name or _resolve_gateway_model(user_config)
@@ -239,6 +241,19 @@ def _capped_rows(items: list, render) -> list[str]:
 class GatewayStatusCommandsMixin:
     """Read-only gateway introspection commands: /status, /context, /usage, /agents, /insights, /topup."""
 
+    def _status_config_path_for_source(self, source):
+        """Return the config file for the profile serving *source*.
+
+        Telegram and other adapters can be hosted by one gateway while serving a named
+        profile; falling back to the process launch home makes /status report the host's
+        model instead of the routed profile's model when the session has no persisted route.
+        """
+        from gateway.run import _hermes_home
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            with contextlib.suppress(Exception):
+                return self._resolve_profile_home_for_source(source) / "config.yaml"
+        return _hermes_home / "config.yaml"
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -262,7 +277,8 @@ class GatewayStatusCommandsMixin:
         self._rehydrate_session_model_override(session_key)
         active_override = self._session_model_override(session_key) or {}
         model_name, provider_name, context_used, context_total, route = _status_model_route(
-            status_agent, active_override, persisted_route, session_row, session_entry
+            status_agent, active_override, persisted_route, session_row, session_entry,
+            config_path=self._status_config_path_for_source(source),
         )
         if not context_total and model_name:
             # Same resolver /context uses (off-loop: it can probe /models). A window the resolver only

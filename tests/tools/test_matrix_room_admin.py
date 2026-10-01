@@ -58,7 +58,12 @@ def test_matrix_admin_discovery_requires_explicit_matrix_selection(platform, ena
     for profile, opt_in in (("A", enabled), ("B", not enabled), ("A", enabled)):
         home = tmp_path / profile
         home.mkdir(exist_ok=True)
-        config = {"platform_toolsets": {platform: [f"hermes-{platform}", "matrix_read"]}}
+        config = {
+            "platform_toolsets": {platform: [f"hermes-{platform}", "matrix_read"]},
+            "agent": {"disabled_toolsets": [
+                "matrix_reaction", "matrix_followup", "matrix_image_packs", "matrix_unread",
+            ]},
+        }
         if opt_in:
             config["platform_toolsets"][platform].append("matrix_admin")
         atomic_config_write(home / "config.yaml", config)

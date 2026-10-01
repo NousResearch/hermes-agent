@@ -5516,12 +5516,8 @@ def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
     if unit is None:
         return
     scope = _dash._extract_scope_from_cgroup(_dash._get_pid_cgroup_path(pid) or "")
-    if scope == "user":
-        cmds = [f"systemctl --user restart {unit}"]
-    elif scope == "system":
-        cmds = [f"sudo systemctl restart {unit}"]
-    else:
-        cmds = [f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}   (system unit)"]
+    user_cmd, system_cmd = f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}"
+    cmds = {"user": [user_cmd], "system": [system_cmd]}.get(scope, [user_cmd, system_cmd])
     _print_lines(
         "",
         f"✗ Gateway (PID {pid}) is managed by systemd unit {unit}.",

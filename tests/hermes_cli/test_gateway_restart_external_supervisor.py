@@ -130,5 +130,4 @@ def test_service_managed_gateway_refuses_fallback_takeover(restart_calls, monkey
     out = capsys.readouterr().out
     for hint in hints:
         assert hint in out
-    if len(hints) == 1:
-        assert out.count("systemctl") == 1, "a known scope must print only its own command"
+    assert out.count("systemctl") == len(hints), "a known scope must print only its own command"

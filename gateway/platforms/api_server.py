@@ -861,7 +861,8 @@ if AIOHTTP_AVAILABLE:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    limit = MAX_REQUEST_BYTES + (16 if request.headers.get('Authorization', '').startswith('HermesRoomProof ') else 0)
+                    if int(cl) > limit:
                         return _error_response("Request body too large.", 413, code="body_too_large")
                 except ValueError:
                     return _error_response("Invalid Content-Length header.", 400, code="invalid_content_length")

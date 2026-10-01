@@ -1,4 +1,4 @@
-"""Proofs bind both directions without disclosing the room grant bearer."""
+"""Both directions bind raw ciphertext without disclosing the grant or private bodies."""
 import json
 
 import pytest
@@ -13,24 +13,26 @@ def grant():
         target_profile='default', execution_policy_digest='a' * 64, issued_at=100, ttl_seconds=3600)
 
 
-def request(token=None, **kwargs):
-    return proof.request_proof(token or grant(), installation_id='target', method='POST',
-                              path='/v1/runs', body=b'{"input":"hello"}', now=120, **kwargs)
+def request(**kwargs):
+    return proof.request_proof(grant(), **(dict(installation_id='target', method='POST',
+        path='/v1/runs', body=b'{"input":"private hello"}', now=120) | kwargs))
 
 
-def verify(header, **kwargs):
+def verify(header, wire, **kwargs):
     return proof.verify_request(header, **(dict(secret=b'x' * 32, installation_id='target', method='POST',
-        path='/v1/runs', body=b'{"input":"hello"}', now=120) | kwargs))
+        path='/v1/runs', body=wire, now=120) | kwargs))
 
 
-def test_proof_uses_grant_without_transmitting_reusable_signature():
-    header, key, mac = request()
-    token, derived, verified, envelope = verify(header)
+def test_proof_encrypts_private_bodies_and_never_transmits_reusable_signature():
+    header, key, mac, wire = request()
+    token, derived, verified, envelope, plain = verify(header, wire)
     assert token == grant() and key == derived and mac == verified
+    assert plain == b'{"input":"private hello"}' and b'private hello' not in wire
     assert grant() not in header
     assert grant().split('.')[1] not in json.dumps(json.loads(_b64decode(header[len(proof.SCHEME):])))
-    response = proof.response_proof(key, mac, 202, b'{"run_id":"accepted"}')
-    proof.verify_response(key, mac, 202, b'{"run_id":"accepted"}', response)
+    cipher, nonce, response_mac = proof.seal_response(key, mac, 202, b'{"output":"private reply"}')
+    assert b'private reply' not in cipher
+    assert proof.verify_response(key, mac, 202, cipher, response_mac, nonce) == b'{"output":"private reply"}'
 
 
 @pytest.mark.parametrize('changed', [
@@ -38,22 +40,38 @@ def test_proof_uses_grant_without_transmitting_reusable_signature():
     {'headers': {'Idempotency-Key': 'forged'}}, {'headers': {'X-Hermes-Session-Key': 'other'}},
     {'installation_id': 'replacement'}, {'secret': b'y' * 32}, {'now': 181}, {'now': 59}])
 def test_request_tampering_wrong_installation_and_staleness_are_refused(changed):
+    header, _, _, wire = request()
     with pytest.raises(ValueError):
-        verify(request()[0], **changed)
+        verify(header, wire, **changed)
 
 
-@pytest.mark.parametrize('field,value', [('request_id', 'another-request-id'), ('issued_at', 121), ('v', 2)])
-def test_signed_request_identity_cannot_be_changed(field, value):
-    header = request()[0]
+@pytest.mark.parametrize('field,value', [('request_id', 'another-request-id'), ('issued_at', 121),
+                                       ('v', 3), ('body_nonce', 'AAAAAAAAAAAAAAAA')])
+def test_signed_request_identity_and_nonce_cannot_be_changed(field, value):
+    header, _, _, wire = request()
     envelope = json.loads(_b64decode(header[len(proof.SCHEME):]))
     envelope[field] = value
     with pytest.raises(ValueError):
-        verify(proof.SCHEME + _b64encode(json.dumps(envelope).encode()))
+        verify(proof.SCHEME + _b64encode(json.dumps(envelope).encode()), wire)
 
 
-@pytest.mark.parametrize('status,body,request_mac', [(200, b'ok', None), (202, b'changed', None), (202, b'ok', 'other')])
-def test_response_cannot_change_or_move_to_another_request(status, body, request_mac):
-    _, key, mac = request()
-    signed = proof.response_proof(key, mac, 202, b'ok')
+@pytest.mark.parametrize('change', ['status', 'body', 'request', 'nonce'])
+def test_response_cannot_change_or_move_to_another_request(change):
+    _, key, mac, _ = request()
+    cipher, nonce, signed = proof.seal_response(key, mac, 202, b'private reply')
+    status = 200 if change == 'status' else 202
+    cipher = bytes([cipher[0] ^ 1]) + cipher[1:] if change == 'body' else cipher
     with pytest.raises(ValueError):
-        proof.verify_response(key, request_mac or mac, status, body, signed)
+        proof.verify_response(key, 'other' if change == 'request' else mac, status, cipher, signed,
+                              'AAAAAAAAAAAAAAAA' if change == 'nonce' else nonce)
+
+
+def test_fresh_wire_nonces_preserve_plaintext_issuance_identity_and_empty_get_semantics():
+    first = request(path='/v1/room-members/grants/refresh', body=b'{"ttl_seconds":3600}')
+    second = request(path='/v1/room-members/grants/refresh', body=b'{"ttl_seconds":3600}')
+    a = verify(first[0], first[3], path='/v1/room-members/grants/refresh')
+    b = verify(second[0], second[3], path='/v1/room-members/grants/refresh')
+    assert first[3] != second[3] and a[3]['body_nonce'] != b[3]['body_nonce']
+    assert a[3]['request_id'] == b[3]['request_id'] and a[4] == b[4]
+    header, _, _, wire = request(method='GET', body=b'')
+    assert wire == b'' and verify(header, wire, method='GET')[4] == b''

@@ -5737,6 +5737,15 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
     cron_thread.start()
 
+    # The workflow reactor drains this home's workflow inbox (webhooks, cron triggers, approvals
+    # answered from a chat) unless the desktop backend already holds it.
+    try:
+        from workflow import reactor as workflow_reactor
+
+        workflow_reactor.ensure_started()
+    except Exception:
+        logger.warning("Workflow reactor did not start", exc_info=True)
+
     # External providers fire over loopback HTTP to THIS process's api_server; if it never came up (usually
     # API_SERVER_KEY missing) every fire fails while manual runs work — misread as a job bug. Say it ONCE.
     if not isinstance(cron_provider, InProcessCronScheduler):

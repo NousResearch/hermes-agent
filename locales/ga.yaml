@@ -1639,6 +1639,8 @@ slash:
     description: "Cothabháil scileanna sa chúlra (status, run, pin, archive, list-archived)"
   kanban:
     description: "Clár comhoibrithe ilphróifíle (tascanna, naisc, tráchtanna)"
+  workflow:
+    description: "Ritheanna sreabhadh oibre: liostaigh, tosaigh, stádas, ceadaigh nó diúltaigh céim atá ag fanacht ort"
   reload:
     description: "Athlódáil athróga .env isteach sa seisiún atá ag rith"
   reload-mcp:

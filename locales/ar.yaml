@@ -1639,6 +1639,8 @@ slash:
     description: "صيانة المهارات في الخلفية (status، run، pin، archive، list-archived)"
   kanban:
     description: "لوحة تعاون متعددة الملفات التعريفية (مهام، روابط، تعليقات)"
+  workflow:
+    description: "تشغيلات سير العمل: عرض، بدء، الحالة، الموافقة على خطوة تنتظرك أو رفضها"
   reload:
     description: "إعادة تحميل متغيرات .env في الجلسة الجارية"
   reload-mcp:

@@ -9,6 +9,9 @@ from typing import Any
 # package: every session opened afterwards is recorded from its first scope event.
 from . import relay_traces
 
+# Workflows react to Hermes's own sessions, turns and tool calls through the recorded stream.
+from workflow import bridge as _workflow_bridge  # noqa: E402,F401  (registers its listener)
+
 logger = logging.getLogger(__name__)
 
 

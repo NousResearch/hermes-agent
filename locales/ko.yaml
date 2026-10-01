@@ -1639,6 +1639,8 @@ slash:
     description: "백그라운드 스킬 유지 관리 (status, run, pin, archive, list-archived)"
   kanban:
     description: "다중 프로필 협업 보드 (작업, 링크, 댓글)"
+  workflow:
+    description: "워크플로 실행: 목록, 시작, 상태, 나를 기다리는 단계 승인 또는 거부"
   reload:
     description: ".env 변수를 실행 중인 세션에 다시 불러오기"
   reload-mcp:

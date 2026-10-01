@@ -1,0 +1,806 @@
+/* Workflows canvas — Node cards: surface, states, head, meta, seal, ticker, ports and slots.
+   Scoped under `.wf-root` like workflows.css, which declares the tokens these read. */
+.wf-root {
+  /* ---------------- nodes ----------------
+     A card is paper: a near-white fill, a hairline, and a soft cast pooling
+     underneath it. All three, deliberately.
+
+     This card used to be fill-only, on the argument that a hairline plus a cast
+     plus a fill is three separators doing one job. The job isn't separation
+     though — it's ELEVATION. Value difference alone can only say "these two
+     regions differ", and to say even that it needed the backdrop dragged down to
+     a mid grey, which is what made the whole canvas read as a grey UI panel with
+     holes in it. A hairline gives the card an edge, the cast gives it a height,
+     and together they let the sheet behind go back to being light. Every
+     reference canvas does exactly this.
+
+     The three are weighted so only the silhouette registers: the hairline is 8%
+     of the text colour, and the cast is --shadow-card, a ~6px pool rather than a
+     drop shadow.
+
+     The lift needs care. React Flow measures each handle's offset once and bakes
+     it into the edge paths, so translating the card left its dots behind — and
+     counter-translating the handles just detached them from the card instead.
+     Neither is right: the dots belong to the card AND the lines belong to the
+     dots. The card carries the handles up with it, and the node's inspector tells
+     React Flow to re-measure (useUpdateNodeInternals in nodes.tsx), so the edges
+     re-route to the lifted positions. Everything moves together.
+
+     Only the ring's colour separates "I picked this" from "the engine is running
+     this" — accent vs status. */
+  .node {
+    --node-lift: 0px;
+    position: relative;
+
+    width: var(--node-w);
+    background: var(--scenario-card);
+    border: 0;
+    border-radius: var(--node-radius);
+    padding: var(--node-pad-block) var(--node-pad-inline) var(--node-pad-block-end);
+    transform: translateY(var(--node-lift));
+    /* Hairline and cast in one list so they move together. The hairline is a
+       spread-only layer rather than a `border`, which keeps it off the box model
+       — a real border would shift every child by a pixel and fight the outline
+       ring below. */
+    box-shadow:
+      0 0 0 1px var(--scenario-hairline),
+      var(--shadow-card);
+    /* Fast off the line, not eased into. A decelerate curve spends its first
+       frames barely moving, which on a click reads as lag even though the state
+       flipped immediately. This puts most of the change up front. */
+    transition:
+      transform var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out);
+    font-size: var(--node-font);
+  }
+
+  /* Hover firms the cast; it does NOT lift. Sweeping the pointer across twenty
+     cards should stay quiet — the lift is reserved for a state the user or the
+     engine actually committed to. */
+  .react-flow__node:hover .node {
+    box-shadow:
+      0 0 0 1px var(--scenario-hairline),
+      var(--shadow-card-hover);
+  }
+
+  /* Raised — the committed states. The cast deepens with the lift, because a
+     card that rises without its shadow following reads as sliding rather than
+     coming up off the sheet. */
+  .node.sel,
+  .node.status-running,
+  .node.status-looping,
+  .node.status-waiting,
+  .react-flow__node:hover .node.sel,
+  .react-flow__node:hover .node.status-running,
+  .react-flow__node:hover .node.status-looping,
+  .react-flow__node:hover .node.status-waiting {
+    --node-lift: var(--node-lift-raised);
+    box-shadow:
+      0 0 0 1px var(--scenario-hairline),
+      var(--shadow-card-raised);
+  }
+
+  /* Rings, in ascending priority. A working node shows its status; selecting it
+     shows the accent, because selection is the thing you just did.
+
+     The ring is an `outline`, not a box-shadow layer, for one reason: box-shadow
+     animates as a single unit, so a ring living in that list would have to fade
+     in on the same 160ms curve as the lift. As its own property the ring can
+     have its own (zero-duration) transition — it snaps on the click frame while
+     the lift and cast animate in behind it. That ordering is what makes a click
+     feel caught rather than acknowledged late. outline follows border-radius,
+     and the negative offset pulls it inside the card edge so it reads exactly
+     like the inset ring it replaces. */
+  .node {
+    outline: var(--node-ring-w) solid transparent;
+    outline-offset: calc(-1 * var(--node-ring-w));
+  }
+  /* Ascending priority, so source order is the precedence.
+
+     Success is not a colour. A done card used to keep a green ring forever,
+     which meant a finished run was a wall of green boxes — the same mistake the
+     edge layer already refuses ("once a run finishes every edge is done").
+     Instead the ring flashes the verdict on the frame the step settles and
+     decays away, and the card goes back to being paper. The seal in the head
+     (a plain check) is the durable record. The flash re-fires when a scrub
+     drops you on a settled frame, which is fine: it's the same fact — this
+     step just resolved in front of you.
+
+     Failure is THE colour. One broken step is what a settled graph exists to
+     show you, so it keeps the destructive ring at full strength plus a breath
+     of the same hue in the fill — the one loud object left standing. */
+  .node.status-done {
+    animation: settle-flash 0.9s var(--ease-out);
+  }
+  /* A held-over step didn't re-run — it wears its predecessor's result, and the
+     meta row already says "skipped". Without this, a loop's second take ended
+     with every carried-over card flashing green in unison: the wall of
+     green=success, just on a timer. Only steps that actually resolved flash. */
+  .node.status-done.skipped {
+    animation: none;
+  }
+  .node.status-failed {
+    outline-color: var(--scenario-fail);
+    background: color-mix(in srgb, var(--scenario-fail) 4%, var(--scenario-card));
+  }
+  /* Held back from the raw accent. At full strength on a light card this was a
+     saturated blue box, and with two steps running at once the graph read as two
+     highlighted rectangles rather than as work in progress. The seal spins, the
+     progress track fills and the card is lifted — the ring only has to confirm
+     which card those belong to. Selection keeps the accent undiluted, because
+     that one is the user's own doing and should answer instantly. */
+  /* Parked on a person. The loop amber, because both states mean "the run is
+     held" — but steady where looping pulses: nothing is being reworked, the
+     canvas is simply waiting for a signature. */
+  .node.status-waiting {
+    outline-color: color-mix(in srgb, var(--scenario-loop) 70%, transparent);
+  }
+  .node.sel {
+    outline-color: var(--ui-accent);
+  }
+  /* A working card drops its flat ring for the travelling arc below. Selection
+     keeps the accent, because the two states stack: you can select the step the
+     engine is chewing on, and the arc rides outside the ring. */
+  .node.status-running,
+  .node.status-looping {
+    outline-color: transparent;
+  }
+
+  /* The GUI's working ring (styles.css .arc-border / .arc-row), values verbatim.
+     It stands off the card rather than sitting flush, so it reads against the
+     canvas instead of fighting the card's own hairline — which is also why
+     `.react-flow__node` has to stop clipping. */
+  .arc-border {
+    /* Head, then tail. The desktop trails its band off into --dt-background,
+       which on a light canvas is a white streak chasing the blue. Here both
+       stops are the accent and the tail just loses opacity, so the arc reads as
+       one travelling comet instead of two. */
+    --arc-c0: color-mix(in srgb, var(--ui-accent) 0%, transparent);
+    --arc-c1: var(--ui-accent);
+    --arc-c2: color-mix(in srgb, var(--ui-accent) 35%, transparent);
+    --arc-angle: 160deg;
+    /* Thicker than the desktop's 0.078125rem: the canvas renders cards at
+       whatever the viewport zoom is, and a hairline arc disappears the moment
+       you zoom out past ~0.8. */
+    --arc-width: 0.125rem;
+    --arc-standoff: 0.125rem;
+    --arc-radius: var(--node-radius);
+    --arc-duration: 2.23s;
+    pointer-events: none;
+    position: absolute;
+    overflow: hidden;
+    border-radius: calc(var(--arc-radius) + var(--arc-standoff));
+    inset: calc(var(--arc-standoff) * -1);
+    padding: var(--arc-width);
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+  .arc-border::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 300%;
+    height: 300%;
+    background: linear-gradient(
+      var(--arc-angle),
+      transparent 0%,
+      var(--arc-c0) 15%,
+      var(--arc-c1) 20%,
+      var(--arc-c2) 25%,
+      transparent 35%,
+      transparent 40%,
+      var(--arc-c0) 55%,
+      var(--arc-c1) 60%,
+      var(--arc-c2) 65%,
+      transparent 75%,
+      transparent 80%,
+      var(--arc-c0) 95%,
+      var(--arc-c1) 100%
+    );
+    will-change: transform;
+    animation: arc-border var(--arc-duration) linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .arc-border::before {
+      animation: none;
+    }
+  }
+
+  /* Dragging kills the transition — a lifted card should track the cursor
+     exactly, not lag behind it by 220ms. */
+  .react-flow__node.dragging .node {
+    transition: none;
+  }
+
+  /* DESIGN.md:241 — anything past a fade gets turned off, and both the lift and
+     the card's growth qualify. Zeroed rather than removed so the states still
+     settle in one frame instead of the rules disappearing. */
+  @media (prefers-reduced-motion: reduce) {
+    .node,
+    .node-body,
+    .node-meta,
+    .logline {
+      transition-duration: 0.01ms;
+    }
+    .node.sel,
+    .node.status-running,
+    .node.status-looping,
+    .node.status-waiting {
+      --node-lift: 0;
+    }
+  }
+
+  /* ---- head ----
+     A Codicon, then the title. Colour is the glyph — no tile behind it. */
+  .node-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .kind-mark {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    display: grid;
+    place-items: center;
+  }
+  .kind-mark .codicon {
+    display: block;
+  }
+  .tile-agent {
+    color: var(--scenario-agent);
+  }
+  .tile-gate {
+    color: var(--scenario-gate);
+  }
+  .tile-human {
+    color: var(--scenario-ok-text);
+  }
+  .tile-wait {
+    color: var(--ui-text-secondary);
+  }
+  .tile-trigger {
+    color: var(--scenario-loop);
+  }
+  /* There is no type label under the title. The mark to its left says
+     agent-or-gate already, and on a gate the branch slots say it again. */
+  /* The card's headline, and it should win first fixation. It was --fs-body on a
+     two-line title block whose second line was the step id — a slug that repeats
+     the name in lowercase ("Implement UI" / "implement") and tells a reader
+     nothing the title didn't. The id belongs to `needs:` and the gate predicates,
+     which live in the inspector. Dropping it lets the name have the row, and the
+     size it should have had. */
+  .node-name {
+    min-width: 0;
+    flex: 1;
+    font-weight: 600;
+    font-size: var(--fs-body);
+    line-height: 1.2;
+    letter-spacing: -0.2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Nothing on a node card has a fill any more. The family that lived here — the
+     take counter, the todo count, the skip note, the PASS/FAIL verdict — was four
+     badges competing for the same corner, and every one of them turned out to be
+     saying something already said elsewhere: the outcome by the dot and the ring,
+     the iteration by the loop connector. A card is a tile, a title, a line of
+     result, and a row of numbers. */
+
+  /* ---- meta row ----
+     The card's foot: model, constraints, spend. One line, dot-separated,
+     everything at the same quiet weight — none of it is what you scan a graph
+     for. It replaces two separate bands (a status row and a config row) that sat
+     ABOVE the result and pushed the one line that changes down the card.
+
+     No status and no pinned chip live here any more. Both were restatements of
+     the dot, and the pinned right edge meant the slot held a different KIND of
+     fact on every card. What's left is one homogeneous list. */
+  .node-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    font-size: var(--fs-badge);
+    line-height: 1.3;
+    color: var(--ui-text-tertiary);
+  }
+  .meta-item {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Separator belongs BETWEEN items, so it hangs off each one after the first
+     rather than being typed into the markup. Sibling-combinator rather than
+     `:not(:first-child)`: the row's first child is not always the first item. */
+  .meta-item ~ .meta-item::before {
+    content: '·';
+    margin-right: 5px;
+    color: var(--ui-text-quaternary);
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    flex: none;
+  }
+
+  /* ---- collapsible blocks ----
+     A card's height changes as a run moves through it: the result line arrives,
+     the progress track comes and goes, the numbers land. Those were instant jumps
+     — and a jump is the one thing on a canvas you can't read, because the eye
+     registers that something moved without registering what.
+
+     `height: 0 → auto` is the honest declaration of what's happening, and
+     `interpolate-size` (declared on :root) is what makes it interpolable. The
+     alternative, a `grid-template-rows: 0fr/1fr` wrapper, animates the same way
+     but needs an extra element per block and reads as a trick.
+
+     Named properties only, per DESIGN.md:247 — `transition-all` here would sweep
+     in colour and shadow changes that should stay instant. Nothing is delayed:
+     the content is in the DOM the frame the state changes, and the box catches up
+     around it. `overflow: hidden` sits on the block rather than on `.node`, where
+     it would clip the handles that overhang the card's edge. */
+  .node-body,
+  .node-meta {
+    height: 0;
+    margin-top: 0;
+    overflow: hidden;
+    transition:
+      height var(--dur-fast) var(--ease-glide),
+      margin-top var(--dur-fast) var(--ease-glide);
+  }
+  .node-body.open {
+    height: auto;
+    margin-top: 8px;
+  }
+  .node-meta.open {
+    height: auto;
+    margin-top: 8px;
+  }
+
+  /* ---- the status seal ----
+     Singular. This seal is the whole of what the card says about how a step is
+     doing; the word beside it, the verdict badge next to that, and the verdict
+     the summary opened with are all gone. It sits at the head's right edge so it
+     has one fixed home on every card — the meta row it used to live in appears
+     and disappears with whether the step has spent anything, and an indicator
+     that moves rows isn't one you can scan a column of.
+
+     It's a codicon, not a coloured circle. A dot can only say "something,
+     in a hue" — a glyph says the fact itself, in the same vocabulary the app's
+     tool rows use: a spinner while it works, a sync while it reworks, a check
+     when it lands, an × when it breaks. Colour becomes redundancy instead of
+     the whole message, which is also what keeps it legible to anyone who can't
+     read green-vs-red. The failed seal is the only one with a fill behind it —
+     the same rule as the ring: success rests, failure is the loud one. */
+  .node-head > .seal,
+  .node-head > .node-play {
+    margin-left: auto;
+  }
+  .seal {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--radius-sm);
+    color: var(--ui-text-tertiary);
+  }
+  .seal .codicon {
+    font-size: 12px;
+  }
+  .seal-running {
+    color: var(--scenario-running);
+  }
+  .seal-looping {
+    color: var(--scenario-loop-text);
+  }
+  .seal-waiting {
+    color: var(--scenario-loop-text);
+  }
+  .seal-done {
+    color: var(--scenario-ok-text);
+  }
+  .seal-failed {
+    color: var(--scenario-fail-text);
+    background: var(--scenario-fail-wash);
+  }
+
+  /* The card's one content line. It reserves its height in every state so a card
+     doesn't change size as it runs — one line now, not two, because the goal
+     paragraph that needed the wrap is gone. */
+  .logline {
+    margin-top: 0;
+    font-size: var(--fs-tool);
+    color: var(--ui-text-secondary);
+    line-height: 17px;
+    height: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition:
+      height var(--dur-fast) var(--ease-glide),
+      margin-top var(--dur-fast) var(--ease-glide);
+  }
+  /* The live header verb above the reel — the GUI's shimmering streaming title.
+     Same collapse mechanics as the logline: 0 → fixed height so the card grows
+     by whole rows. Primary text weight.
+
+     No container-type, no track overrides: the GUI's own shimmer spans
+     (fallback.tsx:311) sit in a plain flex row with the package DEFAULTS —
+     200px track, speed 200 — and that timing is the reference feel. My
+     `shimmer-container` addition scoped the track to the ~40px word, which
+     shrank the travel distance and spun the cycle several times faster than
+     the GUI's. Package defaults ARE the GUI's speed; add nothing. */
+  .doing-line {
+    height: 0;
+    margin-top: 0;
+    overflow: hidden;
+    font-size: var(--fs-tool);
+    font-weight: 550;
+    line-height: 15px;
+    color: var(--ui-text-primary);
+    white-space: nowrap;
+    transition:
+      height var(--dur-fast) var(--ease-glide),
+      margin-top var(--dur-fast) var(--ease-glide);
+  }
+  /* Chromium: background-clip:text misrenders inside transformed ancestors
+     (crbug 41385122 kin; SO 75012797) — and every React Flow node sits under
+     the viewport's translate+scale plus its own translate. Nothing else in the
+     app hits this, because no other surface is transformed. Promoting the
+     clipped span to its own compositing layer makes it paint independently of
+     the ancestor transform's raster cache. display:inline-block because a
+     plain inline can't be promoted. */
+  .react-flow .shimmer {
+    display: inline-block;
+    will-change: transform;
+  }
+  /* No margin when open — the collapsible body already carries the band's 8px
+     (the same one-box-per-gap rule that fixed the logline). */
+  .doing-line.open {
+    height: 15px;
+  }
+  /* When the verb header is up it owns the band's margin; the logline under it
+     only needs a breath. */
+  .doing-line.open + .logline.open {
+    margin-top: 3px;
+  }
+
+  /* No margin of its own when open: the collapsible body it lives in already
+     carries the 8px band gap, and the two used to STACK — 8 + 7 made the
+     head→result gap nearly double every other gap on the card. One box owns
+     each gap. */
+  .logline.open {
+    height: 17px;
+  }
+  /* A broken step's reason is the thing you came to the graph to see. One
+     ellipsized line of an auth dump reads as empty; three wrapping lines is
+     still a card, not a panel. */
+  .logline.open.is-fail {
+    height: auto;
+    max-height: 51px;
+    white-space: normal;
+    color: var(--scenario-fail-text);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+  .node-body.live .logline {
+    color: var(--ui-text-primary);
+  }
+
+  /* A URL the node produced, surfaced on the card instead of only in the Data
+     tab. Underlined on hover rather than always, so a settled card stays as calm
+     as the others until you go looking for the artifact. */
+  .node-link {
+    color: var(--scenario-accent-text);
+    text-decoration: none;
+    pointer-events: all;
+    cursor: pointer;
+    border-bottom: 1px solid transparent;
+    transition: border-color var(--dur-fast) var(--ease-out);
+  }
+  .node-link:hover {
+    border-bottom-color: currentColor;
+  }
+
+  /* The GUI's tool ticker, verbatim (styles.css:1895, ToolRunTicker in
+     run-ticker.tsx): the call history is a reel offset to the newest row via
+     --tool-ticker-index, each new call sliding the last up and out of a
+     one-line window. Class names, token names, easing and duration are the
+     desktop's own; --conversation-line-height is its row unit (styles.css:424
+     ships 1.125rem; here it's 17px, the card's line box). */
+  .node {
+    --conversation-line-height: 17px;
+  }
+  .tool-ticker {
+    height: var(--conversation-line-height);
+    overflow: hidden;
+  }
+  .tool-ticker__reel {
+    transform: translateY(calc(var(--tool-ticker-index, 0) * var(--conversation-line-height) * -1));
+    /* Longer than the chat ticker's 240ms: that one turns over at most once per
+       tool call inside a message card, while this sits on a canvas where a
+       running step fires a call every ~600ms — at 240ms the reel spent half its
+       life snapping. Same curve as chat, rather than swapped for --ease-glide:
+       it's the reference feel, just more of it, and the row still lands before
+       the next event. */
+    transition: transform 480ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .tool-ticker__row {
+    display: flex;
+    height: var(--conversation-line-height);
+    align-items: center;
+    overflow: hidden;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tool-ticker__reel {
+      transition: none;
+    }
+  }
+
+  /* ---- output ports ----
+     Only the branching step has these, and the shape is lifted from OpenAI's
+     Agent Builder if/else node: a recessed lane per output, inset the same as
+     every other line of content, name right-aligned inside it, and no socket
+     drawn at all — the wire simply leaves the card's border at the lane's
+     centre. Every earlier pass here failed on one of those three. Lanes that
+     bled to the right edge read as bolted on; a dot parked at the end of each
+     one made the ports the loudest thing on the card; and a left-aligned name
+     sat 200px from the wire it belonged to, so you matched them by row instead
+     of by proximity. */
+  .node-ports {
+    margin-top: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .port-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: 17px;
+    padding: 0 6px;
+    /* A well, not a chip: the card's own colour taken down a few percent. The
+       shared --scenario-recess carries 8% accent, which on a white card comes
+       out periwinkle and turns three quiet lanes into three coloured bars. */
+    background: color-mix(in srgb, var(--ui-base) 5%, var(--scenario-card));
+    border-radius: 4px;
+    font-size: var(--fs-badge);
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: -0.1px;
+    color: var(--ui-text-secondary);
+  }
+  /* One rule doing two jobs: a short name sits against the edge its wire leaves
+     from, and a long condition runs the full lane and drops its tail rather than
+     widening the card. */
+  .port-label {
+    flex: 1;
+    min-width: 0;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Out over the card's padding, on the silhouette the wire exits by — the same
+     edge the input and the rework port sit on, so a gate's slots line up with
+     every other card's. OpenAI draws no socket here at all, but they can afford
+     that: nothing else on their canvas has one either, and their outputs are all
+     wired by construction. Ours has to say which rules route nowhere yet. */
+  .port-row .react-flow__handle-right {
+    right: calc(-1 * var(--node-pad-inline));
+    background: var(--scenario-ok);
+  }
+  /* Vertical flow: the arms leave the BOTTOM edge, so the column of labelled
+     rows becomes a strip of them and each handle lands under its own label
+     rather than all of them stacking on one point. Flexbox does the placement;
+     React Flow reads each handle's own box, so nothing is positioned by hand.
+     The labels centre and truncate — at four arms on a 212px card there's room
+     for a word, and the full text is still in the inspector. */
+  .dir-tb .node-ports {
+    flex-direction: row;
+    gap: 4px;
+  }
+  .dir-tb .port-row {
+    min-width: 0;
+    flex: 1;
+    justify-content: center;
+    padding: 0 3px;
+  }
+  .dir-tb .port-label {
+    text-align: center;
+  }
+  .dir-tb .port-row .react-flow__handle-bottom {
+    bottom: calc(-1 * var(--node-pad-block));
+    background: var(--scenario-ok);
+  }
+  .port-row .handle-loop {
+    background: var(--scenario-loop);
+  }
+  /* The spare you drag to make the next branch. It stays in the flow rather than
+     appearing on hover: these cards are centre-anchored (nodeOrigin), so a card
+     that changes height walks its own handles and sags every wire on it. */
+  .port-row.is-spare {
+    opacity: 0.55;
+    transition: opacity var(--dur-fast) var(--ease-out);
+  }
+  .node:hover .port-row.is-spare,
+  .node.sel .port-row.is-spare {
+    opacity: 1;
+  }
+  /* Both neutral, for the same reason: nothing is plugged in. Green is what an
+     output the gate is actually using looks like, so a rule that routes nowhere
+     and the spare you'd drag to make one both read as empty. */
+  .port-row.is-spare .react-flow__handle-right,
+  .port-row.is-open .react-flow__handle-right {
+    background: var(--scenario-handle);
+  }
+  .port-row.is-open {
+    color: var(--ui-text-tertiary);
+  }
+
+  /* The rework input, held back until it's relevant — see BackPort. `:has` reads
+     the connection off React Flow's own class rather than subscribing every card
+     to the drag. */
+  .handle-back {
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-out);
+  }
+  .handle-back.is-wired,
+  .node:hover .handle-back,
+  .react-flow:has(.react-flow__handle.connectingfrom) .handle-back {
+    opacity: 1;
+  }
+
+  /* current tool-call line inside a running node — name then arg, both on the
+     one line, each ellipsized rather than wrapping the card taller. The row is
+     two lines tall like every other logline state, so the text centers in it.
+
+     Liveness is the app's shimmer, not a blinking block caret — the same
+     treatment it puts on every other in-flight label. The shimmer
+     clips its gradient to the text, so the name/arg colour split below stops
+     painting while it runs; the flex sizing is still what ellipsizes each. */
+  .toolline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* Inside the flex logline the ticker is the row's one child — let it take the
+     width and clip, exactly as the GUI's ticker sits in its tool header. */
+  .toolline .tool-ticker {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .tool-name {
+    flex: 0 1 auto;
+    min-width: 0;
+    color: var(--ui-text-primary);
+    font-size: var(--fs-tool);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* the arg gives up room first — the tool's name is the thing you're reading */
+  .tool-arg {
+    flex: 0 4 auto;
+    min-width: 0;
+    color: var(--ui-text-secondary);
+    font-size: var(--fs-tool);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* ---- diff stats in a summary line ----
+     The composer's DiffCount pair exactly (diff-count.tsx:41): raw --ui-green /
+     --ui-red on text. --ui-red, not --scenario-fail: a −N is diff data, not an
+     error, and the pair's dark-mode lightening is what keeps it readable at
+     stat size. */
+  .stat-add {
+    color: var(--ui-green);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-del {
+    color: var(--ui-red);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- slots ----
+     Where a wire attaches. These were 6px flat dots at 20% of the text colour,
+     on the theory that a handle is an attachment point rather than a control —
+     which undersold them: at that weight they disappeared into the card's own
+     hairline, so on a card with three of them you couldn't tell where a wire
+     could go without dragging one to find out.
+
+     A slot is now a socket: a ring in the card's own colour with a solid core,
+     so it reads as a hole punched through the edge rather than a speck sitting on
+     it. The ring is what does the work — it separates the slot from both the card
+     behind it and the wire running into it, at any zoom. */
+  .react-flow__handle {
+    width: 9px;
+    height: 9px;
+    border: 0;
+    background: var(--scenario-handle);
+    box-shadow: 0 0 0 2px var(--scenario-card);
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out);
+  }
+  /* Hover grows the halo, not the box. React Flow centres each handle with a
+     different `transform` per side, so scaling one means re-stating that
+     translate and getting it right four times — a shadow ring reads as the same
+     "target got bigger" and can't knock the dot off the card edge. */
+  .react-flow__handle:hover {
+    background: var(--ui-accent);
+    box-shadow:
+      0 0 0 2px var(--scenario-card),
+      0 0 0 5px color-mix(in srgb, var(--ui-accent) 22%, transparent);
+  }
+
+  /* ---- slots while a wire is in the air ----
+     A drag captures the pointer, so `:hover` stops firing the moment you set
+     off — which left every socket looking exactly as it had at rest for the
+     whole gesture. You dragged a line into a dot and the dot never once said it
+     had you. React Flow tracks all of this itself and puts it on the class list;
+     nothing was reading it.
+
+     Everything below is scoped under the same `:has()` so source order decides
+     between them, rather than four rules of climbing specificity.
+
+     The four states a socket can be in mid-drag:
+       dimmed        not a place this wire can end
+       indicator     it could end here
+       connectingto  it would end here if you let go  (valid, or refused)
+       connectingfrom  it started here */
+  .react-flow:has(.react-flow__handle.connectingfrom) .react-flow__handle {
+    opacity: 0.22;
+  }
+  /* React Flow works out which handles are live ends for THIS drag — direction,
+     already-connected, our isValidConnection. Lighting them all at once turns a
+     blind aim into a visible choice. Tinted core, not just a halo: a ring alone
+     was too close to the socket's rest state to count as an answer. */
+  .react-flow:has(.react-flow__handle.connectingfrom) .react-flow__handle.connectionindicator {
+    opacity: 1;
+    background: color-mix(in srgb, var(--ui-accent) 45%, var(--scenario-handle));
+    box-shadow:
+      0 0 0 2px var(--scenario-card),
+      0 0 0 5px color-mix(in srgb, var(--ui-accent) 18%, transparent);
+  }
+  /* The one you left. Held lit for the whole gesture — it's the other end of the
+     line you're looking at, and letting it go dark makes the wire look unmoored. */
+  .react-flow:has(.react-flow__handle.connectingfrom) .react-flow__handle.connectingfrom {
+    opacity: 1;
+    background: var(--ui-accent);
+    box-shadow:
+      0 0 0 2px var(--scenario-card),
+      0 0 0 5px color-mix(in srgb, var(--ui-accent) 30%, transparent);
+  }
+  /* Under the pointer and it would take: the socket swallows the line. This is
+     the one that has to be unmistakable, because it's the only thing standing
+     between you and letting go over nothing. */
+  .react-flow:has(.react-flow__handle.connectingfrom) .react-flow__handle.connectingto.valid {
+    opacity: 1;
+    background: var(--ui-accent);
+    box-shadow:
+      0 0 0 2px var(--scenario-card),
+      0 0 0 8px color-mix(in srgb, var(--ui-accent) 32%, transparent);
+  }
+  /* Under the pointer and it wouldn't. Refusing out loud beats a socket that
+     looks willing and then springs the wire back. */
+  .react-flow:has(.react-flow__handle.connectingfrom) .react-flow__handle.connectingto:not(.valid) {
+    opacity: 1;
+    background: var(--scenario-fail);
+    box-shadow:
+      0 0 0 2px var(--scenario-card),
+      0 0 0 6px color-mix(in srgb, var(--scenario-fail) 28%, transparent);
+  }
+}

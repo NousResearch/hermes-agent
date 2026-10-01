@@ -1656,6 +1656,8 @@ slash:
     description: "Háttérben futó skillkarbantartás (status, run, pin, archive, list-archived)"
   kanban:
     description: "Többprofilos együttműködési tábla (feladatok, hivatkozások, hozzászólások)"
+  workflow:
+    description: "Munkafolyamat-futtatások: listázás, indítás, állapot, rád váró lépés jóváhagyása vagy elutasítása"
   reload:
     description: "A .env változók újratöltése a futó munkamenetbe"
   reload-mcp:

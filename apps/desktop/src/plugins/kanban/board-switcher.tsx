@@ -19,6 +19,8 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  Field,
+  FieldHint,
   host,
   Input,
   isSubmitEnter,
@@ -50,7 +52,7 @@ import {
 } from './api'
 import { runExportBoardFlow, runImportBoardFlow } from './transfer'
 import type { BoardMeta } from './types'
-import { errText, FIELD_LABEL, useKanban } from './ui'
+import { errText, useKanban } from './ui'
 
 const NO_PROJECT = '__none__'
 /** Mirrors `kanban_db.DEFAULT_BOARD` — the board that always exists. */
@@ -66,8 +68,7 @@ function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; va
   const projects = data?.projects ?? []
 
   return (
-    <label className="flex flex-col gap-1">
-      <span className={FIELD_LABEL}>{k.project}</span>
+    <Field label={k.project}>
       <Select onValueChange={id => onChange(id === NO_PROJECT ? '' : id)} value={value || NO_PROJECT}>
         <SelectTrigger>
           <SelectValue />
@@ -81,11 +82,11 @@ function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; va
           ))}
         </SelectContent>
       </Select>
-      <span className="text-[0.6875rem] leading-relaxed text-(--ui-text-quaternary)">
+      <FieldHint>
         {k.projectHintPre}
         <span className="font-mono">{k.projectHintCmd}</span>.
-      </span>
-    </label>
+      </FieldHint>
+    </Field>
   )
 }
 
@@ -145,7 +146,9 @@ function BoardDialog({
   )
 }
 
-/** Display name, with the slug it maps to shown underneath. */
+/** Display name, with the slug it maps to shown underneath. A name of pure
+ *  punctuation slugs to nothing, which only showed up as a Create button that
+ *  wouldn't light — the field says it instead. */
 function BoardNameField({
   onChange,
   onEnter,
@@ -160,8 +163,7 @@ function BoardNameField({
   const k = useKanban()
 
   return (
-    <label className="flex flex-col gap-1">
-      <span className={FIELD_LABEL}>{k.name}</span>
+    <Field label={k.name} status={value.trim() && !slug ? { level: 'error', message: k.boardNameUnusable } : undefined}>
       <Input
         autoFocus
         onChange={event => onChange(event.target.value)}
@@ -169,8 +171,8 @@ function BoardNameField({
         placeholder={k.boardNamePlaceholder}
         value={value}
       />
-      {slug && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.slug(slug)}</span>}
-    </label>
+      {slug && <FieldHint>{k.slug(slug)}</FieldHint>}
+    </Field>
   )
 }
 

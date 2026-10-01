@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 
 
@@ -22,9 +23,11 @@ def main() -> None:
     temp = Path(sys.argv[1])
     root = Path(os.environ["HERMES_HOME"]) / "hermes-agent"
     root.mkdir(parents=True)
-    for name in (
-        "hermes_cli", "hermes_platform", "pm", "agent", "tools", "gateway", "tui_gateway", "cron", "plugins",
-    ):
+    # The packages a wheel ships (pyproject's packages.find), so a new root package reaches this
+    # source install without a second list to keep in sync.
+    config = tomllib.loads((repository / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    include = config["tool"]["setuptools"]["packages"]["find"]["include"]
+    for name in sorted({n for n in include if "*" not in n and (repository / n).is_dir()}):
         shutil.copytree(repository / name, root / name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     for source in repository.glob("*.py"):

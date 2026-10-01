@@ -4335,6 +4335,66 @@ export interface TraceEventsResult {
   truncated?: boolean
   recording?: boolean
 }
+/** One ``workflow.store.*`` reply: the docs (plugin-owned shape) plus webhook triggers. */
+export interface DocumentsResult {
+  docs?: unknown[]
+  currentId?: string | null
+  webhooks?: Record<string, unknown> | null
+  triggers?: unknown | null
+  [key: string]: unknown
+}
+export interface WorkflowDocsPutParams {
+  docs: unknown[]
+  currentId?: string | null
+}
+export interface WorkflowIdParams {
+  id: string
+}
+export interface WorkflowStartParams {
+  workflowId?: string
+  scenario?: unknown | null
+  payload?: unknown | null
+  source?: string
+}
+/** ``status`` is ``queued`` until the reactor picks the start up (or the live run's, when Play adopted one already going). */
+export interface WorkflowStartedResult {
+  runId: string
+  status?: string | null
+}
+export interface RunIdParams {
+  runId: string
+}
+export interface WorkflowRunEventsResult {
+  run?: unknown | null
+  events?: unknown[]
+  runId?: string | null
+  recording?: boolean
+}
+export interface WorkflowRunActiveResult {
+  run?: unknown | null
+  events?: unknown[]
+  runId?: string | null
+  recording?: boolean
+}
+export interface WorkflowRunRespondParams {
+  runId: string
+  nodeId: string
+  decision: string
+  by?: string | null
+}
+/** One run row (``workflow/runs/<id>.json``); the runner owns the fields beyond runId/status. */
+export interface RunStateResult {
+  runId: string
+  status: string
+  [key: string]: unknown
+}
+export interface WorkflowRunEventParams {
+  name?: string
+  payload?: unknown | null
+}
+export interface WorkflowRunEventResult {
+  id: string
+}
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -4439,6 +4499,12 @@ export interface TourStep {
   title?: string | null
   text?: string | null
   side?: string | null
+  [key: string]: unknown
+}
+/** ``tools/workflow_tools.py`` field set. ``ops``/``scenario`` are plugin-defined (the op vocabulary is owned by the Workflows plugin and read back through ``action='read'``), so they stay open here. */
+export interface WorkflowRequestParams {
+  session_id: string
+  action: string
   [key: string]: unknown
 }
 export interface DisplayInstallSudoParams {
@@ -4881,6 +4947,11 @@ export type ChangeSignalPayload = Record<string, unknown>
 /** ``methods_trace._forward_trace_event`` — one Relay event recorded for a watched session. */
 export interface TraceEventPayload {
   trace_session_id: string
+  event: unknown
+}
+/** One Relay event just recorded under a workflow run's session (``event`` is the ATOF record). */
+export interface WorkflowRunEventPayload {
+  runId: string
   event: unknown
 }
 export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY'
@@ -5391,6 +5462,28 @@ export interface RpcMethods {
   'wake.status': { params: WakeStatusParams; result: WakeStatusResult }
   /** Stop this surface's listener; persist also writes wake_word.enabled: false. */
   'wake.stop': { params: WakeStopParams; result: WakeStopResult }
+  /** The workflow's newest live run and its recorded Relay events (null run when none). */
+  'workflow.run.active': { params: WorkflowIdParams; result: WorkflowRunActiveResult }
+  /** Cancel a run; in-flight work finishes, nothing new starts. */
+  'workflow.run.cancel': { params: RunIdParams; result: RunStateResult }
+  /** Publish a named event for whatever workflow listens: event triggers and parked waits. */
+  'workflow.run.event': { params: WorkflowRunEventParams; result: WorkflowRunEventResult }
+  /** One run's state and its recorded Relay events (null run while a start is still queued). */
+  'workflow.run.events': { params: RunIdParams; result: WorkflowRunEventsResult }
+  /** Request a pause: the loop stops at the next step boundary. */
+  'workflow.run.pause': { params: RunIdParams; result: RunStateResult }
+  /** Answer a run's parked human-approval step (approved / denied). */
+  'workflow.run.respond': { params: WorkflowRunRespondParams; result: RunStateResult }
+  /** Resume a paused run from where it parked. */
+  'workflow.run.resume': { params: RunIdParams; result: RunStateResult }
+  /** Publish a start for a stored workflow graph; the workflow reactor runs it. */
+  'workflow.run.start': { params: WorkflowStartParams; result: WorkflowStartedResult }
+  /** Every workflow document under HERMES_HOME/workflows, plus webhook triggers. */
+  'workflow.store.list': { params: Params; result: DocumentsResult }
+  /** Save the workflow documents and return the synced webhook triggers. */
+  'workflow.store.put': { params: WorkflowDocsPutParams; result: DocumentsResult }
+  /** Delete one workflow document and return the remainder. */
+  'workflow.store.remove': { params: WorkflowIdParams; result: DocumentsResult }
 }
 export type RpcMethod = keyof RpcMethods
 export const RPC_METHODS = [
@@ -5645,7 +5738,18 @@ export const RPC_METHODS = [
   'wake.resume',
   'wake.start',
   'wake.status',
-  'wake.stop'
+  'wake.stop',
+  'workflow.run.active',
+  'workflow.run.cancel',
+  'workflow.run.event',
+  'workflow.run.events',
+  'workflow.run.pause',
+  'workflow.run.respond',
+  'workflow.run.resume',
+  'workflow.run.start',
+  'workflow.store.list',
+  'workflow.store.put',
+  'workflow.store.remove'
 ] as const satisfies readonly RpcMethod[]
 
 // ── Server→client requests ──
@@ -5676,6 +5780,8 @@ export interface ServerRequestMap {
   'vault.unlock_prompt': { params: VaultUnlockRequestParams; result: ValueResult }
   /** Enumerate the native window below the app (JSON text answer). */
   'window.read': { params: EmptyRequestParams; result: ValueResult }
+  /** Read or edit the workflow graph on the Workflows canvas (JSON text answer). */
+  workflow: { params: WorkflowRequestParams; result: ValueResult }
 }
 export type ServerRequestMethod = keyof ServerRequestMap
 export const SERVER_REQUEST_METHODS = [
@@ -5691,7 +5797,8 @@ export const SERVER_REQUEST_METHODS = [
   'vault.code',
   'vault.save_login',
   'vault.unlock_prompt',
-  'window.read'
+  'window.read',
+  'workflow'
 ] as const satisfies readonly ServerRequestMethod[]
 
 // ── Notifications (`event` frames) ──
@@ -5848,6 +5955,8 @@ export interface BackendGatewayEventMap {
   'voice.transcript': VoiceTranscriptPayload
   /** A wake phrase fired. */
   'wake.detected': WakeDetectedPayload
+  /** A workflow run's Relay trace as it is recorded, folded live by the Workflows canvas. */
+  'workflow.run': WorkflowRunEventPayload
 }
 export type BackendGatewayEventName = keyof BackendGatewayEventMap
 export const GATEWAY_EVENT_TYPES = [
@@ -5926,5 +6035,6 @@ export const GATEWAY_EVENT_TYPES = [
   'voice.interrupted',
   'voice.status',
   'voice.transcript',
-  'wake.detected'
+  'wake.detected',
+  'workflow.run'
 ] as const satisfies readonly BackendGatewayEventName[]

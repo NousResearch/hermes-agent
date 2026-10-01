@@ -18,6 +18,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type * as SessionStore from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
 
 vi.mock('@/app/chat/session-view', async () => {
@@ -40,12 +41,15 @@ vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
-vi.mock('@/store/session', async () => {
+// Partial: the SDK barrel also exports the chat surfaces, whose import graph
+// reads more of this module than the refresh path under test.
+vi.mock('@/store/session', async importOriginal => {
   const { atom } = await import('nanostores')
 
   type LineageRow = { _lineage_root_id?: null | string; id: string }
 
   return {
+    ...(await importOriginal<typeof SessionStore>()),
     $activeSessionId: atom(null),
     $connection: atom(null),
     $cronSessions: atom([]),

@@ -125,6 +125,7 @@
   "/voice": "composer-voice",
   "/wake": null,
   "/whoami": null,
+  "/workflow": "messaging",
   "/worktree": null,
   "/yolo": null
 }

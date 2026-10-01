@@ -30,11 +30,19 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   ErrorState,
+  Field,
+  type FieldStatus,
+  FieldStatusSlot,
   formatModifierToken,
   host,
   Input,
   isSubmitEnter,
   Loader,
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderCount,
+  PageHeaderTitle,
+  PageShell,
   SearchField,
   Select,
   SelectContent,
@@ -95,7 +103,6 @@ import {
   columnHelp,
   columnLabel,
   errText,
-  FIELD_LABEL,
   isLockedTarget,
   lockedReason,
   PriorityGlyph,
@@ -535,15 +542,6 @@ const NO_PARENT = '__none__'
 const PARKED = '__parked__'
 const WORKSPACE_KINDS = ['scratch', 'worktree', 'dir'] as const
 
-function Field({ children, label }: { children: ReactNode; label: string }) {
-  return (
-    <label className="flex flex-col gap-1">
-      <span className={FIELD_LABEL}>{label}</span>
-      {children}
-    </label>
-  )
-}
-
 function NewTaskDialog({
   onClose,
   parents,
@@ -588,6 +586,7 @@ function NewTaskDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
   const [estimate, setEstimate] = useState<null | TaskEstimate>(null)
+  const [submitted, setSubmitted] = useState(false)
 
   // Rough effort estimate from the typed title/body (before the task exists),
   // via the auto-routed auxiliary model. Makes a model call — explicit action.
@@ -621,11 +620,17 @@ function NewTaskDialog({
       setError(null)
       setBusy(false)
       setEstimate(null)
+      setSubmitted(false)
     }
   }, [target, boardDefaultKind])
 
+  const titleStatus: FieldStatus | undefined =
+    submitted && !title.trim() ? { level: 'error', message: k.titleRequired } : undefined
+
   const submit = async () => {
     const trimmed = title.trim()
+
+    setSubmitted(true)
 
     if (!trimmed || !target || busy) {
       return
@@ -690,18 +695,22 @@ function NewTaskDialog({
           <DialogTitle>{target ? k.newTaskIn(columnLabel(k, target)) : k.newTask}</DialogTitle>
         </DialogHeader>
         <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pr-0.5">
-          <Input
-            autoFocus
-            onChange={event => setTitle(event.target.value)}
-            onKeyDown={event => {
-              if (isSubmitEnter(event)) {
-                event.preventDefault()
-                void submit()
-              }
-            }}
-            placeholder={isTriage ? k.titlePlaceholderTriage : k.titlePlaceholder}
-            value={title}
-          />
+          {/* Enter on an empty title used to do nothing at all — the Create
+              button greys out, but the keyboard path had no way to say why. */}
+          <FieldStatusSlot status={titleStatus}>
+            <Input
+              autoFocus
+              onChange={event => setTitle(event.target.value)}
+              onKeyDown={event => {
+                if (isSubmitEnter(event)) {
+                  event.preventDefault()
+                  void submit()
+                }
+              }}
+              placeholder={isTriage ? k.titlePlaceholderTriage : k.titlePlaceholder}
+              value={title}
+            />
+          </FieldStatusSlot>
           <Textarea
             className="min-h-20"
             onChange={event => setBodyText(event.target.value)}
@@ -1334,12 +1343,10 @@ export function KanbanBoardPage() {
   }
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)">
-      <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
-        <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
-        <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
-          {total}
-        </span>
+    <PageShell>
+      <PageHeader>
+        <PageHeaderTitle>{k.title}</PageHeaderTitle>
+        <PageHeaderCount>{total}</PageHeaderCount>
         {/* The full page projects this into its page header; a split tile has
             none, so the switcher stays here in the row. */}
         <WorkspacePageHeaderControl id="kanban:board-switcher">
@@ -1357,7 +1364,7 @@ export function KanbanBoardPage() {
           />
         )}
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ml-auto flex items-center gap-1">
+        <PageHeaderActions>
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}
@@ -1373,8 +1380,8 @@ export function KanbanBoardPage() {
             <Codicon name="add" size="0.8rem" />
             {k.newTask}
           </Button>
-        </div>
-      </header>
+        </PageHeaderActions>
+      </PageHeader>
 
       {settingsOpen && <OrchestrationPanel />}
 
@@ -1439,6 +1446,6 @@ export function KanbanBoardPage() {
 
       <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
       <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
-    </div>
+    </PageShell>
   )
 }

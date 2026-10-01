@@ -28,6 +28,7 @@ GUI_TOOLS = {
     "react_to_message",
     "show_tip",
     "gui_tour",
+    "workflow",
 }
 
 

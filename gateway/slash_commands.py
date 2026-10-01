@@ -339,6 +339,20 @@ class GatewaySlashCommandsMixin(
         runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else t("gateway.shared.none_marker")
         return head + t("gateway.whoami.tier_user", commands=runnable_str)
 
+    async def _handle_workflow_command(self, event: MessageEvent) -> str:
+        """Handle /workflow — the ``hermes workflow`` verbs. ``/workflow approve <code>`` publishes the
+        same answer event the canvas does; the workflow reactor applies it wherever it runs."""
+        from hermes_cli.subcommands.workflow import run_slash
+
+        text = (event.text or "").strip().lstrip("/")
+        if text.startswith("workflow"):
+            text = text[len("workflow"):].lstrip()
+        source = event.source
+        who = (getattr(source, "user_name", None) or getattr(source, "user_id", None) or "") if source else ""
+        platform = getattr(getattr(source, "platform", None), "value", "") if source else ""
+        by = f"{platform}:{who}" if platform and who else (who or None)
+        return await asyncio.to_thread(run_slash, text, by=by)
+
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI (DB work in a thread pool). Allowed
         while an agent runs: the board is profile-agnostic and never touches agent state."""

@@ -1,0 +1,463 @@
+/* Workflows canvas — The run panel (timeline transport + composer) and Hermes on the canvas.
+   Scoped under `.wf-root` like workflows.css, which declares the tokens these read. */
+.wf-root {
+  /* ---------------- run panel: timeline transport + composer ---------------- */
+  /* React Flow centres a bottom-center Panel with left:50% + translateX(-50%),
+     so a negative margin of half the inspector re-centres it on the visible
+     canvas instead of sliding under the panel. */
+  .run-panel {
+    width: 620px;
+    max-width: calc(100vw - 320px - var(--wf-inspector));
+    margin-left: calc(var(--wf-inspector) / -2) !important;
+    padding: 0 !important;
+    /* The transcript band hangs above the dock, over the canvas, so the panel
+       must not clip it — it used to when the dock was only a composer. */
+    overflow: visible;
+    transition: margin-left var(--dur-fast) var(--ease-out);
+    /* ABOVE EVERYTHING ON THE CANVAS. React Flow leaves panels at z 5, which
+       a selected card (elevateNodesOnSelect → 1000), the edge toolbar (1001)
+       and the live log all cross — so a node dragged near the bottom edge
+       painted itself over the composer. The dock is the page's primary
+       control; nothing on the canvas may draw over it. */
+    z-index: 1002 !important;
+  }
+
+  /* The transport row rides the composer, so it wears the composer's own
+     control vocabulary — GHOST_ICON_BTN for the secondary transport, the solid
+     PRIMARY_ICON_BTN circle for the one affirmative action. Only the row's own
+     box lives here; the buttons carry no canvas styling of their own. */
+  /* Status-stack width: mx-2 of the full bar. Does NOT follow the thread's
+     5% inset — the timeline sits on the composer, the thread is its own
+     column above it. */
+  .run-panel .canvas-dock-transport {
+    margin-inline: 0.5rem !important;
+    border-top-left-radius: 0.75rem;
+    border-top-right-radius: 0.75rem;
+    overflow: visible;
+  }
+
+  /* A strip, not a peer: the transport must read as chrome fused to the
+     composer, thinner than the capsule it rides — the buttons already share
+     the composer's control size, so the row's height is all padding. */
+  .tl {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    overflow: visible;
+  }
+
+  /* the playhead track: frame ticks, loop/fail markers, scrubbable */
+  .tl-track {
+    position: relative;
+    flex: 1;
+    height: 18px;
+    cursor: pointer;
+    touch-action: none;
+    margin: 0 4px;
+  }
+  .tl-track::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 8px;
+    height: 3px;
+    background: var(--scenario-recess-hover);
+    border-radius: 999px;
+  }
+  .tl-track.empty {
+    cursor: default;
+  }
+  /* One colour, always. The fill used to switch to amber while scrubbing, which
+     said nothing — the playhead knob already shows where you are, and a track
+     that changes colour reads as a state change rather than a position. */
+  .tl-fill {
+    position: absolute;
+    left: 0;
+    top: 8px;
+    height: 3px;
+    background: var(--ui-accent);
+    border-radius: 999px;
+  }
+  .tl-tick {
+    position: absolute;
+    top: 6px;
+    width: 1px;
+    height: 7px;
+    background: var(--ui-stroke-primary);
+    transform: translateX(-0.5px);
+  }
+  .tl-mark {
+    position: absolute;
+    top: 3.5px;
+    width: 3px;
+    height: 12px;
+    border-radius: 999px;
+    transform: translateX(-1.5px);
+  }
+  .tl-mark.m-start {
+    background: var(--scenario-running);
+    top: 5.5px;
+    height: 8px;
+  }
+  .tl-mark.m-end {
+    background: var(--scenario-ok);
+    top: 5.5px;
+    height: 8px;
+  }
+  .tl-mark.m-loop {
+    background: var(--scenario-loop);
+  }
+  .tl-mark.m-fail {
+    background: var(--scenario-fail);
+  }
+  /* A cursor, not a knob. A dot marks a spot; the thing this names is an
+     instant, and an instant on a track is a line across it. The hit area is the
+     track — you scrub by pressing anywhere on it — so the mark doesn't have to
+     be grab-sized, and at 2px it stops competing with the loop and fail
+     markers it has to be read against. */
+  .tl-headline {
+    position: absolute;
+    top: 2px;
+    width: 2px;
+    height: 15px;
+    border-radius: 1px;
+    background: var(--ui-text-primary);
+    transform: translateX(-1px);
+    box-shadow: 0 0 0 1.5px var(--scenario-card);
+  }
+  /* Spotify-style scrub tip: follows the pointer, time of that instant.
+     Same inverted chip the app's Tip uses — no delay, no native title
+     (those never fire during a drag). */
+  .tl-tip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    z-index: 2;
+    transform: translateX(-50%);
+    padding: 0.25rem 0.375rem;
+    background: var(--foreground);
+    color: var(--background);
+    font-size: 11px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  /* ---------------- Hermes on the canvas ----------------
+     The dock's conversation is the app's real chat (`SessionChat`), so nothing
+     here draws a message, a tool call or a spinner — those are the same
+     components the workspace pane uses and are meant to keep matching it.
+
+     What IS here is geometry, lifted from HUD mode ([data-hud-shell] in
+     styles.css), which is the same problem already solved: the app's chat is
+     built to FILL a pane, so floating it over something else means turning it
+     into a bar with a band above it. The band grows with the conversation and
+     scrolls once it hits --canvas-band-max. HUD's other half, the visibility
+     fade, is deliberately NOT copied: HUD hides itself over someone's game,
+     whereas this dock is the page's primary control and always has the floor. */
+
+  /* The dock is only as tall as the BAR. The composer docks absolutely against
+     the chat surface, so the surface needs a real height or the composer has
+     no box to sit in and the thread collapses with it — HUD gets the same CSS
+     for free because its root is the whole window. Here the height comes from
+     measuring the bar, and the transcript hangs ABOVE the dock, over the
+     canvas, which is why nothing in this chain may clip. */
+  .canvas-chat {
+    position: relative;
+    height: var(--canvas-bar-height, 3.25rem);
+    min-width: 0;
+    overflow: visible;
+  }
+
+  /* The session is minted with the workflow. The shared thread still
+     resumes onto a runtime, but that is not a canvas state — hide the
+     rose-curve overlay so the dock is just the composer. */
+  .canvas-chat [data-slot='thread-session-loading'] {
+    display: none;
+  }
+
+  .canvas-chat [data-chat-surface] {
+    /* The surface paints a full-page background; over a canvas the band and
+       the composer capsule are the only things that should read as surfaces. */
+    height: 100% !important;
+    background: transparent !important;
+    overflow: visible !important;
+  }
+
+  /* THE 0.72 GHOST. Multi-pane chat has a recede treatment: a pane the user
+     isn't focused in drops to opacity 0.72 + grayscale as ONE composited
+     layer ([data-chat-unfocused] in styles.css). The canvas chat is never
+     the app's focused pane, so it wore that dim permanently — element
+     opacity on the root of the whole dock, which no background underneath
+     could ever counter. A canvas dock is not a competing pane; there is no
+     "focused conversation" for it to recede behind. */
+  .canvas-chat [data-chat-surface][data-chat-unfocused] {
+    opacity: 1;
+    filter: none;
+  }
+
+  /* HUD's bar is the window. Ours has to say so: the pane composer is
+     `min(var(--composer-width), 100% - 2rem)` plus a centering translate, so
+     the capsule is already inset before the thread or the transport ever
+     measure against the panel — that's how the timeline ended up wider than
+     the thread, and the thread tiny against the bar. Same override HUD uses
+     ([data-hud-shell] composer-dock in styles.css), including the translate
+     trampoline Lightning CSS would otherwise fold away. */
+  .canvas-chat [data-slot='composer-dock'],
+  .canvas-chat [data-slot='composer-dock'][data-popped-out] {
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    transform: none !important;
+    --canvas-composer-translate: 0;
+    translate: var(--canvas-composer-translate) !important;
+  }
+
+  .canvas-chat [data-chat-surface] {
+    /* Same as the thread's side padding (`aui_thread-content` padding-inline
+       1.5rem) — the last line shouldn't sit tighter to the seam than the
+       column sits to the ring. */
+    --thread-last-message-clearance: 1.5rem;
+  }
+
+  /* Conversation rhythm, tightened for a band a few lines tall — the docked
+     thread's spacing is sized for a full-height column, and in a band that air
+     is most of the box. HUD's values, verbatim. --thread-viewport-height stays
+     100%: the app's calc shortens the viewport to clear dock strips the band
+     doesn't show. */
+  .canvas-chat {
+    --conversation-turn-gap: 0.1875rem;
+    --turn-block-gap: 0.375rem;
+    --paragraph-gap: 0.4rem;
+    --composer-shell-pad-block-end: 0px;
+    /* Intrinsic, not the app's calc. The band is as tall as the conversation;
+       the calc exists to shorten a pane-tall viewport so dock strips stay
+       visible, and there are no strips here. */
+    --thread-viewport-height: auto;
+
+    /* The only number: how far the transcript may grow before it scrolls. The
+       transport and composer ride under the band, so the whole dock tops out
+       around 40vh and the canvas stays the protagonist.
+
+       Zero until there are turns, so an empty session shows the composer
+       rather than an empty sheet the size of the band. */
+    --canvas-band-max: 0px;
+  }
+  .canvas-chat[data-canvas-thread] {
+    --canvas-band-max: 28vh;
+  }
+
+  /* The dock names the session and carries the transport, so the chat's own
+     header, jump pill and timeline rail are all duplicates of it. */
+  .canvas-chat header,
+  .canvas-chat [data-slot='thread-timeline'],
+  .canvas-chat .thread-jump-button {
+    display: none !important;
+  }
+
+  /* Not a workspace session, so none of the workspace's meta-chrome: the
+     status stack (todos, subagents, background tasks, queue), the badge and
+     suggestion strips, and the git/branch row on the capsule. The dock is
+     transport + composer, full stop. HUD's rule, HUD's reason
+     ([data-hud-shell] composer-dock in styles.css). */
+  .canvas-chat [data-slot='composer-dock'] > *:not([data-slot='composer-root']),
+  .canvas-chat .coding-status-bar {
+    display: none !important;
+  }
+
+  /* THE BAND IS THIS BOX — bottom-anchored on the composer's top edge and as
+     tall as the conversation, up to the cap. Bottom-anchored with `top: auto`
+     is what lets it grow upward over the canvas instead of pushing the dock. */
+  .canvas-chat [data-slot='composer-bounds'] {
+    position: absolute !important;
+    /* HUD's inset, HUD's width kill-list. The pane thread is a flex-1 column
+       capped at --composer-width; without these three the band shrinks to that
+       column and the timeline (which never had the cap) looks wider.
+       5% each side — 10% in from the bar. */
+    inset: auto 5% calc(var(--canvas-bar-height, 0px) + var(--canvas-transport-height, 0px)) 5% !important;
+    height: auto !important;
+    width: auto !important;
+    max-width: none !important;
+    flex: none !important;
+    overflow: hidden;
+    /* The band's own backing. This used to be a separate absolute sibling
+       mirroring the same inset, which only worked while a script measured one
+       height for both to wear; an intrinsic band has no number to share, so
+       the box that sizes itself is the box that paints itself.
+       --dt-card, NOT --composer-fill: the fill ladder is deliberately
+       translucent for a capsule with a thread behind it; this has a node graph
+       behind it, and wires under running text is unreadable. */
+    background: var(--dt-card);
+    /* The ring is what separates the band from a same-color canvas: a hairline,
+       rounded away from the bar it stands on and square where they meet (HUD's
+       corner treatment, [data-hud-glass]). No shadow — the band is furniture
+       docked to the composer, not a floating overlay. */
+    border: 1px solid var(--ui-stroke-secondary);
+    border-bottom: 0;
+    border-radius: 0.75rem 0.75rem 0 0;
+  }
+
+  /* THE CAP LIVES ON THE SCROLLER, so reaching it turns into scrolling rather
+     than clipping. Capping an ancestor instead leaves this pane-tall and never
+     overflowing — it would never scroll, and everything past the cap would be
+     unreachable. Everything above is intrinsic, so the band is exactly as tall
+     as the transcript until the transcript is taller than the cap. */
+  .canvas-chat [data-slot='aui_thread-viewport'] {
+    max-height: var(--canvas-band-max);
+  }
+
+  .canvas-chat [data-slot='aui_thread-content'] {
+    max-width: none;
+    /* The pane thread pads for the titlebar. In a band that pad is empty
+       sheet above the first turn. */
+    padding-block-start: 0.5rem;
+  }
+
+  /* The user opens the band (focus). Hermes editing a node, a tool call, a
+     busy turn — none of those summon it; the canvas is what you came to
+     watch. data-chat-held is the pin AFTER they opened it (or a blocking
+     prompt they have to answer): a live turn must not fade the transcript
+     they were reading the moment they click a card.
+     Hidden means non-interactive too: an invisible band must not eat the
+     canvas clicks under it. */
+  .canvas-chat [data-slot='composer-bounds'] {
+    opacity: 0;
+    translate: 0 0.625rem;
+    pointer-events: none;
+    transition:
+      opacity var(--dur-panel) var(--ease-glide),
+      translate var(--dur-panel) var(--ease-glide),
+      height var(--dur-panel) var(--ease-glide);
+  }
+
+  /* Shown for: the user is in the chat, they already opened it and a turn is
+     still live (data-chat-held), or the pointer is over the band itself.
+     Hover is what makes the transcript selectable text rather than a picture
+     of one: selecting is press-and-drag over the band, which never gives it
+     focus, and a band that fades mid-drag takes the selection with it.
+
+     data-canvas-thread is the gate: a focused composer with zero turns is
+     still :focus-within, and that used to summon an empty sheet. No turns,
+     no band — the composer and the timeline are the whole dock. */
+  .canvas-chat[data-canvas-thread]:has([data-chat-held]) [data-slot='composer-bounds'],
+  .canvas-chat[data-canvas-thread]:focus-within [data-slot='composer-bounds'],
+  .canvas-chat[data-canvas-thread] [data-slot='composer-bounds']:hover {
+    opacity: 1;
+    translate: none;
+  }
+
+  /* Interactive only while shown — and never the sheet, which is backdrop.
+     Hover keeping the band interactive is not circular: the band only BECOMES
+     hoverable while it is already up for one of the other reasons, so hover
+     can hold it open but can't summon it over the canvas. */
+  .canvas-chat[data-canvas-thread]:has([data-chat-held]) [data-slot='composer-bounds'],
+  .canvas-chat[data-canvas-thread]:focus-within [data-slot='composer-bounds'],
+  .canvas-chat[data-canvas-thread] [data-slot='composer-bounds']:hover {
+    pointer-events: auto;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .canvas-chat [data-slot='composer-bounds'] {
+      transition: none;
+    }
+  }
+
+  /* THE COMPOSER IS NEVER TRANSLUCENT over the graph. The app's see-through
+     treatments all presume the composer overlaps its own thread — worth
+     seeing through to. Here the composer overlaps the canvas, so each one
+     becomes a hole punched to the node graph, and each is retired the same
+     way: pin the one knob the app itself uses for that treatment.
+
+     The fill ladder drops --composer-fill to 72% at rest and 48% scrolled
+     up; everything docked to the composer (capsule, status stack, queue,
+     and our transport card) paints that one var, so pinning it makes them
+     all solid together. The dock covers the status stack — a SIBLING of
+     composer-root that inherits from above — and composer-root repeats the
+     pin because an element's own definition beats an inherited one, with
+     the scrolled-up rung named explicitly to outrank the app's. */
+  .canvas-chat [data-slot='composer-dock'],
+  .canvas-chat [data-slot='composer-root'],
+  .canvas-chat [data-slot='composer-root'][data-thread-scrolled-up],
+  .canvas-dock-transport {
+    --composer-fill: var(--dt-card);
+  }
+
+  /* The other scrolled-up ghost, element opacity the fill can't reach: the
+     composer's content column dims to 0.3 so the reader can see the history
+     THROUGH the composer. !important because the dim is a Tailwind utility
+     swapped in by React, not a cascade rule to out-rank. */
+  .canvas-chat [data-slot='composer-fade'] {
+    opacity: 1 !important;
+  }
+
+  /* Tool cards are sized for a full pane; in a dock they're the widest thing
+     on screen and box in the text around them. */
+  .canvas-chat [data-slot='tool-block'] {
+    font-size: var(--fs-caption);
+  }
+
+  /* Hermes couldn't be reached at all — the composer never mounts, so this is
+     the whole dock for the moment. */
+  .canvas-chat-idle {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 11px 14px;
+    font-size: var(--fs-caption);
+    color: var(--ui-text-tertiary);
+  }
+
+  .ask {
+    position: fixed;
+    z-index: 21;
+    top: 50%;
+    left: 50%;
+    translate: -50% -50%;
+    width: 344px;
+    padding: 16px 18px 14px;
+    border-radius: var(--panel-radius);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    animation: ask-in var(--dur-panel) var(--ease-glide);
+  }
+
+  /* The way back from a deferred question, at the head of the run panel. */
+  .ask-back {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 12px;
+    margin-bottom: 2px;
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+    background: color-mix(in srgb, var(--scenario-warn) 10%, transparent);
+    color: var(--scenario-warn);
+    font-size: var(--fs-caption);
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+  .ask-back:hover {
+    background: color-mix(in srgb, var(--scenario-warn) 16%, transparent);
+  }
+  .ask-back .codicon,
+  .run-note .codicon {
+    font-size: 12px;
+  }
+
+  /* A run that leaves no history (traces are off): said once, quietly, where the transport is. */
+  .run-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    margin-bottom: 2px;
+    color: var(--ui-text-tertiary);
+    font-size: var(--fs-caption);
+  }
+}

@@ -1639,6 +1639,8 @@ slash:
     description: "Фоновое обслуживание навыков (status, run, pin, archive, list-archived)"
   kanban:
     description: "Доска совместной работы нескольких профилей (задачи, ссылки, комментарии)"
+  workflow:
+    description: "Запуски воркфлоу: список, запуск, статус, одобрить или отклонить шаг, ожидающий вас"
   reload:
     description: "Перезагрузить переменные .env в текущий сеанс"
   reload-mcp:

@@ -205,6 +205,20 @@ server_request("tour", params=TourRequestParams, result=ValueResult,
                doc="Drive a guided tour highlight in the desktop renderer.")
 
 
+class WorkflowRequestParams(ServerRequestParams):
+    """``tools/workflow_tools.py`` field set. ``ops``/``scenario`` are plugin-defined
+    (the op vocabulary is owned by the Workflows plugin and read back through
+    ``action='read'``), so they stay open here."""
+
+    model_config = Params.model_config | {"extra": "allow"}
+
+    action: str
+
+
+server_request("workflow", params=WorkflowRequestParams, result=ValueResult,
+               doc="Read or edit the workflow graph on the Workflows canvas (JSON text answer).")
+
+
 # ── withdrawal ────────────────────────────────────────────────────────────────────────────────
 
 

@@ -1,0 +1,253 @@
+/* Workflows canvas — Edges: connectors, the travelling packet, hit areas and the wire toolbar.
+   Scoped under `.wf-root` like workflows.css, which declares the tokens these read. */
+.wf-root {
+  /* ---------------- edges ----------------
+     A connector is the quietest thing on the canvas that still has to be
+     followed. Three weights, and only one of them moves:
+
+       idle     1.25px, tertiary — present, never competing with a card
+       done     1.5px, accent-tinted — this carried something
+       active   1.75px + the travelling packet
+
+     Deliberately NOT dashed while active. Marching ants on every live edge is
+     the flowchart-tool default and it makes a running graph look like a
+     selection marquee; the packet already says "data is moving", and a solid
+     line under it reads as a wire rather than a placeholder. Dashes are left to
+     the loop-back alone, where they mean something specific: this link runs
+     backwards against the flow. */
+  .react-flow__edge .edge {
+    stroke: var(--scenario-edge);
+    stroke-width: 1.25;
+    stroke-linecap: round;
+    transition:
+      stroke var(--dur-panel) var(--ease-out),
+      stroke-width var(--dur-panel) var(--ease-out);
+  }
+  /* Scoped under .react-flow__edge to match the base rule above. Bare `.edge-*`
+     loses to it on specificity (0,2,0 beats 0,1,0), which silently painted every
+     wire the idle colour — the amber loop-back and the accent active state never
+     rendered at all. Forward wires now stroke with a per-edge gradient set inline
+     from edges.tsx, so these carry the widths and the loop-back's colour. */
+  .react-flow__edge .edge-active {
+    stroke: var(--ui-accent);
+    stroke-width: 1.75;
+  }
+  .react-flow__edge .edge-done {
+    stroke: var(--scenario-edge-done);
+    stroke-width: 1.5;
+  }
+  /* loop connector: the one dashed line, because it's the one that runs against
+     the flow. Amber, gently marching at rest; brighter and faster with feedback.
+
+     Opacity is the mode-aware pair rather than a flat .5. The rest hue is a dark
+     rust, and half-strength rust on a navy backdrop measures ~1.1:1 — the wire
+     was there and unfindable. Light themes keep the quieter .5, where the same
+     value reads fine against paper. */
+  .react-flow__edge .edge-loop-line {
+    stroke: var(--scenario-loop);
+    stroke-width: 1.25;
+    stroke-dasharray: 2 5;
+    opacity: 0.5;
+    animation: dash 2.4s linear infinite;
+  }
+  :root.dark & .react-flow__edge .edge-loop-line {
+    opacity: 0.78;
+  }
+  .react-flow__edge .edge-loop-active {
+    opacity: 1;
+    stroke-width: 1.75;
+    animation: dash 0.9s linear infinite;
+  }
+
+  /* The travelling packet is the FOREGROUND — near-black on paper, near-white
+     on ink. It's the one object on the canvas that means "right now", so it
+     should be the highest-contrast thing against the canvas rather than another
+     hue competing with the status palette; --ui-base is the theme's own fg and
+     flips with the mode for free.
+     One rule for both wires: the packet is the same object wherever it rides,
+     and the wire underneath already says which kind of hop it is (solid forward,
+     dashed ember backward). Tinting it per-wire made the loop's packet a fourth
+     colour saying something the dashes had already said.
+
+     The fill is an attribute on the shape (a per-edge gradient ref), not a
+     declaration here — a `fill` in the stylesheet would outrank the attribute
+     and flatten every packet back to a disc. */
+  .packet,
+  .packet-loop {
+    filter: var(--packet-bloom);
+  }
+  /* SMIL doesn't read prefers-reduced-motion, so the packet has to opt out
+     itself. It IS the motion — a stationary droplet parked mid-wire would say
+     something untrue — so it goes away and the active edge's heavier stroke
+     carries "this hop is live" on its own. */
+  @media (prefers-reduced-motion: reduce) {
+    .packet,
+    .packet-loop {
+      display: none;
+    }
+  }
+
+  /* The transparent stroke that widens a wire to something a pointer can find.
+     `stroke` rather than the default painted test, so the invisible band still
+     counts as a target. */
+  .edge-hit {
+    pointer-events: stroke;
+    cursor: pointer;
+  }
+  /* The wire under the pointer, answering. Weight rather than colour, because
+     forward wires carry an inline gradient no rule can override. */
+  .react-flow__edge .edge-hot {
+    stroke-width: 2.25;
+  }
+  .react-flow__edge .edge-loop-line.edge-hot {
+    opacity: 1;
+  }
+  /* The wire's toolbar: a bead at rest, insert-a-step and cut on hover.
+     Something has to be present at rest, because an affordance you only find by
+     hovering the right 1px of line isn't one — but a + on every hop was a row of
+     buttons across the graph all offering to do something, when only the wire
+     under your pointer is offering anything at all. So the rest state is a bead:
+     a wire's worth of ink saying "there's something here", no promise about
+     what. The actions bloom out of it, centred on the same point, which keeps
+     the pair balanced on the wire instead of hanging off one side.
+
+     Both layers are absolutely centred on the anchor rather than laid out in
+     flow, so the bead and the buttons occupy the same point and neither one's
+     size can shift the other.
+
+     This is the ONLY part of a wire allowed above the cards, and the z-index
+     is what puts it there. It rides in React Flow's edge-label layer, which is
+     a separate div from the edges <svg> — so the toolbar clears a neighbouring
+     card on its own, and the wires never have to. Lifting the whole edge layer
+     on hover, which is what this used to do, drew every line over every card
+     it crossed.
+
+     1001 because React Flow's `elevateNodesOnSelect` puts the SELECTED card at
+     1000, and the buttons on the wire you're pointing at have to be reachable
+     over it. Nothing escapes: `.react-flow__viewport` has a transform, so it's
+     a stacking context, and the app's own panels sit outside it. Being above
+     the edges matters too, or the wire's own hit stroke swallows the click
+     aimed at the button sitting on top of it. */
+  .edge-tools {
+    position: absolute;
+    z-index: 1001;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+  }
+  .edge-nub,
+  .edge-acts {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transition:
+      opacity var(--dur-fast) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
+  }
+  /* Solid, not see-through: the wire showing through the middle reads as a break
+     in the line rather than a bead on it. */
+  .edge-nub {
+    width: 8px;
+    height: 8px;
+    translate: -50% -50%;
+    border-radius: 999px;
+    background: var(--scenario-card);
+    box-shadow: 0 0 0 1px var(--scenario-edge);
+  }
+  .edge-tools.hot .edge-nub {
+    opacity: 0;
+    scale: 0.4;
+  }
+
+  .edge-acts {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    translate: -50% -50%;
+    opacity: 0;
+    scale: 0.5;
+  }
+  /* Inert until they're on show, or an invisible button row would sit in front
+     of the wire eating the hover it depends on. */
+  .edge-tools.hot .edge-acts {
+    opacity: 1;
+    scale: 1;
+    pointer-events: auto;
+  }
+
+  .edge-add,
+  .edge-cut {
+    pointer-events: all;
+    display: grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    /* Solid. The rest state is quiet by being SMALL and wire-coloured, not by
+       being see-through — a translucent control reads as disabled, and the wire
+       showing through the glyph just looks broken. */
+    background: var(--scenario-card);
+    box-shadow: 0 0 0 1px var(--scenario-edge);
+    color: var(--ui-text-secondary);
+    cursor: pointer;
+    transition:
+      color var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out),
+      opacity var(--dur-fast) var(--ease-out),
+      translate var(--dur-fast) var(--ease-out),
+      scale var(--dur-fast) var(--ease-out);
+  }
+  /* Only the one under the pointer colours up. Both are on show together, so
+     lighting them both would be two invitations for one decision. */
+  .edge-add:hover,
+  .edge-add:focus-visible {
+    color: var(--ui-accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  }
+  /* Neutral, not red: n8n's trash never colours, and one wire is a cheap,
+     undoable mistake. The danger hue on this canvas means a step that FAILED,
+     which is a different thing entirely. */
+  .edge-cut:hover,
+  .edge-cut:focus-visible {
+    color: var(--ui-text-primary);
+    box-shadow: 0 0 0 1px var(--ui-text-quaternary);
+  }
+  .edge-add:active,
+  .edge-cut:active {
+    scale: 0.94;
+  }
+  /* The + glyph as vector geometry — strokes cross the viewBox's exact middle,
+     so it is centred by construction (the codicon font's bearings drifted
+     low-left at this size). Sized relative to the button so zoom scales it. */
+  .edge-add-glyph {
+    width: 64%;
+    height: 64%;
+    display: block;
+  }
+  .edge-add-glyph path {
+    stroke: currentColor;
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    fill: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .edge-nub,
+    .edge-acts,
+    .edge-add,
+    .edge-cut {
+      transition-duration: 0.01ms;
+    }
+    .edge-tools.hot .edge-nub {
+      scale: 1;
+    }
+    .edge-tools.hot .edge-acts {
+      scale: 1;
+    }
+    .edge-add:active,
+    .edge-cut:active {
+      scale: 1;
+    }
+  }
+}

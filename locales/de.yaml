@@ -1639,6 +1639,8 @@ slash:
     description: "Skill-Pflege im Hintergrund (status, run, pin, archive, list-archived)"
   kanban:
     description: "Profilübergreifendes Kollaborations-Board (Aufgaben, Links, Kommentare)"
+  workflow:
+    description: "Workflow-Läufe: auflisten, starten, Status, einen auf dich wartenden Schritt genehmigen oder ablehnen"
   reload:
     description: ".env-Variablen in die laufende Sitzung neu laden"
   reload-mcp:

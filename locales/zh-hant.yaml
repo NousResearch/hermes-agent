@@ -1639,6 +1639,8 @@ slash:
     description: "背景技能維護（status、run、pin、archive、list-archived）"
   kanban:
     description: "多設定檔協作看板（任務、連結、留言）"
+  workflow:
+    description: "工作流程執行：列出、啟動、狀態、核准或拒絕等待你的步驟"
   reload:
     description: "將 .env 變數重新載入到執行中的工作階段"
   reload-mcp:

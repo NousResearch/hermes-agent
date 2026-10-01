@@ -1639,6 +1639,8 @@ slash:
     description: "后台技能维护（status、run、pin、archive、list-archived）"
   kanban:
     description: "多配置档协作看板（任务、链接、评论）"
+  workflow:
+    description: "工作流运行：列出、启动、状态、批准或拒绝等待你的步骤"
   reload:
     description: "将 .env 变量重新加载到运行中的会话"
   reload-mcp:

@@ -19,7 +19,10 @@ import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } 
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
 import { registry } from './registry'
+import { onPluginServerRequest, type PluginServerRequestHandler } from './server-request-tap'
 import type { Contribution } from './types'
+
+export type { PluginServerRequestHandler } from './server-request-tap'
 
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
@@ -90,6 +93,14 @@ export interface PluginContext {
    *  callback) can never outlive the plugin the way a bare `host.onEvent`
    *  there would. */
   onEvent: (type: string, listener: GatewayEventListener) => () => void
+  /** ANSWER a backend request method the app has no built-in for
+   *  (`server_requests.send`). The handler receives the same scoped request
+   *  a built-in does; return `true` to claim it (and answer via
+   *  `request.respond` / `request.fail`), `false`/`undefined` to pass. Tracked
+   *  like `onEvent`: a registration made while `register()` runs is retired
+   *  with the plugin on unload/reload/disable, so a handler can never answer
+   *  for a plugin that is gone. */
+  onServerRequest: (method: string, handler: PluginServerRequestHandler) => () => void
   /** Scoped timers: cleared when the plugin unloads/reloads/disables, so a
    *  poller cannot outlive the plugin the way a bare `setInterval` does (the
    *  host never sees a bare global — it is the author's leak). Each returns
@@ -288,6 +299,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     registerMany: cs => track(registry.registerMany(cs.map(scope))),
     onDispose: fn => void track(fn),
     onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
+    onServerRequest: (method, handler) => track(onPluginServerRequest(method, handler)),
     ...createPluginLifetime(track),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),

@@ -1639,6 +1639,8 @@ slash:
     description: "Manutenzione delle skill in background (status, run, pin, archive, list-archived)"
   kanban:
     description: "Bacheca di collaborazione multi-profilo (attività, collegamenti, commenti)"
+  workflow:
+    description: "Esecuzioni dei workflow: elenca, avvia, stato, approva o rifiuta un passaggio in attesa di te"
   reload:
     description: "Ricarica le variabili .env nella sessione in esecuzione"
   reload-mcp:

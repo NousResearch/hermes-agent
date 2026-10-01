@@ -1639,6 +1639,8 @@ slash:
     description: "Arka planda skill bakımı (status, run, pin, archive, list-archived)"
   kanban:
     description: "Çok profilli iş birliği panosu (görevler, bağlantılar, yorumlar)"
+  workflow:
+    description: "İş akışı çalıştırmaları: listele, başlat, durum, seni bekleyen bir adımı onayla veya reddet"
   reload:
     description: ".env değişkenlerini çalışan oturuma yeniden yükle"
   reload-mcp:

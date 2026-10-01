@@ -1639,6 +1639,8 @@ slash:
     description: "Mantenimiento de skills en segundo plano (status, run, pin, archive, list-archived)"
   kanban:
     description: "Tablero de colaboración multiperfil (tareas, enlaces, comentarios)"
+  workflow:
+    description: "Ejecuciones de flujos: listar, iniciar, estado, aprobar o rechazar un paso que te espera"
   reload:
     description: "Recargar las variables de .env en la sesión en curso"
   reload-mcp:

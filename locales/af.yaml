@@ -1639,6 +1639,8 @@ slash:
     description: "Agtergrond-vaardigheidsonderhoud (status, run, pin, archive, list-archived)"
   kanban:
     description: "Multiprofiel-samewerkingsbord (take, skakels, kommentaar)"
+  workflow:
+    description: "Werkvloei-lopies: lys, begin, status, keur 'n stap goed of af wat op jou wag"
   reload:
     description: "Herlaai .env-veranderlikes in die lopende sessie"
   reload-mcp:

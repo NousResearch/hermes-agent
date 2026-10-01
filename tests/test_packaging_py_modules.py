@@ -73,3 +73,31 @@ def test_every_root_module_imported_by_packaged_code_is_shipped():
     missing = {f: v for f, v in missing.items() if v}
     assert not missing, f"packaged code imports root modules the wheel would not ship: {missing}"
     assert "hermes_state" in shipped and "setup" not in shipped
+
+
+def test_every_root_package_imported_by_packaged_code_is_shipped():
+    """The package half of the same contract: a root package (``workflow/``) that packaged code
+    imports must be named in ``packages.find``, or an installed wheel fails at import time."""
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    included = set(cfg["tool"]["setuptools"]["packages"]["find"]["include"])
+    root_packages = {p.parent.name for p in REPO_ROOT.glob("*/__init__.py")} - {"tests"}
+    shipped = {n for n in _root_py_modules() if not n.startswith("_test_")}
+    paths = [p for n in shipped if (p := REPO_ROOT / f"{n}.py").is_file()]
+    for pkg in PACKAGES:
+        paths.extend((REPO_ROOT / pkg).rglob("*.py"))
+    missing: dict[str, set[str]] = {}
+    for path in paths:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+        except (SyntaxError, OSError):
+            continue
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module.split(".")[0]]
+            for n in names:
+                if n in root_packages and n not in included:
+                    missing.setdefault(str(path.relative_to(REPO_ROOT)), set()).add(n)
+    assert not missing, f"packaged code imports root packages the wheel would not ship: {missing}"

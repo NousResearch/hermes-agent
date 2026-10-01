@@ -1639,6 +1639,8 @@ slash:
     description: "バックグラウンドのスキル保守（status、run、pin、archive、list-archived）"
   kanban:
     description: "マルチプロファイルの協業ボード（タスク、リンク、コメント）"
+  workflow:
+    description: "ワークフローの実行：一覧、開始、状態、あなたを待っているステップの承認・却下"
   reload:
     description: ".env の変数を実行中のセッションに再読み込み"
   reload-mcp:

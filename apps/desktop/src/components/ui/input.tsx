@@ -3,6 +3,7 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 import { type ControlVariantProps, controlVariants } from './control'
+import { useFieldControl } from './field'
 
 // `prefix`/`suffix` are DOM string attributes on the native element; we shadow
 // them with ReactNode adornments, so they're omitted from the base props.
@@ -16,11 +17,16 @@ type InputProps = Omit<React.ComponentProps<'input'>, 'size' | 'prefix' | 'suffi
     containerClassName?: string
   }
 
-function Input({ className, containerClassName, prefix, suffix, size, type, ...props }: InputProps) {
+function Input({ className, chrome, containerClassName, prefix, suffix, size, type, ...props }: InputProps) {
   const grouped = prefix != null || suffix != null
+  // An adorned input hands its chrome to the wrapper, so the invalid border has
+  // to go there too — `.desktop-input-chrome[aria-invalid]` lights the element
+  // carrying the border, not the one carrying the caret.
+  const status = useFieldControl()
 
   const field = (
     <input
+      {...(grouped ? { 'aria-describedby': status?.['aria-describedby'] } : status)}
       // Off by default for every consumer — these are code/config/search fields,
       // not prose. Callers can re-enable per-instance by passing the prop.
       autoCapitalize="off"
@@ -32,7 +38,7 @@ function Input({ className, containerClassName, prefix, suffix, size, type, ...p
         // box; otherwise the input carries the chrome itself.
         grouped
           ? 'min-w-0 flex-1 border-0 bg-transparent p-0 text-xs leading-4 text-foreground outline-none placeholder:text-muted-foreground'
-          : controlVariants({ size }),
+          : controlVariants({ chrome, size }),
         'selection:bg-primary selection:text-primary-foreground file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-xs file:font-medium file:text-foreground',
         className
       )}
@@ -49,10 +55,11 @@ function Input({ className, containerClassName, prefix, suffix, size, type, ...p
 
   return (
     <div
+      aria-invalid={status?.['aria-invalid']}
       className={cn(
         // Same control chrome/sizing as a bare input; `.desktop-input-chrome`
         // lights on `:focus-within` (styles.css) since the div never focuses.
-        controlVariants({ size }),
+        controlVariants({ chrome, size }),
         'inline-flex items-center gap-1',
         props.disabled && 'cursor-not-allowed opacity-50',
         containerClassName

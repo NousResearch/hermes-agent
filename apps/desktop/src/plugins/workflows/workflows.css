@@ -1,0 +1,550 @@
+@keyframes arc-border {
+  0% {
+    transform: translate(-10%, -10%);
+  }
+  100% {
+    transform: translate(-50%, -50%);
+  }
+}
+
+@keyframes emote-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes settle-flash {
+  0% {
+    outline-color: color-mix(in srgb, var(--scenario-ok) 70%, transparent);
+  }
+  100% {
+    outline-color: transparent;
+  }
+}
+
+@keyframes dash {
+  to {
+    stroke-dashoffset: -14;
+  }
+}
+
+@keyframes pulse-dim {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* Everything below is scoped to the canvas root. A plugin stylesheet is loaded
+   into the same document as the app, so its class names — .node, .glass, .seal
+   — share one namespace with every other surface; nesting the sheet under
+   `.wf-root` keeps them from meaning anything outside this page. The tokens the
+   canvas adds are declared on that root too, so they inherit down to the cards
+   without ever landing on :root. */
+.wf-root {
+  /* ==========================================================================
+     METRICS
+
+     The canvas's own scale — type, motion, card and lane geometry. Colour comes
+     from the host (see TOKENS below); these are the numbers a node card needs
+     and no app token covers, because the app has no cards this size.
+
+     The type ramp is the app's, by reference rather than by copy: a node title
+     is body text, its rungs are tool text. The radius is the app's 2xl. Only
+     the geometry that is genuinely this canvas's is a literal.
+     ====================================================================== */
+  --fs-body: var(--conversation-text-font-size);
+  --fs-caption: var(--conversation-caption-font-size);
+  --fs-tool: var(--conversation-tool-font-size);
+  --fs-badge: 0.65rem;
+  /* Badge size="xs" — the floor. Nothing smaller. */
+  --fs-micro: 0.6rem;
+
+  /* Two durations and two curves, so nothing on the canvas invents its own.
+     `--ease-out` is front-loaded — most of the change happens in the first
+     third, which is what makes a click feel caught rather than animated at.
+     `--ease-glide` is the softer settle for things that enter rather than
+     react (panels, overlays). */
+  --dur-fast: 0.16s;
+  --dur-panel: 0.26s;
+  --dur-breathe: 1.8s;
+  --ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --ease-glide: cubic-bezier(0.32, 0.72, 0, 1);
+  /* Symmetric — for loops, where an asymmetric curve reads as a stutter. */
+  --ease-loop: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Card padding sits between the app's Badge (px-1.5/py-0.5) and its Dialog
+     (p-4); anything larger and the cards dwarf real product chrome. */
+  --node-w: 13.25rem;
+  --node-pad-block: 0.5625rem;
+  --node-pad-inline: 0.625rem;
+  --node-pad-block-end: 0.5625rem;
+  --node-font: var(--fs-caption);
+  --node-ring-w: 1.5px;
+  --node-radius: var(--radius-2xl);
+  /* Floating chrome — controls, minimap, inspector. A touch rounder than a
+     card, the way a bigger surface wants. */
+  --panel-radius: 0.875rem;
+  /* How far a committed card comes off the canvas. The handles counter-
+     translate by exactly this, so raising it never detaches an edge. */
+  --node-lift-raised: -4px;
+
+  /* The card's cast shadow, in three tiers. Hover only firms it up — it does
+     NOT lift, so sweeping the pointer across the canvas stays quiet; the lift
+     is reserved for a state the user or the engine committed to. */
+  --shadow-card:
+    0 0.0625rem 0.125rem -0.0625rem color-mix(in srgb, #000 7%, transparent),
+    0 0.1875rem 0.375rem -0.1875rem color-mix(in srgb, #000 6%, transparent);
+  --shadow-card-hover:
+    0 0.0625rem 0.125rem -0.0625rem color-mix(in srgb, #000 9%, transparent),
+    0 0.25rem 0.5rem -0.25rem color-mix(in srgb, #000 8%, transparent);
+  --shadow-card-raised:
+    0 0.125rem 0.25rem -0.125rem color-mix(in srgb, #000 8%, transparent),
+    0 0.625rem 1.125rem -0.5rem color-mix(in srgb, #000 8%, transparent),
+    0 1.5rem 2.25rem -1rem color-mix(in srgb, #000 8%, transparent);
+
+  /* The travelling packet is made of ONE colour at varying transparency — the
+     droplet's shape comes from where it's dense, not from a second hue. So
+     there's nothing to flip per mode: on ink it's a bead of light on a dark
+     wire, on paper a bead of ink on a pale one, and both are the foreground
+     the packet has always been.
+
+     Declared on the root, not on `.packet`: the stops live in a <defs>, which
+     is a sibling of the ellipse rather than an ancestor, so tokens set on the
+     shape itself would never reach them. */
+  --packet-glass: var(--ui-base);
+  /* The wet look owes as much to what's around the droplet as to the droplet.
+     On paper that's the shadow it casts; on ink it's the light it throws. A
+     whole filter rather than one shadow, because those two want different
+     numbers of passes. */
+  --packet-bloom: drop-shadow(0 0.5px 1px color-mix(in srgb, #000 32%, transparent));
+
+  /* Same law, deeper alpha: a dark card sits on a dark canvas, so the cast has
+     to work much harder to separate them. */
+  :root.dark & {
+    /* A drop shadow under a bright droplet on a dark canvas would be invisible,
+       so the halo becomes light instead — the scatter around something wet and
+       lit, and the one object on this canvas that means "right now".
+
+       Two passes: a tight one that puts the light back in the middle the glass
+       gives away, and a wide soft one for the scatter. A hollow droplet needs
+       more around it than the solid dot did — the body is mostly transparent
+       now, so without this the packet reads dimmer than it used to. */
+    --packet-bloom: drop-shadow(0 0 1.5px color-mix(in srgb, var(--ui-base) 45%, transparent))
+      drop-shadow(0 0 4px color-mix(in srgb, var(--ui-base) 20%, transparent));
+
+    --shadow-card:
+      0 0.0625rem 0.125rem -0.0625rem color-mix(in srgb, #000 34%, transparent),
+      0 0.1875rem 0.375rem -0.1875rem color-mix(in srgb, #000 30%, transparent);
+    --shadow-card-hover:
+      0 0.0625rem 0.125rem -0.0625rem color-mix(in srgb, #000 38%, transparent),
+      0 0.25rem 0.5rem -0.25rem color-mix(in srgb, #000 34%, transparent);
+    --shadow-card-raised:
+      0 0.125rem 0.25rem -0.125rem color-mix(in srgb, #000 40%, transparent),
+      0 0.625rem 1.125rem -0.5rem color-mix(in srgb, #000 38%, transparent),
+      0 1.5rem 2.25rem -1rem color-mix(in srgb, #000 36%, transparent);
+  }
+
+  /* The activity lane, bottom-right. Its height derives from the row count and
+     line height rather than being typed in, because the fade is a gradient over
+     the box: a hand-tuned height that drifted from the real row metrics would
+     rescale the gradient and dim a row that should be at full strength. */
+  --lane-rows: 6;
+  --lane-line-h: 0.75rem;
+  --lane-gap: 2px;
+  --lane-w: 6.25rem;
+  --lane-font: 0.5rem;
+  --lane-inset-inline: 1.25rem;
+  --lane-inset-block: 1rem;
+  /* Ends before the newest row's centre so that row stays fully opaque. */
+  --lane-fade-end: 70%;
+
+  /* ==========================================================================
+     TOKENS
+
+     Every colour on this canvas resolves to a desktop token — the --ui-* glass
+     set and the --dt-* shadcn bridge from apps/desktop/src/styles.css. There is
+     no palette here and no light/dark branch: a theme changes the seeds those
+     tokens are built from, and the canvas follows.
+
+     What the canvas maps onto:
+       backdrop            --ui-chat-surface-background
+       node card, buttons  --ui-bg-editor
+       floating panels     --dt-popover
+       chips, inputs       --ui-bg-tertiary (as --scenario-recess)
+       hover               --ui-control-hover-background
+       hairline / edge     --dt-border        strong --ui-stroke-primary
+       text ladder         --ui-text-primary / -secondary / -tertiary
+       brand               --ui-accent        CTA --dt-primary   focus --dt-ring
+
+     Below is the only vocabulary the canvas adds: run status and graph parts,
+     which no host token covers. All of it is color-mix() over the tokens above,
+     so it inherits any theme for free — same shape as the app's
+     --context-usage-* set. Nothing here is a literal colour.
+     ========================================================================== */
+
+  & {
+    /* Lets `height: 0` interpolate to `height: auto`, which is what the node
+       cards' collapsible blocks transition between. Without it those keywords are
+       a discrete swap and the card jumps; with it the same declarations animate
+       and nothing else on the page changes behaviour. Chrome 129+, and the app
+       ships Electron 40 (Chromium 140), so it's a floor we're already above. */
+    interpolate-size: allow-keywords;
+
+    /* Status. Named for what the run is doing, not for the hue it borrows.
+       Every one of these resolves to a host token, so a theme change moves them.
+
+       `running` is the ACCENT, not --ui-blue. --ui-blue is the raw brand hue
+       (#0053fd, 100% saturation) while the rest of the ANSI set is deliberately
+       muted at 30–67% — using it made the busy state the one screaming colour on
+       an otherwise restrained canvas. The accent is also the honest mapping: a
+       running node is the app's primary action colour, and on a theme whose
+       accent isn't blue, a blue "running" would simply be off-palette. */
+    --scenario-running: var(--ui-accent);
+    /* Success is the composer's diff green (DiffCount, diff-count.tsx:41), full
+       strength. Failure is NOT the diff red: the GUI paints errors with
+       text-destructive (--dt-destructive, per-theme crimson) and reserves
+       --ui-red for −N diff text — the diff pair lightens in dark mode so a
+       stat stays readable, which is exactly what made a failed card's ring
+       read hot pink. Errors keep the destructive, stats keep the pair. */
+    --scenario-ok: var(--ui-green);
+    --scenario-fail: var(--dt-destructive);
+    /* Rework/held. Derived from the theme's own accent, not a fixed hue: the
+       ANSI set (--ui-orange and friends) is a STYLESHEET CONSTANT the theme
+       engine never writes — measured identical rgb(219,112,75) on all 14
+       themes — so a hardcoded orange is the one thing on this canvas that
+       ignores the skin entirely.
+
+       Relative color syntax off --ui-accent keeps it in the theme's family
+       while pinning the parts that carry the meaning: hue 62 (amber-ember —
+       "come back round"), lightness clamped so it stays legible as a 1.25px
+       dashed stroke on paper and on ink, and chroma BOUNDED at both ends —
+       floored so greyscale skins (mono, dracula) still get a visible ember
+       instead of the grey their accent would hand back, and ceilinged because
+       an unclamped chroma at this hue clips out of sRGB into pure red, which
+       is the failure colour (Nous resolved to rgb(222,0,0) before the cap). */
+    --scenario-loop: oklch(from var(--ui-accent) clamp(0.58, l, 0.72) clamp(0.1, c, 0.15) 50);
+    /* Gate used to be hue 105 — mustard, and it fought the pass/fail pair.
+       Cooler, still off the loop's ember (50) so a dashed return and a gate
+       mark don't read as the same colour. */
+    --scenario-gate: oklch(from var(--ui-accent) clamp(0.52, l, 0.64) clamp(0.08, c, 0.12) 255);
+    --scenario-blind: oklch(from var(--ui-accent) clamp(0.6, l, 0.78) clamp(0.08, c, 0.13) 300);
+    /* An agent step's tag colour. The accent, because an agent IS the default
+       thing on this canvas — the gate is the one that differs. */
+    --scenario-agent: var(--ui-accent);
+    /* Parked on a person. The same ember as a rework loop, because it means the
+       same thing: the run has stopped and is waiting to be sent back round. */
+    --scenario-warn: var(--scenario-loop);
+
+    /* Washes behind a verdict chip. */
+    --scenario-ok-wash: color-mix(in srgb, var(--scenario-ok) 14%, transparent);
+    --scenario-fail-wash: color-mix(in srgb, var(--scenario-fail) 14%, transparent);
+
+    /* Graph parts. Edges sit above the backdrop but below node text, so they
+       key off the text ladder rather than the stroke ladder — a hairline border
+       is too faint to read as a connection at canvas zoom. */
+    --scenario-edge: color-mix(in srgb, var(--ui-base) 19%, transparent);
+    /* A settled wire is the ONE green, quieted — the same --ui-green every
+       check, stat, and port dot uses, carried 55% into the rest hairline so a
+       finished graph doesn't glow. It was an accent mix before, which made the
+       done wire a fourth hue the palette never needed: everything green/red on
+       this canvas is the composer's diff pair, full stop. */
+    --scenario-edge-done: color-mix(in srgb, var(--scenario-ok) 55%, var(--scenario-edge));
+    /* Mixed into the card, not into transparency. A dot straddles the card's
+       edge, so a translucent core lets whatever runs under it through — most
+       visibly the selected card's 2px accent border, which drew a line clean
+       across every port on the node. Same colour over the card as before,
+       opaque now, which is what the ring around it already assumed. */
+    --scenario-handle: color-mix(in srgb, var(--ui-base) 20%, var(--scenario-card));
+
+    /* The canvas backdrop is the app's chat surface, unmodified. This token has
+       twice been an invention — first an 11% shade toward black, then a 48% mix
+       toward warm paper (#e6e2db) that kept every theme's backdrop beige — and
+       both fought the theme engine: the engine already decides what a chrome
+       surface looks like per skin (seed blended toward the mode's neutral), and
+       nothing in the product paints a surface the engine didn't derive.
+       Separation from the sheet is the CARD's job (hairline + cast, see
+       `.node`), exactly as it is in the app's transcript. */
+    --scenario-canvas: var(--ui-chat-surface-background);
+    /* The hairline every floating surface draws around itself — card, panel,
+       control pill. The app's card edge: --dt-border, which applyTheme() binds
+       to the skin's own border colour (slate ships #30363d) and the stylesheet
+       defaults to the stroke ladder. One token so a card and the composer can't
+       drift apart. */
+    --scenario-hairline: var(--dt-border);
+
+    /* A recess: an input, a track, a chip, a port row — anything that should
+       read as a dent in the surface it sits on. --ui-bg-tertiary IS the engine's
+       token for this (it's what --dt-muted binds to); the hover step is the next
+       rung up the fill ladder. These were previously re-invented as neutral
+       base-washes to strip the accent tint — but the tint is the engine's
+       behaviour, and themes tune their accent knowing every muted fill carries
+       it. */
+    --scenario-recess: var(--ui-bg-tertiary);
+    --scenario-recess-hover: var(--ui-bg-secondary);
+
+    /* The card fill: the app's own editor/card surface, both modes. The engine
+       already lifts a dark card above the chrome (38% seed over #161618 vs the
+       chrome's 74% over #0d0d0e), so the old dark-mode "+8% white" boost was
+       double-lifting. */
+    --scenario-card: var(--ui-bg-editor);
+
+    /* Floating panels are the app's popover surface — 96% elevated over
+       transparent, under the same backdrop blur the app puts behind it. */
+    --scenario-glass: var(--dt-popover);
+
+    /* Accent as TEXT, not as a fill.
+       A theme is free to make its accent the same hue family as its surfaces
+       (Nous dark is #4a84fe on a #010409 card) — and accent-coloured label
+       text then disappears into the panel. Mixing the accent halfway to the
+       text colour restores it. Anywhere the accent is a BACKGROUND, keep
+       using --ui-accent — this token is for glyphs and label text only. */
+    --scenario-accent-text: color-mix(in srgb, var(--ui-base) 50%, var(--ui-accent));
+
+    /* Status colours as TEXT: the same tokens, full strength — DiffCount puts
+       --ui-green/--ui-red straight on text with no alpha, so these exist only
+       as the named hook the rest of this sheet reads. */
+    --scenario-ok-text: var(--scenario-ok);
+    --scenario-fail-text: var(--scenario-fail);
+    --scenario-loop-text: var(--scenario-loop);
+  }
+
+  /* --------------------------------------------------------------------------
+     React Flow bridge.
+
+     v12 resolves each property as var(--xy-X-props, var(--xy-X, var(--xy-X-default))).
+     The -default pair is what the library ships for light and dark; setting the
+     unsuffixed name wins in both, so the canvas stays on our tokens whatever
+     colorMode is. These must be declared on .react-flow — the library's own
+     declarations live there, so :root would lose to them.
+     -------------------------------------------------------------------------- */
+  .react-flow {
+    --xy-background-color: var(--scenario-canvas);
+    /* The grid is orientation, not decoration — you should register it without
+       ever looking at it. --ui-stroke-primary is accent-tinted and sized for a
+       border meeting a fill; at canvas scale, repeated a few thousand times, it
+       turned the backdrop into visible texture. */
+    --xy-background-pattern-color: color-mix(in srgb, var(--ui-base) 13%, transparent);
+
+    --xy-node-color: var(--ui-text-primary);
+    --xy-node-background-color: var(--scenario-card);
+    --xy-node-border: 0;
+    --xy-node-boxshadow-hover: none;
+    /* Our card draws its own selection ring (see `.node.sel`). React Flow's
+       wrapper ring would sit outside it as a second, offset outline — the
+       doubled-up look. Neutralised here rather than fought per-node. */
+    --xy-node-boxshadow-selected: none;
+    --xy-node-group-background-color: var(--scenario-recess-hover);
+
+    --xy-handle-background-color: var(--scenario-handle);
+    --xy-handle-border-color: transparent;
+
+    --xy-edge-stroke: var(--scenario-edge);
+    --xy-edge-stroke-selected: var(--ui-accent);
+    --xy-edge-label-background-color: var(--ui-bg-elevated);
+    --xy-edge-label-color: var(--ui-text-secondary);
+    --xy-connectionline-stroke: var(--ui-accent);
+
+    --xy-selection-background-color: color-mix(in srgb, var(--ui-accent) 8%, transparent);
+    --xy-selection-border: 1px dotted var(--ui-accent);
+
+    /* The rail is one pill with a fill of its own, so each button inside it is
+       transparent until hovered — see `.react-flow__controls`. */
+    --xy-controls-button-background-color: transparent;
+    --xy-controls-button-background-color-hover: var(--ui-control-hover-background);
+    --xy-controls-button-color: var(--ui-text-secondary);
+    --xy-controls-button-color-hover: var(--ui-text-primary);
+    /* React Flow rules a hairline between every control button by default. The
+       pill separates them by the gap between their hover fills instead. */
+    --xy-controls-button-border-color: transparent;
+    --xy-controls-box-shadow: none;
+
+    --xy-minimap-background-color: var(--ui-bg-elevated);
+    --xy-minimap-mask-background-color: color-mix(in srgb, var(--ui-bg-chrome) 62%, transparent);
+    --xy-minimap-node-background-color: var(--ui-text-tertiary);
+    --xy-minimap-node-stroke-color: transparent;
+
+    --xy-resize-background-color: var(--ui-accent);
+  }
+
+  /* The window is one sheet: the header and the canvas share a background, and
+     only the cards and the floating panels are lighter than it. That's the whole
+     trick behind how a builder canvas reads as calm — there is exactly one
+     backdrop value on screen, not a chrome tone meeting a canvas tone. */
+  /* The box and the backdrop are PageShell's, the same one the Kanban board
+     page wears — a page that paints its own surface is how two plugins end up
+     looking like two apps. The canvas gets its own colour where it belongs, on
+     --xy-background-color below, so only the sheet under the CARDS is
+     scenario-tinted; the header strip stays on the app's surface. */
+  & {
+    /* What the open inspector takes off the right edge. Anything centred on
+       the canvas reads this so it centres on the part you can still see. */
+    --wf-inspector: 0rem;
+  }
+  /* min-height:0 or the flex child refuses to shrink and React Flow measures the
+     viewport taller than the window. */
+  .canvas-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+  }
+  .react-flow__attribution {
+    display: none;
+  }
+
+  /* nodes are grabbable, like any canvas app */
+  .react-flow__node {
+    cursor: grab;
+    overflow: visible;
+  }
+  .react-flow__node.dragging {
+    cursor: grabbing;
+  }
+
+  /* While an agent build plays out, cards GLIDE to the ranks dagre gives them
+     as the graph grows around each new step, instead of teleporting once per
+     frame. Deliberately not a blanket transition on .react-flow__node: that
+     would put the same easing on a drag, and a card that lags the cursor by
+     200ms feels broken in a way no amount of polish elsewhere makes up for.
+     `.dragging` is excluded as well, in case a build lands mid-grab. */
+  .canvas-wrap.reflowing .react-flow__node:not(.dragging) {
+    transition: transform var(--dur-panel) var(--ease-glide);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .canvas-wrap.reflowing .react-flow__node:not(.dragging) {
+      transition: none;
+    }
+  }
+  .react-flow__node:focus,
+  .react-flow__node:focus-visible {
+    outline: none;
+  }
+
+  /* A label in the graph, not a card. Pans and drags with the canvas; the
+     dots show through because there is no fill. */
+  .react-flow__node-note {
+    padding: 0;
+    background: none;
+    border: none;
+    box-shadow: none;
+    cursor: grab;
+  }
+  .react-flow__node-note.dragging {
+    cursor: grabbing;
+  }
+  .canvas-note {
+    color: var(--ui-text-tertiary);
+    font-family: 'Iowan Old Style', Palatino, ui-serif, Georgia, serif;
+    font-size: var(--fs-body);
+    font-style: italic;
+    line-height: 1.4;
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .react-flow__panel {
+    margin: 14px;
+  }
+
+  /* ---------------- live log ----------------
+     Ambient activity pinned to the bottom-right corner: what's happening right
+     now, as text. Appears, then fades. No scrollback, nothing to dismiss.
+
+     Deliberately NOT pills. A pill is a badge — a discrete thing with a status.
+     This is a tail of work in progress, so it reads as a terminal does:
+     right-aligned, no container. That also lets it sit directly on the canvas
+     without competing with the node cards, which ARE pills-and-surfaces.
+
+     Sits in the corner proper rather than stacking above the composer: the
+     composer is bottom-CENTER and ends well short of this column, so there's
+     nothing to clear. Growing upward from the bottom keeps the newest line
+     pinned to the same spot while older ones drift up and out. */
+  .emotes {
+    position: absolute;
+    right: var(--lane-inset-inline);
+    bottom: var(--lane-inset-block);
+    /* Fixed, not max-: a max-width column shrinks to its shortest line, so the
+       right edge would jitter as content changes. Fixed keeps every line
+       truncating to the same rail. */
+    width: var(--lane-w);
+    /* Derived, never typed: the fade below is a gradient over this box, so a
+       height that drifted from the real row metrics would rescale the gradient
+       and dim a line that should be at full strength. */
+    height: calc(var(--lane-rows) * var(--lane-line-h) + (var(--lane-rows) - 1) * var(--lane-gap));
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: flex-end;
+    gap: var(--lane-gap);
+    overflow: hidden;
+    /* below Panel (z 5), so an open inspector covers it rather than fighting it */
+    z-index: 4;
+    pointer-events: none;
+
+    font-size: var(--lane-font);
+    line-height: var(--lane-line-h);
+    letter-spacing: -0.1px;
+    /* The text sits straight on the canvas, so it needs its own legibility
+       rather than a panel's contrast behind it. */
+    text-shadow:
+      0 1px 3px var(--scenario-canvas),
+      0 0 6px var(--scenario-canvas);
+    /* Older lines recede. This is a property of the COLUMN, not of any line, so
+       it's one gradient over the container — the same mask the inspector's scroll
+       edges use. Doing it per-row in JS meant every existing line's opacity was
+       recomputed and repainted whenever a new one arrived; as a mask, adding a
+       line repaints only that line and the gradient composites on the GPU. */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 var(--lane-fade-end));
+    mask-image: linear-gradient(to bottom, transparent 0%, #000 var(--lane-fade-end));
+  }
+  /* A block, not a flex row: ellipsis only works on a single inline flow. At this
+     width the tail is what gets cut, which is correct — the tool name matters
+     more than its argument. The node name isn't rendered at all (see livelog.tsx);
+     it's on the title attribute for a hover. */
+  .emote {
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
+    color: var(--ui-text-secondary);
+    animation: emote-in var(--dur-panel) var(--ease-out);
+    transition: opacity 0.5s linear;
+  }
+  .emote.k-start {
+    color: var(--ui-text-primary);
+  }
+  .emote.k-ok {
+    color: var(--ui-text-secondary);
+  }
+  .emote.k-fail {
+    color: var(--ui-text-secondary);
+  }
+  .emote.k-loop {
+    color: var(--ui-text-secondary);
+  }
+  .emote.k-data {
+    color: var(--ui-text-tertiary);
+  }
+
+  /* ---- typography ----
+     ONE family. Everything on this canvas is --dt-font-sans at whatever --fs-*
+     rung its role sits on.
+
+     There used to be a second: mono for "verbatim payload" — a tool's argument
+     string, a gate predicate, a derived read-only value, an identifier under
+     edit, the ambient log tail. The rule was coherent and the result wasn't. Six
+     scattered runs of Menlo, none longer than a few words, at a different width,
+     weight and x-height from the sans a pixel away from them: on a card that
+     reads as a rendering bug rather than as a category. Mono earns its keep on a
+     BLOCK — a diff, a stack trace, a code fence, something with alignment to
+     preserve. There is no such block here. */
+}

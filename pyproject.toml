@@ -816,6 +816,7 @@ include = [
   "tui_gateway.*",
   "cron",
   "cron.*",
+  "workflow",
   "acp_adapter",
   "plugins",
   "plugins.*",

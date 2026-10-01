@@ -1710,6 +1710,8 @@ slash:
     description: "Background skill maintenance (status, run, pin, archive, list-archived)"
   kanban:
     description: "Multi-profile collaboration board (tasks, links, comments)"
+  workflow:
+    description: "Workflow runs: list, start, status, approve or deny a step waiting on you"
   reload:
     description: "Reload .env variables into the running session"
   reload-mcp:

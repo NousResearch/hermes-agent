@@ -273,6 +273,15 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
+        # Same reason for workflows: with no gateway up, this backend reacts to the workflow
+        # inbox (the lock lets a gateway that is up keep it instead).
+        try:
+            from workflow import reactor as workflow_reactor
+
+            workflow_reactor.ensure_started()
+        except Exception:
+            _log.warning("Workflow reactor did not start", exc_info=True)
+
     # Reap idle/dead keep-alive PTY sessions (30-min TTL).
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
     # Periodic authenticated self-test feeding the ``dashboard`` component on /api/status.

@@ -282,6 +282,10 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("action", "action", ""), ("surface", "surface"), ("selector", "selector"), ("title", "title"),
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
     ),
+    "workflow": _callback_tool(
+        "tools.workflow_tools", "workflow_tool", "workflow_callback",
+        ("action", "action", ""), ("ops", "ops"), ("workflow", "workflow"), ("scenario", "scenario"),
+    ),
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,

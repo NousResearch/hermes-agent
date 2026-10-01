@@ -15,10 +15,18 @@ export const GHOST_ICON_BTN = cn(
 // (reads as black-on-white in light mode, white-on-black in dark mode) to
 // match the reference composer's high-contrast CTA. Keeps the pill itself
 // neutral and lets the action visually dominate the row.
-export const PRIMARY_ICON_BTN = cn(
-  'size-(--composer-control-primary-size,var(--composer-control-size)) shrink-0 rounded-full p-0',
+//
+// Face only — pair with a Button `size`. The composer send keeps its own
+// measure via PRIMARY_ICON_BTN; everywhere else pick `icon-2xs` / `icon-xs`.
+export const PRIMARY_ICON_FACE = cn(
+  'shrink-0 rounded-full p-0',
   'bg-foreground text-background hover:bg-foreground/90',
   'disabled:bg-foreground/30 disabled:text-background disabled:opacity-100'
+)
+
+export const PRIMARY_ICON_BTN = cn(
+  PRIMARY_ICON_FACE,
+  'size-(--composer-control-primary-size,var(--composer-control-size))'
 )
 
 /** A toggle that is currently ON — dictation, spoken replies, the wake word. */

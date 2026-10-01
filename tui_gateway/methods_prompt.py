@@ -1050,9 +1050,9 @@ def _(rid, params: dict) -> dict:
 
 @method("request.answer")
 def _(rid, params: dict) -> dict:
-    """Answer an open server→client request from a client that did not receive it (a Bot Mode room
-    window answering a member's prompt mirrored from its resume snapshot). The response-frame path is
-    the norm; this is the proxy for it. ``expired`` when the request already ended."""
+    # Answer an open server→client request from a client that did not receive it (a Bot Mode room
+    # window answering a member's prompt mirrored from its resume snapshot). The response-frame path is
+    # the norm; this is the proxy for it. ``expired`` when the request already ended.
     request_id = str(params.get("id") or "")
     result = params.get("result")
     if not request_id or not isinstance(result, dict):

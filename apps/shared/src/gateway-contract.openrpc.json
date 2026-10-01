@@ -4541,6 +4541,204 @@
           "$ref": "#/components/schemas/WakeStopResult"
         }
       }
+    },
+    {
+      "name": "workflow.run.active",
+      "summary": "The workflow's newest live run and its recorded Relay events (null run when none).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkflowIdParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkflowRunActiveResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.run.cancel",
+      "summary": "Cancel a run; in-flight work finishes, nothing new starts.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RunIdParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunStateResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.run.event",
+      "summary": "Publish a named event for whatever workflow listens: event triggers and parked waits.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkflowRunEventParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkflowRunEventResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.run.events",
+      "summary": "One run's state and its recorded Relay events (null run while a start is still queued).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RunIdParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkflowRunEventsResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.run.pause",
+      "summary": "Request a pause: the loop stops at the next step boundary.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RunIdParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunStateResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.run.respond",
+      "summary": "Answer a run's parked human-approval step (approved / denied).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkflowRunRespondParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunStateResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.run.resume",
+      "summary": "Resume a paused run from where it parked.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RunIdParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunStateResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.run.start",
+      "summary": "Publish a start for a stored workflow graph; the workflow reactor runs it.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkflowStartParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkflowStartedResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.store.list",
+      "summary": "Every workflow document under HERMES_HOME/workflows, plus webhook triggers.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DocumentsResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.store.put",
+      "summary": "Save the workflow documents and return the synced webhook triggers.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkflowDocsPutParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DocumentsResult"
+        }
+      }
+    },
+    {
+      "name": "workflow.store.remove",
+      "summary": "Delete one workflow document and return the remainder.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkflowIdParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DocumentsResult"
+        }
+      }
     }
   ],
   "components": {
@@ -13577,6 +13775,54 @@
           }
         },
         "title": "DisplayThumbnailResult",
+        "type": "object"
+      },
+      "DocumentsResult": {
+        "additionalProperties": true,
+        "description": "One ``workflow.store.*`` reply: the docs (plugin-owned shape) plus webhook triggers.",
+        "properties": {
+          "docs": {
+            "items": {},
+            "title": "Docs",
+            "type": "array"
+          },
+          "currentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Currentid"
+          },
+          "webhooks": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Webhooks"
+          },
+          "triggers": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Triggers"
+          }
+        },
+        "title": "DocumentsResult",
         "type": "object"
       },
       "EmptyRequestParams": {
@@ -28099,6 +28345,41 @@
         "title": "RoomTombstone",
         "type": "object"
       },
+      "RunIdParams": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "minLength": 1,
+            "title": "Runid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "title": "RunIdParams",
+        "type": "object"
+      },
+      "RunStateResult": {
+        "additionalProperties": true,
+        "description": "One run row (``workflow/runs/<id>.json``); the runner owns the fields beyond runId/status.",
+        "properties": {
+          "runId": {
+            "title": "Runid",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "status"
+        ],
+        "title": "RunStateResult",
+        "type": "object"
+      },
       "SecretRequestParams": {
         "additionalProperties": false,
         "properties": {
@@ -39070,6 +39351,303 @@
         "title": "WakeStopResult",
         "type": "object"
       },
+      "WorkflowDocsPutParams": {
+        "additionalProperties": false,
+        "properties": {
+          "docs": {
+            "items": {},
+            "title": "Docs",
+            "type": "array"
+          },
+          "currentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Currentid"
+          }
+        },
+        "required": [
+          "docs"
+        ],
+        "title": "WorkflowDocsPutParams",
+        "type": "object"
+      },
+      "WorkflowIdParams": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "WorkflowIdParams",
+        "type": "object"
+      },
+      "WorkflowRequestParams": {
+        "additionalProperties": true,
+        "description": "``tools/workflow_tools.py`` field set. ``ops``/``scenario`` are plugin-defined\n(the op vocabulary is owned by the Workflows plugin and read back through\n``action='read'``), so they stay open here.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "action": {
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "action"
+        ],
+        "title": "WorkflowRequestParams",
+        "type": "object"
+      },
+      "WorkflowRunActiveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run"
+          },
+          "events": {
+            "items": {},
+            "title": "Events",
+            "type": "array"
+          },
+          "runId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Runid"
+          },
+          "recording": {
+            "default": true,
+            "title": "Recording",
+            "type": "boolean"
+          }
+        },
+        "title": "WorkflowRunActiveResult",
+        "type": "object"
+      },
+      "WorkflowRunEventParams": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "payload": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Payload"
+          }
+        },
+        "title": "WorkflowRunEventParams",
+        "type": "object"
+      },
+      "WorkflowRunEventPayload": {
+        "additionalProperties": false,
+        "description": "One Relay event just recorded under a workflow run's session (``event`` is the ATOF record).",
+        "properties": {
+          "runId": {
+            "title": "Runid",
+            "type": "string"
+          },
+          "event": {
+            "title": "Event"
+          }
+        },
+        "required": [
+          "runId",
+          "event"
+        ],
+        "title": "WorkflowRunEventPayload",
+        "type": "object"
+      },
+      "WorkflowRunEventResult": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "WorkflowRunEventResult",
+        "type": "object"
+      },
+      "WorkflowRunEventsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run"
+          },
+          "events": {
+            "items": {},
+            "title": "Events",
+            "type": "array"
+          },
+          "runId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Runid"
+          },
+          "recording": {
+            "default": true,
+            "title": "Recording",
+            "type": "boolean"
+          }
+        },
+        "title": "WorkflowRunEventsResult",
+        "type": "object"
+      },
+      "WorkflowRunRespondParams": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "minLength": 1,
+            "title": "Runid",
+            "type": "string"
+          },
+          "nodeId": {
+            "minLength": 1,
+            "title": "Nodeid",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "By"
+          }
+        },
+        "required": [
+          "runId",
+          "nodeId",
+          "decision"
+        ],
+        "title": "WorkflowRunRespondParams",
+        "type": "object"
+      },
+      "WorkflowStartParams": {
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "default": "",
+            "title": "Workflowid",
+            "type": "string"
+          },
+          "scenario": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scenario"
+          },
+          "payload": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Payload"
+          },
+          "source": {
+            "default": "manual",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "title": "WorkflowStartParams",
+        "type": "object"
+      },
+      "WorkflowStartedResult": {
+        "additionalProperties": false,
+        "description": "``status`` is ``queued`` until the reactor picks the start up (or the live run's, when Play\nadopted one already going).",
+        "properties": {
+          "runId": {
+            "title": "Runid",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "title": "WorkflowStartedResult",
+        "type": "object"
+      },
       "_SessionScoped": {
         "additionalProperties": false,
         "description": "Handlers that look a live session up with ``_sessions.get(params.get(\"session_id\"))``: an\nabsent / unknown id falls back to the launch profile's config, so it is never required.",
@@ -39345,6 +39923,24 @@
           "name": "params",
           "schema": {
             "$ref": "#/components/schemas/EmptyRequestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ValueResult"
+        }
+      }
+    },
+    {
+      "name": "workflow",
+      "summary": "Read or edit the workflow graph on the Workflows canvas (JSON text answer).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkflowRequestParams"
           }
         }
       ],
@@ -40267,6 +40863,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/WakeDetectedPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "workflow.run",
+      "summary": "A workflow run's Relay trace as it is recorded, folded live by the Workflows canvas.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/WorkflowRunEventPayload"
           }
         }
       ]

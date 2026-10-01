@@ -444,10 +444,10 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
     elif history:
         _seed_row(_sessions[sid])
-    elif explicit_cwd and remote_cwd:
-        # A remote project session persists its row now: the per-profile gateway that runs the first turn mints
-        # the row itself (AIAgent INSERT-OR-IGNORE) with cwd=None, and the sidebar then drops it to Home. Local
-        # project drafts stay lazy — their cwd reaches the row on the first prompt (no "Untitled" litter).
+    # Surfaces that *own* the conversation (a workflow canvas, a named hidden
+    # chat) pass persist=true so a refresh can resume the same id instead of
+    # 404ing "session not found" — the row exists from the start.
+    elif is_truthy_value(params.get("persist", False)):
         _ensure_session_db_row(_sessions[sid])
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)

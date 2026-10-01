@@ -43,6 +43,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
+import { isDetachedSession } from './detached-sessions'
 import { dialedGatewayModeFor } from './gateway'
 import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
@@ -924,11 +925,16 @@ export function confirmReconnectSettlesExcept(workingStoredIds: ReadonlySet<stri
   }
 }
 
-/** Is any surface on THIS window still holding the runtime — the primary view
- *  or an open tile? (A tile mid-resume references by stored id only; its
- *  runtime binding is patched in after `resumeTile` returns.) */
+/** Is any surface on THIS window still holding the runtime — the primary view,
+ *  an open tile, or a detached chat (the Workflows canvas)? (A tile mid-resume
+ *  references by stored id only; its runtime binding is patched in after
+ *  `resumeTile` returns.) */
 function runtimeReferenced(runtimeId: string, storedSessionId: null | string): boolean {
   if (runtimeId === $activeSessionId.get()) {
+    return true
+  }
+
+  if (isDetachedSession(runtimeId, storedSessionId)) {
     return true
   }
 

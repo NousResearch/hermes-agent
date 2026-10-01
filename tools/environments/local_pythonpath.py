@@ -127,10 +127,35 @@ def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
         env.pop(_marker, None)
 
 
+def _is_installs_env_site_packages(path: Path) -> bool:
+    """``<installs_root>/<install-key>/environments/<hash>/venv/...`` — the
+    site-packages of a pm-managed install environment. The TUI/desktop gateway
+    launches with this on its own PYTHONPATH (so the backend can import its
+    pinned deps), but the gateway's interpreter is the standalone tools python,
+    so ``_get_hermes_site_packages`` (which derives from ``sys.prefix`` /
+    ``site.getsitepackages()``) never lists it. Leaked into a child python of a
+    DIFFERENT version it shadows the project's own venv and crashes imports of
+    version-locked C extensions (e.g. pydantic_core's .so under python3.11).
+    The pm layout is structurally unambiguous, so provenance is preserved:
+    only paths under the pm installs root match, never arbitrary user paths."""
+    try:
+        from pm.environments import installs_root
+
+        root = installs_root().resolve()
+        resolved = path.resolve()
+        rel = resolved.relative_to(root)
+    except (OSError, ValueError, ImportError):
+        return False
+    parts = rel.parts
+    # <install-key>/environments/<hash>/venv/lib/pythonX.Y/site-packages
+    return len(parts) >= 4 and parts[1] == "environments" and parts[3] == "venv"
+
+
 def _strip_hermes_owned_pythonpath(env: dict) -> None:
-    """Remove Hermes-owned PYTHONPATH entries: only exact matches of the repo root
-    (any launcher spelling) and runtime site-packages — never descendants, which are
-    user paths. Empty components (= cwd) and everything else are preserved.
+    """Remove Hermes-owned PYTHONPATH entries: exact matches of the repo root
+    (any launcher spelling), runtime site-packages, and pm-managed install-env
+    venv site-packages — never descendants of user paths. Empty components
+    (= cwd) and everything else are preserved.
 
     Everything else -- user libs, Nix plugin paths, a pythonX.Y/site-packages entry meant for a DIFFERENT
     child version -- is preserved byte-for-byte: ownership is decided by path provenance, never by a
@@ -141,7 +166,9 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
         return
     owned_paths = [*_get_hermes_site_packages(env), *_state()._hermes_repo_root_aliases]
     entries = pp.split(os.pathsep)
-    stripped = [e for e in entries if e and any(_same_path(Path(e), p) for p in owned_paths)]
+    stripped = [e for e in entries if e and (
+        any(_same_path(Path(e), p) for p in owned_paths)
+        or _is_installs_env_site_packages(Path(e)))]
     kept = [e for e in entries if e not in stripped]
     if kept:
         env["PYTHONPATH"] = os.pathsep.join(kept)

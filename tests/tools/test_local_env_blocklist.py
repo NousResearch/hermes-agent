@@ -584,6 +584,30 @@ def test_pythonpath_descendants_are_not_owned():
     assert env["PYTHONPATH"].split(os.pathsep) == entries
 
 
+def test_pythonpath_installs_env_venv_is_stripped(tmp_path, monkeypatch):
+    """The TUI/desktop gateway launches with its pm-managed install env's
+    site-packages on PYTHONPATH (gateway's interpreter is the standalone
+    tools python, so sys.prefix-derived ownership never lists it). It must
+    be stripped from children: under a different child python version the
+    env's C extensions crash imports (pydantic_core .so under 3.11)."""
+    from pm import environments as pm_env
+
+    installs = tmp_path / "installs"
+    env_venv_sp = (installs / "08f7d59f9758a75d" / "environments" / "7aa978153ee9492998ed9fa3cd262088"
+                   / "venv" / "lib" / "python3.14" / "site-packages")
+    env_venv_sp.mkdir(parents=True)
+    monkeypatch.setattr(pm_env, "installs_root", lambda: installs)
+
+    assert pp._is_installs_env_site_packages(env_venv_sp)
+    # user venvs elsewhere are never touched
+    assert not pp._is_installs_env_site_packages(tmp_path / "proj" / ".venv" / "lib" / "python3.11" / "site-packages")
+
+    user_venv = "/home/u/proj/.venv/lib/python3.11/site-packages"
+    env = {"PYTHONPATH": os.pathsep.join([str(env_venv_sp), user_venv])}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"] == user_venv
+
+
 @pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])

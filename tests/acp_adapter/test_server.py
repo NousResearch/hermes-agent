@@ -47,7 +47,12 @@ def agent(mock_manager):
 async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    # Modes carry edit approval; ``config_options`` carries the ``thought_level`` reasoning
+    # effort selector. The intent: the edit-approval policy never appears as a config option
+    # (it stays out of Zed's model-picker slot), and the reasoning selector does.
+    advertised = {opt.id for opt in (resp.config_options or [])}
+    assert "edit_approval_policy" not in advertised
+    assert "reasoning_effort" in advertised
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [mode.id for mode in resp.modes.available_modes] == [
@@ -68,8 +73,72 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
+    # Edit approval stays in modes, never in the advertised config options.
+    assert "edit_approval_policy" not in {opt.id for opt in update.config_options}
     assert getattr(state, "mode", None) == "accept_edits"
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_applies_reasoning_effort_to_live_agent(agent):
+    """Paseo's Thinking picker / ``--thinking`` drives ``session/set_config_option`` with a
+    ``thought_level`` category; the selection must reach the live agent's ``reasoning_config``
+    (the same assignment the TUI ``/model --reasoning`` path makes) and echo the option set."""
+    from acp.exceptions import RequestError
+
+    resp = await agent.new_session(cwd="/tmp")
+    state = agent.session_manager.get_session(resp.session_id)
+
+    update = await agent.set_config_option("reasoning_effort", resp.session_id, "high")
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    assert state.agent.reasoning_config == {"enabled": True, "effort": "high"}
+    assert state.reasoning_effort == ("high", {"enabled": True, "effort": "high"})
+    # Response echoes the selector with the new current value (Paseo reads configOptions back).
+    thought = next(opt for opt in update.config_options if opt.id == "reasoning_effort")
+    assert thought.category == "thought_level" and thought.current_value == "high"
+
+    # ``none`` disables thinking rather than picking a level.
+    await agent.set_config_option("reasoning_effort", resp.session_id, "none")
+    assert state.agent.reasoning_config == {"enabled": False}
+    assert state.reasoning_effort[0] == "none"
+
+    # Unknown level is a bad ``value`` param (-32602), not a silent no-op.
+    with pytest.raises(RequestError) as exc:
+        await agent.set_config_option("reasoning_effort", resp.session_id, "sideways")
+    assert exc.value.code == -32602
+
+    # Aliases normalise to ``none`` so the stored level is always a ladder value.
+    await agent.set_config_option("reasoning_effort", resp.session_id, "disabled")
+    assert state.reasoning_effort == ("none", {"enabled": False})
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_reasoning_rejected_while_busy(agent):
+    """Same mid-turn exclusion as a model switch: the in-flight request keeps its effort."""
+    import acp
+
+    resp = await agent.new_session(cwd="/tmp")
+    state = agent.session_manager.get_session(resp.session_id)
+    original = state.agent.reasoning_config
+    state.is_running = True
+
+    with pytest.raises(acp.RequestError):
+        await agent.set_config_option("reasoning_effort", resp.session_id, "high")
+    # The rejected switch left both the live agent and the session state untouched.
+    assert state.agent.reasoning_config is original
+    assert state.reasoning_effort is None
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_edit_approval_still_echoes_thought_level(agent):
+    """An edit-approval update must not tell the client the session has no options: the
+    response echoes the full option set, so a host keeps its Thinking selector."""
+    resp = await agent.new_session(cwd="/tmp")
+    update = await agent.set_config_option("edit_approval_policy", resp.session_id, "workspace_session")
+
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    thought = next(opt for opt in update.config_options if opt.id == "reasoning_effort")
+    assert thought.category == "thought_level" and thought.current_value in {
+        level for level in HermesACPAgent._THINKING_DESCRIPTIONS}
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +414,10 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result["configOptions"] == []
+        # The router round-trips the method; the response carries the session's option set
+        # (the generic branch stores unknown ids but still echoes the advertised options).
+        assert isinstance(config_result["configOptions"], list)
+        assert "reasoning_effort" in {opt["id"] for opt in config_result["configOptions"]}
 
 
 

@@ -1163,13 +1163,10 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
 def _attempt_stream_socket(stream: Any) -> Any:
     """The raw socket under an SDK event stream (``stream.response`` is the ``httpx.Response``;
     httpcore publishes its connection as the ``network_stream`` extension), or None."""
-    try:
-        extensions = getattr(getattr(stream, "response", None), "extensions", None)
-        network_stream = extensions.get("network_stream") if isinstance(extensions, dict) else None
-        get_extra_info = getattr(network_stream, "get_extra_info", None)
-        return get_extra_info("socket") if callable(get_extra_info) else None
-    except Exception:
-        return None
+    from agent.agent_runtime_helpers import _socket_from_stream
+    extensions = getattr(getattr(stream, "response", None), "extensions", None)
+    network_stream = extensions.get("network_stream") if isinstance(extensions, dict) else None
+    return _socket_from_stream(network_stream) if network_stream is not None else None
 
 
 def _close_quietly(target: Any, failure_note: Optional[str]) -> None:
@@ -1269,19 +1266,9 @@ class _CodexStreamGuard:
             self._attempt_stream = None
 
     def close_attempt_stream(self, failure_note: str) -> None:
-        """Wakes only this attempt's stream — never the process-shared client.
-
-        On the owning thread this is a real ``close()``. From any other thread (the watchdog
-        Timer) it only shuts the stream's own socket down: ``Stream.close()`` on an unfinished
-        response ends in ``sock.close()`` (httpx ``Response.close`` → httpcore
-        ``HTTP11Connection.close`` → ``SyncStream.close``), i.e. exactly the stranger-thread FD
-        release ``_close_client_on_timeout`` forbids — the owner is still inside ``SSL_read`` on
-        that descriptor, the kernel hands the number to the next ``open()``, and OpenSSL writes
-        a TLS alert into that file (#70773, #130115). ``shutdown()`` wakes the reader and keeps
-        the FD; the owner does the real close in its ``finally`` (``release_stream``). A stream
-        with no reachable socket (a test double, a non-httpx transport) has no FD this thread
-        could strand, so it is closed as before.
-        """
+        """Wake only this attempt's stream, never the shared client. The owner thread closes it;
+        any other thread only ``shutdown()``s its socket, since ``Stream.close()`` would release the FD
+        under the owner's ``SSL_read`` (#70773, #130115). Socketless streams are closed as before."""
         with self._attempt_stream_lock:
             stream = self._attempt_stream
         if stream is None:

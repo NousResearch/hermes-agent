@@ -3387,6 +3387,21 @@ def _socket_from_candidate(candidate: Any):
     return sock if sock is not None else _socket_from_stream(candidate)
 
 
+def _socket_from_response(response: Any):
+    """Raw socket behind an httpx response's network stream (``extensions["network_stream"]``
+    first, then ``response.stream``), or None. Callers own their error handling."""
+    exts = getattr(response, "extensions", None) or {}
+    direct = exts.get("network_stream") if isinstance(exts, dict) else None
+    for start in (direct, getattr(response, "stream", None)):
+        if start is None:
+            continue
+        for candidate in _connection_candidates(start):
+            sock = _socket_from_candidate(candidate)
+            if sock is not None:
+                return sock
+    return None
+
+
 def _socket_from_stream(stream: Any):
     """Raw socket behind an httpcore network stream (several backends), or None."""
     sock = getattr(stream, "_sock", None)

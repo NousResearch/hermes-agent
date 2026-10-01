@@ -1178,27 +1178,19 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         logger.debug("Codex stream opened (attempt=%s/%s, model=%s)",
             attempt + 1, max_stream_retries + 1, model)
 
-    def _post_terminal_socket(*streams: Any):
-        """Return the raw socket for the current Responses stream, if it can be interrupted safely."""
-        from agent.agent_runtime_helpers import _connection_candidates, _socket_from_candidate
+    def _post_terminal_socket(raw_stream: Any):
+        """Return the raw socket for the provider Responses stream, if it can be interrupted safely.
 
+        Only the raw SDK stream carries ``.response``; the ManagedLlmStream wrapper does not."""
+        from agent.agent_runtime_helpers import _socket_from_response
+
+        response = getattr(raw_stream, "response", None)
+        if response is None:
+            return None
         try:
-            for stream in streams:
-                response = getattr(stream, "response", None)
-                if response is None:
-                    continue
-                extensions = getattr(response, "extensions", None) or {}
-                network_stream = extensions.get("network_stream") if isinstance(extensions, dict) else None
-                for root in (network_stream, getattr(response, "stream", None)):
-                    if root is None:
-                        continue
-                    for candidate in _connection_candidates(root):
-                        sock = _socket_from_candidate(candidate)
-                        if sock is not None:
-                            return sock
+            return _socket_from_response(response)
         except Exception:
             return None
-        return None
 
     def _drain_for_finalizer(event_stream: Any) -> None:
         # The final response is already assembled. Keep the finalizer drain on THIS owner thread:
@@ -1209,7 +1201,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if budget <= 0:
             return
         raw_stream = writer_token.get("raw_stream")
-        sock = _post_terminal_socket(raw_stream, event_stream)
+        sock = _post_terminal_socket(raw_stream)
         if sock is None:
             # Without a shutdown-capable socket a synchronous drain could become unbounded. The drain
             # is only for Relay's finalizer, so skip it and let the owner-thread finally close below.
@@ -1231,19 +1223,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         watchdog.daemon = True
         try:
             watchdog.start()
-        except BaseException as exc:
-            # If an interrupt lands inside start(), cancel first; if the timer thread already exists,
-            # join it before the owner can close the stream.
-            watchdog.cancel()
-            if watchdog.ident is not None:
-                with suppress(Exception):
-                    watchdog.join()
-            if not isinstance(exc, Exception):
-                raise
-            logger.debug("Codex post-terminal watchdog failed to start; skipping finalizer drain", exc_info=True)
-            return
-
-        try:
             for _ignored in event_stream:
                 pass
         except (*transport_errors, _APIConnectionError) as exc:
@@ -1261,9 +1240,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             logger.debug("Codex Responses stream finalization failed after a terminal response", exc_info=True)
         finally:
             # cancel() wins if the budget has not fired; join() also waits for an already-running shutdown
-            # callback, preserving shutdown-before-close ordering at the exact timeout boundary.
+            # callback, preserving shutdown-before-close ordering at the exact timeout boundary. A failed
+            # or interrupted start() leaves no thread (ident None) to join.
             watchdog.cancel()
-            watchdog.join()
+            if watchdog.ident is not None:
+                watchdog.join()
 
         if timed_out.is_set():
             logger.warning(
@@ -1365,11 +1346,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
             return final
         finally:
-            managed_owns_close = callable(getattr(event_stream, "close", None))
-            _close_event_stream(event_stream)
-            raw_stream = writer_token.get("raw_stream")
-            if not managed_owns_close and raw_stream is not None and raw_stream is not event_stream:
-                _close_event_stream(raw_stream)
+            # relay_llm.stream is ManagedLlmStream, whose close() always owns the provider stream; only
+            # when construction itself failed (event_stream None) may a raw stream be left to close here.
+            if event_stream is None:
+                _close_event_stream(writer_token.get("raw_stream"))
+            else:
+                _close_event_stream(event_stream)
 
 
 __all__ = [

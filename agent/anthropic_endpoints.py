@@ -139,6 +139,15 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     return "azure.com" in _normalize_base_url_text(base_url).lower()
 
 
+def _is_github_copilot_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for GitHub Copilot's Anthropic Messages relay.
+
+    Copilot proxies Claude end to end, including the signed thinking contract,
+    so it takes the native replay path rather than the third-party strip.
+    """
+    return base_url_host_matches(base_url or "", "githubcopilot.com")
+
+
 def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
     """MiniMax's Anthropic-compatible endpoints, which reject the fine-grained-tool-streaming and
     context-1m betas (stripped even though MiniMax also uses Bearer auth)."""

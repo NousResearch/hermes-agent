@@ -81,17 +81,51 @@ def _effective_content(event: Any) -> tuple[dict, bool]:
     return content, False
 
 
-def _own_text(body: str) -> str:
-    if not body.startswith("> "):
-        return body
+_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^> (?:\* )?<(@[^>\s]+)>\s*(.*)")
+
+
+def _split_reply_fallback(body: str) -> tuple[str, str]:
+    """Split a fallback into its quote block and reply text without changing bytes.
+
+    The separator belongs to the quote block, so joining both halves reproduces
+    the original body when callers transform only the reply text.
+    """
+    if not body or not body.startswith("> "):
+        return "", body
     lines = body.split("\n")
-    for index, line in enumerate(lines):
-        if line.startswith("> ") or line == ">":
-            continue
-        if line == "":
-            return "\n".join(lines[index + 1:]).strip()
-        return "\n".join(lines[index:]).strip()
-    return ""
+    idx = 0
+    while idx < len(lines) and (lines[idx].startswith("> ") or lines[idx] == ">"):
+        idx += 1
+    if idx < len(lines) and lines[idx] == "":
+        idx += 1
+    head = "\n".join(lines[:idx])
+    return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
+
+
+def _has_reply_fallback(body: str, content: Mapping[str, Any]) -> bool:
+    """Whether a reply's body starts with a legacy reply fallback instead of the user's own quote.
+
+    Matrix 1.13 (MSC2781) removed reply fallbacks, so a modern client sends the reply as typed
+    and a leading ``> `` block is the user's quotation. A legacy client marks its fallback with
+    an ``<mx-reply>`` element at the start of the HTML body. Its plain fallback starts with the
+    quoted sender's pill (``> <@user:srv>``, or ``> * <@user:srv>`` for an emote) and ends with
+    a blank line.
+    """
+    if not body.startswith("> "):
+        return False
+    if starts_with_mx_reply(content):
+        return True
+    if not _MATRIX_REPLY_FALLBACK_PILL_RE.match(body):
+        return False
+    quote_block, reply_text = _split_reply_fallback(body)
+    return quote_block.endswith("\n\n") or not reply_text
+
+
+def _own_text(body: str, content: Mapping[str, Any]) -> str:
+    if not _has_reply_fallback(body, content):
+        return body
+    _, text = _split_reply_fallback(body)
+    return text.strip()
 
 
 class _MxReplyQuoteExtractor(HTMLParser):
@@ -196,7 +230,7 @@ class MatrixEventContextCache:
         if prior is None or prior.redacted or prior.sender != sender:
             return
         self.store(room_id, target, MatrixEventContext(
-            sender, _own_text(body.strip()),
+            sender, _own_text(body.strip(), replacement),
             media_path=prior.media_path, media_type=prior.media_type, is_image=prior.is_image,
         ))
 
@@ -247,7 +281,7 @@ class MatrixEventContextCache:
         body = body.strip() if isinstance(body, str) else ""
         if edited and body.startswith("* "):
             body = body[2:].strip()
-        body = _own_text(body)
+        body = _own_text(body, content)
         msgtype = str(content.get("msgtype") or "")
         text = _label_body(msgtype, body)
         media = None

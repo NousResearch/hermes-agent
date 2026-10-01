@@ -285,10 +285,13 @@ def _prompt_model_selection(
 def _save_model_choice(model_id: str) -> None:
     """Save the selected model to config.yaml only — NOT .env, which would stomp in multi-agent setups."""
     from hermes_cli.config import save_config, load_config
+    from hermes_cli.route_identity import drop_stale_context_pin
     config = load_config()
     # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
+        prior = dict(config["model"])
         config["model"]["default"] = model_id
+        drop_stale_context_pin(config["model"], prior)
     else:
         config["model"] = {"default": model_id}
     save_config(config)

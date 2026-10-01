@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
 from typing import Any
 
-from agent.async_utils import safe_schedule_threadsafe
 from gateway.session_context import get_session_env, get_session_transport
+from tools.matrix_tool_runtime import run_matrix_mutation
 from tools.registry import registry
-
-logger = logging.getLogger(__name__)
 
 
 async def _matrix_image_packs(args: dict[str, Any]) -> str:
@@ -39,28 +35,21 @@ async def _matrix_image_packs(args: dict[str, Any]) -> str:
         return json.dumps({"error": "action must be list or send with a selection_id"})
     if loop is None or not loop.is_running():
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
-    operation = image_packs(
-        action,
-        room_id,
-        requester=requester,
-        selection_id=selection_id,
-        reply_to=get_session_env("HERMES_SESSION_MESSAGE_ID") or None,
-        thread_id=get_session_env("HERMES_SESSION_THREAD_ID") or None,
-    )
-    future = safe_schedule_threadsafe(
-        operation,
+    return await run_matrix_mutation(
         loop,
-        logger=logger,
-        log_message="matrix_image_packs: failed to schedule on the gateway loop",
+        lambda interrupted, before_write: image_packs(
+            action,
+            room_id,
+            requester=requester,
+            selection_id=selection_id,
+            reply_to=get_session_env("HERMES_SESSION_MESSAGE_ID") or None,
+            thread_id=get_session_env("HERMES_SESSION_THREAD_ID") or None,
+            interrupt_check=interrupted,
+            before_write=before_write,
+        ),
+        operation_label="Matrix image-pack request",
+        next_step="Check the room before retrying the sticker send",
     )
-    if future is None:
-        return json.dumps({"error": "Matrix gateway loop is unavailable"})
-    try:
-        result = await asyncio.wait_for(asyncio.wrap_future(future), timeout=60.0)
-    except asyncio.TimeoutError:
-        future.cancel()
-        return json.dumps({"error": "Matrix image-pack request timed out"})
-    return json.dumps(result, ensure_ascii=False)
 
 
 registry.register(

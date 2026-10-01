@@ -51,3 +51,17 @@ class MatrixMediaUploadMixin:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
         self._apply_relation_metadata(room_id, msg_content, reply_to=reply_to, metadata=metadata)
         return await self._send_content_event(room_id, msg_content)
+
+    async def _send_content_event(
+        self, room_id: str, msg_content: Dict[str, Any], *, finalize: bool = True,
+    ) -> SendResult:
+        """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
+        from .adapter import RoomID, EventType
+
+        try:
+            event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
+            self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
+            self._remember_followup_delivery(room_id, str(event_id), msg_content, finalize=finalize)
+            return SendResult(success=True, message_id=str(event_id))
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))

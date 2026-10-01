@@ -1915,18 +1915,6 @@ class MatrixAdapter(MatrixMediaUploadMixin, MatrixSendRetryMixin, MatrixMediaMix
         return SendResult(
             success=False, error=f"Media file exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
 
-    async def _send_content_event(
-        self, room_id: str, msg_content: Dict[str, Any], *, finalize: bool = True,
-    ) -> SendResult:
-        """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
-        try:
-            event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
-            self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
-            self._remember_followup_delivery(room_id, str(event_id), msg_content, finalize=finalize)
-            return SendResult(success=True, message_id=str(event_id))
-        except Exception as exc:
-            return SendResult(success=False, error=str(exc))
-
     async def _send_local_file(
         self, room_id: str, file_path: str, msgtype: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,

@@ -50,3 +50,39 @@ def test_openai_style_credential_refresh_reaches_the_compressor(agent):
         assert agent._adopt_openai_credentials("fresh-key", "https://openrouter.ai/api/v1", reason="test") is True
 
     assert agent.context_compressor.api_key == "fresh-key"
+
+
+def test_compression_picks_up_a_token_rotated_since_the_last_request(agent):
+    from agent.conversation_compression import compress_context
+
+    seen = []
+
+    class _Compressor:
+        api_key = "stale"
+        _last_compress_aborted = False
+        _last_summary_error = None
+        compression_count = 1
+        _last_compression_made_progress = True
+        _last_summary_fallback_used = False
+        last_compression_rough_tokens = last_prompt_tokens = last_completion_tokens = 0
+        awaiting_real_usage_after_compression = False
+
+        def compress(self, _messages, **_kwargs):
+            seen.append(self.api_key)
+            return [{"role": "user", "content": "[summary]"}, {"role": "assistant", "content": "tail"}]
+
+    agent.api_mode, agent.provider = "anthropic_messages", "anthropic"
+    agent._anthropic_base_url = "https://api.anthropic.com"
+    agent._anthropic_client = MagicMock()
+    agent._anthropic_api_key = agent.api_key = "stale"
+    agent.context_compressor = _Compressor()
+    agent._compression_feasibility_checked = True
+    messages = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+
+    with (
+        patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="rotated"),
+        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+    ):
+        compress_context(agent, messages, "system", approx_tokens=100_000, force=True)
+
+    assert seen == ["rotated"]

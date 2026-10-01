@@ -285,6 +285,46 @@ reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 
 ### Transferring hosted room authority
 
+:::caution Kept, but disabled
+`groups.replicate`, `groups.promote` and `groups.demote` stay in the protocol but are disabled
+until Hermes has exclusive-authority recovery. A takeover is only safe when exactly one gateway
+can hold a room's authority, and Hermes cannot guarantee that yet: two gateways could both promote
+a copy, and a demoted gateway cannot be proven to have stopped writing. A page handed to
+`groups.replicate` is no proof of what the authority wrote either. Until then each call is refused
+before it touches the room, and `groups.capabilities` leaves `log_replication` and
+`authority_takeover` out of `features`. `groups.replica_state` still reports any copy this
+gateway already holds.
+
+| Method | Error code | `error.data.reason` |
+| --- | --- | --- |
+| `groups.replicate` | `4116` | `replica_provenance_required` |
+| `groups.promote` | `4118` | `authority_takeover_disabled` |
+| `groups.demote` | `4119` | `authority_takeover_disabled` |
+
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":4118,"message":"Group Chat takeover is disabled until Hermes can select one globally exclusive authority.","data":{"reason":"authority_takeover_disabled"}}}
+```
+
+The procedure below describes how the methods work once exclusive-authority recovery enables
+them.
+:::
+
+A Group Chat whose history already records a promotion or demotion (made before these methods were
+disabled, or by an older gateway sharing the same store) is kept **read-only**: without an
+exclusive authority, Hermes cannot tell whether two gateways both kept writing. `groups.list` marks
+such a room with `safety_status: "authority_quarantined"` and a `safety_reason`, and `groups.log`
+still returns its full history, but `groups.state`, sends, renames and disband are refused with
+reason `room_authority_quarantined`. A stored copy whose history fails validation is likewise
+reported as `safety_status: "quarantined"` by `groups.replica_state`. Quarantined history is never
+pruned.
+
+To end such a room on this gateway, call `groups.disband` with `confirm_quarantined: true`; without it
+the call is refused with reason `room_authority_quarantined`. The confirmed Disband only tombstones the
+room here: it leaves the room lists, its id is never reused, and its history stays readable through
+`groups.log` (with `include_disbanded: true`) and is still never pruned. It doesn't lift the
+quarantine, stop or start work, change the room's recorded authority, or contact other gateways: peer
+routes aren't revoked, and grants other gateways issued for the room simply expire.
+
 Authority takeover is an **operator recovery procedure**, not an atomic handover.
 Use the existing JSON-RPC methods `groups.promote` and `groups.demote` on the
 appropriate gateway. There are no `groups.peer.promote` or `groups.peer.demote`

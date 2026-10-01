@@ -66,6 +66,10 @@ class Room(Result):
     claim_event: RoomEvent | None = None
     authority_claim: RoomEvent | None = None
     event: RoomEvent | None = None
+    #: ``authority_quarantined`` (``groups.list`` only) when the room's history records an unproven
+    #: takeover; ``safety_reason`` names it. Such a room stays readable and refuses new events.
+    safety_status: str | None = None
+    safety_reason: str | None = None
 
 
 class RoomAuthority(Result):
@@ -282,6 +286,8 @@ method("groups.log", params=GroupsLogParams, result=GroupsLogResult,
 
 class GroupsDisbandParams(RoomParams):
     cancel_id: str | None = None
+    #: Required to disband a quarantined room, which then only ends on this gateway (its history is kept).
+    confirm_quarantined: bool | None = None
 
 
 class RoomTombstone(Result):
@@ -297,7 +303,8 @@ class GroupsDisbandResult(Result):
 
 
 method("groups.disband", params=GroupsDisbandParams, result=GroupsDisbandResult,
-       doc="Permanently tombstone a hosted room id after stopping its work and revoking peer routes.")
+       doc="Permanently tombstone a hosted room id after stopping its work and revoking peer routes. "
+           "A quarantined room needs confirm_quarantined=true and only ends on this gateway, history kept.")
 
 
 class GroupsStopParams(RoomParams):
@@ -372,7 +379,8 @@ class GroupsReplicateResult(Result):
 
 
 method("groups.replicate", params=GroupsReplicateParams, result=GroupsReplicateResult,
-       doc="Persist one authority-stamped replay page into the local replica store; idempotent.")
+       doc="Persist one authority-stamped replay page into the local replica store; idempotent. "
+           "Refused (4116, reason replica_provenance_required) until exclusive-authority recovery exists.")
 
 
 class GroupsReplicaStateParams(RoomParams):
@@ -389,6 +397,11 @@ class GroupsReplicaStateResult(Result):
     event_bytes: int
     created_at: float
     updated_at: float
+    disbanded_at: float | None = None
+    #: ``passive``, or ``quarantined`` when the stored lineage failed the replica audit
+    #: (``safety_reason`` names the first defect).
+    safety_status: str | None = None
+    safety_reason: str | None = None
 
 
 method("groups.replica_state", params=GroupsReplicaStateParams, result=GroupsReplicaStateResult,
@@ -411,7 +424,8 @@ class GroupsPromoteResult(Result):
 
 
 method("groups.promote", params=GroupsPromoteParams, result=GroupsPromoteResult,
-       doc="Continue a replicated room on this gateway at epoch + 1; requires confirm=true.")
+       doc="Continue a replicated room on this gateway at epoch + 1; requires confirm=true. "
+           "Refused (4118, reason authority_takeover_disabled) until exclusive-authority recovery exists.")
 
 
 class GroupsDemoteParams(RoomParams):
@@ -427,7 +441,8 @@ class GroupsDemoteResult(Result):
 
 
 method("groups.demote", params=GroupsDemoteParams, result=GroupsDemoteResult,
-       doc="Fence this gateway's stale room authority against a proven newer epoch.")
+       doc="Fence this gateway's stale room authority against a proven newer epoch. "
+           "Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists.")
 
 
 # ── peer routes (RoomLink) ────────────────────────────────────────────────────────────────────

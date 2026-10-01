@@ -28,10 +28,15 @@ class _HookedStartThread(threading.Thread):
 
 
 def _hook_turn_threads(monkeypatch, **hooks_by_name):
+    threads = []
+
     def spawn(target, *, name, **_kwargs):
-        return _HookedStartThread(target=target, name=name, daemon=True, **hooks_by_name.get(name, {}))
+        thread = _HookedStartThread(target=target, name=name, daemon=True, **hooks_by_name.get(name, {}))
+        threads.append(thread)
+        return thread
 
     monkeypatch.setattr("agent.memory_provider.spawn_context_thread", spawn)
+    return threads
 
 
 @pytest.fixture
@@ -74,12 +79,13 @@ def test_exit_stop_while_the_turn_worker_starts_leaves_the_turn_to_end_itself(mo
         stopper.start()
         stopper.join(10)
 
-    _hook_turn_threads(monkeypatch, **{"prompt-turn-sid": {"before_start": stop_from_another_thread}})
+    threads = _hook_turn_threads(monkeypatch, **{"prompt-turn-sid": {"before_start": stop_from_another_thread}})
     worker = server._start_session_work(lambda: None, name="prompt-turn-sid", session=registered_session)
-    worker.join(10)
+    for thread in threads:
+        thread.join(10)
 
-    # A live turn clears `running` itself when it ends; only a stuck flag is cleared by the stop.
-    assert (outcomes, registered_session["running"], registered_session["_run_thread"]) == ([None], True, worker)
+    assert (outcomes, registered_session["running"], worker, registered_session["_run_thread"]) == (
+        [None], True, None, threading.current_thread())
 
 
 @pytest.mark.parametrize("worker_publishes_first", [True, False])

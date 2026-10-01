@@ -55,7 +55,7 @@ def _decide_turn_thread(session: dict, thread, claim: int | None, decision: list
     released claim must not make the starter report that the worker never ran."""
     with session["history_lock"]:
         if not decision:
-            decision.append(_holds_turn_claim(session, claim))
+            decision.append(_holds_turn_claim(session, claim) and not session.get("_turn_cancel_requested"))
             if decision[0]:
                 session["_run_thread"] = thread
                 session["_run_thread_claim"] = claim

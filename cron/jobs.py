@@ -1534,8 +1534,16 @@ def _unlink_quiet(path: Optional[str]) -> None:
 
 
 def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]]) -> str:
-    """Serialize the store payload to a fsynced temp file next to *jobs_file*; return its path."""
-    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_")
+    """Serialize the store payload to a fsynced temp file beside the RESOLVED *jobs_file*; return
+    its path. A temp next to a symlink whose target is on another filesystem makes the rename
+    EXDEV, and atomic_replace's copy fallback then rewrites the store in place (torn on crash)."""
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=os.path.dirname(os.path.realpath(jobs_file)), suffix=".tmp", prefix=".jobs_")
+    except PermissionError:
+        # The link target's directory may be read-only to us while the file itself is writable;
+        # staging beside the link keeps saves working (non-atomic copy fallback, as before).
+        fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
@@ -1574,9 +1582,7 @@ def _save_jobs_unlocked(
         for attempt in range(_SAVE_JOBS_MERGE_ATTEMPTS + 1):
             if not replace:
                 jobs = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
-            # Stage beside the resolved store: a temp next to a symlink on another filesystem
-            # makes the rename EXDEV, and atomic_replace's copy fallback rewrites in place.
-            tmp_path = _stage_jobs_payload(Path(os.path.realpath(jobs_file)), jobs)
+            tmp_path = _stage_jobs_payload(jobs_file, jobs)
             # Verify-after-stage: a sibling landing during serialization forces another merge round.
             if (
                 not replace

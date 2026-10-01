@@ -139,37 +139,6 @@ class TestSaveJobsOwnershipPreservation:
         mode = stat.S_IMODE(os.stat(cron_store / "jobs.json").st_mode)
         assert mode == 0o600
 
-    def test_symlinked_store_saves_by_rename_not_in_place_copy(self, cron_store, tmp_path, monkeypatch):
-        """jobs.json symlinked into another dir (treated as another filesystem) must still
-        be published by an atomic rename — never the EXDEV in-place copy fallback, which tears
-        the store on a crash mid-copy."""
-        import errno
-        import shutil
-
-        real_dir = tmp_path / "elsewhere"
-        real_dir.mkdir()
-        (real_dir / "jobs.json").write_text('{"jobs": []}')
-        cron_store.mkdir(parents=True, exist_ok=True)
-        (cron_store / "jobs.json").symlink_to(real_dir / "jobs.json")
-
-        real_replace = os.replace
-
-        def replace_same_dir_only(src, dst):
-            if os.path.dirname(os.path.realpath(src)) != os.path.dirname(os.path.realpath(dst)):
-                raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
-            return real_replace(src, dst)
-
-        def no_copy(*a, **k):
-            raise AssertionError("in-place copy fallback used")
-
-        monkeypatch.setattr(os, "replace", replace_same_dir_only)
-        monkeypatch.setattr(shutil, "copyfile", no_copy)
-
-        jobs.save_jobs([{"id": "a", "prompt": "x"}], replace=True)
-
-        assert (cron_store / "jobs.json").is_symlink()
-        assert [j["id"] for j in jobs.load_jobs()] == ["a"]
-
 
 # =========================================================================
 # 2. Zombie-ticker surfacing (ticker_last_error marker)

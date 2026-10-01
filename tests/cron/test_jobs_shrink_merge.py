@@ -8,7 +8,10 @@ unexpected on-disk ids back unless the caller passes ``removed_ids``.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import shutil
 
 import pytest
 
@@ -207,3 +210,34 @@ def test_nested_create_survives_outer_stale_save(hermes_env):
     ids = {j["id"] for j in load_jobs()}
     assert created["id"] in ids, "nested create was clobbered by outer stale save"
     assert seed["id"] in ids
+
+
+def test_symlinked_store_saves_by_rename_not_in_place_copy(hermes_env, tmp_path, monkeypatch):
+    """jobs.json symlinked into another dir (treated as another filesystem) must still be
+    published by an atomic rename — never the EXDEV in-place copy fallback, which tears the
+    store on a crash mid-copy."""
+    from cron.jobs import load_jobs, save_jobs
+
+    real_dir = tmp_path / "elsewhere"
+    real_dir.mkdir()
+    (real_dir / "jobs.json").write_text('{"jobs": []}')
+    link = hermes_env / "cron" / "jobs.json"
+    link.symlink_to(real_dir / "jobs.json")
+
+    real_replace = os.replace
+
+    def replace_same_dir_only(src, dst):
+        if os.path.dirname(os.path.realpath(src)) != os.path.dirname(os.path.realpath(dst)):
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+        return real_replace(src, dst)
+
+    def no_copy(*a, **k):
+        raise AssertionError("in-place copy fallback used")
+
+    monkeypatch.setattr(os, "replace", replace_same_dir_only)
+    monkeypatch.setattr(shutil, "copyfile", no_copy)
+
+    save_jobs([{"id": "a", "prompt": "x"}], replace=True)
+
+    assert link.is_symlink()
+    assert [j["id"] for j in load_jobs()] == ["a"]

@@ -8,6 +8,8 @@ rescue-served response, or the one-shot rescue becomes sticky for a whole TTL. L
 
 import logging
 
+from tools.interrupt import is_interrupted
+
 logger = logging.getLogger("tools.web_tools")
 
 # Ring vendor -> env var holding its paid key (keyed mode ⇒ eligible for rescue).
@@ -49,6 +51,8 @@ def _ring_vendor_keyless(name: str) -> bool:
 
 def _managed_search_fallback(provider, original_error: str, query: str, limit: int):
     """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue."""
+    if is_interrupted():
+        return {"success": False, "error": "Interrupted"}
     from agent.web_search_provider import get_provider_env
     from tools.web_tools import _managed_web_search
     if (getattr(provider, "name", "") != "perplexity"
@@ -60,6 +64,8 @@ def _managed_search_fallback(provider, original_error: str, query: str, limit: i
         resp = get_provider("firecrawl").search(query, limit)
     except Exception as exc:  # noqa: BLE001 — fallback is best-effort
         resp = {"success": False, "error": str(exc)}
+    if is_interrupted():
+        return {"success": False, "error": "Interrupted"}
     if not resp.get("success"):
         logger.warning("managed Firecrawl fallback failed too: %s", str(resp.get("error", ""))[:200])
         return None
@@ -78,7 +84,7 @@ def _rescue_eligible(provider) -> bool:
     in keyed mode, or a ring vendor routed through the managed gateway / a self-hosted instance. A
     ring vendor that walked the ring is NOT eligible: its failure means the ring already failed.
     """
-    if not _keyless_rescue_enabled() or provider is None:
+    if is_interrupted() or not _keyless_rescue_enabled() or provider is None:
         return False
     try:
         from plugins.web.keyless_mcp import _KEYLESS_RING
@@ -91,12 +97,16 @@ def _rescue_eligible(provider) -> bool:
 
 def _rescue_search(provider_name: str, original_error: str, query: str, limit: int) -> dict:
     """Rescue a failed search via the ring; annotate the result with the original failure."""
+    if is_interrupted():
+        return {"success": False, "error": "Interrupted"}
     from plugins.web.keyless_mcp import search_with_failover
     logger.warning(
         "web_search backend '%s' failed (%s); one-shot keyless rescue",
         provider_name, (original_error or "")[:200],
     )
     rescued = search_with_failover(provider_name, query, limit)
+    if is_interrupted():
+        return {"success": False, "error": "Interrupted"}
     if rescued.get("success"):
         rescued.setdefault("data", {}).update(
             rescued_from=provider_name,
@@ -132,6 +142,8 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     """
     from plugins.web.keyless_mcp import extract_with_failover
 
+    if is_interrupted():
+        return _interrupted_extract_results(urls, results)
     parity = len(results) == len(urls)
     rescue_idx = [i for i, r in enumerate(results) if not parity or not _policy_blocked_result(r)]
     if not rescue_idx:
@@ -145,6 +157,11 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
         provider_name, len(rescue_urls), (original_error or "")[:200],
     )
     rescued = extract_with_failover(provider_name, list(rescue_urls))
+    if is_interrupted():
+        # A provider can omit entries or report redirects as additional pages.
+        # Preserve the original refusals rather than relying on list parity.
+        preserved = [r for r in results if not r.get("error") or _policy_blocked_result(r)]
+        return _interrupted_extract_results(urls, preserved + rescued)
     if rescued and all(r.get("error", "") for r in rescued):
         return results  # rescue also failed everywhere: keep original errors
     for r in rescued:
@@ -156,3 +173,21 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
         replacements = dict(zip(rescue_idx, rescued))
         return [replacements.get(i, r) for i, r in enumerate(results)]
     return rescued
+
+
+def _interrupted_extract_results(urls: list, results: list) -> list:
+    """Mark unfinished pages interrupted, preserving completed pages and policy refusals."""
+    remaining = list(results)
+    ordered = []
+    for url in urls:
+        def _matches(result):
+            meta = result.get("metadata")
+            source = meta.get("sourceURL") if isinstance(meta, dict) else None
+            return url in (result.get("url"), source)
+
+        index = next((i for i, r in enumerate(remaining) if _matches(r)), None)
+        ordered.append(remaining.pop(index) if index is not None else
+                       {"url": url, "title": "", "content": "", "error": "Interrupted"})
+    # Unmatched redirect pages are still completed work; keep them as well.
+    return [r if not r.get("error") or _policy_blocked_result(r) else {**r, "error": "Interrupted"}
+            for r in ordered + remaining]

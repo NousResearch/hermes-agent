@@ -136,6 +136,30 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_waits_for_pre_verify_closure(monkeypatch, worker_env):
+    """A worker completion must not publish ``done`` before stop gates close."""
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: name == "pre_verify")
+    monkeypatch.setattr("agent.delegation_context.is_dispatcher_owned_worker_context", lambda: True)
+    from tools import kanban_tools as kt
+    out = json.loads(kt._handle_complete({"summary": "verified handoff"}))
+    assert out == {"ok": True, "task_id": worker_env, "pending_verification": True}
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
+    finally:
+        conn.close()
+
+    assert kt.finalize_pending_completion() is True
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "done"
+    finally:
+        conn.close()
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

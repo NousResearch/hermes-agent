@@ -32,6 +32,54 @@ KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
 
+def _defer_completion_until_turn_closes(
+    *, task_id: str, result: Optional[str], summary: Optional[str], metadata: Any,
+    created_cards: list[str],
+) -> bool:
+    """Keep the card in-flight until the agent's stop gates have accepted the turn.
+
+    ``pre_verify`` runs after the model's terminal tool call. Committing here makes a
+    rejected candidate observable as ``done`` while the worker is still being nudged.
+    The small process-local handoff is consumed by ``agent.turn_finalizer`` after all
+    stop gates have closed.
+    """
+    if not (os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker()):
+        return False
+    try:
+        from hermes_cli.lifecycle import has_hook
+        if not has_hook("pre_verify"):
+            return False
+        os.environ["HERMES_KANBAN_PENDING_COMPLETION"] = json.dumps({
+            "task_id": task_id, "result": result, "summary": summary,
+            "metadata": metadata, "created_cards": created_cards,
+        }, default=str)
+        return True
+    except Exception:
+        logger.debug("could not defer kanban completion", exc_info=True)
+        return False
+
+
+def finalize_pending_completion() -> bool:
+    """Commit a deferred worker completion after the turn stop gates finish."""
+    raw = os.environ.pop("HERMES_KANBAN_PENDING_COMPLETION", None)
+    if not raw:
+        return False
+    try:
+        payload = json.loads(raw)
+        from hermes_cli import kanban_db as kb
+        with _board(None) as (board, conn):
+            board.complete_task(
+                conn, payload["task_id"], result=payload.get("result"),
+                summary=payload.get("summary"), metadata=payload.get("metadata"),
+                created_cards=payload.get("created_cards") or [],
+                expected_run_id=_worker_run_id(payload["task_id"]),
+            )
+        return True
+    except Exception:
+        logger.warning("deferred kanban completion failed", exc_info=True)
+        return False
+
+
 # --- Gating ---
 
 def _profile_has_kanban_toolset() -> bool:
@@ -710,6 +758,11 @@ def _handle_complete(args: dict, **kw) -> str:
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        if not created_cards and not artifacts and _defer_completion_until_turn_closes(
+            task_id=tid, result=result, summary=summary, metadata=metadata,
+            created_cards=list(created_cards or []),
+        ):
+            return _ok(task_id=tid, pending_verification=True)
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
@@ -748,7 +801,6 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
                 f"change). Retry kanban_complete with a non-empty summary or result describing "
                 f"what was done.")
-        task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or
             # never-finished parent is the actionable one. Name the blockers so

@@ -576,6 +576,13 @@ def finalize_turn(
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 
+    # A Kanban worker's terminal tool call is staged while ``pre_verify`` can still
+    # nudge the model. Publish ``done`` only after this turn has passed every stop gate.
+    if completed and not failed and not interrupted:
+        with suppress(Exception):
+            from tools.kanban_tools import finalize_pending_completion
+            finalize_pending_completion()
+
     _rollback_interrupted_preflight_display(agent, interrupted)
 
     from hermes_cli.observability.shared_metrics_harness import finish_turn

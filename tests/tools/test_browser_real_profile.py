@@ -491,6 +491,21 @@ class TestChannelIdentity:
         assert bc._BROWSER_BY_KEY["thorium"].linux_config == "thorium"
         assert "thorium-browser" in bc._BROWSER_BY_KEY["thorium"].linux_exec
 
+    def test_thorium_is_linux_only(self):
+        """Thorium support is Linux-only; other platforms must fail closed.
+
+        Only the Linux install layout has been exercised. Until mac/win
+        identities are filled in AND tested, a Thorium default there must not
+        resolve to a launchable browser — otherwise real-profile mode would
+        drive an unverified (potentially wrong) profile.
+        """
+        import hermes_cli.browser_connect as bc
+        assert bc.chromium_executable("thorium", system="Linux") is not None
+        for system in ("Darwin", "Windows"):
+            assert bc.chromium_executable("thorium", system=system) is None, (
+                f"{system} Thorium now resolves an executable; add that "
+                f"platform's identity and a test for it in the same change")
+
     def test_linux_flatpak_beta_not_stable(self):
         import hermes_cli.browser_connect as bc
         with patch.object(bc.subprocess, "run",

@@ -106,8 +106,17 @@ _BROWSERS = (
         ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
          "/opt/microsoft/msedge/microsoft-edge", "/opt/microsoft/msedge/msedge"),
         "microsoft-edge", linux_exec=("microsoft-edge", "microsoft-edge-stable")),
-    # Thorium: ungoogled Chromium fork, Linux-first (its own build lives under
-    # /opt/chromium.org/thorium). Profile dir is ``thorium`` under $XDG_CONFIG_HOME.
+    # Thorium: ungoogled Chromium fork. LINUX-ONLY for now — the empty mac/win
+    # fields below are deliberate, not an oversight: only the Linux install
+    # layout has been exercised (binary under /opt/chromium.org/thorium,
+    # ``thorium-browser.desktop``, profile dir ``thorium`` in $XDG_CONFIG_HOME).
+    # The mac/win fields stay empty on purpose: only the Linux layout has been
+    # exercised. A Thorium default on those platforms resolves to this key and
+    # then finds no executable, so the launch fails closed rather than driving a
+    # wrong profile. (The data-dir helper still synthesises a path from the
+    # support/profile tuples, but nothing installs there, so it cannot be
+    # mistaken for a real profile.) Populate those fields only alongside a test
+    # for that platform.
     _Browser(
         "thorium", "", ("Thorium",), (), (),
         ("Thorium", "User Data"),

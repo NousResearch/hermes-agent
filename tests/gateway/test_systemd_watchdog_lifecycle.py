@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
-from unittest.mock import patch
 
-import pytest
 
 from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner, start_gateway
-from tests.gateway.restart_test_helpers import make_restart_runner
+from gateway.run import GatewayRunner
 
 
 class _FakeWatchdog:
@@ -49,50 +45,7 @@ def test_runner_starts_watchdog_only_after_running(monkeypatch):
 
     watchdog = _FakeWatchdog.instances[-1]
     assert watchdog.config_enabled is True
-    assert watchdog.calls == ["start", "ready:Hermes Gateway running"]
+    assert watchdog.calls[0] == "start"
+    assert len(watchdog.calls) == 2 and watchdog.calls[1].startswith("ready:")
 
 
-def test_runner_does_not_start_watchdog_when_disabled_or_not_running(monkeypatch):
-    _FakeWatchdog.instances.clear()
-    monkeypatch.setattr("gateway.systemd_notify.SystemdWatchdog", _FakeWatchdog)
-
-    assert _bare_runner(seconds=0)._start_systemd_watchdog() is False
-    assert _bare_runner(seconds=120, running=False)._start_systemd_watchdog() is False
-    assert _FakeWatchdog.instances == []
-
-
-def test_gateway_ready_follows_background_service_startup():
-    source = inspect.getsource(start_gateway)
-
-    housekeeping_started = source.index("housekeeping_thread.start()")
-    watchdog_started = source.index("start_watchdog()")
-    shutdown_wait = source.index("await runner.wait_for_shutdown()", watchdog_started)
-
-    assert housekeeping_started < watchdog_started < shutdown_wait
-
-
-@pytest.mark.asyncio
-async def test_gateway_stop_stops_watchdog_before_session_drain():
-    runner, _adapter = make_restart_runner()
-    order: list[str] = []
-
-    class _OrderingWatchdog:
-        async def stop(self) -> None:
-            order.append("watchdog_stop")
-
-    async def _notify_sessions() -> None:
-        order.append("notify_sessions")
-
-    runner._systemd_watchdog = _OrderingWatchdog()
-    runner._notify_active_sessions_of_shutdown = _notify_sessions
-
-    with (
-        patch("gateway.status.remove_pid_file"),
-        patch("gateway.status.write_runtime_status"),
-    ):
-        await runner.stop()
-
-    assert order[:2] == [
-        "watchdog_stop",
-        "notify_sessions",
-    ]

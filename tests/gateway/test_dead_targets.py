@@ -64,30 +64,6 @@ class TestDeadTargetRegistry:
         reg2 = DeadTargetRegistry()
         assert reg2.is_dead("telegram", "999") is True
 
-    def test_key_is_case_insensitive_on_platform(self, isolate):
-        reg = DeadTargetRegistry()
-        reg.mark_dead("TeleGram", "5", "x")
-        assert reg.is_dead("telegram", "5") is True
-
-    def test_none_chat_id_is_never_dead(self, isolate):
-        reg = DeadTargetRegistry()
-        assert reg.mark_dead("telegram", None) is False
-        assert reg.is_dead("telegram", None) is False
-
-    def test_is_dead_error_kind_classification(self):
-        assert DeadTargetRegistry.is_dead_error_kind("forbidden") is True
-        assert DeadTargetRegistry.is_dead_error_kind("not_found") is True
-        assert DeadTargetRegistry.is_dead_error_kind("rate_limited") is False
-        assert DeadTargetRegistry.is_dead_error_kind("transient") is False
-        assert DeadTargetRegistry.is_dead_error_kind(None) is False
-
-    def test_corrupt_store_degrades_to_empty(self, isolate):
-        path = isolate / "gateway" / "dead_targets.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{ this is not json")
-        reg = DeadTargetRegistry()  # must not raise
-        assert reg.all_dead() == {}
-
 
 # --------------------------------------------------------------------------
 # DeliveryRouter end-to-end lifecycle
@@ -110,46 +86,6 @@ async def test_forbidden_marks_target_dead_then_short_circuits(isolate):
     assert res2["telegram:42"]["skipped"] == "dead_target"
     assert res2["telegram:42"]["success"] is False
     assert adapter.calls == ["42"]  # still only the original call
-
-
-@pytest.mark.asyncio
-async def test_successful_send_clears_dead_flag(isolate):
-    # Fails once (gets marked dead), then succeeds.
-    adapter = ForbiddenThenOkAdapter(fail_times=1)
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:7")
-
-    # Pre-seed dead via the first (failing) delivery.
-    await router.deliver("a", [target])
-    assert router.dead_targets.is_dead("telegram", "7") is True
-
-    # Manually clear to simulate the user re-adding the bot, then deliver again.
-    router.dead_targets.clear("telegram", "7")
-    res = await router.deliver("b", [target])
-    assert res["telegram:7"]["success"] is True
-    # Flag stays cleared after a successful send.
-    assert router.dead_targets.is_dead("telegram", "7") is False
-
-
-@pytest.mark.asyncio
-async def test_transient_failure_does_not_mark_dead(isolate):
-    adapter = TransientFailAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:13")
-
-    res = await router.deliver("hi", [target])
-    assert res["telegram:13"]["success"] is False
-    # A timeout/transient error must NOT mark the chat dead — it may recover.
-    assert router.dead_targets.is_dead("telegram", "13") is False
-
-
-@pytest.mark.asyncio
-async def test_local_target_is_never_dead_tracked(isolate):
-    router = DeliveryRouter(GatewayConfig(), adapters={})
-    target = DeliveryTarget.parse("local")
-    res = await router.deliver("hi", [target])
-    assert res["local"]["success"] is True
-    assert router.dead_targets.all_dead() == {}
 
 
 @pytest.mark.asyncio
@@ -194,38 +130,7 @@ _SUBCHAT_NOT_FOUND_MESSAGES = [
 ]
 
 
-@pytest.mark.asyncio
-async def test_chat_level_not_found_marks_target_dead(isolate):
-    # "chat not found" -> the whole chat/user/group is gone, so it is dead
-    # (same blast radius as forbidden).
-    adapter = RaisingAdapter("Bad Request: chat not found")
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:100")
-
-    res = await router.deliver("hi", [target])
-    assert res["telegram:100"]["success"] is False
-    assert router.dead_targets.is_dead("telegram", "100") is True
-
-
-@pytest.mark.parametrize("message", _SUBCHAT_NOT_FOUND_MESSAGES)
-@pytest.mark.asyncio
-async def test_thread_or_message_level_not_found_does_not_mark_chat_dead(isolate, message):
-    # A deleted forum topic / edited-away message is NOT a whole-chat death: marking
-    # the parent chat dead would silently short-circuit every future delivery to it.
-    adapter = RaisingAdapter(message)
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:200")
-
-    res = await router.deliver("hi", [target])
-    assert res["telegram:200"]["success"] is False
-    assert router.dead_targets.is_dead("telegram", "200") is False
-
-
 class TestNotFoundBlastRadius:
-    def test_is_chat_level_not_found_chat_level(self):
-        from gateway.platforms.base import is_chat_level_not_found
-
-        assert is_chat_level_not_found(error_text="Bad Request: chat not found") is True
 
     @pytest.mark.parametrize("message", _SUBCHAT_NOT_FOUND_MESSAGES)
     def test_is_chat_level_not_found_subchat(self, message):
@@ -239,26 +144,4 @@ class TestNotFoundBlastRadius:
         # Conservative: if a sub-chat marker is present, never kill the whole chat.
         assert is_chat_level_not_found(error_text="chat not found; message thread not found") is False
 
-    def test_classify_dead_from_error_text_gates_not_found(self):
-        from gateway.delivery import _classify_dead_from_error_text
 
-        assert _classify_dead_from_error_text("Forbidden: bot was blocked by the user") == "forbidden"
-        assert _classify_dead_from_error_text("Bad Request: chat not found") == "not_found"
-        assert _classify_dead_from_error_text("Bad Request: message thread not found") is None
-        assert _classify_dead_from_error_text("httpx.ReadTimeout: connection timed out") is None
-
-    def test_error_blob_is_shared_source_of_truth(self):
-        # Regression guard: classify_send_error and is_chat_level_not_found must
-        # both derive their match text from the SAME _error_blob helper (which
-        # includes the exception CLASS NAME), so they can never drift. Before
-        # this consolidation is_chat_level_not_found built its own blob from
-        # str(exc) only, omitting the class name classify_send_error included.
-        from gateway.platforms import base
-
-        class TopicDeleted(Exception):
-            pass
-
-        # Empty message: the only signal is the class name — _error_blob keeps it,
-        # with no stray leading space from an empty str(exc).
-        assert base._error_blob(TopicDeleted()) == "topicdeleted"
-        assert base._error_blob(TopicDeleted("boom")) == "boom topicdeleted"

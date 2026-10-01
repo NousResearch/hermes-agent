@@ -31,7 +31,7 @@ Hermes Agent 采用纵深防御安全模型。本页涵盖所有安全边界—�
 ```yaml
 approvals:
   mode: smart     # smart | manual | off
-  timeout: 60     # 等待用户响应的秒数（默认：60）
+  timeout: 300    # 等待用户响应的秒数（默认：300）
 ```
 
 | 模式 | 行为 |
@@ -73,7 +73,7 @@ YOLO 模式在 CLI 和 gateway 会话中均可使用。在内部，它会设置 
 YOLO 模式会禁用会话中**所有**危险命令安全检查——**但硬性黑名单除外**（见下文）。仅在完全信任所生成命令的情况下使用（例如，在一次性环境中经过充分测试的自动化脚本）。
 :::
 
-对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands)。
+对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#破坏性命令的确认提示)。
 
 ### 硬性黑名单（始终生效的底线）
 
@@ -105,7 +105,7 @@ YOLO 模式会禁用会话中**所有**危险命令安全检查——**但硬性
 
 ```yaml
 approvals:
-  timeout: 60  # 秒（默认：60）
+  timeout: 300  # 秒（默认：300）
 ```
 
 ### 触发审批的条件
@@ -144,7 +144,7 @@ approvals:
 | `gateway run` 配合 `&`/`disown`/`nohup`/`setsid` | 防止在服务管理器外启动 gateway |
 
 :::info
-**容器绕过**：在 `docker`、`singularity`、`modal` 或 `daytona` 后端运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。容器内的破坏性命令不会危害宿主机。
+**容器绕过**：在 `docker`、`singularity`、`modal`、`daytona` 或 `vercel_sandbox` 后端运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。容器内的破坏性命令不会危害宿主机。
 :::
 
 ### 审批流程（CLI）
@@ -340,7 +340,7 @@ terminal:
 - **临时模式**（`container_persistent: false`）：工作区使用 tmpfs——清理后所有内容丢失
 
 :::tip
-对于生产 gateway 部署，使用 `docker`、`modal` 或 `daytona` 后端，将 Agent 命令与宿主机系统隔离。这样可以完全消除危险命令审批的需要。
+对于生产 gateway 部署，使用 `docker`、`modal`、`daytona` 或 `vercel_sandbox` 后端，将 Agent 命令与宿主机系统隔离。这样可以完全消除危险命令审批的需要。
 :::
 
 :::warning
@@ -357,6 +357,7 @@ terminal:
 | **singularity** | 容器 | ❌ 跳过 | HPC 环境 |
 | **modal** | 云沙箱 | ❌ 跳过 | 可扩展的云隔离 |
 | **daytona** | 云沙箱 | ❌ 跳过 | 持久化云工作区 |
+| **vercel_sandbox** | 云微虚拟机 | ❌ 跳过 | 带快照持久化的云执行 |
 
 ## 环境变量透传 {#environment-variable-passthrough}
 
@@ -440,7 +441,7 @@ terminal:
 - 凭据文件以**只读**方式挂载到 Docker 容器中
 - Skills Guard 在安装前会扫描技能内容中的可疑环境变量访问模式
 - 缺失/未设置的变量永远不会被注册（不存在的内容无法泄露）
-- Hermes 基础设施密钥（提供商 API 密钥、gateway token）不应添加到 `env_passthrough`——它们有专用机制
+- Hermes 基础设施密钥（提供商 API 密钥、gateway token）不应添加到 `env_passthrough`——它们有专用机制。声明此类名称时会被拒绝；已声明的名称若之后被某个平台适配器占用（例如在技能加载后才注册的插件适配器），从那时起便不再转发
 
 ## MCP 凭据处理
 
@@ -494,7 +495,7 @@ security:
 
 当请求被阻止的 URL 时，工具会返回一条错误，说明该域名已被策略阻止。黑名单在 `web_search`、`web_extract`、`browser_navigate` 及所有支持 URL 的工具中均强制执行。
 
-完整详情请参见配置指南中的[网站黑名单](/user-guide/configuration#website-blocklist)。
+完整详情请参见配置指南中的[网站黑名单](./configuration.md#网站黑名单)。
 
 ### SSRF 防护
 
@@ -521,6 +522,24 @@ security:
 开启后，Web 工具、浏览器、视觉 URL 获取和 gateway 媒体下载不再拒绝 RFC 1918 / 回环 / 链路本地 / CGNAT / 云元数据目标。**这是一个有意为之的信任边界**——仅在 Agent 针对本地网络执行任意 prompt 注入 URL 属于可接受风险的机器上启用。面向公众的 gateway 应保持关闭。
 
 主机子字符串防护（即使底层 IP 是公共的，也能阻止 Unicode 同形字域名欺骗）无论此设置如何均保持开启。
+
+#### 本地代理的 fake-ip 地址段
+
+以 fake-ip 模式工作的 TUN 代理（Mihomo/Clash `fake-ip`、Surge 增强模式）会对不在其过滤器内的
+每个域名返回自己地址段中的地址——默认是 `198.18.0.0/15`（RFC 2544 基准测试段）。这些地址是代理
+的哨兵地址，而不是内网主机，因此私网 IP 守卫会在这种机器上拦掉全部出网抓取：`web_extract`、平台
+附件下载、浏览器链路都会以 *URL targets a private or internal network address* 失败，而请求根本
+没有发出。声明该地址段即可放行哨兵地址：
+
+```yaml
+security:
+  fake_ip_ranges:
+    - 198.18.0.0/15
+```
+
+默认为空，且比 `allow_private_urls` 更窄：只有被声明的地址段获得豁免，且应当是本地代理自己拥有的
+地址段（连接仍然发往代理，由代理自行解析真实目标），回环、RFC 1918、链路本地、CGNAT 和云元数据
+目标依然被拦截。
 
 ### Tirith 预执行安全扫描
 
@@ -629,35 +648,33 @@ hermes doctor --ack <advisory-id>
 
 ### 可选依赖的懒加载安装
 
-许多功能（Mistral TTS、ElevenLabs、Honcho 记忆、Bedrock、Slack、Matrix 等）依赖并非每个用户都需要的 Python 包。Hermes 在首次使用时**懒加载**安装这些包，而非在 `hermes-agent[all]` 下急切安装。实现位于 `tools/lazy_deps.py`。
+PM 通过 `pyproject.toml` 中的 extras 管理可选 Python 功能。
+源码安装选择 `all` extra，原生桌面包预装目标平台支持的所有 extras。
+这两种集合并不相同。
 
-此方案解决的权衡问题：
+当功能请求缺失的 extra 时，`pm.ensure_import("extra-name")` 使用与插件准入相同的依赖事务：
 
-- **脆弱性。** 当某个额外依赖的传递依赖在 PyPI 上不可用时（因恶意软件被隔离、被撤回、上传损坏），整个 `[all]` 解析会失败，新安装会静默回退到精简版本——同时丢失 10 个以上不相关的额外功能。懒加载安装将每个后端隔离，使一个受损依赖不会破坏不相关的功能。
-- **臃肿。** 只使用一个提供商的用户不再需要拉取数百个永远不会导入的包。
+1. 检查平台支持和 `security.allow_lazy_installs`。
+2. 在候选环境中统一准备核心依赖、现有 extras 和已启用插件的依赖。
+3. 没有插件成员时保持提交的锁文件不变；有成员时从先前选择开始解析，然后执行冻结同步。
+4. 验证候选环境后才发布新选择。失败会保留原环境，不会自动禁用或删除其他插件。
+5. 若当前进程仍使用旧环境，则提示重启，不在进程中直接替换已导入的库。
 
-工作原理：
+已发布的源码、锁文件和签名载荷保持不变。新增依赖使用包外的可写存储。
+插件依赖共享完整 Python 环境，不是相互隔离的沙箱。
+兼容的传递依赖可以更新，但声明的约束和精确固定版本仍有效。
+失败通过 `pm.InstallError` 和同步记录报告。
 
-1. 后端模块在其首次导入路径的顶部调用 `ensure("feature.name")`。
-2. 若依赖缺失，`ensure` 检查 `config.yaml` 中的 `security.allow_lazy_installs`（默认 `true`），并为允许列表中的规格运行 venv 作用域的 `pip install`。
-3. 若安装失败或用户已禁用懒加载安装，调用会抛出 `FeatureUnavailable`，附带实际的 pip stderr 和指向 `hermes tools` 的提示。
+关闭按需安装：
 
-`tools/lazy_deps.py` 强制执行的安全保证：
-
-| 保证 | 含义 |
-|---|---|
-| 仅限 venv 作用域 | 安装目标为活跃 venv 中的 `sys.executable`——绝不安装到系统 Python |
-| 仅按名称从 PyPI 安装 | 规格接受 `"package>=1.0,<2"` 语法。不允许 `--index-url`、`git+https://` 或 `file:` 路径——恶意的 `config.yaml` 无法重定向安装 |
-| 允许列表 | 只有出现在内置 `LAZY_DEPS` 映射中的规格才能通过此路径安装。功能名称中的拼写错误**不会**获得任意安装语义 |
-| 可选退出 | 设置 `security.allow_lazy_installs: false` 可完全禁用运行时安装。适用于受限网络或严格安全态势 |
-| 无静默重试 | 失败以 `FeatureUnavailable` 形式呈现——不缓存错误状态，不发生重试风暴 |
-
-禁用运行时安装：
-
-```yaml
-# ~/.hermes/config.yaml
-security:
-  allow_lazy_installs: false
+```bash
+hermes config set security.allow_lazy_installs false
 ```
 
-禁用后，需要可选依赖的后端会提示用户手动运行安装（`pip install …`）或通过 `hermes tools` 选择其他后端。
+已安装的依赖仍可使用。显式安装命令与按需安装不同。
+关闭懒加载且存在包内冻结功能列表时，请求的 Python extra 名称仍受该列表限制。
+该设置不是禁止显式插件准入或手动包管理命令的沙箱。
+官方 Docker 镜像还通过内部策略关闭按需安装，仅更改配置不能覆盖它。
+
+用 `hermes tools` 和 `hermes doctor` 检查缺失需求。
+不要向签名载荷或系统 Python 执行 pip 安装。详见[包管理](../reference/package-management.md)。

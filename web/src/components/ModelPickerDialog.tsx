@@ -6,11 +6,15 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
+import type { ModelOptionProvider, ModelOptionsResult } from "@hermes/shared";
 import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link } from "react-router";
 import { cn, themedBody } from "@/lib/utils";
-import { fuzzyRank } from "@/lib/fuzzy";
+import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
+import { fuzzyRank, modelSearchText } from "@hermes/shared";
+import { errorMessage } from "@/lib/api-error";
 
 /**
  * Two-stage model picker modal.
@@ -31,21 +35,6 @@ import { fuzzyRank } from "@/lib/fuzzy";
  *    command.  This lets the Models page reuse the same UI without
  *    requiring an open chat PTY.
  */
-
-interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  warning?: string;
-}
-
-interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
 
 interface ExpensiveModelConfirmResponse {
   confirm_message?: string;
@@ -71,7 +60,7 @@ interface Props {
   onSubmit?(slashCommand: string): void;
 
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
-  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResponse>;
+  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResult>;
   onApply?(args: {
     confirmExpensiveModel?: boolean;
     provider: string;
@@ -116,7 +105,7 @@ export function ModelPickerDialog(props: Props) {
     useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
 
-  const applyOptions = (r: ModelOptionsResponse) => {
+  const applyOptions = (r: ModelOptionsResult) => {
     const next = r?.providers ?? [];
     setProviders(next);
     setCurrentModel(String(r?.model ?? ""));
@@ -130,10 +119,10 @@ export function ModelPickerDialog(props: Props) {
 
   const requestOptions = (refresh = false) =>
     standalone
-      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResponse>)({
+      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResult>)({
           refresh,
         })
-      : (gw as GatewayClient).request<ModelOptionsResponse>(
+      : (gw as GatewayClient).request<ModelOptionsResult>(
           "model.options",
           {
             ...(sessionId ? { session_id: sessionId } : {}),
@@ -156,7 +145,7 @@ export function ModelPickerDialog(props: Props) {
       })
       .catch((e) => {
         if (closedRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       })
       .finally(() => {
         if (closedRef.current) return;
@@ -175,7 +164,7 @@ export function ModelPickerDialog(props: Props) {
       })
       .catch((e) => {
         if (closedRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       })
       .finally(() => {
         if (closedRef.current) return;
@@ -216,25 +205,49 @@ export function ModelPickerDialog(props: Props) {
   // Fuzzy-ranked providers: match on name + slug + the provider's model ids so
   // typing a model name surfaces its provider (preserves the prior behaviour
   // where a model match also revealed its provider).
-  const filteredProviders = useMemo(
-    () =>
-      fuzzyRank(
-        providers,
-        trimmedQuery,
-        (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
-      ).map((r) => r.item),
-    [providers, trimmedQuery],
+  //
+  // With no query, float providers that actually have models to the top
+  // (stable within each group). A fresh install lists ~40 providers and only
+  // a couple are configured — burying "OpenRouter · 37 models" under a wall
+  // of "0 models" rows made the picker feel broken.
+  const filteredProviders = useMemo(() => {
+    const ranked = fuzzyRank(
+      providers,
+      trimmedQuery,
+      (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
+    ).map((r) => r.item);
+    if (trimmedQuery) return ranked;
+    const withModels = ranked.filter((p) => (p.models ?? []).length > 0);
+    const withoutModels = ranked.filter((p) => (p.models ?? []).length === 0);
+    return [...withModels, ...withoutModels];
+  }, [providers, trimmedQuery]);
+
+  // A query that matched the SELECTED provider by name/slug (not its models)
+  // located that provider — it shouldn't also hide that provider's models
+  // just because their ids don't share a substring with the provider name
+  // (e.g. typing "aws" to find "AWS Build" then finding zero of its Claude
+  // model ids contain "aws"). Fall back to an unfiltered model list in that
+  // case; a query that also matches a model id keeps filtering normally.
+  const queryMatchesSelectedProviderOnly = useMemo(
+    () => queryMatchesProviderOnly(selectedProvider, models, trimmedQuery),
+    [trimmedQuery, selectedProvider, models],
   );
 
   // Fuzzy-ranked models carrying the matched character positions so the model
-  // list can highlight why each entry matched.
+  // list can highlight why each entry matched. modelSearchText adds aliases
+  // for brand-less wire ids (e.g. Kimi Coding `k3` ↔ search "kimi").
   const filteredModels = useMemo(
     () =>
-      fuzzyRank(models, trimmedQuery, (m) => m).map((r) => ({
+      fuzzyRank(
+        models,
+        queryMatchesSelectedProviderOnly ? "" : trimmedQuery,
+        modelSearchText,
+      ).map((r) => ({
         model: r.item,
-        positions: r.positions,
+        // Positions may land in alias suffixes — keep only in-id highlights.
+        positions: r.positions.filter((i) => i >= 0 && i < r.item.length),
       })),
-    [models, trimmedQuery],
+    [models, trimmedQuery, queryMatchesSelectedProviderOnly],
   );
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
@@ -272,7 +285,7 @@ export function ModelPickerDialog(props: Props) {
         }
         onClose();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       } finally {
         setApplying(false);
       }
@@ -300,7 +313,7 @@ export function ModelPickerDialog(props: Props) {
         }
         onClose();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       } finally {
         setApplying(false);
       }
@@ -372,6 +385,7 @@ export function ModelPickerDialog(props: Props) {
           <ProviderColumn
             loading={loading}
             error={error}
+            onClose={onClose}
             providers={filteredProviders}
             total={providers.length}
             selectedSlug={selectedSlug}
@@ -469,6 +483,10 @@ export function ModelPickerDialog(props: Props) {
 /*  Provider column                                                    */
 /* ------------------------------------------------------------------ */
 
+/** Empty picker: no key and no OAuth login anywhere. Points at the two in-app fixes. */
+export const NO_PROVIDERS_MESSAGE =
+  "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models to see models here.";
+
 function ProviderColumn({
   loading,
   error,
@@ -477,6 +495,7 @@ function ProviderColumn({
   selectedSlug,
   query,
   onSelect,
+  onClose,
 }: {
   loading: boolean;
   error: string | null;
@@ -485,6 +504,8 @@ function ProviderColumn({
   selectedSlug: string;
   query: string;
   onSelect(slug: string): void;
+  /** The links below navigate away; the full-screen dialog must close or it keeps covering the target page. */
+  onClose(): void;
 }) {
   return (
     <div className="border-r border-border overflow-y-auto">
@@ -497,12 +518,22 @@ function ProviderColumn({
       {error && <div className="p-4 text-xs text-destructive">{error}</div>}
 
       {!loading && !error && providers.length === 0 && (
-        <div className="p-4 text-xs text-muted-foreground italic">
-          {query
-            ? "no matches"
-            : total === 0
-              ? "no authenticated providers"
-              : "no matches"}
+        <div className="p-4 text-xs text-muted-foreground">
+          {query || total > 0 ? (
+            <span className="italic">No providers match your search.</span>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <span>{NO_PROVIDERS_MESSAGE}</span>
+              <div className="flex flex-wrap gap-2">
+                <Link to="/env" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
+                  Open Keys
+                </Link>
+                <Link to="/models" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
+                  Sign in to a provider
+                </Link>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -5,6 +5,7 @@ import type {
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '../../../gatewayTypes.js'
+import { t } from '../../../i18n/runtime.js'
 import { openExternalUrl } from '../../../lib/openExternalUrl.js'
 import type { SubscriptionOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -20,7 +21,7 @@ type Sys = (text: string) => void
  * `org_id` pins the page to the correct account in multi-org situations.
  * Falls back to bare `/manage-subscription` if org_id is absent.
  */
-function buildManageUrl(s: SubscriptionStateResponse): string | null {
+function buildManageUrl(s: SubscriptionStateResponse, tierId?: string): string | null {
   // portal_url is already an absolute URL resolved by resolve_portal_base_url()
   // on the Python side (e.g. https://portal.nousresearch.com/billing). Strip any
   // path so we can attach /manage-subscription cleanly.
@@ -46,6 +47,10 @@ function buildManageUrl(s: SubscriptionStateResponse): string | null {
     url.searchParams.set('org_id', s.org_id)
   }
 
+  if (tierId) {
+    url.searchParams.set('plan', tierId)
+  }
+
   return url.toString()
 }
 
@@ -64,11 +69,11 @@ const buildSubscriptionCtx = (
       .rpc<BillingStateResponse>('billing.state', {})
       .then(r => (r?.ok ? (r.card ?? null) : null))
       .catch(() => null),
-  openManageLink: () => {
-    const url = buildManageUrl(initialState)
+  openManageLink: (tierId?: string) => {
+    const url = buildManageUrl(initialState, tierId)
 
     if (!url) {
-      sys('Could not build manage URL — is your portal configured?')
+      sys(t('slashCmd.subscription.manageUrlFailed'))
 
       return Promise.resolve(false)
     }
@@ -76,18 +81,18 @@ const buildSubscriptionCtx = (
     const opened = openExternalUrl(url)
 
     if (opened) {
-      sys('Opening your subscription page in the browser — finish there, then re-run /subscription.')
+      sys(t('slashCmd.subscription.openingManage'))
     } else {
-      sys('Could not open browser — visit your subscription page manually at ' + url)
+      sys(t('slashCmd.subscription.openBrowserFailedManage', url))
     }
 
     return Promise.resolve(opened)
   },
   openPortal: (url: string) => {
     if (openExternalUrl(url)) {
-      sys('Opening the portal in your browser — finish there, then re-run /subscription.')
+      sys(t('slashCmd.subscription.openingPortal'))
     } else {
-      sys('Could not open browser — visit ' + url + ' to finish.')
+      sys(t('slashCmd.subscription.openBrowserFailedPortal', url))
     }
   },
   preview: tierId =>
@@ -108,7 +113,7 @@ const buildSubscriptionCtx = (
       .then(r => ({ error: r?.error, granted: !!(r && r.ok && r.granted), message: r?.message }))
       .catch(() => ({
         granted: false,
-        message: 'Could not reach the billing service — check your connection, then retry.'
+        message: t('slashCmd.subscription.billingUnreachable')
       })),
   resume: () =>
     ctx.gateway
@@ -152,7 +157,7 @@ export const subscriptionCommands: SlashCommand[] = [
         .then(
           ctx.guarded<SubscriptionStateResponse>(s => {
             if (!s.logged_in) {
-              sys('Not logged into Nous Portal — run /portal to log in, then /subscription.')
+              sys(t('slashCmd.subscription.notLoggedIn'))
 
               return
             }

@@ -12,8 +12,15 @@ function ContextMenuPortal({ ...props }: React.ComponentProps<typeof ContextMenu
   return <ContextMenuPrimitive.Portal data-slot="context-menu-portal" {...props} />
 }
 
+/** Coordinator marker that survives Radix `asChild` Slot merges.
+ * `data-slot` is overwritten when the child sets its own `data-slot`
+ * (status bar footer); this attribute is not. */
+export const HERMES_CONTEXT_MENU_TRIGGER_ATTR = 'data-hermes-context-menu-trigger'
+
 function ContextMenuTrigger({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Trigger>) {
-  return <ContextMenuPrimitive.Trigger data-slot="context-menu-trigger" {...props} />
+  return (
+    <ContextMenuPrimitive.Trigger data-slot="context-menu-trigger" {...props} data-hermes-context-menu-trigger="" />
+  )
 }
 
 function ContextMenuGroup({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Group>) {
@@ -55,6 +62,30 @@ function ContextMenuItem({
       data-variant={variant}
       {...props}
     />
+  )
+}
+
+function ContextMenuCheckboxItem({
+  className,
+  children,
+  checked,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.CheckboxItem>) {
+  return (
+    <ContextMenuPrimitive.CheckboxItem
+      checked={checked}
+      className={cn(
+        "relative flex cursor-default items-center gap-2 rounded-md px-2 py-1 text-xs outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
+        className
+      )}
+      data-slot="context-menu-checkbox-item"
+      {...props}
+    >
+      {children}
+      <ContextMenuPrimitive.ItemIndicator className="ml-auto flex items-center pl-2 text-foreground">
+        <Codicon name="check" size="0.75rem" />
+      </ContextMenuPrimitive.ItemIndicator>
+    </ContextMenuPrimitive.CheckboxItem>
   )
 }
 
@@ -142,6 +173,7 @@ function ContextMenuSubContent({
 
 export {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuGroup,
   ContextMenuItem,

@@ -1,5 +1,5 @@
 import type { BillingResult } from './api'
-import type { BillingStateResponse, SubscriptionStateResponse } from './types'
+import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption } from './types'
 
 const current = (
   overrides: Partial<NonNullable<SubscriptionStateResponse['current']>> = {}
@@ -207,6 +207,144 @@ export const loggedOutSubscriptionState = {
   usage: undefined
 } satisfies SubscriptionStateResponse
 
+// Full four-tier personal catalog. tier_ids are cuid-like (Prisma) on purpose:
+// tier art keys off the lowercase NAME, never the id (ids differ per env). Dollar
+// credits are 0.1 / 22 / 110 / 220 to exercise the "$X credits/mo" formatting.
+const personalTierCatalog: SubscriptionTierOption[] = [
+  {
+    dollars_per_month_display: '$0',
+    is_current: false,
+    is_enabled: true,
+    monthly_credits: '0.1',
+    name: 'Free',
+    tier_id: 'cltier000free0000personal',
+    tier_order: 0
+  },
+  {
+    dollars_per_month_display: '$20',
+    is_current: false,
+    is_enabled: true,
+    monthly_credits: '22',
+    name: 'Plus',
+    tier_id: 'cltier111plus1111personal',
+    tier_order: 1
+  },
+  {
+    dollars_per_month_display: '$100',
+    is_current: false,
+    is_enabled: true,
+    monthly_credits: '110',
+    name: 'Super',
+    tier_id: 'cltier222super222personal',
+    tier_order: 2
+  },
+  {
+    dollars_per_month_display: '$200',
+    is_current: false,
+    is_enabled: true,
+    monthly_credits: '220',
+    name: 'Ultra',
+    tier_id: 'cltier333ultra333personal',
+    tier_order: 3
+  }
+]
+
+const catalogWithCurrent = (currentTierId: null | string): SubscriptionTierOption[] =>
+  personalTierCatalog.map(tier => ({ ...tier, is_current: tier.tier_id === currentTierId }))
+
+// Logged-in personal org, no subscription: exercises the "View plans" plan card
+// and the full plans grid where every tier is an upgrade.
+export const freePersonalBillingState = {
+  ...postTrainBillingState,
+  balance_display: '$12.00',
+  balance_usd: '12.00',
+  org_name: 'Personal',
+  usage: {
+    available: true,
+    has_topup: true,
+    plan_name: 'Free',
+    renews_at: null,
+    renews_display: null,
+    status: 'active',
+    subscription_remaining_display: '$0',
+    topup_remaining_display: '$12.00',
+    total_spendable_display: '$12.00'
+  }
+} satisfies BillingStateResponse
+
+export const freePersonalSubscriptionState = {
+  ...todaySubscriptionState,
+  can_change_plan: true,
+  context: 'personal',
+  current: null,
+  org_id: 'org_personal_free',
+  org_name: 'Personal',
+  tiers: catalogWithCurrent(null),
+  usage: freePersonalBillingState.usage
+} satisfies SubscriptionStateResponse
+
+// Personal subscriber on Plus: exercises the "Change plan" plan card, the current
+// marker, upgrades (Super/Ultra), and the disabled downgrade (Free).
+export const subscriberPersonalBillingState = {
+  ...postTrainBillingState,
+  org_name: 'Personal',
+  usage: {
+    ...postTrainBillingState.usage,
+    plan_name: 'Plus'
+  }
+} satisfies BillingStateResponse
+
+export const subscriberPersonalSubscriptionState = {
+  ...todaySubscriptionState,
+  can_change_plan: true,
+  context: 'personal',
+  current: current({
+    credits_remaining: '12',
+    cycle_ends_at: '2026-08-15T00:00:00Z',
+    monthly_credits: '22',
+    tier_id: 'cltier111plus1111personal',
+    tier_name: 'Plus'
+  }),
+  org_id: 'org_personal_plus',
+  org_name: 'Personal',
+  tiers: catalogWithCurrent('cltier111plus1111personal'),
+  usage: subscriberPersonalBillingState.usage
+} satisfies SubscriptionStateResponse
+
+// Personal subscriber on Plus with a downgrade to Free already scheduled at period
+// end: exercises the plan-card pending state + undo, and the grid's "Scheduled"
+// marker on Free while Super/Ultra stay choosable.
+export const pendingDowngradeSubscriptionState = {
+  ...subscriberPersonalSubscriptionState,
+  current: current({
+    credits_remaining: '12',
+    cycle_ends_at: '2026-08-15T00:00:00Z',
+    monthly_credits: '22',
+    pending_downgrade_at: '2026-08-15T00:00:00Z',
+    pending_downgrade_display: 'Aug 15',
+    pending_downgrade_tier_name: 'Free',
+    tier_id: 'cltier111plus1111personal',
+    tier_name: 'Plus'
+  })
+} satisfies SubscriptionStateResponse
+
+// Personal subscriber on Plus with a cancellation (not a downgrade) scheduled at
+// period end: exercises the plan-card "Cancels on …" copy + undo, with NO Scheduled
+// grid marker (a cancellation has no target tier).
+export const pendingCancellationSubscriptionState = {
+  ...subscriberPersonalSubscriptionState,
+  current: current({
+    cancel_at_period_end: true,
+    cancellation_effective_at: '2026-08-15T00:00:00Z',
+    cancellation_effective_display: 'Aug 15',
+    credits_remaining: '12',
+    cycle_ends_at: '2026-08-15T00:00:00Z',
+    monthly_credits: '22',
+    tier_id: 'cltier111plus1111personal',
+    tier_name: 'Plus'
+  })
+} satisfies SubscriptionStateResponse
+
 const okBilling = (data: BillingStateResponse): BillingResult<BillingStateResponse> => ({ data, ok: true })
 
 const okSubscription = (data: SubscriptionStateResponse): BillingResult<SubscriptionStateResponse> => ({
@@ -270,6 +408,22 @@ function withUsage(
 
 export const billingDevFixtures = {
   healthy: withUsage('Healthy', { monthlyCapSpent: '89', remaining: '132' }),
+  'free-personal': {
+    billing: okBilling(freePersonalBillingState),
+    subscription: okSubscription(freePersonalSubscriptionState)
+  },
+  'subscriber-personal': {
+    billing: okBilling(subscriberPersonalBillingState),
+    subscription: okSubscription(subscriberPersonalSubscriptionState)
+  },
+  'pending-cancellation': {
+    billing: okBilling(subscriberPersonalBillingState),
+    subscription: okSubscription(pendingCancellationSubscriptionState)
+  },
+  'pending-downgrade': {
+    billing: okBilling(subscriberPersonalBillingState),
+    subscription: okSubscription(pendingDowngradeSubscriptionState)
+  },
   'auto-refill-divergent': withUsage('Auto Refill Divergent', {
     autoReload: {
       ...postTrainBillingState.auto_reload,

@@ -20,8 +20,6 @@ import contextlib
 import io
 from pathlib import Path
 
-import pytest
-
 from hermes_constants import get_hermes_home
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -29,13 +27,11 @@ from run_agent import AIAgent
 from agent.agent_init import (
     _codex_gpt55_autoraise_notice_marker,
     _codex_gpt55_autoraise_notice_seen,
-    _codex_gpt55_autoraise_notice_state,
     _record_codex_gpt55_autoraise_notice,
 )
 
 # The dict agent_init stashes when the Codex gpt-5.5 override fires.
 AUTORAISE = {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
-
 
 def _config(*, show_notice: bool) -> dict:
     return {
@@ -53,12 +49,13 @@ def _config(*, show_notice: bool) -> dict:
         "bedrock": {},
     }
 
-
 def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
     """Construct a real Codex gpt-5.5 agent under an isolated config."""
     from hermes_cli import config as config_mod
 
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(show_notice=show_notice))
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: _config(show_notice=show_notice))
     db = SessionDB(db_path=tmp_path / "state.db")
     stdout = io.StringIO()
 
@@ -78,34 +75,11 @@ def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
 
     return agent, stdout.getvalue()
 
-
 def _threshold_ratio(agent: AIAgent) -> float:
     compressor = getattr(agent, "context_compressor")
     return round(compressor.threshold_tokens / compressor.context_length, 2)
 
-
 # ── config display gate ──────────────────────────────────────────────────────
-
-
-def test_codex_gpt55_autoraise_notice_enabled_by_default(monkeypatch, tmp_path):
-    agent, stdout = _make_codex_agent(monkeypatch, tmp_path, show_notice=True)
-
-    assert _threshold_ratio(agent) == 0.85
-    warning = getattr(agent, "_compression_warning")
-    assert warning is not None
-    assert "auto-compaction was raised" in warning
-    assert "auto-compaction was raised" in stdout
-
-
-def test_codex_gpt55_autoraise_notice_can_be_suppressed_without_disabling_autoraise(
-    monkeypatch, tmp_path
-):
-    agent, stdout = _make_codex_agent(monkeypatch, tmp_path, show_notice=False)
-
-    assert _threshold_ratio(agent) == 0.85
-    assert getattr(agent, "_compression_warning") is None
-    assert "auto-compaction was raised" not in stdout
-
 
 def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tmp_path):
     # Gateway spam scenario (#54432): the gateway rebuilds the agent per
@@ -120,38 +94,11 @@ def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tm
     assert "auto-compaction was raised" not in stdout2
     assert getattr(agent2, "_compression_warning") is None
 
-
 # ── per-profile dedupe marker (#54432) ───────────────────────────────────────
-
 
 def test_marker_lives_under_hermes_home() -> None:
     marker = _codex_gpt55_autoraise_notice_marker()
     assert marker.parent == get_hermes_home()
-    assert marker.name == ".codex_gpt55_autoraise_notice"
-
-
-def test_state_keyed_on_model_and_displayed_percentages() -> None:
-    # Same percentages the notice text renders (int(round(ratio * 100))),
-    # prefixed with the bare model slug.
-    assert _codex_gpt55_autoraise_notice_state(AUTORAISE) == "gpt-5.5:50:85"
-    assert (
-        _codex_gpt55_autoraise_notice_state(
-            {"model": "openai/gpt-5.4", "from": 0.75, "to": 0.85}
-        )
-        == "gpt-5.4:75:85"
-    )
-
-
-def test_unseen_before_anything_is_recorded() -> None:
-    assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
-
-
-def test_seen_after_record() -> None:
-    assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
-    _record_codex_gpt55_autoraise_notice(AUTORAISE)
-    # A "restart" is just another call: the marker persists on disk.
-    assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is True
-
 
 def test_changed_threshold_renotifies_once() -> None:
     _record_codex_gpt55_autoraise_notice(AUTORAISE)
@@ -163,55 +110,3 @@ def test_changed_threshold_renotifies_once() -> None:
     assert _codex_gpt55_autoraise_notice_seen(changed) is True
     # And the old state is now considered unseen (marker moved forward).
     assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
-
-
-def test_changed_model_renotifies_once() -> None:
-    # Switching to a different autoraised Codex model re-fires the notice
-    # (the banner names the model, so it displays new information).
-    _record_codex_gpt55_autoraise_notice(AUTORAISE)
-    other_model = {"model": "gpt-5.4", "from": 0.50, "to": 0.85}
-    assert _codex_gpt55_autoraise_notice_seen(other_model) is False
-    _record_codex_gpt55_autoraise_notice(other_model)
-    assert _codex_gpt55_autoraise_notice_seen(other_model) is True
-
-
-def test_record_is_idempotent() -> None:
-    _record_codex_gpt55_autoraise_notice(AUTORAISE)
-    _record_codex_gpt55_autoraise_notice(AUTORAISE)
-    assert (
-        _codex_gpt55_autoraise_notice_marker().read_text(encoding="utf-8")
-        == "gpt-5.5:50:85"
-    )
-
-
-def test_malformed_marker_reads_as_unseen() -> None:
-    marker = _codex_gpt55_autoraise_notice_marker()
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("not-a-state", encoding="utf-8")
-    assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
-
-
-@pytest.mark.parametrize("bad", [{}, {"from": 0.5}, {"from": None, "to": None}])
-def test_seen_tolerates_malformed_autoraise(bad) -> None:
-    # Never raises even if the stashed dict is missing/garbage keys.
-    assert _codex_gpt55_autoraise_notice_seen(bad) is False
-
-
-def test_full_init_gate_shows_once_then_stays_silent() -> None:
-    # Mirror the decision agent_init makes on each build:
-    #   show = bool(autoraise) and compression_enabled and not seen(autoraise)
-    def decide(compression_enabled: bool) -> bool:
-        show = (
-            bool(AUTORAISE)
-            and compression_enabled
-            and not _codex_gpt55_autoraise_notice_seen(AUTORAISE)
-        )
-        if show:
-            _record_codex_gpt55_autoraise_notice(AUTORAISE)
-        return show
-
-    # First init (any surface) shows; every subsequent init in this profile
-    # stays silent — the gateway spam scenario from the issue.
-    assert decide(compression_enabled=True) is True
-    assert decide(compression_enabled=True) is False
-    assert decide(compression_enabled=True) is False

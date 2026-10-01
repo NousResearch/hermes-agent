@@ -41,8 +41,18 @@ class MatrixEditFollowupsMixin:
     _build_inbound_event: Callable[..., Awaitable[MessageEvent | None]]
     _resolve_message_context: Callable[..., Awaitable[tuple | None]]
     _is_sender_authorized: Callable[..., bool | None]
+    _allowed_room_ids: set[str]
     _is_allowed_matrix_room_event: Callable[[str], Awaitable[bool]]
     handle_message: Callable[[MessageEvent], Awaitable[None]]
+
+    def _edit_policy_allows(
+        self, room_id: str, sender: str, event_id: str, target: str, chat_type: str,
+    ) -> bool:
+        return (room_id in self._process_edits
+                and not self._event_context_cache.is_redacted(room_id, target)
+                and not self._event_context_cache.is_redacted(room_id, event_id)
+                and (not self._allowed_room_ids or room_id in self._allowed_room_ids or chat_type == "dm")
+                and self._is_sender_authorized(sender, chat_type=chat_type, chat_id=room_id) is True)
 
     async def validate_inbound_event(self, event: MessageEvent) -> bool:
         if not event._queue_at_turn_boundary:
@@ -72,7 +82,9 @@ class MatrixEditFollowupsMixin:
             allow_gateway_control=False, reply_fallback=False, record=False,
         )
         queued = event.raw_message if isinstance(event.raw_message, dict) else {}
-        return (ctx is not None and content.get("body") == queued.get("body")
+        return (ctx is not None
+                and self._edit_policy_allows(room_id, source.user_id, event.message_id, target, ctx[-1].chat_type)
+                and content.get("body") == queued.get("body")
                 and ctx[-1].thread_id == source.thread_id)
 
     @staticmethod
@@ -194,7 +206,7 @@ class MatrixEditFollowupsMixin:
         if ctx is None:
             return
         _body, _is_dm, chat_type, thread_id, _display_name, _requires_mention, source = ctx
-        if self._is_sender_authorized(sender, chat_type=chat_type, chat_id=room_id) is not True:
+        if not self._edit_policy_allows(room_id, sender, event_id, target, chat_type):
             return
         source.message_id = event_id
         event = await self._build_inbound_event(
@@ -207,6 +219,8 @@ class MatrixEditFollowupsMixin:
             return
         if thread_id:
             await self._threads.mark_async(thread_id)
+        if not self._edit_policy_allows(room_id, sender, event_id, target, chat_type):
+            return
         if self._read_receipts_mode == ReadReceiptMode.IMMEDIATE:
             self._background_read_receipt(room_id, event_id)
         event._queue_at_turn_boundary = True

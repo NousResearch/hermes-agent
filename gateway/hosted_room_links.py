@@ -115,6 +115,12 @@ def load_room_links(db_path: DbPath) -> tuple[StoredRoomLink, ...]:
     return tuple(StoredRoomLink.from_record(row) for row in _link_rows(db_path))
 
 
+def load_room_link(db_path: DbPath, *, room_id: str, member_id: str) -> StoredRoomLink | None:
+    """The one stored route for a room member, or None."""
+    row = next((r for r in _link_rows(db_path) if (r["room_id"], r["member_id"]) == (room_id, member_id)), None)
+    return StoredRoomLink.from_record(row) if row is not None else None
+
+
 def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...], tuple[str, ...]]:
     """Load healthy routes while quarantining malformed rows by identity."""
     links, errors = [], []
@@ -126,19 +132,21 @@ def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...
     return tuple(links), tuple(errors)
 
 
-def save_room_link(db_path: DbPath, link: StoredRoomLink) -> None:
-    hosted_rooms.upsert_room_link_record(db_path, record=link.as_record(), max_links=MAX_LINKS)
+def save_room_link(db_path: DbPath, link: StoredRoomLink, *, authorize=None) -> None:
+    hosted_rooms.upsert_room_link_record(
+        db_path, record=link.as_record(), max_links=MAX_LINKS, authorize=authorize)
     if os.name == "posix":
         with contextlib.suppress(OSError):
             Path(db_path).chmod(0o600)
 
 
-def mark_room_link_status(db_path: DbPath, *, room_id: str, member_id: str, status: str) -> bool:
+def mark_room_link_status(
+    db_path: DbPath, *, room_id: str, member_id: str, status: str, grant: str | None = None) -> bool:
     if status not in _STATUSES:
         raise HostedRoomPeerError("stored room link status is invalid")
     return hosted_rooms.update_room_link_status(
         db_path, room_id=_short_string(room_id, "room_id"), member_id=_short_string(member_id, "member_id"),
-        status=status)
+        status=status, grant=grant)
 
 
 def make_stored_link(
@@ -149,3 +157,41 @@ def make_stored_link(
         "room_id": room_id, "member_id": member_id, "target_url": target_url, "target_profile": target_profile,
         "grant": grant, "catalog": catalog.as_mapping(), "cancellation_scope_id": cancellation_scope_id,
         "trace_id": trace_id, "transport_security": transport_security, "status": "ready", "updated_at": time.time()})
+
+
+def route_binding_digest(link):
+    """The exact stored authorization/transport binding, independent of health and clock."""
+    import hashlib
+    record = {k: v for k, v in link.as_record().items() if k not in {'status', 'updated_at'}}
+    return hashlib.sha256(json.dumps(record, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def remember_verified_renewal(conn, previous, renewed, *, horizon):
+    """Record only a verified same-scope/policy/horizon renewal, with route publication."""
+    old = {k: v for k, v in previous.as_record().items() if k not in {'grant', 'status', 'updated_at'}}
+    new = {k: v for k, v in renewed.as_record().items() if k not in {'grant', 'status', 'updated_at'}}
+    if old != new:
+        raise HostedRoomPeerError('renewal changed the pinned route')
+    key = (previous.room_id, previous.member_id, route_binding_digest(previous))
+    digest = route_binding_digest(renewed)
+    conn.execute('DELETE FROM hosted_room_link_renewals WHERE expires_at<=?', (time.time(),))
+    row = conn.execute('SELECT new_digest FROM hosted_room_link_renewals WHERE room_id=? AND member_id=? AND old_digest=?', key).fetchone()
+    if row is not None and row[0] != digest:
+        raise HostedRoomPeerError('renewal conflicts with retained authorization lineage')
+    conn.execute('INSERT OR IGNORE INTO hosted_room_link_renewals VALUES (?,?,?,?,?)', (*key, digest, horizon))
+
+
+def is_verified_renewal(conn, *, room_id, member_id, original_digest, current_digest):
+    """Follow bounded durable renewal evidence; a manual replacement has no such edge."""
+    seen = set()
+    while original_digest != current_digest and len(seen) < 1024:
+        if original_digest in seen:
+            return False
+        seen.add(original_digest)
+        row = conn.execute("""SELECT new_digest FROM hosted_room_link_renewals
+            WHERE room_id=? AND member_id=? AND old_digest=? AND expires_at>?""",
+            (room_id, member_id, original_digest, time.time())).fetchone()
+        if row is None:
+            return False
+        original_digest = row[0]
+    return original_digest == current_digest

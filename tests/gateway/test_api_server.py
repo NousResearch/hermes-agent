@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
@@ -140,8 +140,7 @@ class TestRunIdempotentProfileScope:
     @pytest.mark.asyncio
     async def test_same_key_different_profiles_do_not_share_a_cached_response(self, adapter, monkeypatch):
         monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
-        request = MagicMock()
-        request.headers = {"Idempotency-Key": "client-supplied-key"}
+        request = make_mocked_request('POST', '/v1/runs', headers={"Idempotency-Key": "client-supplied-key"})
         body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
         calls = []
 
@@ -174,8 +173,7 @@ class TestRunIdempotentProfileScope:
         """Regression guard: profile-scoping the cache key must not break same-profile dedup,
         which is the whole point of the Idempotency-Key contract."""
         monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
-        request = MagicMock()
-        request.headers = {"Idempotency-Key": "client-supplied-key"}
+        request = make_mocked_request('POST', '/v1/runs', headers={"Idempotency-Key": "client-supplied-key"})
         body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
         calls = []
 
@@ -732,9 +730,7 @@ class TestDisconnectedAgentReap:
         _publish_turn_process_ownership(agent, "run-stop-sess")
         adapter._active_run_agents["run_x"] = agent
 
-        request = MagicMock()
-        request.headers = {}
-        request.match_info = {"run_id": "run_x"}
+        request = make_mocked_request('POST', '/v1/runs/run_x/stop', match_info={"run_id": "run_x"})
         adapter._run_owners["run_x"] = adapter._run_idempotency_scope(request)
         resp = await adapter._handle_stop_run(request)
         assert resp.status == 200

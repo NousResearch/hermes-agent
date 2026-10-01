@@ -9,6 +9,8 @@ Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py`
 
 from __future__ import annotations
 
+from typing import Literal
+
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
 from .registry import method
@@ -132,6 +134,7 @@ class RoomLinkStatus(Result):
     """``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``."""
 
     enabled: bool
+    authentication: Literal['proof-v2'] | None = None
     profile: str | None = None
     catalog: RoomLinkCatalog | None = None
     endpoint: RoomLinkEndpoint | None = None
@@ -214,6 +217,8 @@ class RoomDriverStatus(Result):
     counts: dict[str, int]
     pending_actions: list[dict[str, JsonValue]]
     peer_routes: list[PeerRouteStatus]
+    peer_cleanup: list[dict[str, JsonValue]] | None = None
+    retiring: bool | None = None
 
 
 class GroupsStateResult(Result):
@@ -333,6 +338,9 @@ method("groups.approve", params=GroupsApproveParams, result=GroupsApproveResult,
 
 class GroupsRetryParams(RoomParams):
     task_id: str
+    # Canonical controls bind the member and exact generation; legacy uses task_id.
+    member_id: str | None = None
+    execution_generation: int | None = None
 
 
 class RoomTaskReceipt(Result):
@@ -351,7 +359,60 @@ class GroupsRetryResult(Result):
 
 
 method("groups.retry", params=GroupsRetryParams, result=GroupsRetryResult,
-       doc="Retry one indeterminate room task after explicit user confirmation.")
+       doc="Retry one eligible room task; canonical controls require exact proven nonadmission.")
+
+
+class GroupsDiscardParams(RoomParams):
+    member_id: str
+    task_id: str
+    execution_generation: int
+
+
+class GroupsDiscardResult(Result):
+    discarded: bool
+    task: RoomTaskReceipt
+
+
+method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
+       doc="Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.")
+
+
+class GroupsAttachmentUploadParams(RoomParams):
+    upload_id: str
+    kind: str
+    name: str
+    mime: str
+    data_base64: str
+
+
+class GroupsAttachmentResult(Result):
+    attachment_id: str
+    kind: str
+    name: str
+    size: int
+    mime: str
+    sha256: str
+    state: str
+    created_at: float
+    idempotent: bool
+    event_id: str | None = None
+
+
+method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=GroupsAttachmentResult,
+       doc="Upload owner-authorized bytes for a canonical room message.")
+
+
+class GroupsAttachmentDownloadParams(RoomParams):
+    event_id: str
+    attachment_id: str
+
+
+class GroupsAttachmentDownloadResult(GroupsAttachmentResult):
+    data_base64: str
+
+
+method("groups.attachment.download", params=GroupsAttachmentDownloadParams, result=GroupsAttachmentDownloadResult,
+       doc="Read bytes bound to a canonical room event, subject to current viewer authorization.")
 
 
 # ── replication / authority takeover ──────────────────────────────────────────────────────────
@@ -441,6 +502,9 @@ class GroupsPeerInviteParams(ProfileParams):
     member_id: str | None = None
     grant_id: str | None = None
     ttl_seconds: float | None = None
+    # How long the room's gateway may keep renewing the grant (canonical surface); defaults to
+    # ``ttl_seconds``, so nothing is renewed unless the operator chooses a longer horizon.
+    status_ttl_seconds: float | None = None
 
 
 class GroupsPeerInviteResult(Result):

@@ -1069,6 +1069,42 @@
       }
     },
     {
+      "name": "groups.attachment.download",
+      "summary": "Read bytes bound to a canonical room event, subject to current viewer authorization.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentDownloadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentDownloadResult"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.upload",
+      "summary": "Upload owner-authorized bytes for a canonical room message.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentUploadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentResult"
+        }
+      }
+    },
+    {
       "name": "groups.capabilities",
       "summary": "Describe the hosted-room protocol implemented by this gateway.",
       "params": [
@@ -1137,6 +1173,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsDisbandResult"
+        }
+      }
+    },
+    {
+      "name": "groups.discard",
+      "summary": "Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsDiscardParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsDiscardResult"
         }
       }
     },
@@ -1304,7 +1358,7 @@
     },
     {
       "name": "groups.retry",
-      "summary": "Retry one indeterminate room task after explicit user confirmation.",
+      "summary": "Retry one eligible room task; canonical controls require exact proven nonadmission.",
       "params": [
         {
           "name": "params",
@@ -13778,6 +13832,230 @@
         "title": "GroupsApproveResult",
         "type": "object"
       },
+      "GroupsAttachmentDownloadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "event_id",
+          "attachment_id"
+        ],
+        "title": "GroupsAttachmentDownloadParams",
+        "type": "object"
+      },
+      "GroupsAttachmentDownloadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Id"
+          },
+          "data_base64": {
+            "title": "Data Base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "kind",
+          "name",
+          "size",
+          "mime",
+          "sha256",
+          "state",
+          "created_at",
+          "idempotent",
+          "data_base64"
+        ],
+        "title": "GroupsAttachmentDownloadResult",
+        "type": "object"
+      },
+      "GroupsAttachmentResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Id"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "kind",
+          "name",
+          "size",
+          "mime",
+          "sha256",
+          "state",
+          "created_at",
+          "idempotent"
+        ],
+        "title": "GroupsAttachmentResult",
+        "type": "object"
+      },
+      "GroupsAttachmentUploadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "data_base64": {
+            "title": "Data Base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "upload_id",
+          "kind",
+          "name",
+          "mime",
+          "data_base64"
+        ],
+        "title": "GroupsAttachmentUploadParams",
+        "type": "object"
+      },
       "GroupsCapabilitiesParams": {
         "additionalProperties": false,
         "properties": {
@@ -14029,6 +14307,65 @@
           "tombstone"
         ],
         "title": "GroupsDisbandResult",
+        "type": "object"
+      },
+      "GroupsDiscardParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "task_id",
+          "execution_generation"
+        ],
+        "title": "GroupsDiscardParams",
+        "type": "object"
+      },
+      "GroupsDiscardResult": {
+        "additionalProperties": false,
+        "properties": {
+          "discarded": {
+            "title": "Discarded",
+            "type": "boolean"
+          },
+          "task": {
+            "$ref": "#/components/schemas/RoomTaskReceipt"
+          }
+        },
+        "required": [
+          "discarded",
+          "task"
+        ],
+        "title": "GroupsDiscardResult",
         "type": "object"
       },
       "GroupsListParams": {
@@ -14312,6 +14649,18 @@
             ],
             "default": null,
             "title": "Ttl Seconds"
+          },
+          "status_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Ttl Seconds"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -14817,6 +15166,30 @@
           "task_id": {
             "title": "Task Id",
             "type": "string"
+          },
+          "member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member Id"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Generation"
           }
         },
         "required": [
@@ -26794,6 +27167,34 @@
             },
             "title": "Peer Routes",
             "type": "array"
+          },
+          "peer_cleanup": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Peer Cleanup"
+          },
+          "retiring": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retiring"
           }
         },
         "required": [
@@ -27036,6 +27437,19 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "authentication": {
+            "anyOf": [
+              {
+                "const": "proof-v2",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Authentication"
           },
           "profile": {
             "anyOf": [

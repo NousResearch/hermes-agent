@@ -475,15 +475,19 @@ def _transition(
     db_path: DbPath, identity: TaskIdentity, *, sql: str, set_params: tuple[Any, ...], fence_params: tuple[Any, ...],
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
-    guard: Callable[[sqlite3.Row], None] | None = None) -> dict[str, Any]:
+    guard: Callable[[sqlite3.Row], None] | None = None,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
     is raised. ``lease_first`` checks the lease before the row load (recovery paths) instead of after the
-    replay (settlement paths: an identical replay still succeeds after the lease moved on).
+    replay (settlement paths: an identical replay still succeeds after the lease moved on). ``authorize``
+    runs first inside the same write transaction, so a caller's own checks commit or roll back with it.
     """
     params = (*set_params, identity.room_id, identity.task_id, *fence_params)
     with _transaction(db_path) as conn:
+        if authorize is not None:
+            authorize(conn)
         if lease is not None and lease_first:
             _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
@@ -502,7 +506,8 @@ def _transition(
 def _generation_transition(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, execution_generation: int,
     cancel_generation: int, *, now: float, set_params: tuple[Any, ...],
-    replay: Callable[[sqlite3.Row], Any] | None = None) -> dict[str, Any]:
+    replay: Callable[[sqlite3.Row], Any] | None = None,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Lease-first transition from ``_GENERATION_TRANSITIONS`` fenced on status + both generations."""
     status, set_clause, generation_stale, stale = _GENERATION_TRANSITIONS[name]
     def guard(row: sqlite3.Row) -> None:
@@ -510,7 +515,8 @@ def _generation_transition(
             raise StaleTaskError(generation_stale)
     return _transition(
         db_path, identity, lease=lease, now=now, replay=replay, guard=guard, sql=_generation_update(set_clause, status),
-        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale)
+        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale,
+        authorize=authorize)
 
 
 def _run_fence_transition(
@@ -751,13 +757,72 @@ def defer_indeterminate_task(
 
 def requeue_deferred_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    expected_cancel_generation: int, clock: Clock,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Explicitly retry a fenced deferred turn under a new generation."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     now = _timestamp(clock)
     return _generation_transition(
         db_path, identity, lease, "requeue_deferred", expected_execution_generation, expected_cancel_generation,
-        now=now, set_params=(now,))
+        now=now, set_params=(now,), authorize=authorize)
+
+
+_NONADMISSION_PROOF_FIELDS = frozenset({
+    "disposition", "identity", "execution_generation", "cancel_generation", "authority_epoch",
+    "run_gateway_id", "run_process_generation", "run_lease_generation", "retry_binding"})
+
+
+def is_proven_nonadmission(task: Mapping[str, Any]) -> bool:
+    """Whether a deferred task carries its producer's proof that this attempt never ran.
+
+    Only ``defer_not_admitted_task`` writes the proof, fenced to the exact running attempt. An
+    unknown attempt deferred by recovery shares the reason text, never the proof, and a requeue
+    clears it, so one proof allows one retry.
+    """
+    result = task.get("result")
+    proof = result.get("nonadmission") if isinstance(result, dict) else None
+    if (task.get("status") != "deferred" or not isinstance(proof, dict)
+            or set(proof) != _NONADMISSION_PROOF_FIELDS
+            or proof["disposition"] != "proven_nonadmission"
+            or proof["identity"] != dataclasses.asdict(task["identity"])
+            or type(proof["authority_epoch"]) is not int or proof["authority_epoch"] < 1):
+        return False
+    for key, low in (("execution_generation", 1), ("cancel_generation", 0), ("run_lease_generation", 1)):
+        if type(proof[key]) is not int or proof[key] < low or proof[key] != task.get(key):
+            return False
+    return all(isinstance(proof[key], str) and proof[key] and proof[key] == task.get(key)
+               for key in ("run_gateway_id", "run_process_generation"))
+
+
+def defer_not_admitted_task(
+    db_path: DbPath, attempt: TaskAttempt, *, reason: Any, clock: Clock,
+    retry_binding: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Defer one running attempt the member provably never received, with that proof.
+
+    Fenced on the exact running attempt, so later member turns can proceed; only an explicit
+    ``requeue_deferred_task`` gives the turn a new generation.
+    """
+    _check_same_room(attempt.lease, attempt.identity)
+    reason = _identifier(reason, label="defer_reason")
+    lease = attempt.lease
+    proof = {
+        "disposition": "proven_nonadmission", "identity": dataclasses.asdict(attempt.identity),
+        "execution_generation": attempt.execution_generation, "cancel_generation": attempt.cancel_generation,
+        "authority_epoch": lease.authority_epoch, "run_gateway_id": lease.gateway_id,
+        "run_process_generation": lease.process_generation, "run_lease_generation": lease.lease_generation,
+        "retry_binding": None if retry_binding is None else dict(retry_binding)}
+    result_json = _canonical_json({"reason": reason, "retryable": True, "nonadmission": proof})
+    now = _timestamp(clock)
+    def replay(row: sqlite3.Row) -> dict[str, Any] | None:
+        same = _generations_match(row, "deferred", attempt.execution_generation, attempt.cancel_generation) and (
+            row["run_gateway_id"], row["run_process_generation"], row["run_lease_generation"]) == _run_fence(lease)
+        return _task_from_row(row, idempotent=True) if same and row["result_json"] == result_json else None
+    return _run_fence_transition(
+        db_path, attempt, guard_stale="not-admitted task attempt lost its fence",
+        lease_generation=lambda value: int(value or 0), now=now, replay=replay,
+        sql=_generation_update("status='deferred', result_json=?, terminal_at=?, updated_at=?", "running")
+        + f" AND {_RUN_FENCE}", set_params=(result_json, now, now),
+        stale="not-admitted task changed during deferral")
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:
@@ -775,7 +840,8 @@ def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: C
 
 
 def cancel_task(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    authorize: Callable[[sqlite3.Connection], None] | None = None
 ) -> dict[str, Any]:
     """Cancel a queued task before any external work was admitted."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
@@ -790,7 +856,7 @@ def cancel_task(
     return _transition(
         db_path, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_CANCEL_QUEUED_SQL,
         set_params=(expected_cancel_generation + 1, cancel_id, now, now), fence_params=(expected_cancel_generation,),
-        stale="task changed during cancellation")
+        stale="task changed during cancellation", authorize=authorize)
 
 
 def begin_task_cancel(

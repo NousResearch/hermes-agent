@@ -20,62 +20,87 @@ class HostedControls:
                    and m.get('profile') == task['payload']['target_profile']
                    for m in self._room(room_id)['members']):
             raise RuntimeStoreError('permission_denied')
-        if self._member_is_peer(room_id, member_id):
-            raise RuntimeStoreError('unsupported_operation')
         return task, HostedRoomBinding(room_id, gateway, epoch)
 
     def discard_room_task(self, room_id, *, member_id, task_id, execution_generation):
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
-            cancel_id = f'discard:{execution_generation}'
-            if task['status'] == 'cancelled' and task.get('cancel_id') == cancel_id:
-                return task
-            if task['status'] != 'indeterminate':
-                raise RuntimeStoreError('stale_generation')
-            rpc = self._resolve_member_transport(binding, task)
-            # Canonical receipt commits first. If the driver write fails, exact
-            # RPC replay must recover it rather than invent another execution.
-            rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
-                        session_id=rpc.ref.session_id, expected_task_id=task_id,
-                        execution_generation=execution_generation)
-            lease = self.runtime._ensure_lease(binding)
-            result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
-                binding, task, lease, cancel_id=cancel_id)
-            self.runtime._set_blocked(room_id, False)
-            self.runtime.wakeup()
-            return result
+            if not self._member_is_peer(room_id, member_id):
+                return self._discard_local(task, binding)
+        # A peer's gateway is asked outside the policy lock (session_group_peer_controls).
+        from gateway.session_group_peer_controls import discard_peer
+        return discard_peer(self, task, binding)
+
+    def _discard_local(self, task, binding):
+        execution_generation = task['execution_generation']
+        cancel_id = f'discard:{execution_generation}'
+        if task['status'] == 'cancelled' and task.get('cancel_id') == cancel_id:
+            return task
+        if task['status'] != 'indeterminate':
+            raise RuntimeStoreError('stale_generation')
+        rpc = self._resolve_member_transport(binding, task)
+        # Canonical receipt commits first. If the driver write fails, exact
+        # RPC replay must recover it rather than invent another execution.
+        rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
+                    session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
+                    execution_generation=execution_generation)
+        lease = self.runtime._ensure_lease(binding)
+        result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
+            binding, task, lease, cancel_id=cancel_id)
+        self.runtime._set_blocked(binding.room_id, False)
+        self.runtime.wakeup()
+        return result
 
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
-            # Unknown is not non-admission. Never advance its hosted generation
-            # while leaving the canonical unknown head behind it.
-            if task['status'] == 'indeterminate':
-                raise RuntimeStoreError('unknown_execution')
-            if task['status'] != 'deferred':
-                raise RuntimeStoreError('stale_generation')
-            rpc = self._resolve_member_transport(binding, task)
-            info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
-                            session_id=rpc.ref.session_id)
-            if info.get('status') == 'unknown':
-                raise RuntimeStoreError('unknown_execution')
-            if info.get('active'):
-                raise RuntimeStoreError('session_busy')
-            lease = self.runtime._ensure_lease(binding)
-            return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+            if not self._member_is_peer(room_id, member_id):
+                return self._retry_local(task, binding)
+        # Only a proven non-admission is retried, after a probe made outside the policy lock.
+        from gateway.session_group_peer_controls import retry_peer
+        return retry_peer(self, task, binding)
+
+    def _retry_local(self, task, binding):
+        # Unknown is not non-admission. Never advance its hosted generation
+        # while leaving the canonical unknown head behind it.
+        if task['status'] == 'indeterminate':
+            raise RuntimeStoreError('unknown_execution')
+        if task['status'] != 'deferred':
+            raise RuntimeStoreError('stale_generation')
+        rpc = self._resolve_member_transport(binding, task)
+        info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
+                        session_id=rpc.ref.session_id)
+        if info.get('status') == 'unknown':
+            raise RuntimeStoreError('unknown_execution')
+        if info.get('active'):
+            raise RuntimeStoreError('session_busy')
+        lease = self.runtime._ensure_lease(binding)
+        return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, binding.room_id)
 
     def status(self, room_id=None):
         result = super().status(room_id)
         if room_id is None:
             return result
         actions = [a for a in result['pending_actions'] if a['kind'] != 'retry']
+        binding = None
         for task in tasks.list_tasks(self.db_path, room_id=room_id):
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue
             member = task['payload'].get('target_member_id') or task['payload']['target_profile']
+            kind = 'discard' if task['status'] == 'indeterminate' else 'retry'
             if self._member_is_peer(room_id, member):
-                continue
-            actions.append({'kind': 'discard' if task['status'] == 'indeterminate' else 'retry',
-                            'member_id': member, 'task_id': task['identity'].task_id,
+                from gateway.hosted_rooms import AuthorityConflictError
+                from gateway.session_group_peer_controls import peer_action
+                try:
+                    binding = binding or HostedRoomBinding(room_id, *self._owned_authority(room_id))
+                except AuthorityConflictError:
+                    continue
+                kind = peer_action(self, task, binding)
+                if kind is None:
+                    continue
+            actions.append({'kind': kind, 'member_id': member, 'task_id': task['identity'].task_id,
                             'execution_generation': task['execution_generation']})
+            if self._member_is_peer(room_id, member) and kind == 'retry':
+                actions.append({'kind': 'discard', 'member_id': member, 'task_id': task['identity'].task_id,
+                                'execution_generation': task['execution_generation']})
         return {**result, 'pending_actions': actions}

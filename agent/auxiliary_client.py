@@ -1289,11 +1289,8 @@ class _CodexStreamGuard:
         if threading.get_ident() != self._owner_tid:
             sock = _attempt_stream_socket(stream)
             if sock is not None:
-                try:
-                    from agent.agent_runtime_helpers import _shutdown_socket
-                    _shutdown_socket(sock)
-                except Exception:
-                    logger.debug("Codex auxiliary: %s", failure_note, exc_info=True)
+                from agent.agent_runtime_helpers import _shutdown_socket
+                _shutdown_socket(sock)
                 return
         _close_quietly(stream, failure_note)
 

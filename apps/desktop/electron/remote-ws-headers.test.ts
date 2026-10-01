@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { applyGatewayWsOrigin } from './gateway-ws-origin'
 import {
   applyRemoteRequestHeaders,
   attachRemoteRequestHeaderListener,
@@ -211,5 +212,71 @@ describe('OAuth login and registry extra headers', () => {
     expect(callback).toHaveBeenCalledWith({
       requestHeaders: { Origin: 'app://hermes', ...accessHeaders }
     })
+  })
+})
+
+describe('one onBeforeSendHeaders listener for remote headers and the gateway-WS Origin', () => {
+  // Electron keeps only the last listener attached to a session, so the
+  // Origin rewrite must ride the remote-header listener rather than add its own.
+  const attach = () => {
+    const listeners = []
+
+    const sess = {
+      webRequest: {
+        onBeforeSendHeaders: listener => {
+          listeners.push(listener)
+        }
+      }
+    }
+
+    const sources = collectRemoteHeaderSources({
+      connections: [{ kind: 'remote', url: 'https://gateway.example', headers: accessHeaders }]
+    })
+
+    attachRemoteRequestHeaderListener(sess, url => resolveRemoteRequestHeaders(url, { sources }), applyGatewayWsOrigin)
+
+    const send = (url: string, requestHeaders: Record<string, string>) => {
+      const callback = vi.fn()
+      listeners[0]({ url, requestHeaders }, callback)
+
+      return callback.mock.calls[0][0]
+    }
+
+    return { listeners, send }
+  }
+
+  it('registers exactly one listener', () => {
+    expect(attach().listeners).toHaveLength(1)
+  })
+
+  it('adds the remote headers and rewrites Origin on the same gateway WS upgrade', () => {
+    const { send } = attach()
+
+    expect(send('wss://gateway.example/api/ws?ticket=t', { Origin: 'http://127.0.0.1:5174' })).toEqual({
+      requestHeaders: { ...accessHeaders, Origin: 'https://gateway.example' }
+    })
+  })
+
+  it('rewrites Origin for a gateway WS upgrade with no remote headers configured', () => {
+    const { send } = attach()
+
+    expect(send('ws://100.64.0.7:9119/api/ws?ticket=t', { Origin: 'http://127.0.0.1:5174' })).toEqual({
+      requestHeaders: { Origin: 'http://100.64.0.7:9119' }
+    })
+  })
+
+  it('adds remote headers but keeps the Origin on non-WS requests', () => {
+    const { send } = attach()
+
+    expect(send('https://gateway.example/login', { Origin: 'app://hermes' })).toEqual({
+      requestHeaders: { Origin: 'app://hermes', ...accessHeaders }
+    })
+  })
+
+  it('leaves unrelated requests untouched', () => {
+    const { send } = attach()
+
+    expect(send('https://other.example/page', { Origin: 'app://hermes' })).toEqual({})
+    expect(send('wss://other.example/socket', { Origin: 'app://hermes' })).toEqual({})
   })
 })

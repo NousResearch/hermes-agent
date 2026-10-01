@@ -275,6 +275,7 @@ import {
 import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway-file-download-transport'
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { resolveGatewayVersion } from './gateway-version'
+import { applyGatewayWsOrigin } from './gateway-ws-origin'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
@@ -8833,7 +8834,16 @@ function installRemoteHeaderRulesOnSession(sess) {
   }
 
   remoteHeaderSessions.add(sess)
-  attachRemoteRequestHeaderListener(sess, headersForRemoteRequest)
+  // Electron keeps only the last onBeforeSendHeaders listener per session, so
+  // the gateway-WS Origin rewrite rides this same listener instead of adding
+  // its own. It presents the gateway's own origin on the renderer's gateway
+  // WS handshakes so the dashboard's Host/Origin guard accepts the upgrade:
+  // without it, a renderer served from anywhere other than the gateway host
+  // (the Vite dev server in `npm run dev`) is refused pre-accept with 403
+  // while REST keeps working, because main-process requests carry no Origin.
+  // The decision lives in gateway-ws-origin.ts (electron-free, unit-tested)
+  // and only touches ws/wss upgrades of the gateway endpoints.
+  attachRemoteRequestHeaderListener(sess, headersForRemoteRequest, applyGatewayWsOrigin)
 }
 
 function installRemoteHeaderRules() {

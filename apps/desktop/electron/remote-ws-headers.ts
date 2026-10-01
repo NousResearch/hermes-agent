@@ -108,12 +108,24 @@ export function oauthLoginLoadUrlOptions(headers: Record<string, string> = {}): 
   return extraHeaders ? { extraHeaders } : {}
 }
 
+/**
+ * Final rewrite over a request's outgoing headers, run after the remote
+ * header blocks are merged in. Returns a new headers object, or null to leave
+ * them as they are. Electron keeps only one onBeforeSendHeaders listener per
+ * session, so every header rewrite has to go through this one listener.
+ */
+export type RequestHeaderRewrite = (
+  requestUrl: string,
+  requestHeaders: Record<string, string>
+) => null | Record<string, string>
+
 export function attachRemoteRequestHeaderListener(
   sessionLike: SessionLike,
-  headersForRequest: (requestUrl: string) => Record<string, string>
+  headersForRequest: (requestUrl: string) => Record<string, string>,
+  rewriteRequestHeaders?: RequestHeaderRewrite
 ) {
   sessionLike?.webRequest?.onBeforeSendHeaders?.((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRequest)
+    applyRemoteRequestHeaders(details, callback, headersForRequest, rewriteRequestHeaders)
   })
 }
 
@@ -158,17 +170,20 @@ export function createRemoteWsHeaderStore(limit = 100) {
 export function applyRemoteRequestHeaders(
   details: RemoteRequestDetails,
   callback: RemoteRequestCallback,
-  headersForRequest: (requestUrl: string) => Record<string, string>
+  headersForRequest: (requestUrl: string) => Record<string, string>,
+  rewriteRequestHeaders?: RequestHeaderRewrite
 ) {
   const headers = headersForRequest(details.url)
+  const merged = Object.keys(headers).length === 0 ? null : { ...details.requestHeaders, ...headers }
+  const requestHeaders = rewriteRequestHeaders?.(details.url, merged ?? details.requestHeaders ?? {}) ?? merged
 
-  if (Object.keys(headers).length === 0) {
+  if (!requestHeaders) {
     callback({})
 
     return
   }
 
-  callback({ requestHeaders: { ...details.requestHeaders, ...headers } })
+  callback({ requestHeaders })
 }
 
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {

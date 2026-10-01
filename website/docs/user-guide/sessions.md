@@ -1110,7 +1110,7 @@ never closed by this sweep.
 ### Oversized-Transcript Guards
 
 Two limits stop a runaway transcript from being loaded into memory all at once
-(both default to `20000` active messages; `0` disables the guard):
+(both default to `20000` messages; `0` disables the guard):
 
 ```yaml
 sessions:

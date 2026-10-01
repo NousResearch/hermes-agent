@@ -130,6 +130,15 @@ class SessionExportTooLargeError(ValueError):
         )
 
 
+def export_too_large_message(exc: SessionExportTooLargeError) -> str:
+    """User-facing refusal shared by every in-memory JSON/JSONL export (CLI and console)."""
+    return (
+        f"Session '{exc.session_id}' has more than {exc.limit:,} exportable messages; the JSON/JSONL "
+        "backup is built in memory and capped per session. Use the dashboard Sessions page's streaming "
+        "Export action, or set sessions.max_export_messages: 0 in config.yaml to disable the guard."
+    )
+
+
 def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     """True only when a ``pid=<n>`` lock holder's local PID is provably gone.
     Reclaim on kernel proof only: unstructured/same-process holders (another

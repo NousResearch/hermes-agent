@@ -341,29 +341,26 @@ def _cmd_export(db, args):
     # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
     shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
 
-    # A shown transcript is the display history; the json/jsonl backup is the TRANSFER projection —
-    # every row with its active/compacted flags, so an import restores a compacted session's whole
-    # history (live-only dropped every turn in-place compaction archived; #122679 fixed only the
-    # console export).
+    # The json/jsonl backup is the TRANSFER projection (every row with its active/compacted flags) so
+    # an import restores a compacted session's archived turns; a shown transcript is display history.
     projection = {"include_compacted": True} if shown else {"include_inactive": True}
 
     def _too_large(session_ids=None) -> bool:
         """The transfer projection holds every stored row in memory: the console export's per-session
         ``sessions.max_export_messages`` guard (0 disables) runs before any is loaded. ``None`` = the
         sessions a bare export loads."""
-        from hermes_state import SessionExportTooLargeError
+        from hermes_state import SessionExportTooLargeError, export_too_large_message, resolved_max_export_messages
         if shown:
             return False
+        limit = resolved_max_export_messages()
+        if limit == 0:
+            return False  # resolved before the bare-path scan: a disabled guard costs nothing
         if session_ids is None:
             session_ids = [s["id"] for s in db.search_sessions(source=None, limit=100000)]
         try:
-            for session_id in session_ids:
-                db.assert_export_safe(session_id)
+            db.assert_exports_safe(session_ids, max_messages=limit)
         except SessionExportTooLargeError as exc:
-            print(f"Error: session '{exc.session_id}' has more than {exc.limit:,} stored messages; the "
-                  "JSON/JSONL backup is built in memory and capped per session. Use the dashboard Sessions "
-                  "page's streaming Export action, or set sessions.max_export_messages: 0 in config.yaml "
-                  "to disable the guard.")
+            print(f"Error: {export_too_large_message(exc)}")
             return True
         return False
 

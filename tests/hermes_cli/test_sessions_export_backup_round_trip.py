@@ -71,10 +71,11 @@ def test_jsonl_backup_refuses_a_session_over_max_export_messages(tmp_path, monke
     cfg = load_config()
     cfg.setdefault("sessions", {})["max_export_messages"] = live + 1
     save_config(cfg)
-    assert live < live + 1 < stored
+    assert stored > live + 1
 
     backup = tmp_path / "backup.jsonl"
     _export(monkeypatch, backup, *selection)
 
     assert not backup.exists()
-    assert SID in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert SID in out and "max_export_messages" in out

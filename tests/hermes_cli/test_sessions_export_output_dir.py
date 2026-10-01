@@ -14,8 +14,8 @@ class _FakeDB:
     def export_session(self, session_id, **_projection):
         return {"id": "sess-123", "source": "cli", "messages": [{"role": "user", "content": "hi"}]}
 
-    def assert_export_safe(self, session_id, max_messages=None):
-        return 1
+    def assert_exports_safe(self, session_ids, max_messages=None):
+        return None
 
     def close(self):
         pass

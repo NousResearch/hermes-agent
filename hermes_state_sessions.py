@@ -1460,6 +1460,16 @@ class SessionSessionsMixin:
             raise SessionExportTooLargeError(session_id, message_count, max_messages)
         return message_count
 
+    def assert_exports_safe(self, session_ids, max_messages: Optional[int] = None) -> None:
+        """assert_export_safe for each id with the limit resolved once; 0 disables (no queries)."""
+        from hermes_state import resolved_max_export_messages
+        if max_messages is None:
+            max_messages = resolved_max_export_messages()
+        if max_messages == 0:
+            return
+        for session_id in session_ids:
+            self.assert_export_safe(session_id, max_messages=max_messages)
+
     def _is_explicit_branch_session(self, session_id: str) -> bool:
         """Copied user-facing branch (``_branched_from``)? Branches own a copied transcript;
         compression continuations need the parent's archived rows."""

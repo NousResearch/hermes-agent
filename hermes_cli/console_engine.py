@@ -651,20 +651,11 @@ def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
 
 def _guard_exports(db, session_ids: list[str]) -> None:
     """Per-session export budget: only an individual runaway transcript trips it; 0 disables."""
-    from hermes_state import SessionExportTooLargeError, resolved_max_export_messages
-    limit = resolved_max_export_messages()
-    if limit <= 0:
-        return
+    from hermes_state import SessionExportTooLargeError, export_too_large_message
     try:
-        for session_id in session_ids:
-            db.assert_export_safe(session_id, max_messages=limit)
+        db.assert_exports_safe(session_ids)
     except SessionExportTooLargeError as exc:
-        raise ConsoleCommandError(
-            f"Session '{exc.session_id}' has more than {limit:,} "
-            "exportable messages; in-memory export is capped per session. "
-            "Use the Sessions page's streaming Export action, or set "
-            "sessions.max_export_messages: 0 in config.yaml to disable "
-            "the guard.") from exc
+        raise ConsoleCommandError(export_too_large_message(exc)) from exc
 
 
 @_captured

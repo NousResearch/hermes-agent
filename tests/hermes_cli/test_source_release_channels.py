@@ -174,13 +174,40 @@ def test_retirement_downgrade_allows_verified_empty_ancestry(monkeypatch, tmp_pa
         stdout = ""
 
     def run(argv, **_kwargs):
-        assert argv[1:3] == ["rev-list", "--ancestry-path"]
+        if argv[1:3] == ["rev-list", "--ancestry-path"]:
+            return Result()
+        assert argv[1:3] == ["merge-base", "--is-ancestor"]
         return Result()
 
     monkeypatch.setattr("subprocess.run", run)
     request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
     terminal = {"name": "stable", "head": {"sequence": terminal_sequence}}
     _refuse_retirement_downgrade(request, terminal, ["git"], tmp_path)
+
+
+def test_retirement_downgrade_rejects_divergent_history(tmp_path):
+    from hermes_cli.source_releases import _refuse_retirement_downgrade
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-b", "main")
+    git(root, "config", "user.name", "Release Fixture")
+    git(root, "config", "user.email", "fixture@example.invalid")
+    (root / "content.txt").write_text("base", encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "base")
+    (root / "content.txt").write_text("destination", encoding="utf-8")
+    git(root, "commit", "-am", "destination")
+    destination = git(root, "rev-parse", "HEAD")
+    base = git(root, "rev-parse", "HEAD~1")
+    git(root, "checkout", "-b", "divergent", base)
+    (root / "content.txt").write_text("installed", encoding="utf-8")
+    git(root, "commit", "-am", "installed")
+
+    request = {"commit": destination, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 2}}
+    with pytest.raises(ValueError, match="equal to or an ancestor"):
+        _refuse_retirement_downgrade(request, terminal, ["git"], root)
 
 
 @pytest.mark.parametrize("channel", ["stable", "canary"])

@@ -138,9 +138,23 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
         )
         # The target need not exist locally before the updater's fetch. When it
         # does, any descendants prove that this pinned build would roll us back.
-        if result.returncode == 0 and result.stdout.strip():
-            raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
-        if result.returncode != 0 and terminal["head"]["sequence"] > request["sequence"]:
+        if result.returncode == 0:
+            if result.stdout.strip():
+                raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
+            # An empty ancestry path is only useful when Git independently
+            # proves that the installed HEAD is equal to or an ancestor of the
+            # qualified target.  Divergent histories (and an unavailable
+            # target) also produce an empty path, so do not treat that output
+            # as proof of safety.
+            proof = subprocess.run(
+                [*git_cmd, "merge-base", "--is-ancestor", "HEAD", request["commit"]], cwd=cwd,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                stdin=subprocess.DEVNULL, env=source_git_env(),
+            )
+            if proof.returncode == 0:
+                return
+            raise ValueError("Source retirement cannot verify that the installed source is equal to or an ancestor of the destination; select the destination channel explicitly")
+        if terminal["head"]["sequence"] > request["sequence"]:
             # A missing qualified commit is expected in shallow checkouts, but
             # it is not evidence that the installed source is safe to retire.
             # Keep the decision conservative until ancestry can be verified.

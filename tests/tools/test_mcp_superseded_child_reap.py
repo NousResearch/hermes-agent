@@ -4,13 +4,15 @@ attempt's entry sweep.
 
 ``_run_stdio``'s finally hands a still-live child to the orphan ledger
 (``_release_spawned_children``); the only consumer of that ledger was the entry
-sweep of the NEXT attempt. While the run task parks awaiting a revive — or dies
-cancelled — no next attempt comes, so a reconnect/revive loop accumulated one
-orphaned bridge process per attempt for the life of the gateway.
+sweep of the NEXT attempt. While the run task parks awaiting a revive — or waits
+lazily after a recycle, or dies cancelled — no next attempt comes, so a
+reconnect/revive loop accumulated one orphaned bridge process per attempt for
+the life of the gateway.
 
 The fix reaps the server's orphans at two structural boundaries where "next
-attempt" would otherwise be delayed or never arrive: the run loop's
-per-iteration finally and the park entry. These tests drive the real reaper
+attempt" would otherwise be delayed or never arrive: the park entry and the
+recycle wait in ``_on_clean_return`` (an UNTIMED wait — a recycled server that
+is never called again stays dormant forever). These tests drive the real reaper
 (``_kill_orphaned_mcp_children``) against a real stubborn child process that
 ignores SIGTERM, so the TERM -> grace -> KILL escalation itself is under test.
 """
@@ -148,3 +150,34 @@ class TestSupersededChildReap:
         """Healthy path: nothing orphaned -> the reap costs one lock, raises nothing."""
         asyncio.run(_mk_task("leaky")._reap_superseded_stdio_children())
         assert ledger._orphan_stdio_pids == set()
+
+    def test_recycle_boundary_reaps_the_recycled_attempts_child(self, ledger):
+        """The OTHER dormant wait: ``_on_clean_return(reason="recycle")`` parks the task
+        in an UNTIMED lazy-reconnect wait. A recycled server nobody calls again never
+        spawns the next attempt whose entry sweep would consume the ledger, so its
+        bridge process would live as long as the gateway — the #126990 accumulation on
+        the branch that fires on every idle_timeout/max_lifetime expiry."""
+        from tools.mcp_tool_server_run import _RetryBudget
+
+        pid = _spawn_stubborn_child()
+        try:
+            assert _alive(pid)
+            ledger._stdio_pgids[pid] = pid
+            ledger._orphan_stdio_pids.add(pid)
+            ledger._orphan_stdio_pid_servers[pid] = "leaky"
+
+            task = _mk_task("leaky")
+            task._recycled_reason = "max lifetime"
+
+            async def _shutdown_during_wait(**_kwargs):
+                task._shutdown_event.set()
+                return "shutdown"
+
+            task._wait_for_reconnect_or_shutdown = _shutdown_during_wait
+            assert asyncio.run(task._on_clean_return("recycle", _RetryBudget())) is False
+
+            assert _wait_gone(pid), "stubborn child survived the pre-recycle-wait reap"
+            assert pid not in ledger._orphan_stdio_pids
+            assert pid not in ledger._stdio_pgids
+        finally:
+            _force_cleanup(pid)

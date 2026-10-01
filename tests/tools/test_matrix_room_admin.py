@@ -5,6 +5,7 @@ import importlib
 import json
 import threading
 import weakref
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import unquote
@@ -741,3 +742,53 @@ async def test_profile_files_are_read_off_the_gateway_loop(action, monkeypatch):
     assert isinstance(raw, str)
     assert (json.loads(raw).get("error"), len(writes), len(calls), loop_thread in calls,
             bool(secret_reads), loop_thread in secret_reads) == (None, 1, 2, False, True, False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["invite", "redact", "leave", "forget", "pin", "unpin"])
+@pytest.mark.parametrize("stage", ["m.room.encryption", "m.room.create", "selection"])
+async def test_admin_write_uses_current_requester_power_after_preflight(action, stage, monkeypatch):
+    from plugins.platforms.matrix import room_admin
+
+    users = {ACTOR: 100, BOT: 100}
+    power = {"users": users, "invite": 50}
+    adapter, writes, tokens = _bind_admin_room(
+        power, bot_membership="leave" if action == "forget" else "join",
+    )
+    request = adapter._client.api.request
+    selections = 0
+    require_selection = room_admin._AdminContext.require_selection
+
+    async def changing_state(method, path, **kwargs):
+        event_type = unquote(str(path)).rstrip("/").rsplit("/", 1)[-1]
+        if event_type == stage:
+            users[ACTOR] = 0
+        value = await request(method, path, **kwargs)
+        if event_type == "m.room.pinned_events":
+            return {"pinned": ["$target"] if action == "unpin" else []}
+        return deepcopy(value)
+
+    async def changing_selection(context, *args, **kwargs):
+        nonlocal selections
+        await require_selection(context, *args, **kwargs)
+        selections += 1
+        if stage == "selection" and selections == 2:
+            users[ACTOR] = 0
+
+    adapter._client.api.request = changing_state
+    monkeypatch.setattr(room_admin._AdminContext, "require_selection", changing_selection)
+    tool = "matrix_pin" if action in {"pin", "unpin"} else "matrix_room_admin"
+    try:
+        raw = await asyncio.to_thread(
+            registry.dispatch, tool, {"action": action, "user_id": "@bob:server", "event_id": "$target"},
+        )
+        assert isinstance(raw, str)
+        result = json.loads(raw)
+    finally:
+        clear_session_vars(tokens)
+    purpose = {"invite": "invite users", "redact": "redact this event",
+               "leave": "remove the bot from this room", "forget": "remove the bot from this room"}
+    error = ("Matrix requester lacks permission to change pins" if action in {"pin", "unpin"}
+             else f"Matrix requester lacks permission to {purpose[action]}")
+
+    assert (result, writes) == ({"error": error, "required": 50, "level": 0}, [])

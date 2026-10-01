@@ -145,9 +145,9 @@ async def _member(context: _AdminContext, user: str) -> str | None:
 
 
 async def _permissions(context: _AdminContext) -> dict[str, Any]:
-    power = await _state(context, "m.room.power_levels")
     encryption = await _state(context, "m.room.encryption") or {}
     create = _RoomCreate.parse(await _get(context, _state_path(context.room, "m.room.create"), {"format": "event"}))
+    power = await _state(context, "m.room.power_levels")
     return _permission_levels(context.actor, context.bot, power, encryption, create)
 
 
@@ -262,6 +262,11 @@ async def administer_matrix_room(
             return refusal
         await context.access(chat_type, joined=action != "forget")
         await context.require_selection(chat_type, joined=action != "forget")
+        await context.access(chat_type, joined=action != "forget")
+        if requirement is not None and (refusal := await _refusal(
+            context, requirement, chat_type, joined=action != "forget",
+        )) is not None:
+            return refusal
         result = await _MUTATIONS[action](context, args, send)
         try:
             context.check(chat_type, joined=action not in {"leave", "forget"})

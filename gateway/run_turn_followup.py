@@ -130,6 +130,7 @@ class GatewayQueuedFollowupMixin:
                     outcome = ProcessingOutcome.FAILURE
             if not result.get("interrupted") or outcome == ProcessingOutcome.CANCELLED:
                 await _run_followup_processing_hook(completed_adapter, completed_event, "on_processing_complete", outcome)
+                await self._complete_attached_to_hookless(completed_adapter, completed_event, outcome)
 
             if pending_event is not None and not await self._strict_session_current(
                 pending_event, session_key, session_id=session_id,
@@ -307,7 +308,12 @@ class GatewayQueuedFollowupMixin:
                 await self._complete_attached_to_hookless(_hook_adapter, pending_event, ProcessingOutcome.FAILURE)
                 raise
             followup_outcome = _turn_result_outcome(followup_result)
-            await self._complete_attached_to_hookless(_hook_adapter, pending_event, followup_outcome)
+            delivery_owner = completed_event if (
+                completed_event is not None and (completed_event.message_id or completed_event.raw_message)
+                and followup_outcome == ProcessingOutcome.SUCCESS and not followup_result.get("already_sent")
+            ) else None
+            await self._complete_attached_to_hookless(
+                _hook_adapter, pending_event, followup_outcome, defer_to=delivery_owner)
             if (completed_event is not None and _hook_adapter is not None
                     and (completed_event.message_id or completed_event.raw_message)
                     and _followup_processing_hooks_apply(_hook_adapter, pending_event)
@@ -353,6 +359,7 @@ class GatewayQueuedFollowupMixin:
 
     async def _complete_attached_to_hookless(
         self: "GatewayRunner", adapter: Any, event: Any, outcome: ProcessingOutcome,
+        *, defer_to: Optional[MessageEvent] = None,
     ) -> None:
         """The queued lane runs no hooks for a follow-up without its own (a /goal continuation,
         heartbeat or internal notification), so the started messages merged into it complete here,
@@ -363,4 +370,7 @@ class GatewayQueuedFollowupMixin:
         if state is None or _followup_processing_hooks_apply(adapter, event):
             return
         for attached in state.take_absorbed():
+            if defer_to is not None:
+                defer_to._processing_state.attach(attached)
+                continue
             await attached.adapter._run_processing_hook("on_processing_complete", attached.event, outcome)

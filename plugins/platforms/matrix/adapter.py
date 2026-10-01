@@ -3145,14 +3145,13 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                     data = await resp.json()
                     return {"success": True, "platform": "matrix", "chat_id": chat_id,
                             "message_id": data.get("event_id")}
-            result = None
             for payload in _standalone_payloads(message):
                 try:
                     result = await asyncio.wait_for(_do_send(payload), timeout=30)
                 except asyncio.TimeoutError:
                     return send_error("Matrix API timeout (30s)")
                 if not result.get("success"):
-                    break
+                    return result
             return result
     except Exception as e:
         return send_error(f"Matrix send failed: {e}")
@@ -3161,11 +3160,13 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 def _standalone_payloads(message: str) -> list[Dict[str, Any]]:
     """One m.room.message content per chunk. The caller chunks on characters, and a chunk of
     non-Latin text can still exceed the homeserver's byte cap, so re-chunk on UTF-8 bytes."""
+    _md = None
+    with suppress(ImportError):
+        import markdown as _md
     payloads = []
     for chunk in BasePlatformAdapter.truncate_message(message, MATRIX_MAX_MESSAGE_LENGTH_CEILING, _utf8_len):
         payload = {"msgtype": "m.text", "body": chunk}
-        with suppress(ImportError):
-            import markdown as _md
+        if _md is not None:
             tokenized, tex_store = _latex_to_tokens(chunk)
             html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
             formatted = {"format": "org.matrix.custom.html", "formatted_body": _tokens_to_mx_maths(

@@ -902,3 +902,66 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+def test_seat_subscription_routes_classify_as_included():
+    """Every seat-subscription route (a Copilot seat, the OpenCode Go plan, a
+    Codex subscription) bills a fixed price with no per-token invoice, so its
+    marginal cost is genuinely zero — classify it ``included``, not ``unknown``.
+    Config-level slugs and aliases resolve through the provider registry.
+    """
+    cases = (
+        ("openai-codex", "openai-codex"),
+        ("codex", "openai-codex"),
+        ("copilot", "copilot"),
+        ("github-copilot", "copilot"),
+        ("github-models", "copilot"),
+        ("copilot-acp", "copilot-acp"),
+        ("opencode-go", "opencode-go"),
+        ("go", "opencode-go"),
+    )
+    for slug, canonical in cases:
+        route = resolve_billing_route("claude-sonnet-5", provider=slug)
+        assert route.billing_mode == "subscription_included", slug
+        assert route.provider == canonical, slug
+    usage = CanonicalUsage(input_tokens=1000, output_tokens=1000, cache_read_tokens=0, cache_write_tokens=0)
+    cost = estimate_usage_cost("claude-sonnet-5", usage, provider="github-copilot")
+    assert cost.status == "included"
+    assert cost.amount_usd == 0
+    assert cost.source == "none"
+
+
+def test_free_credit_routes_classify_as_included():
+    """NVIDIA NIM trial credits and the Cloudflare Workers AI free daily
+    allowance have no per-token invoice either. Workers AI is reached through a
+    ``custom:<key>`` route with no registered profile, so the free-credit host
+    carries it; other custom endpoints keep their ``unknown`` classification.
+    """
+    nim = resolve_billing_route("z-ai/glm-5.3-flash", provider="nvidia")
+    assert (nim.billing_mode, nim.provider) == ("subscription_included", "nvidia")
+
+    workers = resolve_billing_route(
+        "@cf/nvidia/nemotron-3-120b-a12b",
+        provider="custom:cloudflare",
+        base_url="https://api.cloudflare.com/client/v4/accounts/self/ai/run",
+    )
+    assert workers.billing_mode == "subscription_included"
+
+    other_custom = resolve_billing_route(
+        "some/model", provider="custom:lan-gateway", base_url="http://gateway.internal/v1"
+    )
+    assert other_custom.billing_mode == "unknown"
+
+    usage = CanonicalUsage(input_tokens=1000, output_tokens=1000, cache_read_tokens=0, cache_write_tokens=0)
+    cost = estimate_usage_cost("z-ai/glm-5.3-flash", usage, provider="nvidia")
+    assert cost.status == "included"
+    assert cost.amount_usd == 0
+
+
+def test_token_priced_route_without_a_priced_model_stays_unknown():
+    """The control from the field report: a token-priced provider with no
+    snapshot entry for the model stays honestly ``unknown`` — ``included`` must
+    stay reserved for fixed-price routes.
+    """
+    route = resolve_billing_route("claude-sonnet-5", provider="deepseek")
+    assert route.billing_mode == "unknown"

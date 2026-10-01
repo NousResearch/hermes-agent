@@ -1,15 +1,16 @@
-/* md-to-html default stylesheet — clean technical-doc look */
+/* md-to-html default stylesheet — dark theme (dark bg, light fg) */
 :root {
-  --fg: #1a1a1a;
-  --bg: #ffffff;
-  --muted: #5a6570;
-  --accent: #1f4e79;
-  --border: #d8dee6;
-  --code-bg: #f4f6f8;
-  --mark-ok: #1e7d32;   /* green  */
-  --mark-warn: #b26a00; /* amber  */
-  --mark-bad: #b71c1c;  /* red    */
-  --neutral: #6b7280;   /* gray/silver */
+  --fg: #e2e6ea;
+  --bg: #17191c;
+  --muted: #9aa4ae;
+  --accent: #6cb6ff;
+  --border: #3a4048;
+  --code-bg: #22262b;
+  --row-alt: #1d2126;
+  --mark-ok: #66bb6a;   /* green  */
+  --mark-warn: #ffb74d; /* amber  */
+  --mark-bad: #ef5350;  /* red    */
+  --neutral: #9aa4ae;   /* gray/silver */
 }
 * { box-sizing: border-box; }
 html { font-size: 16px; }
@@ -62,7 +63,7 @@ pre code { background: none; padding: 0; font-size: 0.85rem; }
 table { border-collapse: collapse; margin: 1em 0; width: 100%; font-size: 0.92rem; }
 th, td { border: 1px solid var(--border); padding: 0.45em 0.7em; text-align: left; }
 th { background: var(--code-bg); font-weight: 600; }
-tr:nth-child(even) td { background: #fafbfc; }
+tr:nth-child(even) td { background: var(--row-alt); }
 hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
 img { max-width: 100%; }
 /* status words: green/amber/red/gray bold words are converted

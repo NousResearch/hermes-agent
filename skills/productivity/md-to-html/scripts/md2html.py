@@ -101,7 +101,7 @@ def main() -> int:
 
     css_path = Path(args.css) if args.css else DEFAULT_CSS
     css_text = css_path.read_text(encoding="utf-8")
-    py_css = HtmlFormatter(style="default").get_style_defs(".codehilite")
+    py_css = HtmlFormatter(style="monokai").get_style_defs(".codehilite")
 
     rc = 0
     for src in args.files:

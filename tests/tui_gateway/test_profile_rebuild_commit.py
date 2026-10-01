@@ -143,6 +143,8 @@ def test_rebuild_finishing_after_close_closes_the_replacement_and_its_handle(tmp
 @pytest.mark.parametrize("action,names", [
     ("enable", ["terminal"]),
     ("disable", ["web"]),
+    ("enable", ["discord", "discord_admin"]),
+    ("disable", ["discord", "discord_admin"]),
     ("enable", ["not-a-toolset"]),
     ("enable", ["missing:tool"]),
     ("enable", ["local:enabled"]),

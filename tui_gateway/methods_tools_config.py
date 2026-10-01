@@ -66,7 +66,7 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     valid_toolsets = {ts_key for ts_key, _, _ in tc.CONFIGURABLE_TOOLSETS} | tc._get_plugin_toolset_keys()
     mcp_targets = [name for name in targets if ":" in name]
     rejections = _tools_mod("hermes_cli.tools_config_mcp").toolset_rejections(
-        [name for name in targets if ":" not in name], "cli")
+        [name for name in targets if ":" not in name], "cli", valid_toolsets=valid_toolsets)
     unknown = [name for name in targets if ":" not in name and name not in valid_toolsets]
     rejected = {name: message for name, message in rejections.items() if name in valid_toolsets}
     toolset_targets = [name for name in targets if ":" not in name and name not in rejections]

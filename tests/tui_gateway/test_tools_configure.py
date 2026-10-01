@@ -31,3 +31,25 @@ def test_tools_configure_rejects_toolsets_that_cli_does_not_allow(action):
         "unknown": ["no_such_toolset"],
     }
     assert ("web" in enabled) == (action == "enable")
+
+
+@pytest.mark.parametrize("action", ["enable", "disable"])
+def test_tools_configure_classifies_targets_from_one_catalogue(monkeypatch, action):
+    from hermes_cli import tools_config
+    from hermes_cli.config import save_config
+    from tui_gateway.server import _methods
+
+    reads = 0
+
+    def discovered_keys():
+        nonlocal reads
+        reads += 1
+        return {"late_plugin"} if reads >= 3 else set()
+
+    monkeypatch.setattr(tools_config, "_get_plugin_toolset_keys", discovered_keys)
+    save_config({"platform_toolsets": {"cli": ["file"]}})
+    response = _methods["tools.configure"]("catalogue", {"action": action, "names": ["late_plugin"]})
+    result = response["result"]
+    assert {key: result[key] for key in ("changed", "unknown", "rejected")} == {
+        "changed": [], "unknown": ["late_plugin"], "rejected": {},
+    }

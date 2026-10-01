@@ -155,6 +155,7 @@ def _mirrored_readable_thinking(message: Any) -> str | None:
             return "\n\n".join(readable)
     return None
 
+
 def _filter_message(message: Any, fingerprints: set[str], strip_all: bool) -> int:
     if not isinstance(message, dict):
         return 0

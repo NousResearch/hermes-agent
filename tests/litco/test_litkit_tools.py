@@ -821,3 +821,139 @@ def test_cross_matter_search_other_answers(fake, env):
     finally:
         reset_turn(token)
     assert len(fake.calls("POST", CROSS)) == 2
+
+
+# -- canonical links (clickable references) --------------------------------------
+# Tools hand Ana a ready-made app-relative link for each document, LitSpace file and folder,
+# built only from ids LitKit returned. A bad id drops the link and keeps the row.
+
+LS = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+LS_OTHER = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+
+
+def _links(value):
+    """Every ``link`` / ``folderLink`` value anywhere in a tool result."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ("link", "folderLink"):
+                yield item
+            else:
+                yield from _links(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _links(item)
+
+
+def _target(link):
+    return link.rsplit("](", 1)[1][:-1]
+
+
+def _no_origin(fake, *results):
+    links = [link for result in results for link in _links(result)]
+    assert links
+    for link in links:
+        assert "http" not in link and fake.url not in link and TOKEN not in link and len(link) <= 400
+
+
+def test_files_list_links_each_row_to_its_own_litspace_matter(fake, env):
+    fake.route("GET", rf"/api/litspace/matters/{M}/files", {"files": [
+        {"litspaceMatterId": LS, "litspaceFileId": _id(1), "filename": "Smith (final) [v2].pdf", "bytes": 9},
+        {"litspaceMatterId": LS_OTHER, "litspaceFileId": _id(2), "filename": "b.docx"},
+        {"litspaceMatterId": LS, "litspaceFileId": "not-a-uuid", "filename": "c.pdf", "mime": "application/pdf"}]})
+    out = call("litkit_files", action="list")
+    first, second, bad = out["results"]
+    assert _target(first["link"]) == f"/litspace/matters/{LS}/documents/{_id(1)}"
+    assert first["link"].startswith("[Smith (final) \\[v2\\].pdf](")
+    assert _target(second["link"]) == f"/litspace/matters/{LS_OTHER}/documents/{_id(2)}"
+    assert "link" not in bad and bad == {"fileId": "not-a-uuid", "filename": "c.pdf", "mime": "application/pdf",
+                                         "bytes": None, "updatedAt": None}
+    _no_origin(fake, out)
+
+
+def test_files_search_links_the_file_and_its_folder(fake, env):
+    fake.route("GET", rf"/api/litspace/matters/{M}/files", {"files": [{"litspaceMatterId": LS}]})
+    fake.route("GET", rf"/api/litspace/matters/{LS}/search", {"rows": [
+        {"documentId": _id(1), "filename": "2026-09-15 Exhibit A - Privilege Log.pdf",
+         "folderDisplay": "Productions/Volume 1", "snippet": "privilege"},
+        {"documentId": _id(2), "filename": "root.pdf", "folderDisplay": "", "snippet": "x"},
+        {"documentId": "bad", "filename": "odd.pdf", "folderDisplay": "Productions", "snippet": "y"}]})
+    out = call("litkit_files", action="search", query="privilege")
+    nested, root, bad = out["results"]
+    assert _target(nested["link"]) == f"/litspace/matters/{LS}/documents/{_id(1)}"
+    assert _target(nested["folderLink"]) == f"/litspace/matters/{LS}/files?path=Productions/Volume%201"
+    assert "link" in root and "folderLink" not in root
+    assert "link" not in bad and _target(bad["folderLink"]) == f"/litspace/matters/{LS}/files?path=Productions"
+    assert bad["fileId"] == "bad" and bad["filename"] == "odd.pdf" and bad["snippet"] == "y"
+    _no_origin(fake, out)
+
+
+def test_files_read_links_only_when_litkit_names_the_litspace_matter(fake, env):
+    fake.route("GET", r"/api/litspace/files/.*/content", (200, b"file"))
+    fake.route("GET", rf"/api/litspace/files/{_id(5)}", {"filename": "log.pdf", "litspaceMatterId": LS})
+    fake.route("GET", rf"/api/litspace/files/{_id(6)}", {"filename": "other.pdf"})
+    linked = call("litkit_files", action="read", fileId=_id(5))
+    assert _target(linked["link"]) == f"/litspace/matters/{LS}/documents/{_id(5)}"
+    assert linked["link"].startswith("[log.pdf](")
+    assert "link" not in call("litkit_files", action="read", fileId=_id(6))
+    _no_origin(fake, linked)
+
+
+def test_docs_page_links_only_rows_without_bates(fake, env):
+    fake.route("GET", rf"/api/matters/{M}/docs", {"total": 3, "hasMore": False, "nextCursor": None, "docs": [
+        {"id": _id(1), "batesStart": "ABC00001", "fileName": "a.pdf"},
+        {"id": _id(2), "fileName": "Smith (final) [v2].pdf"},
+        {"id": _id(3)}, {"id": "nope", "fileName": "x.pdf"}]})
+    out = call("litkit_docs")
+    bates, named, bare, bad = out["docs"]
+    assert "link" not in bates
+    assert _target(named["link"]) == f"/matters/{M}?doc={_id(2)}" and named["link"].startswith("[Smith (final)")
+    assert bare["link"].startswith("[document](")
+    assert bad == {"id": "nope", "fileName": "x.pdf"}
+    _no_origin(fake, out)
+    # census files written with saveAs carry no links
+    call("litkit_docs", saveAs="all")
+    assert not any("link" in json.loads(line) for line in (env["cwd"] / "census" / "all.jsonl").read_text().splitlines())
+
+
+def test_search_links_only_hits_without_bates(fake, env):
+    fake.route("GET", rf"/api/matters/{M}/search", {"hits": [
+        {"docId": _id(1), "bates": "ABC00001", "page": 2, "snippet": "a"},
+        {"docId": _id(2), "page": 4, "snippet": "b"},
+        {"docId": _id(3), "snippet": "c"}, {"docId": "nope", "page": 1, "snippet": "d"}]})
+    out = call("litkit_search", query='"price"')
+    bates, paged, unpaged, bad = out["results"]
+    assert "link" not in bates
+    assert _target(paged["link"]) == f"/matters/{M}?doc={_id(2)}&page=4" and paged["link"].startswith("[document](")
+    assert _target(unpaged["link"]) == f"/matters/{M}?doc={_id(3)}"
+    assert "link" not in bad and bad["snippet"] == "d" and bad["page"] == 1
+    _no_origin(fake, out)
+
+
+def test_single_document_tools_label_the_link_by_bates_then_file_name(fake, env):
+    with_bates, without = _id(7), _id(8)
+    fake.route("GET", rf"/api/matters/{M}/bates-resolve", {"documentId": with_bates})
+    fake.route("GET", rf"/api/documents/{with_bates}", {"doc": {"batesStart": "ABC00007", "fileName": "a.msg"}})
+    fake.route("GET", rf"/api/documents/{without}", {"doc": {"fileName": "Smith (final) [v2].pdf"}})
+    fake.route("GET", r"/api/documents/[^/]+/text", {"extractedText": "t"})
+    fake.route("GET", r"/api/documents/[^/]+/pdf", (200, b"%PDF-1.4"))
+    results = []
+    for tool in ("litkit_document", "litkit_text", "litkit_pdf"):
+        by_bates = call(tool, bates="ABC00007")
+        named = call(tool, documentId=without)
+        assert by_bates["link"] == f"[ABC00007](/matters/{M}?doc={with_bates})"
+        assert named["link"] == f"[Smith (final) \\[v2\\].pdf](/matters/{M}?doc={without})"
+        results += [by_bates, named]
+    _no_origin(fake, *results)
+
+
+def test_pdf_without_metadata_still_links_as_document(fake, env):
+    d = _id(9)
+    fake.route("GET", rf"/api/documents/{d}", (404, {"error": "not_found"}))
+    fake.route("GET", rf"/api/documents/{d}/pdf", (200, b"%PDF-1.4"))
+    assert call("litkit_pdf", documentId=d)["link"] == f"[document](/matters/{M}?doc={d})"
+
+
+def test_a_refused_lookup_stays_the_plain_permission_result(fake, env):
+    fake.route("GET", rf"/api/litspace/matters/{M}/files", (403, {"error": "forbidden"}))
+    out = call("litkit_files", action="list")
+    assert "not permitted" in out["error"] and not list(_links(out))

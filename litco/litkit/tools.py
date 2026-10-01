@@ -28,6 +28,7 @@ from litco.homes import register_deliverable, safe_segment
 from litco.litkit.client import (TURN_GRANT_HEADER, LitKitClient, LitKitConfig, LitKitError,
                                  LitKitPermissionError, default_client)
 from litco.litkit.context import current_acting_user, current_thread_id, current_turn, current_turn_grant
+from litco.litkit.links import document_link, file_link, folder_link
 from litco.litkit.files import (TEXT_SEPARATOR, InputFileMissing, PathOutsideWorkDir, dumps, generate_preview,
                                 input_path, output_dir, output_path, relative, spill, work_dir)
 from litco.litkit import jev as _jev
@@ -136,6 +137,21 @@ def _compact(obj: Dict[str, Any], *, drop: Iterable[str] = (), limit: int = 300)
                 continue
             out[key] = _clip(value, limit)
     return out
+
+
+def _linked(row: Dict[str, Any], key: str, build: Callable[..., str], *args: Any, **kw: Any) -> Dict[str, Any]:
+    """Add ``row[key]`` when the link builds. A bad id leaves the row as it was, without the key."""
+    try:
+        link = build(*args, **kw)
+    except ValueError:
+        return row
+    if link:
+        row[key] = link
+    return row
+
+
+def _doc_label(doc: Dict[str, Any]) -> str:
+    return str(doc.get("batesStart") or doc.get("fileName") or "document")
 
 
 def _now_iso() -> str:
@@ -252,6 +268,9 @@ def litkit_search(args: Dict[str, Any]) -> Any:
     compact = [{"docId": h.get("docId"), "bates": h.get("bates"), "batesEnd": h.get("batesEnd"),
                 "page": h.get("page"), "snippet": _clip(h.get("snippet"), 280),
                 **({"metadataOnly": True} if h.get("metadataOnly") else {})} for h in hits if isinstance(h, dict)]
+    for hit in compact:  # a hit with Bates is cited by Bates; only the others need a link
+        if not hit.get("bates"):
+            _linked(hit, "link", document_link, mid, hit.get("docId"), "document", page=hit.get("page"))
     notes = []
     if len(hits) >= limit:
         notes.append(f"hit the {limit}-result limit; results are a mention-finder, not a census. "
@@ -300,6 +319,9 @@ def litkit_docs(args: Dict[str, Any]) -> Any:
     if not save_as:
         body = page(cursor)
         docs = [_doc_row(r) for r in body.get("docs") or [] if isinstance(r, dict)]
+        for row in docs:  # a row with Bates is cited by Bates; only the others need a link
+            if not row.get("batesStart"):
+                _linked(row, "link", document_link, mid, row.get("id"), row.get("fileName") or "document")
         return {"total": body.get("total"), "returned": len(docs), "hasMore": bool(body.get("hasMore")),
                 "nextCursor": body.get("nextCursor"), "docs": docs}
 
@@ -362,11 +384,13 @@ def litkit_document(args: Dict[str, Any]) -> Any:
     doc_id = _resolve_doc_id(client, args)
     body = client.get(f"/api/documents/{doc_id}")
     body = body if isinstance(body, dict) else {}
-    doc = _compact(body.get("doc") if isinstance(body.get("doc"), dict) else {}, limit=400)
+    raw = body.get("doc") if isinstance(body.get("doc"), dict) else {}
+    doc = _compact(raw, limit=400)
     tags = [t.get("name") for t in body.get("tags") or [] if isinstance(t, dict) and t.get("name")]
     productions = [_compact(p) for p in body.get("productions") or [] if isinstance(p, dict)]
-    return {"document": doc, "tags": tags, "productions": productions,
-            "redactions": len(body.get("redactions") or [])}
+    result = {"document": doc, "tags": tags, "productions": productions,
+              "redactions": len(body.get("redactions") or [])}
+    return _linked(result, "link", document_link, _mid(client), doc_id, _doc_label(raw))
 
 
 def _text_from_payload(body: Dict[str, Any]) -> Tuple[str, Optional[Dict[str, Any]]]:
@@ -412,7 +436,7 @@ def litkit_text(args: Dict[str, Any]) -> Any:
     if not text.strip():
         result["note"] = ("LitKit holds no extracted text for this document (image-only or native-only); "
                           "fetch the PDF with litkit_pdf and read it visually.")
-    return result
+    return _linked(result, "link", document_link, mid, doc_id, _doc_label(meta))
 
 
 @_tool("litkit_pdf")
@@ -439,7 +463,7 @@ def litkit_pdf(args: Dict[str, Any]) -> Any:
         result["warning"] = "the bytes do not start with %PDF; inspect before relying on this file"
     if not native and meta.get("pageCount") == 1 and str(meta.get("mime") or "").find("sheet") >= 0:
         result["note"] = "a one-page PDF of a spreadsheet is usually a slip sheet; fetch the native as well"
-    return result
+    return _linked(result, "link", document_link, _mid(client), doc_id, _doc_label(meta))
 
 
 def _ids_from_census(raw_path: str) -> List[str]:
@@ -576,8 +600,11 @@ def litkit_files(args: Dict[str, Any]) -> Any:
         params = {"limit": int(args.get("limit") or 200), "cursor": args.get("cursor") or None}
         body = client.get(f"/api/litspace/matters/{mid}/files", params=params)
         files = body.get("files") if isinstance(body, dict) else []
-        rows = [{"fileId": f.get("litspaceFileId"), "filename": f.get("filename"), "mime": f.get("mime"),
-                 "bytes": f.get("bytes"), "updatedAt": f.get("updatedAt")} for f in files or [] if isinstance(f, dict)]
+        rows = [_linked({"fileId": f.get("litspaceFileId"), "filename": f.get("filename"), "mime": f.get("mime"),
+                         "bytes": f.get("bytes"), "updatedAt": f.get("updatedAt")},
+                        "link", file_link, f.get("litspaceMatterId"), f.get("litspaceFileId"),
+                        f.get("filename") or "file")
+                for f in files or [] if isinstance(f, dict)]
         return {"files": len(rows), "nextCursor": (body or {}).get("nextCursor"), "results": rows}
     if action == "search":
         query = str(_require(args, "query"))
@@ -590,16 +617,24 @@ def litkit_files(args: Dict[str, Any]) -> Any:
         rows = [{"fileId": r.get("documentId"), "filename": r.get("filename"), "folder": r.get("folderDisplay"),
                  "snippet": _clip(r.get("snippet"), 280), **({"seekSec": r["seekSec"]} if "seekSec" in r else {})}
                 for r in (body or {}).get("rows") or [] if isinstance(r, dict)]
+        for row in rows:
+            _linked(row, "link", file_link, ls_id, row["fileId"], row.get("filename") or "file")
+            if row.get("folder"):
+                _linked(row, "folderLink", folder_link, ls_id, row["folder"])
         return {"query": query, "hits": len(rows), "results": rows}
     if action == "read":
         file_id = _uuid(args, "fileId")
         meta = client.get(f"/api/litspace/files/{file_id}")
-        name = (meta or {}).get("filename") if isinstance(meta, dict) else None
+        meta = meta if isinstance(meta, dict) else {}
+        name = meta.get("filename")
         target = output_path(args.get("dir") or "files", name or file_id)
         info = client.download(f"/api/litspace/files/{file_id}/content", target, params={"op": "download"})
         info.pop("head", None)
-        return {"saved": relative(target), "fileId": file_id, "bytes": info["bytes"], "sha256": info["sha256"],
-                "contentType": info["contentType"]}
+        result = {"saved": relative(target), "fileId": file_id, "bytes": info["bytes"], "sha256": info["sha256"],
+                  "contentType": info["contentType"]}
+        if meta.get("litspaceMatterId"):
+            _linked(result, "link", file_link, meta["litspaceMatterId"], file_id, name or "file")
+        return result
     if action == "upload":
         path = input_path(str(_require(args, "path")), tool="litkit_files")
         status, body = client.upload(f"/api/litspace/matters/{mid}/files/upload", path,
@@ -1479,7 +1514,8 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         "litkit_search",
         "Search the matter's produced documents (Boolean and phrase syntax). LitKit allows 5 seconds and returns at "
         "most 500 hits, so this finds mentions; it is not a census. Use quoted phrases, distinctive names, or Bates "
-        "numbers; single common words time out or rank. A timeout or zero hits is not proof of absence.",
+        "numbers; single common words time out or rank. A timeout or zero hits is not proof of absence. Hits "
+        "without Bates carry link: paste it as written when you name the document.",
         {"query": {"type": "string", "description": "e.g. '\"average selling price\"' or 'ABC0001234'"},
          "custodian": _S, "dateFrom": _DATE, "dateTo": _DATE, "bates": _S,
          "limit": {"type": "integer", "description": "1-500, default 100"}, "matchCase": _B, "wholeWord": _B},
@@ -1487,7 +1523,8 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
     "litkit_docs": _schema(
         "litkit_docs",
         "Document census with custodian/date/Bates filters and cursor paging. Without saveAs: one page plus "
-        "nextCursor. With saveAs: pages through everything into census/<saveAs>.jsonl and returns counts.",
+        "nextCursor. With saveAs: pages through everything into census/<saveAs>.jsonl and returns counts. Rows "
+        "without Bates carry link: paste it as written when you name the document.",
         {"custodian": _S, "dateFrom": _DATE, "dateTo": _DATE, "bates": _S, "productionId": _S,
          "q": {"type": "string", "description": "optional text filter (must be narrow enough to page)"},
          "limit": {"type": "integer", "description": "rows per page, 1-5000, default 1000"},
@@ -1496,15 +1533,17 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
          "maxPages": _I}),
     "litkit_document": _schema(
         "litkit_document", "Metadata for one document (by documentId or Bates): Bates range, custodian, dates, "
-        "author, subject, tags, productions.",
+        "author, subject, tags, productions. Returns link: paste it as written when you name the document.",
         {"documentId": _S, "bates": _S}),
     "litkit_text": _schema(
         "litkit_text", "Extracted text of one document, saved to texts/<bates>.txt under a self-citing header "
-        "(Bates, docId, custodian, date). Returns the path and a preview; read the file for the full text.",
+        "(Bates, docId, custodian, date). Returns the path, a preview and link (paste it as written when you name "
+        "the document); read the file for the full text.",
         {"documentId": _S, "bates": _S, "dir": {"type": "string", "description": "folder, default texts"},
          "previewChars": _I}),
     "litkit_pdf": _schema(
-        "litkit_pdf", "Download a document's PDF (or its native file with native=true) to pdfs/ or natives/.",
+        "litkit_pdf", "Download a document's PDF (or its native file with native=true) to pdfs/ or natives/. "
+        "Returns link: paste it as written when you name the document.",
         {"documentId": _S, "bates": _S, "native": _B, "dir": _S}),
     "litkit_export_text": _schema(
         "litkit_export_text", "Bulk text export: writes each document to texts/<bates>.txt with a self-citing "
@@ -1517,7 +1556,8 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         {"action": {"type": "string", "enum": ["list", "read"]}, "fileId": _S}),
     "litkit_files": _schema(
         "litkit_files", "The matter's LitSpace files: list, search, read (download to files/), or upload a file "
-        "from the working directory.",
+        "from the working directory. Rows carry link (and folderLink): paste it as written when you name the "
+        "file or folder.",
         {"action": {"type": "string", "enum": ["list", "search", "read", "upload"]}, "query": _S, "fileId": _S,
          "path": _S, "filename": _S, "parentId": _S, "cursor": _S, "limit": _I, "dir": _S}, ["action"]),
     "litkit_deliver": _schema(

@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
 import DOMPurify from 'dompurify'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { GUEST_SELECTION_CHANNEL, sendSelectionQuote } from '@/app/chat/composer/selection-quote'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -30,8 +31,10 @@ const HEADER_BUTTON_CLASS =
  *  through untouched. Keeps generated fragments (no <html>/<body>) rendering
  *  with sane defaults instead of quirks-mode soup. */
 function composeArtifactHtml(content: string): string {
+  const bridge = `<script>document.addEventListener('keydown',function(e){if((e.metaKey||e.ctrlKey)&&!e.shiftKey&&e.key.toLowerCase()==='l'){var s=getSelection();var t=s&&s.toString().trim();var a=document.activeElement;if(t&&!(a&&(a.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)))){e.preventDefault();parent.postMessage({channel:'${GUEST_SELECTION_CHANNEL}',text:t},'*')}}},true)</script>`
+
   if (/<html[\s>]|<!doctype\s+html/i.test(content)) {
-    return content
+    return /<\/body\s*>/i.test(content) ? content.replace(/<\/body\s*>/i, `${bridge}</body>`) : `${content}${bridge}`
   }
 
   return [
@@ -39,6 +42,7 @@ function composeArtifactHtml(content: string): string {
     '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
     '<style>body{margin:0;font-family:system-ui,sans-serif}</style></head><body>',
     content,
+    bridge,
     '</body></html>'
   ].join('\n')
 }
@@ -80,10 +84,26 @@ async function openHtmlInBrowser(content: string): Promise<void> {
  * DOMPurify-sanitized with the same profile as the inline ```svg embed.
  */
 function ArtifactLiveView({ content, kind, title }: { content: string; kind: ArtifactKind; title: string }) {
+  const frameRef = useRef<HTMLIFrameElement>(null)
+
   const svgClean = useMemo(
     () => (kind === 'svg' ? DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true } }) : ''),
     [content, kind]
   )
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const payload = event.data as { channel?: unknown; text?: unknown } | null
+
+      if (event.source === frameRef.current?.contentWindow && payload?.channel === GUEST_SELECTION_CHANNEL) {
+        sendSelectionQuote(String(payload.text ?? ''), title)
+      }
+    }
+
+    window.addEventListener('message', onMessage)
+
+    return () => window.removeEventListener('message', onMessage)
+  }, [title])
 
   if (kind === 'svg') {
     return (
@@ -96,6 +116,7 @@ function ArtifactLiveView({ content, kind, title }: { content: string; kind: Art
   return (
     <iframe
       className="block size-full border-0 bg-white"
+      ref={frameRef}
       sandbox="allow-scripts"
       srcDoc={composeArtifactHtml(content)}
       // Deliberately raw white + forced light scheme: the frame hosts foreign

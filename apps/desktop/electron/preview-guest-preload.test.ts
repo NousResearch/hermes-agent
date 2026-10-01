@@ -2,13 +2,18 @@ import assert from 'node:assert/strict'
 
 import { describe, test } from 'vitest'
 
-import { GUEST_EXTERNAL_CHANNEL, type GuestClickEvent, installGuestExternalHandoff } from './preview-guest-preload'
+import {
+  GUEST_EXTERNAL_CHANNEL,
+  type GuestClickEvent,
+  type GuestKeyEvent,
+  installGuestExternalHandoff
+} from './preview-guest-preload'
 
 // Preview-pane guest bridge (#112941): the preload forwards a user's click on a
 // `_blank` anchor to the host and nothing else.
 function rig() {
   const sent: { channel: string; args: unknown[] }[] = []
-  const listeners: { type: string; listener: (event: GuestClickEvent) => void; capture?: boolean }[] = []
+  const listeners: { type: string; listener: (event: GuestClickEvent | GuestKeyEvent) => void; capture?: boolean }[] = []
 
   installGuestExternalHandoff({
     addEventListener: (type, listener, capture) => listeners.push({ capture, listener, type }),
@@ -28,7 +33,10 @@ describe('installGuestExternalHandoff', () => {
 
     assert.deepEqual(
       listeners.map(entry => [entry.type, entry.capture]),
-      [['click', true]]
+      [
+        ['click', true],
+        ['keydown', true]
+      ]
     )
 
     click({ button: 0, isTrusted: true, target: blankAnchor('https://www.google.com/search?q=traceback') })

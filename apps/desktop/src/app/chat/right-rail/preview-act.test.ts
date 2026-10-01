@@ -552,6 +552,23 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     })
   })
 
+  it('reports navigation when read-back comes from a new document', async () => {
+    const tabId = openBrowserTab()
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({ acted: 'looking at link "Learn more"', point: { x: 12, y: 8 }, success: true })
+          : JSON.stringify({ elements: [], hit: null, inputDocument: false, success: true })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send: vi.fn() }))
+    expect(await actOnActivePreview({ kind: 'click', ref: '@e1' })).toMatchObject({
+      success: true,
+      acted: 'clicked link "Learn more"',
+      note: expect.stringContaining('navigating')
+    })
+  })
+
   it('fails loudly when the pointer input never reaches the page', async () => {
     const tabId = openBrowserTab()
 

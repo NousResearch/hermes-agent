@@ -291,6 +291,7 @@ ${preamble()}
       var out = act({ kind: 'elements' });
       watch('sweep');
       out.hit = w.__hermesHit || null;
+      out.inputDocument = Object.prototype.hasOwnProperty.call(w, '__hermesHit');
       return JSON.stringify(out);
     } catch (err) {
       return JSON.stringify({ note: 'The page changed before it could be re-read: ' + err, success: true });
@@ -668,7 +669,15 @@ async function driveAction(
     return { acted, note: NAVIGATED, success: true }
   }
 
-  const { hit, ...result } = after.result as PreviewActResult & { hit?: { tag: string; trusted: boolean } | null }
+  const { hit, inputDocument, ...result } = after.result as PreviewActResult & {
+    hit?: { tag: string; trusted: boolean } | null
+    inputDocument?: boolean
+  }
+
+  // A new document cannot retain the pointer witness armed on the old page.
+  if (inputDocument === false) {
+    return { ...result, acted, note: NAVIGATED, success: true }
+  }
 
   // The witness the locate trip armed. No record means the input never reached
   // the document, which the agent must hear about — every other signal here

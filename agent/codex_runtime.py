@@ -575,6 +575,14 @@ def _codex_turn_effort(agent, model: str | None) -> str | None:
     return effort
 
 
+def _codex_turn_service_tier(agent) -> str | None:
+    """``turn/start.serviceTier``: the tier Hermes' own Responses path would request this turn (a static
+    ``/fast`` tier pinned in request_overrides, or an open ``auto``/``cold`` window), in codex's words: the
+    OpenAI ``priority`` tier is codex's ``fast``. A tier codex has no word for (``ultrafast``) is not sent."""
+    from agent.fast_mode import effective_request_overrides
+    return {"priority": "fast"}.get(effective_request_overrides(agent).get("service_tier"))
+
+
 def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
@@ -712,14 +720,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     model_provider = getattr(agent, "_codex_session_model_provider", None)
     wire_model = _codex_wire_model(agent, model_provider)
     reasoning_effort = _codex_turn_effort(agent, wire_model)
-    service_tier = getattr(agent, "service_tier", None)
-    if service_tier == "priority":
-        # Hermes uses the OpenAI API name; Codex app-server calls this tier fast.
-        service_tier = "fast"
-    elif service_tier in {None, "", "normal", "default"}:
-        # Send null rather than omitting the field so `/fast off` clears a tier
-        # selected by an earlier turn in the same Codex thread.
-        service_tier = None
+    service_tier = _codex_turn_service_tier(agent)
     try:
         _start_codex_thread(agent)
         turn = agent._codex_session.run_turn(

@@ -75,7 +75,8 @@ class TestRunConversationCodexPath:
             ({"enabled": True, "effort": "high"}, "priority", "high", "fast"),
             ({"enabled": False}, None, "none", None),
             # Hermes-only levels are clamped to the route's vocabulary; raw "ultra" fails the turn with 400.
-            ({"enabled": True, "effort": "ultra"}, None, "xhigh", None),
+            # A tier codex has no word for is not sent.
+            ({"enabled": True, "effort": "ultra"}, "ultrafast", "xhigh", None),
         ],
     )
     def test_effective_runtime_settings_reach_codex_turn(
@@ -102,6 +103,8 @@ class TestRunConversationCodexPath:
             model="gpt-5.4",
             reasoning_config=reasoning_config,
             service_tier=service_tier,
+            # Every surface pins a static /fast tier into request_overrides (resolve_fast_mode_overrides).
+            request_overrides={"service_tier": service_tier} if service_tier else None,
         )
 
         with patch.object(agent, "_spawn_background_review", return_value=None):

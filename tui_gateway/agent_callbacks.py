@@ -574,6 +574,12 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         elif opened:
             with contextlib.suppress(Exception):
                 session_db.close()
+    # Rebuilding replaces the long-lived agent, so release its memory provider, clients, and
+    # other resources after ownership has moved to the replacement.  Closing before the transfer
+    # would let the old agent close the shared session DB out from under the new one.
+    if old_agent is not None and old_agent is not agent and hasattr(old_agent, "close"):
+        with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
+            old_agent.close()
     return agent
 
 

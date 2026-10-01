@@ -115,3 +115,19 @@ def test_rebuild_keeps_session_runtime_picks_but_new_clears_them(monkeypatch):
         session.pop(pin)
     server._rebuild_session_agent("sid", session)
     assert seen[-1] == dict.fromkeys(carried)
+
+
+def test_rebuild_closes_replaced_agent_after_transferring_session_db(monkeypatch):
+    from tui_gateway import server
+    closed = []
+
+    old = SimpleNamespace(_session_db=None, _owns_session_db=False, close=lambda: closed.append("old"))
+    new = SimpleNamespace(_session_db=None, _owns_session_db=False)
+    monkeypatch.setattr(server, "_config_model_target", lambda: "model")
+    monkeypatch.setattr(server, "_make_agent", lambda *_args, **_kwargs: new)
+    session = {"agent": old, "session_key": "key", "profile_home": None}
+
+    server._rebuild_session_agent("sid", session)
+
+    assert session["agent"] is new
+    assert closed == ["old"]

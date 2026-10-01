@@ -7,7 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 from agent.anthropic_message_convert import convert_messages_to_anthropic
-from agent.message_sanitization import stale_thinking_reaches_wire
+from agent.message_sanitization import (
+    native_anthropic_accounting_projection,
+    stale_thinking_reaches_wire,
+)
 from agent.model_metadata import estimate_messages_tokens_rough
 
 
@@ -375,9 +378,67 @@ def test_full_producer_to_wire_prices_surviving_non_tool_thinking(monkeypatch):
     assert emitted == 16000
 
 
-def test_native_accounting_projection_dedupes_ordered_carrier_and_opaque_bytes():
-    from agent.turn_request_assembly import _native_anthropic_accounting_projection
+def test_context_selection_canonical_clone_does_not_double_count_thinking(monkeypatch):
+    from agent.transports.anthropic import AnthropicTransport
 
+    agent = _assembly_agent()
+    history = _native_history(agent, 8000)
+
+    _patch_assembly_loop(monkeypatch)
+    normal = _assemble(agent, copy.deepcopy(history))
+
+    def select_canonical(agent, api, canonical, incoming, logger=None):
+        return copy.deepcopy(canonical)
+
+    _patch_assembly_loop(monkeypatch, selector=select_canonical)
+    selected = _assemble(agent, copy.deepcopy(history))
+
+    assert selected.approx_tokens == normal.approx_tokens
+    assert selected.request_pressure_tokens == normal.request_pressure_tokens
+
+    transport = AnthropicTransport()
+    normal_kwargs = transport.build_kwargs(
+        agent.model, normal.api_messages, tools=[], base_url=agent.base_url
+    )
+    selected_kwargs = transport.build_kwargs(
+        agent.model, selected.api_messages, tools=[], base_url=agent.base_url
+    )
+    assert selected_kwargs["messages"] == normal_kwargs["messages"]
+
+
+def test_canonical_preflight_dedupes_ordered_thinking_carrier():
+    from agent.model_metadata import estimate_request_tokens_rough
+    from agent.turn_context import _preflight_request_tokens
+
+    agent = _assembly_agent()
+    thinking = "x" * 8000
+    assistant = _carrier_message()
+    assistant["reasoning"] = thinking
+    assistant["reasoning_details"][0]["thinking"] = thinking
+    assistant["anthropic_content_blocks"][0]["thinking"] = thinking
+    assistant["tool_calls"] = [
+        {
+            "id": "tool_1",
+            "type": "function",
+            "function": {"name": "search", "arguments": "{\\\"q\\\":\\\"x\\\"}"},
+        }
+    ]
+    canonical = [
+        {"role": "user", "content": "Q"},
+        assistant,
+        {"role": "user", "content": "continue"},
+    ]
+
+    preflight = _preflight_request_tokens(agent, copy.deepcopy(canonical), "")
+
+    request_copy = copy.deepcopy(canonical)
+    request_copy[1].pop("reasoning", None)
+    expected = estimate_request_tokens_rough(
+        native_anthropic_accounting_projection(request_copy)
+    )
+    assert preflight == expected
+
+def test_native_accounting_projection_dedupes_ordered_carrier_and_opaque_bytes():
     base = _carrier_message()
     base["reasoning_details"][0]["thinking"] = "x" * 8000
     base["anthropic_content_blocks"][0]["thinking"] = "x" * 8000
@@ -391,9 +452,9 @@ def test_native_accounting_projection_dedupes_ordered_carrier_and_opaque_bytes()
     ordered_only = copy.deepcopy(huge_opaque)
     ordered_only.pop("reasoning_details")
 
-    projected_huge = _native_anthropic_accounting_projection([huge_opaque])
-    projected_ordered = _native_anthropic_accounting_projection([ordered_only])
-    projected_small = _native_anthropic_accounting_projection([base])
+    projected_huge = native_anthropic_accounting_projection([huge_opaque])
+    projected_ordered = native_anthropic_accounting_projection([ordered_only])
+    projected_small = native_anthropic_accounting_projection([base])
 
     assert estimate_messages_tokens_rough(projected_huge) == estimate_messages_tokens_rough(
         projected_ordered

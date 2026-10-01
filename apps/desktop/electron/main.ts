@@ -2145,7 +2145,7 @@ function setPoolLimits(raw) {
 //     not when the idle reaper definitively tears a backend down.
 const POOL_KEEPALIVE_FRESH_MS = Math.max(
   120_000,
-  Number(process.env.HERMES_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 4 * 60_000
+  Number(process.env.HERMES_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 10 * 60_000
 )
 
 // Pinned-tier TTL (#105239): the renderer's 60s keepalive (touchPoolBackend)

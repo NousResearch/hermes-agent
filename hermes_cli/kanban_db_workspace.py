@@ -486,7 +486,16 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
-    if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
+    # Reuse only a linked worktree rooted AT target: any plain directory of the
+    # main checkout shares the common dir too, and "reusing" it would run the
+    # worker in the user's checkout on whatever branch is checked out there.
+    if (
+        target.exists()
+        and repo_common is not None
+        and _path_key(_git_common_dir(target)) == _path_key(repo_common)
+        and _is_linked_worktree_checkout(target)
+        and _path_key(_git_toplevel(target)) == _path_key(target.resolve(strict=False))
+    ):
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
@@ -567,7 +576,12 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         return requested_resolved, actual_branch or branch_name
 
     repo_root = _git_toplevel(requested)
-    if repo_root is not None and _path_key(requested_resolved) == _path_key(repo_root):
+    # A folder of the main checkout that git cannot turn into a worktree (the
+    # root, or a non-empty subfolder such as a board project dir in a monorepo)
+    # anchors the task's own worktree, as a subfolder default_workdir does above.
+    if repo_root is not None and (
+        _path_key(requested_resolved) == _path_key(repo_root) or any(requested.iterdir())
+    ):
         return _anchored_worktree(repo_root, task.id, branch_name)
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
@@ -587,8 +601,9 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     dispatcher and every profile worker. ``dir``: ``workspace_path``, created
     if missing; MUST be absolute (relative paths would resolve against the
     dispatcher's CWD — confused-deputy traversal). ``worktree``: a linked git
-    worktree; a repo-root ``workspace_path`` anchors ``<repo>/.worktrees/<id>``,
-    a concrete path is created/reused, none -> the board's ``default_workdir``
+    worktree; a repo-root or non-empty in-checkout ``workspace_path`` anchors
+    ``<repo>/.worktrees/<id>``, a new or empty path is materialized in place, an
+    existing linked worktree is reused, none -> the board's ``default_workdir``
     (raises if unset rather than guessing). Persist via ``set_workspace_path``.
     """
     kind = task.workspace_kind or "scratch"

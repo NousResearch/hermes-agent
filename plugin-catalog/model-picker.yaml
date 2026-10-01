@@ -1,6 +1,6 @@
 name: model-picker
 repo: https://github.com/aean0x/hermes-model-picker
-sha: 04a23c809d550ecb0a69749927b803e9250da656
+sha: 040854d667ffd4166cbb0534587de3e244f5c41a
 description: "Per-turn cost classifier that routes each turn to one of three model tiers and escalates when tools fail."
 maintainer: aean0x
 tier: community

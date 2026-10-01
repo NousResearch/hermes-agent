@@ -476,7 +476,11 @@ _FILTER_COMMAND_KEY = re.compile(r"^filter\..+\.(?:clean|smudge|process)$", re.I
 # is therefore read directly, whatever its condition, and its filter names are neutralized too.
 # Global/system config is already /dev/null, so only repo-local includes reach this.
 _INCLUDE_IF_KEY = re.compile(r"^includeif\..*\.path$", re.IGNORECASE)
-_FILTER_OR_INCLUDE_RE = r"^(filter\..*\.(clean|smudge|process)|include\.path|includeif\..*\.path)$"
+_INCLUDE_KEY = re.compile(r"^include(?:if\..*)?\.path$", re.IGNORECASE)
+# `git config --get-regexp` pattern for the keys discovery reads (filter commands and includes).
+_DISCOVERY_KEYS_REGEXP = r"^(filter\..*\.(clean|smudge|process)|include\.path|includeif\..*\.path)$"
+# Each include target costs one bounded spawn on every hardened git call; refuse past this many.
+_MAX_INCLUDE_TARGETS = 16
 # Each discovered key costs two env entries; a repo with tens of thousands of filters would make
 # every spawn fail with E2BIG ("Argument list too long"), so refuse past a generous cap.
 _MAX_FILTER_KEYS = 256
@@ -504,12 +508,14 @@ def noninteractive_repo_git_env(
     # yields "file:<origin>", "<key>\n<value>" pairs.
     proc = bounded_probe_run(
         ["git", "-C", str(cwd), "config", "--includes", "--show-origin", "-z", "--get-regexp",
-         r"^(filter\..*\.(clean|smudge|process)|includeif\..*\.path)$"],
+         _DISCOVERY_KEYS_REGEXP],
         timeout=2, env=env,
     )
     if proc is None or proc.returncode not in (0, 1):
         return None
     names: list[str] = []
+    targets: set[Path] = set()
+    toplevel: "Path | None" = None
     fields = proc.stdout.split("\0")
     for origin, entry in zip(fields[0::2], fields[1::2]):
         key, _, value = entry.partition("\n")
@@ -518,27 +524,40 @@ def noninteractive_repo_git_env(
             continue
         if not origin.startswith("file:"):
             return None
+        origin_path = Path(origin[len("file:"):])
+        if not origin_path.is_absolute():
+            # git prints repo-local origins relative to the worktree top level, not to *cwd*.
+            if toplevel is None:
+                top = bounded_probe_run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                                        timeout=2, env=env)
+                if top is None or top.returncode != 0:
+                    return None
+                toplevel = Path(top.stdout.strip())
+            origin_path = toplevel / origin_path
         # A relative include path resolves against the directory of the config file naming it.
-        target = (Path(cwd) / origin[len("file:"):]).parent / os.path.expanduser(value)
-        if not target.exists():
-            continue  # git skips a missing include file
+        target = (origin_path.parent / os.path.expanduser(value)).resolve()
+        if target in targets or not target.exists():
+            continue  # already read, or missing (git skips a missing include file)
+        if not target.is_file() or len(targets) >= _MAX_INCLUDE_TARGETS:
+            return None  # a FIFO/device/directory, or too many targets to read on every call
+        targets.add(target)
         probe = bounded_probe_run(
-            ["git", "config", "--file", str(target), "--name-only", "-z", "--get-regexp", _FILTER_OR_INCLUDE_RE],
+            ["git", "config", "--file", str(target), "--name-only", "-z", "--get-regexp", _DISCOVERY_KEYS_REGEXP],
             timeout=2, env=env,
         )
         if probe is None or probe.returncode not in (0, 1):
             return None
-        found = [name.strip() for name in probe.stdout.split("\0")]
+        found = probe.stdout.split("\0")
         # An include inside an include target would need the same walk again; refuse instead.
-        if any(name.lower() == "include.path" or _INCLUDE_IF_KEY.fullmatch(name) for name in found):
+        if any(_INCLUDE_KEY.fullmatch(name) for name in found):
             return None
         names.extend(found)
 
     keys: list[str] = []
     required: list[str] = []
     seen: set[str] = set()
-    # Dedup on the exact name ``--name-only`` prints: git lowercases section and variable but keeps
-    # the subsection's case, and ``[filter "Evil"]`` is a different driver from ``[filter "evil"]``.
+    # Dedup on the exact key name git prints: section and variable lowercased, subsection case kept,
+    # and ``[filter "Evil"]`` is a different driver from ``[filter "evil"]``.
     for raw in names:
         key = raw.strip()
         if not key or key in seen or not _FILTER_COMMAND_KEY.fullmatch(key):

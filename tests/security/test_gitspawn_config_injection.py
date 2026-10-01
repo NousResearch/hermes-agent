@@ -28,6 +28,7 @@ from hermes_cli._subprocess_compat import (
     NO_DRIVER_DIFF_FLAGS,
     harden_git_argv,
     noninteractive_git_env,
+    noninteractive_repo_git_env,
 )
 
 _HAS_GIT = shutil.which("git") is not None
@@ -265,6 +266,20 @@ def _evil_include(condition, nested: bool = False):
     return config
 
 
+def _credential_include(repo: Path, marker: str) -> str:
+    (repo / ".git" / "creds.inc").write_text("[http]\n\textraheader = x\n")
+    return f'[includeIf "gitdir:{(repo / ".git").as_posix()}"]\n\tpath = creds.inc\n'
+
+
+def _include_flood(repo: Path, marker: str) -> str:
+    """More include targets than discovery reads on every hardened call."""
+    sections = []
+    for i in range(17):
+        (repo / ".git" / f"inc{i}").write_text("")
+        sections.append(f'[includeIf "onbranch:b{i}"]\n\tpath = inc{i}\n')
+    return "".join(sections)
+
+
 @pytest.mark.parametrize("attrs, config, refused", [
     pytest.param("README filter=evil\n", lambda r, m: _evil_filter(m), False, id="plain"),
     pytest.param("README filter=Evil\n",
@@ -277,6 +292,9 @@ def _evil_include(condition, nested: bool = False):
     # An include inside an include target is not walked again: refuse.
     pytest.param("README filter=evil\n", _evil_include(lambda r: "onbranch:safe", nested=True), True,
                  id="nested_include"),
+    # The actions/checkout credential include: a target with no filters must not block the repo.
+    pytest.param("README filter=evil\n", _credential_include, False, id="credential_include"),
+    pytest.param("README filter=evil\n", _include_flood, True, id="include_flood"),
     pytest.param("README filter=evil\n",
                  lambda r, m: "".join(f'[filter "f{i}"]\n\tclean = cat\n' for i in range(300)), True,
                  id="filter_flood"),
@@ -304,6 +322,9 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, c
         assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
         return
 
+    # git prints repo-local origins relative to the top level, so discovery from a subdirectory must agree.
+    (repo / "sub").mkdir()
+    assert noninteractive_repo_git_env(repo / "sub") == noninteractive_repo_git_env(repo)
     kw._ensure_git_worktree(repo, tmp_path / "wt", "safe")
     assert (tmp_path / "wt" / "README").read_text() == "hi\n"
     (repo / "README").write_text("hi\n")  # same size, new mtime: status must re-hash it

@@ -6,14 +6,14 @@ The `js` module does not exist under CPython, so tests inject a fake
 forwarded to the page. These pin the invariants the browser runtime
 depends on:
 
-- ws frames route to the right logical socket; replies go out through
-  the bridge;
-- REST frames become ASGI invocations of the real app object and reply
-  with status/headers/body;
-- fetch_blocking round-trips through the bridge (the page's fetch()
-  answers via a `net-resp` ring frame).
+- ws frames route to the right logical socket queue;
+- REST frames become ASGI invocations of the real app object (through
+  httpx.ASGITransport) and reply with status/headers/body;
+- fetch_blocking resolves through the bridge's synchronous proxy call —
+  the page's fetch() result comes back as the call's return value.
 """
 
+import asyncio
 import base64
 import json
 import sys
@@ -34,7 +34,7 @@ class _Bridge:
     def __init__(self):
         self.ws_events = []      # (ws_id, event, payload)
         self.rest_replies = []   # (id, status, headers, bodyB64)
-        self.fetch_requests = [] # (id, url, method, headers, bodyB64)
+        self.fetch_requests = [] # (url, method, headers, bodyB64)
         self.logs = []
         self.pump_frames = []    # frames returned by pump()
 
@@ -54,8 +54,10 @@ class _Bridge:
     def restReply(self, rid, status, headers_json, body_b64):
         self.rest_replies.append((rid, status, json.loads(headers_json), body_b64))
 
-    def fetchRequest(self, req_id, url, method, headers_json, body_b64):
-        self.fetch_requests.append((req_id, url, method, json.loads(headers_json), body_b64))
+    def fetchRequest(self, url, method, headers_json, body_b64):
+        self.fetch_requests.append((url, method, json.loads(headers_json), body_b64))
+        return {"status": 200, "headers": {},
+                "body": base64.b64encode(b"ok").decode()}
 
     def log(self, level, msg):
         self.logs.append((level, msg))
@@ -90,44 +92,30 @@ def stub_app(monkeypatch):
 
 
 class TestWebSocketGlue:
-    def test_ws_open_registers_socket_and_schedules_handler(self, bridge):
+    def test_ws_open_registers_socket_queue(self, bridge):
         gw.ws_open(7, "/api/ws?x=1", {"host": "localhost"})
         assert 7 in gw._sockets
-        ws = gw._sockets[7]
-        assert ws.query_params == {"x": "1"}
-        assert ws.headers["host"] == "localhost"
+        assert isinstance(gw._sockets[7], asyncio.Queue)
 
     def test_ws_send_feeds_socket_queue(self, bridge):
-        ws = gw._FakeWS(3)
-        gw._sockets[3] = ws
+        gw._sockets[3] = asyncio.Queue()
         gw.ws_send(3, '{"id":1}')
-        assert ws._inq.get_nowait() == '{"id":1}'
+        assert gw._sockets[3].get_nowait() == '{"id":1}'
 
     def test_ws_send_unknown_id_is_noop(self, bridge):
         gw.ws_send(999, "x")  # must not raise
 
-    def test_ws_close_feeds_disconnect(self, bridge):
-        ws = gw._FakeWS(4)
-        gw._sockets[4] = ws
+    def test_ws_close_feeds_disconnect_sentinel(self, bridge):
+        q = asyncio.Queue()
+        gw._sockets[4] = q
         gw.ws_close(4)
         assert 4 not in gw._sockets
-        item = ws._inq.get_nowait()
-        assert isinstance(item, BaseException)
-
-    def test_send_text_goes_to_bridge_emit(self, bridge):
-        ws = gw._FakeWS(5)
-        coro = ws.send_text("hello")
-        try:
-            coro.send(None)
-        except StopIteration:
-            pass
-        assert (5, "message", "hello") in bridge.ws_events
+        assert isinstance(q.get_nowait(), BaseException)
 
     def test_handle_routes_ws_frames(self, bridge):
-        ws = gw._FakeWS(9)
-        gw._sockets[9] = ws
+        gw._sockets[9] = asyncio.Queue()
         gw.handle(json.dumps({"t": "ws-send", "id": 9, "data": "ping"}))
-        assert ws._inq.get_nowait() == "ping"
+        assert gw._sockets[9].get_nowait() == "ping"
 
     def test_handle_tolerates_bad_json(self, bridge):
         gw.handle("not json")
@@ -172,29 +160,20 @@ class TestRestBridge:
 
 class TestFetchBlocking:
     def test_round_trips_through_bridge(self, bridge):
-        # Simulate the page answering instantly: fetchRequest records the
-        # call, then we inject the net-resp before fetch_blocking pumps.
-        orig = bridge.fetchRequest
-
-        def answer(req_id, url, method, headers_json, body_b64):
-            orig(req_id, url, method, headers_json, body_b64)
-            gw._pending_net[req_id] = {"status": 200, "headers": {},
-                                       "body": base64.b64encode(b"ok").decode()}
-
-        bridge.fetchRequest = answer
+        # The bridge's fetchRequest resolves synchronously (coincident hands
+        # the page's resolved value back as the call result).
         resp = gw.fetch_blocking("https://api.example.test/v1", "POST",
                                  {"authorization": "Bearer x"}, "aGk=")
         assert resp["status"] == 200
         assert base64.b64decode(resp["body"]) == b"ok"
-        rid, url, method, headers, body_b64 = bridge.fetch_requests[0]
+        url, method, headers, body_b64 = bridge.fetch_requests[0]
         assert url == "https://api.example.test/v1" and method == "POST"
         assert headers == {"authorization": "Bearer x"} and body_b64 == "aGk="
 
-    def test_net_resp_frame_unblocks(self, bridge):
-        # The pump router is the same path the worker drives after ringDrain.
-        gw.handle(json.dumps({"t": "net-resp", "id": 55, "status": 204,
-                              "headers": {}, "body": ""}))
-        assert gw._pending_net[55]["status"] == 204
+    def test_defaults_fill_missing_keys(self, bridge):
+        bridge.fetchRequest = lambda *a: {}
+        resp = gw.fetch_blocking("https://api.example.test/", "GET", {}, "")
+        assert resp["status"] == 599 and resp["headers"] == {} and resp["body"] == ""
 
 
 class TestSuspensionPolicyGuardrail:
@@ -204,8 +183,7 @@ class TestSuspensionPolicyGuardrail:
     def test_frame_router_bound_by_install(self, bridge):
         gw.install()
         assert br._sched.frame_router is not None
-        ws = gw._FakeWS(11)
-        gw._sockets[11] = ws
+        gw._sockets[11] = asyncio.Queue()
         # Deliver a frame through the router as pump() would.
         br._sched.frame_router({"t": "ws-send", "id": 11, "data": "nested"})
-        assert ws._inq.get_nowait() == "nested"
+        assert gw._sockets[11].get_nowait() == "nested"

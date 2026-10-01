@@ -5,11 +5,13 @@
  * replaces window.fetch and window.WebSocket so every same-origin /api/*
  * call is served by the in-page Pyodide backend worker (browser/worker.mjs).
  *
- * Transport: page -> worker over a SharedArrayBuffer ring + Atomics
- * doorbell (the worker can be blocked in Atomics.wait inside Python, so
- * postMessage alone cannot reach it). Worker -> page uses postMessage.
- * Frames larger than the ring capacity are fragmented; records that do not
- * fit yet are queued and retried as the consumer advances.
+ * Transport: coincident (MIT) — synchronous worker->page proxy calls over
+ * SharedArrayBuffer + Atomics. The worker's pump parks inside
+ * proxy.pullInbound(ms) until this page hands over buffered inbound
+ * frames; worker->page events remain plain postMessage (fire-and-forget
+ * is fine in that direction). postMessage alone could never reach the
+ * worker while Python blocks — coincident's sync channel carries both
+ * directions.
  *
  * Requirements: cross-origin isolation (SharedArrayBuffer/Atomics), i.e.
  *   Cross-Origin-Opener-Policy: same-origin
@@ -41,79 +43,23 @@
     sessionToken = 'x'.repeat(43)
   }
 
-  // --- 2. Ring buffer to the backend worker ------------------------------
-  var RING_CAP = 4 * 1024 * 1024
-  var sab = new SharedArrayBuffer(16 + RING_CAP)
-  var hdr = new Int32Array(sab, 0, 4)   // [0]=seq doorbell [1]=write [2]=read
-  var data = new Uint8Array(sab, 16)
-  var enc = new TextEncoder()
-  var FRAG_MORE = 0x80000000            // len-field flag: more fragments follow
-  var FRAG_MAX = 1024 * 1024            // fragment payload — always fits an empty ring
-  var PENDING_MAX = 64 * 1024 * 1024    // queued-bytes cap before real drops
-
-  function ringWriteRecord(record) {   // record: framed [len|flags][payload]
-    var need = record.byteLength
-    var w = Atomics.load(hdr, 1)
-    var r = Atomics.load(hdr, 2)
-    var free = (w >= r ? RING_CAP - (w - r) : r - w) - 1
-    if (need > free) return false
-    for (var i = 0; i < need; i++) data[(w + i) % RING_CAP] = record[i]
-    w = (w + need) % RING_CAP
-    Atomics.store(hdr, 1, w)
-    Atomics.add(hdr, 0, 1)
-    Atomics.notify(hdr, 0)
-    return true
-  }
-
-  var pendingWrites = []               // FIFO of framed records awaiting space
-  var pendingBytes = 0
-  var flushTimer = null
-  function flushPending() {
-    flushTimer = null
-    while (pendingWrites.length && ringWriteRecord(pendingWrites[0])) {
-      pendingBytes -= pendingWrites.shift().byteLength
-    }
-    if (pendingWrites.length) flushTimer = setTimeout(flushPending, 4)
-  }
-  function enqueueRecord(record) {
-    pendingWrites.push(record)
-    pendingBytes += record.byteLength
-    if (pendingBytes > PENDING_MAX) {
-      var dropped = pendingWrites.shift()
-      pendingBytes -= dropped.byteLength
-      console.error('[hermes-browser] ring backpressure overflow; dropped record')
-    }
-    flushPending()
-  }
+  // --- 2. Inbound frame buffer to the backend worker ---------------------
+  // The worker pulls: its pump is a sync proxy.pullInbound(ms) call that
+  // parks until frames exist or the timeout elapses, then resolves with
+  // the drained array (JSON strings — browser.gateway.handle parses each).
+  var inbound = []
+  var pullWaiter = null
 
   function postToWorker(msg) {
-    var bytes = enc.encode(JSON.stringify(msg))
-    // Fragment oversized frames; single-producer ordering keeps fragments
-    // contiguous — the worker concatenates until a record without FRAG_MORE.
-    var dv = new DataView(new ArrayBuffer(4))
-    if (bytes.length <= FRAG_MAX) {
-      dv.setUint32(0, bytes.length, true)
-      enqueueRecord(concatBytes(dv.buffer, bytes))
-      return
+    inbound.push(msg)
+    if (pullWaiter) {
+      var r = pullWaiter
+      pullWaiter = null
+      r()
     }
-    for (var off = 0; off < bytes.length; off += FRAG_MAX) {
-      var chunk = bytes.subarray(off, Math.min(off + FRAG_MAX, bytes.length))
-      var last = off + FRAG_MAX >= bytes.length
-      var h = new DataView(new ArrayBuffer(4))
-      h.setUint32(0, last ? chunk.length : (chunk.length | FRAG_MORE), true)
-      enqueueRecord(concatBytes(h.buffer, chunk))
-    }
-  }
-  function concatBytes(a, b) {
-    var out = new Uint8Array(a.byteLength + b.byteLength)
-    out.set(new Uint8Array(a), 0)
-    out.set(b, a.byteLength)
-    return out
   }
 
   // --- 3. Backend worker --------------------------------------------------
-  var worker = new Worker('./worker.mjs', { type: 'module' })
-  var rpcLog = (window.__HERMES_API_LOG__ = [])
   var bootReady = false
   var bootWaiters = []
 
@@ -121,7 +67,7 @@
   var sockets = {}
   var nextId = 1
 
-  worker.onmessage = function (ev) {
+  function onWorkerMessage(ev) {
     var msg = ev.data
     if (msg.type === 'fetch-response' && pendingFetch[msg.id]) {
       var p = pendingFetch[msg.id]
@@ -135,8 +81,6 @@
       p.resolve(new Response(bodyBytes, { status: msg.status, headers: msg.headers }))
     } else if (msg.type === 'ws-event' && sockets[msg.id]) {
       sockets[msg.id]._onWorkerEvent(msg)
-    } else if (msg.type === 'net-request') {
-      handleNetRequest(msg)
     } else if (msg.type === 'log') {
       (msg.stream === 'err' ? console.warn : console.log)('[backend]', msg.text)
     } else if (msg.type === 'boot-ready') {
@@ -148,11 +92,53 @@
     }
   }
 
+  // Worker-side timeout loops are gone (sync proxy calls return results
+  // directly), so page handlers impose the deadlines themselves.
+  function withTimeout(p, ms, label) {
+    return new Promise(function (resolve) {
+      var timer = setTimeout(function () {
+        resolve({ error: label + ' timeout' })
+      }, ms)
+      Promise.resolve(p).then(function (r) {
+        clearTimeout(timer)
+        resolve(r)
+      }, function (e) {
+        clearTimeout(timer)
+        resolve({ error: String(e).slice(0, 300) })
+      })
+    })
+  }
+
+  // coincident proxy handlers — the worker's synchronous calls land here
+  // and the returned promise's resolution is handed back on the parked
+  // thread.
+  function registerProxyHandlers(w) {
+    w.proxy.pullInbound = function (ms) {
+      return new Promise(function (resolve) {
+        var drain = function () {
+          pullWaiter = null
+          resolve(inbound.splice(0).map(JSON.stringify))
+        }
+        if (inbound.length) return drain()
+        pullWaiter = drain
+        if (ms > 0 && ms < 2147483647) {
+          setTimeout(function () {
+            if (pullWaiter === drain) drain()
+          }, ms)
+        }
+      })
+    }
+    w.proxy.fetchRequest = function (url, method, headersJson, bodyB64) {
+      return fetchRequestDirect(url, method, headersJson, bodyB64)
+    }
+  }
+
   // The backend's Python httpx/urllib3 transports ask the page to perform
   // real fetches (TLS + CORS belong to the browser; the worker has no
-  // sockets). Replies ride back through the ring as `net-resp` frames.
-  function handleNetRequest(msg) {
-    var headers = Object.assign({}, msg.headers || {})
+  // sockets). The synchronous proxy call resolves with the response.
+  function fetchRequestDirect(url, method, headersJson, bodyB64) {
+    var headers = {}
+    try { headers = JSON.parse(headersJson || '{}') } catch (e) {}
     // Bare-browser fetch is subject to each provider's CORS header
     // allowlist; headers outside it fail preflight. x-stainless-* are
     // OpenAI-SDK build diagnostics with no request semantics; upstream's
@@ -164,19 +150,19 @@
     }
     var hostDeny = null
     try {
-      hostDeny = HOST_HEADER_DENY[new URL(msg.url).hostname] || null
+      hostDeny = HOST_HEADER_DENY[new URL(url).hostname] || null
     } catch (e) {}
     Object.keys(headers).forEach(function (k) {
       var kl = k.toLowerCase()
       if (kl.indexOf('x-stainless-') === 0) delete headers[k]
       else if (hostDeny && hostDeny.indexOf(kl) !== -1) delete headers[k]
     })
-    var init = { method: msg.method, headers: headers }
-    if (msg.bodyB64) init.body = Uint8Array.from(atob(msg.bodyB64), function (c) { return c.charCodeAt(0) })
-    var urlTag = msg.url.split('?')[0]
-    console.log('[net] -> ' + msg.method + ' ' + urlTag)
-    realFetch(msg.url, init).then(function (resp) {
-      console.log('[net] ' + msg.method + ' ' + urlTag + ' -> ' + resp.status)
+    var init = { method: method, headers: headers }
+    if (bodyB64) init.body = Uint8Array.from(atob(bodyB64), function (c) { return c.charCodeAt(0) })
+    var urlTag = url.split('?')[0]
+    console.log('[net] -> ' + method + ' ' + urlTag)
+    return withTimeout(realFetch(url, init).then(function (resp) {
+      console.log('[net] ' + method + ' ' + urlTag + ' -> ' + resp.status)
       return resp.arrayBuffer().then(function (ab) {
         var bytes = new Uint8Array(ab)
         // Chunked base64: byte-at-a-time concat is O(n^2) and a ~30MB catalog
@@ -187,11 +173,16 @@
           bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH))
         var hs = {}
         resp.headers.forEach(function (v, k) { hs[k] = v })
-        postToWorker({ t: 'net-resp', id: msg.id, status: resp.status, headers: hs, body: btoa(bin) })
+        return { status: resp.status, headers: hs, body: btoa(bin) }
       })
     }).catch(function (e) {
-      console.log('[net] ' + msg.method + ' ' + urlTag + ' -> ERR ' + String(e).slice(0, 120))
-      postToWorker({ t: 'net-resp', id: msg.id, status: 599, headers: {}, body: '', error: String(e) })
+      console.log('[net] ' + method + ' ' + urlTag + ' -> ERR ' + String(e).slice(0, 120))
+      return { status: 599, headers: {}, body: '', error: String(e) }
+    }), 120000, 'fetch').then(function (r) {
+      if (r && r.error === 'fetch timeout') {
+        return { status: 599, headers: {}, body: '', error: 'fetch timeout' }
+      }
+      return r
     })
   }
 
@@ -209,7 +200,6 @@
       return realFetch.apply(this, arguments)
     }
     var method = (init && init.method) || (input && input.method) || 'GET'
-    rpcLog.push({ kind: 'rest', method: method, path: url.pathname + url.search, ts: Date.now() })
     return new Promise(function (resolve, reject) {
       var id = nextId++
       pendingFetch[id] = { resolve: resolve, reject: reject }
@@ -270,7 +260,6 @@
     this._listeners = {}
     this._queue = []
     sockets[this._id] = this
-    rpcLog.push({ kind: 'ws-open', path: u.pathname + u.search, ts: Date.now() })
     var wsHeaders = { host: u.host, origin: window.location.origin }
     if (protocols) {
       wsHeaders['sec-websocket-protocol'] =
@@ -287,7 +276,6 @@
     send: function (d) {
       if (this.readyState === 0) { this._queue.push(d); return }
       if (this.readyState !== 1) { throw new Error('WebSocket is not open') }
-      rpcLog.push({ kind: 'ws-send', id: this._id, data: String(d).slice(0, 4000), ts: Date.now() })
       postToWorker({ t: 'ws-send', id: this._id, data: d })
     },
     close: function (code, reason) {
@@ -314,7 +302,6 @@
         for (var i = 0; i < this._queue.length; i++) this.send(this._queue[i])
         this._queue = []
       } else if (msg.event === 'message') {
-        rpcLog.push({ kind: 'ws-recv', id: this._id, data: String(msg.data).slice(0, 4000), ts: Date.now() })
         this._fire('message', { data: msg.data })
       } else if (msg.event === 'close') {
         this.readyState = 3
@@ -341,19 +328,31 @@
   // --- 6. Boot ------------------------------------------------------------
   var interruptSab = new SharedArrayBuffer(8)
   window.__HERMES_INTERRUPT__ = new Int32Array(interruptSab)
-  worker.postMessage({
-    type: 'boot',
-    sab: sab,
-    interruptSab: interruptSab,
-    pyodideUrl: './pyodide/',
-    pyZipUrl: './hermes-py.zip',
-    envZipUrl: './hermes-env.zip',
-    overlayManifestUrl: './overlay/manifest.json',
-    persistHome: true,
-    sessionToken: sessionToken,
-    publicHost: window.location.hostname,
+
+  // coincident wraps Worker: worker code calls proxy.<fn> synchronously;
+  // the handlers registered above answer them. `native` false means no
+  // cross-origin isolation — the backend cannot park, so boot fails loudly
+  // instead of hanging.
+  import('./vendor/coincident-main.js').then(function (mod) {
+    var co = mod.default()
+    var w = new co.Worker('./worker.mjs', { type: 'module' })
+    registerProxyHandlers(w)
+    w.onmessage = onWorkerMessage
+    w.postMessage({
+      type: 'boot',
+      interruptSab: interruptSab,
+      pyodideUrl: './pyodide/',
+      pyZipUrl: './hermes-py.zip',
+      envZipUrl: './hermes-env.zip',
+      overlayManifestUrl: './overlay/manifest.json',
+      persistHome: true,
+      sessionToken: sessionToken,
+      publicHost: window.location.hostname,
+    })
+  }).catch(function (e) {
+    console.error('[hermes-browser] transport init failed:', e)
   })
 
   window.__HERMES_BOOTSTRAP__ = { sessionToken: sessionToken, intercepted: true }
-  console.log('[hermes-browser] bootstrap installed; api log at window.__HERMES_API_LOG__')
+  console.log('[hermes-browser] bootstrap installed')
 })()

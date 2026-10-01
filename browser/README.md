@@ -16,10 +16,11 @@ isn't possible or wanted.
 | File | Role |
 |---|---|
 | `runtime.py` | Cooperative runtime: `threading`/`queue`/`time.sleep` emulation over a single wasm thread. Daemon threads suspend on blocking primitives and are rescheduled by a deadline scheduler; the asyncio loop is stepped from the same pump. |
-| `gateway.py` | In-process server: routes page frames to the real `tui_gateway.ws.handle_ws` coroutine (queue-backed socket object) and the real `web_server.app` ASGI app. Also owns the page-mediated fetch path used by httpx/urllib3/urllib. |
+| `gateway.py` | In-process server: drives the real `/api/ws` ASGI route per page socket via `httpx-ws` and the real `web_server.app` via `httpx.ASGITransport`. Also owns the page-mediated fetch path used by httpx/urllib3/urllib. |
 | `bootstrap_py.py` | Runs before any upstream import: native-module stubs (pty, termios, resource, ...), socket connect guards (fail fast, never wedge), EOF stdin, exit guards, and the transport patch that routes all HTTP egress through the page's `fetch()`. |
-| `worker.mjs` | Web Worker: loads Pyodide, unpacks the Python tree + deps, mounts OPFS for `~/.hermes`, boots `browser.gateway`, then drains the inbound ring into Python forever. |
-| `page.js` | Page-side half: installs `window.fetch`/`window.WebSocket` shims for same-origin `/api/*`, owns the SAB ring writer with fragmentation + backpressure, and answers `net-request` fetches from the backend. |
+| `worker.mjs` | Web Worker: loads Pyodide, unpacks the Python tree + deps, mounts OPFS for `~/.hermes`, boots `browser.gateway`, then pulls inbound frames into Python forever via `proxy.pullInbound`. |
+| `page.js` | Page-side half: installs `window.fetch`/`window.WebSocket` shims for same-origin `/api/*`, answers `pullInbound` with buffered frames, and services `fetchRequest` proxy calls from the backend. |
+| `vendor/` | Vendored `coincident` dist (MIT) — the sync worker↔page transport. |
 | `index.html` | Minimal demo host page: boots the worker and answers a `gateway.ping` JSON-RPC over `/api/ws`. |
 | `serve.mjs` | Static dev server with the required COOP/COEP headers + a `/mock-llm` OpenAI-compatible endpoint for smoke tests. |
 
@@ -27,19 +28,23 @@ isn't possible or wanted.
 
 ```
 page (page.js)                worker.mjs                 Python (Pyodide)
-fetch()/WebSocket ──SAB ring──> ringDrain ──────────────> gateway.handle()
-                     postMessage <── emit/restReply <── _FakeWS / _handle_rest
-fetch() real net  <──────────── net-request <────────── fetch_blocking()
+fetch()/WebSocket ──inbound──> proxy.pullInbound ───────> gateway.handle()
+                     postMessage <── emit/restReply <── ws tasks / _handle_rest
+fetch() real net  <──proxy.fetchRequest <────────────── fetch_blocking()
 ```
 
-- **Inbound (page→worker):** `SharedArrayBuffer` ring + `Atomics.wait`
-  doorbell. `postMessage` can't reach a worker blocked inside Python, so
-  all inbound frames ride the ring. Frames >1MB are fragmented
-  (`FRAG_MORE` flag); writes that don't fit are queued and retried.
+- **Transport is [coincident](https://github.com/WebReflection/coincident)
+  (MIT)** — synchronous worker→page proxy calls over
+  `SharedArrayBuffer`/`Atomics`. `postMessage` can't reach a worker
+  blocked inside Python, so inbound frames ride the pull channel instead.
+- **Inbound (page→worker):** `postToWorker` buffers frames; the worker's
+  `bridge.pump(ms)` resolves as a sync `proxy.pullInbound(ms)` call once
+  frames exist or the timeout elapses.
 - **Outbound (worker→page):** `postMessage`, fire-and-forget.
-- **Blocking Python waits** (approvals, fetches, thread joins) re-enter
-  `bridge.pump()` — the same ring drain — so the interpreter never wedges
-  while waiting on the page.
+- **Blocking Python waits** (approvals, fetches, thread joins) are sync
+  proxy calls that park the worker the same way, so the interpreter never
+  wedges while waiting on the page — and no req/resp id matching exists
+  on either side.
 
 ## Requirements
 
@@ -59,8 +64,10 @@ reference `assemble`/`pack` pipeline):
 
 - `pyodide/` — Pyodide distribution (`pyodide.mjs` + stdlib)
 - `hermes-py.zip` — the Hermes source tree + this `browser/` package
-- `hermes-env.zip` — pure-Python wheels (openai, httpx[socks], requests,
-  jinja2, websockets, rich, ...)
+- `hermes-env.zip` — pure-Python wheels (openai, httpx[socks], httpx-ws,
+  wsproto, requests, jinja2, websockets, rich, ...)
+- `vendor/` — `coincident-main.js` + `coincident-worker.js` (already in
+  this tree; the build just copies it next to `index.html`)
 - `overlay/manifest.json` — `[{"name": "browser/runtime.py", "url": "..."}]`
   listing files written into `/hermes-py/` before boot
 
@@ -83,8 +90,9 @@ daemons, suspension is opt-in for loop daemons only (linear work never
 replays), `join()` pumps rather than suspends, and the pump tolerates
 nested drains.
 
-`test_gateway.py` exercises the frame router, `_FakeWS` socket glue, REST
-→ASGI dispatch, and `fetch_blocking` round-trip against a fake `js` bridge.
+`test_gateway.py` exercises the frame router, the queue-backed socket glue,
+REST → `ASGITransport` dispatch, and the synchronous `fetch_blocking`
+round-trip against a fake `js` bridge.
 
 ## Security boundaries
 

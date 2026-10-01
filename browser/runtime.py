@@ -8,8 +8,8 @@ provides the execution model upstream code expects, faithfully emulated:
                            scheduler when their deadline passes
 - threading.Event/Condition/Lock/Timer, queue.Queue,
   concurrent.futures.ThreadPoolExecutor -> pump-based waits: while blocked,
-  the interpreter drains inbound transport frames from a SharedArrayBuffer
-  ring (filled by the JS bridge owner, no event loop needed) and runs due
+  the interpreter drains inbound transport frames pulled from the page via
+  a synchronous coincident proxy call (no event loop needed) and runs due
   scheduler callbacks
 - time.sleep            -> pump for the duration, keeping transport live
 

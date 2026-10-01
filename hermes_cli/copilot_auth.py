@@ -247,6 +247,22 @@ def _exchange_lock_for(fp: str) -> threading.Lock:
         return lock
 
 
+def _purge_stale_copilot_auth_caches() -> None:
+    """Remove expired token state so credential rotation does not grow the process forever."""
+    now = time.time()
+    with _exchange_locks_guard:
+        for fp, cached in list(_jwt_cache.items()):
+            if not _cache_entry_fresh(cached):
+                _jwt_cache.pop(fp, None)
+        for fp, fail_until in list(_exchange_failure_cache.items()):
+            if fail_until <= now:
+                _exchange_failure_cache.pop(fp, None)
+        live = _jwt_cache.keys() | _exchange_failure_cache.keys()
+        for fp in list(_exchange_locks):
+            if fp not in live:
+                _exchange_locks.pop(fp, None)
+
+
 _EXCHANGE_FAILURE_TTL_TRANSIENT_SECONDS = 60.0     # network blips: retry soon
 _EXCHANGE_FAILURE_TTL_PERMANENT_SECONDS = 1800.0   # 401/403/404: won't heal
 # The token itself is rejected — retrying with backoff just blocks the caller.
@@ -423,6 +439,7 @@ def exchange_copilot_token(
     accounts), else derived from the token's ``proxy-ep``; individual accounts have neither,
     so it is None. Cached in-process until close to expiry. Raises ``ValueError`` on failure.
     """
+    _purge_stale_copilot_auth_caches()
     fp = _token_fingerprint(raw_token)
     # Fast paths outside the lock: a valid in-process JWT needs no exchange, and a recent failure
     # means queueing behind the in-flight holder (up to ~50 s) would only park an executor thread

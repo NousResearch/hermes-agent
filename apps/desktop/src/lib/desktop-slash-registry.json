@@ -37,6 +37,7 @@
   "/gateway": "terminal",
   "/generate-pet": null,
   "/goal": null,
+  "/group": "messaging",
   "/handoff": null,
   "/hatch": null,
   "/hb": null,

@@ -1502,8 +1502,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         from gateway.session_ingress import executing_admission
         pending_event = None
         pending = None
-        preserve_pending_for_restart = self._draining and self._queue_during_drain_enabled()
-        if result and adapter and session_key and not preserve_pending_for_restart:
+        # A draining gateway starts no new turn, so leave queued work in the slot: the shutdown flush
+        # persists it for the next process. That covers /queue in every busy mode, not only the
+        # follow-ups the drain notice promised to keep.
+        if result and adapter and session_key and not self._draining:
             pending_event = _dequeue_pending_event(adapter, session_key)
             if result.get("compression_exhausted") and pending_event is not None:
                 self._defer_past_exhaustion_reset(result, adapter, source, session_key, pending_event)

@@ -18,7 +18,7 @@ pwd = pytest.importorskip("pwd")
 grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
-from hermes_cli.gateway_launchd import launchd_program_arguments
+from hermes_cli.gateway_launchd import configured_launchd_identity, launchd_program_arguments
 from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
@@ -1727,6 +1727,68 @@ class TestProfileArg:
         assert argv[-3:] == [str(profile_dir / "logs" / "gateway.log"), "2>>", str(profile_dir / "logs" / "gateway.error.log")]
         # The wrapper's own ps line must never be taken for the gateway (stop/status would signal osascript).
         assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
+
+    def test_launchd_plist_direct_identity_runs_launcher_directly(self, tmp_path, monkeypatch):
+        """`gateway.launchd_network_identity: direct` (#123118) drops the osascript wrapper: the
+        launcher chain itself is the ProgramArguments, so TCC/Privacy & Security attributes the
+        job to Hermes. No shell may remain in the job root: stdout/stderr keep flowing to the
+        plist's Standard*Path sinks and the stderr wrapper's --error-log file."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                            lambda: {"gateway": {"launchd_network_identity": "direct"}})
+
+        plist = gateway_cli.generate_launchd_plist()
+        program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
+
+        # Job root is the Hermes launcher, not /usr/bin/osascript, and carries no shell
+        # redirection tokens — launchd's Standard*Path keys name the same log files.
+        assert program_args[0] == "/usr/bin/python3"
+        assert "osascript" not in " ".join(program_args)
+        assert not any(">>" in part for part in program_args)
+        separator = program_args.index("--")
+        assert program_args[separator - 2:separator] == ["--error-log", str(profile_dir / "logs" / "gateway.error.log")]
+        assert program_args[-5:] == ["--profile", "mybot", "gateway", "run", "--external-supervisor"]
+        assert "--replace" not in program_args
+        # Same plist log sinks as the osascript shape, so the operator's log tooling is unchanged.
+        assert f"<string>{profile_dir / 'logs' / 'gateway.log'}</string>" in plist
+        assert f"<string>{profile_dir / 'logs' / 'gateway.error.log'}</string>" in plist
+
+    def test_launchd_direct_wrapper_ps_line_not_taken_for_gateway(self):
+        """The direct-identity job root (`hermes --run-module hermes_cli.stderr_timestamp … -- …
+        gateway run`) must not be matched as the gateway itself, mirroring the osascript wrapper:
+        the gateway is the wrapper's child and is matched on its own command line."""
+        wrapper = ("/opt/hermes/.hermes/bin/hermes --run-module hermes_cli.stderr_timestamp "
+                   "--error-log /tmp/gateway.error.log -- /opt/hermes/.hermes/bin/hermes "
+                   "--profile mybot gateway run --external-supervisor")
+        assert status.looks_like_gateway_command_line(wrapper) is False
+        child = "/opt/hermes/.hermes/bin/hermes --profile mybot gateway run --external-supervisor"
+        assert status.looks_like_gateway_command_line(child) is True
+
+    def test_configured_launchd_identity_fails_safe_to_osascript(self):
+        """Missing/invalid config falls back to the osascript identity: only the exact string
+        `direct` opts out of the platform-binary Local Network identity (#71206)."""
+        assert configured_launchd_identity({"gateway": {"launchd_network_identity": "direct"}}) == "direct"
+        assert configured_launchd_identity({}) == "osascript"
+        assert configured_launchd_identity({"gateway": {}}) == "osascript"
+        assert configured_launchd_identity({"gateway": {"launchd_network_identity": "osascript"}}) == "osascript"
+        assert configured_launchd_identity({"gateway": {"launchd_network_identity": "DIRECT"}}) == "osascript"
+        assert configured_launchd_identity({"gateway": {"launchd_network_identity": None}}) == "osascript"
+        assert configured_launchd_identity({"gateway": {"launchd_network_identity": 1}}) == "osascript"
+        assert configured_launchd_identity({"gateway": "not-a-mapping"}) == "osascript"
+
+    def test_configured_launchd_identity_fails_safe_when_config_unloadable(self, monkeypatch):
+        """An unloadable config keeps the default osascript identity (the LAN grant must not be
+        lost to a broken config.yaml)."""
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", _boom)
+        assert configured_launchd_identity() == "osascript"
 
     @pytest.mark.platforms("macos")
     def test_launchd_osascript_wrapper_preserves_process_group_and_exit_status(self, tmp_path):

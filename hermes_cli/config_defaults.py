@@ -2096,6 +2096,17 @@ DEFAULT_CONFIG = {
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
 
+        # macOS LaunchAgent job identity for the gateway. "osascript" (default): ProgramArguments wrap
+        # `gateway run` in a JXA `/usr/bin/osascript` script, so the job root is an Apple platform
+        # binary — the identity macOS Local Network Privacy exempts, keeping launchd-spawned LAN
+        # connects alive (#71206). "direct": ProgramArguments run the Hermes launcher itself, so
+        # TCC/Privacy & Security attributions (Calendar/EventKit probes, OneDrive File Provider, the
+        # generic "osascript" Background App Activity entry) land on an identifiable Hermes process
+        # (#123118) — but the job loses the platform-binary LAN identity and #71206 symptoms (LAN
+        # connects dying with EHOSTUNREACH) may return. Choose per host which property matters;
+        # `hermes gateway start`/`update` regenerate the plist, so the switch applies on the next
+        # service refresh. Other values fall back to "osascript".
+        "launchd_network_identity": "osascript",
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,

@@ -685,6 +685,12 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
         return None
+    # The launchd job's direct-identity wrapper (gateway.launchd_network_identity: direct) runs the
+    # launcher as ``… hermes --run-module hermes_cli.stderr_timestamp … -- … gateway run``. Like the
+    # osascript wrapper it is the supervisor-owned job root, not the gateway: its child carries the
+    # real ``gateway run`` argv and is matched on its own command line.
+    if any(t == "hermes_cli.stderr_timestamp" for t in tokens):
+        return None
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
         return "run"

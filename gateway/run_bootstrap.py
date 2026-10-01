@@ -315,6 +315,9 @@ async def _start_gateway_start_control_socket(runner):
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})
         _control_server.ticket_store = runner.session_ticket_store
+        # `hermes groups`: the authenticated local account allows or revokes messaging chats.
+        from gateway.group_chat_access import control_verb as _group_chats_verb
+        _control_server.private_handlers["group-chats"] = _group_chats_verb(runner, _main_loop)
         if not await _control_server.start():
             _control_server = None
         else:

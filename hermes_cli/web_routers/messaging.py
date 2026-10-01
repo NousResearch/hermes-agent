@@ -832,6 +832,33 @@ async def get_messaging_platforms(profile: Optional[str] = None):
     return await asyncio.to_thread(_run)
 
 
+@router.get("/api/messaging/whatsapp/identity")
+async def get_whatsapp_identity(profile: Optional[str] = None):
+    """Return the live self-chat account identity, or a fail-closed result."""
+    def _run() -> dict[str, Any]:
+        with _profile_scope(profile) as scoped_dir:
+            session_path = _whatsapp_session_path()
+            payload = _platform_payloads(scoped_dir, [_require_platform("whatsapp")])[0]
+            mode = str(payload.get("whatsapp_setup", {}).get("mode") or "").strip()
+            account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
+            connected = (
+                payload.get("gateway_running") is True
+                and payload.get("state") == "connected"
+                and mode == "self-chat"
+                and bool(account_phone)
+            )
+            if not connected:
+                account_id = account_name = account_phone = None
+            return {
+                "connected": connected,
+                "account_id": account_id,
+                "account_name": account_name,
+                "account_phone": account_phone,
+            }
+
+    return await asyncio.to_thread(_run)
+
+
 def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Optional[str]) -> Optional[str]:
     """Reason enabling ``platform_id`` on the target profile is pointless under a multiplexed
     gateway, or ``None`` when allowed.

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import time
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_models as _web_models
@@ -117,6 +118,60 @@ def test_start_whatsapp_onboarding_existing_creds_returns_linked_account(monkeyp
     assert old_proc.terminated is True
     assert _web_server_messaging._whatsapp_onboarding_sessions["existing-creds"].account_phone == "15551234567"
     _web_server_messaging._whatsapp_onboarding_sessions.clear()
+
+
+def test_whatsapp_identity_fails_closed_without_live_self_chat(monkeypatch, tmp_path):
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "creds.json").write_text(
+        '{"me":{"id":"15551234567:1@s.whatsapp.net","name":"Hermes Bot"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_rt_messaging, "_whatsapp_session_path", lambda: session_dir)
+    monkeypatch.setattr(_rt_messaging, "_profile_scope", lambda profile: contextlib.nullcontext(None))
+    monkeypatch.setattr(
+        _rt_messaging,
+        "_platform_payloads",
+        lambda scoped_dir, entries: [{
+            "gateway_running": True,
+            "state": "connected",
+            "whatsapp_setup": {"mode": "bot"},
+        }],
+    )
+    result = asyncio.run(_rt_messaging.get_whatsapp_identity())
+    assert result == {
+        "connected": False,
+        "account_id": None,
+        "account_name": None,
+        "account_phone": None,
+    }
+
+
+def test_whatsapp_identity_returns_live_self_chat_account(monkeypatch, tmp_path):
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "creds.json").write_text(
+        '{"me":{"id":"15551234567:1@s.whatsapp.net","name":"Hermes Bot"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_rt_messaging, "_whatsapp_session_path", lambda: session_dir)
+    monkeypatch.setattr(_rt_messaging, "_profile_scope", lambda profile: contextlib.nullcontext(None))
+    monkeypatch.setattr(
+        _rt_messaging,
+        "_platform_payloads",
+        lambda scoped_dir, entries: [{
+            "gateway_running": True,
+            "state": "connected",
+            "whatsapp_setup": {"mode": "self-chat"},
+        }],
+    )
+    result = asyncio.run(_rt_messaging.get_whatsapp_identity())
+    assert result == {
+        "connected": True,
+        "account_id": "15551234567:1@s.whatsapp.net",
+        "account_name": "Hermes Bot",
+        "account_phone": "15551234567",
+    }
 
 
 

@@ -299,6 +299,15 @@ class TestValidateSignature:
                                              "webhook-signature": "v1,AAAA"})
         assert adapter._validate_signature(req_partial, b"{}", "legacy-token") is False
 
+    def test_hermes_outbound_signature_accepts(self):
+        """Hermes outbound webhooks sign with X-Hermes-Signature-256."""
+        adapter = _make_adapter()
+        body = b'{"hello": "world"}'
+        secret = "hermes-secret"
+        sig = _github_signature(body, secret)  # same sha256 math
+        req = _mock_request(headers={"X-Hermes-Signature-256": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
 
 # ===================================================================
 # Prompt rendering

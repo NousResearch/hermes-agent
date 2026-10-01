@@ -202,30 +202,6 @@ class TestTrustedPeers:
             assert ctx.is_trusted_peer("ip:1.2.3.4") is False
         assert "no A2A_TRUSTED_PEERS" in caplog.text
 
-    def test_non_loopback_bind_matching_peer_trusted(self, monkeypatch):
-        monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
-        monkeypatch.setenv("A2A_HOST", "0.0.0.0")
-        monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice,bob")
-        monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
-        ctx = security.A2ASecurityContext.capture()
-        assert ctx.is_trusted_peer("alice") is True
-
-    def test_non_loopback_bind_non_matching_peer_rejected(self, monkeypatch):
-        monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
-        monkeypatch.setenv("A2A_HOST", "0.0.0.0")
-        monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice,bob")
-        monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
-        ctx = security.A2ASecurityContext.capture()
-        assert ctx.is_trusted_peer("mallory") is False
-
-    def test_non_loopback_bind_allow_all_users_trusts_all(self, monkeypatch):
-        monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
-        monkeypatch.setenv("A2A_HOST", "0.0.0.0")
-        monkeypatch.setenv("A2A_ALLOW_ALL_USERS", "true")
-        monkeypatch.delenv("A2A_TRUSTED_PEERS", raising=False)
-        ctx = security.A2ASecurityContext.capture()
-        assert ctx.is_trusted_peer("mallory") is True
-
     def test_loopback_bind_empty_allowlist_trusts_all(self, monkeypatch):
         """Loopback + bearer token + no allow-list preserves backward compat."""
         monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")

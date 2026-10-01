@@ -3174,102 +3174,99 @@ class TestCreateAgentModelRecovery:
 # ---------------------------------------------------------------------------
 
 
-class TestGovF25cPersistGatedIdempotency:
-    """The idempotency cache's persist-gating is OPT-IN at both layers: omitting the opt-in keeps
-    the stock 'cache any completed result' behaviour, while a durable caller (X-Hermes-Require-Persist
-    at the route / cache_if at the cache) keeps an UNPERSISTED result OUT of the cache so a same-key
-    retry re-runs until the turn commits."""
+async def _cache_calls(*, cache_if, results_persisted):
+    """Drive _IdempotencyCache.get_or_set twice under one key and return how often compute ran.
 
-    @staticmethod
-    async def _cache_calls(*, cache_if, results_persisted):
-        """Drive _IdempotencyCache.get_or_set twice under one key and return how often compute ran."""
-        cache = _IdempotencyCache()
-        calls = {"n": 0}
+    cache_if=None OMITS the kwarg (the stock default path), so the regression guard proves a caller
+    that does not opt in gets byte-identical caching — not merely that an explicit None behaves so."""
+    cache = _IdempotencyCache()
+    calls = {"n": 0}
 
-        async def compute():
-            calls["n"] += 1
-            return ({"turn_persisted": results_persisted}, {"total_tokens": 1})
+    async def compute():
+        calls["n"] += 1
+        return ({"turn_persisted": results_persisted}, {"total_tokens": 1})
 
-        await cache.get_or_set("k", "fp", compute, cache_if=cache_if)
-        await cache.get_or_set("k", "fp", compute, cache_if=cache_if)
-        return calls["n"]
+    cache_kwargs = {} if cache_if is None else {"cache_if": cache_if}
+    await cache.get_or_set("k", "fp", compute, **cache_kwargs)
+    await cache.get_or_set("k", "fp", compute, **cache_kwargs)
+    return calls["n"]
 
-    @staticmethod
-    async def _route_runs(adapter, *, key, require_persist, persisted, repeats):
-        """Drive the real _run_idempotent under one key `repeats` times; return how often compute ran.
 
-        Exercises the route's X-Hermes-Require-Persist branch + _cache_if_persisted predicate against
-        a fresh process-global cache, so a cached repeat does not re-run compute."""
-        import gateway.platforms.api_server as _api
-        _api._idem_cache = _IdempotencyCache()  # isolate from other tests' shared global
-        request = MagicMock()
-        headers = {"Idempotency-Key": key}
-        if require_persist:
-            headers["X-Hermes-Require-Persist"] = "1"
-        request.headers = headers
-        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
-        calls = {"n": 0}
+async def _route_runs(adapter, *, key, require_persist, persisted, repeats):
+    """Drive the real _run_idempotent under one key `repeats` times; return how often compute ran.
 
-        async def compute():
-            calls["n"] += 1
-            return ({"final_response": "ok", "turn_persisted": persisted}, {"total_tokens": 1})
+    Exercises the route's X-Hermes-Require-Persist branch + _cache_if_persisted predicate against
+    a fresh process-global cache, so a cached repeat does not re-run compute."""
+    import gateway.platforms.api_server as _api
+    _api._idem_cache = _IdempotencyCache()  # isolate from other tests' shared global
+    request = MagicMock()
+    headers = {"Idempotency-Key": key}
+    if require_persist:
+        headers["X-Hermes-Require-Persist"] = "1"
+    request.headers = headers
+    body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+    calls = {"n": 0}
 
-        token = _api_request_profile.set("profile-durable")
-        try:
-            for _ in range(repeats):
-                _outcome, err = await adapter._run_idempotent(
-                    request, body, compute, log_label="test",
-                    fingerprint_keys=["model", "messages"], route="chat_completions")
-                assert err is None
-        finally:
-            _api_request_profile.reset(token)
-        return calls["n"]
+    async def compute():
+        calls["n"] += 1
+        return ({"final_response": "ok", "turn_persisted": persisted}, {"total_tokens": 1})
 
-    @pytest.mark.asyncio
-    async def test_ac_gov_f25_c_6(self, adapter, monkeypatch):
-        """_IdempotencyCache.get_or_set cache_if is OPT-IN at the cache AND the route: omit == stock caching; persist-required caches only committed results."""
-        # --- cache unit level ---
-        assert await self._cache_calls(cache_if=None, results_persisted=False) == 1
-        assert await self._cache_calls(cache_if=lambda r: False, results_persisted=False) == 2
-
-        def _boom(_r):
-            raise RuntimeError("bad predicate")
-        # a raising predicate must fail toward re-running, never poison the cache
-        assert await self._cache_calls(cache_if=_boom, results_persisted=False) == 2
-
-        # --- route level (real _run_idempotent) ---
-        assert await self._route_runs(adapter, key="k-ord", require_persist=False, persisted=False, repeats=2) == 1
-        assert await self._route_runs(adapter, key="k-rp", require_persist=True, persisted=False, repeats=2) == 2
-        assert await self._route_runs(adapter, key="k-rp2", require_persist=True, persisted=True, repeats=2) == 1
-
-    @pytest.mark.asyncio
-    async def test_persist_required_cache_scopes_by_session(self, adapter):
-        """A persist receipt is per-session: two persist-required wakes with the SAME Idempotency-Key
-        and body but DIFFERENT X-Hermes-Session-Id each run their own turn; a repeat of one session is
-        deduped, never served the other session's receipt."""
-        import gateway.platforms.api_server as _api
-        _api._idem_cache = _IdempotencyCache()
-        calls = {"n": 0}
-
-        async def compute():
-            calls["n"] += 1
-            return ({"final_response": "ok", "turn_persisted": True}, {"total_tokens": 1})
-
-        async def _post(session_id):
-            request = MagicMock()
-            request.headers = {"Idempotency-Key": "k", "X-Hermes-Require-Persist": "1",
-                               "X-Hermes-Session-Id": session_id}
-            body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+    token = _api_request_profile.set("profile-durable")
+    try:
+        for _ in range(repeats):
             _outcome, err = await adapter._run_idempotent(
                 request, body, compute, log_label="test",
                 fingerprint_keys=["model", "messages"], route="chat_completions")
             assert err is None
+    finally:
+        _api_request_profile.reset(token)
+    return calls["n"]
 
-        token = _api_request_profile.set("profile-durable")
-        try:
-            await _post("sess-A")
-            await _post("sess-A")
-            await _post("sess-B")
-        finally:
-            _api_request_profile.reset(token)
-        assert calls["n"] == 2
+
+@pytest.mark.asyncio
+async def test_ac_gov_f25_c_6(adapter):
+    """_IdempotencyCache.get_or_set cache_if is OPT-IN at the cache AND the route: omit == stock caching; persist-required caches only committed results."""
+    assert await _cache_calls(cache_if=None, results_persisted=False) == 1
+    assert await _cache_calls(cache_if=lambda r: False, results_persisted=False) == 2
+
+    def _boom(_r):
+        raise RuntimeError("bad predicate")
+    # a raising predicate must fail toward re-running, never poison the cache
+    assert await _cache_calls(cache_if=_boom, results_persisted=False) == 2
+
+    assert await _route_runs(adapter, key="k-ord", require_persist=False, persisted=False, repeats=2) == 1
+    assert await _route_runs(adapter, key="k-rp", require_persist=True, persisted=False, repeats=2) == 2
+    assert await _route_runs(adapter, key="k-rp2", require_persist=True, persisted=True, repeats=2) == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_required_cache_scopes_by_session(adapter):
+    """A persist receipt is per-session: two persist-required wakes with the SAME Idempotency-Key
+    and body but DIFFERENT X-Hermes-Session-Id each run their own turn; a repeat of one session is
+    deduped, never served the other session's receipt."""
+    import gateway.platforms.api_server as _api
+    _api._idem_cache = _IdempotencyCache()
+    calls = {"n": 0}
+
+    async def compute():
+        calls["n"] += 1
+        return ({"final_response": "ok", "turn_persisted": True}, {"total_tokens": 1})
+
+    async def _post(session_id):
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": "k", "X-Hermes-Require-Persist": "1",
+                           "X-Hermes-Session-Id": session_id}
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        _outcome, err = await adapter._run_idempotent(
+            request, body, compute, log_label="test",
+            fingerprint_keys=["model", "messages"], route="chat_completions")
+        assert err is None
+
+    token = _api_request_profile.set("profile-durable")
+    try:
+        await _post("sess-A")
+        await _post("sess-A")
+        await _post("sess-B")
+    finally:
+        _api_request_profile.reset(token)
+    assert calls["n"] == 2

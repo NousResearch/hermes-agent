@@ -5,6 +5,16 @@ signature/data values, then filter those blocks from each rebuilt request copy. 
 needed beyond the immediate retry because context selection and process resume can rebuild
 from canonical history later. The state belongs to one session (and is carried onto its
 compression continuation); it applies only where Anthropic signs the blocks.
+
+The fingerprinting is deliberately coarse: one signature 400 marks every signed block in the
+rejected request, so the session falls back to stripping that history (one cache miss, then
+stable) while blocks produced later still replay. The 400's ``messages.N.content.M`` path indexes
+the converted wire, but recovery only sees the pre-conversion ``api_messages``; system extraction,
+tool-result folding and same-role merges shift both indexes, so targeting one block from that path
+could suppress a valid block and resend the bad one.
+
+Recovery covers every native model, including last-turn-only ones: their latest turn still carries
+signed blocks in ordered carriers, which the old ``reasoning_details``-only repair left in place.
 """
 
 from __future__ import annotations

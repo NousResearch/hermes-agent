@@ -191,6 +191,10 @@ _PRESERVED = [
     ("claude-opus-4-5-20251101", True), ("claude-opus-4-6-20250414", True),
     ("claude-sonnet-4-5-20250929", False), ("claude-opus-5", True), ("claude-sonnet-5-5", True),
     ("claude-fable-5-1", True), ("claude-mythos-5", True), ("claude-mythos-preview", True),
+    # Future ids keep by default; known last-turn-only generations and non-Claude ids do not.
+    ("claude-fable-5-2", True), ("claude-mythos-6", True), ("claude-newfamily-7", True),
+    ("claude-haiku-5", False), ("claude-3-7-sonnet-20250219", False), ("claude-sonnet-4", False),
+    ("hermes-4-405b", False),
 ]
 # case -> (model, route, number of growing thinking blocks that must reach the wire)
 _ACCOUNTING_CASES = {
@@ -295,7 +299,7 @@ def test_estimates_charge_exactly_the_thinking_the_wire_replays(tmp_path, monkey
 @pytest.mark.parametrize(
     "boundary",
     ["same_agent", "rebuild", "session_switch", "compression_child", "context_selection",
-     "carrier", "unfingerprintable", "kimi_route"],
+     "carrier", "unfingerprintable", "kimi_route", "future_family"],
 )
 def test_rejected_thinking_never_returns_and_nothing_else_is_suppressed(
     tmp_path, monkeypatch, boundary
@@ -307,7 +311,11 @@ def test_rejected_thinking_never_returns_and_nothing_else_is_suppressed(
     from agent.conversation_compression import _carry_session_state_to_child
 
     db = _session_db(tmp_path, "s1", "s2")
-    agent = _agent(db, route=KIMI, model="kimi-k2.5") if boundary == "kimi_route" else _agent(db)
+    agent = (
+        _agent(db, route=KIMI, model="kimi-k2.5") if boundary == "kimi_route"
+        else _agent(db, model="claude-fable-5-2") if boundary == "future_family"
+        else _agent(db)
+    )
     agent._usage_anchor = {"prompt_tokens": 999}
     _patch_assembly_loop(
         monkeypatch, _select_canonical_clone if boundary == "context_selection" else None

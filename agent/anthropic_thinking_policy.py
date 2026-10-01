@@ -4,6 +4,11 @@ Anthropic preserves and bills prior assistant thinking on Opus 4.5+ and
 Sonnet 4.6+ (plus the newer Fable/Mythos families). Older models accept
 replayed blocks but strip them server-side. Keep the model capability in
 one place so message conversion and context accounting cannot diverge.
+
+Unknown or future Claude ids default to keep: replaying a block the API
+strips costs nothing, while stripping on a model that keeps it rewrites the
+cached prefix on every call. Only the known last-turn-only generations
+(Haiku, Claude 3, Opus < 4.5, Sonnet < 4.6) strip. Non-Claude ids never keep.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ _CLAUDE_VERSION_RE = re.compile(
     r"claude[-_.](opus|sonnet|fable|mythos)[-_.](\d+)(?:[-_.](\d{1,2})(?=$|[-_.]))?",
     re.IGNORECASE,
 )
+_LAST_TURN_ONLY_RE = re.compile(r"haiku|claude[-_.]?3(?!\d)", re.IGNORECASE)
 
 
 def _claude_family_version(model: Any) -> tuple[str, tuple[int, int]] | None:
@@ -42,21 +48,13 @@ def _claude_family_version(model: Any) -> tuple[str, tuple[int, int]] | None:
 
 def model_preserves_prior_thinking(model: Any) -> bool:
     """Whether Anthropic keeps prior assistant thinking in model-visible context."""
-    if isinstance(model, str) and re.search(
-        r"claude[-_.]mythos[-_.]preview", model.strip(), re.IGNORECASE
-    ):
-        return True
+    if not isinstance(model, str) or "claude" not in model.lower() or _LAST_TURN_ONLY_RE.search(model):
+        return False
     parsed = _claude_family_version(model)
     if parsed is None:
-        return False
+        return True
     family, version = parsed
-    if family == "opus":
-        return version >= (4, 5)
-    if family == "sonnet":
-        return version >= (4, 6)
-    if family in {"fable", "mythos"}:
-        return version in {(5, 0), (5, 1)}
-    return False
+    return version >= {"opus": (4, 5), "sonnet": (4, 6)}.get(family, (5, 0))
 
 
 def anthropic_thinking_route(base_url: Any, model: Any) -> str:

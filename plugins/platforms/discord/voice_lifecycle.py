@@ -1,4 +1,4 @@
-"""Discord disconnect and voice inactivity lifecycle."""
+"""Discord client and voice-channel connection lifecycle."""
 
 from __future__ import annotations
 
@@ -161,10 +161,12 @@ class DiscordVoiceLifecycleMixin:
         if source is not None:
             self._voice_sources[guild_id] = source
 
-    async def leave_voice_channel(self: DiscordAdapter, guild_id: int) -> None:
-        """Disconnect from the voice channel in a guild."""
+    async def leave_voice_channel(self: DiscordAdapter, guild_id: int) -> Optional[int]:
+        """Disconnect and return the text channel bound to the ended call."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            text_channel_id = self._voice_text_channels.get(guild_id)
             await self._leave_voice_channel_locked(guild_id)
+            return text_channel_id
 
     async def _leave_voice_channel_locked(self: DiscordAdapter, guild_id: int) -> None:
         receiver = self._voice_receivers.pop(guild_id, None)

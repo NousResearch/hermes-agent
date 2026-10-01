@@ -1471,7 +1471,7 @@ class GatewayTurnMixin(GatewayQueuedFollowupMixin, GatewayPendingDrainMixin):
         model instruction, not authored text) — regardless of the toggle; only the in-context
         RENDER is gated behind gateway.message_timestamps.enabled (default OFF)."""
         from gateway.run import _load_gateway_config, _message_timestamps_enabled
-        from gateway.run_inbound import strip_discord_triggering_note
+        from gateway.run_inbound_context import strip_discord_triggering_note
         persist_user_message = None
         persist_user_timestamp = None
         try:

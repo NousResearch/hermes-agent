@@ -534,3 +534,31 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+KANBAN_WITHDRAW_SCHEMA = _schema(
+    "kanban_withdraw",
+    (
+        "Withdraw a card THIS RUN filed and should not be worked — a "
+        "duplicate, a brief superseded before it started, a card filed twice "
+        "because the first create looked like it had failed. The card leaves "
+        "dispatch on the spot: it lands in the terminal 'archived' state, so no "
+        "dispatcher tick can promote or claim it, and a worker already spawned "
+        "on it is stopped. Only the run that FILED the card may withdraw it, "
+        "proven by your own HERMES_KANBAN_TASK — the id you pass is not "
+        "evidence. This is not a substitute for kanban_complete / kanban_block, "
+        "which close the card you are working; withdrawing that one is refused."
+    ),
+    {
+        "task_id": _prop("string", (
+                "Id of the card this run filed and now retracts. Explicit — it "
+                "never defaults to your own task (withdrawing the card you are "
+                "working on is refused)."
+        )),
+        "reason": _prop("string", (
+                "Why it is withdrawn, in one line (e.g. 'duplicate of t_abc12345 "
+                "— filed twice when the first create looked like it had "
+                "failed'). Recorded on the card as its withdrawal record."
+        )),
+    },
+    ["task_id"],
+)

@@ -3,6 +3,7 @@
 import asyncio
 import gc
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -651,4 +652,41 @@ async def test_final_admission_uses_current_matrix_policy_after_identity_await(
     }.get(change, accepted)
     if change == "allowlist" and chat_type != "dm":
         expected = {"error": "Matrix room is not allowed or joined"}
+    assert result == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encrypted", [False, True])
+@pytest.mark.parametrize("read", ["m.room.encryption", "m.room.create"])
+async def test_permission_inspection_uses_power_after_other_state_reads(encrypted, read):
+    power = {"users": {"@alice:server": 50, "@bot:server": 100}}
+    state = {"m.room.create": _create_event("10"), "m.room.power_levels": power}
+    if encrypted:
+        state["m.room.encryption"] = {"algorithm": "m.megolm.v1.aes-sha2"}
+    api = _state_api(state)
+    request = api.request
+
+    async def changing_state(method, path, **kwargs):
+        if _state_type(path) == read:
+            power["users"]["@alice:server"] = 0
+            power["events"] = {
+                "m.room.pinned_events": 100, "m.room.message": 7, "m.room.encrypted": 9,
+            }
+        return deepcopy(await request(method, path, **kwargs))
+
+    api.request = changing_state
+    adapter = _inspection_adapter(
+        _client=SimpleNamespace(api=api), _joined_rooms={"!room:server"}, _user_id="@bot:server",
+        _is_allowed_matrix_room_event=AsyncMock(return_value=True),
+        _is_dm_room=AsyncMock(return_value=False),
+        _is_sender_authorized=lambda *_args, **_kwargs: True,
+    )
+    result = await inspect_matrix_room(adapter, "permissions", "!room:server", 20,
+                                       requester="@alice:server")
+    expected = _permissions((0, False), (100, False), 100, True)
+    expected["required"].update(
+        send_message=9 if encrypted else 7,
+        send_event_type="m.room.encrypted" if encrypted else "m.room.message",
+    )
+
     assert result == expected

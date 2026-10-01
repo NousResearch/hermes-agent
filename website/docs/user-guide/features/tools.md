@@ -61,6 +61,7 @@ See [Toolsets Reference](../../reference/toolsets-reference.md) for the full set
 
 A few tool behaviors are worth knowing when you read agent transcripts:
 
+- **File line numbers are optional.** `read_file` includes `LINE_NUM|` display prefixes by default. Set `line_numbers: false` when copying or quoting text to omit those prefixes while preserving literal prefixes in the file. Pagination, truncation, redaction, document extraction, and text decoding still apply; this is a text view, not a byte-for-byte download.
 - **Signal deaths are explained.** When a terminal command is killed by a signal, the result carries a human-readable note instead of a bare numeric code — e.g. exit `-9`/`137` becomes "terminated by signal 9: SIGKILL — often the kernel OOM killer on memory exhaustion, or an explicit kill -9", and segfaults, aborts, SIGTERM, broken pipes, and CPU/file-size limits are labeled the same way. Negative codes (subprocess semantics) are stated definitively; the shell's `128+signum` convention is hedged with "usually" since an application can legitimately exit with those codes.
 - **UTF-16 text files are transcoded, not refused.** `read_file` detects UTF-16 (BOM or byte-pattern heuristic, either endianness — common for Windows Notepad files and PowerShell `>` redirects) and transcodes it to UTF-8 for display instead of flagging the file as binary. The result includes a hint disclosing the conversion; edits via `patch`/`write_file` re-encode as UTF-8. Files over 10 MB and genuinely binary files still get the binary-file refusal.
 

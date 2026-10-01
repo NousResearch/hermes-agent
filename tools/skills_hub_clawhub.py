@@ -193,7 +193,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                 return deduped[:limit] if limit > 0 else deduped
 
         # Catalog miss / walker failure: best-effort lightweight listing API.
-        cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode()).hexdigest()}_{limit}"
+        cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode(), usedforsecurity=False).hexdigest()}_{limit}"
         cached = _cached_metas(cache_key)
         if cached is not None:
             return self._finalize_search_results(query, cached, limit)
@@ -280,7 +280,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         return meta
 
     def _search_catalog(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        cache_key = f"clawhub_search_catalog_v1_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
+        cache_key = f"clawhub_search_catalog_v1_{hashlib.md5(f'{query}|{limit}'.encode(), usedforsecurity=False).hexdigest()}"
         cached = _cached_metas(cache_key)
         if cached is not None:
             return cached[:limit]

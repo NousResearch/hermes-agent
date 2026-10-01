@@ -195,8 +195,10 @@ async function fetchRefreshedTranscript(
 }
 
 /**
- * Same read, plus whether the surplus is a competing view's message. The
- * pre-send guard refuses only a competing view; this window's own server-side
+ * Read the authoritative latest page; when this view is behind, return the
+ * refreshed transcript plus whether the surplus is a competing view's message.
+ * Null when current or the read fails — a missing profile or a down backend
+ * must not soft-lock send. The pre-send guard refuses only a competing view; this window's own server-side
  * turn residue (a turn that died on an approval timeout) is grafted silently
  * and the send proceeds (#124005).
  */

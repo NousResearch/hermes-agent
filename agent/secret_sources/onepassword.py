@@ -38,7 +38,7 @@ _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 # dynamically in _op_child_env().
 _OP_ENV_ALLOWLIST = (
     "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
-    "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR",
+    "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "OP_CONFIG_DIR",
     "OP_ACCOUNT", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN",
     # Lets a user skip op's desktop-app integration probe (which can hang with
     # no timeout on a wedged desktop container) and go straight to token auth.
@@ -335,26 +335,3 @@ def clear_caches(home_path: Optional[Path] = None) -> None:
 
 
 _reset_cache_for_tests = clear_caches
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import hashlib  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DiskCache': ('agent.secret_sources._cache', 'DiskCache'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

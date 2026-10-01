@@ -11,20 +11,23 @@ through ``_gateway_config_home()`` like the reads do.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import gateway.run as gateway_run
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner, _profile_runtime_scope
-from gateway.slash_commands import GatewaySlashCommandsMixin
+from gateway.session import SessionSource
+from gateway.session_identity import RoutingIdentity
+from tools import write_approval as wa
 
 
-class _Runner(GatewaySlashCommandsMixin):
-    _run_in_executor_with_context = GatewayRunner._run_in_executor_with_context
-    _get_executor = GatewayRunner._get_executor
+class _Runner(GatewayRunner):
+    """Bare runner (no __init__): the dispatcher binds the routed runtime scope ONCE around every
+    table handler (#119915), so drive the handlers through it rather than calling them directly."""
+
+    def __init__(self):  # skip GatewayRunner.__init__: only the dispatcher + slash mixins are exercised
+        self.config = GatewayConfig(multiplex_profiles=True)
 
     def _session_key_for_source(self, _source):
         return "k"
@@ -32,11 +35,21 @@ class _Runner(GatewaySlashCommandsMixin):
     def _evict_cached_agent(self, _session_key):
         pass
 
+    def _resolve_profile_home_for_source(self, _source):
+        return getattr(self, "routed_home", gateway_run._gateway_config_home())
+
+    async def slash(self, name: str, args: str) -> str:
+        """``/<name> <args>`` through the real dispatcher (ambient scope = the receiving bot's)."""
+        event = _Event(args)
+        handled, reply = await self._hm_dispatch_canonical_command(event, event.source, "k", name)
+        assert handled
+        return reply
+
 
 class _Event:
     def __init__(self, args: str = ""):
         self._args = args
-        self.source = None
+        self.source = object()
 
     def get_command_args(self) -> str:
         return self._args
@@ -66,50 +79,113 @@ async def test_slash_config_writes_hit_routed_profile_and_leave_default_untouche
         await runner._handle_memory_command(_Event("approval on"))
         await runner._handle_skills_command(_Event("approval on"))
 
-    routed = yaml.safe_load((routed_home / "config.yaml").read_text(encoding="utf-8"))
+    routed = yaml.safe_load((routed_home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert routed["agent"]["reasoning_effort"] == "high"
     assert routed["memory"]["write_approval"] is True
     assert routed["skills"]["write_approval"] is True
     assert (default_home / "config.yaml").read_bytes() == default_before
 
 
-def test_plugin_admin_gate_reads_routed_profile_without_handler_context(
-    homes, monkeypatch
-):
+def test_plugin_mutation_requires_transport_and_routed_administrators(homes, monkeypatch):
+    """The receiving bot admits the command; the runtime profile owns the persisted change."""
     default_home, routed_home = homes
-    (default_home / "config.yaml").write_text(
-        "gateway:\n  platforms:\n    buzz:\n      extra:\n"
-        "        group_allow_admin_from: [default-admin]\n"
-    )
     (routed_home / "config.yaml").write_text(
         "gateway:\n  platforms:\n    buzz:\n      extra:\n"
-        "        group_allow_admin_from: [routed-admin]\n"
+        "        group_allow_admin_from: [routed-admin, both-admin]\n",
+        encoding="utf-8",
     )
+    default_before = (default_home / "config.yaml").read_bytes()
+    routed_before = (routed_home / "config.yaml").read_bytes()
+    platform = Platform("buzz")
     runner = object.__new__(GatewayRunner)
-    runner.config = SimpleNamespace(platforms={})
-    runner._plugin_source_identity_candidates = lambda _source: ("routed-admin",)
-    runner._plugin_routed_profile = lambda _source: "beta"
-    source = SimpleNamespace(
-        platform=Platform("buzz"),
-        profile="beta",
-        chat_type="group",
-        user_id="routed-admin",
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        platforms={platform: PlatformConfig(extra={
+            "group_allow_admin_from": ["transport-admin", "both-admin"],
+        })},
     )
-    monkeypatch.setattr(
-        "hermes_cli.profiles.get_profile_dir", lambda _name: routed_home
+    runner._primary_profile_name = "default"
+    runner._plugin_source_identity_candidates = lambda source: (source.user_id,)
+    runner._plugin_channel_policy_capability_granted = lambda *_args: True
+    source = SessionSource(platform=platform, chat_id="channel", chat_type="group", profile="beta")
+    source._identity = RoutingIdentity(
+        transport_profile="default", runtime_profile="beta",
+        authorization_home=default_home, runtime_home=routed_home,
     )
-    monkeypatch.setattr(
-        "hermes_cli.plugins.get_plugin_command",
-        lambda _name: {"with_context": False},
-    )
-    monkeypatch.setattr(
-        "hermes_cli.plugins.plugin_command_access_level",
-        lambda _entry, _args, _context: "admin",
-    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command", lambda _name: {"with_context": False})
+    monkeypatch.setattr("hermes_cli.plugins.plugin_command_access_level", lambda *_args: "admin")
 
+    def update_config(raw, channel, policy, value):
+        raw["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] = {channel: {policy: value}}
+        return channel, value, True
+
+    def persist():
+        return runner._persist_plugin_channel_policy(
+            plugin_id="platforms/buzz", platform="buzz", profile_home=routed_home,
+            channel_id="channel", policy="listen", value="always",
+            source_identity_candidates=(source.user_id,), config_updater=update_config,
+        )
+
+    source.user_id = "routed-admin"
+    assert "admin-only" in runner._check_slash_access(source, "buzz", "listen always")
+    source.user_id = "transport-admin"
     assert runner._check_slash_access(source, "buzz", "listen always") is None
+    with pytest.raises(PermissionError, match="explicitly configured"):
+        persist()
+    assert (routed_home / "config.yaml").read_bytes() == routed_before
 
-    runner._plugin_source_identity_candidates = lambda _source: ("default-admin",)
-    denial = runner._check_slash_access(source, "buzz", "listen always")
-    assert denial is not None
-    assert "admin-only" in denial
+    source.user_id = "both-admin"
+    assert runner._check_slash_access(source, "buzz", "listen always") is None
+    assert persist() == ("channel", "always")
+    routed = yaml.safe_load((routed_home / "config.yaml").read_text(encoding="utf-8-sig"))
+    assert routed["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
+        "channel": {"listen": "always"},
+    }
+    assert (default_home / "config.yaml").read_bytes() == default_before
+
+
+@pytest.mark.asyncio
+async def test_memory_and_skills_review_commands_use_routed_profile_from_dispatch(homes):
+    """The dispatcher binds the routed runtime around the handlers (the ambient scope is the
+    receiving bot's = the default home here), including destructive actions."""
+    default_home, routed_home = homes
+    default_before = (default_home / "config.yaml").read_bytes()
+    runner = _Runner()
+    runner.routed_home = routed_home
+
+    with _profile_runtime_scope(routed_home):
+        memory_approve = wa.stage_write(
+            wa.MEMORY, {"action": "add", "target": "memory", "content": "routed approved"},
+            summary="routed-memory-approve", origin="foreground")
+        memory_reject = wa.stage_write(
+            wa.MEMORY, {"action": "add", "target": "memory", "content": "routed rejected"},
+            summary="routed-memory-reject", origin="foreground")
+        skill_reject = wa.stage_write(
+            wa.SKILLS, {"action": "create", "name": "routed-skill", "content": "---\nname: routed-skill\n---\n"},
+            summary="routed-skill-reject", origin="foreground")
+        skill_approve = wa.stage_write(
+            wa.SKILLS, {"action": "create", "name": "routed-approved-skill",
+                        "content": "---\nname: routed-approved-skill\ndescription: Use when testing routed approval.\n---\n\nVerify the routed profile.\n"},
+            summary="routed-skill-approve", origin="foreground")
+
+    with _profile_runtime_scope(default_home):
+        assert "routed-memory-approve" in await runner.slash("memory", "pending")
+        assert "Approved 1 memory write(s)." in await runner.slash("memory", f"approve {memory_approve['id']}")
+        assert "routed approved" in (routed_home / "memories" / "MEMORY.md").read_text(encoding="utf-8-sig")
+        assert "Rejected pending memory write" in await runner.slash("memory", f"reject {memory_reject['id']}")
+        assert "routed-skill-reject" in await runner.slash("skills", "pending")
+        assert "Pending skill write" in await runner.slash("skills", f"diff {skill_reject['id']}")
+        assert "Rejected pending skills write" in await runner.slash("skills", f"reject {skill_reject['id']}")
+        assert "Approved 1 skills write(s)." in await runner.slash("skills", f"approve {skill_approve['id']}")
+        assert (routed_home / "skills" / "routed-approved-skill" / "SKILL.md").exists()
+        assert "set to 'on'" in await runner.slash("memory", "approval on")
+        assert "set to 'on'" in await runner.slash("skills", "approval on")
+        assert gateway_run._gateway_config_home() == default_home  # ambient scope restored per dispatch
+
+    routed = yaml.safe_load((routed_home / "config.yaml").read_text(encoding="utf-8-sig"))
+    assert routed["memory"]["write_approval"] is True
+    assert routed["skills"]["write_approval"] is True
+    assert not (default_home / "pending").exists()
+    assert not (default_home / "memories").exists()
+    assert not (default_home / "skills").exists()
+    assert (default_home / "config.yaml").read_bytes() == default_before

@@ -417,11 +417,11 @@ async def test_gateway_buzz_metadata_keeps_trigger_and_placement_for_progress(
         }
     )
     runner = object.__new__(GatewayRunner)
-    runner.adapters = {Platform.BUZZ: adapter}
+    runner.adapters = {Platform("buzz"): adapter}
     runner._profile_adapters = {}
     runner._primary_profile_name = "default"
     top_source = SimpleNamespace(
-        platform=Platform.BUZZ,
+        platform=Platform("buzz"),
         chat_id=CHANNEL,
         chat_type="group",
         thread_id=None,
@@ -429,7 +429,7 @@ async def test_gateway_buzz_metadata_keeps_trigger_and_placement_for_progress(
         profile=None,
     )
     thread_source = SimpleNamespace(
-        platform=Platform.BUZZ,
+        platform=Platform("buzz"),
         chat_id=CHANNEL,
         chat_type="group",
         thread_id=ROOT_EVT,
@@ -614,10 +614,6 @@ async def test_standalone_send_reads_persisted_channel_mode_and_global_alias(
 
 class TestDisplayDefaults:
 
-    def test_buzz_has_platform_defaults_entry(self):
-        from gateway.display_config import _PLATFORM_DEFAULTS
-
-        assert "buzz" in _PLATFORM_DEFAULTS
 
     def test_buzz_does_not_inherit_verbose_global_tool_progress(self):
         from gateway.display_config import resolve_display_setting

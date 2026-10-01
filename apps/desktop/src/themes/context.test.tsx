@@ -1,9 +1,9 @@
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
-import { everforestTheme } from './presets'
+import { DEFAULT_SKIN_NAME, everforestTheme } from './presets'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -12,7 +12,23 @@ const bloomberg = (foreground: string) => ({
   colors: { background: '#000000', ui_text: foreground, ui_accent: '#ff8000' }
 })
 
+const classicDefault = {
+  name: 'default',
+  description: 'Classic Hermes — gold and kawaii',
+  colors: { background: '#1a1a2e', ui_accent: '#FFBF00', ui_text: '#FFF8DC', banner_text: '#FFF8DC' }
+}
+
 const cssVar = (name: string) => window.document.documentElement.style.getPropertyValue(name)
+
+const customStyleEl = () => window.document.getElementById('hermes-desktop-custom-css') as HTMLStyleElement | null
+
+/** Probe so tests can call setTheme through the real provider path (not only skinPref). */
+function ThemeProbe({ onReady }: { onReady: (api: ReturnType<typeof useTheme>) => void }) {
+  const api = useTheme()
+  onReady(api)
+
+  return null
+}
 
 describe('ThemeProvider ← backend skin sync', () => {
   beforeEach(() => {
@@ -33,6 +49,44 @@ describe('ThemeProvider ← backend skin sync', () => {
 
     expect(cssVar('--theme-foreground')).toBe('#ff9f0a')
     expect(cssVar('--theme-background-seed')).toBe('#000000')
+  })
+
+  it('keeps setTheme(default) active and paints Classic Hermes (#76579 / #76743)', () => {
+    // Review salvage: selecting registered `default` must go through setTheme /
+    // normalizeSkin (not only resolveTheme/skinPref) and must NOT collapse to nous.
+    let latest: ReturnType<typeof useTheme> | null = null
+
+    render(
+      <ThemeProvider>
+        <ThemeProbe
+          onReady={api => {
+            latest = api
+          }}
+        />
+      </ThemeProvider>
+    )
+
+    act(() => ingestBackendSkin(classicDefault, { apply: false }))
+
+    expect(latest).not.toBeNull()
+    // Boot default remains nous until the user (or Appearance) selects classic.
+    expect(DEFAULT_SKIN_NAME).toBe('nous')
+
+    act(() => {
+      latest!.setTheme('default')
+    })
+
+    // Active selection stays `default` (not retired → nous). deriveTheme may
+    // mode-suffix the seed (default-light / Classic Hermes Light); the
+    // selection key and painted palette are what Appearance must preserve.
+    expect(latest!.themeName).toBe('default')
+    expect(latest!.themeName).not.toBe(DEFAULT_SKIN_NAME)
+    expect(latest!.theme.label.toLowerCase()).toContain('classic hermes')
+    expect(latest!.availableThemes.some(t => t.name === 'default' && t.label === 'Classic Hermes')).toBe(true)
+    // Classic gold palette reaches CSS (ui_accent / ui_text → primary / foreground).
+    // Light-mode derivation may mix the navy background; accent/text stay gold.
+    expect(cssVar('--theme-foreground').toLowerCase()).toBe('#fff8dc')
+    expect(cssVar('--theme-primary').toLowerCase()).toBe('#ffbf00')
   })
 
   it('repaints an in-place edit of the ACTIVE skin (same name, new palette)', () => {
@@ -90,6 +144,86 @@ describe('ThemeProvider ← backend skin sync', () => {
 
     expect(cssVar('--theme-background-seed')).toBe('#000000')
     expect(skinPref.resolve('default')).toBe('bloomberg')
+  })
+})
+
+describe('ThemeProvider ← local bridge fallback', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
+  })
+
+  it('uses the local bridge skin when a remote gateway has not connected yet', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'hermesDesktop')
+
+    try {
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { localSkin: { profile: 'research', skin: bloomberg('#ff9f0a') } }
+      })
+      vi.resetModules()
+
+      const [{ ThemeProvider: FreshThemeProvider }, freshSync] = await Promise.all([
+        import('./context'),
+        import('./backend-sync')
+      ])
+
+      expect(freshSync.$backendThemes.get().bloomberg?.name).toBe('bloomberg')
+
+      render(
+        <FreshThemeProvider>
+          <div />
+        </FreshThemeProvider>
+      )
+
+      expect(cssVar('--theme-background-seed')).toBe('#000000')
+    } finally {
+      cleanup()
+      window.localStorage.clear()
+
+      if (previous) {
+        Object.defineProperty(window, 'hermesDesktop', previous)
+      } else {
+        Reflect.deleteProperty(window, 'hermesDesktop')
+      }
+
+      vi.resetModules()
+    }
+  })
+
+  it('keeps a saved desktop appearance ahead of the local bridge fallback', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'hermesDesktop')
+
+    try {
+      window.localStorage.setItem('hermes-desktop-theme-v2', 'everforest')
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { localSkin: { profile: 'research', skin: bloomberg('#ff9f0a') } }
+      })
+      vi.resetModules()
+
+      const { ThemeProvider: FreshThemeProvider } = await import('./context')
+
+      render(
+        <FreshThemeProvider>
+          <div />
+        </FreshThemeProvider>
+      )
+
+      expect(window.document.documentElement.dataset.hermesTheme).toBe('everforest')
+    } finally {
+      cleanup()
+      window.localStorage.clear()
+
+      if (previous) {
+        Object.defineProperty(window, 'hermesDesktop', previous)
+      } else {
+        Reflect.deleteProperty(window, 'hermesDesktop')
+      }
+
+      vi.resetModules()
+    }
   })
 })
 
@@ -159,5 +293,110 @@ describe('ThemeProvider highlight preview', () => {
 
     act(() => ctx.previewTheme('does-not-exist', 'dark'))
     expect(cssVar('--theme-foreground')).toBe(painted)
+  })
+})
+
+describe('ThemeProvider customCSS injection', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
+  })
+
+  it('injects customCSS from an applied backend skin', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() =>
+      ingestBackendSkin({ ...bloomberg('#ff9f0a'), customCSS: '.chat-input { font-size: 16px; }' }, { apply: true })
+    )
+
+    expect(customStyleEl()?.textContent).toBe('.chat-input { font-size: 16px; }')
+  })
+
+  it('replaces customCSS in the SAME <style> tag when the active skin changes', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() => ingestBackendSkin({ ...bloomberg('#ff9f0a'), customCSS: 'a { color: red; }' }, { apply: true }))
+    const first = customStyleEl()
+    expect(first?.textContent).toBe('a { color: red; }')
+
+    act(() =>
+      ingestBackendSkin(
+        { name: 'forest', colors: { background: '#001100', ui_text: '#66ff66' }, customCSS: 'b { color: blue; }' },
+        { apply: true }
+      )
+    )
+
+    const second = customStyleEl()
+    expect(second).not.toBeNull()
+    expect(second?.id).toBe(first?.id) // one tag reused — no accumulation
+    expect(second?.textContent).toBe('b { color: blue; }')
+  })
+
+  it('removes the style tag when switching to a CSS-less skin', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() => ingestBackendSkin({ ...bloomberg('#ff9f0a'), customCSS: 'a { color: red; }' }, { apply: true }))
+    expect(customStyleEl()).not.toBeNull()
+
+    act(() => ingestBackendSkin(bloomberg('#00ff00'), { apply: true }))
+
+    expect(customStyleEl()).toBeNull()
+  })
+
+  it('applies customCSS for a built-in-named user skin without shadowing the built-in palette', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() =>
+      ingestBackendSkin(
+        {
+          name: 'mono',
+          colors: { background: '#ff00ff', ui_text: '#00ff00' },
+          customCSS: '.status-bar { background: black; }'
+        },
+        { apply: true }
+      )
+    )
+
+    // The user's CSS lands…
+    expect(customStyleEl()?.textContent).toBe('.status-bar { background: black; }')
+    // …but the palette policy still holds: the backend theme is never
+    // registered under a built-in name, so the painted background is the
+    // desktop's built-in mono, not the user YAML's #ff00ff.
+    expect($backendThemes.get().mono).toBeUndefined()
+    expect(cssVar('--theme-background-seed')).not.toBe('#ff00ff')
+  })
+
+  it('applies customCSS from a default-named user skin under the desktop default', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() =>
+      ingestBackendSkin(
+        { name: 'default', colors: { background: '#123456' }, customCSS: '.chat-input { font-size: 18px; }' },
+        { apply: true }
+      )
+    )
+
+    expect(customStyleEl()?.textContent).toBe('.chat-input { font-size: 18px; }')
   })
 })

@@ -8,6 +8,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session_identity import RoutingIdentity
 from hermes_cli.platform_actions import SourceBoundPlatformActions
 from hermes_cli.plugins import PluginCommandInvocation, PluginContext, PluginManager, PluginManifest
 
@@ -294,3 +295,65 @@ async def test_plugin_interrupt_then_dispatch_runs_plugin_handler(monkeypatch):
 
     assert response == "interrupted-plugin-ok"
     handler.assert_awaited_once_with("now")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [False, True])
+@pytest.mark.parametrize("with_context", [False, True])
+async def test_registered_sync_plugin_binds_routed_session_off_loop(
+    tmp_path, monkeypatch, busy, with_context,
+):
+    import threading
+
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.commands import resolve_gateway_command
+    from hermes_constants import get_hermes_home
+    from gateway.session_context import get_session_env
+
+    runner, _adapter = _make_runner()
+    runner.config.multiplex_profiles = True
+    runner._primary_profile_name = "default"
+    runner._set_session_env = runner.__class__._set_session_env.__get__(runner)
+    default_home, runtime_home = tmp_path / "default", tmp_path / "beta"
+    default_home.mkdir()
+    runtime_home.mkdir()
+    event = _make_event("/scoped action")
+    event.source.profile = "beta"
+    event.source._identity = RoutingIdentity(
+        transport_profile="default", runtime_profile="beta",
+        authorization_home=default_home, runtime_home=runtime_home,
+    )
+    captured = {}
+    manager = PluginManager()
+    ctx = PluginContext(PluginManifest(name="fixture", source="user"), manager)
+
+    def handler(raw_args, *invocation):
+        captured.update(
+            thread=threading.get_ident(), home=get_hermes_home(),
+            key=get_session_env("HERMES_SESSION_KEY"),
+            chat=get_session_env("HERMES_SESSION_CHAT_ID"),
+        )
+        if invocation:
+            assert invocation[0].routed_profile == "beta"
+            assert invocation[0].platform_actions.transport_profile == "default"
+        return raw_args
+
+    ctx.register_command("scoped", handler, with_context=with_context, busy_policy="dispatch")
+    monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda force=False: manager)
+    with _profile_runtime_scope(default_home):
+        if busy:
+            result = await runner._dispatch_busy_slash_command(
+                event, resolve_gateway_command("scoped"),
+                runner._session_key_for_source(event.source), event.source,
+            )
+        else:
+            handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(
+                event, event.source, "scoped",
+            )
+            assert handled
+        assert get_hermes_home() == default_home
+    assert result == "action"
+    assert captured["thread"] != threading.get_ident()
+    assert captured["home"] == runtime_home
+    assert captured["key"] == runner._session_key_for_source(event.source)
+    assert captured["chat"] == "c1"

@@ -2,15 +2,12 @@ import type { ReactNode } from 'react'
 
 import { cn } from '@/lib/utils'
 
-/** One selection style for every pickable element in the shell: chips, connector cards, and layout cards. */
 export const selectableClass = (on: boolean) =>
   cn(
     'border text-foreground transition-colors',
     on ? 'border-primary bg-primary/15' : 'border-transparent bg-muted hover:bg-accent/60'
   )
 
-/** Toggleable chip for the guided cards. ConnectorsCard uses the default `card` variant for its connector rows;
- *  FirstBuildCard uses the compact `pill` variant. */
 export function Chip({
   className,
   icon,

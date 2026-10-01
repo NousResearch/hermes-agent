@@ -125,20 +125,6 @@ export function useComposerMetrics({
       return
     }
 
-    // Floating composer is out of the thread's flow — it must not reserve any
-    // bottom clearance. Zero the measured vars so the thread reclaims the space.
-    // Read through a ref so the callback stays stable, and read THIS surface's
-    // own state: pop-out is per layout zone, so a float in the left split must
-    // not zero the right split's clearance.
-    if (poppedOutRef.current) {
-      lastBucketedHeightRef.current = 0
-      lastBucketedSurfaceHeightRef.current = 0
-      setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')
-      setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, '0px')
-
-      return
-    }
-
     const { height } = dock.getBoundingClientRect()
     const { width } = composer.getBoundingClientRect()
     const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
@@ -162,6 +148,17 @@ export function useComposerMetrics({
 
     if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
       setExpanded(true)
+    }
+
+    // Floats still need their width-driven controls, but no pane reserves
+    // bottom clearance while the shared composer is detached.
+    if (poppedOutRef.current) {
+      lastBucketedHeightRef.current = 0
+      lastBucketedSurfaceHeightRef.current = 0
+      setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')
+      setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, '0px')
+
+      return
     }
 
     if (height > 0) {

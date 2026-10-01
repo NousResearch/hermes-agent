@@ -17,22 +17,30 @@ from contextlib import contextmanager
 from pathlib import Path
 from rich.markup import escape as _escape
 
+from agent.i18n import t
+from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
 # the agent strips them from final_response too) unless show_reasoning routes them to the box.
-_OPEN_TAGS = (
-    "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>", "<thought>")
-_CLOSE_TAGS = tuple("</" + t[1:] for t in _OPEN_TAGS)
+_OPEN_TAGS = THINK_OPEN_TAGS
+_CLOSE_TAGS = THINK_CLOSE_TAGS
 _MAX_CLOSE_TAG_LEN = max(len(t) for t in _CLOSE_TAGS)
 
-# Ordered (prefix, status) rows for _slow_command_status — first match wins.
+# Ordered (prefix, catalog key) rows for _slow_command_status — first match wins; the key is
+# resolved through t() at call time so the active language applies.
 _SLOW_COMMAND_STATUS = (
-    ("/skills search", "Searching skills..."), ("/skills browse", "Loading skills..."),
-    ("/skills inspect", "Inspecting skill..."), ("/skills install", "Installing skill..."),
-    ("/skills", "Processing skills command..."), ("/browser", "Configuring browser..."))
+    ("/skills search", "cli.stream.busy_skills_search"), ("/skills browse", "cli.stream.busy_skills_browse"),
+    ("/skills inspect", "cli.stream.busy_skills_inspect"), ("/skills install", "cli.stream.busy_skills_install"),
+    ("/skills", "cli.stream.busy_skills"), ("/browser", "cli.stream.busy_browser"))
 _SLOW_COMMAND_STATUS_EXACT = {
-    "/reload-mcp": "Reloading MCP servers...",
-    "/reload-skills": "Reloading skills...",
-    "/reload_skills": "Reloading skills..."}
+    "/reload-mcp": "cli.stream.busy_reload_mcp",
+    "/reload-skills": "cli.stream.busy_reload_skills",
+    "/reload_skills": "cli.stream.busy_reload_skills"}
+
+
+def _thinking_prefix() -> str:
+    """``  [thinking] `` — the reasoning-preview label; also measured for wrap width."""
+    return f"  {t('cli.stream.thinking_label')} "
 
 
 def _terminal_columns(default: int = 80) -> int:
@@ -47,11 +55,17 @@ class CLIStreamMixin:
 
     def _on_thinking(self, text: str) -> None:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
-        if not text:
-            self._flush_reasoning_preview(force=True)
-        self._spinner_text = text or ""
-        self._tool_start_time = 0.0  # clear tool timer when switching to thinking
-        self._invalidate()
+        if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
+            return
+        from gateway.warning_notifications import DiagnosticText, render_notification
+        def show():
+            if not text:
+                self._flush_reasoning_preview(force=True)
+            self._spinner_text = text or ""
+            self._tool_start_time = 0.0  # clear tool timer when switching to thinking
+            self._invalidate()
+        render_notification(show, platform="cli", diagnostic=isinstance(text, DiagnosticText),
+                            user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
 
     def _on_notice(self, notice) -> None:
         """Queue an out-of-band AgentNotice for rendering at the next clean boundary.
@@ -62,12 +76,18 @@ class CLIStreamMixin:
         """
         try:
             text = getattr(notice, "text", "") or ""
+            if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
+                return
             if not text:
                 return
             level = getattr(notice, "level", "info") or "info"
-            if not hasattr(self, "_pending_credit_notices"):
-                self._pending_credit_notices = []
-            self._pending_credit_notices.append((level, text))
+            from gateway.warning_notifications import is_diagnostic_notice, render_notification
+            def queue_notice():
+                if not hasattr(self, "_pending_credit_notices"):
+                    self._pending_credit_notices = []
+                self._pending_credit_notices.append((level, text))
+            render_notification(queue_notice, platform="cli", diagnostic=is_diagnostic_notice(notice),
+                                user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
         except Exception:
             pass
 
@@ -105,7 +125,7 @@ class CLIStreamMixin:
         preview_text = reasoning_text.strip()
         if not preview_text:
             return
-        wrap_width = max(30, _terminal_columns() - len("  [thinking] ") - 2)
+        wrap_width = max(30, _terminal_columns() - len(_thinking_prefix()) - 2)
         paragraphs = []
         for paragraph in re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n")):
             compact = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
@@ -115,14 +135,14 @@ class CLIStreamMixin:
         if not preview_text:
             return
         if self.verbose:
-            _cprint(f"  {_DIM}[thinking] {preview_text}{_RST}")
+            _cprint(f"{_DIM}{_thinking_prefix()}{preview_text}{_RST}")
             return
         lines = preview_text.splitlines()
         if len(lines) > 5:
-            preview = "\n".join(lines[:5]) + f"\n  ... ({len(lines) - 5} more lines)"
+            preview = "\n".join(lines[:5]) + f"\n  {t('cli.stream.thinking_more_lines', count=len(lines) - 5)}"
         else:
             preview = preview_text
-        _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
+        _cprint(f"{_DIM}{_thinking_prefix()}{preview}{_RST}")
 
     def _flush_reasoning_preview(self, *, force: bool = False) -> None:
         """Flush buffered reasoning text at natural boundaries.
@@ -133,7 +153,7 @@ class CLIStreamMixin:
         buf = getattr(self, "_reasoning_preview_buf", "")
         if not buf:
             return
-        target_width = max(40, _terminal_columns() - len("  [thinking] ") - 4)
+        target_width = max(40, _terminal_columns() - len(_thinking_prefix()) - 4)
         flush_text = ""
         if force:
             flush_text, buf = buf, ""
@@ -181,8 +201,8 @@ class CLIStreamMixin:
         preview_lines = [f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]{ts_suffix}"]
         preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
         if hidden_middle_count > 0:
-            noun = "line" if hidden_middle_count == 1 else "lines"
-            preview_lines.append(f"[dim]... (+{hidden_middle_count} more {noun})[/]")
+            key = "cli.stream.preview_more_lines_one" if hidden_middle_count == 1 else "cli.stream.preview_more_lines_other"
+            preview_lines.append(f"[dim]{_escape(t(key, count=hidden_middle_count))}[/]")
         preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
         return "\n".join(preview_lines)
 
@@ -199,7 +219,7 @@ class CLIStreamMixin:
             # check and read (TOCTOU), silently dropping the input.
             try:
                 # See #17666.
-                return path.read_text(encoding="utf-8")
+                return path.read_text(encoding="utf-8-sig")
             except (OSError, IOError):
                 logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
                 return match.group(0)
@@ -209,9 +229,11 @@ class CLIStreamMixin:
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
         from cli import ChatConsole, _accent_hex
-        from tools.process_registry_notifications import SubagentNotification
-        if isinstance(user_input, SubagentNotification):
-            ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]")
+        from tools.process_registry_notifications import TimelineNotification
+        if isinstance(user_input, TimelineNotification):
+            from gateway.warning_notifications import render_notification
+            render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
+                                platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
@@ -236,7 +258,7 @@ class CLIStreamMixin:
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
             w = self._scrollback_box_width()
-            r_label = " Reasoning "
+            r_label = f" {t('cli.chat.reasoning_label')} "
             r_fill = w - 2 - len(r_label)
             _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
 
@@ -270,7 +292,7 @@ class CLIStreamMixin:
             _cprint(line)
 
     def _close_reasoning_box(self) -> None:
-        """Close the live reasoning box if it's open, then flush deferred content."""
+        """Close the live reasoning box if it's open (renders the buffered reasoning tail)."""
         from cli import _DIM, _RST, _cprint
         if not getattr(self, "_reasoning_box_opened", False):
             return
@@ -283,10 +305,6 @@ class CLIStreamMixin:
         self._reasoning_box_opened = False
         if not getattr(self, "_stream_box_live", False):
             self._release_held_status_lines()
-        deferred = getattr(self, "_deferred_content", "")
-        if deferred:
-            self._deferred_content = ""
-            self._emit_stream_text(deferred)
 
     def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.
@@ -407,10 +425,8 @@ class CLIStreamMixin:
             HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint, _strip_markdown_syntax, datetime)
         if not text:
             return
-        # Defer content while the reasoning box renders so reasoning always lands BEFORE it.
-        if self.show_reasoning and getattr(self, "_reasoning_box_opened", False):
-            self._deferred_content = getattr(self, "_deferred_content", "") + text
-            return
+        # Close a still-open reasoning box on the first content token so the answer streams
+        # token-by-token; _close_reasoning_box renders the reasoning tail first, so ordering holds.
         self._close_reasoning_box()
 
         # Open the response box header on the very first visible text
@@ -439,6 +455,9 @@ class CLIStreamMixin:
             fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
+        # Turn-level record of what actually reached the screen; survives _reset_stream_state at
+        # tool-call boundaries so an interrupted reply isn't re-rendered as a Panel (#65666).
+        self._streamed_text_this_turn = getattr(self, "_streamed_text_this_turn", "") + text
         self._stream_buf += text
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
@@ -518,7 +537,6 @@ class CLIStreamMixin:
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
-        self._deferred_content = ""
         # A batch cancelled/errored before any tool.started would otherwise mute the next turn's line.
         self.__dict__.pop("_tool_gen_announced", None)
         self._stream_table_buf = []
@@ -530,11 +548,11 @@ class CLIStreamMixin:
         cmd_lower = command.lower().strip()
         exact = _SLOW_COMMAND_STATUS_EXACT.get(cmd_lower)
         if exact:
-            return exact
-        for prefix, status in _SLOW_COMMAND_STATUS:
+            return t(exact)
+        for prefix, key in _SLOW_COMMAND_STATUS:
             if cmd_lower.startswith(prefix):
-                return status
-        return "Processing command..."
+                return t(key)
+        return t("cli.stream.processing_command")
 
     def _command_spinner_frame(self) -> str:
         """Return the current spinner frame for slow slash commands."""
@@ -548,13 +566,14 @@ class CLIStreamMixin:
         Most sync slash commands reserve the composer (their completion changes session state);
         manual compression is safe to draft through (queued input runs against compacted history).
         """
+        from cli import _cprint
         previous_blocks_input = getattr(self, "_command_blocks_input", False)
         self._command_running = True
         self._command_blocks_input = blocks_input
         self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
-            print(f"⏳ {status}")
+            _cprint(f"⏳ {status}")
             yield
         finally:
             self._command_running = False
@@ -568,6 +587,7 @@ class CLIStreamMixin:
         local path is included so the agent can re-examine via ``vision_analyze``."""
         from cli import _DIM, _RST, _cprint
         import asyncio as _asyncio
+        from gateway.warning_notifications import render_notification
         from tools.vision_tools import vision_analyze_tool
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
@@ -579,7 +599,7 @@ class CLIStreamMixin:
                 continue
             size_kb = img_path.stat().st_size // 1024
             if announce:
-                _cprint(f"  {_DIM}👁️  analyzing {img_path.name} ({size_kb}KB)...{_RST}")
+                _cprint(f"  {_DIM}{t('cli.stream.vision_analyzing', name=img_path.name, size_kb=size_kb)}{_RST}")
             try:
                 result_json = _asyncio.run(
                     vision_analyze_tool(image_url=str(img_path), user_prompt=analysis_prompt))
@@ -591,21 +611,23 @@ class CLIStreamMixin:
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {img_path}]")
                     if announce:
-                        _cprint(f"  {_DIM}✓ image analyzed{_RST}")
+                        _cprint(f"  {_DIM}{t('cli.stream.vision_analyzed')}{_RST}")
                 else:
                     enriched_parts.append(
                         f"[The user attached an image but it couldn't be analyzed. "
                         f"You can try examining it with vision_analyze using "
                         f"image_url: {img_path}]")
                     if announce:
-                        _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}")
+                        render_notification(lambda: _cprint(f"  {_DIM}{t('cli.stream.vision_failed')}{_RST}"),
+                                            platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
             except Exception as e:
                 enriched_parts.append(
                     f"[The user attached an image but analysis failed ({e}). "
                     f"You can try examining it with vision_analyze using "
                     f"image_url: {img_path}]")
                 if announce:
-                    _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}")
+                    render_notification(lambda: _cprint(f"  {_DIM}{t('cli.stream.vision_error')}{_RST}"),
+                                        platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
 
         # Vision descriptions first, then the user's original text
         user_text = text if isinstance(text, str) and text else ""
@@ -637,8 +659,9 @@ class CLIStreamMixin:
         if tool_name in announced:
             return
         announced.add(tool_name)
-        from agent.display import get_tool_emoji
-        _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {tool_name}…")
+        from agent.display import bridge_generating_phrase, get_tool_emoji
+        what = bridge_generating_phrase(tool_name) or tool_name
+        _cprint(f"  ┊ {t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)}")
 
     def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
         """Tool lifecycle events (tool.started / tool.completed / reasoning.* / moa.*).
@@ -650,11 +673,12 @@ class CLIStreamMixin:
         # MoA reference outputs (display-only events from the MoA facade): render each answer
         # as a labelled thinking-style block BEFORE the aggregator acts.
         if event_type == "moa.reference":
-            label = function_name or "reference"
+            label = function_name or t("cli.stream.reference_noun")
             text = preview or ""
             idx = kwargs.get("moa_index")
             count = kwargs.get("moa_count")
-            header = f"Reference {idx}/{count} — {label}" if idx and count else f"Reference — {label}"
+            header = (t("cli.stream.reference_header_indexed", index=idx, count=count, label=label) if idx and count
+                      else t("cli.stream.reference_header", label=label))
             try:
                 self._flush_reasoning_preview(force=True)
             except Exception:
@@ -669,7 +693,7 @@ class CLIStreamMixin:
             return
         if event_type == "moa.aggregating":
             agg = function_name or ""
-            self._spinner_text = f"◆ aggregating ({agg})" if agg else "◆ aggregating"
+            self._spinner_text = t("cli.stream.aggregating_detail", detail=agg) if agg else t("cli.stream.aggregating")
             self._invalidate()
             return
 
@@ -733,12 +757,12 @@ class CLIStreamMixin:
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):
-            from agent.display import get_tool_emoji, get_tool_preview_max_len
+            from agent.display import get_tool_preview_max_len, tool_row_emoji
             label = preview or function_name
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
-            self._spinner_text = f"{get_tool_emoji(function_name)} {label}"
+            self._spinner_text = f"{tool_row_emoji(function_name, function_args)} {label}"
             self._tool_start_time = time.monotonic()
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
@@ -768,9 +792,9 @@ class CLIStreamMixin:
                 parsed = {}
             if isinstance(parsed, dict) and parsed.get("status") == "dispatched" and parsed.get("mode") == "background":
                 n = parsed.get("count") or 1
-                noun, tail = ("task", "it finishes") if n == 1 else (f"{n} tasks", "they finish")
+                key = "cli.stream.background_running_one" if n == 1 else "cli.stream.background_running_other"
                 try:
-                    _cprint(f"\033[2m\u21a9 Background {noun} running — I'll resume when {tail}. Keep chatting.\033[0m")
+                    _cprint(f"\033[2m{t(key, count=n)}\033[0m")
                 except Exception:
                     pass
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)

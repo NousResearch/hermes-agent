@@ -16,6 +16,7 @@ import {
 import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { Check, ExternalLink, QrCode, Save, X } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
@@ -71,6 +72,8 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
   const [qrDataUrl, setQrDataUrl] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
   const [botUsername, setBotUsername] = useState<null | string>(null)
+  // The bot a successful apply just saved; outlives reset() so the card still says which bot is connected.
+  const [connectedBot, setConnectedBot] = useState<null | string>(null)
   const [allowedIds, setAllowedIds] = useState<string[]>([])
   const [detectedOwnerId, setDetectedOwnerId] = useState<null | string>(null)
   const [newAllowedId, setNewAllowedId] = useState('')
@@ -176,6 +179,7 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
     setPhase('starting')
     setError('')
     setBotUsername(null)
+    setConnectedBot(null)
     setAllowedIds([])
     setDetectedOwnerId(null)
     setNewAllowedId('')
@@ -235,6 +239,7 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
     try {
       const result = await applyTelegramOnboarding(setup.pairing_id, allowedIds, scopeProfile)
       reset()
+      setConnectedBot(result.bot_username || botUsername)
       onApplied(result)
     } catch (applyError) {
       setPhase('ready')
@@ -267,7 +272,14 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
         )}
       </div>
 
-      {platform.configured && phase === 'idle' && (
+      {phase === 'idle' && connectedBot && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Badge variant="success">{t.messaging.states.connected}</Badge>
+          <span className="font-mono text-xs text-muted-foreground">@{connectedBot}</span>
+        </div>
+      )}
+
+      {platform.configured && phase === 'idle' && !connectedBot && (
         <p className="mt-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-muted-foreground">
           {q.replaceWarning}
         </p>
@@ -326,7 +338,7 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
                       className={CREDENTIAL_CONTROL_CLASS}
                       onChange={event => setNewAllowedId(event.target.value)}
                       onKeyDown={event => {
-                        if (event.key === 'Enter') {
+                        if (isSubmitEnter(event)) {
                           event.preventDefault()
                           addAllowedId()
                         }

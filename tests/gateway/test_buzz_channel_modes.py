@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.profile_routing import ProfileRoute
@@ -515,7 +515,7 @@ async def test_shared_primary_transport_uses_routed_authority_and_live_policy(
     }
     assert changed["ok"] is True
     assert changed["live_applied"] is True
-    persisted = yaml.safe_load((team_home / "config.yaml").read_text(encoding="utf-8"))
+    persisted = yaml.safe_load((team_home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert persisted["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
         CHANNEL: {"listen": "always", "replies": "hybrid"}
     }
@@ -617,7 +617,15 @@ async def test_shared_transport_restart_hydrates_routed_policy_before_intake(
     await asyncio.gather(*list(restarted_transport._session_tasks.values()))
 
     handler.assert_awaited_once()
-    assert handler.await_args.args[0].source.profile == "team-b"
+    source = handler.await_args.args[0].source
+    assert source.profile == "team-b"
+    from gateway.session_identity import identity_of
+
+    identity = identity_of(source)
+    assert identity is not None
+    assert identity.runtime_profile == "team-b"
+    assert identity.transport_profile == "default"
+    assert identity.adapter() is restarted_transport
 
 
 @pytest.mark.asyncio
@@ -660,7 +668,7 @@ async def test_mutation_persists_sparse_routed_profile_then_updates_live_adapter
 
     assert result["ok"] is True
     assert result["live_applied"] is True
-    persisted = yaml.safe_load((team_home / "config.yaml").read_text(encoding="utf-8"))
+    persisted = yaml.safe_load((team_home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert persisted["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
         CHANNEL: {"listen": "always"}
     }
@@ -707,7 +715,7 @@ async def test_top_level_platform_modes_migrate_on_set_and_stay_reset_after_rest
     )
 
     assert set_result["ok"] is True
-    persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    persisted = yaml.safe_load(config_path.read_text(encoding="utf-8-sig"))
     assert persisted["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
         CHANNEL: {"listen": "always", "replies": "hybrid"}
     }
@@ -788,7 +796,7 @@ async def test_duplicate_mode_nodes_migrate_to_canonical_and_reset_without_shado
     )
 
     assert set_result["ok"] is True
-    persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    persisted = yaml.safe_load(config_path.read_text(encoding="utf-8-sig"))
     assert persisted["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
         CHANNEL: {"listen": "always", "replies": "hybrid"}
     }
@@ -819,7 +827,7 @@ async def test_duplicate_mode_nodes_migrate_to_canonical_and_reset_without_shado
     )
 
     assert reset_result["ok"] is True
-    persisted_after_reset = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    persisted_after_reset = yaml.safe_load(config_path.read_text(encoding="utf-8-sig"))
     assert persisted_after_reset["gateway"]["platforms"]["buzz"]["extra"][
         "channel_modes"
     ] == {CHANNEL: {"replies": "hybrid"}}
@@ -859,7 +867,7 @@ async def test_non_admin_or_write_failure_never_changes_live_state(tmp_path, mon
 
     before = config_path.read_bytes()
     monkeypatch.setattr(
-        "hermes_cli.config.atomic_config_write",
+        "hermes_cli.config.atomic_config_replace",
         MagicMock(side_effect=OSError("disk full")),
     )
     failed = await runner._apply_plugin_channel_policy_action(
@@ -938,7 +946,7 @@ async def test_active_custom_profile_writes_current_hermes_home(tmp_path, monkey
     )
 
     assert result["ok"] is True
-    persisted = yaml.safe_load((custom_home / "config.yaml").read_text(encoding="utf-8"))
+    persisted = yaml.safe_load((custom_home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert persisted["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
         CHANNEL: {"replies": "hybrid"}
     }
@@ -974,7 +982,7 @@ async def test_reset_prunes_only_selected_property_and_empty_channel(tmp_path, m
     )
 
     assert first["ok"] is second["ok"] is True
-    persisted = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    persisted = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert persisted["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
         OTHER_CHANNEL: {"listen": "mentions"}
     }
@@ -1038,7 +1046,7 @@ async def test_live_setter_failure_reports_persisted_restart_required(tmp_path, 
     assert result["persisted"] is True
     assert result["live_applied"] is False
     assert result["restart_required"] is True
-    persisted = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    persisted = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert persisted["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
         CHANNEL: {"listen": "always"}
     }
@@ -1062,7 +1070,7 @@ async def test_reasserting_canonical_policy_skips_write_but_repairs_live_state(
     runner = _runner_for_profiles(adapter)
     monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: home)
     write = MagicMock()
-    monkeypatch.setattr("hermes_cli.config.atomic_config_write", write)
+    monkeypatch.setattr("hermes_cli.config.atomic_config_replace", write)
 
     result = await runner._apply_plugin_channel_policy_action(
         plugin_id="buzz-platform",
@@ -1134,7 +1142,7 @@ async def test_concurrent_mutations_merge_without_lost_updates(tmp_path, monkeyp
     )
 
     assert listen["ok"] is replies["ok"] is True
-    persisted = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    persisted = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert persisted["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
         CHANNEL: {"listen": "always"},
         OTHER_CHANNEL: {"replies": "hybrid"},
@@ -1201,7 +1209,7 @@ async def test_same_property_operations_serialize_persistence_through_live_apply
 
     assert first_result["ok"] is second_result["ok"] is True
     assert persisted_values == ["always", "mentions"]
-    persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    persisted = yaml.safe_load(config_path.read_text(encoding="utf-8-sig"))
     assert persisted["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
         CHANNEL: {"listen": "mentions"}
     }

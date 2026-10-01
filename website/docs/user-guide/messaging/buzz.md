@@ -138,16 +138,21 @@ equivalent `npub` encodings are accepted and normalized to the same identity.
 Administrator status does not grant conversation access: the sender must also
 pass the normal Buzz `allowed_users` / `allow_all_users` authorization gate.
 
+When a shared bot routes a channel to another profile, command admission uses
+the receiving bot's administrator policy. A mode change also requires explicit
+administrator permission in the routed profile whose settings it changes.
+An administrator of only one profile cannot change the other profile's policy.
+
 The Buzz plugin also needs consent for its narrowly scoped platform action. If
 an existing installation predates this capability, inspect and grant it
 interactively:
 
 ```bash
-hermes plugins capabilities buzz-platform
-hermes plugins enable buzz-platform
+hermes plugins capabilities platforms/buzz
+hermes plugins enable platforms/buzz
 ```
 
-The consent is recorded as `gateway.platform_actions` for the `buzz-platform`
+The consent is recorded as `gateway.platform_actions` for the `platforms/buzz`
 plugin. A missing grant or missing explicit group administrator fails closed;
 no configuration or live state is changed.
 
@@ -285,7 +290,7 @@ second channel as an isolation check:
 ## Notes and limitations
 
 - **`BUZZ_*` env vars are available in terminal tool children for Buzz sessions** — the agent can invoke the `buzz` CLI directly (e.g. `buzz messages send ...`) because `BUZZ_PRIVATE_KEY`, `BUZZ_AUTH_TAG`, `BUZZ_RELAY_URL`, and the other `BUZZ_*` variables are passed through to terminal subprocesses when the session's platform is `buzz` or the process is a Buzz Desktop managed agent (`BUZZ_MANAGED_AGENT`). Non-Buzz sessions on the same host, `execute_code`, and other non-terminal spawns remain sealed.
-- **Inbound prefers WebSocket with polling fallback.** In `auto` mode the adapter uses a persistent NIP-42-authenticated Nostr WebSocket subscription and falls back to `buzz messages get` polling when a WebSocket cannot be established. Explicit `websocket` and `poll` modes are also available.
+- **Inbound streaming has a watchdog.** On the WebSocket transport a connection that goes quiet for five minutes, or whose socket the relay closed underneath us, is torn down and reconnected with backoff; while that happens the gateway health (`/health/detailed`, dashboard status) reports Buzz as `retrying`, not `connected`. On the `poll` transport the adapter polls `buzz messages get` per watched channel every `poll_interval` seconds (default 4), so expect up to one interval of latency.
 - On (re)connect the adapter seeds its high-water mark from the newest events, so channel history is never replayed into the agent.
 - New DM conversations are discovered automatically (every few poll sweeps).
 - The private key is passed to the CLI via the subprocess environment — it never appears in argv or logs.

@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from hermes_constants import get_hermes_home
+from utils import atomic_write_bytes
 
 VAULT_KINDS = ("login", "payment", "address")
 
@@ -166,6 +167,10 @@ class VaultItemMeta:
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
+    # Every origin the password manager bound to this item (manager backends only;
+    # ``origin`` is the first/primary one). Fill matching stays exact-origin against
+    # this list — no wildcard or subdomain inference is ever derived from it.
+    allowed_origins: tuple = ()
 
     def to_dict(self) -> Dict[str, Any]:
         out = {
@@ -180,6 +185,8 @@ class VaultItemMeta:
             out["identifier_type"] = self.identifier_type
         if self.has_otp:
             out["has_otp"] = True
+        if len(self.allowed_origins) > 1:
+            out["allowed_origins"] = list(self.allowed_origins)
         return out
 
 
@@ -274,7 +281,14 @@ class VaultStore:
             raise VaultError(
                 "vault file could not be decrypted (key mismatch or corruption)"
             ) from exc
-        data = json.loads(raw.decode("utf-8"))
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise VaultError(
+                "vault file is corrupted (invalid JSON)"
+            ) from exc
+        if not isinstance(data, dict):
+            raise VaultError("vault file is corrupted (unexpected shape)")
         items = data.get("items", [])
         return items if isinstance(items, list) else []
 
@@ -282,24 +296,8 @@ class VaultStore:
         self._ensure_dir()
         payload = json.dumps({"version": 1, "items": items}).encode("utf-8")
         blob = self._fernet().encrypt(payload)
-        tmp = self._vault_path.with_suffix(".enc.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, blob)
-            os.fsync(fd)  # the blob must be on disk before the rename makes it THE vault
-        finally:
-            os.close(fd)
-        os.replace(tmp, self._vault_path)
-        with suppress(OSError):  # directory entry durable too (power loss between rename and next sync)
-            dfd = os.open(self._base, os.O_RDONLY)
-            try:
-                os.fsync(dfd)
-            finally:
-                os.close(dfd)
-        try:
-            os.chmod(self._vault_path, 0o600)
-        except OSError:
-            pass
+        # fsync_dir: the directory entry must be durable too (power loss between rename and next sync).
+        atomic_write_bytes(self._vault_path, blob, mode=0o600, fsync_dir=True)
 
     # -- public API ----------------------------------------------------------
 

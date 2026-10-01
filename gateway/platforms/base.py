@@ -3857,15 +3857,18 @@ class BasePlatformAdapter(ABC):
         """Buffer normal queue-mode busy text and schedule a bounded flush."""
         store = self._text_debounce_store()
         state = store.get(session_key)
+        if state is None or not self._can_merge_text_debounce_events(state.event, event):
+            queue_depth = getattr(self.gateway_runner, "_queue_depth", None)
+            depth = (queue_depth(session_key, adapter=self) if callable(queue_depth) else
+                     int(session_key in self._pending_messages)
+                     + (len(state.earlier_events) + 1 if state else 0))
+            limit = getattr(self.gateway_runner, "_BUSY_QUEUE_MAX_PENDING", 32)
+            if depth >= limit:
+                return False
         if state is not None and not self._can_merge_text_debounce_events(state.event, event):
             await self._flush_text_debounce_now(session_key)
             state = store.get(session_key)
             if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                depth = len(state.earlier_events) + 1 + int(session_key in self._pending_messages)
-                if depth >= 32:
-                    logger.warning("[%s] Dropping busy follow-up for %s: pending queue at cap (32)",
-                                   self.name, session_key)
-                    return False
                 state.earlier_events.append(state.event)
                 state.event = event
                 state.first_ts = state.last_ts = time.monotonic()
@@ -4198,6 +4201,14 @@ class BasePlatformAdapter(ABC):
                          "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
                          session_key, self._busy_text_debounce_seconds)
             event._gateway_accepted = await self._queue_text_debounce(session_key, event)
+            if not event._gateway_accepted:
+                notify = getattr(self.gateway_runner, "_send_pending_queue_refusal", None)
+                if callable(notify):
+                    await notify(event, self)
+                else:
+                    await self._send_with_retry(
+                        chat_id=event.source.chat_id, content=t("gateway.queue.full"),
+                        reply_to=event.message_id, metadata=_thread_metadata_for_event(event))
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)

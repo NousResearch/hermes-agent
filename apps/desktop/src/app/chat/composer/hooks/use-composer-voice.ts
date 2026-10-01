@@ -17,6 +17,7 @@ import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indic
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { recordFeatureUse } from '@/store/desktop-metrics'
+import { enqueueQueuedPrompt } from '@/store/composer-queue'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
@@ -33,6 +34,7 @@ import { useAutoSpeakReplies } from './use-auto-speak-replies'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
+import { deliverVoiceTurn } from './voice-turn-delivery'
 
 interface UseComposerVoiceArgs {
   busy: boolean
@@ -46,6 +48,8 @@ interface UseComposerVoiceArgs {
   onInterrupt?: () => Promise<void> | void
   onSubmit: ChatBarProps['onSubmit']
   onTranscribeAudio: ChatBarProps['onTranscribeAudio']
+  /** The composer queue key; a voice turn said while the agent is busy waits there. */
+  queueSessionKey?: null | string
   sessionId: string | null | undefined
   /** This composer's focus-bus key — voice toggles targeting another
    *  composer (or the active one, when not us) are ignored. */
@@ -68,6 +72,7 @@ export function useComposerVoice({
   onInterrupt,
   onSubmit,
   onTranscribeAudio,
+  queueSessionKey,
   sessionId,
   target
 }: UseComposerVoiceArgs) {
@@ -171,14 +176,23 @@ export function useComposerVoice({
   }
 
   const submitVoiceTurn = async (text: string) => {
-    if (busyRef.current) {
-      return
-    }
-
     triggerHaptic('submit')
     resetBrowseState(sessionId)
-    clearDraft()
-    await onSubmit(text)
+
+    if (!busyRef.current) {
+      clearDraft()
+    }
+
+    // Never drop a transcribed turn: busy (or a refused submit) queues it behind
+    // the running turn instead of discarding what the user said.
+    await deliverVoiceTurn({
+      busy: busyRef.current,
+      enqueue: enqueueQueuedPrompt,
+      insertText,
+      onSubmit: value => onSubmit(value),
+      queueKey: queueSessionKey ?? sessionId ?? null,
+      text
+    })
   }
 
   /** A GPT-Live delegation → Hermes turn. The bubble and the persisted row are

@@ -122,6 +122,8 @@ export function useVoiceConversation({
   // Reply text that was playing when the barge tripped ('' for a
   // generation-phase trip: nothing audible, so nothing to echo).
   const bargeEchoTextRef = useRef('')
+  // This barge sent onInterrupt for a turn still generating (wait for it to settle).
+  const interruptedTurnRef = useRef(false)
   const speechStartSequenceRef = useRef(0)
   const enabledRef = useRef(enabled)
   const mutedRef = useRef(muted)
@@ -215,6 +217,7 @@ export function useVoiceConversation({
     bargeCapturePendingRef.current = false
     bargedRef.current = false
     bargeEchoTextRef.current = ''
+    interruptedTurnRef.current = false
     speechSessionRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
@@ -529,6 +532,12 @@ export function useVoiceConversation({
         // turn/playback was already cut at trip time; now end the conversation
         // instead of submitting "stop" as a new prompt.
         if (isVoiceStopCommand(transcript)) {
+          // A deliberate stop also cancels a turn that was left working.
+          if (busyRef.current && !interruptedTurnRef.current) {
+            void onInterruptRef.current?.()
+          }
+
+          interruptedTurnRef.current = false
           dropSpeechSession()
           setStatus('idle')
           onStopWordRef.current?.()
@@ -549,23 +558,31 @@ export function useVoiceConversation({
         }
 
         // A generation-phase barge interrupted the in-flight turn; the submit
-        // path refuses while `busy`, so wait for the interrupt to settle.
-        const deadline = Date.now() + INTERRUPT_SETTLE_TIMEOUT_MS
+        // path refuses while `busy`, so wait for the interrupt to settle. When
+        // nothing was interrupted (the turn kept working) there is nothing to
+        // wait for: onSubmit queues the words behind the turn.
+        const interrupted = interruptedTurnRef.current
 
-        while (busyRef.current && Date.now() < deadline) {
-          await new Promise(resolve => window.setTimeout(resolve, 100))
+        if (interrupted) {
+          const deadline = Date.now() + INTERRUPT_SETTLE_TIMEOUT_MS
+
+          while (busyRef.current && Date.now() < deadline) {
+            await new Promise(resolve => window.setTimeout(resolve, 100))
+          }
         }
 
         if (!live()) {
           return
         }
 
-        // Live busy never settled: submitting would be refused by the
-        // composer's live-busy guard and the spoken interruption would be
-        // lost. Park the transcript in the composer input instead — visible,
-        // editable, one Enter away from sending — and resume listening.
-        // Never drop a transcribed turn without a trace (#123357).
-        if (busyRef.current) {
+        interruptedTurnRef.current = false
+
+        // The interrupt we sent never settled (a hung turn): a queued entry
+        // would wait behind it forever, so park the transcript in the composer
+        // input instead — visible, editable, one Enter away from sending — and
+        // resume listening. Never drop a transcribed turn without a trace
+        // (#123357). An uninterrupted, still-working turn queues via onSubmit.
+        if (interrupted && busyRef.current) {
           parkText?.(transcript)
           focusInput?.()
           resumeListening()
@@ -624,13 +641,24 @@ export function useVoiceConversation({
         // time the capture is transcribed.
         bargeEchoTextRef.current = $voicePlayback.get().status === 'speaking' ? (pendingResponse()?.text ?? '') : ''
         bargeCapturePendingRef.current = true
+
+        // Talking over the agent only cuts it off while it is SPEAKING. While it
+        // is still working (thinking, running tools) the speech is captured and
+        // queued behind the turn: a cough or an aside must not cancel a half-done
+        // tool chain. A spoken stop command still interrupts (see
+        // submitCapturedUtterance), as does the Stop button.
+        if (busyRef.current && $voicePlayback.get().status !== 'speaking') {
+          return
+        }
+
         bargedRef.current = true
         markVoicePlaybackInterrupted()
         stopVoicePlayback()
 
         if (busyRef.current) {
-          // Mid-generation: stop the in-flight turn so the captured utterance
-          // becomes the next one instead of queueing behind a stale reply.
+          // Speaking while still generating: stop the in-flight turn so the
+          // captured utterance becomes the next one instead of a stale reply.
+          interruptedTurnRef.current = true
           void onInterruptRef.current?.()
         }
       },

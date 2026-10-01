@@ -1115,6 +1115,7 @@ export function ChatBar({
     onInterrupt: haltRun,
     onSubmit,
     onTranscribeAudio,
+    queueSessionKey: activeQueueSessionKey,
     sessionId,
     target: scope.target
   })

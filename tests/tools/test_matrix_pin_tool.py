@@ -51,6 +51,10 @@ def _matrix_adapter(pins, send):
         raise MissingState()
 
     adapter = object.__new__(MatrixAdapter)
+    adapter._room_identities = {}
+    adapter._room_identity_cached_at = {}
+    adapter._dm_rooms = {}
+    adapter._room_identity_ttl_seconds = 60.0
     adapter._pin_state_lock = asyncio.Lock()
     adapter._client = SimpleNamespace(api=SimpleNamespace(request=request), send_state_event=send)
     adapter._joined_rooms = {"!room:server"}

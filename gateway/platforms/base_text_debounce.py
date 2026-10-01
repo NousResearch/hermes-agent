@@ -96,8 +96,6 @@ class BaseTextDebounceMixin:
                     return
                 if not self._same_text_debounce_sender(state.event, event):
                     return
-                # The pending slot and this buffer are the only places where a queued turn can wait,
-                # and both reply to other messages. Keep the text in the buffer, under its quote.
                 logger.debug(
                     "[%s] Busy text for %s replies to a third message; merging it into the "
                     "debounce buffer, which keeps its own reply context",
@@ -118,8 +116,6 @@ class BaseTextDebounceMixin:
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
             if latest_message_id is not None:
-                # Responses should anchor to the latest inbound message, while
-                # reply_to_* remains the user's original quote/author context.
                 state.event.merged_message_ids.extend(
                     message_id for message_id in (state.event.message_id, *event.merged_message_ids)
                     if message_id

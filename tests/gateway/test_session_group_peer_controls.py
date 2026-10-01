@@ -655,51 +655,51 @@ def unknown_with_receipt(c):
     c.peer.mode = "repaired"
 
 
-def test_discard_stops_the_exact_run_and_then_cancels_the_unknown_attempt(case):
+def test_discard_retires_only_proven_nonadmission_without_contacting_target(case):
+    c = case
+    tick(c, 4)
+    exact = selector(c)
+    assert current(c)['status'] == 'deferred' and tasks.is_proven_nonadmission(current(c))
+    before = len(c.peer.dispatches)
+    assert dict(kind='discard', **{k: v for k, v in exact.items() if k != 'room_id'}) in actions(c)
+    reply = rpc(c, 'groups.discard', exact)
+    assert reply.get('result', {}).get('discarded') is True, reply
+    assert current(c)['status'] == 'cancelled'
+    assert c.peer.stops == [] and len(c.peer.dispatches) == before
+    assert rpc(c, 'groups.discard', exact).get('result', {}).get('discarded') is True
+
+
+def test_accepted_peer_discard_points_to_stop_and_exact_stop_remains_usable(case, monkeypatch):
     c = case
     unknown_with_receipt(c)
     exact = selector(c)
-    assert dict(kind="discard", **{k: v for k, v in exact.items() if k != "room_id"}) in actions(c)
-    reply = rpc(c, "groups.discard", exact)
-    assert reply.get("result", {}).get("discarded") is True, reply
-    done = current(c)
-    assert done["status"] == "cancelled" and done["cancel_id"] == f"discard:{exact['execution_generation']}"
-    assert c.peer.stops == [(c.original["identity"].task_id, exact["execution_generation"])]
-    assert any(e["kind"] == "turn.cancelled" and e["payload"]["member_id"] == "peer"
-               for e in c.service._events("room"))
-    assert rpc(c, "groups.discard", exact).get("result", {}).get("discarded") is True  # idempotent
-    assert len(c.peer.stops) == 1
-    assert not any(a["member_id"] == "peer" for a in actions(c))
+    before = current(c)
+    assert not any(a['kind'] == 'discard' for a in actions(c))
+    refused = rpc(c, 'groups.discard', exact)
+    assert refused.get('error', {}).get('message') == 'peer_stop_required', refused
+    assert current(c) == before and c.peer.stops == []
+    def status(**kwargs):
+        return {'active': not c.peer.stops, 'status': 'cancelled' if c.peer.stops else 'running',
+                'task_id': exact['task_id'], 'execution_generation': exact['execution_generation']}
+    monkeypatch.setattr(c.peer, 'status', status)
+    stopped = rpc(c, 'groups.stop')
+    assert 'result' in stopped, stopped
+    assert current(c)['status'] == 'cancelled'
+    assert c.peer.stops == [(exact['task_id'], exact['execution_generation'])]
+    assert rpc(c, 'groups.stop')['result']['cancelled'] == 0
 
 
-@pytest.mark.parametrize("outcome", ["still-stopping", "unreachable", "changed", "withdrawn",
-                                     "withdrawn-while-stopping"])
-def test_discard_changes_nothing_until_the_member_confirms_the_run_ended(case, monkeypatch, outcome):
+@pytest.mark.parametrize('outcome', ['still-stopping', 'unreachable', 'withdrawn'])
+def test_discard_never_stops_or_erases_an_accepted_unknown_turn(case, outcome):
     c = case
     unknown_with_receipt(c)
-    monkeypatch.setattr(peer_controls, "_DISCARD_WAIT_SECONDS", 0.3)
-    if outcome == "still-stopping":
-        c.peer.stop_status = "stopping"
-    elif outcome == "unreachable":
+    if outcome == 'still-stopping':
+        c.peer.stop_status = 'stopping'
+    elif outcome == 'unreachable':
         c.peer.stop_status = None
-    elif outcome == "changed":
-        def resolved_meanwhile():
-            lease = c.service.runtime._ensure_lease(c.service.bindings()[0])
-            tasks.resolve_indeterminate_cancellation(
-                c.service.db_path, c.original["identity"], lease, expected_execution_generation=1,
-                expected_cancel_generation=0, cancel_id="remote-cancel:1", clock=lambda: c.now[0])
-        c.peer.on_stop = resolved_meanwhile
-    elif outcome == "withdrawn-while-stopping":
-        c.peer.on_stop = lambda: setattr(c.authority.runner, "_draining", True)
     else:
         c.authority.runner._draining = True
     before = current(c)
-    result = rpc(c, "groups.discard", selector(c))
-    assert "error" in result, result
-    after = current(c)
-    if outcome == "changed":
-        assert after["status"] == "cancelled" and after["cancel_id"] == "remote-cancel:1"
-    else:
-        assert after == before
-    assert bool(c.peer.stops) is (outcome != "withdrawn")  # a withdrawn owner never calls the member
-    assert not any(e["kind"] == "turn.cancelled" for e in c.service._events("room"))
+    assert 'error' in rpc(c, 'groups.discard', selector(c))
+    assert current(c) == before and c.peer.stops == []
+    assert not any(e['kind'] == 'turn.cancelled' for e in c.service._events('room'))

@@ -118,3 +118,31 @@ async def test_due_cleanup_after_corrupt_and_backoff_prefix_is_not_starved(gatew
         assert await asyncio.to_thread(capabilities, url, grant) == (403, 'room_reauthorization_required')
     finally:
         await server.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_disband_fences_send_and_route_publication_and_resumes_after_restart(gateway, monkeypatch):
+    from gateway import hosted_rooms
+    from hermes_state_runtime import RuntimeStoreError
+    server, url, room, catalog, grant = await joined(gateway, monkeypatch)
+    try:
+        gateway.service.begin_disband('linked')
+        def still_stopping(*args, **kwargs):
+            raise RuntimeError('target still running')
+        monkeypatch.setattr(gateway.service, 'stop_room', still_stopping)
+        await asyncio.to_thread(gateway.service._resume_disbands)
+        assert gateway.service.is_retiring('linked')
+        with pytest.raises(RuntimeStoreError, match='room_retiring'):
+            gateway.service.send(room_id='linked', event_id='too-late', payload={'text': 'must not execute'})
+        with pytest.raises(RuntimeStoreError, match='room_retiring'):
+            gateway.service.register_peer_route(room_id='linked', member_id='reviewer',
+                route=gateway.service.peer_routes[('linked', 'reviewer')],
+                client=gateway.service.peer_clients[('linked', 'reviewer')], target_url=url,
+                catalog=links.load_room_link(gateway.service.db_path, room_id='linked', member_id='reviewer').catalog)
+        restarted = CanonicalHostedRoomService(gateway.authority, None)
+        assert restarted.is_retiring('linked')
+        await asyncio.to_thread(restarted._resume_disbands)
+        assert hosted_rooms.room_state(restarted.db_path, room_id='linked', include_disbanded=True)['disbanded_at']
+        assert await asyncio.to_thread(capabilities, url, grant) == (403, 'room_reauthorization_required')
+    finally:
+        await server.close()

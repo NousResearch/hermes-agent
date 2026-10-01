@@ -3,7 +3,8 @@
 Another surface appends rows after this process loaded its prefix. The held history is repaired
 (dropped tool rows, merged users, folded assistants) and reloaded without row ids, so the commit has
 to name each held row from the repair's records. Falling back to the watermark, or matching by text,
-archives those unseen rows: they leave the model's history without being in the summary.
+archives those unseen rows: they leave the model's history without being in the summary. A carried
+tail must not leave its originals summarized beside the live copy either.
 """
 
 import pytest
@@ -21,29 +22,29 @@ def _call(call_id):
 
 
 # behaviour -> (rows another surface writes before the held suffix, the held suffix, render the held
-# suffix with gateway timestamps, rows written after the snapshot, the active rows expected after commit
-# [, how many held dicts the compaction carries verbatim])
+# suffix with gateway timestamps, rows written after the snapshot, the active rows expected after commit,
+# how many held dicts the compaction carries verbatim)
 CASES = {
     "timestamp_rendered_merged_user_names_its_run": (
         UNSEEN, [("user", "U2", {}), ("user", "U3", {}), ("assistant", "A3", {})], True, [],
-        [SUMMARY, "UNSEEN_USER", "UNSEEN_REPLY"]),
+        [SUMMARY, "UNSEEN_USER", "UNSEEN_REPLY"], 0),
     "dropped_row_is_named_not_a_watermark_fallback": (
         UNSEEN, [("user", "U2", {}), ("assistant", "A2", {}), ("tool", "ORPHAN", {"tool_call_id": "killed"}),
                  ("user", "U3", {}), ("assistant", "A3", {})], False, [],
-        [SUMMARY, "UNSEEN_USER", "UNSEEN_REPLY"]),
+        [SUMMARY, "UNSEEN_USER", "UNSEEN_REPLY"], 0),
     "composed_drops_record_the_original_row_once": (
         UNSEEN, [("user", "U2", {}), ("assistant", "tool setup", _call("z")),
                  ("tool", "answer z", {"tool_call_id": "z"}), ("assistant", "", _call("a")),
                  ("assistant", "", _call("b")), ("user", "U3", {}), ("assistant", "A3", {})], False, [],
-        [SUMMARY, "UNSEEN_USER", "UNSEEN_REPLY"]),
+        [SUMMARY, "UNSEEN_USER", "UNSEEN_REPLY"], 0),
     "users_adjacent_only_after_a_drop_skip_the_dropped_row": (
         UNSEEN, [("user", "U2", {}), ("tool", "orphan", {"tool_call_id": "orphan"}), ("user", "U3", {}),
                  ("assistant", "A3", {})], False, [],
-        [SUMMARY, "UNSEEN_USER", "UNSEEN_REPLY"]),
+        [SUMMARY, "UNSEEN_USER", "UNSEEN_REPLY"], 0),
     "folded_assistant_text_never_claims_a_later_row": (
         [], [("user", "U2", {}), ("assistant", "A2", {}), ("assistant", "A2b", {}), ("user", "U3", {}),
              ("assistant", "A3", {})], False, [("user", "UNSEEN_USER", {}), ("assistant", "A2\nA2b", {})],
-        [SUMMARY, "UNSEEN_USER", "A2\nA2b"]),
+        [SUMMARY, "UNSEEN_USER", "A2\nA2b"], 0),
     # Two equal orphans cannot be named apart, so the commit keeps the watermark: the carried tail's
     # rewind must widen by the rows counted behind A2, or A2's original stays summarized beside its copy.
     "watermark_tail_rewind_widens_by_rows_dropped_behind_a_carried_dict": (
@@ -54,11 +55,10 @@ CASES = {
 
 
 @pytest.mark.parametrize("case", list(CASES))
-def test_repaired_reload_commit_keeps_unseen_rows_live(tmp_path, case):
+def test_repaired_reload_commit_archives_only_held_rows(tmp_path, case):
     from gateway.run import _build_gateway_agent_history
 
-    unseen, suffix, render, late, expected, *carried = CASES[case]
-    tail_count = carried[0] if carried else 0
+    unseen, suffix, render, late, expected, tail_count = CASES[case]
     db = SessionDB(tmp_path / "state.db")
     try:
         db.create_session("sid", source="test")

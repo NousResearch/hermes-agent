@@ -32,8 +32,8 @@ const PARTIAL_OPEN_REASONING_TAG_RE = new RegExp(`(^|\\n)[ \\t]*<(?:${REASONING_
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
-const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
-const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~|$))/g
+const FENCE_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)(`{3,}|~{3,})([^\n]*)$/
+const FENCE_CLOSE_LINE_RE = /^[ \t]*(?:>[ \t]*)*(`{3,}|~{3,})[ \t]*\r?$/
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // Math spans as remark-math will see them: a `$$…$$` block, which may span
 // lines, or a same-line `$…$`. A delimiter escaped as `\$` is prose — that is
@@ -194,12 +194,34 @@ const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*
 const CITATION_TRANSPORT_MARKER_RE =
   /\uE200(?:cite)?(?:\uE202?turn\d+search\d+)+\uE201?|citeturn\d+search\d+(?:turn\d+search\d+)*/gu
 
+// The `Sources` section header the bundled grounded-citations skill renders —
+// `## Sources` (ATX, 1-6 hashes) or plain `Sources:`, case-insensitive,
+// optionally bolded, colon optional. Mirrors the skill's own header pattern
+// (`_SOURCES_HEADER_RE` in scripts/sources.py) so only the section shape it
+// actually emits is recognized.
+const SOURCES_HEADER_RE = /^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?sources:?(?:\*\*)?[ \t]*\r?$/i
+// Numbered source-list entries inside a `Sources` section — a `[3] https://…`
+// line (optionally behind a list marker or a `-`/`–`/`:` separator), as the
+// bundled grounded-citations skill renders its entries. Such an entry anchors
+// the bare `[3]` marker in prose: the marker cites a listed source, so it
+// must survive the orphan-marker strip (#110370). Entries only count after
+// the LAST `Sources` header and never inside a fenced block, so ordinary
+// `[7] todo` lines or fenced examples can't anchor anything.
+const SOURCE_LIST_ENTRY_RE = /^[ \t]*(?:[-*+][ \t]+)?\[((?:\d+(?:\s*,\s*\d+)*))\][ \t]*(?:[-–:][ \t]*)?https?:\/\/\S/
+// Any fence line toggles code-block state while scanning for the `Sources`
+// section — the same toggle the bundled skill uses to drop fenced code from
+// a draft's prose.
+const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
-// image syntax (`![alt](path)`) on its existing inline pipeline. The target
-// char class excludes `)`/whitespace, matching how LLMs actually emit these.
-const FILE_LINK_RE = /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target><?(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*>?)\)/gi
+// image syntax (`![alt](path)`) on its existing inline pipeline. Plain
+// targets exclude `)`/whitespace, matching how LLMs actually emit these;
+// CommonMark angle-bracket destinations (`[notes](<~/My Notes/todo.md>`) are
+// matched separately so paths with spaces route to the preview pipeline too
+// (#102782) — `routeFileLinksToPreview` strips the surrounding `<>`.
+const FILE_LINK_RE =
+  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*)\)/gi
 
 // A transcript directive on its own line: `::name{...}`. Attribute values are
 // prose the model wrote (a task brief, a question) and read as markdown to the
@@ -322,8 +344,74 @@ function stripReasoningBlocks(text: string): string {
   return closed.replace(OPEN_REASONING_BLOCK_RE, '$1').replace(PARTIAL_OPEN_REASONING_TAG_RE, '$1')
 }
 
+interface MarkdownSegment {
+  code: boolean
+  // A closed fence whose closer is the very next line.
+  empty: boolean
+  text: string
+}
+
+// Prose and fenced-code segments in order; joined, they are `text` exactly. A
+// fence opens only on its own line (after any blockquote / list-item prefix)
+// and closes only on a line holding the same character at least as long — the
+// rule normalizeFenceBlocks applies. A ``` inside a code line, or the inner
+// fences of a ````-fenced markdown example, is code, not a boundary: treating it
+// as one ran the prose rewrites over the rest of the listing (`arr[0]` lost its
+// index, `$5` gained a backslash) and dropped the closing fences.
+function splitFencedCode(text: string): MarkdownSegment[] {
+  const segments: MarkdownSegment[] = []
+  let cursor = 0
+  let fence: null | { marker: string; openerEnd: number; start: number } = null
+
+  for (let lineStart = 0; ;) {
+    const newline = text.indexOf('\n', lineStart)
+    const lineEnd = newline === -1 ? text.length : newline
+    const line = text.slice(lineStart, lineEnd)
+
+    if (!fence) {
+      const open = line.match(FENCE_OPEN_LINE_RE)
+
+      // A backtick run with a backtick in its info string is inline code.
+      if (open && !(open[2][0] === '`' && open[3].includes('`'))) {
+        fence = { marker: open[2], openerEnd: lineEnd, start: lineStart + open[1].length }
+      }
+    } else {
+      const close = line.match(FENCE_CLOSE_LINE_RE)
+
+      if (close && close[1][0] === fence.marker[0] && close[1].length >= fence.marker.length) {
+        segments.push(
+          { code: false, empty: false, text: text.slice(cursor, fence.start) },
+          { code: true, empty: lineStart === fence.openerEnd + 1, text: text.slice(fence.start, lineEnd) }
+        )
+        cursor = lineEnd
+        fence = null
+      }
+    }
+
+    if (newline === -1) {
+      break
+    }
+
+    lineStart = newline + 1
+  }
+
+  if (fence) {
+    segments.push(
+      { code: false, empty: false, text: text.slice(cursor, fence.start) },
+      { code: true, empty: false, text: text.slice(fence.start) }
+    )
+  } else {
+    segments.push({ code: false, empty: false, text: text.slice(cursor) })
+  }
+
+  return segments
+}
+
 function stripEmptyFenceBlocks(text: string): string {
-  return text.replace(EMPTY_FENCE_BLOCK_RE, '$1')
+  return splitFencedCode(text)
+    .filter(segment => !segment.empty)
+    .map(segment => segment.text)
+    .join('')
 }
 
 function isUrlOnlyBlock(lines: string[]): boolean {
@@ -440,13 +528,78 @@ function routeFileLinksToPreview(text: string): string {
   })
 }
 
-function rewriteProseSegment(segment: string): string {
+// Mirror of the bundled grounded-citations skill's `_split_draft()`: find the
+// LAST `Sources` header, then collect entry ids only from the section that
+// header opens (fenced code excluded). A marker survives only when this
+// response actually lists a corresponding `[n] url` entry.
+function collectSourceListIds(text: string): Set<string> {
+  const ids = new Set<string>()
+  const lines = text.split('\n')
+  let inFence = false
+  let headerIndex = -1
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+
+    if (FENCE_TOGGLE_RE.test(line)) {
+      inFence = !inFence
+
+      continue
+    }
+
+    if (!inFence && SOURCES_HEADER_RE.test(line)) {
+      headerIndex = index
+    }
+  }
+
+  if (headerIndex === -1) {
+    return ids
+  }
+
+  inFence = false
+
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index]
+
+    if (FENCE_TOGGLE_RE.test(line)) {
+      inFence = !inFence
+
+      continue
+    }
+
+    if (inFence) {
+      continue
+    }
+
+    const match = line.match(SOURCE_LIST_ENTRY_RE)
+
+    if (match) {
+      for (const id of match[1].split(',')) {
+        ids.add(id.trim())
+      }
+    }
+  }
+
+  return ids
+}
+
+function rewriteProseSegment(segment: string, sourceListIds: Set<string>): string {
   return linkifySessionRefs(
     escapeLoneTildes(
       autoLinkRawUrls(
         routeFileLinksToPreview(
           escapeUnknownHtmlLikeTags(
-            segment.replace(/`{3,}/g, '').replace(CITATION_TRANSPORT_MARKER_RE, '').replace(CITATION_MARKER_RE, '')
+            segment
+              .replace(/`{3,}/g, '')
+              .replace(CITATION_TRANSPORT_MARKER_RE, '')
+              .replace(CITATION_MARKER_RE, marker => {
+                const ids = marker
+                  .slice(1, -1)
+                  .split(',')
+                  .map(id => id.trim())
+
+                return ids.every(id => sourceListIds.has(id)) ? marker : ''
+              })
           )
         )
       )
@@ -483,7 +636,7 @@ export function shieldDirectiveLines(text: string): string {
  * `startsWith('$')` test, so a prose segment that merely opens with a stray
  * dollar can't be mistaken for math.
  */
-function normalizeVisibleProse(text: string): string {
+function normalizeVisibleProse(text: string, sourceListIds: Set<string>): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
     .map(part =>
@@ -491,7 +644,7 @@ function normalizeVisibleProse(text: string): string {
         ? part
         : part
             .split(MATH_SPAN_SPLIT_RE)
-            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment)))
+            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment, sourceListIds)))
             .join('')
     )
     .join('')
@@ -982,12 +1135,15 @@ export function preprocessMarkdown(text: string): string {
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)
+  // Anchors come from the response's `Sources` section only: a marker
+  // survives the orphan strip exactly when this response lists a matching
+  // `[n] url` entry there (see collectSourceListIds).
+  const sourceListIds = collectSourceListIds(strippedEmptyFences)
 
-  return strippedEmptyFences
-    .split(CODE_FENCE_SPLIT_RE)
-    .map(part => {
+  return splitFencedCode(strippedEmptyFences)
+    .map(({ code, text: part }) => {
       // Fence blocks pass through untouched.
-      if (/^(?:```|~~~)/.test(part)) {
+      if (code) {
         return part
       }
 
@@ -998,7 +1154,7 @@ export function preprocessMarkdown(text: string): string {
       // Directive lines are shielded last, after the prose rewrites have had
       // their look, so nothing re-introduces markdown into them.
       return shieldDirectiveLines(
-        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
+        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part)), sourceListIds))
       )
     })
     .join('')
@@ -1019,10 +1175,9 @@ export function preprocessMarkdown(text: string): string {
  * them regardless of this function.
  */
 export function normalizeFilePreviewMath(text: string): string {
-  return text
-    .split(CODE_FENCE_SPLIT_RE)
-    .map(part => {
-      if (/^(?:```|~~~)/.test(part)) {
+  return splitFencedCode(text)
+    .map(({ code, text: part }) => {
+      if (code) {
         return part
       }
 

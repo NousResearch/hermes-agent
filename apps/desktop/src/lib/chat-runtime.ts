@@ -1,5 +1,6 @@
 import type { ThreadMessage } from '@assistant-ui/react'
 import type { ModelOptionsResult } from '@hermes/shared'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 
 import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState } from '@/app/types'
@@ -314,6 +315,33 @@ export function normalizePersonalityValue(value: string): string {
   // Share the runtime's canonical form with the dropdown reader (foldPersonalityName),
   // which also folds the `neutral` spelling this previously missed.
   return foldPersonalityName(value)
+}
+
+// Desktop prepends attachment ref tags (@image:, @file:, @url:, @folder:,
+// @terminal:, @line:, @session:, @tool:, ...) to the submitted wire text. A
+// slash command typed after those refs must still be detected — strip leading
+// ref lines before testing the text for a command. Mirrors the gateway's
+// _ATTACHMENT_REF_RE, but covers every ref kind the composer can emit.
+const ATTACHMENT_REF_LINE_RE = /^@[a-z][a-z0-9-]*:[^\n]*\n?/i
+
+export function stripAttachmentRefs(text: string): string {
+  let current = text ?? ''
+
+  while (true) {
+    const next = current.replace(ATTACHMENT_REF_LINE_RE, '')
+
+    if (next === current) {
+      break
+    }
+
+    current = next
+  }
+
+  return current
+}
+
+export function isSlashCommandText(text: string): boolean {
+  return SLASH_COMMAND_RE.test(stripAttachmentRefs(text).trimStart())
 }
 
 export function quickModelOptions(

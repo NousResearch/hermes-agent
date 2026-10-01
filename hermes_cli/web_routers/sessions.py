@@ -335,13 +335,18 @@ async def search_sessions(
 
             tip_cache: dict = {}
 
-            def lineage_tip(root_id: str) -> str:
-                if root_id not in tip_cache:
+            def lineage_tip(session_id: str) -> str:
+                # Resolve the tip from the MATCHED id, never from the lineage
+                # root: the forward chain walk is defensively bounded, so a
+                # lineage deeper than the bound truncates to a stale mid id
+                # when started at the root. Resuming from the matched id is
+                # what the CLI does and always reaches the live tip (#125041).
+                if session_id not in tip_cache:
                     try:
-                        tip_cache[root_id] = db.get_compression_tip(root_id) or root_id
+                        tip_cache[session_id] = db.get_compression_tip(session_id) or session_id
                     except Exception:
-                        tip_cache[root_id] = root_id
-                return tip_cache[root_id]
+                        tip_cache[session_id] = session_id
+                return tip_cache[session_id]
 
             # One keyspace for id-hits and content-hits, keyed by lineage root;
             # first hit wins, and ID matches run first.
@@ -354,7 +359,7 @@ async def search_sessions(
                 if root in seen or len(seen) >= safe_limit:
                     return
                 payload = dict(payload)
-                sid = lineage_tip(root)
+                sid = lineage_tip(raw_sid)
                 payload["session_id"] = sid
                 payload["lineage_root"] = root
                 payload["profile"] = row_profile
@@ -381,6 +386,7 @@ async def search_sessions(
                         "output_tokens": row.get("output_tokens") or 0,
                         "preview": row.get("preview"),
                         "parent_session_id": row.get("parent_session_id"),
+                        "profile": _serving_profile(profile),
                         "archived": bool(row.get("archived"))})
                 else:
                     payload["id"] = sid
@@ -489,9 +495,10 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     Archived sessions are skipped — the user explicitly chose to keep those rows. * Children of deleted
     parents are orphaned, not cascade-deleted. See #95868.
     """
+    profile = destructive_profile(profile, "DELETE /api/sessions/empty")
     deleted = await asyncio.to_thread(
-        _with_db, destructive_profile(profile, "DELETE /api/sessions/empty"),
-        lambda db: db.delete_empty_sessions(), read_only=False)
+        _with_db, profile,
+        lambda db: db.delete_empty_sessions(sessions_dir=_session_files_dir(profile)), read_only=False)
     return {"ok": True, "deleted": deleted}
 
 
@@ -586,7 +593,32 @@ def _session_files_dir(profile) -> Path:
     return _history_profile_home(profile) / "sessions"
 
 
+def _is_untyped_scaffold_notice(message) -> bool:
+    """A ``[System: …]`` role=user row persisted without a ``display_kind``.
+
+    ``[System:`` is a reserved gateway-notice namespace — it must never render as a user
+    bubble (the gateway's own history projection drops these rows outright) — but recovery
+    scaffolding written before typing existed carries no kind. Rows WITH a kind
+    (``model_switch``, …) are timeline entries and keep flowing.
+    """
+    if not isinstance(message, dict) or message.get("role") != "user" or message.get("display_kind"):
+        return False
+    content = message.get("content")
+    return isinstance(content, str) and content.lstrip().startswith("[System:")
+
+
 def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
+    """Replace compaction summaries with their display-only projection and hide untyped
+    gateway-scaffold notices.
+
+    Recovery scaffolding (e.g. the stream-timeout nudge appended when a tool call's stream
+    is cut) persists as a ``[System: …]`` ``role=user`` row with no ``display_kind``. This
+    projection feeds the Desktop's transcript prefetch, which addresses VISIBLE user rows by
+    durable row id — and the gateway truncation resolver refuses scaffold rows fail-closed,
+    so a shipped scaffold row can never resolve as a rewind/regenerate target and dead-ends
+    every retry (``refusing truncation without fallback``). Hide them the same way the
+    Desktop collapses other display-only rows; typed notices stay for the timeline.
+    """
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
     from agent.conversation_compression import _extract_steer_text_from_message
@@ -616,6 +648,11 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
             message.get("role"), message.get("content"))
         if failed_turn:
             message = {**message, "display_kind": failed_turn}
+        if _is_untyped_scaffold_notice(message):
+            projected = message.copy()
+            projected["display_kind"] = "hidden"
+            projected_messages.append(projected)
+            continue
         # Mid-turn steer: the user's own words, not the model-facing marker (same as session.resume).
         if message.get("role") == "user" and message.get("display_kind") == STEER_DISPLAY_KIND and (
                 steer_text := _extract_steer_text_from_message(message)):

@@ -1,6 +1,11 @@
 import { atom, computed } from 'nanostores'
 
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
+import {
+  capturePreviewAnnotateDestination,
+  clearPreviewAnnotateDestination,
+  rememberPreviewAnnotateDestination
+} from '@/lib/preview-annotate/handoff'
 import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
@@ -48,6 +53,10 @@ export interface PreviewTarget {
    * them for the native folder action / not-found reporting instead. */
   previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: PreviewRenderMode
+  /** Tombstone set when a read/watch confirmed the file is gone. The tab stays
+   *  open for the session showing an explicit "file no longer exists" state,
+   *  but is dropped at the next restore so day-2 boots stop re-probing it. */
+  missing?: boolean
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */
   transient?: boolean
@@ -126,10 +135,16 @@ export function decodePreviewTabs(raw: string): PreviewTab[] {
 }
 
 function parseTabList(parsed: unknown): PreviewTab[] {
-  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab =>
-    isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
-      ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
-      : tab
+  return (
+    (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : [])
+      .map(tab =>
+        isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
+          ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
+          : tab
+      )
+      // Drop tombstoned file tabs (a previous session confirmed the file is
+      // gone). Keeping them would re-probe a known-dead path on every boot.
+      .filter(tab => !tab.target.missing)
   )
 }
 
@@ -492,6 +507,13 @@ export function popOutBrowserTab(tabId: string) {
 
   const page = $browserPages.get()[tabId]
 
+  // Pin the exact chat/group surface that owns this Browser before the new
+  // renderer opens. Comment Mode in the pop-out uses this route to hand its
+  // saved batch back without guessing from whichever composer is active later.
+  const anchor =
+    typeof document !== 'undefined' && document.activeElement instanceof Element ? document.activeElement : null
+
+  rememberPreviewAnnotateDestination(tabId, capturePreviewAnnotateDestination(anchor))
   markBrowserTabPopped(tabId, true)
   commitBrowserTabLocation(tabId, page?.url || tab.target.url, page?.title)
   void openBrowserInNewWindow(tabId).then(ok => {
@@ -519,6 +541,7 @@ export function markBrowserTabPopped(tabId: string, popped: boolean) {
     next.add(tabId)
   } else {
     next.delete(tabId)
+    clearPreviewAnnotateDestination(tabId)
   }
 
   $poppedBrowserTabIds.set(next)
@@ -614,6 +637,21 @@ export function openPreview(target: PreviewTarget) {
 }
 
 const blankPage = (): PreviewTarget => ({ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' })
+
+/** Tombstone the tab for a confirmed-missing file: keep it open this session
+ *  (the pane shows "file no longer exists"), but flag the target so the next
+ *  restore drops it instead of re-probing the dead path on every boot. */
+export function markPreviewTabMissing(targetUrl: string) {
+  const current = $previewTabs.get()
+  const id = targetUrl.startsWith('file:') ? targetUrl : `file:${targetUrl}`
+  const index = current.findIndex(tab => tab.id === id)
+
+  if (index === -1 || current[index]!.target.missing) {
+    return
+  }
+
+  $previewTabs.set(current.map((tab, i) => (i === index ? { ...tab, target: { ...tab.target, missing: true } } : tab)))
+}
 
 /** Show the Browser — the surface, not a page. Keeps whatever it was last
  *  showing so the hotkey re-fronts your page instead of wiping it; with no

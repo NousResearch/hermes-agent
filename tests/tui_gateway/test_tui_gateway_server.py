@@ -3151,6 +3151,92 @@ def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cw
     assert skill_utils.find_project_root() is None
 
 
+def test_command_dispatch_reviews_staged_skill_writes(tmp_path, monkeypatch):
+    # #98330/#118812: command.dispatch is the desktop/TUI FALLBACK stage when the slash
+    # worker cannot start. With no /skills route there, a failed worker turned every
+    # review command into the routing refusal, stranding staged writes with no surface
+    # left. The review slice (pending/approve/reject/diff/approval) must answer; the
+    # CLI-hub mutations must keep refusing.
+    from tools import write_approval as wa
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("skills:\n  write_approval: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    rec = wa.stage_write(
+        wa.SKILLS,
+        {"action": "create", "name": "demo-review",
+         "content": "---\nname: demo-review\ndescription: Use when testing staged review.\n---\n\nBody.\n"},
+        summary="create demo-review", origin="background_review")
+    server._sessions["sid-wa"] = _session(profile_home=str(home))
+    try:
+        pending = server._methods["command.dispatch"](
+            "d1", {"name": "skills", "arg": "pending", "session_id": "sid-wa"})
+        assert pending["result"]["type"] == "exec", pending
+        assert rec["id"] in pending["result"]["output"]
+        assert "demo-review" in pending["result"]["output"]
+
+        diff = server._methods["command.dispatch"](
+            "d2", {"name": "skills", "arg": f"diff {rec['id']}", "session_id": "sid-wa"})
+        assert diff["result"]["type"] == "exec", diff
+        assert "demo-review" in diff["result"]["output"]
+
+        reject = server._methods["command.dispatch"](
+            "d3", {"name": "skills", "arg": f"reject {rec['id']}", "session_id": "sid-wa"})
+        assert "Rejected pending skills write" in reject["result"]["output"], reject
+        assert wa.pending_count(wa.SKILLS) == 0
+
+        # The hub mutations are NOT routed — the desktop allowlist mirrors this refusal.
+        refused = server._methods["command.dispatch"](
+            "d4", {"name": "skills", "arg": "install demo", "session_id": "sid-wa"})
+        assert refused["error"]["code"] == 4018, refused
+    finally:
+        server._sessions.pop("sid-wa", None)
+
+
+def test_command_dispatch_skills_gate_off_answers_instead_of_refusing(tmp_path, monkeypatch):
+    # Gateway parity: the gate being off must not strand writes that are already staged,
+    # and with an empty pile it points at the toggle instead of the routing refusal.
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("skills:\n  write_approval: false\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    server._sessions["sid-wa"] = _session(profile_home=str(home))
+    try:
+        res = server._methods["command.dispatch"](
+            "d", {"name": "skills", "arg": "pending", "session_id": "sid-wa"})
+        assert res["result"]["type"] == "exec", res
+        assert "write_approval" in res["result"]["output"], res
+    finally:
+        server._sessions.pop("sid-wa", None)
+
+
+def test_command_dispatch_memory_pending_reviews_staged_writes(tmp_path, monkeypatch):
+    # Same fallback for /memory (#118812): the store must resolve under the session's
+    # profile home, applying the write on approve instead of dropping it.
+    from tools import write_approval as wa
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("memory:\n  write_approval: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    wa.stage_write(wa.MEMORY, {"action": "add", "target": "memory", "content": "dispatched fact"},
+                   summary="add dispatched fact", origin="foreground")
+    server._sessions["sid-wa"] = _session(profile_home=str(home))
+    try:
+        res = server._methods["command.dispatch"](
+            "d1", {"name": "memory", "arg": "pending", "session_id": "sid-wa"})
+        assert res["result"]["type"] == "exec", res
+        assert "dispatched fact" in res["result"]["output"]
+
+        approve = server._methods["command.dispatch"](
+            "d2", {"name": "memory", "arg": "approve all", "session_id": "sid-wa"})
+        assert "Approved 1" in approve["result"]["output"], approve
+        assert wa.pending_count(wa.MEMORY) == 0
+    finally:
+        server._sessions.pop("sid-wa", None)
+
+
 def test_complete_slash_and_skills_reload_are_bound_to_the_session_cwd(tmp_path, monkeypatch):
     # The '/' popup and /reload-skills ran the registry unbound: the popup never offered a project skill
     # ``command.dispatch`` accepts, and a rescan after that dispatch reported the session's project skills
@@ -7018,6 +7104,287 @@ def test_prompt_submit_row_id_not_found(monkeypatch):
         assert resp["error"]["code"] == 4018
     finally:
         server._sessions.pop("missing-row-sid", None)
+
+
+def test_prompt_submit_resolves_row_id_absorbed_into_marker_merge(monkeypatch):
+    """#94486: after a mid-session model switch, the marker is persisted as
+    role=user (#48338) and the next real user row merges into it under
+    repair. The merged row must stay addressable (plain row's _row_id kept,
+    display classification dropped) so prompt.submit with
+    truncate_before_row_id resolves instead of failing closed with the
+    user's input silently dropped.
+    """
+    import copy
+
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    verbatim = [
+        {"_row_id": 12131, "role": "user", "content": "first"},
+        {"_row_id": 12133, "role": "assistant", "content": "reply 1"},
+        {
+            "_row_id": 12134,
+            "role": "user",
+            "display_kind": "model_switch",
+            "content": "[System: The active model for this chat has changed to ds4.]",
+        },
+        {"_row_id": 12135, "role": "user", "content": "the dropped prompt"},
+    ]
+    repaired = copy.deepcopy(verbatim)
+    assert repair_message_sequence(None, repaired) == 1
+    # The merged pair survives as ONE addressable user row carrying the
+    # plain row's durable id — this is the property the gateway relies on.
+    assert len(repaired) == 3
+    assert repaired[2]["_row_id"] == 12135
+    assert not repaired[2].get("display_kind")
+
+    replaced = []
+
+    class _FakeDB:
+        def get_messages_as_conversation(
+            self, key, include_ancestors=False, repair_alternation=False,
+            include_row_ids=False, **_kwargs
+        ):
+            assert key == "session-key"
+            assert include_row_ids is True
+            return copy.deepcopy(repaired if repair_alternation else verbatim)
+
+        def replace_messages(self, key, messages, active_only=False, archive_dropped=False, **_kwargs):
+            replaced.append((key, list(messages)))
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield _FakeDB()
+
+    # Live history as a RUNNING session holds it after a turn rewrite: the
+    # repaired, merged shape with row-id stamps still attached (the live
+    # dicts carry them), so the in-memory lookup resolves directly.
+    live = copy.deepcopy(repaired)
+    assert live[2]["_row_id"] == 12135
+    server._sessions["merged-marker-sid"] = _session(history=list(live))
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "merged-marker-sid",
+                    "text": "new turn",
+                    "truncate_before_row_id": 12135,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("error") is None, resp.get("error")
+        # The cut lands before the merged marker+prompt pair: everything the
+        # pair would have buried is kept, the pair itself is replaced by the
+        # freshly submitted turn. (Rows carry _row_id stamps because the
+        # durable fallback healed the live list's missing stamps first.)
+        assert len(replaced) == 1
+        assert replaced[0][0] == "session-key"
+        assert replaced[0][1] == [
+            {"role": "user", "content": "first", "_row_id": 12131},
+            {"role": "assistant", "content": "reply 1", "_row_id": 12133},
+        ]
+        assert len(server._sessions["merged-marker-sid"]["history"]) == 2
+    finally:
+        server._sessions.pop("merged-marker-sid", None)
+
+
+def _mk_merge_fake_db(verbatim, repaired, replaced):
+    """SessionDB stand-in answering exactly like the real store: the repaired view
+    (what `_load_durable_truncation_history` historically loaded) has the user;user
+    run merged away, the un-repaired view keeps every physical row."""
+
+    class _FakeDB:
+        def get_messages_as_conversation(
+            self,
+            key,
+            include_ancestors=False,
+            repair_alternation=False,
+            include_row_ids=False,
+            **_kwargs,
+        ) -> list:
+            import copy as _copy
+
+            assert key == "session-key"
+            assert include_row_ids is True
+            return _copy.deepcopy(repaired if repair_alternation else verbatim)
+
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False, **_kwargs
+        ):
+            replaced.append((key, list(messages)))
+
+    return _FakeDB()
+
+
+def test_prompt_submit_resolves_row_id_swallowed_by_marker_merge(monkeypatch):
+    """#94486 (live-session shape): model-switch markers persist as role=user
+    (#48338), so the just-sent prompt forms a user;user run that
+    repair_message_sequence merges into the FIRST row — the target's _row_id
+    vanishes from the repaired view and truncate_before_row_id fails closed
+    (4018) even though the row is physically present. Identity resolution must
+    read the un-repaired durable transcript, the same discipline the rebind
+    path already applies ('repair can merge a physical user;user pair while
+    preserving only the first row id').
+    """
+    import contextlib
+    import copy
+
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    verbatim = [
+        {"_row_id": 201, "role": "user", "content": "first"},
+        {"_row_id": 202, "role": "assistant", "content": "reply 1"},
+        {
+            "_row_id": 203,
+            "role": "user",
+            "display_kind": "model_switch",
+            "content": "[System: The active model for this chat has changed to ds4.]",
+        },
+        {
+            "_row_id": 204,
+            "role": "user",
+            "display_kind": "model_switch",
+            "content": "[System: The active model for this chat has changed to kk3.]",
+        },
+        {"_row_id": 205, "role": "user", "content": "the interrupted prompt"},
+    ]
+    repaired = copy.deepcopy(verbatim)
+    assert repair_message_sequence(None, repaired) == 2  # 3-row run, two merges
+    # On main the merge buries the plain row's id inside the marker.
+    assert len(repaired) == 3
+
+    replaced = []
+    fake_db = _mk_merge_fake_db(verbatim, repaired, replaced)
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield fake_db
+
+    # Live history as a running session holds it after a turn rewrite: every
+    # physical row present, row-id stamps lost (provider-format rewrite), so
+    # resolution must go through the durable fallback.
+    live = [
+        {k: v for k, v in message.items() if k != "_row_id"} for message in verbatim
+    ]
+    server._sessions["marker-merge-sid"] = _session(history=list(live))
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "marker-merge-sid",
+                    "text": "edited prompt",
+                    "truncate_before_row_id": 205,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert isinstance(resp, dict)
+        err = resp.get("error")
+        assert err is None, err
+        # The cut lands before row 205: the markers and everything earlier
+        # survive (durable rows healed their stamps onto the live list).
+        assert len(replaced) == 1
+        assert replaced[0][0] == "session-key"
+        assert [m["content"] for m in replaced[0][1]] == [
+            "first",
+            "reply 1",
+            verbatim[2]["content"],
+            verbatim[3]["content"],
+        ]
+        assert len(server._sessions["marker-merge-sid"]["history"]) == 4
+    finally:
+        server._sessions.pop("marker-merge-sid", None)
+
+
+def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch):
+    """Same swallowed-id class with NO display marker: an interrupted turn
+    persists no assistant row, the user's resend lands as a second consecutive
+    plain user row, and repair merges it into the earlier one — the resend's
+    row id is unresolvable on every later rewind/edit. Repair-side address
+    preservation keyed on display_kind cannot reach this shape; reading the
+    un-repaired transcript for identity can.
+    """
+    import contextlib
+    import copy
+
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    verbatim = [
+        {"_row_id": 301, "role": "user", "content": "first"},
+        {"_row_id": 302, "role": "assistant", "content": "reply 1"},
+        {"_row_id": 303, "role": "user", "content": "prompt whose turn was cut off"},
+        {"_row_id": 304, "role": "user", "content": "the resent prompt"},
+    ]
+    repaired = copy.deepcopy(verbatim)
+    assert repair_message_sequence(None, repaired) == 1
+    assert len(repaired) == 3
+    assert repaired[2]["_row_id"] == 303  # merge keeps only the FIRST row id
+
+    replaced = []
+    fake_db = _mk_merge_fake_db(verbatim, repaired, replaced)
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield fake_db
+
+    # Production cold resume materializes the live history from the DB with
+    # repair_alternation=True (server._load_resume_transcript), stamps kept:
+    # rows 303/304 collapse into ONE live carrier at 303, so 304 has no live
+    # user ordinal. The un-repaired DB read finds 304 as physical ordinal 2,
+    # but the live list only has user ordinals 0/1 — resolution must map the
+    # DB row onto the repaired live carrier instead of trusting the same
+    # ordinal against a list that cannot have it.
+    live = copy.deepcopy(repaired)
+    assert live[2]["_row_id"] == 303
+    server._sessions["plain-merge-sid"] = _session(history=list(live))
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "plain-merge-sid",
+                    "text": "edited resend",
+                    "truncate_before_row_id": 304,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert isinstance(resp, dict)
+        err = resp.get("error")
+        assert err is None, err
+        assert len(replaced) == 1
+        # The cut retains 303: deriving it from the physical durable prefix
+        # keeps the inner row boundary instead of collapsing the pair.
+        assert [m["content"] for m in replaced[0][1]] == [
+            "first",
+            "reply 1",
+            "prompt whose turn was cut off",
+        ]
+        assert len(server._sessions["plain-merge-sid"]["history"]) == 3
+    finally:
+        server._sessions.pop("plain-merge-sid", None)
 
 
 def test_prompt_submit_row_id_ignores_platform_id_fallback(monkeypatch):
@@ -19543,7 +19910,12 @@ def test_restart_slash_worker_noop_without_worker(monkeypatch):
 def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
     """With eager pre-warm removed, slash.exec is the only spawn path — two
     concurrent worker-routed commands on a fresh session must not each fork a
-    full MCP-fleet worker. The per-session spawn lock serializes first use."""
+    full MCP-fleet worker. The per-session spawn lock serializes first use.
+
+    The probe is an unregistered command so it is not answered live, pending-input,
+    bundle, skill, or plugin — it falls through to the worker spawn (the path under
+    test). ``/context`` was the original probe but is now answered in-process for a
+    local session (the #93280 fix), so it no longer reaches the worker."""
     import time as _time
 
     spawned = []
@@ -19573,7 +19945,7 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
             {
                 "id": str(n),
                 "method": "slash.exec",
-                "params": {"command": "/context", "session_id": "race-spawn"},
+                "params": {"command": "/frobnicate-probe", "session_id": "race-spawn"},
             }
         )
         results.append(resp)

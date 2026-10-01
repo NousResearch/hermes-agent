@@ -57,6 +57,63 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 })
 
 describe('toChatMessages', () => {
+  it('does not render an opaque native_assistant reasoning_details carrier as Thought (#126588)', () => {
+    const carrier = JSON.stringify([
+      {
+        type: 'claude-subscription-directsdk-experimental.native_assistant',
+        version: 1,
+        messages: [
+          {
+            content: [
+              { type: 'thinking', thinking: '', signature: 'sigabc' },
+              { type: 'text', text: 'Public answer' }
+            ]
+          }
+        ],
+        projection: { content: 'Public answer', tool_calls: [] }
+      }
+    ])
+
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Public answer',
+        reasoning: null,
+        reasoning_content: null,
+        reasoning_details: carrier,
+        timestamp: 1
+      }
+    ])
+
+    expect(message.parts.filter(part => part.type === 'reasoning')).toHaveLength(0)
+    expect(chatMessageText(message)).toContain('Public answer')
+    const rendered = JSON.stringify(message.parts)
+    expect(rendered).not.toContain('sigabc')
+    expect(rendered).not.toContain('native_assistant')
+  })
+
+  it('shows readable reasoning text from a serialized reasoning_details envelope', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Answer',
+        reasoning_details: JSON.stringify([
+          { type: 'reasoning.summary', summary: 'Checked the lock.' },
+          {
+            type: 'demo.native_assistant',
+            messages: [{ content: [{ type: 'thinking', thinking: 'Nested thought.', signature: 'sigxyz' }] }]
+          }
+        ]),
+        timestamp: 1
+      }
+    ])
+
+    const reasoning = message.parts.find(part => part.type === 'reasoning')
+
+    expect(reasoning && 'text' in reasoning ? reasoning.text : '').toBe('Checked the lock.\n\nNested thought.')
+    expect(JSON.stringify(message.parts)).not.toContain('sigxyz')
+  })
+
   it('rebuilds the full command from a gateway tool row carrying args', () => {
     // Gateway watch-window hydration projects tool rows as
     // {role:'tool', name, context, args?}. `context` is an 80-char preview;

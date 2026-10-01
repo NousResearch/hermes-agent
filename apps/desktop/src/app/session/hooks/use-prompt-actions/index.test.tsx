@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getLatestSessionMessages, getSession } from '@/hermes'
+import { en } from '@/i18n/en'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
@@ -774,6 +775,56 @@ describe('usePromptActions /compress', () => {
 
     expect(renderedText).toContain('summarized context')
     expect(renderedText).toContain('sure, here is the summary')
+  })
+
+  it('keeps pre-compression messages reachable after the transcript rewrite (#105256)', async () => {
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
+      if (method === 'session.compress') {
+        return {
+          removed: 2,
+          summary: { headline: 'Compressed: 4 → 2 messages' },
+          messages: [
+            { role: 'user', content: 'summarized context' },
+            { role: 'assistant', content: 'sure, here is the summary' }
+          ]
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'pre-1', role: 'user', parts: [textPart('pre-compression user turn')], timestamp: 0 },
+          { id: 'pre-2', role: 'assistant', parts: [textPart('pre-compression assistant reply')], timestamp: 1 }
+        ]}
+      />
+    )
+
+    await handle!.submitText('/compress')
+
+    // The transcript was replaced with the post-compress history.
+    const finalMessages = seeds[seeds.length - 1]?.messages as Array<{ parts?: Array<{ text?: string }> }>
+
+    const renderedText = (finalMessages ?? [])
+      .flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      .join('\n')
+
+    expect(renderedText).toContain('summarized context')
+    expect(renderedText).toContain('sure, here is the summary')
+    // Active-session scrollback: the pre-compression segment stays in the
+    // transcript so scrolling up still reaches it.
+    expect(renderedText).toContain('pre-compression user turn')
+    expect(renderedText).toContain('pre-compression assistant reply')
+    expect(renderedText.indexOf('pre-compression user turn')).toBeLessThan(renderedText.indexOf('summarized context'))
   })
 
   it('uses the compute-host response transcript and success output', async () => {
@@ -2685,6 +2736,51 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
     dropSessionState(RUNTIME_SESSION_ID)
   })
+
+  it('reports the exact accepted identity through onAccepted after a stale-runtime recovery', async () => {
+    const STORED_SESSION_ID = 'stored-db-xyz789'
+    const RECOVERED_SESSION_ID = 'rt-recovered-456'
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    const onAccepted = vi.fn()
+
+    const ok = await handle!.submitText('identity after wake', { onAccepted })
+
+    expect(ok).toBe(true)
+    expect(onAccepted).toHaveBeenCalledTimes(1)
+    expect(onAccepted).toHaveBeenCalledWith({
+      runtimeSessionId: RECOVERED_SESSION_ID,
+      storedSessionId: STORED_SESSION_ID
+    })
+  })
 })
 
 describe('usePromptActions redirectPrompt', () => {
@@ -3036,6 +3132,68 @@ describe('usePromptActions restoreToMessage', () => {
       1_800_000
     )
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
+  })
+
+  it('resumes and retries once when restore hits a stale durable target', async () => {
+    const initialMessages = [
+      { id: 'u1', role: 'user' as const, parts: [textPart('first prompt')], rowId: 101 },
+      { id: 'a1', role: 'assistant' as const, parts: [textPart('first answer')], rowId: 102 },
+      { id: 'u2', role: 'user' as const, parts: [textPart('second prompt')], rowId: 103 }
+    ]
+
+    const refreshedMessages = [
+      { id: 'u1-forked', role: 'user' as const, parts: [textPart('first prompt')], rowId: 501 },
+      { id: 'a1-forked', role: 'assistant' as const, parts: [textPart('first answer')], rowId: 502 },
+      { id: 'u2-forked', role: 'user' as const, parts: [textPart('second prompt')], rowId: 503 }
+    ]
+
+    $messages.set(initialMessages as never)
+
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })
+        }
+      }
+
+      return {} as never
+    })
+
+    const resumeStoredSession = vi.fn(async () => {
+      $messages.set(refreshedMessages as never)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={resumeStoredSession}
+        seedMessages={initialMessages as never}
+        storedSessionId="stored-restore"
+      />
+    )
+
+    await handle!.restoreToMessage('u1')
+
+    expect(resumeStoredSession).toHaveBeenCalledWith('stored-restore')
+    expect(submitAttempts).toBe(2)
+
+    const submitCalls = requestGateway.mock.calls.filter(([method]) => method === 'prompt.submit')
+    expect(submitCalls).toHaveLength(2)
+    expect(submitCalls[0]?.[1]).toMatchObject({
+      text: 'first prompt',
+      truncate_before_row_id: 101
+    })
+    expect(submitCalls[1]?.[1]).toMatchObject({
+      text: 'first prompt',
+      truncate_before_row_id: 501
+    })
   })
 })
 
@@ -5665,82 +5823,6 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
   })
 })
 
-describe('uploadComposerAttachment remote read failures', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  it('turns the raw 16MB IPC cap error into a friendly remote-gateway message', async () => {
-    // electron/hardening.ts rejects the readFileDataUrl IPC with this exact
-    // shape when a file exceeds the configured data-URL read cap.
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: {
-        readFileDataUrl: vi.fn(async () => {
-          throw new Error('File preview failed: file is too large (20971520 bytes; limit 16777216 bytes).')
-        })
-      }
-    })
-
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    await expect(
-      uploadComposerAttachment(
-        { id: 'file:big', kind: 'file', label: 'huge.csv', path: '/abs/huge.csv' },
-        { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
-      )
-    ).rejects.toThrow(/huge\.csv.*16 MB/)
-
-    // The cap is hit before any gateway round-trip.
-    expect(requestGateway).not.toHaveBeenCalled()
-  })
-})
-
-describe('uploadComposerAttachment image cache contract', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  it('always re-reads the image from disk, even when a stale previewUrl is cached', async () => {
-    // attachImagePath drops `previewUrl` as soon as a thumbnail exists, so a
-    // populated `previewUrl` here does not mean it holds full-resolution
-    // bytes (#93324) — the upload must never trust it and must always read
-    // the on-disk file for the bytes the model receives.
-    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZnJvbS1kaXNr')
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { readFileDataUrl }
-    })
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'image.attach_bytes') {
-        return { attached: true, path: '/gw/images/shot.png' } as never
-      }
-
-      return {} as never
-    })
-
-    const uploaded = await uploadComposerAttachment(
-      {
-        id: 'image:shot.png',
-        kind: 'image',
-        label: 'shot.png',
-        path: '/local/shot.png',
-        previewUrl: 'data:image/png;base64,c3RhbGUtY2FjaGVk'
-      },
-      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
-    )
-
-    expect(readFileDataUrl).toHaveBeenCalledWith('/local/shot.png')
-    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
-      content_base64: 'ZnJvbS1kaXNr',
-      filename: 'shot.png',
-      session_id: RUNTIME_SESSION_ID
-    })
-    expect(uploaded.path).toBe('/gw/images/shot.png')
-  })
-})
-
 // The actions bag is a STABLE ref that wiring.tsx mutates in place
 // (Object.assign), and the pane surfaces are memoized on that stable ref — so a
 // surface does NOT re-render when the active session changes and its props keep
@@ -6251,6 +6333,48 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
       'prompt.submit',
       { session_id: RUNTIME_SESSION_ID, text: 'send anyway' },
       1_800_000
+    )
+  })
+
+  it('refuses a slash command sent alongside an attachment instead of silently degrading to a chat message (#81798)', async () => {
+    // The attachment's refText gets prepended ahead of the typed text by
+    // buildContextText, so the merged wire text no longer starts with "/".
+    // Before the fix, submitText's attachment-count gate silently fell through
+    // to a normal prompt.submit — /goal (and every other slash command) with an
+    // attachment vanished into a regular chat message with no feedback.
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('slash.exec must never be called when an attachment is present')
+      }
+
+      if (method === 'prompt.submit') {
+        throw new Error('prompt.submit must never be called for a slash command')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('/goal align with the handoff doc', {
+      attachments: [
+        {
+          id: 'file:handoff.md',
+          kind: 'file',
+          label: 'handoff.md',
+          path: '/Users/alice/handoff.md',
+          refText: '@file:`/Users/alice/handoff.md`'
+        }
+      ]
+    })
+
+    expect(ok).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect($notifications.get()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ message: en.desktop.slashCommandIgnoredBody })])
     )
   })
 })

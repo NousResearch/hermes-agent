@@ -11,6 +11,7 @@ import {
   chatMessageText,
   dedupeRepeatedTextInParts,
   reasoningPart,
+  reasoningTextFromDetails,
   renderMediaTags,
   textPart
 } from './parts'
@@ -454,9 +455,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const commentary = codexText?.commentary ?? []
 
     const rawReasoning =
-      message.reasoning ||
-      message.reasoning_content ||
-      (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
+      message.reasoning || message.reasoning_content || reasoningTextFromDetails(message.reasoning_details)
 
     const reasoning = message.display_reasoning !== undefined ? message.display_reasoning : rawReasoning
 

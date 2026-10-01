@@ -1607,7 +1607,6 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     assert len(messages) == 2
     assert messages[0]["content"] == parts
     assert messages[1]["content"] == "any follow-up thoughts?"
-    assert "base64" not in messages[1]["content"]
 
     # A body that no longer parses stays encoded and is never welded onto the next text turn.
     corrupt = SessionDB._CONTENT_JSON_PREFIX + '[{"type": "text"} EXTRA garbage'
@@ -1656,8 +1655,6 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
     assert before == ["user", "assistant"]
 
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
-
         agent = AIAgent(
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",

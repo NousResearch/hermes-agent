@@ -596,8 +596,7 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     from hermes_state import SessionDB
 
     def _plain_text(content: Any) -> bool:
-        # A str still carrying the persistence sentinel after the decode pre-pass is corrupt
-        # multimodal content; welding text onto it would only bury the base64 deeper (#125299).
+        # never rewrite the persisted row around undecodable content
         return isinstance(content, str) and not content.startswith(SessionDB._CONTENT_JSON_PREFIX)
 
     repairs = 0
@@ -669,15 +668,13 @@ _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_users,
 )
 
-def _normalize_sentinel_encoded_content(messages: List[Dict]) -> int:
+def _normalize_sentinel_encoded_content(messages: List[Dict]) -> None:
     """Decode any sentinel-encoded row content in place before the alternation passes run, so an
     image-bearing turn is never merged as text (#125299). A multimodal turn can re-enter the working set
     as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history, #124102). A body
-    that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it.
-    Returns the number of rows restored."""
+    that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it."""
     from hermes_state import SessionDB  # lazy: the persistence layer owns the sentinel codec
 
-    restored = 0
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -685,14 +682,8 @@ def _normalize_sentinel_encoded_content(messages: List[Dict]) -> int:
         decoded = SessionDB._decode_content(content)
         if decoded is not content:
             msg["content"] = decoded
-            # Deliberately keep any `_db_persisted` marker: this decode is representation-only.
-            # `SessionDB._encode_content(decoded)` reproduces the same `\x00json:` scalar already
-            # stored, so the durable row is not stale. Dropping the marker here makes the append-only
-            # flush treat this historical turn as new (user _row_id values are never update targets in
-            # resolve_and_repair_transcript_batch), re-appending a duplicate user turn (review: ehz0ah,
-            # #125331). The merge/prune passes drop the marker only when the durable bytes actually change.
-            restored += 1
-    return restored
+            # Keep any `_db_persisted` marker: re-encoding reproduces the stored scalar, and dropping
+            # it makes the append-only flush re-append this user turn as a duplicate (#125331).
 
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
@@ -706,9 +697,6 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """
     if not messages:
         return 0
-    # A re-inserted multimodal turn can arrive as its ``\x00json:`` string; decode before the passes so
-    # the base64 image is not concatenated onto an adjacent text turn (#125299). In-place mutation on the
-    # shared row dicts is visible to the passes and to callers regardless of the alternation count below.
     _normalize_sentinel_encoded_content(messages)
     repairs = 0
     current = messages

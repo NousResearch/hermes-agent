@@ -204,12 +204,12 @@ def run_worker_turns(agent, frame, history):
         author = frame.get('turn_author')
         return agent.run_conversation(frame['text'], conversation_history=history,
                                       **({'turn_author': author} if author is not None else {}))
-    from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+    from hermes_cli.turn_exit import turn_exit_code
     code, last_output = 1, ''
     try:
         result = _run_task_turns(agent, frame, history, context)
-        code = KANBAN_RATE_LIMIT_EXIT_CODE if result.get('failed') and result.get('failure_reason') in {'rate_limit', 'billing'} else int(bool(result.get('failed') or result.get('interrupted')))
-        last_output = str(result.get('final_response') or '')[-500:]
+        code = turn_exit_code(result, kanban_worker=True)
+        last_output = str(result.get('final_response') or '')[-500:] if isinstance(result, dict) else ''
         return result
     finally:
         _TURNS_DONE.set()

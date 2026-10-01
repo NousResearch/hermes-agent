@@ -1987,6 +1987,9 @@ class CLICommandsMixin:
                             self._app.invalidate()
 
                 bg_agent.thinking_callback = _bg_thinking
+                # /bg prompts paint on this terminal: they wait until answered, like the foreground turn's.
+                from tools.approval_context import reset_prompts_wait_for_answer, set_prompts_wait_for_answer
+                prompts_token = set_prompts_wait_for_answer()
                 try:
                     result = bg_agent.run_conversation(user_message=prompt, task_id=task_id)
                     response = result.get("final_response", "") if result else ""
@@ -1994,6 +1997,7 @@ class CLICommandsMixin:
                         response = _gt("model.error_prefix", error=result["error"])
                     return response
                 finally:
+                    reset_prompts_wait_for_answer(prompts_token)
                     # One agent per /bg task in a long-lived CLI process: close()
                     # is the owner boundary (memory shutdown, tool subprocesses,
                     # httpx clients); an unclosed side agent leaks all of them

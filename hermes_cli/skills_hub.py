@@ -885,6 +885,28 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         return installed
 
 
+def _install_target_refusal(c: Console, bundle, category: str, force: bool, reinstall_existing: bool,
+                            attempt: dict) -> tuple:
+    """``(lock entry, early result or None)`` for the install target. A hub install there needs --force
+    (or a reinstall request); a skill the hub did not install there is never deleted without --force."""
+    from tools.skills_hub import HubLockFile
+    existing = HubLockFile().get_installed(bundle.name)
+    if existing:
+        c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
+        if not (force or reinstall_existing):
+            c.print("Use --force to reinstall.\n")
+            return existing, (bundle, None, None)
+        return existing, None
+    from tools.skills_hub_install import untracked_skill_at_install_dir
+    if not force and (untracked := untracked_skill_at_install_dir(bundle.name, category)) is not None:
+        c.print(f"[yellow]Warning:[/] a skill you did not install from the hub already exists at "
+                f"{untracked}. Installing '{bundle.name}' would delete it and its files.")
+        c.print("Move it elsewhere first, or use --force to replace it.\n")
+        attempt["failure_class"] = "other"
+        return None, (bundle, "failed", False)
+    return None, None
+
+
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
                    invalidate_cache: bool, name_override: str, source_id: Optional[str],
                    attempt: Optional[dict] = None, reinstall_existing: bool = False) -> tuple:
@@ -942,12 +964,9 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     if official and not category:
         category = "/".join(bundle.identifier.split("/")[1:-1])
 
-    existing = HubLockFile().get_installed(bundle.name)
-    if existing:
-        c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
-        if not (force or reinstall_existing):
-            c.print("Use --force to reinstall.\n")
-            return bundle, None, None
+    existing, refusal = _install_target_refusal(c, bundle, category, force, reinstall_existing, attempt)
+    if refusal is not None:
+        return refusal
     failed = None if existing else "failed"
 
     extra_metadata = {**(getattr(meta, "extra", {}) or {}), **bundle.metadata}

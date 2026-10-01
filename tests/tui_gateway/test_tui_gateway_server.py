@@ -1619,8 +1619,8 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
         {"tool_progress_mode": "off", "tool_started_at": {}},
     )
 
-    args = {"question": "Pick one", "choices": ["A", "B"]}
-    result = '{"question":"Pick one","choices_offered":["A","B"],"user_response":"A"}'
+    args = {"questions": [{"question": "Pick one", "choices": ["A", "B"]}]}
+    result = '{"responses":[{"question":"Pick one","choices_offered":["A","B"],"status":"answered","user_response":"A"}],"outcome":"submitted"}'
 
     server._on_tool_start("clarify-off-test", "tool-clarify", "clarify", args)
     server._on_tool_complete("clarify-off-test", "tool-clarify", "clarify", args, result)
@@ -1628,7 +1628,7 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
     assert [event[0] for event in events] == ["tool.start", "tool.complete"]
     assert events[0][2]["name"] == "clarify"
     assert events[0][2]["tool_id"] == "tool-clarify"
-    assert events[1][2]["result"]["user_response"] == "A"
+    assert events[1][2]["result"]["responses"][0]["user_response"] == "A"
 
 
 def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(monkeypatch):
@@ -3070,8 +3070,7 @@ def test_expand_skill_invocation_for_replay_round_trips_the_projection(
     )
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda *a, **k: [])
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
     skill_commands.scan_skill_commands()
 
     expanded = server._expand_skill_invocation_for_replay(
@@ -3087,8 +3086,7 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
     import agent.skill_utils as skill_utils
 
     monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda *a, **k: [])
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
 
     assert server._expand_skill_invocation_for_replay("just words", "t") == "just words"
     # A core slash command is not a skill — nothing to expand.
@@ -3120,8 +3118,7 @@ def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]
     monkeypatch.setattr(skill_utils, "_skills_cfg", lambda: {
         "external_dirs": [], "trusted_project_dirs": [str(repo_a), str(repo_b)]})
     skill_utils._external_dirs_cache_clear()
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
     # Launch shape: process cwd and TERMINAL_CWD both point at a non-project dir (the resolved placeholder).
     elsewhere = tmp_path / "home-dir"
     elsewhere.mkdir()
@@ -3166,7 +3163,12 @@ def test_complete_slash_and_skills_reload_are_bound_to_the_session_cwd(tmp_path,
     assert server._methods["command.dispatch"]("d", {"name": "alpha-skill", "arg": "", "session_id": "sid-a"})[
         "result"]["type"] == "skill"
     reload = server._methods["skills.reload"]("r", {"session_id": "sid-a"})["result"]
-    assert reload["result"]["removed"] == [] and "/alpha-skill" in skill_commands._skill_commands, reload["output"]
+    assert reload["result"]["removed"] == [], reload["output"]
+    # The session-bound registry still offers the project skill after the reload
+    # (the multi-slot cache keeps each session-identity's view; the launch-env
+    # identity outside any session legitimately sees none of them).
+    items = server._methods["complete.slash"]("s", {"text": "/alph", "session_id": "sid-a"})["result"]["items"]
+    assert [i["text"] for i in items if i["kind"] == "skill"] == ["alpha-skill"], reload["output"]
     # Another session's reload resolves ITS repo, not the launch env.
     other = server._methods["skills.reload"]("r", {"session_id": "sid-b"})["result"]
     assert {i["name"] for i in other["result"]["added"]} == {"beta-skill"}, other["output"]
@@ -9149,7 +9151,7 @@ def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypat
     def slow_bootstrap():
         release.wait(5)
         with fb._lock:
-            fb._record = fb.SetupRecord(provider_configured=True, inference_provider="nous", free_tier=True,
+            fb._record = fb.SetupRecord(provider_configured=True, inference_provider="nous", free_tier_account=True,
                                         has_identity=True, other_providers=False)
             fb._done.set()
     with fb._lock:
@@ -9159,7 +9161,7 @@ def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypat
         release.set()
         resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
         assert resp["result"]["provider_configured"] is True
-        assert resp["result"]["ready"] is True and resp["result"]["free_tier"] is True
+        assert resp["result"]["ready"] is True and resp["result"]["free_tier_account"] is True
         assert resp["result"]["inference_provider"] == "nous"
     finally:
         fb.reset_for_tests()
@@ -9193,6 +9195,9 @@ def test_probe_credentials_allows_keyless_custom_runtime():
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("openrouter/test-model", None))
+    # No pin anywhere (startup pin None, config model pin absent): the failure keeps naming the
+    # resolved route's provider.
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {}})
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **_kw: {
@@ -9210,6 +9215,53 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
         "openrouter", "openrouter/test-model", "env/config"
     )
     assert result["error"]
+
+
+def test_setup_runtime_check_failure_names_the_configured_pin_not_the_chain_tail(monkeypatch):
+    """#124939: without an explicit ``provider`` the probe runs the startup pin and then the
+    fallback chain. When the chain only resolves at its tail (BWS secrets not yet hydrated at
+    boot), the runtime stops on the tail provider and the failure used to blame it — pointing
+    the user at a provider they never pinned. The failure must name the pin."""
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("glm-5.3", None))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "zai"}})
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **_kw: {
+            "provider": "openrouter",  # the chain tail that "resolved"
+            "api_key": "",
+            "source": "pool",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    result = resp["result"]
+    assert result["ok"] is False
+    assert result["provider"] == "zai"
+    assert result["error"] == "No usable credentials found for zai."
+    assert "openrouter" not in result["error"]
+
+
+def test_setup_runtime_check_failure_names_startup_env_pin(monkeypatch):
+    """The startup env pin (HERMES_TUI_PROVIDER) outranks the config model pin."""
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("glm-5.3", "zai"))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "openai-api"}})
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **_kw: {
+            "provider": "openrouter",
+            "api_key": "",
+            "source": "pool",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    result = resp["result"]
+    assert result["ok"] is False
+    assert result["error"] == "No usable credentials found for zai."
 
 
 def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
@@ -9231,6 +9283,7 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
 
 def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **_kw: {
@@ -9249,6 +9302,7 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
 def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     """Onboarding must be able to validate the provider the user just connected."""
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
 
     def fake_resolve(requested=None, **kwargs):
         if requested == "nous":
@@ -9358,7 +9412,7 @@ def test_setup_runtime_check_scopes_launch_profile_in_multiplex_backend(monkeypa
         "provider": "openai-codex",
         "model": "gpt-5.3-codex",
         "source": "credential-pool",
-        "free_tier": False,
+        "free_tier_route": False,
     }
 
 
@@ -10410,6 +10464,9 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
                 {"session_id": session_id, "role": role, "content": content}
             )
 
+        def deactivate_messages_by_display_kind(self, _session_id, _display_kind):
+            return 0
+
     agent = Agent()
     db = SessionDB()
     agent._session_db = db
@@ -10465,7 +10522,10 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         assert session["history"][-1]["role"] == "user"
         assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
         assert db.messages[-1] == {
-            "session_id": "session-key",
+            # The agent's own db handle belongs to the agent's live session id, not the gateway's
+            # session_key — the same `getattr(agent, "session_id", None) or session_key` the sibling
+            # system-prompt persist uses one screen up (#123545: these two must not diverge).
+            "session_id": agent.session_id,
             "role": "user",
             "content": session["history"][-1]["content"],
         }
@@ -12121,6 +12181,28 @@ def test_rollback_restore_resolves_number_and_file_path():
     assert resp["result"]["success"] is True
     assert calls["args"][1] == "bbb222"
     assert calls["args"][2] == "src/app.tsx"
+
+
+def test_rollback_list_carries_checkpoint_reason_as_message():
+    reason = "before write_file: a.py [nested git repos not captured: tool]"
+
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [{"hash": "aaa111", "short_hash": "aaa", "timestamp": "2026-09-29T10:00:00+00:00",
+                     "reason": reason, "files_changed": 1}]
+
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()), history=[]
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "rollback.list", "params": {"session_id": "sid"}}
+    )
+
+    row = resp["result"]["checkpoints"][0]
+    assert row["hash"] == "aaa111"
+    assert row["message"] == reason
 
 
 def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
@@ -17039,7 +17121,7 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
     other_home.mkdir(parents=True)
     monkeypatch.setattr(server, "_profile_home", lambda name: other_home if name == "other" else None)
     fb.reset_for_tests()
-    stale = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+    stale = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier_account=False,
                            has_identity=False, other_providers=False)
     with fb._lock:
         fb._record, fb._started = stale, True
@@ -18767,6 +18849,52 @@ def test_notification_poller_skips_consumed(monkeypatch):
         process_registry._completion_consumed.discard("proc_already_done")
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_starts_no_turn_after_stop(monkeypatch):
+    """After the user pressed Stop, a completion that arrives must not start an
+    automatic model turn; it waits (requeued) until the user submits again."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    started = []
+    sess = _session(running=False, _turn_cancel_requested=True)
+    server._sessions["sid_stopped"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **kw: started.append(a) or True)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_after_stop")
+    isolated_queue.put({
+        "type": "completion", "session_id": "proc_after_stop", "command": "make build",
+        "exit_code": 0, "output": "ok",
+    })
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_stopped", sess)
+
+        assert started == []
+        assert sess["running"] is False
+        assert isolated_queue.get_nowait()["session_id"] == "proc_after_stop"
+    finally:
+        server._sessions.pop("sid_stopped", None)
+
+
+def test_goal_continuation_starts_no_turn_after_stop(monkeypatch):
+    """A Stop that lands after the model answered but before the post-turn follow-ups
+    must not let an active /goal chain its continuation turn."""
+    started = []
+    sess = _session(running=False, _turn_cancel_requested=True)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **kw: started.append(a) or True)
+
+    server._run_post_turn_followups("r", "sid_goal_stopped", sess, {}, "keep going")
+
+    assert started == []
+    assert sess["running"] is False
 
 
 def test_notification_poller_requeues_when_busy(monkeypatch):
@@ -21007,29 +21135,19 @@ def _capture_server_request(monkeypatch, result):
 
 def test_clarify_callback_uses_configured_timeout(monkeypatch):
     """The TUI/desktop clarify bridge sends a ``clarify`` server request with the canonical clarify timeout
-    (via _clarify_timeout_seconds), and returns the response's ``answer``."""
+    (via _clarify_timeout_seconds), and returns the response's ``answers`` and ``outcome``."""
     monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
-    captured = _capture_server_request(monkeypatch, {"answer": "answer"})
+    reply = {"answers": {"q0": "a"}, "outcome": "submitted"}
+    captured = _capture_server_request(monkeypatch, reply)
+    questions = [{"qid": "q0", "question": "Pick one", "choices": ["a", "b"], "multi_select": False}]
 
-    result = server._agent_cbs("sid-1")["clarify_callback"]("Pick one", ["a", "b"])
+    result = server._agent_cbs("sid-1")["clarify_callback"](questions)
 
-    assert result == "answer"
+    assert result == reply
     assert captured["method"] == "clarify" and captured["sid"] == "sid-1"
     assert captured["timeout"] == 42
-    assert captured["params"] == {"question": "Pick one", "choices": ["a", "b"]}
-
-
-def test_clarify_callback_multi_select_hint(monkeypatch):
-    """multi_select=True adds the hint to the params; the single-select shape stays byte-identical to the
-    pre-multi-select protocol (older renderers must never see the extra field)."""
-    captured = _capture_server_request(monkeypatch, {"answer": "answer"})
-    cb = server._agent_cbs("sid-1")["clarify_callback"]
-
-    cb("Pick many", ["a", "b"], multi_select=True)
-    assert captured["params"] == {"question": "Pick many", "choices": ["a", "b"], "multi_select": True}
-
-    cb("Pick one", ["a", "b"], multi_select=False)
-    assert captured["params"] == {"question": "Pick one", "choices": ["a", "b"]}
+    assert captured["params"] == {"questions": questions}
+    assert captured["qids"] == ["q0"]
 
 
 @pytest.mark.parametrize(

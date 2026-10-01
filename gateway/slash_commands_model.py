@@ -29,6 +29,7 @@ _FAST_SELECTIONS = {
     "off": (None, "normal", "gateway.fast.label_normal"),
     "auto": ("auto", "auto", None),
     "cold": ("cold", "cold", None),
+    "ultrafast": ("ultrafast", "ultrafast", None),
 }
 
 # /reasoning display-toggle arguments -> show_reasoning value.
@@ -115,6 +116,9 @@ class _ModelSwitchContext:
 
 
 
+_TEXT_LISTING_MODELS = 5
+
+
 def _model_provider_listing_lines(providers) -> list[str]:
     """Text-list body for ``/model`` with no args on platforms without a picker."""
     lines: list[str] = []
@@ -122,8 +126,9 @@ def _model_provider_listing_lines(providers) -> list[str]:
         tag = t("gateway.model.current_tag") if p["is_current"] else ""
         lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
         if p["models"]:
-            model_strs = ", ".join(f"`{m}`" for m in p["models"])
-            hidden = p["total_models"] - len(p["models"])
+            shown = p["models"][:_TEXT_LISTING_MODELS]  # uncapped rows arrive full; this is a preview
+            model_strs = ", ".join(f"`{m}`" for m in shown)
+            hidden = p["total_models"] - len(shown)
             extra = t("gateway.model.more_models_suffix", count=hidden) if hidden > 0 else ""
             lines.append(f"  {model_strs}{extra}")
         elif p.get("api_url"):
@@ -406,13 +411,18 @@ class GatewayModelCommandsMixin:
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
+        # A /model switch fires no title event, so the slash handler is the only notice point for a
+        # live group-title recompose (spec §3.3). One call covers all three entry paths (typed,
+        # picker, cost-confirm) because they all funnel through here; ordering reads model landed ->
+        # recompose -> reasoning recompose.
+        self._notify_telegram_group_title_of_switch(source, ctx.session_key)
         if ctx.reasoning_effort and not one_turn:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.
             from gateway.run import _platform_config_key
             reply += "\n" + self._apply_reasoning_selection(
                 ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
-                persist_global=ctx.persist_global and global_error is None)
+                persist_global=ctx.persist_global and global_error is None, source=source)
         return reply
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
@@ -474,7 +484,7 @@ class GatewayModelCommandsMixin:
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),
                    provider=get_label(ctx.current_provider)), ""]
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
-            providers = await asyncio.to_thread(list_authenticated_providers, max_models=5, **listing_kwargs)
+            providers = await asyncio.to_thread(list_authenticated_providers, max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
             lines.extend(_model_provider_listing_lines(providers))
         except Exception:
             pass
@@ -668,8 +678,15 @@ class GatewayModelCommandsMixin:
 
     def _apply_reasoning_selection(
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
+        source=None,
     ) -> str:
-        """Apply a /reasoning argument (typed or picked) and return the reply."""
+        """Apply a /reasoning argument (typed or picked) and return the reply.
+
+        ``source`` rides in from slash dispatch only so a switch that actually CHANGED the reasoning
+        state can recompose the Telegram group title (spec §3.3): no title event fires on a switch,
+        so this applier is the only notice point. Paths that changed nothing — the display toggle, an
+        unresolvable argument, an unsupported --global reset — must leave the title alone.
+        """
         from hermes_constants import parse_reasoning_effort
 
         value = (value or "").strip().lower()
@@ -685,6 +702,7 @@ class GatewayModelCommandsMixin:
             self._set_session_reasoning_override(session_key, None)
             self._reasoning_config = self._load_reasoning_config()
             self._evict_cached_agent(session_key)
+            self._notify_telegram_group_title_of_switch(source, session_key)
             return t("gateway.reasoning.reset_done")
 
         parsed = parse_reasoning_effort(value)
@@ -694,10 +712,13 @@ class GatewayModelCommandsMixin:
         if persist_global:
             if self._save_gateway_config_key("agent.reasoning_effort", value):
                 self._set_reasoning_override(session_key, None)
+                self._notify_telegram_group_title_of_switch(source, session_key)
                 return t("gateway.reasoning.set_global", effort=value)
             self._set_reasoning_override(session_key, parsed)
+            self._notify_telegram_group_title_of_switch(source, session_key)
             return t("gateway.reasoning.set_global_save_failed", effort=value)
         self._set_reasoning_override(session_key, parsed)
+        self._notify_telegram_group_title_of_switch(source, session_key)
         return t("gateway.reasoning.set_session", effort=value)
 
     async def _try_send_choice_picker(
@@ -739,7 +760,8 @@ class GatewayModelCommandsMixin:
         )
         platform_key = _platform_config_key(event.source.platform)
         if raw_args:  # typed path — same applier the picker uses
-            return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
+            return self._apply_reasoning_selection(
+                session_key, platform_key, args, persist_global=persist_global, source=event.source)
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
@@ -765,7 +787,10 @@ class GatewayModelCommandsMixin:
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return self._apply_reasoning_selection(session_key, platform_key, value)
+            # The picker's callback carries no source, so bind the event's own (raw, pre-normalized
+            # — the same source the typed path hands over).
+            return self._apply_reasoning_selection(
+                session_key, platform_key, value, source=event.source)
 
         picker_sent = await self._try_send_choice_picker(
             event,
@@ -804,18 +829,23 @@ class GatewayModelCommandsMixin:
     async def _handle_fast_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /fast — the CLI Priority Processing toggle; session-scoped unless ``--global``
         (persists agent.service_tier, parity with /model)."""
+        from agent.fast_mode import service_tier_word
         from gateway.run import _load_gateway_config, _resolve_gateway_model
-        from hermes_cli.models import model_supports_fast_mode
+        from hermes_cli.models import model_supports_fast_mode, model_supports_ultrafast
 
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(event.get_command_args().strip().lower())
         session_key = self._session_key_for_source(event.source)
         self._service_tier = self._resolve_session_service_tier(session_key=session_key)
-        if not model_supports_fast_mode(_resolve_gateway_model(_load_gateway_config())):
+        model = _resolve_gateway_model(_load_gateway_config())
+        if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
+        ultrafast = model_supports_ultrafast(model)
+        if args == "ultrafast" and not ultrafast:
+            return t("gateway.fast.ultrafast_not_supported", model=model)
         if args and args != "status":
             return self._apply_fast_selection(session_key, args, persist=persist_global)
-        mode = "fast" if self._service_tier == "priority" else (self._service_tier or "normal")
+        mode = service_tier_word(self._service_tier)
         status = {"fast": t("gateway.fast.status_fast"), "normal": t("gateway.fast.status_normal")}.get(mode, mode)
 
         async def _on_fast_choice(_chat_id: str, value: str) -> str:
@@ -827,7 +857,7 @@ class GatewayModelCommandsMixin:
             title=t("gateway.fast.picker_title", mode=status),
             choices=[
                 {"value": v, "label": t(f"gateway.fast.choice_{v}"), "is_current": mode == v}
-                for v in ("fast", "normal", "auto", "cold")
+                for v in ("fast", "normal", "auto", "cold", *(("ultrafast",) if ultrafast else ()))
             ],
             on_choice_selected=_on_fast_choice,
         )

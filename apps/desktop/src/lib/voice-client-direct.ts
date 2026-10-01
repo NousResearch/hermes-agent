@@ -1,4 +1,4 @@
-import { type OwnerScope, ownerScoped } from '@/api/client'
+import { hermesApiAs, type OwnerScope, ownerScoped, type ResolvedOwner } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, hermesApi } from '@/hermes'
 
 /**
@@ -29,6 +29,9 @@ export interface DirectSttConfig {
   language: null | string
   /** Seconds the gateway allows one transcription request (`stt.openai.timeout`); absent on older backends. */
   timeout_s?: null | number
+  /** Silence-hallucination contract the relay path applies (`is_whisper_hallucination`);
+   *  absent on older backends — a matching transcript is still returned as-is then. */
+  hallucination_filter?: null | { phrases: string[]; repeat_regex: string }
 }
 
 export interface DirectTtsConfig {
@@ -83,8 +86,28 @@ export function clearVoiceClientConfigCache(): void {
 }
 
 export async function fetchVoiceClientConfig(owner?: OwnerScope): Promise<null | VoiceClientConfig> {
-  const key = scopeKey(owner)
+  // hermesApi carries connectionScoped(); profileScoped() adds the profile —
+  // the same routing every relay audio call uses, so the config comes from
+  // the backend the user is actually talking to.
+  return loadVoiceClientConfig(scopeKey(owner), () =>
+    hermesApi<VoiceConfigResponse>({ ...ownerScoped(owner), path: '/api/audio/voice-config' })
+  )
+}
 
+/** The config for an owner resolved once for a whole voice operation: the
+ *  lookup cannot drift to whatever scope is ambient by the time it runs. */
+export async function fetchVoiceClientConfigFor(owner: ResolvedOwner): Promise<null | VoiceClientConfig> {
+  return loadVoiceClientConfig(`${owner.connectionId || 'local'}::${owner.profile || 'default'}`, () =>
+    hermesApiAs<VoiceConfigResponse>(owner, { path: '/api/audio/voice-config' })
+  )
+}
+
+type VoiceConfigResponse = { ok: boolean } & VoiceClientConfig
+
+async function loadVoiceClientConfig(
+  key: string,
+  fetchConfig: () => Promise<VoiceConfigResponse>
+): Promise<null | VoiceClientConfig> {
   if (cached && cached.key === key && Date.now() - cached.at < CONFIG_TTL_MS) {
     return cached.config
   }
@@ -95,13 +118,7 @@ export async function fetchVoiceClientConfig(owner?: OwnerScope): Promise<null |
 
   const promise = (async () => {
     try {
-      // hermesApi carries connectionScoped(); profileScoped() adds the
-      // profile — the same routing every relay audio call uses, so the
-      // config comes from the backend the user is actually talking to.
-      const response = await hermesApi<{ ok: boolean } & VoiceClientConfig>({
-        ...ownerScoped(owner),
-        path: '/api/audio/voice-config'
-      })
+      const response = await fetchConfig()
 
       if (!response?.ok || !response.stt || !response.tts) {
         return null
@@ -191,6 +208,39 @@ export function sttTimeoutSeconds(stt: Pick<DirectSttConfig, 'timeout_s'>): numb
 }
 
 /**
+ * The relay path's Whisper-silence filter (`is_whisper_hallucination`,
+ * tools/voice_mode_transcript.py): empty, an exact known hallucination
+ * (lowercased, trailing `.!` stripped), or repetitive filler like
+ * "Thank you. Thank you." A client-direct transcript must agree with a
+ * relayed one instead of submitting "thank you" on silence as a real turn.
+ * No filter on the config (older backend) → the transcript passes through.
+ */
+export function isSttSilenceHallucination(
+  transcript: string,
+  filter: DirectSttConfig['hallucination_filter']
+): boolean {
+  if (!filter) {
+    return false
+  }
+
+  const cleaned = transcript.trim().toLowerCase()
+
+  if (!cleaned) {
+    return true
+  }
+
+  if (filter.phrases.includes(cleaned.replaceAll('!', '').replaceAll('.', ''))) {
+    return true
+  }
+
+  try {
+    return new RegExp(filter.repeat_regex, 'i').test(cleaned)
+  } catch {
+    return false
+  }
+}
+
+/**
  * `fetch` with the STT deadline. A slow or wedged endpoint otherwise keeps the
  * dictation UI in "transcribing" forever — the browser applies no timeout of
  * its own to a POST that never answers.
@@ -218,10 +268,11 @@ async function sttFetch(stt: DirectSttConfig, url: string, init: RequestInit): P
  * when the profile's provider isn't client-callable — the caller relays.
  * Provider REJECTIONS throw: the configured provider said no, and silently
  * re-running the same request through the gateway would just fail again
- * slower and hide the real error.
+ * slower and hide the real error. `owner` pins the provider config to the
+ * recording's owner (resolved when the mic opened); omitted → the active scope.
  */
-export async function transcribeAudioClientDirect(audio: Blob): Promise<null | string> {
-  const config = await fetchVoiceClientConfig()
+export async function transcribeAudioClientDirect(audio: Blob, owner?: ResolvedOwner): Promise<null | string> {
+  const config = await (owner ? fetchVoiceClientConfigFor(owner) : fetchVoiceClientConfig())
   const stt = config?.stt
 
   if (!stt || stt.mode !== 'direct') {
@@ -253,7 +304,11 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
       throw new Error(`${stt.provider} STT error (HTTP ${response.status}): ${await providerErrorText(response)}`)
     }
 
-    return transcriptFromOpenAiMultipartBody(await response.text())
+    const transcript = transcriptFromOpenAiMultipartBody(await response.text())
+
+    // Silence hallucination ("thank you" on quiet audio): treat as silence,
+    // exactly like the relay endpoint, instead of submitting a phantom turn.
+    return isSttSilenceHallucination(transcript, stt.hallucination_filter) ? '' : transcript
   }
 
   if (stt.wire === 'xai-stt') {
@@ -277,8 +332,10 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
     }
 
     const result = (await response.json()) as { text?: string }
+    const transcript = (result.text || '').trim()
 
-    return (result.text || '').trim()
+    // Silence hallucination: same contract as the relay endpoint.
+    return isSttSilenceHallucination(transcript, stt.hallucination_filter) ? '' : transcript
   }
 
   if (stt.wire === 'elevenlabs-stt') {
@@ -305,8 +362,10 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
     }
 
     const result = (await response.json()) as { text?: string }
+    const transcript = (result.text || '').trim()
 
-    return (result.text || '').trim()
+    // Silence hallucination: same contract as the relay endpoint.
+    return isSttSilenceHallucination(transcript, stt.hallucination_filter) ? '' : transcript
   }
 
   return null

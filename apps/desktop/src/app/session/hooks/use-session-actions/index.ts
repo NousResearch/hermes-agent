@@ -80,8 +80,10 @@ import {
   $yoloActive,
   getCurrentModelSource,
   getSessionOwnerHint,
+  idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
+  rotateFreshDraftKey,
   sessionPinId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -123,6 +125,7 @@ import {
   type SessionProfileRoute
 } from '@/store/session-request-router'
 import {
+  $focusedStoredSessionId,
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
@@ -156,11 +159,13 @@ import { sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
+import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
+import { createGatewaySession } from './session-create-request'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -220,15 +225,6 @@ interface SessionActionsOptions {
     storedSessionId?: string | null
   ) => ClientSessionState
 }
-
-// Stored ids created in THIS renderer run. A brand-new session lives only in the
-// gateway's in-memory map until its first turn persists a state.db row — so if a
-// respawning/flapping backend drops it, both resume RPC and the REST transcript
-// 404 even though the user just made it. We must NOT treat that as "gone" (which
-// yanks them to a fresh draft — the "new sessions clear themselves" bug); the
-// bounded retry rebinds it when the backend returns. Boot-into-a-stale-last-id
-// (NOT in this set) still legitimately drops to a draft.
-const createdThisRun = new Set<string>()
 
 const branchMessagesFingerprint = (messages: BranchMessage[]): string =>
   JSON.stringify(messages.map(({ content, role }) => [role, content]))
@@ -381,6 +377,7 @@ async function desktopSessionCreateParams(
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
   replaceRoute?: boolean
+  rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
@@ -487,6 +484,9 @@ export function useSessionActions({
   // unconditionally; a fast A → B → C switch could therefore be overwritten
   // by A's delayed session.info event and visibly jump back to A.
   const storedIdRotation = useStore($activeSessionStoredIdRotation)
+  const storedSessions = useStore($sessions)
+  const focusedStoredSessionId = useStore($focusedStoredSessionId)
+  const routedStoredSessionId = getRoutedStoredSessionId()
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -494,21 +494,39 @@ export function useSessionActions({
       return
     }
 
-    // Consume the event even when it is stale. Rotation is an edge, not durable
-    // state; replaying it after a later remount/selection would steal focus.
-    setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
+    const selectedAtEffect = selectedStoredSessionIdRef.current
+    const previousId = storedIdRotation.previousStoredSessionId
+    const nextId = storedIdRotation.nextStoredSessionId
 
-    const selectedStoredSessionId = selectedStoredSessionIdRef.current
-    const routedStoredSessionId = getRoutedStoredSessionId()
+    // A tile can adopt the exact successor before the refreshed sessions list
+    // contains it. The rotation itself proves that this focus is the same live
+    // runtime; unrelated focused chats still fail the foreground check.
+    const focusedOnRotatedLineage = Boolean(
+      focusedStoredSessionId &&
+      (focusedStoredSessionId === nextId || idsShareLineage(focusedStoredSessionId, nextId, storedSessions))
+    )
 
-    if (
+    const rotationIsStale =
       activeSessionIdRef.current !== storedIdRotation.runtimeSessionId ||
-      selectedStoredSessionId !== storedIdRotation.previousStoredSessionId ||
-      (routedStoredSessionId !== null && routedStoredSessionId !== storedIdRotation.previousStoredSessionId) ||
-      !isSessionInForeground(storedIdRotation.previousStoredSessionId)
-    ) {
+      selectedAtEffect !== previousId ||
+      (routedStoredSessionId !== null && routedStoredSessionId !== previousId)
+
+    if (rotationIsStale) {
+      // The user moved to another conversation, so this proof must not replay.
+      setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
+
       return
     }
+
+    if (!isSessionInForeground(previousId) && !focusedOnRotatedLineage) {
+      // Focus moved to an unrelated tile, but route and selection still name
+      // this conversation. Keep the proof so steering can use it until focus
+      // or the session list catches up.
+      return
+    }
+
+    // Consume only once the successor can safely take over the visible session.
+    setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
 
     // Park unsent draft/queue on the durable lineage key (not the new tip).
     // ChatBar scopes composer state on resolveComposerSessionKey(); migrating
@@ -516,15 +534,12 @@ export function useSessionActions({
     // live editor text on a brief remount. If the new tip row is not in
     // $sessions yet, resolveComposerSessionKey falls back to the tip id — prefer
     // the previous id (usually the lineage root) in that gap.
-    const previousId = storedIdRotation.previousStoredSessionId
-    const nextId = storedIdRotation.nextStoredSessionId
-    const sessions = $sessions.get()
-    const resolvedNext = resolveComposerSessionKey(nextId, sessions)
+    const resolvedNext = resolveComposerSessionKey(nextId, storedSessions)
 
     const durableKey =
       resolvedNext && resolvedNext !== nextId
         ? resolvedNext
-        : (resolveComposerSessionKey(previousId, sessions) ?? previousId)
+        : (resolveComposerSessionKey(previousId, storedSessions) ?? previousId)
 
     migrateSessionDraft(previousId, durableKey)
     migrateSessionDraft(nextId, durableKey)
@@ -540,7 +555,18 @@ export function useSessionActions({
     if (routedStoredSessionId === previousId) {
       navigate(sessionRoute(nextId), { replace: true })
     }
-  }, [activeSessionIdRef, getRoutedStoredSessionId, navigate, selectedStoredSessionIdRef, storedIdRotation])
+  }, [
+    activeSessionId,
+    activeSessionIdRef,
+    focusedStoredSessionId,
+    getRoutedStoredSessionId,
+    navigate,
+    routedStoredSessionId,
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef,
+    storedIdRotation,
+    storedSessions
+  ])
 
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {
@@ -554,6 +580,10 @@ export function useSessionActions({
       const workspaceTarget = hasWorkspaceTarget
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
+
+      if (draftOptions.rotateFreshDraftKey !== false) {
+        rotateFreshDraftKey()
+      }
 
       resetViewSync()
       busyRef.current = false
@@ -701,17 +731,7 @@ export function useSessionActions({
         let stored: null | string
 
         try {
-          created = capturedRoute
-            ? await requestGatewayForAgent<SessionCreateResponse>(
-                capturedRoute.connectionId,
-                capturedRoute.profile,
-                'session.create',
-                params,
-                undefined,
-                undefined,
-                { spawnPriority: 'foreground' }
-              )
-            : await requestGateway<SessionCreateResponse>('session.create', params)
+          created = await createGatewaySession(capturedRoute, params, requestGateway)
 
           stored = created.stored_session_id ?? null
 
@@ -778,7 +798,7 @@ export function useSessionActions({
         ensureSessionState(created.session_id, stored)
 
         if (stored) {
-          createdThisRun.add(stored)
+          markSessionCreatedThisRun(stored)
           // Seed the sidebar preview with the user's first message so the row
           // reads meaningfully while the turn is in flight, instead of flashing
           // "Untitled session" until the turn persists and auto-title runs. The
@@ -789,6 +809,7 @@ export function useSessionActions({
           // Anything still parked under the pre-session draft bucket belongs
           // to this chat now (#114122); the composer moves it on scope swap.
           announceNewSessionDraftKey(stored)
+          createOverrides?.onComposerScopeAssigned?.(stored)
           navigate(sessionRoute(stored), { replace: true })
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.
@@ -989,17 +1010,7 @@ export function useSessionActions({
         let stored: string | undefined
 
         try {
-          created = capturedRoute
-            ? await requestGatewayForAgent<SessionCreateResponse>(
-                capturedRoute.connectionId,
-                capturedRoute.profile,
-                'session.create',
-                params,
-                undefined,
-                undefined,
-                { spawnPriority: 'foreground' }
-              )
-            : await requestGateway<SessionCreateResponse>('session.create', params)
+          created = await createGatewaySession(capturedRoute, params, requestGateway)
 
           stored = created.stored_session_id
 
@@ -1031,7 +1042,7 @@ export function useSessionActions({
           return
         }
 
-        createdThisRun.add(stored)
+        markSessionCreatedThisRun(stored)
 
         // Seed the per-runtime cache so the tile renders immediately without a
         // redundant resume. Only add the row to the SIDEBAR when `listed` — an
@@ -2407,7 +2418,7 @@ export function useSessionActions({
           }
 
           const verdict = goneSessionVerdict({
-            createdThisRun: createdThisRun.has(storedSessionId),
+            createdThisRun: sessionCreatedThisRun(storedSessionId),
             stillListed,
             switchInFlight:
               $gatewaySwitching.get() ||

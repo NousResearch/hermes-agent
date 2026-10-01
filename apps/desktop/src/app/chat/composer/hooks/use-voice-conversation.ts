@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
+import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
@@ -9,12 +11,14 @@ import {
   playSpeechText,
   type SpeechStreamSession,
   startSpeechStream,
-  stopVoicePlayback
+  stopVoicePlayback,
+  takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
+import { isTtsEcho } from '@/lib/voice-tts-echo'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $autoSpeakReplies, $bargeInThresholdMultiplier, $voiceSilenceMs } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $bargeInEnabled, $bargeInThresholdMultiplier, $voiceSilenceMs } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -37,12 +41,24 @@ interface VoiceConversationOptions {
   onInterrupt?: () => Promise<void> | void
   onStopWord?: () => void
   onSubmit: (text: string) => Promise<void> | void
-  onTranscribeAudio?: (audio: Blob) => Promise<string>
+  onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
   /** Awaited right before the mic is opened. Used to let the wake-word listener
    *  fully release the capture device first, so the two never contend. */
   beforeMicOpen?: () => Promise<void> | void
+}
+
+/**
+ * One voice conversation, from start() to end(). Its STT owner is resolved
+ * once at start and used for every warm-up, transcription and the final
+ * release. `warmup` is the latest listening start's warm-up: transcription
+ * awaits it so a cold model load never runs inside the transcription
+ * request's decode budget (#105955).
+ */
+interface Conversation {
+  owner: ResolvedOwner
+  warmup: Promise<void>
 }
 
 /** How long a barge-triggered interrupt may take to settle before we submit
@@ -85,12 +101,20 @@ export function useVoiceConversation({
   const turnClosingRef = useRef(false)
   const meterFailuresRef = useRef(0)
   const awaitingSpokenResponseRef = useRef(false)
+  // The live conversation. Every await in a turn is followed by a check that
+  // it is still this one: end() and unmount clear it (and a new start()
+  // replaces it), so a warm-up or transcript settling afterwards cannot
+  // transcribe, submit, or move status.
+  const conversationRef = useRef<Conversation | null>(null)
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
   const speechSessionRef = useRef<null | SpeechStreamSession>(null)
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
   const bargedRef = useRef(false)
+  // Reply text that was playing when the barge tripped ('' for a
+  // generation-phase trip: nothing audible, so nothing to echo).
+  const bargeEchoTextRef = useRef('')
   const speechStartSequenceRef = useRef(0)
   const enabledRef = useRef(enabled)
   const mutedRef = useRef(muted)
@@ -144,6 +168,18 @@ export function useVoiceConversation({
 
   useEffect(() => () => cancelFallbackPollRef.current?.(), [])
 
+  useEffect(
+    () => () => {
+      const conversation = conversationRef.current
+      conversationRef.current = null
+
+      if (conversation) {
+        void syncSttLease(VOICE_INPUT_LEASE, false, conversation.owner)
+      }
+    },
+    []
+  )
+
   const clearTurnTimeout = () => {
     if (turnTimeoutRef.current) {
       window.clearTimeout(turnTimeoutRef.current)
@@ -157,6 +193,7 @@ export function useVoiceConversation({
     stopBargeMonitorRef.current = null
     bargeCapturePendingRef.current = false
     bargedRef.current = false
+    bargeEchoTextRef.current = ''
     speechSessionRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
@@ -171,9 +208,16 @@ export function useVoiceConversation({
       turnClosingRef.current = true
       clearTurnTimeout()
       setStatus('transcribing')
+      const conversation = conversationRef.current
+      const live = () => conversation !== null && conversationRef.current === conversation
 
       try {
         const result = await handle.stop()
+
+        if (!conversation || !live()) {
+          return // ended while the recorder stopped
+        }
+
         const meterFailed = Boolean(result?.meterFailed)
 
         meterFailuresRef.current = meterFailed ? meterFailuresRef.current + 1 : 0
@@ -207,7 +251,21 @@ export function useVoiceConversation({
         }
 
         try {
-          const transcript = (await onTranscribeAudio(result.audio)).trim()
+          // Readiness first: let the listening-start warm-up settle before
+          // handing the clip to transcription (#105955) — a cold model load
+          // must not run inside the transcription request's decode budget.
+          // syncSttLease never rejects.
+          await conversation.warmup
+
+          if (!live()) {
+            return
+          }
+
+          const transcript = (await onTranscribeAudio(result.audio, conversation.owner)).trim()
+
+          if (!live()) {
+            return
+          }
 
           if (!transcript) {
             if (enabledRef.current) {
@@ -233,9 +291,23 @@ export function useVoiceConversation({
 
           awaitingSpokenResponseRef.current = true
           dropSpeechSession()
+          // The reply we just finished playing is stale the moment a new turn
+          // is submitted. Mark it spoken BEFORE submit (barge path parity):
+          // otherwise the turn-drive effect sees `awaiting` + an "unspoken"
+          // previous reply and re-speaks it via the whole-text fallback while
+          // the model is still thinking — the old answer plays until the new
+          // one arrives and barges in.
+          consumePendingResponse()
           await onSubmit(transcript)
-          setStatus('thinking')
+
+          if (live()) {
+            setStatus('thinking')
+          }
         } catch (error) {
+          if (!live()) {
+            return
+          }
+
           notifyError(error, voiceCopy.transcriptionFailed)
 
           if (enabledRef.current && !mutedRef.current && !busyRef.current) {
@@ -249,6 +321,7 @@ export function useVoiceConversation({
       }
     },
     [
+      consumePendingResponse,
       handle,
       onFatalError,
       onSubmit,
@@ -284,7 +357,9 @@ export function useVoiceConversation({
     }
 
     // enabled/muted/busy or an interleaved turn may have changed while we waited.
-    if (!enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
+    const conversation = conversationRef.current
+
+    if (!conversation || !enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
       return
     }
 
@@ -306,6 +381,13 @@ export function useVoiceConversation({
         onSilence: () => void handleTurn()
       })
       setStatus('listening')
+      // Same warm-up as push-to-talk dictation: a cold local model loads while
+      // the user speaks instead of inside the transcription timeout (#105955).
+      // Sent on every listening start: the idle watcher may have evicted the
+      // model during a long reply or a mute, and the backend re-warm is a
+      // cache hit otherwise. The promise is the readiness barrier the
+      // transcription paths await before submitting audio.
+      conversation.warmup = syncSttLease(VOICE_INPUT_LEASE, true, conversation.owner)
       // Clear any prior turn-timeout before arming a fresh one. Each listen
       // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
       // timer from an earlier cycle survives and later fires handleTurn() in
@@ -367,12 +449,22 @@ export function useVoiceConversation({
    */
   const submitCapturedUtterance = useCallback(
     async (audio: Blob | null) => {
+      const echoSource = bargeEchoTextRef.current
+      const conversation = conversationRef.current
+      const live = () => conversation !== null && conversationRef.current === conversation
+
+      bargeEchoTextRef.current = ''
+
       const resumeListening = () => {
         if (enabledRef.current && !mutedRef.current) {
           pendingStartRef.current = true
         }
 
         setStatus('idle')
+      }
+
+      if (!conversation || !live()) {
+        return // ended while the barge monitor was capturing
       }
 
       if (!audio || !onTranscribeAudio) {
@@ -384,7 +476,21 @@ export function useVoiceConversation({
       setStatus('transcribing')
 
       try {
-        const transcript = (await onTranscribeAudio(audio)).trim()
+        // Same readiness barrier as handleTurn: the barge capture transcribes
+        // with the warm-up issued when this conversation last started
+        // listening (the monitor is armed through the whole turn, so the
+        // barrier is normally already settled by speech time).
+        await conversation.warmup
+
+        if (!live()) {
+          return
+        }
+
+        const transcript = (await onTranscribeAudio(audio, conversation.owner)).trim()
+
+        if (!live()) {
+          return
+        }
 
         if (!transcript) {
           resumeListening()
@@ -403,6 +509,18 @@ export function useVoiceConversation({
           return
         }
 
+        // Fail-closed echo guard (tools/voice_mode_transcript.is_tts_echo):
+        // over speakers the reply bleeds into the mic and trips the playback-
+        // phase trigger. A transcript matching what was being spoken is
+        // Hermes hearing itself — treat it as silence: no submit, and clear
+        // the interruption latch so a later real turn isn't annotated.
+        if (echoSource && isTtsEcho(transcript, echoSource)) {
+          takeVoicePlaybackInterrupted()
+          resumeListening()
+
+          return
+        }
+
         // A generation-phase barge interrupted the in-flight turn; the submit
         // path refuses while `busy`, so wait for the interrupt to settle.
         const deadline = Date.now() + INTERRUPT_SETTLE_TIMEOUT_MS
@@ -411,14 +529,23 @@ export function useVoiceConversation({
           await new Promise(resolve => window.setTimeout(resolve, 100))
         }
 
+        if (!live()) {
+          return
+        }
+
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
         await onSubmit(transcript)
-        setStatus('thinking')
+
+        if (live()) {
+          setStatus('thinking')
+        }
       } catch (error) {
-        notifyError(error, voiceCopy.transcriptionFailed)
-        resumeListening()
+        if (live()) {
+          notifyError(error, voiceCopy.transcriptionFailed)
+          resumeListening()
+        }
       }
     },
     [consumePendingResponse, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
@@ -439,6 +566,12 @@ export function useVoiceConversation({
    * all call this).
    */
   const ensureBargeMonitor = useCallback(() => {
+    // `voice.barge_in: false` disarms the listener entirely, mirroring the
+    // gateway's `_arm_barge_listener_if_enabled` gate.
+    if (!$bargeInEnabled.get()) {
+      return
+    }
+
     if (stopBargeMonitorRef.current) {
       return
     }
@@ -447,6 +580,9 @@ export function useVoiceConversation({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
       thresholdMultiplier: $bargeInThresholdMultiplier.get(),
       onSpeech: () => {
+        // Snapshot before playback is cut: the reply may be consumed by the
+        // time the capture is transcribed.
+        bargeEchoTextRef.current = $voicePlayback.get().status === 'speaking' ? (pendingResponse()?.text ?? '') : ''
         bargeCapturePendingRef.current = true
         bargedRef.current = true
         markVoicePlaybackInterrupted()
@@ -464,7 +600,7 @@ export function useVoiceConversation({
         void submitCapturedUtterance(audio)
       }
     })
-  }, [submitCapturedUtterance])
+  }, [pendingResponse, submitCapturedUtterance])
 
   /** Push any new reply text into the live session; finish when complete. */
   const feedSpeechSession = useCallback(
@@ -754,6 +890,9 @@ export function useVoiceConversation({
     awaitingSpokenResponseRef.current = false
     dropSpeechSession()
     consumePendingResponse()
+    // A fresh conversation: its owner is resolved now and kept to the end.
+    // Replacing the ref also fences any continuation of a previous one.
+    conversationRef.current = { owner: resolveOwnerNow(ownerRef.current), warmup: Promise.resolve() }
     pendingStartRef.current = true
     await startListening()
   }, [
@@ -774,6 +913,18 @@ export function useVoiceConversation({
     awaitingSpokenResponseRef.current = false
     dropSpeechSession()
     consumePendingResponse()
+    // Conversation over: drop the STT lease to the owner that acquired it,
+    // and fence every continuation still awaiting a warm-up or transcript.
+    // One lease is shared per renderer, so a concurrent dictation session
+    // re-acquires on its next start; the backend keeps the model resident
+    // regardless of the count.
+    const conversation = conversationRef.current
+    conversationRef.current = null
+
+    if (conversation) {
+      void syncSttLease(VOICE_INPUT_LEASE, false, conversation.owner)
+    }
+
     setMuted(false)
     setStatus('idle')
   }, [consumePendingResponse, handle])

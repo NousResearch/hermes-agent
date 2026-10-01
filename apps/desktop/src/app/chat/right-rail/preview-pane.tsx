@@ -767,6 +767,36 @@ export function PreviewPane({
     }
   }, [])
 
+  // Escape is the universal "leave where I am" key, and a preview webview that
+  // navigated away from the original page (a report's in-page links) is a
+  // dead end without it. Only the pane that holds DOM focus backs up, so two
+  // side-by-side panes never fight, and only when the webview actually has
+  // history — a remote-HTML report (data: document, no webview) or a
+  // first-page preview claims no back at all. While focus sits in an editable
+  // surface inside the pane (the browser bar's address input, an annotate
+  // note), Escape keeps its native meaning for that control and does not
+  // also navigate.
+  const onPaneKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape') {
+      return
+    }
+
+    const target = event.target as HTMLElement | null
+
+    if (target?.closest?.('input, textarea, [contenteditable="true"], [contenteditable=""]')) {
+      return
+    }
+
+    const webview = webviewRef.current
+
+    if (!webview?.canGoBack?.()) {
+      return
+    }
+
+    event.preventDefault()
+    webview.goBack?.()
+  }, [])
+
   // Gestures that land on the app's chrome (⌘R from the address bar, a mouse
   // button over the frame). A gesture made INSIDE the page is answered by main
   // against the focused guest — this renderer can't see into a webview.
@@ -1318,8 +1348,9 @@ export function PreviewPane({
   return (
     <aside
       className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground"
-      // Buttons 3/4 are a mouse's back/forward. Chromium delivers them to the
-      // renderer as a normal mouse event inside the app's own chrome (the
+      onKeyDown={onPaneKeyDown}
+      // Buttons 3/4 are a mouse's back/forward. Chromium delivers them to
+      // the renderer as a normal mouse event inside the app's own chrome (the
       // guest page gets its own via `app-command` in main), and unhandled they
       // walk the HOST document's history.
       onMouseDown={event => {

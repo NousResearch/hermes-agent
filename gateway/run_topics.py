@@ -443,6 +443,54 @@ class GatewayTopicThreadsMixin:
             "Telegram group title rename",
         )
 
+    async def _recompose_telegram_group_title_after_switch(
+        self, source: SessionSource, session_key: str,
+    ) -> None:
+        """Re-enter the rename lane after a mid-session ``/model`` or ``/reasoning`` switch.
+
+        No title event fires on a switch, so the slash-command handlers are the only notice point
+        (spec §3.3). This adds no rename path of its own: it resolves the session id and calls the
+        same scheduler the title callback uses, so the kill-switch, ownership recheck, read-back
+        dedupe and the rename budget are inherited rather than duplicated. The lane re-reads the
+        store and composes fresh, so the switch is picked up instead of baked into a cached string.
+
+        The empty fallback subject is deliberate — the lane prefers the stored title read NOW, and
+        a synthesized subject here would be the stale one by definition. Never raises: a recompose
+        must not break the slash-command reply.
+        """
+        try:
+            # Already an off-loop boundary (AsyncSessionStore offloads every method to a thread).
+            entry = await self.async_session_store.get_or_create_session(source)
+            session_id = str(getattr(entry, "session_id", "") or "")
+            if not session_id:
+                return
+            self._schedule_telegram_group_title_rename(source, session_id, "")
+        except Exception:
+            logger.debug(
+                "Telegram group title recompose after switch failed: session_key=%s", session_key,
+                exc_info=True)
+
+    def _notify_telegram_group_title_of_switch(self, source, session_key: str) -> None:
+        """Fire-and-forget door to :meth:`_recompose_telegram_group_title_after_switch` for the
+        SYNC slash-command appliers (``_apply_reasoning_selection`` is shared by the typed path and
+        the picker callback).
+
+        Both callers run on the gateway loop, so ``create_task`` is the right primitive and the
+        task is retained on the runner (the runner-wide fire-and-forget pattern) so it cannot be
+        garbage-collected mid-flight. No source means no chat to name, and no running loop means no
+        live gateway to rename on: both return silently, because a sync slash-command caller must
+        never raise.
+        """
+        if source is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._retain_background_task(
+            loop.create_task(self._recompose_telegram_group_title_after_switch(source, session_key))
+        )
+
     # Group-title ownership serializes per chat on the gateway loop: the auto-title thread schedules
     # these coroutines, so the check-then-rename sequence must not interleave with a newer session's
     # rename. One lock per (profile, chat_id), kept for the runner's lifetime — popping a lock while

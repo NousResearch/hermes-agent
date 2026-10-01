@@ -117,6 +117,7 @@ export function ChatBar({
   cwd,
   disabled,
   focusKey,
+  freshDraftKey,
   gateway,
   maxRecordingSeconds = 120,
   profile,
@@ -203,11 +204,8 @@ export function ChatBar({
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
-  // Parked on an approval/sudo/secret prompt: typing can't answer those, so the
-  // busy submit routes text to the queue instead of a steer (which would sit
-  // undelivered behind the blocked tool batch). Drives the button affordance.
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
-  const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
   const codingDrawerId = useId()
@@ -299,6 +297,7 @@ export function ChatBar({
   const {
     activeQueueSessionKeyRef,
     clearDraft,
+    draftScopeRef,
     draftRef,
     editorRef,
     focusInput,
@@ -363,6 +362,7 @@ export function ChatBar({
   // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
   const {
     beginQueuedEdit,
+    deliverQueuedNow,
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
@@ -420,7 +420,8 @@ export function ChatBar({
   // into a tool result) and never for a slash command (those execute inline).
   // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
   // is parked on the user, so a steer can't reach the model — text queues.
-  const canSteer = busy && !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
+  // Compaction does not: the gateway holds the correction until it finishes.
+  const canSteer = busy && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
 
   // While busy: text redirects the live turn (Cursor-style stop-and-correct),
   // attachments queue for the next turn, an empty composer stops.
@@ -437,9 +438,9 @@ export function ChatBar({
     activeQueueSessionKeyRef,
     attachments,
     busy,
-    compacting,
     clearDraft,
     disabled,
+    draftScopeRef,
     draftRef,
     drainNextQueued,
     editorRef,
@@ -1021,8 +1022,9 @@ export function ChatBar({
       }
 
       // Empty Enter while busy. With prompts queued this is the double-send:
-      // the first Enter put the words in the queue, a second sends them now
-      // (promote + interrupt + drain on settle), mirroring the idle empty-Enter
+      // the first Enter put the words in the queue, a second delivers them
+      // now — steered into the live turn when a steer can carry them, else
+      // promote + interrupt + drain on settle — mirroring the idle empty-Enter
       // drain above. With nothing queued it stays a no-op — interrupting is
       // explicit (Stop/Esc), never a stray Enter after sending. Gate on the live
       // DOM payload (not the render-lagged composer state) so a message typed
@@ -1032,7 +1034,7 @@ export function ChatBar({
         const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
 
         if (head) {
-          sendQueuedNow(head.id)
+          void deliverQueuedNow(head.id)
         }
 
         return

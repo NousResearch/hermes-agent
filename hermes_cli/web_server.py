@@ -1243,6 +1243,11 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         ws_ping_interval=ping_interval,
         ws_ping_timeout=ping_timeout,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+        # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
+        # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
+        # mid-turn request orphans the backend past that budget (#76244). 3s
+        # leaves room for lifespan shutdown + cron_stop before the kill.
+        timeout_graceful_shutdown=3,
     )
     return config, uvicorn.Server(config)
 
@@ -1350,8 +1355,13 @@ def _on_server_started(
         except (TypeError, ValueError):
             grace = DEFAULT_IDLE_GRACE_S
         start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
-        # A connected client keeps the idle watchdog quiet forever, and the host's updater may not
-        # restart this backend, so it retires itself (between turns) when the install moves on.
+    if getattr(app.state, "ssh_isolated_clients", None) is not None or is_desktop_owned_backend():
+        # The host's updater never restarts this backend (SSH-isolated: only the remote Desktop
+        # client holds its token and owner nonce, #91668/#101626; Desktop-owned local serve:
+        # the updater defers to the app's ledger-verified restart and the backend otherwise
+        # outlives the handoff, #99859), so it retires itself (between turns) when the install
+        # moves on. The retirement fence closes admission process-wide before the exit, so a
+        # connected Desktop just sees its next request reconnect-respawn the backend on new code.
         from hermes_cli.web_server_skew_exit import start_code_skew_watchdog
 
         start_code_skew_watchdog(server)

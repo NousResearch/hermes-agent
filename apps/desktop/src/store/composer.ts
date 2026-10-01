@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
+import { persistString, storedString } from '@/lib/storage'
 
 import { recordDislike, recordFriction } from './desktop-metrics'
 
@@ -245,7 +246,40 @@ export interface SessionDraft {
   text: string
 }
 
-const draftKey = (scope: string | null | undefined) => scope?.trim() || NEW_SESSION_DRAFT_KEY
+// Stable only for the lifetime of the current sessionless chat (#66662). The
+// legacy behavior mapped every unsaved chat onto the single NEW_SESSION_DRAFT_KEY
+// bucket, so a second New Chat inherited the first one's unsent text. Persisting
+// the key (rather than just its text) lets a reload restore that exact fresh
+// draft; starting another new chat rotates the key so abandoned unsent drafts
+// cannot bleed into the next lifecycle.
+const FRESH_DRAFT_STORAGE_KEY = 'hermes.desktop.freshDraftKey'
+
+const createFreshDraftKey = (): string =>
+  `__new__:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+
+export const $freshDraftKey = atom<string>(storedString(FRESH_DRAFT_STORAGE_KEY) ?? NEW_SESSION_DRAFT_KEY)
+
+export const freshDraftScope = (): string => $freshDraftKey.get()
+
+export const rotateFreshDraftKey = (): string => {
+  const key = createFreshDraftKey()
+  $freshDraftKey.set(key)
+  persistString(FRESH_DRAFT_STORAGE_KEY, key)
+
+  return key
+}
+
+// A draft key belongs to a fresh-chat lifecycle when it is the legacy shared
+// bucket or one of its per-instance successors (`__new__:<uuid>`, #66662).
+export const isFreshDraftScope = (key: string | null | undefined): boolean =>
+  typeof key === 'string' &&
+  (key === NEW_SESSION_DRAFT_KEY ||
+    (key.startsWith(NEW_SESSION_DRAFT_KEY) && key.length > NEW_SESSION_DRAFT_KEY.length))
+
+// A null/empty scope IS the current fresh-chat lifecycle — resolve it to that
+// lifecycle's own key so every stash/read/migrate consumer below addresses the
+// active fresh bucket instead of the shared legacy one.
+const draftKey = (scope: string | null | undefined) => scope?.trim() || freshDraftScope()
 
 /** Inline "Restored your unsent message" notice for the fresh draft (see
  *  `adoptGoneSessionDraft`). `null` = nothing to show. */
@@ -460,7 +494,7 @@ export function stashSessionDraft(scope: string | null | undefined, text: string
 
   if (text.trim() || attachments.length > 0) {
     draftsBySession.set(key, cloneDraft({ attachments, text }))
-  } else if (key === NEW_SESSION_DRAFT_KEY) {
+  } else if (isFreshDraftScope(key)) {
     // The fresh draft was sent or emptied — a restore notice has nothing left
     // to undo.
     $restoredDraftNotice.set(null)
@@ -586,7 +620,7 @@ export function adoptGoneSessionDraft(): boolean {
     return false
   }
 
-  const dest = draftsBySession.get(NEW_SESSION_DRAFT_KEY)
+  const dest = draftsBySession.get(freshDraftScope())
 
   if (dest && (dest.text.trim() || dest.attachments.length > 0)) {
     return false
@@ -620,7 +654,7 @@ export function undoRestoredDraft(liveText: string): boolean {
     return false
   }
 
-  const current = draftsBySession.get(NEW_SESSION_DRAFT_KEY)
+  const current = draftsBySession.get(freshDraftScope())
   stashSessionDraft(notice.fromKey, notice.text, current?.attachments ?? [])
   clearSessionDraft(null)
   recordDislike('undo', 'restored_draft')

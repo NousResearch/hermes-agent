@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from dataclasses import asdict
+from dataclasses import fields
 from datetime import datetime
 
 import pytest
@@ -14,9 +14,9 @@ from tests.gateway.test_busy_followup_after_session_release import _QueueRunner
 
 
 def _wire_event(event):
-    value = asdict(event)
-    for key in ("raw_message", "_gateway_accepted", "_notification_reply_muted"):
-        value.pop(key)
+    value = {item.name: getattr(event, item.name) for item in fields(event)
+             if item.init and not item.name.startswith("_") and item.name not in {"raw_message", "source"}}
+    value["source"] = {item.name: getattr(event.source, item.name) for item in fields(event.source)}
     value["message_type"] = event.message_type.value
     value["source"]["platform"] = event.source.platform.value
     value["timestamp"] = event.timestamp.isoformat()

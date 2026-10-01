@@ -1134,6 +1134,9 @@ export const frOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Taille du texte du chat',
+      chatTextScaleDesc:
+        'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',
       title: 'Apparence',
       intro:
         'Exclusif au desktop. Le mode contrôle la luminosité ; le thème contrôle la palette et le chrome de la conversation.',
@@ -1518,7 +1521,8 @@ export const frOverrides = {
       fileReadMaxChars: 'Nombre maximal de caractères que Hermes peut lire dans une demande de fichier.',
       approvals: {
         mode: 'Comment Hermes gère les commandes nécessitant une approbation explicite.',
-        timeout: "Durée d'attente des invites d'approbation avant expiration."
+        timeout:
+          "Durée d'attente des invites d'approbation sur les plateformes de messagerie avant expiration. L'app et le terminal attendent votre réponse."
       },
       security: {
         redactSecrets: "Masque les secrets détectés du contenu visible par le modèle lorsque c'est possible."
@@ -5055,6 +5059,10 @@ export const frOverrides = {
       editModels: 'Modifier les modèles…',
       followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
+      favorites: 'Favoris',
+      addFavorite: 'Ajouter aux favoris',
+      removeFavorite: 'Retirer des favoris',
+      favoriteShortcut: '⇧ Clic',
       fast: 'Rapide',
       free: 'gratuit',
       cacheRead: 'lecture en cache',
@@ -5475,6 +5483,7 @@ export const frOverrides = {
       branchNewChat: 'Créer une branche dans une nouvelle conversation',
       react: 'Réagir',
       dismissError: "Ignorer l'erreur",
+      responseStopped: 'Réponse interrompue',
       errorLayers: {
         auth: "Erreur d'authentification",
         billing: 'Crédits épuisés',
@@ -5541,6 +5550,10 @@ export const frOverrides = {
           title: 'Service d’IA injoignable',
           body: provider =>
             `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
+        },
+        no_reply: {
+          title: "La réponse n'a pas abouti",
+          body: 'Hermes a terminé ce tour sans réponse. Réessayez pour la renvoyer.'
         },
         stream_drop: {
           title: 'La réponse a été interrompue',
@@ -5723,14 +5736,11 @@ export const frOverrides = {
       placeholder: 'Saisissez votre réponse…',
       skip: 'Passer',
       skipped: 'Ignoré',
-      continueLabel: 'Continuer',
+      noAnswer: 'Pas de réponse',
       confirmAndContinueLabel: 'Confirmer et continuer',
-      answeredBadge: 'Répondu',
+      singleSelectHint: 'Choisir une réponse',
+      multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
-      lateAnswer: (question, choice) => `Re : « ${question} » — ma réponse : ${choice}`,
-      lateAnswerTip: 'Rédiger cette réponse comme message de suivi',
-      lateAnswerHint:
-        "Cette invite n'attend plus de réponse. Choisissez une option pour la rédiger comme message de suivi.",
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
     },

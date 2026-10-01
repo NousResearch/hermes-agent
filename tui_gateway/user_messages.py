@@ -91,7 +91,23 @@ def busy_message(command: str) -> str:
             f"or Ctrl+C in a terminal), then run /{command.lstrip('/')}.")
 
 
+# Prefixes of the TimeoutErrors raised by ``hermes_cli.auth._auth_store_lock`` (profile
+# auth.json) and ``hermes_cli.auth_nous._nous_shared_store_lock`` (cross-profile shared store)
+# when the advisory lock times out (#124533). Both sit on the assistant-init path
+# (``resolve_nous_access_token`` acquires the shared lock inside the profile lock), and init
+# died on lock contention there — the generic /model /setup hints would send the user
+# debugging credentials that are perfectly fine.
+_AUTH_LOCK_TIMEOUT_PREFIXES = (
+    "Timed out waiting for auth store lock",
+    "Timed out waiting for shared Nous auth lock",
+)
+
+
 def agent_init_failed_message(exc: Any) -> str:
+    if any(prefix in str(exc) for prefix in _AUTH_LOCK_TIMEOUT_PREFIXES):
+        return (f"Hermes could not start the assistant for this session. Details: {exc}. "
+                "Wait for the other process to release the lock (or exit it — check for a running "
+                "dashboard or background hermes process), then retry.")
     return (f"Hermes could not start the assistant for this session. Details: {exc}. "
             "Check the model and provider with /model, or run `hermes setup` in a terminal to reconfigure.")
 

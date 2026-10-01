@@ -299,8 +299,8 @@ describe('answerApproval', () => {
 
     await answerApproval(gateway as never, target, 'once')
 
-    // #55433: the generic 30s default fires long before the backend's 300s
-    // approvals.timeout; the RPC must carry an explicit longer deadline.
+    // #55433: the generic 30s default fires behind a stalled WS while the
+    // backend still applies the answer; the RPC carries a generous deadline.
     expect(calls).toHaveLength(1)
     expect(calls[0][0]).toBe('approval.respond')
     expect(calls[0][2]).toBe(APPROVAL_RESPOND_REQUEST_TIMEOUT_MS)
@@ -429,7 +429,11 @@ describe('$activeSessionAwaitingInput', () => {
     clearApprovalRequest('s1')
     expect($activeSessionAwaitingInput.get()).toBe(false)
 
-    setClarifyRequest({ choices: null, multiSelect: false, question: 'q', requestId: 'c1', sessionId: 's1' })
+    setClarifyRequest({
+      questions: [{ choices: null, multiSelect: false, qid: 'q0', question: 'q' }],
+      requestId: 'c1',
+      sessionId: 's1'
+    })
     expect($activeSessionAwaitingInput.get()).toBe(true)
   })
 

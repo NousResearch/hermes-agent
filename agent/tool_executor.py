@@ -132,14 +132,14 @@ _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # Long enough for an approval round-trip, short enough that one wedged dispatch can't starve the batch.
 _START_ORDER_GATE_TIMEOUT_S = 120.0
-# Fallback only; the effective bound derives from approvals.timeout (_authorization_gate_lock_timeout).
+# Fallback only; the effective bound derives from the turn's approval window (_authorization_gate_lock_timeout).
 _AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
 
 
 def _authorization_gate_lock_timeout() -> float:
-    """Authorization-lock bound = ``tools.approval_human_wait.human_wait_ceiling`` (approval timeout +
-    margin, capped so it can't overflow Lock.acquire): never break serialization while a
-    prompt is answerable, never let a wedged holder park workers forever. Deliberately NOT
+    """Authorization-lock bound = ``tools.approval_human_wait.human_wait_ceiling`` (the turn's approval window +
+    margin — unbounded on CLI/TUI/Desktop — capped so it can't overflow Lock.acquire): never break serialization
+    while a prompt is answerable, never let a wedged holder park workers forever. Deliberately NOT
     min()'d with the fallback so the gate never gives up early.
 
     Delegates to ``tools.approval_human_wait.human_wait_ceiling`` — the same bound that clamps a human-wait window's
@@ -417,8 +417,11 @@ def _unwrap_tool_search_call(
             # in the batch dispatcher, not against a synthetic registry name.
             return function_name, function_args, None
         if underlying not in _tool_search_scoped_names(agent):
+            # Session-gated GUI tools name their missing surface (#120413);
+            # anything else keeps the generic block.
             return function_name, function_args, (
-                f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
+                _ts.out_of_scope_reason(underlying)
+                or f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
             )
         # Validate before unwrapping: the generic bridge hides the concrete
         # parameter schema from provider-native tool-call validation.

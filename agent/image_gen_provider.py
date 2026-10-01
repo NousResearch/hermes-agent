@@ -33,9 +33,12 @@ class ImageGenProvider(CatalogProviderBase):
     ``speed`` / ``strengths`` / ``price`` for the picker."""
 
     def capabilities(self) -> Dict[str, Any]:
-        """``modalities`` (``"text"`` and/or ``"image"``) and ``max_reference_images``.
-        Surfaced in the dynamic tool schema so the model knows when ``image_url`` is
-        honored; the text-only default keeps non-overriding providers backward compatible."""
+        """``modalities`` (``"text"`` and/or ``"image"``) and ``max_reference_images``; optionally
+        ``supports_upscale`` (bool) and ``creative_controls`` (names from the tool's creative-control
+        vocabulary: ``creativity``, ``intensity``, ``complexity``, ``movement``). Surfaced in the
+        dynamic tool schema so the model knows when ``image_url`` / ``upscale`` / each control is
+        honored, and only declared controls are passed to :meth:`generate`; the text-only default
+        keeps non-overriding providers backward compatible."""
         return {"modalities": ["text"], "max_reference_images": 0}
 
     @abc.abstractmethod

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type * as WindowsStore from '@/store/windows'
+
 const isBrowserWindow = vi.hoisted(() => vi.fn(() => false))
 const actOnActivePreview = vi.hoisted(() => vi.fn())
 const readActivePreview = vi.hoisted(() => vi.fn())
@@ -45,7 +47,7 @@ class LoopbackChannel {
 vi.stubGlobal('BroadcastChannel', LoopbackChannel)
 
 vi.mock('@/store/windows', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/store/windows')>()
+  const actual = await importOriginal<typeof WindowsStore>()
 
   return {
     ...actual,

@@ -20,7 +20,7 @@ import { isBrowserWindow } from '@/store/windows'
 
 import { actOnActivePreview } from './preview-act'
 import { activePreviewNav } from './preview-nav'
-import { readActivePreview, type PreviewReadOptions, type PreviewReadResult } from './preview-reader'
+import { type PreviewReadOptions, type PreviewReadResult, readActivePreview } from './preview-reader'
 import { activePreviewScriptRunner } from './preview-script-runner'
 
 const CHANNEL = 'hermes:preview-popout'

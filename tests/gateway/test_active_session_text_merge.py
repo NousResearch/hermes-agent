@@ -31,10 +31,10 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_pending_merge import merge_pending_message_event
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
-    merge_pending_message_event,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key

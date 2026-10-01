@@ -19,7 +19,8 @@ from acp.schema import (
     AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
     Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
     McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
-    SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
+    SessionCapabilities, SessionConfigOptionBoolean, SessionConfigOptionSelect, SessionConfigSelectOption,
+    SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
     SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities, SetSessionConfigOptionResponse,
     SetSessionModeResponse, SetSessionModelResponse, TextContentBlock, Usage, UsageUpdate, UserMessageChunk,
 )
@@ -251,6 +252,26 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     _MODE_TO_EDIT_APPROVAL_POLICY = {mode: spec[0] for mode, spec in _MODES.items()}
     _EDIT_APPROVAL_POLICY_TO_MODE = {spec[0]: mode for mode, spec in _MODES.items()}
 
+    # Reasoning effort as an ACP ``thought_level`` config option. ACP has no thinking method
+    # (Zed's ``set_thinking_level`` never spec'd); clients that expose reasoning selectors —
+    # Paseo's Thinking picker, ``--thinking``, agent profiles — drive it through
+    # ``session/set_config_option`` with this id, and only render the selector when the option
+    # is advertised (Paseo: ``findSelectConfigOption(category: "thought_level")``). Hermes'
+    # ladder is wider than any single provider supports; the wire layer clamps per model, so
+    # the full ladder is advertised and unknown values are rejected here.
+    _THINKING_CONFIG_ID = "reasoning_effort"
+    _THINKING_CONFIG_LABEL = "Reasoning Effort"
+    _THINKING_DESCRIPTIONS = {
+        "none": ("Off", "Disable thinking"),
+        "minimal": ("Minimal", "Light reasoning"),
+        "low": ("Low", "Faster reasoning"),
+        "medium": ("Medium", "Balanced reasoning"),
+        "high": ("High", "Deeper reasoning"),
+        "xhigh": ("XHigh", "Very deep reasoning"),
+        "max": ("Max", "Extreme reasoning"),
+        "ultra": ("Ultra", "Maximum reasoning"),
+    }
+
     def __init__(self, session_manager: SessionManager | None = None):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
@@ -289,6 +310,51 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             current_mode_id=current,
             available_modes=[SessionMode(id=m, name=n, description=d) for m, (_p, n, d) in self._MODES.items()],
         )
+
+    def _current_reasoning_effort(self, state: SessionState) -> str:
+        """Effective effort for the session: live agent value, else ``medium`` placeholder.
+
+        ``reasoning_config`` is ``{"enabled": True, "effort": <level>}``, ``{"enabled": False}``
+        (thinking off), or ``None`` (no configured effort). ``None`` and unrecognized levels
+        (a custom ``reasoning_overrides`` spelling such as ``fast``) advertise ``medium``: a
+        concrete selection every client can render — the provider's own default may differ.
+        Standard per-model override levels round-trip; custom spellings show the placeholder.
+        """
+        config = getattr(state.agent, "reasoning_config", None)
+        if isinstance(config, dict):
+            if config.get("enabled", True) is False:
+                return "none"
+            effort = str(config.get("effort") or "").strip().lower()
+            if effort in self._THINKING_DESCRIPTIONS:
+                return effort
+        return "medium"
+
+    def _session_config_options(
+        self, state: SessionState
+    ) -> list[SessionConfigOptionSelect | SessionConfigOptionBoolean]:
+        """``thought_level`` as a select config option — the ACP way clients render and set
+        reasoning effort (Zed puts it in the assistant panel; Paseo keys its Thinking picker
+        and ``--thinking`` off this exact category)."""
+        current = self._current_reasoning_effort(state)
+        options = [
+            SessionConfigSelectOption(
+                value=level,
+                name=label,
+                description=description,
+            )
+            for level, (label, description) in self._THINKING_DESCRIPTIONS.items()
+        ]
+        return [
+            SessionConfigOptionSelect(
+                id=self._THINKING_CONFIG_ID,
+                name=self._THINKING_CONFIG_LABEL,
+                type="select",
+                category="thought_level",
+                description="Reasoning effort for the session's model",
+                current_value=current,
+                options=options,
+            )
+        ]
 
     def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
@@ -346,11 +412,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             }
         # ACP-provided MCP servers live only on the running agent's toolsets (``_register_session_mcp_servers``);
         # a rebuild that re-derived them from config would silently drop every session MCP tool (#42719).
+        # An ACP-set ``thought_level`` effort rides along too: ``_make_agent`` would otherwise fall back to
+        # config.yaml and silently lose the editor's choice on every model switch.
         agent = self.session_manager._make_agent(
             session_id=state.session_id, cwd=state.cwd, model=new_model,
             requested_provider=target_provider, **endpoint,
             enabled_toolsets=getattr(state.agent, "enabled_toolsets", None),
             disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
+            reasoning_config=(state.reasoning_effort[1] if getattr(state, "reasoning_effort", None) else None),
         )
         # Assign only after the rebuild succeeded so a failed switch leaves the session on its
         # working model instead of a model/agent mismatch that persists via save_session.
@@ -605,6 +674,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         return {
             "models": self._build_model_state(state),
             "modes": self._session_modes(state),
+            "config_options": self._session_config_options(state),
             "field_meta": self._provenance_meta(state.session_id, getattr(state.agent, "session_id", state.session_id)),
         }
 
@@ -674,7 +744,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         logger.info("Forked session %s -> %s", session_id, state.session_id)
         self._schedule_available_commands_update(state.session_id)
         return ForkSessionResponse(
-            session_id=state.session_id, models=self._build_model_state(state), modes=self._session_modes(state)
+            session_id=state.session_id, models=self._build_model_state(state), modes=self._session_modes(state),
+            config_options=self._session_config_options(state),
         )
 
     async def list_sessions(
@@ -1074,20 +1145,70 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     async def set_config_option(
         self, config_id: str, session_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
-        """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
+        """Accept ACP config option updates (``thought_level`` reasoning effort, edit approval)."""
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
 
-        if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
+        config_id = str(config_id)
+        if config_id == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
+        elif config_id == self._THINKING_CONFIG_ID:
+            return self._set_reasoning_effort(state, session_id, value)
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):
                 options = {}
-            options[str(config_id)] = value
+            options[config_id] = value
             state.config_options = options
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=[])
+        # Echo the full option set: per ACP, clients read the response's configOptions to
+        # update their UI — an empty list tells them the session has no options at all
+        # (the host drops the Thinking selector it just used).
+        return SetSessionConfigOptionResponse(config_options=self._session_config_options(state))
+
+    def _set_reasoning_effort(
+        self, state: SessionState, session_id: str, value: str
+    ) -> SetSessionConfigOptionResponse:
+        """Apply a ``thought_level`` selection to the live session agent and remember it.
+
+        Same live-agent assignment the TUI gateway's ``/model X --reasoning`` path uses
+        (``tui_gateway/model_switch.py::_apply_switch_reasoning``): effort is a per-request
+        body field, so no rebuild is needed. ``parse_reasoning_effort`` accepts the full
+        ladder plus ``none``; anything else is a bad ``value`` param (-32602), matching the
+        set-model error mapping. The response echoes the option set (per ACP, clients read
+        the returned ``configOptions`` to update their UI; Paseo falls back to the requested
+        value only when the option is missing entirely).
+        """
+        from hermes_constants import parse_reasoning_effort
+
+        parsed = parse_reasoning_effort(value)
+        if parsed is None:
+            from acp.exceptions import RequestError
+
+            ladder = ", ".join(self._THINKING_DESCRIPTIONS)
+            raise RequestError.invalid_params(
+                {"details": f"Unknown reasoning effort '{value}'. Valid levels: {ladder}"})
+
+        # Rejected mid-turn like a model switch: the running agent would keep the old effort
+        # for the in-flight request and the turn's finish could race this write. The write
+        # happens inside the lock (unlike a model switch there is no slow rebuild to hold it
+        # for, so nothing blocks the loop).
+        with state.runtime_lock:
+            if state.is_running or state.command_op:
+                raise acp.RequestError(
+                    -32603, "Session is busy; set reasoning effort while the session is idle")
+            agent = getattr(state, "agent", None)
+            if agent is not None:
+                agent.reasoning_config = parsed
+            # Normalise aliases (false/disabled) to ``none`` so the stored level is always a
+            # ladder value a client can echo back.
+            level = str(value).strip().lower()
+            if parsed.get("enabled", True) is False:
+                level = "none"
+            state.reasoning_effort = (level, parsed)
+        self.session_manager.save_session(session_id)
+        logger.info("Session %s: reasoning effort set to %s", session_id, str(value).strip().lower())
+        return SetSessionConfigOptionResponse(config_options=self._session_config_options(state))

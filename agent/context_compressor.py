@@ -1407,18 +1407,26 @@ _GATEWAY_REPLY_POINTER_RE = re.compile(
 )
 
 
-def _authored_request_text(content: Any) -> str:
-    """Text the user wrote in a turn, without the gateway's reply-to pointer.
+def _restated_request_text(content: Any) -> str:
+    """A user turn's text, stripped, after the last in-flight replay header if present.
 
-    The pointer quotes another message verbatim; it disambiguates which message is being
-    answered but is not part of the request, so it must not count toward request size. A
-    request restated after an earlier compaction carries the replay header first: measure
-    the restated text after it, as ``_reappend_inflight_user_task`` does.
+    A request restated by an earlier compaction carries the replay header (and possibly the
+    old summary) before it; the text after the last header is the request itself, so a task
+    that survives several cycles never stacks headers or drags an old summary along.
     """
     text = _content_text_for_contains(content).strip()
     if _INFLIGHT_TASK_REPLAY_HEADER in text:
         text = text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
-    return _GATEWAY_REPLY_POINTER_RE.sub("", text, count=1).strip()
+    return text
+
+
+def _authored_request_text(content: Any) -> str:
+    """Text the user wrote in a turn, without the gateway's reply-to pointer.
+
+    The pointer quotes another message verbatim; it disambiguates which message is being
+    answered but is not part of the request, so it must not count toward request size.
+    """
+    return _GATEWAY_REPLY_POINTER_RE.sub("", _restated_request_text(content), count=1).strip()
 
 
 def _is_text_only_content(content: Any) -> bool:
@@ -4897,13 +4905,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             # carrier itself, after the marker. Already actionable.
             return compressed
 
-        task_text = _content_text_for_contains(inflight.get("content")).strip()
-        if _INFLIGHT_TASK_REPLAY_HEADER in task_text:
-            # Already a restatement from an earlier compaction (standalone row
-            # or merged onto a carrier): take the text after the header so a
-            # task that survives >1 cycle never stacks headers or drags the
-            # old summary along.
-            task_text = task_text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
+        # Keep any reply pointer: the restated task still needs its disambiguation.
+        task_text = _restated_request_text(inflight.get("content"))
         if not task_text:
             return compressed
 

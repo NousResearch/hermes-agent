@@ -1434,6 +1434,8 @@
     "desktop.sessionUnavailable",
     "desktop.setProfileFailed",
     "desktop.skillCommandsAvailable",
+    "desktop.slashCommandIgnoredBody",
+    "desktop.slashCommandIgnoredTitle",
     "desktop.staleSessionBody",
     "desktop.staleSessionTitle",
     "desktop.stopFailed",

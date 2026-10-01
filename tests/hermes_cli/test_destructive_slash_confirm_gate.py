@@ -1,7 +1,7 @@
 """Tests for the approvals.destructive_slash_confirm config gate.
 
 Destructive session slash commands (/clear, /new, /reset, /undo) discard
-conversation state.  This config key (default True) gates a three-option
+conversation state.  This config key (default False) gates a three-option
 confirmation prompt — "Always Approve" flips the key to False so future
 destructive commands run silently.
 
@@ -11,15 +11,26 @@ cli.py::_confirm_destructive_slash for the runtime gate.
 
 from __future__ import annotations
 
-from hermes_cli.config import DEFAULT_CONFIG
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
 
 
-class TestDestructiveSlashConfirmDefault:
+@pytest.mark.parametrize("key", ["destructive_slash_confirm", "mcp_reload_confirm"])
+@pytest.mark.parametrize("config", [{}, {"approvals": {"mode": "off"}}])
+def test_missing_confirmation_setting_skips_cli_prompt(key, config, monkeypatch):
+    import cli
+    from hermes_cli.cli_modal_mixin import _gated_confirm
 
-    def test_default_is_true(self):
-        # New installs confirm by default — destructive commands must not
-        # silently wipe history without an explicit user "yes".
-        assert DEFAULT_CONFIG["approvals"]["destructive_slash_confirm"] is True
+    monkeypatch.setattr(cli, "load_cli_config", lambda: config)
+    instance = SimpleNamespace(_prompt_text_input_modal=Mock())
+
+    assert _gated_confirm(
+        instance, "test", key, title="test", detail="test", choices=(),
+        unchanged="", always_msg="", once_verb="",
+    ) == "once"
+    instance._prompt_text_input_modal.assert_not_called()
 
 
 class TestUserConfigMerge:
@@ -44,5 +55,4 @@ class TestUserConfigMerge:
         importlib.reload(cfg_mod)
 
         cfg = cfg_mod.load_config()
-        assert cfg["approvals"]["destructive_slash_confirm"] is True
-
+        assert cfg["approvals"]["destructive_slash_confirm"] is False

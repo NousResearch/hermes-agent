@@ -23,6 +23,8 @@ compression:
   min_tail_user_messages: 5
 approvals:
   mode: manual
+  destructive_slash_confirm: true
+  mcp_reload_confirm: true
 stt:
   echo_transcripts: true
 display:
@@ -53,6 +55,8 @@ display:
                 assert compression.threshold == (0.9 if overridden else 0.85)
                 assert compression.min_tail_users == (5 if overridden else 3)
                 assert _get_approval_mode() == ("manual" if overridden else "off")
+                for key in ("destructive_slash_confirm", "mcp_reload_confirm"):
+                    assert config["approvals"][key] is overridden
                 assert load_gateway_config().stt_echo_transcripts is overridden
                 for setting in ("streaming", "show_reasoning"):
                     assert resolve_display_setting(raw, "telegram", setting) is overridden

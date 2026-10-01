@@ -1,6 +1,6 @@
 """Tests for the gateway's destructive-slash-confirm wrapper.
 
-When ``approvals.destructive_slash_confirm`` is True (default), /new,
+When ``approvals.destructive_slash_confirm`` is explicitly True, /new,
 /reset, and /undo route through the slash-confirm primitive — native
 yes/no buttons on Telegram/Discord/Slack, text fallback elsewhere.
 When False (after "Always Approve"), the destructive action runs
@@ -75,6 +75,26 @@ def _make_runner():
     runner._thread_metadata_for_source = lambda *a, **kw: None
     runner._reply_anchor_for_event = lambda _e: None
     return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["clear", "new", "reset", "undo"])
+@pytest.mark.parametrize("config", [{}, {"approvals": {"mode": "off"}},
+                                  {"approvals": {"destructive_slash_confirm": False}}])
+async def test_commands_run_without_confirmation_by_default(command, config):
+    runner = _make_runner()
+    runner._read_user_config = lambda: config
+    runner._request_slash_confirm = AsyncMock()
+    execute = AsyncMock(return_value="done")
+
+    result = await runner._maybe_confirm_destructive_slash(
+        event=_make_event(f"/{command}"), command=command, title=f"/{command}",
+        detail="Discards history.", execute=execute,
+    )
+
+    assert result == "done"
+    execute.assert_awaited_once()
+    runner._request_slash_confirm.assert_not_awaited()
 
 
 @pytest.mark.asyncio

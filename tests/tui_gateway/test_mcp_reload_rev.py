@@ -65,6 +65,24 @@ def test_success_reports_loaded_rev(reload_env):
     assert srv._mcp_reload_gen == 1
 
 
+@pytest.mark.parametrize("config, confirm", [
+    ({}, False),
+    ({"approvals": {"mode": "off"}}, False),
+    ({"approvals": {"mcp_reload_confirm": False}}, False),
+    ({"approvals": {"mcp_reload_confirm": True}}, True),
+])
+def test_reload_confirmation_is_opt_in(reload_env, monkeypatch, config, confirm):
+    from hermes_cli import config as config_module
+
+    calls, _ = reload_env
+    monkeypatch.setattr(config_module, "load_config", lambda: config)
+
+    envelope = srv._methods["reload.mcp"](1, {"session_id": "no-such-session"})
+
+    assert envelope["result"]["status"] == ("confirm_required" if confirm else "reloaded")
+    assert calls["discover"] == int(not confirm)
+
+
 def test_failed_reload_is_an_error_and_no_generation_advance(reload_env, monkeypatch):
     """The exact client-facing contract: a failure must NOT look like an ack.
     quietRpc on the TUI side collapses this error to null and keeps the

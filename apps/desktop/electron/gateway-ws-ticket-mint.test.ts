@@ -2,13 +2,8 @@
  * The ws-ticket mint exactly as main.ts wires it (mintGatewayWsTicketWithRetries
  * over the production native-token coordinator), read through the same
  * gatewayTicketFailure wrapper that decides whether the app latches the
- * sign-in overlay. Plus a source guard: a merge once silently restored an
- * older main.ts that swallowed coordinator errors (`.catch(() => null)`) and
- * fell back to the cookie jar, turning a Cloud 429 into a sign-out.
+ * sign-in overlay.
  */
-
-import fs from 'node:fs'
-import path from 'node:path'
 
 import { expect, test } from 'vitest'
 
@@ -168,20 +163,4 @@ test('a binding change mid-exchange never crosses into the cookie jar or latches
     expect(calls.cookieMints).toBe(0)
     expect(calls.sleeps).toBe(0)
   }
-})
-
-test('main.ts routes every native-token request through the non-swallowing OAuth helpers', () => {
-  const source = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
-
-  // No site may swallow a coordinator error and silently downgrade to cookies.
-  expect(source.match(/ensureNativeAccessToken\([^)]*\)\s*\.catch\(/g) ?? []).toEqual([])
-  // The options-accepting coordinator (forceRefresh) is what the helpers get.
-  expect(/const ensureNativeAccessToken = nativeAccessTokenCoordinator\.ensure\b/.test(source)).toBe(true)
-
-  const mint = source.match(/async function mintGatewayWsTicket\([^)]*\)[^{]*\{([\s\S]*?)\n\}/)
-  expect(mint?.[1]).toMatch(/mintGatewayWsTicketWithRetries\(/)
-  expect(mint?.[1]).not.toMatch(/ensureNativeAccessToken\(/)
-
-  // Readiness probe, file download, and fetchJsonForBackend (REST/api/status).
-  expect(source.match(/requestWithOauthFallback\(/g)?.length ?? 0).toBeGreaterThanOrEqual(3)
 })

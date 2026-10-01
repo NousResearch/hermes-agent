@@ -18,7 +18,6 @@ def _matrix_event_timestamp_seconds(event: Any) -> float:
         ts = float(getattr(event, "timestamp", None) or getattr(event, "server_timestamp", None) or 0)
     except (TypeError, ValueError):
         return 0.0
-    # origin_server_ts is ms; some SDK objects/fakes expose seconds — keep both sane.
     return ts / 1000.0 if ts > 10_000_000_000 else ts
 
 
@@ -51,7 +50,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
         ctx: Optional[tuple] = None, *, reply_parent: MatrixEventContext | None = None,
         event_ts: float = 0.0, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
-        still change (reply-fallback strip); ``extra`` carries media fields / message_type.
+        still change (reply-fallback strip); ``extra`` supplies media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
         downloading); resolving it twice would double the read receipt / thread mark."""
         from .adapter import _normalize_matrix_bang_command, _inbound_media_caption, _label_body
@@ -79,7 +78,6 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
         elif media_msgtype == "m.sticker":
             body = _label_body("m.sticker", body, sender)
         elif media_msgtype is None:
-            # Re-normalize after reply stripping so ``> quoted\n\n!model`` is still a command.
             body = _normalize_matrix_bang_command(body)
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         else:
@@ -91,7 +89,6 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             reply_to_author_name=reply.author_name,
             reply_to_is_own_message=reply.is_own_message,
             reply_to_author_authorized=reply.author_authorized,
-            # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, timestamp=timestamp, **extra)
         if reply.media_path and reply.event_id and reply.media_content_id:
             event._quoted_media_dependencies = (

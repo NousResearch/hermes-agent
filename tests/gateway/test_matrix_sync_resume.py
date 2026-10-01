@@ -1252,7 +1252,7 @@ async def test_native_sync_checkpoints_only_completed_application_admission(
         chat_id="!room:example.org", user_id="@alice:example.org"
     )
     adapter._build_inbound_event = AsyncMock(
-        side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None: MessageEvent(
+        side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None, event_ts=0.0: MessageEvent(
             text=body, source=source, message_id=event_id
         )
     )
@@ -1330,7 +1330,7 @@ async def test_native_sync_checkpoints_only_completed_application_admission(
                 del adapter._handle_text_message
                 adapter._source_session_key = lambda _source: "session"
                 adapter._build_inbound_event = AsyncMock(
-                    side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None: MessageEvent(
+                    side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None, event_ts=0.0: MessageEvent(
                         text=body, source=source, message_id=event_id
                     )
                 )
@@ -1420,7 +1420,7 @@ async def test_startup_replay_executes_admitted_input_before_native_checkpoint(
         chat_id="!room:example.org", user_id="@alice:example.org"
     )
     adapter._build_inbound_event = AsyncMock(
-        side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None: MessageEvent(
+        side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None, event_ts=0.0: MessageEvent(
             text=body, source=source, message_id=event_id
         )
     )
@@ -1564,7 +1564,7 @@ async def test_restart_fixture_buffers_prime_before_initial_checkpoint_and_watch
             chat_id="!room:example.org", user_id="@alice:example.org"
         )
         adapter._build_inbound_event = AsyncMock(
-            side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None: MessageEvent(
+            side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None, event_ts=0.0: MessageEvent(
                 text=body, source=source, message_id=event_id
             )
         )
@@ -1672,7 +1672,7 @@ def gateway_intake(adapter, texts):
         chat_id="!room:example.org", user_id="@alice:example.org"
     )
 
-    def build(_room, _sender, event_id, body, *_args, reply_parent=None):
+    def build(_room, _sender, event_id, body, *_args, reply_parent=None, event_ts=0.0):
         text = texts.get(event_id, body)
         return MessageEvent(
             text=text,

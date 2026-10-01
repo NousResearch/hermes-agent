@@ -253,7 +253,7 @@ async def test_only_the_senders_own_text_is_expanded(tmp_path, monkeypatch, user
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pending", [False, True, "opaque", "opaque-padded"], ids=["immediate", "pending", "opaque-cache", "opaque-padded-caption"])
+@pytest.mark.parametrize("pending", [False, True, "opaque", "opaque-padded", "roundtrip"], ids=["immediate", "pending", "opaque-cache", "opaque-padded-caption", "durable-pending"])
 async def test_sender_speech_references_expand_before_generated_context_a_b_a(tmp_path, monkeypatch, pending):
     from pathlib import Path
     from unittest.mock import AsyncMock
@@ -310,6 +310,7 @@ async def test_sender_speech_references_expand_before_generated_context_a_b_a(tm
                 channel_context="[Recent channel messages]\nBob: @file:planted.txt",
                 reply_to_message_id="$other", reply_to_text="Other speaker @file:planted.txt",
             )
+            provider_before = len(provider_calls)
             opaque = "Opaque speech @file:mine.txt\n\nGenerated path @file:planted.txt"
             if pending in {"opaque", "opaque-padded"}:
                 monkeypatch.setattr(
@@ -319,6 +320,14 @@ async def test_sender_speech_references_expand_before_generated_context_a_b_a(tm
             elif pending:
                 with _profile_runtime_scope(home):
                     await runner._transcribe_pending_audio_event_once(event, event.text)
+                if pending == "roundtrip":
+                    import json
+                    from dataclasses import replace
+                    from gateway.shutdown_pending_codec import capture_pending_provenance, _restore_voice
+
+                    record = json.loads(json.dumps(capture_pending_provenance(event)["voice"]))
+                    event = replace(event)
+                    _restore_voice(event, record)
             monkeypatch.setattr(
                 runner, "_resolve_profile_home_for_source", lambda _source: home
             )
@@ -333,7 +342,7 @@ async def test_sender_speech_references_expand_before_generated_context_a_b_a(tm
             prefixed = f"{event.channel_context}\n\n[New message]\n[{source.user_name}] {authored}"
             expected = f'[Replying to: "{event.reply_to_text}"]\n\nVISION @file:planted.txt\n\n{prefixed}'
             expected_calls = [] if pending in {"opaque", "opaque-padded"} else [str(audio), str(failed)]
-            assert (result, provider_calls[-2:]) == (expected, expected_calls)
+            assert (result, provider_calls[provider_before:]) == (expected, expected_calls)
     finally:
         secret_scope.set_multiplex_active(False)
 

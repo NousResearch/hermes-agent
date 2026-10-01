@@ -111,10 +111,6 @@ def test_exit_cleanup_preserves_dirty_worktree(git_repo, monkeypatch, capsys, re
         assert (git_repo / "node_modules" / "dep.js").exists()
 
 
-
-        # Should not crash — just skip all lines
-
-
 class TestWorktreeLockReaping:
     """Exercise the REAL cli._prune_stale_worktrees lock/dirty/unpushed logic.
 

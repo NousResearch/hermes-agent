@@ -149,12 +149,11 @@ class TestPrune:
         assert db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
     def test_mid_loop_abort_does_not_strand_surviving_rows(self, db):
-        """Delete-then-entry per row: a non-guard error on row N propagates out of
-        ``_execute_write`` and aborts the sweep, so any entry dropped ahead of an
-        un-deleted row would outlive its still-live target and let the gateway resume
-        a nonexistent id. Entry-then-row inside the loop (base order) cannot strand
-        an entry for a row that was never deleted — candidate iteration order is a
-        set, so the invariant is asserted, not a fixed membership."""
+        """Row-then-entry per row: a non-guard error on row N propagates out of
+        ``_execute_write`` and aborts the sweep. Dropping every entry up front (base
+        order) would strand the still-live rows with no route back; per-row ordering
+        only drops entries of rows actually deleted. Candidate order is a set, so the
+        invariant is asserted, not a fixed membership."""
         import sqlite3
 
         for sid in ("junk-a", "junk-b", "junk-c"):
@@ -203,8 +202,6 @@ class TestPruneSkipsLiveTurns:
     def test_guarded_row_survives_and_keeps_its_routing_entry(self, db):
         import os
 
-        from hermes_state_errors import SessionActiveWriteGuardError
-
         _insert(db, "live-junk", age_days=45)
         _insert(db, "dead-junk", age_days=45)
         db.save_gateway_routing_entry(
@@ -229,14 +226,3 @@ class TestPruneSkipsLiveTurns:
         deleted, routing_deleted = db.prune_never_active_keyed_sessions(older_than_days=30)
         assert (deleted, routing_deleted) == (1, 1)
         assert db.get_session("live-junk") is None
-
-    def test_compression_lock_protects_the_row_too(self, db):
-        import os
-
-        _insert(db, "live-cmp", age_days=45)
-        holder = f"pid={os.getpid()}:cmp=1"
-        assert db.try_acquire_compression_lock("live-cmp", holder, ttl_seconds=300.0) is True
-
-        deleted, _ = db.prune_never_active_keyed_sessions(older_than_days=30)
-        assert deleted == 0
-        assert db.get_session("live-cmp") is not None

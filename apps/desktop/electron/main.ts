@@ -1110,7 +1110,10 @@ const HERMES_HOME: string = resolveDesktopHermesHome({
 // processes only from the browser's pre-launch command line.
 // `desktop.ssh_path` (#103288) rides the same pre-window read: an explicit
 // Windows ssh client for when the in-box OpenSSH is missing or broken.
+// `desktop.allowed_link_schemes` (#129813) is read here too and fed to the
+// external-open route so user-opted custom URL schemes are clickable.
 let desktopSshPathOverride = ''
+let desktopAllowedLinkSchemes: readonly string[] = []
 
 {
   let desktopLaunchYaml: string = ''
@@ -1123,6 +1126,7 @@ let desktopSshPathOverride = ''
 
   const desktopLaunchConfig = readDesktopLaunchConfig(desktopLaunchYaml)
   desktopSshPathOverride = desktopLaunchConfig.sshPath || ''
+  desktopAllowedLinkSchemes = desktopLaunchConfig.allowedLinkSchemes
 
   // `desktop.renderer_accessibility: false` must reach packaged launches too,
   // not only the `hermes desktop` launcher's env bridge (#118271).
@@ -2261,7 +2265,8 @@ const EXTERNAL_OPEN_DEPS: ExternalOpenDeps = {
   openFile: openExternalFile,
   openLocalPath: openLocalFilesystemPath,
   notifyFailure: broadcastOpenFailed,
-  log: rememberLog
+  log: rememberLog,
+  allowedLinkSchemes: desktopAllowedLinkSchemes
 }
 
 // Deps for the pre-open stat guard (see openExternalFile): a miss is

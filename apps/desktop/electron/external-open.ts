@@ -56,6 +56,14 @@ export interface ExternalOpenDeps {
   openExternal: (url: string) => Promise<void>
   openFile: (rawUrl: string) => Promise<void>
   /**
+   * User-configured custom URL schemes allowed to open externally — e.g.
+   * `obsidian`, `linear` — in addition to the built-in web allowlist
+   * (http/https/mailto). Schemes are compared case-insensitively with or
+   * without the trailing `:`. Empty by default, so the built-in allowlist
+   * keeps its security intent unless a user opts in per scheme (#129813).
+   */
+  allowedLinkSchemes?: readonly string[]
+  /**
    * Open a BARE local filesystem path (POSIX `/…`, `~/…`, Windows drive/UNC)
    * that is not a URL. The impl resolves it through the same audited
    * `resolveRequestedPathForIpc` the `file:` route uses, then `shell.openPath`,
@@ -72,6 +80,28 @@ const SUPPORTED_WEB = ['http:', 'https:', 'mailto:']
 
 export function externalOpenErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Normalize a user-supplied scheme: strip whitespace and trailing `:`, lowercase. */
+function normalizeScheme(scheme: string): string {
+  return String(scheme).trim().toLowerCase().replace(/:$/, '')
+}
+
+/**
+ * Whether a parsed URL protocol (e.g. `obsidian:`) is allowed to open
+ * externally. The built-in web allowlist always applies; a custom scheme is
+ * accepted only when it appears in `allowedLinkSchemes` (#129813). Keeping the
+ * custom list additive preserves the security intent of the default — a
+ * `javascript:`/`data:`-style link is still rejected unless a user opted it in.
+ */
+export function isSchemeAllowed(protocol: string, allowedLinkSchemes: readonly string[] = []): boolean {
+  if (SUPPORTED_WEB.includes(protocol)) {
+    return true
+  }
+
+  const wanted = normalizeScheme(protocol)
+
+  return wanted.length > 0 && allowedLinkSchemes.some(scheme => normalizeScheme(scheme) === wanted)
 }
 
 /**
@@ -128,7 +158,7 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
     return { ok: true }
   }
 
-  if (!SUPPORTED_WEB.includes(parsed.protocol)) {
+  if (!isSchemeAllowed(parsed.protocol, deps.allowedLinkSchemes)) {
     return { ok: false, reason: 'invalid' }
   }
 

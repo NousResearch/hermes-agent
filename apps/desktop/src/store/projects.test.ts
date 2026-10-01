@@ -6,6 +6,7 @@ import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/proje
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
+import { deferred } from '@/test/deferred'
 import type { ProjectInfo } from '@/types/hermes'
 
 import { $projectScope, ALL_PROJECTS, exitProjectScope } from './project-scope'
@@ -89,16 +90,6 @@ const hermes = await import('@/hermes')
 const getHermesConfig = vi.mocked(hermes.getHermesConfig)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
 
 describe('project scope', () => {
   beforeEach(() => {
@@ -562,14 +553,8 @@ describe('createProject', () => {
 
     // A missing-method rejection that lands after the owner changed says
     // nothing about the new owner's backend, so it must not mark it stale.
-    let rejectCreate!: (err: Error) => void
-
-    const request = vi.fn(
-      () =>
-        new Promise((_resolve, reject) => {
-          rejectCreate = reject
-        })
-    )
+    const pendingCreate = deferred<never>()
+    const request = vi.fn(() => pendingCreate.promise)
 
     activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
     $projectsRpcAvailable.set(true)
@@ -577,7 +562,7 @@ describe('createProject', () => {
     const result = createProject({ folders: ['/srv/demo'], name: 'Demo' })
     await waitFor(() => expect(request).toHaveBeenCalled())
     $activeGatewayProfile.set('other')
-    rejectCreate(new Error('unknown method: projects.create'))
+    pendingCreate.reject(new Error('unknown method: projects.create'))
 
     await expect(result).rejects.toThrow('sidebar.projects.staleBackend')
     expect($projectsRpcAvailable.get()).toBe(true)

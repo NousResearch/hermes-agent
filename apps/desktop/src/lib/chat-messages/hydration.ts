@@ -455,9 +455,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const commentary = codexText?.commentary ?? []
 
     const rawReasoning =
-      message.reasoning ||
-      message.reasoning_content ||
-      reasoningTextFromDetails(message.reasoning_details)
+      message.reasoning || message.reasoning_content || reasoningTextFromDetails(message.reasoning_details)
 
     const reasoning = message.display_reasoning !== undefined ? message.display_reasoning : rawReasoning
 

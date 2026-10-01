@@ -33,11 +33,15 @@ export function reasoningTextFromDetails(details: unknown): string {
   const text: string[] = []
 
   const push = (value: unknown) => {
-    if (typeof value !== 'string') return
+    if (typeof value !== 'string') {
+      return
+    }
 
     const prose = value.trim()
 
-    if (prose && !text.includes(prose)) text.push(prose)
+    if (prose && !text.includes(prose)) {
+      text.push(prose)
+    }
   }
 
   // Nested carrier internals: only genuinely readable reasoning kinds. A
@@ -46,11 +50,16 @@ export function reasoningTextFromDetails(details: unknown): string {
   // reasoning, and signatures/projections/data are opaque replay fields.
   const walkNested = (node: unknown): void => {
     if (Array.isArray(node)) {
-      for (const item of node) walkNested(item)
+      for (const item of node) {
+        walkNested(item)
+      }
+
       return
     }
 
-    if (!node || typeof node !== 'object') return
+    if (!node || typeof node !== 'object') {
+      return
+    }
 
     const record = node as Record<string, unknown>
     const kind = typeof record.type === 'string' ? record.type : ''
@@ -64,23 +73,31 @@ export function reasoningTextFromDetails(details: unknown): string {
     }
 
     for (const [key, value] of Object.entries(record)) {
-      if (key === 'signature' || key === 'projection' || key === 'data' || key === 'type') continue
+      if (key === 'signature' || key === 'projection' || key === 'data' || key === 'type') {
+        continue
+      }
 
-      if (value && typeof value === 'object') walkNested(value)
+      if (value && typeof value === 'object') {
+        walkNested(value)
+      }
     }
   }
 
   for (const block of Array.isArray(blocks) ? blocks : [blocks]) {
     if (typeof block === 'string') {
       push(block)
+
       continue
     }
 
-    if (!block || typeof block !== 'object') continue
+    if (!block || typeof block !== 'object') {
+      continue
+    }
 
     // Top-level blocks are provider reasoning-detail entries; recognized
     // prose fields (summary, thinking, content, text) are display text.
     const record = block as Record<string, unknown>
+
     const value = [record.summary, record.thinking, record.content, record.text].find(
       candidate => typeof candidate === 'string' && candidate.trim()
     )

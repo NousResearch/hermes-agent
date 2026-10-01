@@ -44,4 +44,38 @@ describe('reasoning-details display text', () => {
       })
     ).toEqual(['Canonical reasoning.'])
   })
+
+  it('hydrates an opaque carrier and a decodable envelope side by side without leaking either', () => {
+    const reasoningParts = (message: Partial<SessionMessage>): string[] =>
+      toChatMessages([{ role: 'assistant', content: 'Answer.', ...message } as SessionMessage])
+        .flatMap(item => item.parts)
+        .filter(part => part.type === 'reasoning')
+        .map(part => (part as { text: string }).text)
+
+    // The #126588 DirectSDK carrier: signed thinking with empty plaintext,
+    // native text blocks and a projection that repeat the public answer.
+    const carrier = JSON.stringify([
+      {
+        type: 'claude-subscription-directsdk-experimental.native_assistant',
+        version: 1,
+        messages: [
+          {
+            content: [
+              { type: 'thinking', thinking: '', signature: 'sigside' },
+              { type: 'text', text: 'Answer A' }
+            ]
+          }
+        ],
+        projection: { content: 'Answer A', tool_calls: [] }
+      }
+    ])
+
+    const envelope = JSON.stringify([
+      { type: 'reasoning.summary', summary: 'Checked the lock.' },
+      { type: 'reasoning.text', text: 'Return the result.' }
+    ])
+
+    expect(reasoningParts({ reasoning_details: carrier })).toEqual([])
+    expect(reasoningParts({ reasoning_details: envelope })).toEqual(['Checked the lock.\n\nReturn the result.'])
+  })
 })

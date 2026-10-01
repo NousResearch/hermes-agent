@@ -1569,16 +1569,30 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # launchd jobs, and other detached processes routinely run with a stripped
 # $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the interpreter-bound module form (exactly this install; a PATH
-# shim could be attacker-planted or belong to another install, #111569) and
-# only falls back to the PATH shim when ``hermes_cli`` is not importable.
+# prefers this install's runtime_command bootstrap (checkout inserted, then
+# hermes_bootstrap). A bare `sys.executable -m hermes_cli.main` is not enough:
+# the managed store Python does not have hermes_cli installed, and child-env
+# sanitization strips the PYTHONPATH the parent used to import it. A PATH
+# shim could be attacker-planted or belong to another install (#111569) and
+# is used only when ``hermes_cli`` is not importable.
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
+def _argv_bootstraps_this_checkout(argv) -> bool:
+    """True when the child inserts this checkout itself, instead of assuming
+    ``hermes_cli`` is already installed in the interpreter."""
+    if len(argv) >= 4 and argv[1:3] == ["-I", "-c"]:
+        script = argv[3]
+        return "sys.path.insert" in script and "hermes_bootstrap" in script
+    return False
+
+
+def test_resolve_hermes_argv_prefers_bootstrap_over_path_shim(monkeypatch):
     """A `hermes` on PATH must not shadow the running install (#111569):
-    the module argv wins whenever ``hermes_cli`` is importable; only an
-    explicit ``$HERMES_BIN`` overrides it."""
+    the installation bootstrap wins whenever ``hermes_cli`` is importable;
+    only an explicit ``$HERMES_BIN`` overrides it. A bare ``-m`` form is the
+    store-Python failure: the child cannot import ``hermes_cli`` once
+    PYTHONPATH is stripped."""
     import shutil
     import sys
     from hermes_cli import kanban_db_dispatch as kbd
@@ -1586,22 +1600,21 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    argv = kbd._resolve_hermes_argv()
+    assert "/tmp/planted/hermes" not in argv
+    assert argv != [sys.executable, "-m", "hermes_cli.main"]
+    assert _argv_bootstraps_this_checkout(argv)
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
-
-
 def test_resolve_hermes_argv_module_actually_runs():
-    """The fallback module name must be importable + runnable.
+    """The resolved command must start with PYTHONPATH stripped.
 
-    A unit test that pins the literal string is necessary but not
-    sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
-    handling or its argparse setup, `python -m hermes_cli.main --version`
-    would fail and so would every dispatcher spawn that hits the fallback.
-    Run it as a real subprocess to catch that regression.
+    Child-env sanitization removes the checkout from PYTHONPATH. A bare
+    ``python -m hermes_cli.main`` then dies on the store Python even though
+    the parent could import ``hermes_cli``. Run the real argv that way.
     """
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
@@ -1612,9 +1625,15 @@ def test_resolve_hermes_argv_module_actually_runs():
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    assert _argv_bootstraps_this_checkout(argv)
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("VIRTUAL_ENV", None)
+    r = subprocess.run(
+        argv + ["--version"], capture_output=True, text=True, timeout=60, env=env,
+    )
     assert r.returncode == 0, (
-        f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
+        f"`{' '.join(argv[:3])} ... --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
 

@@ -2468,9 +2468,26 @@ def _rotate_worker_log(
 
 
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    """Installation-bound Hermes CLI invocation.
+
+    A bare ``sys.executable -m hermes_cli.main`` only works when that
+    interpreter already has ``hermes_cli`` installed. The managed store
+    Python does not: the parent imports it only because its launcher inserted
+    this checkout on ``sys.path``, and child-env sanitization strips that
+    ``PYTHONPATH``. The child must use the same bootstrap as every other
+    Hermes spawn (``runtime_command``): insert this checkout, then
+    ``hermes_bootstrap``, before the CLI. A PATH ``hermes`` is still not
+    used (#111569).
+    """
+    from hermes_cli._launchers import runtime_command
+
+    # Bind the running interpreter. Resolving the store Python here reads the
+    # real Hermes home (and can disagree with the process that is dispatching).
+    # The bug is the missing checkout bootstrap, not a different binary.
+    return runtime_command(
+        Path(__file__).resolve().parents[1],
+        python=sys.executable,
+    )
 
 
 def _absolute_hermes_path(path: str) -> str:
@@ -2532,20 +2549,16 @@ def _hermes_path_argv(path: str) -> list[str]:
 
 
 def _resolve_hermes_argv() -> list[str]:
-    """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
-    (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
-    lets an attacker-planted ``hermes`` shadow the running install (#111569).
-    Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
-    sits below ``gateway`` in the dependency order.
-    """
-    import importlib.util
-    import shutil
+    """Resolve the ``hermes`` invocation as argv for ``Popen``.
 
+    ``$HERMES_BIN`` wins when set (path-like -> absolute; bare names keep PATH
+    semantics, never a same-directory file). Otherwise this install's
+    ``runtime_command`` bootstrap: the running interpreter, this checkout
+    inserted, ``hermes_bootstrap`` before the CLI. A bare ``-m hermes_cli.main``
+    dies on the store Python once child-env sanitization strips ``PYTHONPATH``.
+    PATH is not consulted: a planted ``hermes`` must not shadow this install
+    (#111569).
+    """
     env_bin = os.environ.get("HERMES_BIN", "").strip()
     if env_bin:
         if _looks_like_path(env_bin):
@@ -2555,15 +2568,10 @@ def _resolve_hermes_argv() -> list[str]:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
 
-    try:
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return _module_hermes_argv()
-    except Exception:
-        pass
-
-    hermes_bin = _safe_which_no_cwd("hermes") if _kb._IS_WINDOWS else shutil.which("hermes")
-    if hermes_bin:
-        return _hermes_path_argv(hermes_bin)
+    # This module lives in the checkout, so the bootstrap is always available.
+    # Do not fall through to PATH: a planted ``hermes`` must not win (#111569),
+    # and ``find_spec`` can fail in a guarded test home even though this file
+    # is already imported.
     return _module_hermes_argv()
 
 

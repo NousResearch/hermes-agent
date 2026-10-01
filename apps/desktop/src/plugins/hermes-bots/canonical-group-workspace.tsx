@@ -1,14 +1,17 @@
-import { Button } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { Button, Codicon, composerInputSurface, PRIMARY_ICON_BTN, Tip } from '@hermes/plugin-sdk'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
+import { CanonicalGroupComposerInput } from './canonical-group-composer'
+import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { CanonicalGroupPendingActions } from './canonical-group-pending-actions'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalPendingAction } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoomMember } from './canonical-groups'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
@@ -18,7 +21,7 @@ interface DriverStatus {
   blocked?: boolean
   pending_actions?: CanonicalPendingAction[]
 }
-interface RoomState { room: { name: string; authority_epoch?: number }; driver_status?: DriverStatus }
+interface RoomState { room: { name: string; authority_epoch?: number; members?: CanonicalRoomMember[] }; driver_status?: DriverStatus }
 type Labels = ReturnType<typeof useCanonicalGroupLabels>
 
 // A 4001 with one of these reasons means nothing was accepted; any other failure may have been.
@@ -36,21 +39,21 @@ function sendOutcome(error: unknown): 'refused' | 'retryable' | 'unknown' {
 function roomStatus(status: DriverStatus, labels: Labels) {
   const actions = status.pending_actions || []
   const approvals = actions.filter(action => action.kind === 'approval').length
-  const parts = [status.working ? labels.statusWorking : status.running === false ? labels.statusStopped : labels.statusIdle]
+  const stopping = actions.some(action => action.kind === 'stopping')
+  const attention = actions.filter(action => action.kind !== 'approval' && action.kind !== 'stopping').length
+  const parts = [stopping ? labels.statusStopping : status.working ? labels.statusWorking : status.running === false ? labels.statusStopped : labels.statusIdle]
 
   if (status.blocked) {parts.push(labels.statusBlocked)}
 
   if (approvals) {parts.push(labels.statusApprovals.replace('{count}', String(approvals)))}
 
-  if (actions.length > approvals) {parts.push(labels.statusAttention.replace('{count}', String(actions.length - approvals)))}
+  if (attention) {parts.push(labels.statusAttention.replace('{count}', String(attention)))}
 
   return parts.join(' · ')
 }
 
-/** Room controls rendered by the owner of the binding (files, rename, disband). */
-export type CanonicalRoomActions = (room: {
-  name: string; refresh: () => void; latestFileSeq: number; visible: boolean
-}) => ReactNode
+/** Room controls rendered by the owner of the binding (rename, disband). */
+export type CanonicalRoomActions = (room: { name: string; refresh: () => void; latestFileSeq: number; visible: boolean }) => ReactNode
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack, actions }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void; actions?: CanonicalRoomActions
@@ -70,6 +73,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   const [readError, setReadError] = useState('')
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [uploading, setUploading] = useState(false)
+  const uploadingRef = useRef(false)
   const [restored, setRestored] = useState(false)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
   const [busy, setBusy] = useState(false)
@@ -78,7 +83,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   const [notice, setNotice] = useState('')
   const [sendHint, setSendHint] = useState('')
   const alive = useRef(true)
-  const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
+  const transcript = useRef<HTMLDivElement>(null)
+  const following = useRef(true)
   const revision = useRef(0)
   // The log is append-only within one authority epoch: read only what is new.
   const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
@@ -148,8 +154,18 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
 
-  const mutate = async (operation: () => Promise<unknown>) => {
-    if (busyRef.current) {return}
+  // Follow new messages only while the viewer remains at the end of the chat.
+  useLayoutEffect(() => {
+    if (visible && following.current && transcript.current) {transcript.current.scrollTop = transcript.current.scrollHeight}
+  }, [events, visible])
+
+  const mutate = async (operation: () => Promise<unknown>, propagate = false) => {
+    if (busyRef.current) {
+      if (propagate) {throw new Error(labels.actionInFlight)}
+
+      return
+    }
+
     busyRef.current = true
     setBusy(true)
     setError('')
@@ -157,7 +173,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     try { await operation();
 
  if (alive.current) {await refresh()} }
-    catch (e) { if (alive.current) {setError(e instanceof Error ? e.message : String(e))} }
+    catch (e) {
+      if (propagate) {throw e}
+
+      if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
+    }
     finally {
       busyRef.current = false
 
@@ -166,7 +186,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   }
 
   const send = () => {
-    if (!restored || busyRef.current || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    if (!restored || busyRef.current || uploadingRef.current || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
     setSendHint('')
     void mutate(async () => {
       const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments })
@@ -203,7 +223,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   }
 
   const act = (action: CanonicalPendingAction, choice?: 'once' | 'deny') =>
-    mutate(() => actCanonicalGroup(binding, action, choice))
+    mutate(() => actCanonicalGroup(binding, action, choice), true)
 
   // Stop has its own busy state: it must stay available while a Send is in flight.
   const stop = async () => {
@@ -225,40 +245,60 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     }
   }
 
-  return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
-    <header className="flex items-center gap-2">
-      {onBack && <Button onClick={onBack}>{labels.back}</Button>}
-      <h2>{state?.room.name || labels.loadingGroup}</h2>
-      <Button disabled={stopping || !state?.driver_status} onClick={() => void stop()}>{labels.stop}</Button>
-      {state && actions?.({ name: state.room.name, refresh: () => void refresh().catch(e => setReadError(String(e))),
-        latestFileSeq: events.reduce((latest, event) => event.payload.attachments?.length ? Math.max(latest, event.seq) : latest, 0),
-        visible })}
-    </header>
-    {state?.driver_status && <p aria-live="polite">{roomStatus(state.driver_status, labels)}</p>}
-    {notice && <p aria-live="polite">{notice}</p>}
-    {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
-    {error && <div role="alert">{error}</div>}
-    {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
-    <div className="min-h-0 flex-1 overflow-auto" role="log">
-      <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} />
+  const members = state?.room.members ?? []
+  const name = state?.room.name || labels.loadingGroup
+  const pendingActions = state?.driver_status?.pending_actions ?? []
+  const inputDisabled = !restored || busy || !!pending || !state?.driver_status
+
+  return <section className="flex h-full min-h-0 flex-col" data-slot="canonical-group-chat">
+    <CanonicalGroupHeader attention={state?.driver_status?.blocked || pendingActions.some(action => action.kind !== 'stopping')}
+      members={members} name={name} onBack={onBack} status={state?.driver_status && roomStatus(state.driver_status, labels)} working={state?.driver_status?.working}>
+      {visible && state && actions?.({ name: state.room.name, refresh: () => void refresh().catch(e => setReadError(String(e))),
+        latestFileSeq: events.reduce((latest, event) => event.payload.attachments?.length ? Math.max(latest, event.seq) : latest, 0), visible })}
+    </CanonicalGroupHeader>
+    <div aria-label={labels.conversationHistory} className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-2"
+      onScroll={event => { const node = event.currentTarget; following.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48 }} ref={transcript} role="log">
+      <div className="mx-auto w-full max-w-3xl pb-4">
+        <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} members={members} />
+        {state && !events.length && <div className="grid gap-1 px-3 py-10 text-center">
+          <p className="text-sm text-(--ui-text-secondary)">{labels.emptyHistory}</p>
+          <p className="text-xs text-(--ui-text-quaternary)">{labels.emptyHistoryHint}</p>
+        </div>}
+      </div>
     </div>
-    {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
-      <span>{action.member_id}</span>
-      {action.kind === 'discard' && <Button disabled={busy} onClick={() => setDiscard({ ...action })}>{labels.discard}</Button>}
-      {action.kind === 'retry' && <Button disabled={busy} onClick={() => void act({ ...action })}>{labels.retry}</Button>}
-      {action.kind === 'approval' && <><Button disabled={busy} onClick={() => void act({ ...action }, 'once')}>{labels.allowOnce}</Button><Button disabled={busy} onClick={() => void act({ ...action }, 'deny')}>{labels.deny}</Button></>}
-    </div>)}
-    {discard && <div aria-label={labels.discardUnknown} role="alertdialog">
-      <p>{labels.discardWarning}</p>
-      <Button disabled={busy} onClick={() => { const exact = discard; setDiscard(null); void act(exact) }}>{labels.confirmDiscard}</Button>
-      <Button onClick={() => setDiscard(null)}>{labels.cancel}</Button>
-    </div>}
-    {pending && <p role="status">{labels.restoredPendingSend}</p>}
-    {sendHint && <p aria-live="polite">{sendHint}</p>}
-    <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
-      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={!restored || busy || !!pending} onChange={setAttachments} />
-      <textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={!restored || busy || !!pending} onChange={e => setDraft(e.target.value)} value={draft} />
-      <Button disabled={!restored || busy || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
-    </form>
+    <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pb-4">
+      <div className="max-h-[min(40vh,24rem)] overflow-y-auto">
+        {visible && <CanonicalGroupPendingActions actions={pendingActions} busy={busy} members={members} onAction={act}
+          onDiscard={action => act(action)} onRefresh={refresh} />}
+      </div>
+      <div className="grid gap-2 pb-2 text-xs text-(--ui-text-secondary)">
+        {notice && <p aria-live="polite">{notice}</p>}
+        {readError && <div className="grid gap-1" role="alert"><div className="flex items-center gap-2"><span>{labels.driverUnavailable}</span><Button onClick={() => void refresh().catch(e => setReadError(String(e)))} size="inline" variant="text">{labels.refresh}</Button></div>
+          <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{readError}</p></details>
+        </div>}
+        {error && <div className="grid gap-1 text-destructive" role="alert"><p>{labels.pendingActionUnconfirmed}</p>
+          <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{error}</p></details>
+        </div>}
+        {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
+        {pending && <p role="status">{labels.restoredPendingSend}</p>}
+        {sendHint && <p aria-live="polite">{sendHint}</p>}
+      </div>
+      <form className={`${composerInputSurface} rounded-2xl border border-(--ui-stroke-tertiary) p-2`} data-slot="composer-root"
+        onSubmit={event => { event.preventDefault(); send() }}>
+        <CanonicalGroupComposerInput disabled={inputDisabled} members={members} name={name} onChange={setDraft} onSubmit={send} value={draft} />
+        <div className="mt-1 flex items-end gap-2">
+          <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={inputDisabled} onChange={setAttachments}
+            onUploadingChange={uploading => { uploadingRef.current = uploading;
+
+ if (alive.current) {setUploading(uploading)} }} />
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <Button disabled={stopping || !state?.driver_status} loading={stopping} onClick={() => void stop()} size="xs" type="button" variant="ghost"><Codicon name="debug-stop" />{labels.stop}</Button>
+            <Tip label={pending ? labels.retry : labels.send}><Button aria-label={pending ? labels.retry : labels.send} className={PRIMARY_ICON_BTN}
+              disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} loading={busy}
+              size="icon-xs" type="submit" variant="ghost"><Codicon name={pending ? 'refresh' : 'arrow-up'} /></Button></Tip>
+          </div>
+        </div>
+      </form>
+    </div>
   </section>
 }

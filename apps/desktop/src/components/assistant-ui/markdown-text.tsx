@@ -823,17 +823,21 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
  * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
  * against the ACTIVE gateway, so a message written on another machine (a
  * Connections Bot in a cross-machine room) must not have its path read here —
- * that is a broken image at best and a same-path local file at worst. */
+ * that is a broken image at best and a same-path local file at worst. Foreign
+ * histories also pass `previewOnly`: Markdown images, links and live directive
+ * cards stay inert instead of resolving against the foreground session. */
 export function MessageTextContent({
   decorateText,
   media = true,
+  previewOnly = false,
   text
-}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
+}: Pick<MarkdownTextSurfaceProps, 'decorateText' | 'previewOnly'> & { media?: boolean; text: string }) {
   return (
     <MarkdownTextContent
       decorateText={decorateText}
       disableArtifacts
       isRunning={false}
+      previewOnly={previewOnly}
       text={media ? renderMediaTags(text) : text}
     />
   )

@@ -1,17 +1,16 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { ComponentProps, ReactNode } from 'react'
+import type * as HermesSdk from '@hermes/plugin-sdk'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', async () => {
+  const sdk = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
   const { en } = await import('@/i18n/en')
   const { captureGroupRequests } = await import('./group-test-utils')
 
-  return { host: { requestProfile: captureGroupRequests(request).request }, useI18n: () => ({ locale: 'en', t: en }),
-    Button: (props: ComponentProps<'button'>) => <button {...props} />,
-    Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
+  return { ...sdk, host: { requestProfile: captureGroupRequests(request).request }, useI18n: () => ({ locale: 'en', t: en }) }
 })
 vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
@@ -20,6 +19,7 @@ vi.mock('./canonical-group-labels', async () => {
     send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel' }) }
 })
 
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const binding = { connectionId: 'original-owner', profile: 'reviewer', roomId: 'room-one' }
@@ -70,6 +70,52 @@ it('keeps a committed file downloadable in history after Send clears the compose
   expect(request.mock.calls.some(call => call[1] === 'groups.attachment.list')).toBe(false)
 })
 
+it('blocks Send during a chosen file upload, keeps Stop available, and recovers from a failed upload', async () => {
+  let rejectUpload!: (error: Error) => void
+  let releaseUpload!: (value: unknown) => void
+  const heldUpload = new Promise((resolve, reject) => { releaseUpload = resolve; rejectUpload = reject })
+  let uploadResult: Promise<unknown> = heldUpload
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Autumn launch' }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.attachment.upload') {return uploadResult}
+
+    if (method === 'groups.send') {return { accepted: true }}
+
+    return {}
+  })
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  const input = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(input.disabled).toBe(false))
+  fireEvent.change(input, { target: { value: 'Please review this file' } })
+
+  const chooseFile = () => fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['A'], manifest.name, { type: manifest.mime })] }
+  })
+
+  chooseFile()
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.attachment.upload')).toBe(true))
+  expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(false)
+  fireEvent.keyDown(input, { key: 'Enter' })
+  fireEvent.submit(view.container.querySelector('form')!)
+  expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+  await act(async () => rejectUpload(new Error('Upload interrupted')))
+  await screen.findByText(/Upload interrupted/)
+  expect(input.value).toBe('Please review this file')
+  expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(false)
+  uploadResult = new Promise(resolve => { releaseUpload = resolve })
+  chooseFile()
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.attachment.upload')).toHaveLength(2))
+  await act(async () => releaseUpload(manifest))
+  await screen.findByText(manifest.name)
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(request.mock.calls.find(call => call[1] === 'groups.send')?.[2].payload)
+    .toMatchObject({ text: 'Please review this file', attachments: [manifest] }))
+})
+
 it('binds user/member history downloads to their real event and refuses missing or foreign room identity', async () => {
   const observed = observeDownloads()
   const save = vi.fn().mockResolvedValue(undefined)
@@ -106,30 +152,42 @@ it('binds user/member history downloads to their real event and refuses missing 
   expect(history.queryByRole('button', { name: 'Remove attachment' })).toBeNull()
 })
 
-it('labels Bot messages with the actor the gateway sends, and leaves user and gateway events unlabelled', async () => {
+it('attributes rich messages to authoritative friendly members and people without exposing route IDs', async () => {
   const events = [
     { seq: 1, event_id: 'user', kind: 'message.user', actor: { kind: 'user', id: 'desktop' }, payload: { text: 'hello' } },
     { seq: 2, event_id: 'named', kind: 'message.member', payload: { text: 'hi' },
-      actor: { kind: 'member', id: 'm-helper', profile: 'helper', display_name: 'Helper Bot' } },
+      actor: { kind: 'member', id: 'm-helper', profile: 'helper', display_name: 'Atlas Bot' } },
     { seq: 3, event_id: 'unnamed', kind: 'message.member', actor: { kind: 'member', id: 'm-critic', profile: 'critic' },
-      payload: { text: 'noted' } },
+      payload: { text: '**Ready** to review\n\n- First item\n- Second item\n\n`example`\n\nMEDIA:/owner/private.png' } },
+    { seq: 5, event_id: 'person', kind: 'message.user', actor: { kind: 'user', id: 'other-person', display_name: 'Alex' }, payload: { text: 'Thanks' } },
     { seq: 4, event_id: 'settled', kind: 'turn.settled', actor: { kind: 'gateway', id: 'gw-1' }, payload: {} }
   ]
 
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.state') {return { room: { name: 'Room' } }}
+    if (method === 'groups.state') {return { room: { name: 'Room', members: [
+      { member_id: 'm-helper', profile: 'helper', handle: 'helper-route', display_name: 'Atlas Bot renamed' },
+      { member_id: 'm-critic', profile: 'critic', handle: 'critic-route', display_name: 'Mira Bot' }
+    ] } }}
 
     if (method === 'groups.log') {return { events }}
     throw new Error(`Unexpected method ${method}`)
   })
   render(<CanonicalGroupWorkspace binding={binding} />)
   const history = within(screen.getByRole('log'))
-  await waitFor(() => expect(history.getByText('Helper Bot')).toBeTruthy())
-  expect(history.getByText('m-critic')).toBeTruthy()
+  await waitFor(() => expect(history.getByText('Atlas Bot')).toBeTruthy())
+  expect(history.getByText('Mira Bot')).toBeTruthy()
+  expect(history.getByText('You')).toBeTruthy()
+  expect(history.getByText('Alex')).toBeTruthy()
+  expect(history.getByText('Ready').closest('[data-streamdown="strong"]')).toBeTruthy()
+  expect(history.getByRole('list')).toBeTruthy()
+  expect(history.getByText('example').closest('code')).toBeTruthy()
+  expect(history.getByText(/MEDIA:\/owner\/private.png/)).toBeTruthy()
+  expect(screen.getByRole('log').querySelector('img')).toBeNull()
+  expect(history.queryByText('m-critic')).toBeNull()
+  expect(history.queryByText('helper-route')).toBeNull()
+  expect(history.queryByText('Atlas Bot renamed')).toBeNull()
   expect(history.queryByText('desktop')).toBeNull()
   expect(history.queryByText('gw-1')).toBeNull()
-  expect(Array.from(screen.getByRole('log').querySelectorAll('strong'), node => node.textContent))
-    .toEqual(['Helper Bot: ', 'm-critic: '])
 })
 
 it('hides empty bookkeeping rows, but keeps unknown kinds and bookkeeping that carries text', async () => {
@@ -152,6 +210,32 @@ it('hides empty bookkeeping rows, but keeps unknown kinds and bookkeeping that c
   await waitFor(() => expect(history.getByText('hello')).toBeTruthy())
   expect(history.getByText('Stopped by you')).toBeTruthy()
   expect(history.getByText('room.future_kind')).toBeTruthy()
+  expect(history.getByText(CANONICAL_GROUP_LOCALES.en.activityUpdated)).toBeTruthy()
+  expect(history.getByText('room.future_kind').closest('details')?.open).toBe(false)
   expect(history.queryByText('turn.settled')).toBeNull()
   expect(history.queryByText('room.activity')).toBeNull()
+})
+
+it('explains actual failed, deferred and stopped replies while keeping technical details optional', async () => {
+  const events = [
+    { seq: 1, event_id: 'failure', kind: 'turn.failed', actor: { kind: 'gateway' }, payload: { member_id: 'mira', error: 'tool_process_exit_1' } },
+    { seq: 2, event_id: 'deferred', kind: 'turn.deferred', actor: { kind: 'gateway' }, payload: { member_id: 'mira', reason: 'approval_pending' } },
+    { seq: 3, event_id: 'stop', kind: 'room.stop_requested', actor: { kind: 'gateway' }, payload: {} }
+  ]
+
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Autumn launch', members: [{ member_id: 'mira', profile: 'default', handle: 'peer-mira', display_name: 'Mira Bot' }] } }}
+
+    if (method === 'groups.log') {return { events }}
+
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const history = within(screen.getByRole('log'))
+  await history.findByText(CANONICAL_GROUP_LOCALES.en.activityFailed.replace('{name}', 'Mira Bot'))
+  expect(history.getByText(CANONICAL_GROUP_LOCALES.en.activityDeferred.replace('{name}', 'Mira Bot'))).toBeTruthy()
+  expect(history.getByText(CANONICAL_GROUP_LOCALES.en.stopped)).toBeTruthy()
+  expect(history.getByText('tool_process_exit_1').closest('details')?.open).toBe(false)
+  expect(history.getByText('approval_pending').closest('details')?.open).toBe(false)
+  expect(request.mock.calls.every(call => ['groups.state', 'groups.log'].includes(call[1]))).toBe(true)
 })

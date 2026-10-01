@@ -347,6 +347,21 @@ class TestFindSkillInRepoTree:
         assert result == "davila7/claude-code-templates/cli-tool/components/skills/development/senior-backend"
 
     @patch("tools.skills_hub.httpx.get")
+    def test_finds_single_generic_skills_directory_when_slug_is_stale(self, mock_get):
+        tree_entries = [
+            {"path": "README.md", "type": "blob"},
+            {"path": "skills/SKILL.md", "type": "blob"},
+        ]
+        mock_get.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"default_branch": "main"}),
+            MagicMock(status_code=200, json=lambda: {"tree": tree_entries}),
+        ]
+
+        result = self._source()._find_skill_in_repo_tree("tencent/wechatreading", "weread-skills")
+
+        assert result == "tencent/wechatreading/skills"
+
+    @patch("tools.skills_hub.httpx.get")
     def test_returns_none_when_repo_api_fails(self, mock_get):
         mock_get.return_value = MagicMock(status_code=404)
         result = self._source()._find_skill_in_repo_tree("owner/repo", "my-skill")

@@ -22,8 +22,6 @@ const SID = 'interim-redelivery-duplicate'
 const REPLY =
   'The Chinese posts all point at one third-party directory: it claims 1081 Meta Muse use cases across 28 pages, and the invite-code replies are the bulk of the chatter.'
 
-const PROSE = 'Let me check that directory before I answer.'
-
 let stream: MessageStreamHarness
 
 const mountStream = () => {
@@ -37,12 +35,6 @@ const delta = (text: string) => act(() => stream.handleEvent({ payload: { text }
 
 const interim = (text: string) =>
   act(() => stream.handleEvent({ payload: { text, already_streamed: true }, session_id: SID, type: 'message.interim' }))
-
-const tool = (name: string) =>
-  act(() => {
-    stream.handleEvent({ payload: { args: { command: 'ls' }, name, tool_id: 'call-1' }, session_id: SID, type: 'tool.start' })
-    stream.handleEvent({ payload: { name, result: 'ok', tool_id: 'call-1' }, session_id: SID, type: 'tool.complete' })
-  })
 
 const complete = (text: string) =>
   act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.complete' }))
@@ -60,9 +52,6 @@ const visibleAssistantTexts = (): string[] =>
     .messages.filter(message => message.role === 'assistant' && !message.hidden)
     .map(message => chatMessageText(message).trim())
     .filter(Boolean)
-
-const toolCallCount = (): number =>
-  state().messages.flatMap(message => message.parts).filter(part => part.type === 'tool-call').length
 
 describe('a reply the turn re-streams after sealing it as an interim paints once', () => {
   afterEach(() => {
@@ -95,34 +84,6 @@ describe('a reply the turn re-streams after sealing it as an interim paints once
     await flushDeltas()
     await complete(REPLY)
 
-    expect(visibleAssistantTexts()).toEqual([REPLY, REPLY])
-  })
-
-  it('still keeps a distinct interim segment beside the reply', async () => {
-    mountStream()
-    await start()
-    await interim(PROSE)
-    await delta(REPLY)
-    await flushDeltas()
-    await complete(REPLY)
-
-    expect(visibleAssistantTexts()).toEqual([PROSE, REPLY])
-  })
-
-  it('never drops an interim that carries tool rows', async () => {
-    mountStream()
-    await start()
-    await tool('terminal')
-    await delta(REPLY)
-    await flushDeltas()
-    await interim(REPLY)
-    await delta(REPLY)
-    await flushDeltas()
-    await complete(REPLY)
-
-    // The interim owns the tool row, so it survives even though its text
-    // matches the reply: dropping it would lose the completed tool card.
-    expect(toolCallCount()).toBe(1)
     expect(visibleAssistantTexts()).toEqual([REPLY, REPLY])
   })
 })

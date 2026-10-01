@@ -21,7 +21,12 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { type NativeTokenSet, parseStoredTokenSet, parseTokenResponse } from './native-oauth'
-import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import {
+  createNativeTokenCache,
+  loadNativeTokenSet,
+  type NativeTokenStoreIo,
+  persistNativeTokenSet
+} from './native-token-store'
 
 const GATEWAY = 'https://gw.example.com'
 
@@ -379,4 +384,46 @@ test('an unparseable gateway URL logs a fixed placeholder rather than the raw va
   assert.match(disk.logs[0], /<invalid gateway URL>/)
   assert.doesNotMatch(disk.logs[0], /alice/)
   assert.doesNotMatch(disk.logs[0], /supersecret/)
+})
+
+// --- the in-memory cache in front of the store (main.ts's token store) ---
+
+const normalize = (url: string) => url.replace(/\/+$/, '')
+
+test('cache: a rotated set is kept in memory even when encrypting it for disk fails', () => {
+  const disk = createFakeDisk()
+  const cache = createNativeTokenCache(disk.io, normalize)
+
+  cache.store(GATEWAY, TOKENS)
+
+  // The keychain goes away, then the server rotates the refresh token.
+  disk.io.encrypt = () => {
+    throw new Error('keychain unavailable')
+  }
+
+  const rotated = { ...TOKENS, accessToken: 'AT-2', refreshToken: 'RT-rotated' }
+
+  assert.doesNotThrow(() => cache.store(`${GATEWAY}/`, rotated))
+  // The server-rotated refresh token is not lost for this run...
+  assert.deepEqual(cache.load(GATEWAY), rotated)
+  // ...the failure is logged without the token...
+  assert.ok(disk.logs.some(line => /failed to persist/i.test(line)))
+  assert.ok(disk.logs.every(line => !line.includes('RT-rotated') && !line.includes('AT-2')))
+  // ...and the previous good disk entry was not overwritten with junk.
+  assert.deepEqual(loadNativeTokenSet(GATEWAY, disk.io), TOKENS)
+})
+
+test('cache: load falls back to disk, clear drops both, urls enumerates memory and disk', () => {
+  const disk = createFakeDisk()
+  persistNativeTokenSet('https://disk-only.example', TOKENS, disk.io)
+  const cache = createNativeTokenCache(disk.io, normalize)
+
+  assert.deepEqual(cache.load('https://disk-only.example/'), TOKENS)
+  cache.store(GATEWAY, TOKENS)
+  assert.deepEqual(cache.urls().sort(), ['https://disk-only.example', GATEWAY])
+
+  cache.clear(GATEWAY)
+  assert.equal(cache.load(GATEWAY), null)
+  assert.equal(loadNativeTokenSet(GATEWAY, disk.io), null)
+  assert.deepEqual(cache.urls(), ['https://disk-only.example'])
 })

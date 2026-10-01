@@ -29,6 +29,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 
 import { type AdvertisedAuthProvider, oauthGuardMayHardFail } from './native-auth-decisions'
+import { CLOUD_AGENT_TOKEN_PROVIDER, PORTAL_TOKEN_PROVIDER } from './portal-oauth'
 
 // The gateway status field that lists supported auth flows. See
 // hermes_cli/web_server.py status handler.
@@ -154,10 +155,34 @@ export function nativeRefreshUrl(baseUrl: string): string {
 }
 
 /**
+ * The user backed out of a loopback sign-in: pressed Deny on the
+ * authorization server's page (RFC 6749 §4.1.2.1 `error=access_denied`) or
+ * cancelled the pending flow from the app. A clean cancel, not a failure —
+ * both the Hermes Cloud login and the gateway `oauth-login` IPC report
+ * "not signed in" without an error toast.
+ */
+export class NativeLoginCancelledError extends Error {
+  readonly cancelled = true
+
+  constructor(detail = 'access_denied') {
+    super(`Sign-in was cancelled in the browser (${detail}).`)
+    this.name = 'NativeLoginCancelledError'
+  }
+}
+
+/** True when a loopback request carries exactly the state we generated. */
+export function loopbackStateMatches(requestUrl: string, expectedState: string): boolean {
+  const state = new URL(requestUrl, 'http://127.0.0.1').searchParams.get('state')
+
+  return Boolean(expectedState) && state === expectedState
+}
+
+/**
  * Parse the loopback redirect the gateway sends the browser to. Returns the
  * `code` + `state`, or throws with the gateway's `error` if the flow failed.
- * `expectedState` MUST match (CSRF defense — RFC 6749 §10.12); a mismatch
- * throws rather than proceeding.
+ * `expectedState` MUST match (CSRF defense — RFC 6749 §10.12) for a code AND
+ * for an error redirect: any page can make the browser hit the loopback, so a
+ * stateless or foreign error must never be able to fake a Deny.
  */
 export function parseLoopbackCallback(requestUrl: string, expectedState: string): { code: string } {
   // requestUrl is the path+query the loopback server received, e.g.
@@ -166,7 +191,16 @@ export function parseLoopbackCallback(requestUrl: string, expectedState: string)
   const error = parsed.searchParams.get('error')
 
   if (error) {
+    if (!loopbackStateMatches(requestUrl, expectedState)) {
+      throw new Error('Loopback callback state mismatch (possible CSRF)')
+    }
+
     const desc = parsed.searchParams.get('error_description') || ''
+
+    if (error === 'access_denied') {
+      throw new NativeLoginCancelledError(desc ? `${error}: ${desc}` : error)
+    }
+
     throw new Error(`Gateway rejected native login: ${error}${desc ? ` (${desc})` : ''}`)
   }
 
@@ -186,10 +220,15 @@ export function parseLoopbackCallback(requestUrl: string, expectedState: string)
   return { code }
 }
 
+// Provider markers only the desktop itself assigns (portal-oauth.ts). A
+// remote gateway is untrusted, so its token responses may never carry them.
+const DESKTOP_RESERVED_PROVIDERS = new Set([CLOUD_AGENT_TOKEN_PROVIDER, PORTAL_TOKEN_PROVIDER])
+
 /**
  * Normalize a `/auth/native/token` (or refresh) JSON response into a
  * NativeTokenSet, validating the shape. Throws on a missing/short access
  * token so a malformed response fails loudly rather than storing junk.
+ * A desktop-reserved `provider` value from the gateway is dropped.
  */
 export function parseTokenResponse(body: any): NativeTokenSet {
   const accessToken = String(body?.access_token || '')
@@ -199,12 +238,13 @@ export function parseTokenResponse(body: any): NativeTokenSet {
   }
 
   const expiresAt = Number(body?.expires_at)
+  const provider = String(body?.provider || '')
 
   return {
     accessToken,
     refreshToken: String(body?.refresh_token || ''),
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
-    provider: String(body?.provider || ''),
+    provider: DESKTOP_RESERVED_PROVIDERS.has(provider) ? '' : provider,
     userId: String(body?.user_id || '')
   }
 }

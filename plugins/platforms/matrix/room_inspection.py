@@ -126,9 +126,9 @@ def _user_permissions(
 
 async def _permissions(context: _InspectionContext) -> dict[str, Any]:
     requester, bot = context.requester, context.owner.bot_id
-    power = await _state(context, "m.room.power_levels")
     encryption = await _state(context, "m.room.encryption") or {}
     create = _RoomCreate.parse(await _state_event(context, "m.room.create", {"format": "event"}))
+    power = await _state(context, "m.room.power_levels")
     legacy_strings = create.legacy_string_levels
     levels = power or {}
     events = levels.get("events")
@@ -419,13 +419,13 @@ async def _change_pin_state(
 
     dispatched = False
     try:
+        state = await _state(context, "m.room.pinned_events") or {}
         permissions = await _permissions(context)
         actor, required = permissions["requester"], permissions["required"]["edit_pins"]
         if not actor["creator_override"] and (actor["level"] is None or actor["level"] < required):
             return {"error": "Matrix requester lacks permission to change pins",
                     "required": required, "level": actor["level"]}
 
-        state = await _state(context, "m.room.pinned_events") or {}
         pinned = state.get("pinned")
         if pinned is None:
             pinned = []

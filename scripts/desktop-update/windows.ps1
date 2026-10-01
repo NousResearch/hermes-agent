@@ -858,6 +858,60 @@ function Get-StepProgressLogStamp {
     }
 }
 
+function Read-NewStepProgressLog([ref]$Offset) {
+    # Read only bytes written by this step. The log also contains earlier
+    # updates, whose final stage must never appear in a new progress window.
+    try {
+        $stream = [System.IO.File]::Open($script:StepProgressLogPath,
+            [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::ReadWrite)
+        try {
+            if ($stream.Length -lt $Offset.Value) { $Offset.Value = 0L }
+            $count = [int][Math]::Min(262144L, $stream.Length - $Offset.Value)
+            if ($count -le 0) { return '' }
+            $stream.Position = $Offset.Value
+            $buffer = New-Object byte[] $count
+            $read = $stream.Read($buffer, 0, $count)
+            $Offset.Value += $read
+            return [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
+        } finally {
+            $stream.Dispose()
+        }
+    } catch {
+        return ''
+    }
+}
+
+function Get-UpdateUiStage([string]$Output) {
+    # Match only known progress markers. Arbitrary child output stays in the
+    # hand-off log; it must not become text in the browser progress window.
+    $stages = @(
+        @('completing source-update dependencies|Resolving Python dependencies|Installing Python dependencies', 'Preparing Python environment'),
+        @('Fetching updates', 'Checking for updates'),
+        @('Local changes detected', 'Saving local changes'),
+        @('Pulling updates', 'Downloading code updates'),
+        @('Preparing Node dependencies', 'Preparing Desktop dependencies'),
+        @('Building the TUI', 'Building terminal interface'),
+        @('Building the web UI', 'Building web interface'),
+        @('Building desktop packaged app', 'Building Desktop app'),
+        @('Packaging the desktop app', 'Packaging Desktop app'),
+        @('Syncing bundled skills', 'Syncing skills'),
+        @('Checking configuration for new options', 'Checking configuration'),
+        @('Restarting Windows gateway profile', 'Restarting Gateway'),
+        @('Fleet version check', 'Verifying Gateway version')
+    )
+    $stage = $null
+    foreach ($line in ($Output -split "`r?`n")) {
+        foreach ($entry in $stages) {
+            if ($line -match $entry[0]) {
+                $stage = $entry[1]
+                break
+            }
+        }
+    }
+    return $stage
+}
+
 if (-not ("HermesUpdateJob" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -1157,12 +1211,41 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $abandoned = $false
     $lastProgressAt = Get-Date
     $progressLogStamp = Get-StepProgressLogStamp
+    $progressLogOffset = 0L
+    try { $progressLogOffset = (Get-Item -LiteralPath $script:StepProgressLogPath -ErrorAction Stop).Length } catch {}
+    $lastUiProbeAt = Get-Date
+    $stdoutUiOffset = 0
+    $stderrUiOffset = 0
     $stalled = $false
     while ($true) {
         $moved = $false
         $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
         $errDone = Step-PipeDrain $stderrReader ([ref]$errTask) $errBuffer $errSink ([ref]$moved)
         if ($moved) { $lastProgressAt = Get-Date }
+        if ($Tag -eq 'update' -and ((Get-Date) - $lastUiProbeAt).TotalSeconds -ge 1) {
+            $pipeText = ''
+            if ($outSink.Length -gt $stdoutUiOffset) {
+                $pipeText += $outSink.ToString($stdoutUiOffset, $outSink.Length - $stdoutUiOffset)
+                $stdoutUiOffset = $outSink.Length
+            }
+            if ($errSink.Length -gt $stderrUiOffset) {
+                $pipeText += "`n" + $errSink.ToString($stderrUiOffset, $errSink.Length - $stderrUiOffset)
+                $stderrUiOffset = $errSink.Length
+            }
+            $stage = Get-UpdateUiStage $pipeText
+            $currentLogStamp = Get-StepProgressLogStamp
+            if ($currentLogStamp -ne $progressLogStamp) {
+                $progressLogStamp = $currentLogStamp
+                $lastProgressAt = Get-Date
+                $logStage = Get-UpdateUiStage (Read-NewStepProgressLog ([ref]$progressLogOffset))
+                if ($logStage) { $stage = $logStage }
+            }
+            if ($stage -and $stage -ne $script:UiStage) {
+                Publish-UiProgress $stage
+                Write-HandoffLog "update progress: $stage"
+            }
+            $lastUiProbeAt = Get-Date
+        }
         if ($proc.HasExited) {
             if ($outDone -and $errDone) { break }
             # Clock starts at the step's exit, not at its start: a slow step is
@@ -1385,7 +1468,11 @@ exit 0
 param([int]$Hold, [string]$ProgressLog)
 Write-Output "silent but logging"
 [Console]::Out.Flush()
-for ($i = 0; $i -lt $Hold; $i++) { Add-Content -LiteralPath $ProgressLog -Value ("build tick {0}" -f $i); Start-Sleep -Seconds 1 }
+for ($i = 0; $i -lt $Hold; $i++) {
+    if ($i -eq 0) { Add-Content -LiteralPath $ProgressLog -Value 'Building desktop packaged app' }
+    Add-Content -LiteralPath $ProgressLog -Value ("build tick {0}" -f $i)
+    Start-Sleep -Seconds 1
+}
 exit 3
 '@
     [System.IO.File]::WriteAllText($childPs1, $childSource)
@@ -1459,7 +1546,8 @@ exit 3
         $logstall = Invoke-HermesStep $powershell @(
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $logStallPs1,
             "-Hold", [string]$hold, "-ProgressLog", $logStallProgress
-        ) "logstall"
+        ) "update"
+        $logStallUiStage = $script:UiStage
     } finally {
         $script:StepProgressLogPath = $savedProgressLogPath
     }
@@ -1492,6 +1580,7 @@ exit 3
     if (-not $stall.StartedAfterJobAssignment) { $problems += "stall arm started before cancellation-job assignment" }
     $logStallBudget = $hold + 60
     if ($logstall.Code -ne 3) { $problems += "logstall arm exit code $($logstall.Code), expected 3 -- the idle watchdog killed a pipe-silent step whose progress was visible as update.log growth (the shape of every real 40+ min build)" }
+    if ($logStallUiStage -ne 'Building Desktop app') { $problems += "logstall arm did not publish its live build stage to the updater UI" }
     if ($logstall.Output -notmatch "silent but logging") { $problems += "logstall arm step output was lost" }
     if ($logStallElapsed -ge $logStallBudget) { $problems += "logstall arm returned in ${logStallElapsed}s, over the ${logStallBudget}s budget" }
 
@@ -1635,7 +1724,8 @@ try {
         Write-HandoffLog "could not probe update --help; running without --keep-stash"
     }
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
-    Publish-UiProgress "Updating code and dependencies"
+    Publish-UiProgress "Preparing update tools"
+    $updateStartedAtUtc = [datetime]::UtcNow
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
@@ -1688,12 +1778,76 @@ try {
     if ($res.Code -eq 0 -and -not $desktopBuildFailed -and -not $NoGateway) {
         $gatewayRestartFailed = $false
         try {
-            # Resolve again after update: PM may have published a new generation,
-            # and its command can include an isolation/bootstrap prefix.
-            $gatewayCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
-            $gatewayArgs = @($gatewayCommand | Select-Object -Skip 1) + @("gateway", "start", "--all")
-            $gatewayRestart = Invoke-HermesStep $gatewayCommand[0] $gatewayArgs "gateway restart"
-            $gatewayRestartFailed = $gatewayRestart.Code -ne 0
+            # `hermes update --gateway` can already relaunch and verify the
+            # multiplexed fleet. Starting it again made this hand-off wait for
+            # its full idle timeout even though the updated gateway was live.
+            # Use a fresh, live state record, not the updater's exit code alone.
+            $gatewayAlreadyCurrent = $false
+            $statePath = Join-Path $HermesHome 'gateway_state.json'
+            $verificationIssue = 'gateway state file missing'
+            $verificationDeadline = (Get-Date).AddSeconds(15)
+            do {
+              if (Test-Path -LiteralPath $statePath) {
+                try {
+                $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+                # The receipt belongs to this update. Reading git here is
+                # unreliable: Desktop's PowerShell PATH may not include PM's
+                # Git even though the update child had it available.
+                $receiptsDir = Join-Path $LogDir 'update_receipts'
+                $receiptFile = Get-ChildItem -LiteralPath $receiptsDir -Filter 'update_*.json' -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTimeUtc -ge $updateStartedAtUtc.AddSeconds(-5) } |
+                    Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+                $receipt = if ($receiptFile) { Get-Content -LiteralPath $receiptFile.FullName -Raw | ConvertFrom-Json } else { $null }
+                $expectedSha = if ($receipt -and $receipt.outcome -eq 'success') { [string]$receipt.post_update.sha } else { '' }
+                $pidValue = [int]$state.pid
+                # ConvertFrom-Json may produce a DateTime or text. Keep the
+                # original date value; parse text independent of user locale.
+                $heartbeat = [datetimeoffset]::MinValue
+                $parsedHeartbeat = $false
+                if ($state.updated_at -is [datetime]) {
+                    $heartbeat = [datetimeoffset]$state.updated_at
+                    $parsedHeartbeat = $true
+                } else {
+                    $parsedHeartbeat = [datetimeoffset]::TryParse(
+                        [string]$state.updated_at, [cultureinfo]::InvariantCulture,
+                        [Globalization.DateTimeStyles]::RoundtripKind, [ref]$heartbeat)
+                }
+                $fresh = $parsedHeartbeat -and
+                    ([datetimeoffset]::UtcNow - $heartbeat.ToUniversalTime()).TotalSeconds -lt 60
+                $served = @($state.served_profiles)
+                $profilesRoot = Join-Path $HermesHome 'profiles'
+                $requiredProfiles = @('default')
+                if (Test-Path -LiteralPath $profilesRoot) {
+                    $requiredProfiles += @(Get-ChildItem -LiteralPath $profilesRoot -Directory |
+                        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'config.yaml') } |
+                        ForEach-Object { $_.Name })
+                }
+                $missing = @($requiredProfiles | Where-Object { $served -notcontains $_ })
+                $pidAlive = $pidValue -gt 0 -and $null -ne (Get-Process -Id $pidValue -ErrorAction SilentlyContinue)
+                $gatewayAlreadyCurrent = $state.gateway_state -eq 'running' -and
+                    $pidAlive -and
+                    $expectedSha -and $state.code_sha -eq $expectedSha -and $fresh -and $missing.Count -eq 0
+                $verificationIssue = "receipt=$([bool]$expectedSha) running=$($state.gateway_state -eq 'running') pid=$pidAlive sha=$($state.code_sha -eq $expectedSha) heartbeat=$fresh missingProfiles=$($missing.Count)"
+                } catch {
+                    $verificationIssue = $_.Exception.Message
+                }
+              }
+              if ($gatewayAlreadyCurrent -or (Get-Date) -ge $verificationDeadline) { break }
+              # Gateway state and the receipt are published by separate
+              # processes; let a just-started fleet finish its first heartbeat.
+              Start-Sleep -Milliseconds 500
+            } while ($true)
+            if ($gatewayAlreadyCurrent) {
+                Write-HandoffLog "updated gateway fleet already running (pid $pidValue @ $expectedSha); skipping redundant gateway start"
+            } else {
+                Write-HandoffLog "could not verify existing gateway fleet within 15s ($verificationIssue); running gateway start"
+                # Resolve again after update: PM may have published a new
+                # generation, and its command can include a bootstrap prefix.
+                $gatewayCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+                $gatewayArgs = @($gatewayCommand | Select-Object -Skip 1) + @("gateway", "start", "--all")
+                $gatewayRestart = Invoke-HermesStep $gatewayCommand[0] $gatewayArgs "gateway restart"
+                $gatewayRestartFailed = $gatewayRestart.Code -ne 0
+            }
         } catch {
             $gatewayRestartFailed = $true
             Write-HandoffLog "gateway restart setup failed: $($_.Exception.Message)"

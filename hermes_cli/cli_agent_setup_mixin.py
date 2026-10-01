@@ -53,6 +53,18 @@ def _current_runtime(cli) -> dict:
         "credential_pool": getattr(cli, "_credential_pool", None)}
 
 
+def _same_api_key(new, old) -> bool:
+    """Whether two api_key values name one credential source.
+
+    Equivalent ``CommandTokenSource`` wrappers are rebuilt by the resolver on every call, so
+    object identity would retire an unchanged agent; compare their ``cache_identity`` instead."""
+    if callable(new) and callable(old):
+        new_id, old_id = getattr(new, "cache_identity", None), getattr(old, "cache_identity", None)
+        if isinstance(new_id, str) and new_id and isinstance(old_id, str) and old_id:
+            return new_id == old_id
+    return new == old
+
+
 def _route_signature(model, runtime: dict) -> tuple:
     """Host-private client reuse identity; never include it in middleware DTOs or traces."""
     api_key = runtime.get("api_key")
@@ -326,7 +338,7 @@ class CLIAgentSetupMixin:
         if not isinstance(base_url, str) or not base_url:
             print(f"\n{t('cli.startup.empty_base_url')}")
             return False
-        credentials_changed = api_key != self.api_key or base_url != self.base_url
+        credentials_changed = not _same_api_key(api_key, self.api_key) or base_url != self.base_url
         routing_changed = resolved_routing != (self.provider, self.api_mode, self.acp_command, self.acp_args)
         self.provider, self.api_mode, self.acp_command, self.acp_args = resolved_routing
         self._credential_pool = runtime.get("credential_pool")

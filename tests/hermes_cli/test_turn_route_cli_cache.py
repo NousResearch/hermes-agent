@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_cli.runtime_provider import resolve_runtime_provider as real_resolve_runtime_provider
+
 
 def _import_cli():
     import hermes_cli.config as config_mod
@@ -436,3 +438,49 @@ def test_command_token_source_replacement_rebuilds_cached_chat_agent(routed_chat
     for agent in agents:
         assert "secret-a" not in repr(agent.__dict__)
         assert "secret-b" not in repr(agent.__dict__)
+
+
+@pytest.mark.parametrize("primary_uses_key_cmd", [False, True])
+def test_real_credential_precheck_keeps_routed_agent_for_equivalent_primary_source(
+    routed_chat, monkeypatch, tmp_path, primary_uses_key_cmd,
+):
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+    from hermes_cli.config import atomic_config_write
+
+    shell, selected, _credential, agents, _turn_agents = routed_chat
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def write_config(**primary_auth):
+        atomic_config_write(home / "config.yaml", {
+            "model": {"provider": "primary", "default": "alpha"},
+            "providers": {
+                "primary": {"base_url": "https://primary.example/v1", "default_model": "alpha", **primary_auth},
+                "alternate": {"base_url": "https://alternate.example/v1",
+                              "api_key": "synthetic-alternate", "default_model": "beta"},
+            },
+        })
+
+    write_config(**({"key_cmd": "printf token-one"} if primary_uses_key_cmd else {"api_key": "key-one"}))
+    shell.requested_provider = "primary"
+    shell.provider = "custom"
+    shell._explicit_api_key = None
+    shell._explicit_base_url = None
+    shell._maybe_print_free_tier_available_notice = lambda: None
+    shell._ensure_runtime_credentials = CLIAgentSetupMixin._ensure_runtime_credentials.__get__(shell)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", real_resolve_runtime_provider)
+    selected.update(model="beta", provider="alternate", requested_provider="alternate")
+
+    assert shell.chat("first routed turn") == "beta"
+    first = shell.agent
+    assert shell.chat("unchanged primary, same route") == "beta"
+    assert shell.agent is first
+    assert len(agents) == 1
+    assert not getattr(first, "released", False)
+
+    # A real replacement of the primary credential source still retires the agent.
+    write_config(**({"key_cmd": "printf token-two"} if primary_uses_key_cmd else {"api_key": "key-two"}))
+    assert shell.chat("replaced primary credential") == "beta"
+    assert shell.agent is not first
+    assert first.released

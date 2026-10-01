@@ -56,11 +56,15 @@ def test_jsonl_backup_round_trips_compaction_archived_turns(tmp_path, monkeypatc
         dst.close()
 
 
-@pytest.mark.parametrize("selection", [("--session-id", SID), ("--source", "cli"), ()],
-                         ids=["session-id", "filter", "bare"])
-def test_jsonl_backup_refuses_a_session_over_max_export_messages(tmp_path, monkeypatch, capsys, selection):
+@pytest.mark.parametrize("selection, disabled",
+                         [(("--session-id", SID), False), (("--source", "cli"), False), ((), False), ((), True)],
+                         ids=["session-id", "filter", "bare", "limit-0"])
+def test_jsonl_backup_refuses_a_session_over_max_export_messages(tmp_path, monkeypatch, capsys, selection,
+                                                                 disabled):
     """Every selection path applies the per-session guard to the STORED row count the backup
-    materializes, so a small live tail over a large archive cannot slip past it."""
+    materializes, so a small live tail over a large archive cannot slip past it. ``limit-0``: a
+    disabled guard writes the backup without the guard's own full-session scan (export_all's is
+    the only one)."""
     from hermes_cli.config import load_config, save_config
 
     src = _seed_compacted_session()
@@ -69,13 +73,20 @@ def test_jsonl_backup_refuses_a_session_over_max_export_messages(tmp_path, monke
     src.end_session(SID, "user_exit")  # bulk filters match ended sessions
     src.close()
     cfg = load_config()
-    cfg.setdefault("sessions", {})["max_export_messages"] = live + 1
+    cfg.setdefault("sessions", {})["max_export_messages"] = 0 if disabled else live + 1
     save_config(cfg)
     assert stored > live + 1
+    scans = []
+    real_search = SessionDB.search_sessions
+    monkeypatch.setattr(SessionDB, "search_sessions",
+                        lambda self, *a, **kw: scans.append(1) or real_search(self, *a, **kw))
 
     backup = tmp_path / "backup.jsonl"
     _export(monkeypatch, backup, *selection)
 
+    if disabled:
+        assert backup.exists() and len(scans) == 1
+        return
     assert not backup.exists()
     out = capsys.readouterr().out
     assert SID in out and "max_export_messages" in out

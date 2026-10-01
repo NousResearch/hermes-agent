@@ -164,6 +164,38 @@ def test_title_quoting_a_run_header_cannot_move_the_frame(cron_env, monkeypatch,
     assert answer in result
 
 
+@pytest.mark.parametrize("schedule", ["0 8\n* * *", "0 8\r\n* * *"])
+@pytest.mark.parametrize("upstream", [False, True])
+def test_multiline_schedule_cannot_break_the_frame(cron_env, monkeypatch, schedule, upstream):
+    from cron.jobs import create_job, save_job_output
+    from cron.scheduler_prompt import _inject_context_from
+
+    # Cron fields may be separated by any whitespace, and schedule_display keeps it.
+    answer = "INTRODUCTION\n## Response\nCONCLUSION"
+
+    class Agent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_conversation(self, *args, **kwargs):
+            return {"final_response": answer, "completed": True, "failed": False}
+
+    monkeypatch.setattr(run_agent, "AIAgent", Agent)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
+    source = create_job(prompt="Report", schedule=schedule, context_from="self")
+    success, archive, final, error = cron.scheduler.run_job(source)
+    assert success, error
+    save_job_output(source["id"], archive)
+    reader = create_job(prompt="Next", schedule="0 9 * * *",
+                        context_from=source["id"]) if upstream else source
+
+    result, injected = _inject_context_from(reader, "Next task")
+
+    assert injected
+    assert answer in result
+
+
 def test_truncated_framed_archive_falls_back_to_older_answer(cron_env):
     import os
     from cron.jobs import create_job, OUTPUT_DIR

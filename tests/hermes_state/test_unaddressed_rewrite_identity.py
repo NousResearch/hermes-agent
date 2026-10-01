@@ -35,8 +35,12 @@ def _active_rows(store, sid):
     ]
 
 
-@pytest.mark.parametrize("include_row_ids", [False, True], ids=["unaddressed", "row-addressed"])
-def test_unaddressed_mutated_replay_rewrites_its_original_row(db, include_row_ids):
+@pytest.mark.parametrize(
+    ("include_row_ids", "content", "token_count"),
+    [(False, "after repair", 42), (True, "before repair", 42)],
+    ids=["unaddressed", "row-addressed"],
+)
+def test_mutated_replay_rewrites_its_original_row(db, include_row_ids, content, token_count):
     sid = "mutated-replay"
     db.create_session(sid, "desktop")
     original = {"role": "assistant", "content": "before repair", "timestamp": 1000.0, "token_count": 42}
@@ -60,10 +64,9 @@ def test_unaddressed_mutated_replay_rewrites_its_original_row(db, include_row_id
     assert len(after) == 1
     assert after[0]["id"] == before[0]["id"]
     assert after[0]["message_uid"] == before[0]["message_uid"]
-    if include_row_ids:
-        assert after[0]["token_count"] == 42
-    else:
-        assert after[0]["content"] == "after repair"
+    # The replay never decodes token_count: the stored value survives either path. A row-addressed
+    # (no-digest) resume adopts the filled row's content instead of rewriting it.
+    assert (after[0]["content"], after[0]["token_count"]) == (content, token_count)
 
 
 def test_fresh_identical_message_is_never_adopted_by_payload(db):

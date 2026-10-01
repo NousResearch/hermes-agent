@@ -874,10 +874,9 @@ function Stage-Repository {
         try {
             $cloned = $false
             foreach ($attempt in 1..3) {
-                # Treeless: every commit and release tag (runtime identity is the
+                # Blobless: every commit and release tag (runtime identity is the
                 # nearest reachable release; -Commit pins and branch switches
-                # still resolve), trees and blobs fetched on demand, so the
-                # download stays close to a --depth 1 clone.
+                # still resolve), while file contents are fetched on demand.
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
                 Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none --branch $Branch $RepoUrl $tree }

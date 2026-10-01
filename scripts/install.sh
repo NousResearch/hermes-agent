@@ -563,10 +563,9 @@ stage_repository() {
         if quiet_output; then progress=(--progress); fi
         staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone"
         for attempt in 1 2 3; do
-            # Treeless: every commit and release tag (runtime identity is the
+            # Blobless: every commit and release tag (runtime identity is the
             # nearest reachable release; --commit pins and branch switches
-            # still resolve), trees and blobs fetched on demand, so the
-            # download stays close to a --depth 1 clone.
+            # still resolve), while file contents are fetched on demand.
             label="Cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
             [ "$attempt" = 1 ] || label="$label (attempt $attempt of 3)"
             if run_logged "$label" git clone ${progress[@]+"${progress[@]}"} \

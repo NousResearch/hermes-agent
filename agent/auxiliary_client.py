@@ -2508,7 +2508,7 @@ def _read_main_model_for_aux() -> str:
     return model
 
 
-def _read_main_api_key_if_same_host(aux_base_url: str) -> Any:
+def _read_main_api_key_if_same_origin(aux_base_url: str) -> Union[str, Callable[[], str]]:
     """Main api_key only when *aux_base_url* has the main base_url's exact origin.
 
     Unconditional inheritance would leak the credential to any misconfigured host; mismatch keeps ``no-key-required`` → 401.
@@ -2516,16 +2516,20 @@ def _read_main_api_key_if_same_host(aux_base_url: str) -> Any:
     Anchor and key come from ONE source: the live runtime a turn bound, else config.yaml. The
     per-field readers fall back to config field by field, so a keyless or key_cmd live main would
     pair its own base_url with config's key and send that key to the live endpoint.
+    Origins are compared before any key is read: the client cache calls this on every keyless
+    ``custom`` lookup, and a mismatch must not pay for a config.yaml key read.
     """
     aux_origin = base_url_origin(aux_base_url)
-    live_base, live_key = _runtime_main_value("base_url"), _runtime_main_value("api_key")
-    if live_base or live_key:
-        main_base, main_key = live_base, _normalize_api_key(live_key)
-    else:
-        main_base, main_key = _read_main_base_url(), _read_main_api_key()
-    if not aux_origin[1] or aux_origin != base_url_origin(main_base):
+    if not aux_origin[1]:
         return ""
-    return main_key
+    live = _normalize_main_runtime(None)
+    if live.get("base_url") or live.get("api_key"):
+        if aux_origin != base_url_origin(live.get("base_url", "")):
+            return ""
+        return _normalize_api_key(live.get("api_key", ""))
+    if aux_origin != base_url_origin(_read_main_base_url()):
+        return ""
+    return _read_main_api_key()
 
 
 # Compatibility mirrors for older readers/tests; the ContextVar below is
@@ -5086,7 +5090,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             custom_key = (
                 _normalize_api_key(req.explicit_api_key)
                 or _scoped_key_env("OPENAI_API_KEY")
-                or _read_main_api_key_if_same_host(custom_base)
+                or _read_main_api_key_if_same_origin(custom_base)
                 or "no-key-required"  # local servers don't need auth
             )
         if not custom_base:
@@ -5819,7 +5823,7 @@ def _borrowed_main_credential_key(provider: str, base_url: Optional[str], api_ke
     # Same normalization as the client build, which treats a blank explicit key as keyless.
     if _normalize_api_key(api_key):
         return ()
-    borrowed = _read_main_api_key_if_same_host(_to_openai_base_url(base_url).strip())
+    borrowed = _read_main_api_key_if_same_origin(_to_openai_base_url(base_url).strip())
     return (_runtime_cache_discriminator("api_key", borrowed),)
 
 

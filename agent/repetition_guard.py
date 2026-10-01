@@ -166,7 +166,9 @@ class RunawayStreamWatch:
     A stream that keeps producing never reaches a completion check, and endpoints without an
     output cap (#127234) keep a looping model going for as long as the turn lives. The first
     check runs at ``STOP_PATH_MIN_CHARS`` (asked-for repeats stay below it, as on the stop path)
-    and the next one each time the text doubles, so the total work stays linear in the output.
+    and the gap doubles until it reaches one tail window, then stays there. A fixed stride keeps a
+    loop that starts late in a long reply from streaming as long as the reply already was before
+    a check sees it; each check reads only the tail, so the total work stays linear in the output.
     """
 
     __slots__ = ("_parts", "_held", "_chars", "_next_check")
@@ -184,13 +186,12 @@ class RunawayStreamWatch:
         self._parts.append(text)
         self._held += len(text)
         self._chars += len(text)
-        # The gap between two checks doubles, so text held until the next check would grow
-        # with the reply. Trimming every tail's worth of new text keeps the cost linear.
+        # Text held between checks is bounded by trimming every tail's worth of new text.
         if self._held >= 2 * _STREAM_TAIL_CHARS:
             self._trim()
         if self._chars < self._next_check:
             return False
-        self._next_check = 2 * self._chars
+        self._next_check = self._chars + min(self._chars, _STREAM_TAIL_CHARS)
         return is_runaway_repetition(self._trim())
 
     def _trim(self) -> str:

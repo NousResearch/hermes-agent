@@ -12,6 +12,7 @@ The loops are the ones reported: a Telegram gateway cycle (#125650), the fullwid
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -38,13 +39,17 @@ _DISTINCT_ROWS = "".join(
     f"| {i:05d} | status: pending review by the on-call engineer before the next release window |\n"
     for i in range(500)
 )
+assert len(_ASKED_FOR_REPEAT) < STOP_PATH_MIN_CHARS <= len(_DISTINCT_ROWS)
+# ~100K of distinct legitimate text before a loop starts: the cut must not wait for the reply to double.
+_LONG_PREFIX = "".join(hashlib.sha256(str(i).encode()).hexdigest() + "\n" for i in range(1540))
+_LOOP_BUDGET = 100_000
 
 
 class _FakeEndpoint:
     """Local endpoint streaming one reply per request, on the chat or the Anthropic wire."""
 
-    def __init__(self, channel: str, text: str, *, endless: bool) -> None:
-        self.channel, self.text, self.endless = channel, text, endless
+    def __init__(self, channel: str, text: str, *, endless: bool, prefix: str = "") -> None:
+        self.channel, self.text, self.endless, self.prefix = channel, text, endless, prefix
         self.requests = 0
         self._stop = threading.Event()
         endpoint = self
@@ -88,8 +93,14 @@ class _FakeEndpoint:
         if not self.endless:
             yield from (self.text[i:i + 200] for i in range(0, len(self.text), 200))
             return
+        yield from (self.prefix[i:i + 2000] for i in range(0, len(self.prefix), 2000))
+        looped = 0
         while not self._stop.is_set():
+            if self.prefix and looped >= _LOOP_BUDGET:
+                self._stop.wait()  # stall: a watch that has not cut by now hangs the turn
+                return
             yield self.text
+            looped += len(self.text)
             time.sleep(0.001)
 
     def _chat_frames(self):
@@ -142,8 +153,8 @@ def endpoint(monkeypatch):
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     started = []
 
-    def start(channel: str, text: str, *, endless: bool) -> _FakeEndpoint:
-        started.append(_FakeEndpoint(channel, text, endless=endless))
+    def start(channel: str, text: str, *, endless: bool, prefix: str = "") -> _FakeEndpoint:
+        started.append(_FakeEndpoint(channel, text, endless=endless, prefix=prefix))
         return started[-1]
 
     yield start
@@ -179,17 +190,19 @@ def _run_turn(server: _FakeEndpoint, api_mode: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("api_mode", "channel", "loop"),
+    ("api_mode", "channel", "loop", "prefix"),
     [
-        ("chat_completions", "content", _CYCLE_125650),
-        ("chat_completions", _LOOP_BEHIND_DETAILS, _CYCLE_125650),
-        ("anthropic_messages", "content", _STATUS_LINE_78551),
-        ("anthropic_messages", "reasoning", _CYCLE_125650),
+        ("chat_completions", "content", _CYCLE_125650, ""),
+        ("chat_completions", _LOOP_BEHIND_DETAILS, _CYCLE_125650, ""),
+        ("anthropic_messages", "content", _STATUS_LINE_78551, ""),
+        ("anthropic_messages", "reasoning", _CYCLE_125650, ""),
+        ("chat_completions", "content", _CYCLE_125650, _LONG_PREFIX),
     ],
-    ids=["chat-content", "chat-reasoning-behind-details", "anthropic-text", "anthropic-thinking"],
+    ids=["chat-content", "chat-reasoning-behind-details", "anthropic-text", "anthropic-thinking",
+         "chat-loop-after-long-prefix"],
 )
-def test_looping_stream_is_cut_without_a_stream_callback(endpoint, api_mode, channel, loop):
-    server = endpoint(channel, loop, endless=True)
+def test_looping_stream_is_cut_without_a_stream_callback(endpoint, api_mode, channel, loop, prefix):
+    server = endpoint(channel, loop, endless=True, prefix=prefix)
 
     result = _run_turn(server, api_mode)
 
@@ -202,7 +215,6 @@ def test_looping_stream_is_cut_without_a_stream_callback(endpoint, api_mode, cha
 
 @pytest.mark.parametrize("text", [_ASKED_FOR_REPEAT, _DISTINCT_ROWS], ids=["asked-for-repeat", "distinct-rows"])
 def test_repetitive_but_legitimate_stream_is_delivered(endpoint, text):
-    assert (len(text) < STOP_PATH_MIN_CHARS) == (text is _ASKED_FOR_REPEAT)
     server = endpoint("content", text, endless=False)
 
     result = _run_turn(server, "chat_completions")

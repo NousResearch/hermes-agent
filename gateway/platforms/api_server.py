@@ -227,8 +227,19 @@ RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
 # POST /api/bot-chat/send: bounds for a topic-subscription caller (e.g. Windmill agent_mail
 # fan-out). Content is expected to already be a sanitized digest, not a raw mail body.
 MAX_BOT_CHAT_SEND_CONTENT_LENGTH = 8_000
-MAX_BOT_CHAT_SEND_DEDUPE_KEY_LENGTH = 256
+MAX_BOT_CHAT_SEND_DEDUPE_KEY_LENGTH = 300
 _BOT_CHAT_SEND_TOPIC_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+# POST /api/kanban/create: mirrors tools/hermes_kanban_enqueue_endpoint/entry_server.py's
+# (qwickapps/aos) validation contract exactly, so a caller with no local filesystem access to
+# HERMES_KANBAN_DB (e.g. a Windmill flow in a momo container) keeps the mail pipeline's existing
+# idempotency guarantee when it switches from shelling the local `hermes kanban create` CLI to
+# this HTTP endpoint: a repeated idempotency_key must return the existing non-archived task,
+# never a duplicate.
+MAX_KANBAN_CREATE_TITLE_LENGTH = 180
+MAX_KANBAN_CREATE_BODY_LENGTH = 20_000
+MAX_KANBAN_CREATE_ASSIGNEE_LENGTH = 80
+MAX_KANBAN_CREATE_IDEMPOTENCY_KEY_LENGTH = 300
+KANBAN_CREATE_IDEMPOTENCY_KEY_PREFIX = "mail:"
 
 
 class ThreadSafeAsyncQueue(asyncio.Queue):
@@ -1624,6 +1635,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
+        # Kanban task creation over HTTP (e.g. a Windmill flow with no local filesystem access
+        # to HERMES_KANBAN_DB): authenticated by this profile's own API_SERVER_KEY via
+        # _require_auth, same as every other /api/ route. hermes_cli.kanban_db is core (always
+        # importable), unlike the cron-gated routes below.
+        routes.append(("POST", "/api/kanban/create", self._handle_kanban_create))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
@@ -3787,6 +3803,105 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response(
             {"status": status, "delivery_id": delivery_id, "error": error or "delivery not completed"},
             status=502)
+
+    @_require_auth
+    async def _handle_kanban_create(self, request: "web.Request") -> "web.Response":
+        """POST /api/kanban/create — create (or idempotently return) a Hermes Kanban task over
+        HTTP, for a caller with no local filesystem access to ``HERMES_KANBAN_DB`` (e.g. a
+        Windmill flow running in a momo container that can't shell out to the local
+        ``hermes kanban create`` CLI the way
+        ``tools/hermes_kanban_enqueue_endpoint/entry_server.py`` (qwickapps/aos) previously did).
+
+        Auth is the same profile-scoped API_SERVER_KEY every other /api/ route requires
+        (``@_require_auth`` -> 401 on missing/invalid Bearer token); multiplexed profiles are
+        addressed the normal way, via ``/p/<profile>/api/kanban/create`` with that profile's own
+        key. No new token type or secret is introduced.
+
+        Validation mirrors ``entry_server.py``'s contract exactly — ``title`` <= 180 chars,
+        ``body`` <= 20000, ``assignee`` <= 80, ``idempotency_key`` <= 300 chars and required to
+        start with ``"mail:"`` — so the mail pipeline's existing idempotency guarantee (a
+        repeated ``idempotency_key`` returns the existing non-archived task, never a duplicate)
+        does not regress when a caller switches from the local CLI to this endpoint.
+        ``board`` is optional and selects which Kanban board's DB the task is created on
+        (default board when omitted).
+        """
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
+        try:
+            body = await request.json()
+        except Exception:
+            return _invalid_request("Invalid JSON body")
+        if not isinstance(body, dict):
+            return _invalid_request("Request body must be a JSON object")
+
+        title = body.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return _invalid_request("title is required and must be a non-empty string")
+        title = title.strip()
+        if len(title) > MAX_KANBAN_CREATE_TITLE_LENGTH:
+            return _invalid_request(f"title must be ≤ {MAX_KANBAN_CREATE_TITLE_LENGTH} characters")
+
+        task_body = body.get("body")
+        if not isinstance(task_body, str) or not task_body.strip():
+            return _invalid_request("body is required and must be a non-empty string")
+        task_body = task_body.strip()
+        if len(task_body) > MAX_KANBAN_CREATE_BODY_LENGTH:
+            return _invalid_request(f"body must be ≤ {MAX_KANBAN_CREATE_BODY_LENGTH} characters")
+
+        assignee = body.get("assignee")
+        if not isinstance(assignee, str) or not assignee.strip():
+            return _invalid_request("assignee is required and must be a non-empty string")
+        assignee = assignee.strip()
+        if len(assignee) > MAX_KANBAN_CREATE_ASSIGNEE_LENGTH:
+            return _invalid_request(f"assignee must be ≤ {MAX_KANBAN_CREATE_ASSIGNEE_LENGTH} characters")
+        try:
+            from hermes_cli import kanban_db
+            from hermes_cli.profiles import normalize_profile_name
+            normalized_assignee = normalize_profile_name(assignee)
+            known_profiles = kanban_db.list_profiles_on_disk()
+        except Exception as exc:
+            # Fail closed: an assignee we can't verify must never become a silent
+            # ready-forever card (no dispatcher will ever pick it up).
+            logger.error("kanban create: assignee validation failed: %s", type(exc).__name__)
+            return web.json_response({"error": "Unable to validate assignee"}, status=502)
+        if not known_profiles or normalized_assignee not in known_profiles:
+            return _invalid_request(f"assignee {assignee!r} is not a known profile")
+        assignee = normalized_assignee
+
+        idempotency_key = body.get("idempotency_key")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            return _invalid_request("idempotency_key is required and must be a non-empty string")
+        idempotency_key = idempotency_key.strip()
+        if len(idempotency_key) > MAX_KANBAN_CREATE_IDEMPOTENCY_KEY_LENGTH:
+            return _invalid_request(
+                f"idempotency_key must be ≤ {MAX_KANBAN_CREATE_IDEMPOTENCY_KEY_LENGTH} characters")
+        if not idempotency_key.startswith(KANBAN_CREATE_IDEMPOTENCY_KEY_PREFIX):
+            return _invalid_request(
+                f"idempotency_key must start with {KANBAN_CREATE_IDEMPOTENCY_KEY_PREFIX!r}")
+
+        board = body.get("board")
+        if board is not None and not isinstance(board, str):
+            return _invalid_request("board must be a string")
+        board = (board or "").strip() or None
+
+        try:
+            from hermes_cli import kanban_db, kanban_db_connect
+            with kanban_db_connect.connect_closing(board=board) as conn:
+                task_id = kanban_db.create_task(
+                    conn, title=title, body=task_body, assignee=assignee,
+                    created_by="agent-mail", idempotency_key=idempotency_key, board=board)
+        except ValueError as exc:
+            return _invalid_request(str(exc))
+        except Exception as exc:
+            # Never log title/body content — only sanitized identifiers, matching
+            # /api/bot-chat/send's logging discipline.
+            logger.error(
+                "kanban create failed: idempotency_key=%s board=%s: %s",
+                idempotency_key, board, type(exc).__name__)
+            return web.json_response({"error": "Kanban task creation failed"}, status=502)
+        logger.info("kanban create: task_id=%s idempotency_key=%s board=%s", task_id, idempotency_key, board)
+        return web.json_response({"task_id": task_id, "idempotency_key": idempotency_key})
 
     async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a

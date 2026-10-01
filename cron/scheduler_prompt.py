@@ -126,6 +126,17 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
+                # Persisted run documents also contain the assembled prompt,
+                # including older run documents. Never feed that recursive
+                # prompt back as if it were the previous result.
+                if candidate.startswith("# Cron Job:") and "\n## Prompt\n" in candidate:
+                    markers = [(candidate.rfind(m), m) for m in
+                               ("\n## Response\n", "\n## Error\n")]
+                    position, marker = max(markers)
+                    if position >= 0:
+                        candidate = candidate[position + len(marker):].strip()
+                    else:
+                        candidate = "Previous run has no recorded response or error; outcome unknown."
                 silent_audit = candidate.startswith("# Cron Job:") and any(
                     line.startswith(("**Status:** no_change", "**Status:** silent",
                                      "Script gate returned `wakeAgent=false`"))

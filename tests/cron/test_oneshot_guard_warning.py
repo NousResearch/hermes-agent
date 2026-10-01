@@ -56,10 +56,20 @@ def test_guard_warns_on_rearmed_consumed_record(temp_home, caplog):
         due = get_due_jobs()
 
     assert jid not in [d["id"] for d in due]
-    assert jid not in [j["id"] for j in load_jobs()]
+    # Patch 018: a consumed one-shot is RETAINED and disabled, never silently
+    # deleted — a real financial deadline (job f98f9fcf2561, 2026-08-20) was
+    # lost that way. What matters is that it cannot fire again, not that the
+    # record disappears.
+    retained = [j for j in load_jobs() if j["id"] == jid]
+    assert len(retained) == 1
+    assert retained[0]["enabled"] is False
+    assert retained[0]["next_run_at"] is None
     warnings = [
         r for r in caplog.records
-        if r.levelno == logging.WARNING and "WITHOUT firing" in r.getMessage()
+        # Patch 018 reworded this: a consumed one-shot is disarmed in place and
+        # retained, never deleted. This record HAS a completed run, so it takes
+        # the "already completed a run — disarming in place" arm.
+        if r.levelno == logging.WARNING and "not deleting" in r.getMessage()
     ]
     assert warnings, "expected WARNING on removal of a re-armed consumed one-shot"
     assert "cron resume" in warnings[0].getMessage()

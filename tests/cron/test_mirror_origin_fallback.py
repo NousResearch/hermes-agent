@@ -27,6 +27,8 @@ Design under test:
   user_id would create an orphan session no reply ever resolves to.
 """
 
+import os
+
 import pytest
 
 from cron.scheduler import _deliver_result, _resolve_delivery_targets
@@ -38,6 +40,17 @@ def _home_channel(monkeypatch):
     monkeypatch.setenv("SLACK_HOME_CHANNEL", "D0HOME")
     monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
     monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+    # LOCAL PATCH 195 (re-cut onto upstream's fixture, which names only two
+    # platforms). deliver="all" resolves broadcast targets from *_HOME_CHANNEL
+    # env vars, not from the config a test writes. An agent shell exports real
+    # ones (BLUEBUBBLES_HOME_CHANNEL was the live case), so a named-platform
+    # denylist leaves the test broadcasting to a platform this module never
+    # enables, and it then fails on the host's environment rather than on the
+    # code. Strip EVERY other platform's var; slack's is the one intended
+    # target and is set above.
+    for _var in [k for k in os.environ
+                 if k.endswith("_HOME_CHANNEL") and not k.startswith("SLACK_")]:
+        monkeypatch.delenv(_var, raising=False)
 
 
 class TestMirrorEligibilityResolution:

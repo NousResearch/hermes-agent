@@ -78,6 +78,11 @@ def test_manual_moves_match_server(client, src):
         r = client.patch(f"/k/tasks/{tid}", json=body)
         with kbc.connect_closing() as conn:
             landed = kb.get_task(conn, tid).status
+        # A refusal must be a domain rejection (400 bad verb / 409 refused transition);
+        # anything else (5xx, 422) is a bug, never an acceptable "not allowed".
+        if r.status_code not in (200, 400, 409):
+            mismatches.append(f"{src}->{dst}: unexpected HTTP {r.status_code}: {r.text[:200]}")
+            continue
         accepted = r.status_code == 200
         if accepted != W.can_move(src, dst):
             mismatches.append(f"{src}->{dst}: server {r.status_code}, workflow can_move={W.can_move(src, dst)}")

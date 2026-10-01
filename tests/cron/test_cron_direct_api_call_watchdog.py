@@ -24,6 +24,7 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
@@ -94,6 +95,36 @@ def test_unbounded_explicit_timeout_gets_hard_backstop():
     assert direct_api_call(agent, {"model": "m", "messages": [], "timeout": None}).id == "bounded"
     timeout = fake_client.chat.completions.create.call_args.kwargs["timeout"]
     assert timeout.read == 5.0
+
+
+def test_unbounded_timeout_object_gets_whole_hard_backstop():
+    agent = _make_agent(stale_timeout=5.0)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = SimpleNamespace(id="bounded")
+    agent._create_request_openai_client.return_value = fake_client
+
+    timeout_arg = httpx.Timeout(20.0, read=None)
+    assert direct_api_call(
+        agent, {"model": "m", "messages": [], "timeout": timeout_arg}
+    ).id == "bounded"
+    timeout = fake_client.chat.completions.create.call_args.kwargs["timeout"]
+    assert timeout.connect == 5.0
+    assert timeout.read == 5.0
+    assert timeout.write == 5.0
+    assert timeout.pool == 5.0
+
+
+def test_finite_timeout_object_is_left_untouched():
+    agent = _make_agent(stale_timeout=5.0)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = SimpleNamespace(id="bounded")
+    agent._create_request_openai_client.return_value = fake_client
+
+    timeout_arg = httpx.Timeout(20.0)
+    assert direct_api_call(
+        agent, {"model": "m", "messages": [], "timeout": timeout_arg}
+    ).id == "bounded"
+    assert fake_client.chat.completions.create.call_args.kwargs["timeout"] is timeout_arg
 
 
 def test_inline_cron_openai_codex_keeps_large_context_stale_floor(monkeypatch):

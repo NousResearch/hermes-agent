@@ -46,8 +46,11 @@ USER_OWNED_EXCLUDE: frozenset = DEFAULT_EXPORT_EXCLUDE_ROOT | frozenset({
 _CRON_STORE_REL = ("cron", "jobs.json")
 
 
-def _is_distribution_runtime_path(parts: Tuple[str, ...]) -> bool:
-    """Runtime-owned entries nested under otherwise distribution-owned roots."""
+def _is_installer_owned_path(parts: Tuple[str, ...]) -> bool:
+    """Entries a distribution never writes: credential stores (and Hermes' copies of them) at any
+    depth, and runtime-owned entries nested under otherwise distribution-owned roots."""
+    if profile_path_is_private(parts):
+        return True
     if len(parts) < 2:
         return False
     if parts[0] == "cron":
@@ -345,7 +348,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
         # Do NOT narrow to DEFAULT_DIST_OWNED — existing distributions ship arbitrary extra
         # top-level paths without declaring them.
         for entry in staged.iterdir():
-            if entry.name not in USER_OWNED_EXCLUDE and not profile_path_is_private((entry.name,)):
+            if entry.name not in USER_OWNED_EXCLUDE and not _is_installer_owned_path((entry.name,)):
                 yield entry, (entry.name,)
         return
     # Path-aware allowlist: copy exactly the declared paths.
@@ -354,8 +357,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
             rel_parts = tuple(normalize_archive_parts(rel))
         except ValueError:
             continue
-        if (rel_parts[0] in USER_OWNED_EXCLUDE or profile_path_is_private(rel_parts)
-                or _is_distribution_runtime_path(rel_parts)):
+        if rel_parts[0] in USER_OWNED_EXCLUDE or _is_installer_owned_path(rel_parts):
             continue
         src = staged.joinpath(*rel_parts)
         if src.exists():
@@ -462,7 +464,7 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     """Merge authored roots while leaving runtime-owned nested state untouched."""
     for child in src.iterdir():
         parts = (*rel, child.name)
-        if profile_path_is_private(parts) or _is_distribution_runtime_path(parts):
+        if _is_installer_owned_path(parts):
             continue
         if parts == _CRON_STORE_REL:
             continue  # merged up front by _copy_dist_payload
@@ -475,21 +477,21 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
 def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     for child in src.iterdir():
         parts = (*rel, child.name)
-        if profile_path_is_private(parts) or _is_distribution_runtime_path(parts):
+        if _is_installer_owned_path(parts):
             continue
         if _merges_per_root(child, parts):
             _refuse_symlink(dest / child.name)
             _refuse_symlinked_containers(child, dest / child.name, parts)
         else:
-            _refuse_store_ancestor_replacement(child, dest / child.name, parts)
+            _refuse_store_ancestor_replacement(dest / child.name, parts)
 
 
-def _refuse_store_ancestor_replacement(src: Path, dest: Path, rel_parts: Tuple[str, ...]) -> None:
+def _refuse_store_ancestor_replacement(dest: Path, rel_parts: Tuple[str, ...]) -> None:
     """A payload file where the profile has a directory that holds credential stores
     (``platforms`` shipped as a file over ``platforms/``) would be a whole-directory replace,
-    taking ``platforms/pairing`` with it. Refused before the first write."""
-    if (not src.is_dir() and profile_path_contains_private_store(rel_parts)
-            and dest.is_dir() and not dest.is_symlink()):
+    taking ``platforms/pairing`` with it. Refused before the first write. Only called for entries
+    ``_merges_per_root`` rejected, so a store ancestor reaching here is a file."""
+    if profile_path_contains_private_store(rel_parts) and dest.is_dir() and not dest.is_symlink():
         raise DistributionError(
             f"{dest} is a directory that holds credential stores, and the distribution ships a "
             f"file named {'/'.join(rel_parts)}; refusing to replace it"
@@ -523,7 +525,7 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
         if _merges_per_root(src, rel_parts):
             _refuse_symlinked_containers(src, path, rel_parts)
         else:
-            _refuse_store_ancestor_replacement(src, path / rel_parts[-1], rel_parts)
+            _refuse_store_ancestor_replacement(path / rel_parts[-1], rel_parts)
 
 
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:

@@ -192,10 +192,14 @@ _STORE_COPY_RE = re.compile(
 )
 
 
+def _fold(parts: Tuple[str, ...]) -> Tuple[str, ...]:
+    return tuple(part.casefold() for part in parts)
+
+
 def profile_path_is_private(parts: Tuple[str, ...]) -> bool:
     """True for a PROFILE_CREDENTIAL_PATHS store, anything below one, or a root copy of one.
     Case-folded: on a case-insensitive filesystem ``Platforms/Pairing`` IS the pairing store."""
-    folded = tuple(str(part).casefold() for part in parts)
+    folded = _fold(parts)
     if len(folded) == 1 and _STORE_COPY_RE.fullmatch(folded[0]):
         return True
     return any(folded[:len(store)] == store for store in _CREDENTIAL_PATH_PARTS)
@@ -203,7 +207,7 @@ def profile_path_is_private(parts: Tuple[str, ...]) -> bool:
 
 def profile_path_contains_private_store(parts: Tuple[str, ...]) -> bool:
     """True for a strict ancestor of a store (``platforms`` holds ``platforms/pairing``)."""
-    folded = tuple(str(part).casefold() for part in parts)
+    folded = _fold(parts)
     return any(len(store) > len(folded) and store[:len(folded)] == folded for store in _CREDENTIAL_PATH_PARTS)
 
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
@@ -239,7 +243,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "browser_screenshots", "checkpoints",
     "sandboxes",
     "logs",                 # gateway logs
-}) | PM_RUNTIME_ROOT_DIRS | frozenset(p for p in PROFILE_CREDENTIAL_PATHS if "/" not in p)
+}) | PM_RUNTIME_ROOT_DIRS
 
 # Allow-list for ``export_profile("default")``: when HERMES_HOME equals the
 # cwd (Docker/custom deployments), the default profile home is the working

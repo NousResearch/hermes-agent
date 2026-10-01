@@ -3975,6 +3975,14 @@ class BasePlatformAdapter(BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
                          "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
                          session_key, self._busy_text_debounce_seconds)
             event._gateway_accepted = await self._queue_text_debounce(session_key, event)
+            if not event._gateway_accepted:
+                notify = getattr(self.gateway_runner, "_send_pending_queue_refusal", None)
+                if callable(notify):
+                    await notify(event, self)
+                else:
+                    await self._send_with_retry(
+                        chat_id=event.source.chat_id, content=t("gateway.queue.full"),
+                        reply_to=event.message_id, metadata=_thread_metadata_for_event(event))
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)

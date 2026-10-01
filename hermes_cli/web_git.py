@@ -112,13 +112,18 @@ def resolve_rename_path(raw: str) -> str:
 
 
 def _numstat(cwd: str, args: list[str]) -> dict[str, tuple[int, int]]:
-    """``git diff --numstat`` → {path: (added, removed)}; binary files (``-``) → 0."""
+    """NUL-delimited numstat → literal destination paths; binary files (``-``) → 0."""
     counts: dict[str, tuple[int, int]] = {}
-    for line in _git_out(cwd, ["diff", "--numstat", *args]).splitlines():
-        parts = line.split("\t")
-        if len(parts) >= 3:
+    records = iter(_git_out(cwd, ["diff", "--numstat", "-z", *args]).split("\0"))
+    for record in records:
+        parts = record.split("\t", 2)
+        if len(parts) == 3:
             added, removed = (0 if p == "-" else int(p or 0) for p in parts[:2])
-            counts[resolve_rename_path(parts[2])] = (added, removed)
+            path = parts[2]
+            if not path:  # rename/copy: empty path, old path, destination path
+                next(records, None)
+                path = next(records, "")
+            counts[path] = (added, removed)
     return counts
 
 
@@ -173,7 +178,7 @@ def _walk_entries(raw: str):
             path = rec.split(" ", 8)[-1] if tag == "1" else rec.split(" ", 9)[-1]
             if tag == "2":
                 next(records, None)  # rename/copy: the origin path is the next NUL record
-            yield tag, rec.split(" ")[1], resolve_rename_path(path)
+            yield tag, rec.split(" ")[1], path
 
 
 def _entry_staged(tag: str, xy: str) -> bool:

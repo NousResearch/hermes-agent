@@ -454,7 +454,9 @@ class GatewayInboundMixin:
                     try:
                         await _clarify_adapter.retire_clarify_card(
                             _pending_clarify.clarify_id,
-                            t("gateway.clarify.answered", response=_pending_clarify.response or _raw_clarify_reply))
+                            t("gateway.clarify.answered",
+                              response=_raw_clarify_reply if _pending_clarify.response == _clarify_mod.SKIPPED
+                              else _pending_clarify.response or _raw_clarify_reply))
                     except Exception:
                         logger.debug("Failed to retire clarify card after typed answer", exc_info=True)
             return ""
@@ -466,7 +468,7 @@ class GatewayInboundMixin:
             # Native-choice prompts reject unmatched prose so it continues through normal busy
             # routing. Release this clarify first: redirect() degrades to steer() while tools
             # execute, and that steer cannot drain until the clarify tool returns.
-            if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, ""):
+            if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, _clarify_mod.CANCELLED):
                 # Adapters with a persistent native card (Slack Block Kit) retire it now, before the
                 # prose is routed, so its buttons stop advertising a dead answer path. The pop inside
                 # retire_clarify_card runs before its first await, so the agent thread's own expiry
@@ -939,7 +941,13 @@ class GatewayInboundMixin:
         from hermes_cli.init_command import build_init_prompt_for_cwd
 
         try:
-            _init_prompt = build_init_prompt_for_cwd(extra=event.get_command_args().strip())
+            # The SESSION's active directory, not this process's launch dir: the desktop app
+            # launches the backend from the home directory, so a bare os.getcwd() scanned and
+            # updated the HOME's AGENTS.md instead of the workspace attached to the session.
+            _init_prompt = build_init_prompt_for_cwd(
+                extra=event.get_command_args().strip(),
+                session_key=_quick_key or self._session_key_for_source(source),
+            )
         except Exception:
             return True, t("gateway.init.start_failed")
         _ack = (

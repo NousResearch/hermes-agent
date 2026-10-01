@@ -106,6 +106,12 @@ export async function resolveTargetSessionId(deps: ResolveTargetSessionDeps): Pr
         return requestGateway<{ session_id?: string }>('session.resume', {
           session_id: storedTarget,
           source: 'desktop',
+          // Same contract as every other desktop resume: the response must
+          // not inline a full compression lineage (deep ones exceed
+          // max_resume_messages and fail assert_resume_safe). Only the
+          // resolved tip session_id is consumed here; the gateway follows
+          // mid → tip itself (#125041).
+          omit_messages: true,
           ...(profile ? { profile } : {}),
           ...brandCreateFields()
         })

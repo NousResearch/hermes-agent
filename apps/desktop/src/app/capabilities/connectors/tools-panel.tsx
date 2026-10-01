@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 
 import type { ProfileScope } from '@/hermes'
 import { isToolEnabled } from '@/lib/mcp-tool-filter'
+import { hideVendorNames } from '@/lib/product-names'
 
 import { okProbe } from '../mcp/mcp-status'
 import type { McpServersController } from '../mcp/use-mcp-servers'
@@ -120,7 +121,7 @@ export function LocalToolsPanel({ card, controller, onRemove }: LocalToolsPanelP
       okProbe(probe)?.tools.map(tool => ({
         categories: [],
         deprecated: false,
-        description: tool.description ?? '',
+        description: hideVendorNames(tool.description ?? ''),
         facet: 'unclassified',
         hints: [],
         name: toolDisplayName(tool.name),

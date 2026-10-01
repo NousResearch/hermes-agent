@@ -179,11 +179,13 @@ gateway:
     label_normal: "NORMAL"
     status_fast: "fast"
     status_normal: "normal"
-    picker_title: "⚡ **优先处理**\\n\\n当前模式：`{mode}`\\n\\n请选择："
+    picker_title: "⚡ **优先处理**\n\n当前模式：`{mode}`\n\n请选择："
     choice_fast: "fast — 开启优先处理"
     choice_normal: "normal — 标准处理"
     choice_auto: "auto — 每轮的前几秒快速"
     choice_cold: "cold — 仅会话的第一轮快速"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast（GPT-6 Astra，6 倍价格）"
+    ultrafast_not_supported: "⚡ Ultrafast 仅适用于 GPT-6 Astra（当前模型：`{model}`）。"
   footer:
     status: "📎 运行时页脚：**{state}**\n字段：`{fields}`\n平台：`{platform}`"
     usage: "用法：`/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。"
     reset_done: "🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。"
     unknown_arg: "⚠️ 未知参数：`{arg}`\n\n**有效级别：** none, minimal, low, medium, high, xhigh, max, ultra\n**显示：** show, hide\n**持久化：** 添加 `--global` 以跨会话保存"
-    picker_title: "🧠 **推理设置**\\n\\n**强度：** `{level}`\\n**作用域：** {scope}\\n**显示：** {display}\\n\\n请选择："
+    picker_title: "🧠 **推理设置**\n\n**强度：** `{level}`\n**作用域：** {scope}\n**显示：** {display}\n\n请选择："
     choice_none: "none — 关闭推理"
     choice_reset: "reset — 清除会话覆盖"
     choice_show: "在回复中显示推理"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ 澄清已取消——你的消息将作为后续消息处理。"
     expired: "⏳ 此提示已过期——请发送新的请求。"
     native_stream_placeholder: "💬 等待你的选择..."
+    skip_hint: '回复“skip”即可跳过此问题。'
   errors:
     rate_limited: "⏱️ AI 模型服务正在限流。请稍等片刻，然后使用 /retry。"
     auth_failed: "⚠️ 登录 AI 模型服务失败。请使用 /login 重新登录，或请运行此机器人的人在主机上执行 `hermes doctor`。"
@@ -2032,7 +2035,6 @@ cli:
     clarify_other_type_below: "其他（在下方输入）"
     clarify_other_type_answer: "其他（输入你的回答）"
     clarify_guidance: "在下方提示中输入你的回答，然后按 Enter。"
-    clarify_question_truncated: "…（问题已截断）"
     picker_title_provider: "⚙ 模型选择器 — 选择提供方"
     picker_provider_row_one: "{name}（{count} 个模型）"
     picker_provider_row_other: "{name}（{count} 个模型）"
@@ -2077,7 +2079,6 @@ cli:
     hint_vault_username: "输入时可见 · Enter 继续"
     hint_clarify_freetext: "输入你的回答并按 Enter"
     hint_clarify_batch: "↑/↓ 选择，Enter 锁定，Tab 下一个问题"
-    hint_clarify_choice: "↑/↓ 选择，Enter 确认"
     hint_input_disabled: "输入已暂时禁用"
     hint_input_queues: "输入仍可用；Enter 加入队列"
     hint_command_running: "{frame} 命令执行中 · {detail}"
@@ -2251,8 +2252,6 @@ cli:
   approval:
     bell_context: "审批"
     label: "审批"
-    timeout_denying: "⏱ 超时——拒绝执行命令"
-    timed_out_no_response: "已超时（无响应）"
     outcome_once: "已允许一次"
     outcome_session: "本会话内已允许"
     outcome_always: "已加入允许列表"
@@ -2260,8 +2259,6 @@ cli:
   clarify:
     bell_context: "澄清"
     label: "澄清"
-    timed_out_agent_decides: "（澄清在 {timeout} 秒后超时——由代理自行决定）"
-    timed_out_locked_answers: "（澄清在 {timeout} 秒后超时——已返回锁定的答案）"
   connect:
     bell_context: "连接设置"
     cannot_restart: "此连接无法再次启动。请取消后重新向代理发起请求。"
@@ -2653,7 +2650,9 @@ cli:
       feature_generic: "快速模式"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "用法：/fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast 仅适用于 GPT-6 Astra（当前模型：{model}）。"
+      usage: "用法：/fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}：{status}"
       set_to: "✓ {feature} 已设为 {value} {scope}"
     hatch:

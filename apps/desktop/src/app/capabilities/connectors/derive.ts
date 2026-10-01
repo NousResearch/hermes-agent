@@ -1,4 +1,5 @@
 import { connectorTitle } from '@/lib/connector-tools'
+import { hideVendorNames } from '@/lib/product-names'
 
 import type {
   BundledEntryInput,
@@ -322,7 +323,9 @@ function slugOf({ bundled, hosted, local }: CardParts): string {
 }
 
 function descriptionOf({ bundled, hosted, local }: CardParts): string | undefined {
-  return hosted?.description ?? local?.description ?? bundled?.description
+  const raw = hosted?.description ?? local?.description ?? bundled?.description
+
+  return raw ? hideVendorNames(raw) : undefined
 }
 
 // An install must not rename the app: the bundled entry and the server it becomes read the same way.

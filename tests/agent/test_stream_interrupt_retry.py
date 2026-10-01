@@ -10,6 +10,7 @@ making /stop take multiple retry cycles × read-timeout to actually stop
 The fix adds an `_interrupt_requested` check at the top of the retry loop
 so the agent exits immediately instead of retrying.
 """
+import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -238,3 +239,61 @@ class TestStreamInterruptBeforeRetry:
         assert "new final" in delivered
         assert response.choices[0].message.content == "new final"
         assert mock_abort.called
+
+
+class TestInterruptMidToolArgsIsNotAStreamDrop:
+    """/stop, or a live turn superseding a background review, that lands while a
+    tool call's arguments are streaming. The worker sees ``_interrupt_requested``
+    on the next chunk, normally long before the monitor's 0.3s poll; that stream
+    was ended by Hermes and must not reach the server/proxy-drop diagnostics. The
+    same stream ending on its own is still a drop and keeps its WARNING."""
+
+    _DROP_LOGGERS = ("agent.chat_completion_helpers", "agent.message_sanitization")
+
+    @staticmethod
+    def _partial_tool_args_stream(agent, *, interrupt):
+        from tests.agent.test_streaming import _make_stream_chunk, _make_tool_call_delta
+
+        yield _make_stream_chunk(tool_calls=[_make_tool_call_delta(index=0, tc_id="call_1", name="write_file")])
+        yield _make_stream_chunk(tool_calls=[
+            _make_tool_call_delta(index=0, arguments='{"path": "notes.md", "content": "par')])
+        if interrupt:
+            agent._interrupt_requested = True
+        yield _make_stream_chunk(tool_calls=[_make_tool_call_delta(index=0, arguments="tial")])
+        # No finish_reason and no [DONE] from here on.
+
+    def _drop_warnings(self, caplog):
+        return [r.getMessage() for r in caplog.records
+                if r.levelno >= logging.WARNING and r.name in self._DROP_LOGGERS]
+
+    def _agent_on(self, mock_create, *, interrupt):
+        agent = _make_agent()
+        agent._interrupt_requested = False
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: self._partial_tool_args_stream(agent, interrupt=interrupt))
+        mock_create.return_value = mock_client
+        return agent
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_interrupt_mid_tool_args_ends_as_interrupt_without_drop_warning(
+            self, _mock_close, mock_create, caplog):
+        agent = self._agent_on(mock_create, interrupt=True)
+
+        with caplog.at_level(logging.WARNING), pytest.raises(InterruptedError):
+            agent._interruptible_streaming_api_call({})
+
+        assert self._drop_warnings(caplog) == []
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_server_close_mid_tool_args_is_still_a_logged_drop(self, _mock_close, mock_create, caplog):
+        agent = self._agent_on(mock_create, interrupt=False)
+
+        with caplog.at_level(logging.WARNING):
+            response = agent._interruptible_streaming_api_call({})
+
+        assert response._dropped_tool_names == ["write_file"]
+        assert response.choices[0].message.tool_calls is None
+        assert self._drop_warnings(caplog)

@@ -3197,6 +3197,10 @@ class _StreamingCall(StreamingWaitMonitor):
         for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
             self._count_chunk(_diag, chunk)
             if self.agent._interrupt_requested:
+                # Cancel as ``_abort_for_interrupt`` does: seeing /stop before the monitor's
+                # poll must not hand our own cut to _finish_chat_stream's drop diagnostics.
+                self._request_cancelled["value"] = True
+                self._cancel_current_stream_attempt("interrupt_stream_break")
                 # A half-read SSE response stays checked out of the httpx pool and the finally
                 # would cache the client WITH the leaked connection: close on the owner first.
                 try:

@@ -374,6 +374,8 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     # Simulate _create_adapter returning None for ALL platforms (missing library /
     # missing credentials — no connection attempt ever made).
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
+    # ...because no plugin registered them, so the reconnect watcher may still heal them.
+    monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: False)
 
     import logging
     with caplog.at_level(logging.WARNING):

@@ -62,28 +62,31 @@ class _HealthyAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
-def _runner_with_one_parked_platform(monkeypatch, tmp_path) -> GatewayRunner:
+def _runner(monkeypatch, tmp_path, platforms, create_adapter) -> GatewayRunner:
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    config = GatewayConfig(
-        platforms={
-            Platform.API_SERVER: PlatformConfig(enabled=True, extra={"port": 8642}),
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
-        },
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
-    monkeypatch.setattr(
-        runner,
-        "_create_adapter",
-        lambda platform, platform_config: (
-            _PortTakenAdapter() if platform is Platform.API_SERVER else _HealthyAdapter()
-        ),
-    )
+    # No plugin registers any platform here, so a None adapter is the "plugin never registered" case.
+    monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: False)
+    runner = GatewayRunner(GatewayConfig(platforms=platforms, sessions_dir=tmp_path / "sessions"))
+    monkeypatch.setattr(runner, "_create_adapter", create_adapter)
+
     async def _no_secondary_profiles():
         return 0
 
     monkeypatch.setattr(runner, "_start_secondary_profile_adapters", _no_secondary_profiles)
     return runner
+
+
+def _runner_with_one_parked_platform(monkeypatch, tmp_path) -> GatewayRunner:
+    return _runner(
+        monkeypatch, tmp_path,
+        {
+            Platform.API_SERVER: PlatformConfig(enabled=True, extra={"port": 8642}),
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+        },
+        lambda platform, platform_config: (
+            _PortTakenAdapter() if platform is Platform.API_SERVER else _HealthyAdapter()
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -143,25 +146,15 @@ async def test_every_platform_connected_still_reports_a_normal_run(monkeypatch, 
 @pytest.mark.asyncio
 async def test_missing_adapter_degrades_only_the_unserved_enabled_platform(monkeypatch, tmp_path):
     """An enabled missing plugin must appear in status even when a sibling connects."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    config = GatewayConfig(
-        platforms={
+    runner = _runner(
+        monkeypatch, tmp_path,
+        {
             Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
             Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
             Platform.SLACK: PlatformConfig(enabled=False, token="***"),
         },
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
-    monkeypatch.setattr(
-        runner, "_create_adapter",
         lambda platform, platform_config: _HealthyAdapter() if platform is Platform.TELEGRAM else None,
     )
-
-    async def _no_secondary_profiles():
-        return 0
-
-    monkeypatch.setattr(runner, "_start_secondary_profile_adapters", _no_secondary_profiles)
     try:
         assert await runner.start() is True
         state = read_runtime_status()
@@ -176,34 +169,48 @@ async def test_missing_adapter_degrades_only_the_unserved_enabled_platform(monke
 
 
 @pytest.mark.asyncio
-async def test_adapterless_platform_heals_once_its_adapter_appears(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "platform, platform_config, heals",
+    [
+        # An unregistered plugin can still register later: queued, retried, healed.
+        (Platform.DISCORD, PlatformConfig(enabled=True, token="***"), True),
+        # A builtin whose probe fails on missing creds needs a config change: flagged once, never queued
+        # (else it re-warns forever at the backoff cap on fleet nodes, #5196).
+        (Platform.BLUEBUBBLES, PlatformConfig(enabled=True), False),
+    ],
+    ids=["unregistered-plugin", "builtin-missing-creds"],
+)
+async def test_adapterless_platform_heals_once_its_adapter_appears(
+    monkeypatch, tmp_path, platform, platform_config, heals
+):
     """A plugin that registers late: the queued platform stays queued, then connects."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    config = GatewayConfig(
-        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")},
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
     adapters = {}
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: adapters.get(platform))
-
-    async def _no_secondary_profiles():
-        return 0
-
-    monkeypatch.setattr(runner, "_start_secondary_profile_adapters", _no_secondary_profiles)
+    runner = _runner(
+        monkeypatch, tmp_path, {platform: platform_config},
+        lambda platform, platform_config: adapters.get(platform),
+    )
     try:
         assert await runner.start() is True
-        await runner._reconnect_failed_platform(Platform.DISCORD, time.monotonic() + 60)
-        assert runner._failed_platforms[Platform.DISCORD]["attempts"] == 2  # still missing: kept queued
+        status = read_runtime_status()["platforms"][platform.value]
+        assert status["error_code"] == "adapter_unavailable"
+        assert status["needs_attention"] is True
+        if not heals:
+            assert runner._failed_platforms == {}
+            assert status["state"] == "fatal"
+            assert "Retrying" not in status["error_message"]
+            return
+        await runner._reconnect_failed_platform(platform, time.monotonic() + 60)
+        assert runner._failed_platforms[platform]["attempts"] == 2  # still missing: kept queued
+        assert "check the plugin" in read_runtime_status()["platforms"][platform.value]["error_message"]
 
         healthy = _HealthyAdapter()
-        healthy.platform = Platform.DISCORD
-        adapters[Platform.DISCORD] = healthy
-        await runner._reconnect_failed_platform(Platform.DISCORD, time.monotonic() + 3600)
-        assert runner.adapters[Platform.DISCORD] is healthy
+        healthy.platform = platform
+        adapters[platform] = healthy
+        await runner._reconnect_failed_platform(platform, time.monotonic() + 3600)
+        assert runner.adapters[platform] is healthy
         assert runner._failed_platforms == {}
-        discord = read_runtime_status()["platforms"]["discord"]
-        assert discord["state"] == "connected"
-        assert discord["needs_attention"] is False
+        status = read_runtime_status()["platforms"][platform.value]
+        assert status["state"] == "connected"
+        assert status["needs_attention"] is False
     finally:
         await runner.stop()

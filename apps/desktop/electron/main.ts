@@ -499,8 +499,9 @@ import { resolveSourcePython } from './source-python'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
-import { attachSshGateway } from './ssh-gateway'
+import { attachSshGateway, inspectSshGatewayCommands } from './ssh-gateway'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
+import { readSshRosterInventory } from './ssh-roster-inventory'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
@@ -10218,10 +10219,15 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     },
     publish: () => {
       if (!result.canonical) {persistSshConnectionToken(profile, source, result.token, metadata.registryConnectionId)}
+      if (result.canonical && metadata.registryConnectionId) {
+        // A newly verified owner must not inherit ambient-shell or predecessor inventory.
+        evictConnectionCaches(metadata.registryConnectionId)
+      }
       removeForceCleanup()
       sshConnections.set(scope, {
         ssh,
         canonical: result.canonical === true,
+        baseUrl: result.baseUrl,
         gatewayEndpoint: result.gatewayEndpoint,
         release: result.release,
         remoteHost: result.remoteHost,
@@ -14852,7 +14858,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     if (result?.reachable) {
       sshInventoryAttemptedAt.delete(entry.id)
       sshRosterCache.delete(entry.id)
-      await probeSshProfileInventory(entry)
+      await refreshSshProfileInventory(entry)
     }
 
     return result
@@ -14972,7 +14978,7 @@ async function probeConnectionInstallId(connectionId: string, descriptor: any): 
   }
 }
 
-async function probeSshProfileInventory(connection) {
+async function probeSshProfileInventory(connection, isCurrent: () => boolean, knownClassic: boolean) {
   if (
     !shouldRetrySshInventory(
       sshRosterCache.has(connection.id),
@@ -15006,8 +15012,13 @@ async function probeSshProfileInventory(connection) {
 
   try {
     await ssh.open()
+    if (!knownClassic) {
+      const commands = await inspectSshGatewayCommands(ssh, connection.remoteHermesPath || '')
+      if (!isCurrent() || commands.canonical) {return}
+    }
     const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
 
+    if (!isCurrent()) {return}
     if (profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)
     }
@@ -15015,10 +15026,8 @@ async function probeSshProfileInventory(connection) {
     // Backend identity, on the session we already have open: without it an ssh connection has no
     // install id at all, so two addresses for one machine never collapse into one roster row
     // (#88828 wired this for remote/local only, through /api/status).
-    connectionInstallIds.set(connection.id, {
-      id: await remoteLifecycle.readRemoteInstallId(ssh),
-      ts: Date.now()
-    })
+    const id = await remoteLifecycle.readRemoteInstallId(ssh)
+    if (isCurrent()) {connectionInstallIds.set(connection.id, { id, ts: Date.now() })}
   } catch (error: any) {
     sshRememberLog(`[ssh] profile inventory failed for ${connection.id}: ${error?.message || error}`)
   } finally {
@@ -15028,6 +15037,28 @@ async function probeSshProfileInventory(connection) {
       void 0
     }
   }
+}
+
+async function refreshSshProfileInventory(connection) {
+  const fingerprint = sshConfigFingerprint(connection.id, connection)
+  const inventory = await readSshRosterInventory({
+    connectionId: connection.id, states: sshConnections,
+    request: (descriptor, requestPath) => getJsonForBackend(descriptor, requestPath, { timeoutMs: 8_000 })
+  })
+  const isCurrent = () => {
+    const current = readDesktopConnectionsRegistry().connections.find(entry => entry.id === connection.id)
+    return inventory.isCurrent() && current?.kind === 'ssh' && sshConfigFingerprint(current.id, current) === fingerprint
+  }
+  if (!isCurrent()) {throw new Error('SSH inventory source changed during enumeration')}
+  if (inventory.kind !== 'canonical') {
+    await probeSshProfileInventory(connection, isCurrent, inventory.kind === 'classic')
+  }
+  if (!isCurrent()) {throw new Error('SSH inventory source changed during enumeration')}
+  if (inventory.kind === 'canonical') {
+    sshRosterCache.set(connection.id, inventory.profiles)
+    connectionInstallIds.set(connection.id, { id: inventory.installId, ts: Date.now() })
+  }
+  return { ...inventory, isCurrent }
 }
 
 async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRegistry()) {
@@ -15073,14 +15104,18 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
         // respawn Spark/Mini every Bot Mode poll (~5s), then the mux died
         // (ECONNRESET / liveness probe drop).
         if (connection.kind === 'ssh') {
-          await probeSshProfileInventory(connection)
-          // The inventory probe learns the backend's install id on its own session; carrying it
-          // here is what lets two ssh addresses for one machine collapse to one row.
-          raw = {
-            connection,
-            profiles: null,
-            error: 'connect-on-demand',
-            installId: connectionInstallIds.get(connection.id)?.id
+          const inventory = await withEnumerationDeadline(
+            refreshSshProfileInventory(connection), rosterSourceEnumerationTimeoutMs(connection))
+          if (inventory.kind === 'canonical') {
+            // The native catalog and install identity came from the same pinned
+            // descriptor. A raw SSH home probe is never a fallback for its failure.
+            if (!inventory.isCurrent()) {throw new Error('SSH inventory source changed during enumeration')}
+            raw = { connection, profiles: inventory.profiles, installId: inventory.installId }
+          } else {
+            // Confirmed classic runtimes keep their existing cold inventory.
+            // Canonical undialed sources retain the connect-on-demand/default seed.
+            raw = { connection, profiles: null, error: 'connect-on-demand',
+              installId: connectionInstallIds.get(connection.id)?.id }
           }
         } else {
           // Same connect-on-demand courtesy for the forced-local path: when

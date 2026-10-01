@@ -27,13 +27,25 @@ def test_desktop_ssh_attaches_to_owner_without_owning_its_lifetime(tmp_path):
         'base_url': 'http://127.0.0.1:9/v1'}, 'auxiliary': {'title_generation': {'enabled': False}}}))
     env = child_env() | dict(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
         PYTHONPATH=str(root), OPENAI_API_KEY='loopback-only', PYTHONUNBUFFERED='1')
+    # The SSH login shell and configured launcher deliberately have different
+    # synthetic homes. No real user's Hermes profile inventory is read.
+    ambient = tmp_path / 'ambient-home'
+    (ambient / 'profiles' / 'ambient-only').mkdir(parents=True)
+    (ambient / 'install_id').write_text('0123456789abcdef0123456789abcdef')
+    selected = home / 'profiles' / 'selected-only'
+    selected.mkdir(parents=True)
+    (selected / 'config.yaml').write_text((home / 'config.yaml').read_text().replace('fixture', 'selected-model'))
+    shell = tmp_path / 'ssh-shell'
+    shell.write_text('#!/bin/sh\nexport HOME=' + shlex.quote(str(user)) +
+        '\nexport HERMES_HOME=' + shlex.quote(str(ambient)) + '\nexec /bin/sh -c "$SSH_ORIGINAL_COMMAND"\n')
+    shell.chmod(0o700)
     for name in ('host', 'client'):
         subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(tmp_path / name)], check=True)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     config = tmp_path / 'sshd_config'
     config.write_text(f'Port {port}\nListenAddress 127.0.0.1\nHostKey {tmp_path}/host\nPidFile {tmp_path}/pid\n'
-        f'UsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nAuthorizedKeysFile {tmp_path}/client.pub\nStrictModes no\n')
+        f'ForceCommand {shell}\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nAuthorizedKeysFile {tmp_path}/client.pub\nStrictModes no\n')
     known = tmp_path / 'known_hosts'
     known.write_text(f'[127.0.0.1]:{port} ' + (tmp_path / 'host.pub').read_text())
     launcher = tmp_path / 'hermes'
@@ -41,6 +53,9 @@ def test_desktop_ssh_attaches_to_owner_without_owning_its_lifetime(tmp_path):
         ' '.join(shlex.quote(k + '=' + v) for k, v in env.items()) + ' ' + shlex.quote(sys.executable) +
         ' -m hermes_cli.main "$@"\n')
     launcher.chmod(0o700)
+    classic = tmp_path / 'classic-hermes'
+    classic.write_text("#!/bin/sh\nprintf 'usage: hermes gateway\n  run Run gateway\n  status Show status\n'\n")
+    classic.chmod(0o700)
     fixture = tmp_path / 'desktop-ssh.mjs'
     subprocess.run([str(root / 'node_modules/.bin/esbuild'),
         str(root / 'apps/desktop/electron/ssh-gateway-live-fixture.ts'), '--bundle', '--platform=node', '--format=esm',
@@ -54,12 +69,12 @@ def test_desktop_ssh_attaches_to_owner_without_owning_its_lifetime(tmp_path):
             assert server.poll() is None
             with daemon(root, home, env, barrier=False) as (owner, desc):
                 request = dict(user=pwd.getpwuid(os.getuid()).pw_name, port=port, key=str(tmp_path / 'client'),
-                    knownHosts=str(known), controlDir=control_dir, hermes=str(launcher))
+                    knownHosts=str(known), controlDir=control_dir, hermes=str(launcher), classicHermes=str(classic), selectedHome=str(selected))
                 for _ in range(2):
                     result = subprocess.run(['node', str(fixture)], input=json.dumps(request), text=True,
                         capture_output=True, timeout=60)
                     assert result.returncode == 0, result.stderr + '\n' + (tmp_path / 'sshd.log').read_text()
-                    assert json.loads(result.stdout) == {'canonical': True, 'instance_id': desc['instance_id'], 'http': 200}
+                    assert json.loads(result.stdout) == {'canonical': True, 'instance_id': desc['instance_id'], 'http': 200, 'selectedInventoryOnly': True}
                     assert owner.poll() is None
         finally:
             server.terminate(); server.wait(timeout=10)

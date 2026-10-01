@@ -1502,7 +1502,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         from gateway.session_ingress import executing_admission
         pending_event = None
         pending = None
-        if result and adapter and session_key:
+        preserve_pending_for_restart = self._draining and self._queue_during_drain_enabled()
+        if result and adapter and session_key and not preserve_pending_for_restart:
             pending_event = _dequeue_pending_event(adapter, session_key)
             if result.get("compression_exhausted") and pending_event is not None:
                 self._defer_past_exhaustion_reset(result, adapter, source, session_key, pending_event)

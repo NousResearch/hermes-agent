@@ -914,6 +914,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             reply_to_message_id=f"quote:{message_id}" if quote else None, reply_to_text=quote, timestamp=datetime.now())
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:
+            key = self._text_batch_key(event)
+            existing = self._pending_text_batches.get(key)
+            if existing is not None and existing.reply_context_conflicts(event):
+                await self._flush_text_batch_now(key)
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)

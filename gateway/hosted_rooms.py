@@ -170,6 +170,15 @@ _SCHEMA_DDL += ("""CREATE TABLE IF NOT EXISTS hosted_room_peer_cleanup (
     body BLOB
 )""",)
 
+_SCHEMA_DDL += ("""CREATE TABLE IF NOT EXISTS hosted_room_link_renewals (
+    room_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    old_digest TEXT NOT NULL,
+    new_digest TEXT NOT NULL,
+    expires_at REAL NOT NULL,
+    PRIMARY KEY (room_id, member_id, old_digest)
+)""",)
+
 _REQUIRED_COLUMNS = tuple(
     (re.search(r"EXISTS (\w+)", ddl).group(1),
      frozenset(re.findall(r"^\s*(\w+) (?:TEXT|INTEGER|REAL|BLOB)\b", ddl.split("(", 1)[1], re.M))) for ddl in _SCHEMA_DDL)

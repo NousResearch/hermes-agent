@@ -115,4 +115,3 @@ class DiscordVoiceLifecycleMixin:
             self._on_voice_disconnect(str(text_ch_id))
         except Exception:
             pass
-

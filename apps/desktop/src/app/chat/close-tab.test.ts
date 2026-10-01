@@ -14,13 +14,22 @@ vi.mock('@/app/right-sidebar/terminal/terminals', () => ({
 }))
 
 vi.mock('@/components/pane-shell/tree/store', () => ({
+  // preview.ts stamps explicit opens against the focused tree group.
+  $activeTreeGroup: atom(null),
+  $collapsedTreeSides: atom(new Set()),
+  $hiddenTreePanes: atom(new Set()),
+  $layoutTree: atom(null),
   closeFocusedSessionTab: () => closeFocusedSessionTab(),
   closeFocusedToolTab: () => closeFocusedToolTab()
 }))
 
 vi.mock('@/store/session-states', () => ({
   closeSessionTile: (...args: unknown[]) => closeSessionTile(...args),
-  nextSessionTileForWorkspace: () => nextSessionTileForWorkspace()
+  nextSessionTileForWorkspace: () => nextSessionTileForWorkspace(),
+  // preview.ts reads the focused session when stamping/deriving tabs; this
+  // suite drives the writable $selectedStoredSessionId instead, so a static
+  // null stub is enough.
+  $focusedStoredSessionId: atom<string | null>(null)
 }))
 
 vi.mock('@/store/profile', () => ({

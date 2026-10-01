@@ -15,6 +15,20 @@ name: CI
 # main-only automation uses protected environments in its own workflows.
 
 on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Stable-release candidate run: force every applicability lane and make the aggregate gate strict (skipped required lanes fail).'
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      release:
+        description: 'Stable-release candidate run: force every applicability lane and make the aggregate gate strict (skipped required lanes fail).'
+        required: false
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -23,56 +37,100 @@ permissions:
   contents: read
   pull-requests: write # needed by lint (PR comment) + supply-chain review_status
 
+# cancel-in-progress only ever applies to PR events. A push, a dispatch, and
+# above all a stable-release workflow_call run are never cancelled by a later
+# commit or a rerun of the same branch — the caller's own concurrency uses
+# github.run_id, so even a parent rerun cannot kill this child mid-flight.
+# Release (workflow_call with inputs.release) never cancels and never gets
+# cancelled: its group is github.run_id. PRs collapse per-PR; pushes use the
+# ref as before.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ inputs.release == true && github.run_id || (github.event_name == 'pull_request' && github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ inputs.release != true && github.event_name == 'pull_request' }}
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
   # detect: run the classifier once. Every downstream job reads its outputs
   # to decide whether to run. On push/dispatch the classifier fails open
   # (all lanes true) so post-merge validation is never weakened.
+  #
+  # A release run (inputs.release) additionally forces every lane true via
+  # the `release-forced-*` outputs: a stable candidate must run the FULL
+  # pipeline, not the lanes its diff would touch — the diff of a release
+  # tag is not a meaningful applicability signal.
   # ─────────────────────────────────────────────────────────────────────
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
     timeout-minutes: 1
     outputs:
-      python: ${{ steps.classify.outputs.python }}
-      python_prod: ${{ steps.classify.outputs.python_prod }}
-      frontend: ${{ steps.classify.outputs.frontend }}
-      site: ${{ steps.classify.outputs.site }}
-      scan: ${{ steps.classify.outputs.scan }}
-      deps: ${{ steps.classify.outputs.deps }}
-      uv_lock: ${{ steps.classify.outputs.uv_lock }}
-      npm_lock: ${{ steps.classify.outputs.npm_lock }}
-      installer: ${{ steps.classify.outputs.installer }}
-      desktop_updater: ${{ steps.classify.outputs.desktop_updater }}
-      rust: ${{ steps.classify.outputs.rust }}
-      docker_meta: ${{ steps.classify.outputs.docker_meta }}
-      mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
+      python: ${{ steps.gate-lanes.outputs.python }}
+      python_prod: ${{ steps.gate-lanes.outputs.python_prod }}
+      frontend: ${{ steps.gate-lanes.outputs.frontend }}
+      site: ${{ steps.gate-lanes.outputs.site }}
+      scan: ${{ steps.gate-lanes.outputs.scan }}
+      deps: ${{ steps.gate-lanes.outputs.deps }}
+      uv_lock: ${{ steps.gate-lanes.outputs.uv_lock }}
+      npm_lock: ${{ steps.gate-lanes.outputs.npm_lock }}
+      bootstrap: ${{ steps.gate-lanes.outputs.bootstrap }}
+      desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
+      rust: ${{ steps.gate-lanes.outputs.rust }}
+      docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
+      mcp_catalog: ${{ steps.gate-lanes.outputs.mcp_catalog }}
+      e2e: ${{ steps.gate-lanes.outputs.e2e }}
+      e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
+      e2e_desktop_core: ${{ steps.gate-lanes.outputs.e2e_desktop_core }}
+      e2e_desktop_update: ${{ steps.gate-lanes.outputs.e2e_desktop_update }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
       ci_review_files: ${{ steps.classify.outputs.ci_review_files }}
       event_name: ${{ github.event_name }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
         with:
-          sparse-checkout: scripts/ci/classify_changes.py
-          sparse-checkout-cone-mode: false
           github-token: ${{ github.token }}
+      - name: Force all lanes on release
+        # Overwrite the classifier outputs with 'true' when inputs.release.
+        # ci_review stays raw: it only ever feeds the PR review-label gate.
+        id: gate-lanes
+        env:
+          RELEASE: ${{ inputs.release }}
+          CLASSIFIED: ${{ toJSON(steps.classify.outputs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          values = json.loads(os.environ['CLASSIFIED'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              for lane, value in values.items():
+                  if os.environ['RELEASE'] == 'true' and value in ('true', 'false'):
+                      value = 'true'
+                  if '\n' in value or '\r' in value:
+                      continue
+                  output.write(f'{lane}={value}\n')
+          PY
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
   # Skipped workflows (if condition is false) don't spin up runners.
+  #
+  # The E2E suites (e2e, e2e-upgrade, both Desktop suites, and the two
+  # Windows journeys in tests-os) take most of the larger-runner minutes.
+  # On a pull request each runs only when the diff touches that suite or the
+  # code it guards, or the PR carries the `run-e2e` label
+  # (scripts/ci/classify_changes.py::_E2E_LANES). Every push to main runs
+  # all of them, so a regression the path lists miss turns main red after
+  # the merge.
   # ─────────────────────────────────────────────────────────────────────
   tests:
     name: Python tests
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
+    with:
+      e2e: ${{ needs.detect.outputs.e2e == 'true' }}
+      e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
 
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the
@@ -86,8 +144,10 @@ jobs:
     with:
       # The Windows lane spawns the real desktop-update hand-off script
       # (tests/test_desktop_update_windows_*.py) only when that surface
-      # changed; unit-level windows_only tests always run.
+      # changed; unit-level platforms("windows") tests always run.
       desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
+      e2e: ${{ needs.detect.outputs.e2e == 'true' }}
+      e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
 
   lint:
     name: Python lints
@@ -103,13 +163,6 @@ jobs:
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
 
-  installer-tests:
-    name: Installer tests
-    needs: detect
-    # Windows-only, and only for PRs that touch install.ps1 or its tests.
-    if: needs.detect.outputs.installer == 'true'
-    uses: ./.github/workflows/installer-tests.yml
-
   rust-tests:
     name: Rust tests
     needs: detect
@@ -117,6 +170,15 @@ jobs:
     # changes used to run the TypeScript matrix and nothing that compiles them.
     if: needs.detect.outputs.rust == 'true'
     uses: ./.github/workflows/rust-tests.yml
+
+  bootstrap-installer:
+    name: Bootstrap installer
+    needs: detect
+    # The bootstrap-installer path: install.sh, the pin fragments it embeds,
+    # and the version stamp it ships. The PowerShell installer's native tests
+    # are platforms("windows") pytest files and run in tests-os.
+    if: needs.detect.outputs.bootstrap == 'true'
+    uses: ./.github/workflows/bootstrap-installer.yml
 
   e2e-desktop:
     name: Desktop E2E
@@ -141,8 +203,18 @@ jobs:
     needs: detect
     # The deterministic core suite (apps/desktop/e2e/core): transcript
     # integrity, boot/respawn/orphans, clarify+approval. Required; retries 0.
-    if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
+    if: needs.detect.outputs.e2e_desktop_core == 'true'
     uses: ./.github/workflows/e2e-desktop-core.yml
+
+  e2e-desktop-update:
+    name: Desktop update E2E
+    needs: detect
+    # apps/desktop/e2e/update: a real install.sh install + packaged Desktop,
+    # first run, "Update now" hand-off/relaunch, concurrent-update refusal.
+    # Advisory until it has proven stable on CI: its shards run with continue-on-error, so a
+    # red shard shows on the PR but does not fail all-checks-pass.
+    if: needs.detect.outputs.e2e_desktop_update == 'true'
+    uses: ./.github/workflows/e2e-desktop-update.yml
 
   docs-site:
     name: Docs Site
@@ -183,10 +255,20 @@ jobs:
     needs: detect
     uses: ./.github/workflows/profile-artifact-check.yml
 
+  icons-freshness-check:
+    name: Icon assets freshness
+    needs: detect
+    uses: ./.github/workflows/icons-freshness-check.yml
+
   case-collision-check:
     name: Check no case-colliding filenames
     needs: detect
     uses: ./.github/workflows/case-collision-check.yml
+
+  lazy-deps-guard:
+    name: No production imports of the tools.lazy_deps stub
+    needs: detect
+    uses: ./.github/workflows/lazy-deps-guard.yml
 
   lockfile-diff:
     name: package-lock.json diff
@@ -223,8 +305,14 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
-  # status even when some deps were skipped. Only actual ``failure``
-  # results cause it to fail; ``skipped`` is treated as success.
+  # status even when some deps were skipped.
+  #
+  #   Non-release (PR/push): failure fails, skipped counts as success.
+  #   Release (inputs.release): strict — every required job must be
+  #   `success`. A skipped required lane fails the gate; only the PR-only
+  #   jobs (history-check, lockfile-diff, supply-chain, review-labels) and
+  #   the deferred Desktop E2E (e2e-desktop) may skip. The OSV scan's
+  #   findings are advisory, but its execution is required.
   #
   # Branch protection should require ONLY this check.
   #
@@ -239,18 +327,22 @@ jobs:
       - tests-os
       - lint
       - js-tests
-      - installer-tests
       - rust-tests
+      - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core
+      - e2e-desktop-update
       - docs-site
       - history-check
       - contributor-check
       - uv-lockfile
+      - infographic-check
       - case-collision-check
+      - lazy-deps-guard
       - lockfile-diff
       - docker-lint
       - profile-artifact-check
+      - icons-freshness-check
       - supply-chain
       - review-labels
       # OSV runs weekly against main (osv-scanner.yml schedule), not per PR:
@@ -267,29 +359,21 @@ jobs:
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ github.sha }}
       - name: Evaluate job results
         id: evaluate
+        # Shared with the stable orchestrator (scripts/ci/required_results.py
+        # is imported there). NEEDS is the toJSON(needs) context; RELEASE
+        # switches the gate into strict mode for release runs.
         env:
           NEEDS: ${{ toJSON(needs) }}
+          RELEASE: ${{ inputs.release }}
         run: |
-          echo "$NEEDS" | python3 -c "
-          import json, sys
-          needs = json.load(sys.stdin)
-          # Emit compact {job_name: result} for the comment assembler.
-          compact = {name: info['result'] for name, info in needs.items()}
-          print(f'needs-json={json.dumps(compact)}')
-          with open('$GITHUB_OUTPUT', 'a') as f:
-              f.write(f'needs-json={json.dumps(compact)}\n')
-          failed = [name for name, info in needs.items() if info['result'] == 'failure']
-          for name, info in sorted(needs.items()):
-              result = info['result']
-              icon = '✅' if result in ('success', 'skipped') else '❌'
-              print(f'{icon} {name}: {result}')
-          if failed:
-              print(f'::error::{len(failed)} job(s) failed: {\", \".join(failed)}')
-              sys.exit(1)
-          print('All checks passed (or were skipped)')
-          "
+          args=()
+          if [ "$RELEASE" = true ]; then args+=(--release); fi
+          printf '%s' "$NEEDS" | python3 scripts/ci/required_results.py "${args[@]}"
 
   # ─────────────────────────────────────────────────────────────────────
   # CI timing report: collect per-job/step durations from the GitHub API,
@@ -309,11 +393,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json
           # Prefix-match: exact key will never hit (run_id differs), so
@@ -335,7 +419,7 @@ jobs:
       - name: Upload HTML report
         # Advisory report — artifact-service blips must not fail the job.
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: ci-timings-html
         with:
           name: ci-timings-report
@@ -356,7 +440,7 @@ jobs:
       - name: Upload review status
         if: hashFiles('review-status.json') != ''
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: review-status-ci-timings
           path: review-status.json
@@ -385,7 +469,7 @@ jobs:
 
       - name: Upload baseline to cache (main only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('ci-timings-baseline.json') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json
           key: ci-timings-baseline-${{ github.run_id }}

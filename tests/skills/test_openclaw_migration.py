@@ -211,7 +211,7 @@ def test_readable_config_keeps_every_pre_existing_key(tmp_path: Path):
 
     migrator.migrate()
 
-    import yaml
+    import hermes_yaml as yaml
 
     merged = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert merged["model"] == "hermes-4-405b"

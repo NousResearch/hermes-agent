@@ -376,7 +376,7 @@ def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
         return
     with _file_lock(
         lock_path, _nous_shared_lock_holder, timeout_seconds,
-        "Timed out waiting for shared Nous auth lock"):
+        f"Timed out waiting for shared Nous auth lock ({lock_path})"):
         yield
 
 
@@ -613,6 +613,18 @@ def _refresh_access_token(
         raise AuthError(
             f"Nous Portal is temporarily unavailable (HTTP {response.status_code}).",
             provider="nous", code="temporarily_unavailable", retryable=True)
+    # Vercel's Security Checkpoint in front of the Portal answers non-browser clients with a
+    # 403 (``x-vercel-mitigated: deny``) or 429 (``challenge``) page (#120602). That is the edge
+    # refusing the request, not the token endpoint rejecting the grant, so keep the credentials
+    # instead of forcing a re-login.
+    mitigated = response.headers.get("x-vercel-mitigated") if response.status_code in {403, 429} else None
+    if mitigated:
+        from agent.retry_utils import parse_retry_after_seconds
+        raise AuthError(
+            f"Nous Portal's edge firewall challenged the token refresh (HTTP {response.status_code}, "
+            f"x-vercel-mitigated={mitigated}). Credentials kept; try again shortly.",
+            provider="nous", code="upstream_blocked", retryable=True,
+            retry_after=parse_retry_after_seconds(response.headers))
     from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
     try:
         error_payload = response.json()
@@ -1315,7 +1327,11 @@ def _pool_first_oauth_status(
                         "logged_in": True, "auth_store": str(_auth_file_path()),
                         "last_refresh": getattr(entry, "last_refresh", None),
                         "auth_mode": auth_mode,
-                        "source": f"pool:{getattr(entry, 'label', 'unknown')}", "api_key": api_key}
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}", "api_key": api_key,
+                        # The host this entry's key belongs to, so a caller never pairs it with
+                        # another provider default (#121486).
+                        "base_url": str(getattr(entry, "runtime_base_url", None)
+                                        or getattr(entry, "base_url", None) or "").rstrip("/")}
             if on_pool_miss is not None and (degraded := on_pool_miss()):
                 return degraded
     except Exception:
@@ -1326,7 +1342,7 @@ def _pool_first_oauth_status(
             "logged_in": True, "auth_store": str(_auth_file_path()),
             "last_refresh": creds.get("last_refresh"),
             "auth_mode": creds.get("auth_mode"), "source": creds.get("source"),
-            "api_key": creds.get("api_key")}
+            "api_key": creds.get("api_key"), "base_url": creds.get("base_url") or ""}
     except AuthError as exc:
         return {"logged_in": False, "auth_store": str(_auth_file_path()), "error": str(exc)}
 

@@ -417,7 +417,8 @@ class TestWebhookEndpoints:
             "restart_action": "gateway-restart",
             "restart_pid": 4242,
         }
-        assert restart_calls == [(["gateway", "restart"], "gateway-restart")]
+        # The default home is named explicitly: a bare child would re-read the sticky active_profile.
+        assert restart_calls == [(["-p", "default", "gateway", "restart"], "gateway-restart")]
         assert load_config()["platforms"]["webhook"]["enabled"] is True
         assert self.client.get("/api/webhooks").json()["enabled"] is True
 
@@ -799,7 +800,7 @@ class TestUpdateCheckEndpoint:
         # Stub the shared checker so the contract is deterministic (no network).
         import hermes_cli.banner as banner
 
-        monkeypatch.setattr(banner, "check_for_updates", lambda: 5)
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {"behind": 5, "commits": []})
 
         r = self.client.get("/api/hermes/update/check")
         assert r.status_code == 200
@@ -837,6 +838,14 @@ class TestUpdateCheckEndpoint:
         assert body["update_available"] is False
         assert body["behind"] is None
         assert "managed outside this dashboard" in body["message"]
+        # No runnable command exists; clients render update_command verbatim
+        # as a copyable shell line, so prose here is a fake command.
+        assert body["update_command"] == ""
+
+        refused = self.client.post("/api/hermes/update").json()
+        assert refused["ok"] is False
+        assert refused["error"] == "dashboard_update_managed_externally"
+        assert refused["update_command"] == ""
 
 
 class TestDebugShareEndpoint:
@@ -1138,3 +1147,31 @@ def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
         pass
 
     assert calls == ["terminate"]
+
+
+def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
+    """The boot sweep must pass the startup grace, not reap a just-launching gateway (#122533).
+
+    Asserting only "the reaper ran" would not catch a revert to the bare
+    ``_reap_unsupervised_gateway_orphans()`` call, which is exactly the regression.
+    """
+    import hermes_cli.web_server as ws
+    from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
+
+    seen = {}
+
+    def _fake_reap(extra_exclude=None, *, min_age_s=0.0):
+        seen["min_age_s"] = min_age_s
+        return False
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+    monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
+    monkeypatch.setattr("hermes_cli.gateway._reap_unsupervised_gateway_orphans", _fake_reap)
+
+    client, _header = _client()
+    with client:
+        pass
+
+    assert seen["min_age_s"] == _REAP_MIN_AGE_SECONDS

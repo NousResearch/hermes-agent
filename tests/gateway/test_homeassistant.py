@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
+
 from gateway.config import (
     Platform,
     PlatformConfig,
@@ -274,7 +276,7 @@ class TestSendViaRestApi:
         # Verify the REST API was called with correct payload
         call_args = mock_session.post.call_args
         assert "/api/services/persistent_notification/create" in call_args[0][0]
-        assert call_args[1]["json"]["title"] == "Hermes Agent"
+        assert call_args[1]["json"]["title"] == t("platform.homeassistant.notification_title")
         assert call_args[1]["json"]["message"] == "Test notification"
         assert "Bearer tok" in call_args[1]["headers"]["Authorization"]
 
@@ -302,7 +304,7 @@ class TestLocalNetworkConnectHint:
         assert _connect_error_detail(err) == str(err)
         assert _connect_error_detail(RuntimeError("auth failed")) == "auth failed"
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_ehostunreach_under_launchd_names_the_remedy(self, monkeypatch):
         """Only the launchd-supervised gateway can be denied by Local Network Privacy (#71206)."""
         from plugins.platforms.homeassistant.adapter import _connect_error_detail

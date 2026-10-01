@@ -34,7 +34,6 @@ from hermes_cli.auth import (
     get_auth_status,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -61,16 +60,13 @@ def _make_httpx_response(status_code: int, body: dict | None = None, text: str =
     resp.iter_bytes.return_value = iter([resp.text.encode("utf-8")] if resp.text else [])
     return resp
 
-
 def _future_iso(seconds_from_now: int = 3600) -> str:
     ts = time.time() + seconds_from_now
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
-
 def _past_iso(seconds_ago: int = 3600) -> str:
     ts = time.time() - seconds_ago
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
 
 # ---------------------------------------------------------------------------
 # 0. test_resolve_token_expiry_unix_ttl_vs_absolute_ms
@@ -80,9 +76,6 @@ def test_resolve_token_expiry_unix_ttl_seconds():
     now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
     got = _minimax_resolve_token_expiry_unix(3600, now=now)
     assert abs(got - (now.timestamp() + 3600)) < 0.01
-
-
-
 
 # ---------------------------------------------------------------------------
 # 1. test_pkce_pair_produces_valid_s256
@@ -114,12 +107,9 @@ def test_pkce_pair_produces_valid_s256():
     assert verifier != v2
     assert state != s2
 
-
 # ---------------------------------------------------------------------------
 # 2. test_request_user_code_happy_path
 # ---------------------------------------------------------------------------
-
-
 
 # ---------------------------------------------------------------------------
 # 3. test_request_user_code_state_mismatch_raises
@@ -149,30 +139,21 @@ def test_request_user_code_state_mismatch_raises():
     assert exc_info.value.code == "state_mismatch"
     assert "CSRF" in str(exc_info.value) or "mismatch" in str(exc_info.value).lower()
 
-
 # ---------------------------------------------------------------------------
 # 4. test_request_user_code_non_200_raises
 # ---------------------------------------------------------------------------
-
-
 
 # ---------------------------------------------------------------------------
 # 5. test_poll_token_pending_then_success
 # ---------------------------------------------------------------------------
 
-
-
 # ---------------------------------------------------------------------------
 # 6. test_poll_token_error_raises
 # ---------------------------------------------------------------------------
 
-
-
 # ---------------------------------------------------------------------------
 # 7. test_poll_token_timeout_raises
 # ---------------------------------------------------------------------------
-
-
 
 # ---------------------------------------------------------------------------
 # 8. test_refresh_skip_when_not_expired
@@ -193,26 +174,17 @@ def test_refresh_skip_when_not_expired():
     assert result["access_token"] == "old-access"
     assert result is state  # Same object returned (no refresh)
 
-
 # ---------------------------------------------------------------------------
 # 9. test_refresh_updates_access_token
 # ---------------------------------------------------------------------------
-
-
-
-
 
 # ---------------------------------------------------------------------------
 # 10. test_refresh_reuse_triggers_relogin_required
 # ---------------------------------------------------------------------------
 
-
-
 # ---------------------------------------------------------------------------
 # 11. test_resolve_credentials_requires_login
 # ---------------------------------------------------------------------------
-
-
 
 # ---------------------------------------------------------------------------
 # 11b. Terminal refresh failure quarantines dead tokens (#28003)
@@ -285,20 +257,13 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
     assert err["relogin_required"] is True
     assert "at" in err
 
-
-
-
 # ---------------------------------------------------------------------------
 # 12. test_provider_registry_contains_minimax_oauth
 # ---------------------------------------------------------------------------
 
-
-
 # ---------------------------------------------------------------------------
 # 13. test_minimax_oauth_alias_resolves
 # ---------------------------------------------------------------------------
-
-
 
 # ---------------------------------------------------------------------------
 # 14. test_get_minimax_oauth_auth_status_not_logged_in
@@ -311,12 +276,9 @@ def test_get_minimax_oauth_auth_status_not_logged_in():
     assert status["logged_in"] is False
     assert status["provider"] == "minimax-oauth"
 
-
 # ---------------------------------------------------------------------------
 # 15. test_get_minimax_oauth_auth_status_logged_in
 # ---------------------------------------------------------------------------
-
-
 
 def test_generic_auth_status_dispatches_minimax_oauth():
     state = {
@@ -332,14 +294,12 @@ def test_generic_auth_status_dispatches_minimax_oauth():
     assert status["provider"] == "minimax-oauth"
     assert status["region"] == "global"
 
-
 # ---------------------------------------------------------------------------
 # build_minimax_oauth_token_provider — per-request callable bearer
 # ---------------------------------------------------------------------------
 # These tests verify the fix for short-lived (~15-min) MiniMax access tokens
 # expiring mid-session. The callable is invoked by the Anthropic SDK on every
 # outbound request via the existing Entra-style bearer hook.
-
 
 def test_token_provider_returns_current_access_token_when_fresh():
     """When token is far from expiry, callable just returns the cached token."""
@@ -363,7 +323,6 @@ def test_token_provider_returns_current_access_token_when_fresh():
         mock_client_class.assert_not_called()
 
     assert token == "still-fresh"
-
 
 def test_token_provider_refreshes_when_near_expiry():
     """When token is within the skew window, callable mints a fresh one."""
@@ -402,9 +361,6 @@ def test_token_provider_refreshes_when_near_expiry():
 
     assert token == "fresh-bearer"
 
-
-
-
 def test_token_provider_raises_not_logged_in_when_state_missing():
     """No state in auth.json → AuthError(not_logged_in, relogin_required=True)."""
     from hermes_cli.auth import build_minimax_oauth_token_provider
@@ -416,7 +372,6 @@ def test_token_provider_raises_not_logged_in_when_state_missing():
 
     assert exc_info.value.code == "not_logged_in"
     assert exc_info.value.relogin_required is True
-
 
 def test_token_provider_quarantines_state_on_terminal_refresh():
     """When refresh returns invalid_grant, callable raises AuthError AND
@@ -464,7 +419,6 @@ def test_token_provider_quarantines_state_on_terminal_refresh():
     assert "refresh_token" not in quarantined
     assert quarantined["last_auth_error"]["relogin_required"] is True
 
-
 def test_resolve_returns_callable_when_as_token_provider_true():
     """Explicit opt-in path: resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
     returns a callable api_key."""
@@ -484,7 +438,6 @@ def test_resolve_returns_callable_when_as_token_provider_true():
     assert not isinstance(creds["api_key"], str)
     assert creds["base_url"] == MINIMAX_OAUTH_GLOBAL_INFERENCE.rstrip("/")
 
-
 # ---------------------------------------------------------------------------
 # Bounded error-body reads (#56548 / PR #56549)
 # ---------------------------------------------------------------------------
@@ -502,7 +455,6 @@ def test_refresh_error_body_bounded_and_readable_with_real_client():
     import http.server
     import socketserver
     import threading
-
 
     from hermes_cli.auth import _refresh_minimax_oauth_state
 
@@ -542,5 +494,3 @@ def test_refresh_error_body_bounded_and_readable_with_real_client():
     # Bounded: 16KB limit + truncation marker, never the full 64KB body.
     assert len(msg) < 20 * 1024
     assert "...[truncated]" in msg
-
-

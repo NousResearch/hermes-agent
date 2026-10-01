@@ -9,11 +9,12 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home, get_optional_mcps_dir
 from hermes_cli._subprocess_compat import noninteractive_git_env
@@ -285,7 +286,7 @@ def _parse_install(path: Path, install_raw: Any) -> Optional[InstallSpec]:
 def _parse_manifest(path: Path) -> CatalogEntry:
     """Read and validate a manifest.yaml. Raise CatalogError on any problem."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = yaml.safe_load(f) or {}
     except Exception as exc:
         raise CatalogError(f"failed to read {path}: {exc}") from exc
@@ -718,7 +719,34 @@ def card_install_config(entry: CatalogEntry) -> dict:
     return cfg
 
 
+def record_mcp_install(source: str, name: Optional[str], outcome: str) -> None:
+    """One shared-metrics extension install for an MCP server (catalog entry name, or None when custom)."""
+    from hermes_cli.observability.shared_metrics_events import record_extension_install
+
+    record_extension_install(kind="mcp_server", source=source, name=name, outcome=outcome)
+
+
+@contextmanager
+def recorded_catalog_install(name: str) -> Iterator[None]:
+    """Record a first install of catalog entry *name* once: failed when the body raises, else
+    success. A reinstall over an existing ``mcp_servers`` block is not an install."""
+    fresh = not is_installed(name)
+    try:
+        yield
+    except Exception:
+        if fresh:
+            record_mcp_install("catalog", name, "failed")
+        raise
+    if fresh:
+        record_mcp_install("catalog", name, "success")
+
+
 def install_entry(entry: CatalogEntry, *, enable: bool = True, preloaded_env: Optional[Dict[str, str]] = None) -> None:
+    with recorded_catalog_install(entry.name):
+        _install_entry(entry, enable=enable, preloaded_env=preloaded_env)
+
+
+def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional[Dict[str, str]]) -> None:
     """Install a catalog entry end-to-end.
 
     Order: git clone + bootstrap (if any); credential prompts (``auth.env``) to .env; write

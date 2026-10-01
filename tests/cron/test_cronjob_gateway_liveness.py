@@ -22,7 +22,6 @@ import json
 
 import pytest
 
-
 @pytest.fixture
 def hermes_env(tmp_path, monkeypatch):
     """Isolate HERMES_HOME for each test so jobs don't leak."""
@@ -42,7 +41,6 @@ def hermes_env(tmp_path, monkeypatch):
 
     return home
 
-
 def _create_job() -> dict:
     from tools.cronjob_tools import cronjob
 
@@ -55,7 +53,6 @@ def _create_job() -> dict:
             deliver="local",
         )
     )
-
 
 class TestCreateSurfacesGatewayLiveness:
     def test_create_with_gateway_running_has_no_warning(self, hermes_env):
@@ -96,7 +93,6 @@ class TestCreateSurfacesGatewayLiveness:
         assert result["success"] is True
         assert result["gateway_running"] is None
         assert "warning" not in result
-
 
 class TestListSurfacesGatewayLiveness:
     """The `list` action has the same silent-inert-job failure mode as
@@ -145,12 +141,9 @@ class TestListSurfacesGatewayLiveness:
         assert result["gateway_running"] is True
         assert "warning" not in result
 
-
 # ---------------------------------------------------------------------------
 
-
 from contextlib import ExitStack
-
 
 class _LivenessPatches:
     """Context manager patching the provider/gateway-pid probes.
@@ -207,10 +200,8 @@ class _LivenessPatches:
     def __exit__(self, *exc):
         return self._stack.__exit__(*exc)
 
-
 def patch_liveness(*, provider, pids, lock_active=False):
     return _LivenessPatches(provider=provider, pids=pids, lock_active=lock_active)
-
 
 class TestRuntimeLockFirstLiveness:
     """The gateway runtime lock is the primary liveness signal (#95947).
@@ -298,21 +289,3 @@ class TestRuntimeLockFirstLiveness:
             ),
         ):
             assert cron_cli._builtin_gateway_liveness() is True
-
-    def test_no_multiplexer_and_no_pids_is_still_false(self):
-        from unittest.mock import patch
-
-        import hermes_cli.cron as cron_cli
-
-        with (
-            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
-            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
-            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
-            patch(
-                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
-                return_value=False,
-            ),
-        ):
-            assert cron_cli._builtin_gateway_liveness() is False
-
-

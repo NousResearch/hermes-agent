@@ -28,11 +28,14 @@ import time
 # session's batch deadline. State is process-global like the rest of this module's approval state; entries
 # are bounded by _HUMAN_WAIT_MAX_SESSIONS.
 class _HumanWaitState:
-    __slots__ = ("pending", "window_started", "completed_seconds")
+    __slots__ = ("pending", "window_started", "window_ceiling", "completed_seconds")
 
     def __init__(self) -> None:
         self.pending = 0
         self.window_started: float | None = None
+        # Ceiling of the open window, fixed by the waiting threads when they enter it: the batch wait loop that
+        # reads it may run in another context, where an unbounded CLI/TUI/Desktop prompt would look bounded.
+        self.window_ceiling = 0.0
         self.completed_seconds = 0.0
 
 
@@ -46,17 +49,19 @@ HUMAN_WAIT_MARGIN_S = 60.0
 
 
 def human_wait_ceiling() -> float:
-    """Max seconds a single window may contribute: approvals.timeout + margin.
-    Every legitimate human wait self-terminates at ``approvals.timeout`` (the CLI
-    prompt join and the gateway poll loop both enforce it), so a window that
+    """Max seconds a single window may contribute in this turn: the approval window + margin.
+    On messaging platforms every legitimate human wait self-terminates at
+    ``approvals.timeout`` (the gateway poll loop enforces it), so a window that
     overstays this ceiling is itself wedged and must not keep extending a batch
-    deadline. Also the bound on the authorization gate's serialization-lock
+    deadline; CLI/TUI/Desktop prompts wait until answered, so their ceiling is the
+    platform-safe maximum. Also the bound on the authorization gate's serialization-lock
     acquire in agent/tool_executor.py, so the two cannot drift. Never call while
     holding ``_human_wait_lock`` — it reads the config cache.
-    ``_get_approval_timeout`` caps at ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so the
+    ``approval_wait_seconds`` caps at ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so the
     value is always safe for ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``."""
     from tools import approval_context
-    return float(approval_context._get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
+    from agent.deadline import MAX_SAFE_TIMEOUT_S
+    return min(MAX_SAFE_TIMEOUT_S, float(approval_context.approval_wait_seconds()) + HUMAN_WAIT_MARGIN_S)
 
 
 def _clamped_window_seconds(started: float, now: float, ceiling: float) -> float:
@@ -117,26 +122,29 @@ def human_wait_window(session_key: str | None = None):
     See #79719.
     """
     key = _resolve_key(session_key)
+    ceiling = human_wait_ceiling()
     now = time.monotonic()
     with _human_wait_lock:
         state = _human_wait_state(key)
         if state.pending == 0:
-            state.window_started = now
+            state.window_started, state.window_ceiling = now, ceiling
+        else:
+            state.window_ceiling = max(state.window_ceiling, ceiling)
         state.pending += 1
     try:
         yield
     finally:
         now = time.monotonic()
-        # Clamp the accrual too: a window that overstayed the ceiling was wedged —
-        # record at most the ceiling, not the whole overstay.
-        ceiling = human_wait_ceiling()
         with _human_wait_lock:
             state = _human_wait_states.get(key)
             if state is not None:
                 state.pending -= 1
                 if state.pending == 0:
                     if state.window_started is not None:
-                        state.completed_seconds += _clamped_window_seconds(state.window_started, now, ceiling)
+                        # Clamp the accrual too: a window that overstayed the ceiling was wedged —
+                        # record at most the ceiling, not the whole overstay.
+                        state.completed_seconds += _clamped_window_seconds(
+                            state.window_started, now, state.window_ceiling)
                     state.window_started = None
 
 
@@ -147,23 +155,16 @@ def human_wait_seconds(session_key: str | None = None) -> float:
     cap pressure, which can only shrink a consumer's baseline delta to zero (the
     safe direction: the deadline fires sooner). Deadline consumers snapshot a
     baseline at batch start and use the delta. Each window's contribution is
-    clamped to :func:`human_wait_ceiling` (belt-and-braces against the
-    wedged-window hang).
-
-    Each window's contribution is clamped to :func:`human_wait_ceiling`: every legitimate human wait
-    self-terminates at ``approvals.timeout`` (both the CLI prompt join and the gateway poll loop enforce
-    it), so a window that overstays that bound is itself wedged and must not keep extending a batch deadline
-    (belt-and-braces for #79719).
+    clamped to the :func:`human_wait_ceiling` its waiters entered with
+    (belt-and-braces against the wedged-window hang, #79719).
     """
     key = _resolve_key(session_key)
     now = time.monotonic()
-    # Resolve the clamp outside the lock: it reads the config cache, which must never nest under _human_wait_lock.
-    ceiling = human_wait_ceiling()
     with _human_wait_lock:
         state = _human_wait_states.get(key)
         if state is None:
             return 0.0
         total = state.completed_seconds
         if state.window_started is not None:
-            total += _clamped_window_seconds(state.window_started, now, ceiling)
+            total += _clamped_window_seconds(state.window_started, now, state.window_ceiling)
         return total

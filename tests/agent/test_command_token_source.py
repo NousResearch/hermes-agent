@@ -15,6 +15,7 @@ behaviours that make the feature work:
 from __future__ import annotations
 
 import time
+from hermes_time import deadline_clock
 from types import SimpleNamespace
 
 import pytest
@@ -133,9 +134,9 @@ class TestCaching:
 
         source = CommandTokenSource("date +%s%N", "dbx")
         first = source()
-        assert 0 < source._expires_at - time.monotonic() <= _NO_TTL_REFRESH_SECONDS
+        assert 0 < source._expires_at - deadline_clock() <= _NO_TTL_REFRESH_SECONDS
         assert source() == first  # cached inside the window
-        source._expires_at = time.monotonic() - 1  # cross the window
+        source._expires_at = deadline_clock() - 1  # cross the window
         assert source() != first  # re-minted after it
 
 
@@ -291,7 +292,7 @@ class TestAbsoluteExpiry:
         src = CommandTokenSource(cmd, "p")
         src()
         assert src._expires_at is not None, "cache must carry a deadline"
-        src._expires_at = time.monotonic() - 1  # simulate crossing it
+        src._expires_at = deadline_clock() - 1  # simulate crossing it
         src()
         assert len(counter.read_text()) == 2, "expired cache must re-run the helper"
 

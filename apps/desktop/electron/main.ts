@@ -360,7 +360,12 @@ import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
-import { ensureMainWindow } from './main-window-lifecycle'
+import {
+  activateWindow as activateRestoredWindow,
+  decideSecondInstanceAction,
+  ensureMainWindow,
+  shouldQuitOnAllClosed
+} from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -13775,7 +13780,10 @@ const sessionWindows = createSessionWindowRegistry()
 const minimizeToTray = createMinimizeToTray({
   preferencesPath: path.join(app.getPath('userData'), 'minimize-to-tray.json'),
   getIconPath: getAppIconPath,
-  restoreMainWindow: () => ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow }),
+  // A tray click is an explicit relaunch gesture (#130810): restore with
+  // activation (show + focus), not the ambient showInactive path.
+  restoreMainWindow: () =>
+    ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow: activateRestoredWindow }),
   isQuittingForHandoff: () => isQuittingForHandoff,
   log: rememberLog
 })
@@ -19186,6 +19194,12 @@ function handleDeepLink(url) {
         mainWindow.restore()
       }
 
+      // #130810: a tray-hidden primary reports invisible but not minimized;
+      // without an explicit show the focus below lands on a hidden window.
+      if (!mainWindow.isVisible()) {
+        mainWindow.show()
+      }
+
       mainWindow.focus()
 
       if (mainWindow.isFullScreen()) {
@@ -19207,6 +19221,15 @@ function handleDeepLink(url) {
   try {
     if (mainWindow.isMinimized()) {
       mainWindow.restore()
+    }
+
+    // #130810: same tray-hidden case as above — a second-instance deep link
+    // must un-hide the window before delivering, otherwise the payload goes
+    // to an invisible renderer and the relaunch looks like a silent exit.
+    // Showing emits `show`, so minimize-to-tray releases the window from its
+    // hidden set (and clears skipTaskbar on Windows).
+    if (!mainWindow.isVisible()) {
+      mainWindow.show()
     }
 
     // #83998: a deep link must deliver without re-pumping the Windows
@@ -19312,13 +19335,40 @@ if (!isPrimaryInstance) {
       handleDeepLink(url)
     }
 
-    ensureMainWindow(mainWindow, {
-      isReady: app.isReady(),
-      createWindow,
-      focusWindow,
-      // deep-link delivery focuses a live window after its renderer is ready.
-      focusExisting: !url
-    })
+    // #130810: a second Start-menu / shortcut / Hermes.exe launch must never
+    // silently exit. Restore a live (minimized or tray-hidden) primary with
+    // activation, or re-create it when it was destroyed — and log the
+    // decision so a future silent exit stays diagnosable in desktop.log.
+    const decision = decideSecondInstanceAction(mainWindow, app.isReady())
+    const destroyed = !mainWindow || mainWindow.isDestroyed()
+
+    rememberLog(
+      `[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'} decision=${decision} ` +
+        `mainWindow=${destroyed ? 'destroyed' : 'live'} ` +
+        `minimized=${!destroyed && typeof mainWindow.isMinimized === 'function' ? mainWindow.isMinimized() : 'n/a'} ` +
+        `visible=${!destroyed && typeof mainWindow.isVisible === 'function' ? mainWindow.isVisible() : 'n/a'})`
+    )
+
+    if (decision === 'create') {
+      createWindow()
+
+      return
+    }
+
+    if (decision === 'defer') {
+      // Pre-ready: the pending whenReady boot creates the first window.
+      return
+    }
+
+    // A live primary: deep-link delivery already restored/shown/focused it
+    // above; a plain relaunch must activate it (restore + show + focus) so a
+    // tray-hidden or minimized window comes back instead of flashing the
+    // taskbar. Unlike the ambient focusWindow (showInactive per #83998), an
+    // explicit relaunch owns the foreground. Re-asserting activation after a
+    // deep link is idempotent (a visible + focused window is a no-op) and
+    // covers the queued-delivery case, where handleDeepLink stored the payload
+    // without showing the window yet.
+    activateRestoredWindow(mainWindow)
   })
 }
 
@@ -19467,10 +19517,12 @@ app.whenReady().then(() => {
     // Recreate the primary window if it's gone. Guard on mainWindow directly
     // (not just total window count) so a dock click still restores the main
     // window when only secondary session windows remain open.
+    // #130810: a dock/taskbar activate is explicit, so restore with
+    // activation (restore + show + focus), not the ambient showInactive path.
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
     } else {
-      focusWindow(mainWindow)
+      activateRestoredWindow(mainWindow)
     }
   })
 })
@@ -19619,7 +19671,21 @@ function registerChatWindow(window: BrowserWindow) {
 
     heldQuitForActiveWork(event)
   })
-  window.once('closed', () => chatWindows.delete(window))
+  window.once('closed', () => {
+    chatWindows.delete(window)
+
+    // #130810: hidden helpers (Quick Entry, HUD, pet overlay) are still
+    // BrowserWindows, so `window-all-closed` never fires while one lingers
+    // and a windowless app keeps holding the single-instance lock — every
+    // later launch then exits silently. A tray-absorbed close never reaches
+    // here (preventDefault), and a multi-window close still has peers left,
+    // so quitting only when no chat surface remains is safe: it forces the
+    // ordinary before-quit teardown (backends, SSH, PTYs, watchers) even when
+    // window-all-closed is blocked.
+    if (!IS_MAC && !isQuittingForHandoff && chatWindows.size === 0 && !appQuitting) {
+      app.quit()
+    }
+  })
 }
 
 app.on('before-quit', event => {
@@ -19766,7 +19832,9 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  // #130810: on Windows/Linux closing the last window IS quitting — the app
+  // must not linger windowless holding the single-instance lock.
+  if (shouldQuitOnAllClosed(process.platform, isQuittingForHandoff)) {
     app.quit()
   }
 })

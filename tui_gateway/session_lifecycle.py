@@ -547,7 +547,9 @@ def _announce_session_reclaimed(session: dict, end_reason: str) -> None:
         logger.debug("session.reclaimed broadcast failed", exc_info=True)
 
 
-def _announce_cancelled_gateway_approvals(session: dict, reason: str, *, session_id: str = "") -> None:
+def _announce_cancelled_gateway_approvals(
+    session: dict, reason: str, *, session_id: str = "", pending: list[dict] | None = None,
+) -> None:
     """Tell connected clients pending gateway approvals are being dropped (interrupt/reap/teardown, #106678).
 
     Broadcast, not session-targeted: reap/interrupt run on timer threads with no live transport or contextvar,
@@ -558,12 +560,13 @@ def _announce_cancelled_gateway_approvals(session: dict, reason: str, *, session
     session_key = str(session.get("session_key") or "")
     if not session_key:
         return
-    try:
-        from tools.approval import list_gateway_approvals
-        pending = list_gateway_approvals(session_key)
-    except Exception:
-        logger.debug("list_gateway_approvals failed", exc_info=True)
-        return
+    if pending is None:
+        try:
+            from tools.approval import list_gateway_approvals
+            pending = list_gateway_approvals(session_key)
+        except Exception:
+            logger.debug("list_gateway_approvals failed", exc_info=True)
+            return
     if not pending:
         return
     request_ids = [str(item.get("request_id") or "") for item in pending]
@@ -759,21 +762,32 @@ def _interrupt_session_turn(
     ``orphan=True`` (reaper path) labels dropped approvals ``ws_orphan_reap``; the label comes from the
     caller, never from request_id prefix sniffing — a future orphan caller may use another id (#106678).
     """
+    from tui_gateway import server_requests
+    from tools.approval import list_gateway_approvals, resolve_gateway_approval
+
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
+        interrupted_agent = session.get("agent")
+        interrupted_session_key = str(session.get("session_key") or "")
+        pending_request_ids = {request["id"] for request in server_requests.open_requests(sid)}
+        pending_approvals = list_gateway_approvals(interrupted_session_key) if interrupted_session_key else []
         interrupted_claim = session.get("_turn_claim")
         should_interrupt = bool(session.get("running"))
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+
+    def still_current() -> bool:
+        with session["history_lock"]:
+            return _owns_turn_claim(session, interrupted_claim)
+
     if use_compute_host:
         # Host I/O must stay outside history_lock because the interrupted operation can require that lock.
         if should_interrupt or session.get("_compute_host_active"):
             _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
-    with session["history_lock"]:
-        if not _owns_turn_claim(session, interrupted_claim):
-            return use_compute_host
+    if not still_current():
+        return use_compute_host
     if should_interrupt:
         # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
@@ -785,15 +799,19 @@ def _interrupt_session_turn(
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             with _session_profile_runtime_scope(session, hydrate_secrets=False):
                 _invoke_hook(
-                    "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
+                    "agent_loop_stopped", session_key=interrupted_session_key, platform="tui",
                     reason="user_stop", invalidation_reason="session_interrupt",
                 )
         except Exception:
             logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+    if not still_current():
+        return use_compute_host
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(session.get("agent"))
+            request_hard_interrupt(interrupted_agent)
+        if not still_current():
+            return use_compute_host
         # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
         # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
         # interrupted completion with its partial output.
@@ -801,11 +819,11 @@ def _interrupt_session_turn(
             from tools.async_delegation import interrupt_for_session
             interrupt_for_session(
                 origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
-                parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
+                parent_session_id=str(getattr(interrupted_agent, "session_id", "") or ""))
+        if not still_current():
+            return use_compute_host
         with session["history_lock"]:
-            # A claim whose own thread is not running yet (an automatic turn still starting, or a thread that has
-            # been published but not started) ends here: its owner checks the claim before it starts the turn. A
-            # claim taken after this Stop is left alone.
+            # A dispatcher can be alive before its claim's worker starts; only the worker executes the turn.
             run_thread = session.get("_run_thread")
             claim_thread_alive = (
                 session.get("_run_thread_claim") == interrupted_claim and run_thread is not None
@@ -815,22 +833,27 @@ def _interrupt_session_turn(
                 session["running"] = False
                 _clear_inflight_turn(session)
     # Background memory reviews run outside the foreground turn and need separate interruption.
-    if (agent_for_review := session.get("agent")) is not None:
+    if not still_current():
+        return use_compute_host
+    if interrupted_agent is not None:
         with contextlib.suppress(Exception):
             from agent.background_review import cancel_background_review_for_live_turn
             cancel_background_review_for_live_turn(
-                agent_for_review, message="session interrupted", tool_reason="session interrupted")
+                interrupted_agent, message="session interrupted", tool_reason="session interrupted")
+    if not still_current():
+        return use_compute_host
 
-    _clear_pending(sid)
+    _clear_pending(sid, request_ids=pending_request_ids)
+    if not still_current():
+        return use_compute_host
     with contextlib.suppress(Exception):
-        # Deny-resolve every pending approval so no agent thread blocks on the queue. The
-        # deny is silent without the broadcast: a reconnecting client sees a bare 4001 on
-        # approval.pending and the prompt looks lost rather than cancelled (#106678).
-        # Announce BEFORE the queue is drained, or there is nothing left to name.
         reason = "ws_orphan_reap" if orphan else "interrupt"
-        _announce_cancelled_gateway_approvals(session, reason, session_id=sid)
-        from tools.approval import resolve_gateway_approval
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        _announce_cancelled_gateway_approvals(session, reason, session_id=sid, pending=pending_approvals)
+        if not still_current():
+            return use_compute_host
+        for approval in pending_approvals:
+            if request_id := approval.get("request_id"):
+                resolve_gateway_approval(interrupted_session_key, "deny", request_id=request_id)
     return use_compute_host
 
 

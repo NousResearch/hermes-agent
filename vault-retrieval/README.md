@@ -137,10 +137,13 @@ Roll out:
 
 ## Rollback
 
-Set `mode: off` in the plugin config OR remove the plugin directory.
-Long-lived gateway/worker processes pick up the new mode on next
-start; for immediate effect, restart them. Built-in file tools remain
-unaffected when the hook is `off`.
+Set `mode: "off"` (quoted) in the plugin config — the quote is required
+because YAML 1.1 parses unquoted `mode: off` as boolean `False`, which the
+plugin normalizes to `"off"` defensively but operators should still quote
+the value for clarity — OR remove the plugin directory. Long-lived
+gateway/worker processes pick up the new mode on next start; for immediate
+effect, restart them. Built-in file tools remain unaffected when the hook
+is `off`.
 
 ## Development
 

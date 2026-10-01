@@ -124,6 +124,33 @@ def _require_str(cfg: Dict[str, Any], key: str, allowed: tuple) -> str:
     return value
 
 
+def _normalize_mode_value(value: Any) -> Any:
+    """Normalize YAML 1.1 boolean ``False`` (and its ``Off``/``No`` siblings)
+    to the documented ``"off"`` mode value, but only for this single field.
+
+    PyYAML's ``safe_load`` defaults to YAML 1.1, so an operator who follows
+    the documented rollback literally — ``mode: off`` — gets Python
+    ``bool(False)``. Without normalization, the validator rejects ``False``
+    as not-a-string and ``register()`` fails closed, which is exactly the
+    opposite of the intended rollback (built-in file tools stay blocked AND
+    the ``vault_context`` surface disappears). Normalizing ``False`` to
+    ``"off"`` keeps the rollback a single keystroke from the operator.
+
+    Boolean ``True`` is NOT accepted as an undocumented mode — the spec
+    enumerates exactly three valid string values; any other value still
+    raises :class:`VaultConfigError`. This preserves the strict allow-list
+    the architecture memo mandates.
+    """
+    if value is False:
+        return "off"
+    if value is True:
+        raise VaultConfigError(
+            "mode: boolean True is not a documented mode; use one of "
+            "('enforce', 'audit', 'off')"
+        )
+    return value
+
+
 def validate_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Validate the plugin configuration dict.
 
@@ -172,8 +199,12 @@ def validate_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if out["log_raw_query_terms"]:
         raise VaultConfigError("log_raw_query_terms must remain false (spec)")
 
-    # Mode
-    out["mode"] = _require_str(cfg, "mode", _VALID_MODES)
+    # Mode — YAML 1.1 turns the documented unquoted ``mode: off`` into
+    # Python ``bool(False)``; normalize before the allow-list check so the
+    # literal operator rollback works. Boolean ``True`` is still refused
+    # by _normalize_mode_value itself.
+    out["mode"] = _normalize_mode_value(cfg.get("mode"))
+    out["mode"] = _require_str(out, "mode", _VALID_MODES)
 
     return out
 

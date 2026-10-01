@@ -298,7 +298,8 @@ async def test_short_tagged_bot_chunk_waits_for_followup_window(adapter, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_batched_thread_messages_include_the_history_backfill_once(adapter, monkeypatch):
+@pytest.mark.parametrize("forwarded", [False, True])
+async def test_batched_thread_messages_include_the_history_backfill_once(adapter, monkeypatch, forwarded):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     adapter.config.extra["history_backfill"] = True
@@ -311,6 +312,9 @@ async def test_batched_thread_messages_include_the_history_backfill_once(adapter
     first = make_message(channel=thread, content="first")
     second = make_message(channel=thread, content="second")
     second.id = 124
+    forwarded_context = "[Forwarded message]\nforwarded words" if forwarded else None
+    if forwarded:
+        second.message_snapshots = [SimpleNamespace(content="forwarded words", attachments=[])]
 
     with patch.object(discord_platform.asyncio, "sleep", new_callable=AsyncMock):
         await adapter._handle_message(first)
@@ -318,7 +322,17 @@ async def test_batched_thread_messages_include_the_history_backfill_once(adapter
         await asyncio.gather(*adapter._pending_text_batch_tasks.values())
 
     event = adapter.handle_message.await_args.args[0]
-    assert (event.text, event.channel_context) == ("first\nsecond", backfill)
+    expected_context = f"{backfill}\n\n{forwarded_context}" if forwarded else backfill
+    assert (event.text, event.channel_context, event.message_id, event.merged_message_ids) == (
+        "first\nsecond", expected_context, str(first.id), [str(second.id)],
+    )
+    from gateway.platforms.base_pending import withdraw_from_event
+
+    changed, remaining = withdraw_from_event(event, lambda part: part.message_id == str(first.id))
+    assert changed is True
+    assert (remaining.text, remaining.channel_context, remaining.message_id, remaining.merged_message_ids) == (
+        "second", forwarded_context, str(second.id), [],
+    )
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ import { DEFAULT_THEME, LIGHT_THEME } from '../theme.js'
 const renderRows = (text: string, width: number, theme = DEFAULT_THEME) => {
   const level = chalk.level
   chalk.level = 3
+
   try {
     const { screen, height } = renderToScreen(
       React.createElement(
@@ -22,6 +23,7 @@ const renderRows = (text: string, width: number, theme = DEFAULT_THEME) => {
       ),
       width
     )
+
     return Array.from({ length: height }, (_, row) =>
       Array.from({ length: width }, (_, col) => cellAtIndex(screen, row * width + col))
     )
@@ -36,14 +38,17 @@ it('fills added/removed visual rows, including wrapped Unicode, without painting
       for (const line of ['+x', '-old', '+中文🙂 more words that wrap across rows', '-']) {
         const rows = renderRows('```diff\n' + line + '\n```', width, theme)
         expect(rows.length).toBeGreaterThan(0)
+
         for (const row of rows) {
           expect(row.slice(0, 2).map(cell => cell.styleId & 1)).toEqual([0, 0])
+
           // Wide glyph continuation cells inherit the terminal glyph's style;
           // Ink stores no separate SGR on those spacer cells.
           for (const cell of row.slice(2)) {
-            if (cell.width !== CellWidth.SpacerTail) expect(cell.styleId & 1).toBe(1)
+            if (cell.width !== CellWidth.SpacerTail) {expect(cell.styleId & 1).toBe(1)}
           }
         }
+
         expect(
           rows
             .flat()

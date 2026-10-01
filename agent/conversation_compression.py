@@ -2748,11 +2748,10 @@ def _abort_lease(
 
 def _try_acquire_durable_lock(lease: _CompressionLease, try_acquire: Any, commit_fence: Any) -> bool:
     """Acquire the durable lock for ``lease.holder`` and capture the start watermark.
-    Watermark = MAX(id) of active rows at START (durable-snapshot adoption may advance it to the newest adopted
-    row): appends aren't blocked during summary; later rows are concurrent tail that archive_and_compact
-    re-sequences. Capture is safety-additive (fallback archives everything), so its failure never aborts. An
-    acquire that raises is not version skew: fail closed and release holder-qualified best-effort (safe if never
-    acquired)."""
+    Watermark = MAX(id) of active rows at START: appends aren't blocked during summary; later rows are
+    concurrent tail that archive_and_compact re-sequences. Capture is safety-additive (fallback archives
+    everything), so its failure never aborts. An acquire that raises is not version skew: fail closed and
+    release holder-qualified best-effort (safe if never acquired)."""
     try:
         acquired = try_acquire(lease.sid, lease.holder, ttl_seconds=lease.ttl)
         if acquired:
@@ -2960,12 +2959,9 @@ def _adopt_grown_durable_parent(agent: Any, lease: _CompressionLease, messages: 
     durable_parent = durable_loader(lease.db, lease.sid, include_row_ids=True)
     if not (isinstance(durable_parent, list) and len(durable_parent) > len(messages)):
         return None
-    from agent.conversation_compression_archive import newest_exact_held_id
-    adopted_max_row_id = newest_exact_held_id(durable_parent)
-    for message in durable_parent:
-        message.pop("_row_id", None)
-    if lease.watermark is not None and adopted_max_row_id is not None:
-        lease.watermark = max(lease.watermark, adopted_max_row_id)
+    adopted_row_ids = [rid for m in durable_parent if isinstance(rid := m.pop("_row_id", None), int)]
+    if lease.watermark is not None and adopted_row_ids:
+        lease.watermark = max(lease.watermark, *adopted_row_ids)
     logger.info(
         "compression: session=%s grew before lease (%d → %d msgs); adopting durable snapshot", lease.sid, len(messages),
         len(durable_parent),

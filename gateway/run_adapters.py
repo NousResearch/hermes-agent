@@ -235,7 +235,7 @@ class GatewayAdapterLifecycleMixin:
             **({"queued_at": now} if queued else {}),
             "credential_claim": self._adapter_credential_claim(platform, adapter),
             "listener_claim": self._adapter_listener_claim(platform, adapter),
-            "inbound_dedup": inbound_dedup_caches(adapter),
+            "inbound_dedup": inbound_dedup_caches(adapter) if adapter is not None else None,
         }
 
     def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter) -> bool:
@@ -788,7 +788,11 @@ class GatewayAdapterLifecycleMixin:
         try:
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                self._drop_from_reconnect_queue(platform, "adapter creation returned None")
+                # Plugin still not registered: keep it queued so it heals once the adapter appears.
+                backoff = self._bump_reconnect_backoff(
+                    platform, info, attempt, "adapter_unavailable", f"No adapter available for {platform.value}",
+                )
+                logger.info("Reconnect %s: no adapter yet, next retry in %ds", platform.value, backoff)
                 return
             carry_inbound_dedup(info.get("inbound_dedup"), adapter)
             self._wire_adapter_handlers(adapter)

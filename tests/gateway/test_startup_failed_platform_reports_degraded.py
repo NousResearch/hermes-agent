@@ -8,6 +8,7 @@ gate — every platform, not just api_server — so the same failure on any othe
 the same way.
 """
 import logging
+import time
 
 import pytest
 
@@ -164,13 +165,45 @@ async def test_missing_adapter_degrades_only_the_unserved_enabled_platform(monke
     try:
         assert await runner.start() is True
         state = read_runtime_status()
-        assert state["gateway_state"] == "degraded"
         assert state["platforms"]["telegram"]["state"] == "connected"
-        assert state["platforms"]["discord"]["state"] == "fatal"
+        assert state["platforms"]["discord"]["state"] == "retrying"
         assert state["platforms"]["discord"]["error_code"] == "adapter_unavailable"
         assert state["platforms"]["discord"]["needs_attention"] is True
-        assert "restart" in state["platforms"]["discord"]["error_message"]
         assert "slack" not in state["platforms"]
-        assert runner._failed_platforms == {}  # No adapter exists to reconnect.
+        assert list(runner._failed_platforms) == [Platform.DISCORD]  # the reconnect watcher owns it
+    finally:
+        await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_adapterless_platform_heals_once_its_adapter_appears(monkeypatch, tmp_path):
+    """A plugin that registers late: the queued platform stays queued, then connects."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapters = {}
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: adapters.get(platform))
+
+    async def _no_secondary_profiles():
+        return 0
+
+    monkeypatch.setattr(runner, "_start_secondary_profile_adapters", _no_secondary_profiles)
+    try:
+        assert await runner.start() is True
+        await runner._reconnect_failed_platform(Platform.DISCORD, time.monotonic() + 60)
+        assert runner._failed_platforms[Platform.DISCORD]["attempts"] == 2  # still missing: kept queued
+
+        healthy = _HealthyAdapter()
+        healthy.platform = Platform.DISCORD
+        adapters[Platform.DISCORD] = healthy
+        await runner._reconnect_failed_platform(Platform.DISCORD, time.monotonic() + 3600)
+        assert runner.adapters[Platform.DISCORD] is healthy
+        assert runner._failed_platforms == {}
+        discord = read_runtime_status()["platforms"]["discord"]
+        assert discord["state"] == "connected"
+        assert discord["needs_attention"] is False
     finally:
         await runner.stop()

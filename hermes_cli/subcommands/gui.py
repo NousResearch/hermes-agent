@@ -59,4 +59,9 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         action="store_true",
         help="Close the preview pane and exit its fullscreen (out-of-band escape hatch when the pane captured all input)",
     )
+    gui_parser.add_argument(
+        "--quick-entry",
+        action="store_true",
+        help="Open the floating Quick Entry composer window (niri/Wayland workaround; routes via single-instance argv)",
+    )
     gui_parser.set_defaults(func=cmd_gui)

@@ -473,7 +473,8 @@ import {
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
-import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import { createQuickEntryShortcut, hasQuickEntryFlag, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import { createQuickEntryStateRelay, sameQuickEntryState } from './quick-entry-state-relay'
 import { createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
@@ -15038,6 +15039,11 @@ let quickEntryWindow = null
 // replayed to a quick window that spawns after the push happened.
 let quickEntryLastState = null
 
+// Acknowledged-retry policy delivering that cached truth to the CURRENT quick
+// window; recreated on every spawn, cancelled when the window closes. See
+// electron/quick-entry-state-relay.ts for why the blind replay raced (#95132).
+let quickEntryStateRelay = null
+
 function readQuickEntrySettings() {
   try {
     return sanitizeQuickEntrySettings(JSON.parse(fs.readFileSync(QUICK_ENTRY_CONFIG_PATH, 'utf8')))
@@ -15124,10 +15130,15 @@ function spawnQuickEntryWindow() {
   // resurrect itself over the app, but its loss belongs in desktop.log.
   installWindowRendererLifecycle(win, { kind: 'quick', callbacks: { log: rememberLog } })
 
-  // Hide on blur. The window must never hold the user's focus captive — losing
-  // focus is the cheapest, least surprising dismiss (matches Spotlight).
+  // Hide on blur on X11/macOS. On Wayland, Electron can emit blur immediately
+  // after `show()` because niri does not grant focus to this always-on-top
+  // helper window; hiding there makes Quick Entry appear for a moment and then
+  // vanish before the user can type.
+  const waylandSession =
+    process.platform === 'linux' &&
+    (process.env.XDG_SESSION_TYPE === 'wayland' || Boolean(process.env.WAYLAND_DISPLAY))
   win.on('blur', () => {
-    if (!win.isDestroyed()) {
+    if (!waylandSession && !win.isDestroyed()) {
       win.hide()
     }
   })
@@ -15135,15 +15146,20 @@ function spawnQuickEntryWindow() {
   win.on('closed', () => {
     if (quickEntryWindow === win) {
       quickEntryWindow = null
+      quickEntryStateRelay?.cancel()
+      quickEntryStateRelay = null
     }
   })
 
   // Replay the last known gateway state as soon as the page can hear it — a
   // freshly spawned quick window must not sit "disconnected" when the primary
-  // renderer already reported a live gateway.
+  // renderer already reported a live gateway. `did-finish-load` only promises
+  // that resources finished loading, not that React has mounted and wired its
+  // `hermesDesktop.quickEntry.onState` listener yet (#95132), so delivery goes
+  // through the acknowledged-retry relay instead of one blind send.
   win.webContents.on('did-finish-load', () => {
     if (!win.isDestroyed() && quickEntryLastState) {
-      win.webContents.send('hermes:quick-entry:state', quickEntryLastState)
+      quickEntryStateRelay?.deliver(quickEntryLastState)
     }
   })
 
@@ -15170,6 +15186,13 @@ function showQuickEntryWindow() {
     // points at by the time the event lands.
     const win = spawnQuickEntryWindow()
     quickEntryWindow = win
+    quickEntryStateRelay?.cancel()
+    quickEntryStateRelay = createQuickEntryStateRelay({
+      equals: sameQuickEntryState,
+      isTargetAlive: () => Boolean(quickEntryWindow && !quickEntryWindow.isDestroyed()),
+      latest: () => quickEntryLastState,
+      send: payload => quickEntryWindow?.webContents.send('hermes:quick-entry:state', payload)
+    })
 
     wireWindowReveal(win, {
       show: () => {
@@ -15186,6 +15209,15 @@ function showQuickEntryWindow() {
   quickEntryWindow.focus()
   // Re-summoned: tell the renderer to clear any stale draft and refocus.
   quickEntryWindow.webContents.send('hermes:quick-entry:shown')
+
+  // The renderer keeps its composer state across hides, but a reload (crash
+  // recovery, dev reload) remounts it at the initial disconnected state — the
+  // same gap the did-finish-load replay covers for a cold spawn (#95132).
+  // Re-deliver the cached truth so a re-summoned window never shows "Not
+  // connected" while the primary window is live.
+  if (quickEntryLastState) {
+    quickEntryStateRelay?.deliver(quickEntryLastState)
+  }
 }
 
 function hideQuickEntryWindow() {
@@ -15208,8 +15240,8 @@ function toggleQuickEntryWindow() {
 
 const quickEntryShortcut = createQuickEntryShortcut(globalShortcut, toggleQuickEntryWindow)
 
-function applyQuickEntrySettings(settings) {
-  const state = quickEntryShortcut.apply(settings)
+async function applyQuickEntrySettings(settings) {
+  const state = await quickEntryShortcut.apply(settings)
 
   if (!settings.enabled) {
     // Turning the feature off must not leave an orphan always-on-top window.
@@ -15222,6 +15254,11 @@ function applyQuickEntrySettings(settings) {
 
   if (state.error === 'taken') {
     rememberLog(`[quick-entry] shortcut ${state.shortcut} is already taken by another application`)
+  } else if (state.error === 'unavailable') {
+    rememberLog(
+      `[quick-entry] shortcut ${state.shortcut} cannot be registered in this desktop session ` +
+        `(global shortcut service unreachable${state.detail ? `: ${state.detail}` : ''})`
+    )
   } else if (state.error === 'invalid') {
     rememberLog(`[quick-entry] shortcut ${state.shortcut} is not a valid accelerator`)
   }
@@ -18323,7 +18360,8 @@ ipcMain.handle('hermes:quick-entry:settings:get', async () => {
     enabled: settings.enabled,
     error: state.error,
     registered: state.registered,
-    shortcut: settings.enabled ? state.shortcut : settings.shortcut
+    shortcut: settings.enabled ? state.shortcut : settings.shortcut,
+    ...(state.detail ? { detail: state.detail } : {})
   }
 })
 
@@ -18374,8 +18412,19 @@ ipcMain.on('hermes:quick-entry:state', (_event, payload) => {
   quickEntryLastState = payload ?? null
 
   if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
-    quickEntryWindow.webContents.send('hermes:quick-entry:state', payload)
+    quickEntryStateRelay?.deliver(payload)
   }
+})
+
+// The quick window echoes each adopted state payload back; a matching echo
+// proves a mounted composer received it, so the acknowledged-retry relay can
+// stop resending its replay.
+ipcMain.on('hermes:quick-entry:state-ack', (event, payload) => {
+  if (!quickEntryWindow || quickEntryWindow.isDestroyed() || event.sender !== quickEntryWindow.webContents) {
+    return
+  }
+
+  quickEntryStateRelay?.acknowledge(payload ?? null)
 })
 
 ipcMain.on('hermes:quick-entry:dismiss', () => hideQuickEntryWindow())
@@ -19252,8 +19301,20 @@ if (!isPrimaryInstance) {
 
     const url = _extractDeepLink(argv)
 
+    // Deep link first: an argv that carries both a URL and the quick-entry flag
+    // must not drop the link. (Practically unreachable — the compositor command
+    // is fixed — but ordering by precedence here costs nothing.)
     if (url) {
       handleDeepLink(url)
+    }
+
+    // niri/Wayland workaround: wlroots compositors do not implement the
+    // GlobalShortcuts portal, so the OS-level quick-entry shortcut never
+    // fires. Bind it in the compositor instead and route here:
+    // `hermes desktop --quick-entry`.
+    if (hasQuickEntryFlag(argv)) {
+      toggleQuickEntryWindow()
+      return
     }
 
     ensureMainWindow(mainWindow, {
@@ -19365,6 +19426,14 @@ app.whenReady().then(() => {
       }
     }
   })
+
+  // niri/Wayland workaround (see 'second-instance' above): a cold start with
+  // the --quick-entry flag opens the floating composer immediately. This is
+  // show, not toggle, on purpose — there is no prior window to toggle away on
+  // a fresh launch; don't "unify" the two call sites.
+  if (hasQuickEntryFlag(process.argv)) {
+    showQuickEntryWindow()
+  }
 
   if (IS_MAC) {
     const reposition = () => wakeIndicatorController.reposition()

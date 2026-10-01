@@ -55,9 +55,11 @@ export function QuickEntrySettings() {
         ? q.takenBy
         : state.error === 'invalid'
           ? q.invalidShortcut
-          : state.enabled && state.registered
-            ? q.active
-            : null
+          : state.error === 'unavailable'
+            ? q.sessionUnavailable
+            : state.enabled && state.registered
+              ? q.active
+              : null
 
   return (
     <>
@@ -98,7 +100,12 @@ export function QuickEntrySettings() {
             </div>
           )
         }
-        description={q.shortcutDesc}
+        description={
+          <>
+            {q.shortcutDesc}
+            {q.compositorHint && <span className='block break-words'>{q.compositorHint}</span>}
+          </>
+        }
         id={settingElementId(SETTING_IDS.advanced.quickEntryShortcut)}
         title={q.shortcutTitle}
       />

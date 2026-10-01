@@ -72,6 +72,7 @@ def _ns(**kw):
         setup_tcc_identity=False,
         identity=None,
         close_preview=False,
+        quick_entry=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -293,6 +294,42 @@ def test_gui_brew_install_launches_installed_app_when_present(tmp_path, monkeypa
 
     assert exc.value.code == 0
     assert launched == [1]
+
+
+def test_gui_quick_entry_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):
+    """`hermes desktop --quick-entry` must reach the Electron binary as a real
+    argv element so the single-instance handler can summon the floating
+    composer. Without this, the wrapper drops the flag entirely and
+    wlroots/Wayland users have no compositor-keybind path at all (#82654)."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    launched: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        launched.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main_desktop.subprocess.run", side_effect=fake_run), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(quick_entry=True))
+
+    assert exc.value.code == 0
+    # On Linux, desktop-entry registration runs inside cmd_gui before the
+    # launch: it probes the interpreter with `python -I -c 'import
+    # hermes_cli.main'` (hermes_cli/linux_desktop_entry._can_import_hermes_cli),
+    # which lands in the same mocked subprocess.run. Assert the LAUNCH command
+    # rather than the whole call list, and allow the probe to precede it.
+    # Linux also appends --disable-setuid-sandbox after the sandbox fixup (a
+    # present, non-setuid chrome-sandbox would abort Chromium) — see the
+    # sibling assertion in test_gui_launches_even_when_desktop_entry_install_fails.
+    expected_cmd = [str(packaged_exe), "--quick-entry"]
+    if sys.platform.startswith("linux"):
+        expected_cmd.insert(1, "--disable-setuid-sandbox")
+    assert launched[-1] == expected_cmd
 
 
 def test_gui_close_preview_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):

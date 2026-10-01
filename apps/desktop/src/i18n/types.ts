@@ -1248,9 +1248,12 @@ export interface Translations {
       enabledDesc: string
       shortcutTitle: string
       shortcutDesc: string
+      /** Optional: compositor-keybind fallback hint (missing locales fall back to English). */
+      compositorHint?: string
       active: string
       takenBy: string
       invalidShortcut: string
+      sessionUnavailable: string
     }
     credentials: {
       pasteKey: string

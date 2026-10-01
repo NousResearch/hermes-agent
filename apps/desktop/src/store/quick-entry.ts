@@ -21,18 +21,22 @@ export interface QuickEntryState {
   enabled: boolean
   /** null before the first read; the settings row shows a skeleton until then. */
   registered: boolean | null
-  /** Why the OS shortcut isn't live: taken by another app, or unusable. */
+  /** Why the OS shortcut isn't live: taken, unusable, or no shortcut service. */
   error: null | QuickEntryRegistrationError
   shortcut: string
+  /** Probe reason when `error` is `'unavailable'`; absent otherwise. */
+  detail?: string
 }
 
-export type QuickEntryRegistrationError = 'invalid' | 'taken'
+export type QuickEntryRegistrationError = 'invalid' | 'taken' | 'unavailable'
 
 export interface QuickEntryStatus {
   enabled: boolean
   error: null | QuickEntryRegistrationError
   registered: boolean
   shortcut: string
+  /** Probe reason when `error` is `'unavailable'`; absent otherwise. */
+  detail?: string
 }
 
 export const QUICK_ENTRY_DEFAULT_SHORTCUT = 'CommandOrControl+Shift+Space'
@@ -49,12 +53,18 @@ function applyStatus(status: QuickEntryStatus | undefined): void {
     return
   }
 
-  $quickEntry.set({
+  const next: QuickEntryState = {
     enabled: status.enabled === true,
     error: status.error ?? null,
     registered: status.registered === true,
     shortcut: typeof status.shortcut === 'string' && status.shortcut ? status.shortcut : QUICK_ENTRY_DEFAULT_SHORTCUT
-  })
+  }
+
+  if (status.detail !== undefined) {
+    next.detail = status.detail
+  }
+
+  $quickEntry.set(next)
 }
 
 /** True when the shell exposes the Quick Entry capability (desktop only). */

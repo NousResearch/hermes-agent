@@ -1496,9 +1496,13 @@ export const en: Translations = {
         'Summon a small composer from anywhere with a global shortcut and fire a prompt without opening Hermes.',
       shortcutTitle: 'Quick Entry shortcut',
       shortcutDesc: 'Needs at least one modifier, e.g. CommandOrControl+Shift+Space.',
+      compositorHint:
+        'If the global shortcut never fires (wlroots compositors like niri lack the GlobalShortcuts portal), bind it in the compositor instead, e.g. niri: Mod+D { spawn "hermes" "desktop" "--quick-entry"; }.',
       active: 'Shortcut is active.',
       takenBy: 'Another app already uses this shortcut — pick a different one.',
-      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.'
+      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.',
+      sessionUnavailable:
+        'Global shortcuts are unavailable in this desktop session (the shortcut service did not respond). Use the Hermes window directly.'
     },
     credentials: {
       pasteKey: 'Paste key',

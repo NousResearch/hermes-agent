@@ -42,7 +42,8 @@ def _server():
         _methods=methods,
         _sessions=sessions,
         _sessions_lock=threading.Lock(),
-        _pending_approval_request_payload=lambda _session_key: None,
+        _profile_home=lambda _profile: None,
+        _open_requests=lambda _runtime_id: [],
     )
     return server, calls
 
@@ -116,11 +117,14 @@ def test_info_and_interrupt_are_exact_task_scoped():
 
 def test_local_approval_snapshot_and_response_use_exact_request():
     server, calls = _server()
-    server._pending_approval_request_payload = lambda session_key: {
+    # Pending approvals come from the runtime's own request registry, never from
+    # the stored-key approval queue, which can coincide across profiles.
+    server._open_requests = lambda runtime_id: [{"method": "approval", "params": {
+        "session_id": "runtime",
         "request_id": "approval-1",
         "command": "pytest -q tests/focused",
         "choices": ["once", "deny"],
-    } if session_key == "stored-session" else None
+    }}] if runtime_id == "runtime" else []
     server._sessions["runtime"] = {
         "history_lock": threading.Lock(),
         "running": True,

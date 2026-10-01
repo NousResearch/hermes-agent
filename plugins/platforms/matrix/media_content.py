@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
+from typing import Any
+
+from plugins.platforms.matrix.reply_context import _has_reply_fallback, _split_reply_fallback
 
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif", ".avif"})
@@ -36,5 +39,15 @@ def _is_bare_media_filename(msgtype: str, body: str) -> bool:
     if msgtype == "m.image":
         return _looks_like_matrix_image_filename(body)
     return msgtype in ("m.audio", "m.file", "m.video") and _looks_like_matrix_media_filename(body)
+
+
+def _inbound_media_caption(msgtype: str, body: str, source_content: dict[str, Any], relates_to: dict[str, Any]) -> str:
+    wire_body = str(source_content.get("body") or "")
+    if relates_to.get("m.in_reply_to") and _has_reply_fallback(wire_body, source_content):
+        wire_body = _split_reply_fallback(wire_body)[1]
+    declared_filename = str(source_content.get("filename") or "").strip()
+    if declared_filename:
+        return "" if wire_body.strip() == declared_filename else body
+    return "" if _is_bare_media_filename(msgtype, wire_body) else body
 
 

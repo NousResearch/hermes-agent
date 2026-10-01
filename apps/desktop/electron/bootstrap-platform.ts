@@ -149,13 +149,19 @@ function requestedOzonePlatform(env: NodeJS.ProcessEnv, argv: readonly string[])
     }
 
     if (match[1]) {
-      hint = match[2].toLowerCase()
+      hint = match[2].trim().toLowerCase()
     } else {
-      explicit = match[2].toLowerCase()
+      explicit = match[2].trim().toLowerCase()
     }
   }
 
-  return explicit ?? hint ?? env.ELECTRON_OZONE_PLATFORM_HINT?.toLowerCase() ?? null
+  // Empty/whitespace values are "unset", not a platform name: `?? ` only guards
+  // null/undefined, so ELECTRON_OZONE_PLATFORM_HINT="" must normalize to null
+  // exactly like the Python resolver (main_desktop.py) does, or the two guards
+  // disagree about the same Wayland session.
+  const envHint = env.ELECTRON_OZONE_PLATFORM_HINT?.trim().toLowerCase() || null
+
+  return explicit || hint || envHint
 }
 
 function linuxSessionIsWayland(env: NodeJS.ProcessEnv): boolean {

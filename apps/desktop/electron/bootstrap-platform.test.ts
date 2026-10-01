@@ -149,6 +149,50 @@ test('linuxWaylandVulkanDisableFeatures is linux+wayland ozone only', () => {
   )
 })
 
+test('linuxWaylandVulkanDisableFeatures treats an empty ozone hint as unset (matches Python)', () => {
+  // ELECTRON_OZONE_PLATFORM_HINT="" must normalize to null exactly like the
+  // Python resolver, not stay '' and disable the Vulkan guard on Wayland.
+  const wayland = { XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':0' }
+
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({
+      platform: 'linux',
+      env: { ...wayland, ELECTRON_OZONE_PLATFORM_HINT: '' }
+    }),
+    'Vulkan'
+  )
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({
+      platform: 'linux',
+      env: { ...wayland, ELECTRON_OZONE_PLATFORM_HINT: '   ' }
+    }),
+    'Vulkan'
+  )
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({
+      platform: 'linux',
+      env: { ...wayland, ELECTRON_OZONE_PLATFORM_HINT: ' Wayland ' }
+    }),
+    'Vulkan'
+  )
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({
+      platform: 'linux',
+      env: { DISPLAY: ':0', ELECTRON_OZONE_PLATFORM_HINT: '' }
+    }),
+    null
+  )
+  // An empty explicit argv value is unset too, so session detection decides.
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({
+      platform: 'linux',
+      env: wayland,
+      argv: ['--ozone-platform-hint=']
+    }),
+    'Vulkan'
+  )
+})
+
 test('linuxWaylandVulkanDisableFeatures merges existing disable-features', () => {
   const wayland = { XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0' }
 

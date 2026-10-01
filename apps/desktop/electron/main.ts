@@ -768,6 +768,12 @@ if (IS_WINDOWS) {
 // process then dies ~30s later even after disableHardwareAcceleration()
 // — HERMES_DESKTOP_DISABLE_GPU is not enough. Disable Vulkan only; GL
 // acceleration stays on. Must run before app `ready`.
+//
+// Intentional overlap with the Python launcher (main_desktop.py puts the same
+// switch on argv): Chromium may pick its ozone backend from argv before this
+// appendSwitch runs, and a launch that bypasses the CLI wrapper (raw `electron .`)
+// never sees the argv copy. Both guards append the same value; Chromium takes the
+// last occurrence, so the duplication is harmless — do not remove either side.
 const WAYLAND_VULKAN_FEATURES = linuxWaylandVulkanDisableFeatures({
   argv: process.argv,
   existingDisableFeatures: app.commandLine.getSwitchValue('disable-features')

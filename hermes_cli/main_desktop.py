@@ -1503,17 +1503,35 @@ def _desktop_electron_argv(config_flags: list[str], env: dict | None = None) -> 
 
 
 def _merge_electron_disable_features(flags: list[str], feature: str) -> list[str]:
-    """Append ``feature`` to an existing ``--disable-features=`` flag, or add one."""
+    """Append ``feature`` to an existing ``--disable-features=`` flag, or add one.
+
+    Dedupe is case-insensitive, matching the TS resolver (mergeDisableFeatures): a user's
+    ``--disable-features=vulkan`` must not yield ``vulkan,Vulkan``. Chromium also accepts the
+    space-separated ``--disable-features X`` form, which is normalized to ``=`` so the value
+    cannot end up as a second switch."""
     name = (feature or "").strip()
     if not name:
         return list(flags)
     prefix = "--disable-features="
+    bare = "--disable-features"
     out: list[str] = []
     merged = False
-    for flag in flags:
-        if flag.startswith(prefix):
+    skip_next = False  # the value of a bare ``--disable-features`` is consumed with its flag
+    for index, flag in enumerate(flags):
+        if skip_next:
+            skip_next = False
+            continue
+        if flag == bare and index + 1 < len(flags):
+            # Space-separated form: fold the value into an ``=`` flag at the same position.
+            parts = [p.strip() for p in flags[index + 1].split(",") if p.strip()]
+            if name.lower() not in {p.lower() for p in parts}:
+                parts.append(name)
+            out.append(prefix + ",".join(parts))
+            merged = True
+            skip_next = True
+        elif flag.startswith(prefix):
             parts = [p.strip() for p in flag[len(prefix):].split(",") if p.strip()]
-            if name not in parts:
+            if name.lower() not in {p.lower() for p in parts}:
                 parts.append(name)
             out.append(prefix + ",".join(parts))
             merged = True

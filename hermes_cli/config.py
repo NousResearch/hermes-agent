@@ -3988,9 +3988,18 @@ def _cmd_config_check(args):
         print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
         print("    Run 'hermes config migrate' to add them")
 
+    raw_config = read_raw_config_readonly()
+    structure_issues = validate_config_structure(raw_config)
+    if structure_issues:
+        print()
+        print(color("  config.yaml:", Colors.BOLD))
+        for issue in structure_issues:
+            marker = "✗" if issue.severity == "error" else "⚠"
+            print(color(f"    {marker} {issue.message}", Colors.RED if issue.severity == "error" else Colors.YELLOW))
+
     from hermes_cli.config_check_diagnostics import config_check_diagnostics
 
-    diagnostics = config_check_diagnostics(read_raw_config_readonly(), get_env_value)
+    diagnostics = config_check_diagnostics(raw_config, get_env_value)
     if diagnostics:
         print()
         print(color("  Saved configuration:", Colors.BOLD))

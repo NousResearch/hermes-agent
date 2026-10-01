@@ -539,11 +539,22 @@ class TestVoiceChannelCommands:
 
         restarted = _make_runner(tmp_path)
 
-        assert restarted._load_voice_modes() == {
+        expected_saved = {
             "discord:123": "off",
             "discord:456": "all",
             "discord:789": "voice_only",
         }
+        assert (
+            runner._voice_mode,
+            runner._voice_call_keys,
+            json.loads(runner._VOICE_MODE_PATH.read_text()),
+            restarted._load_voice_modes(),
+        ) == (
+            {**expected_saved, "discord:123": "all"},
+            {"discord:123"},
+            expected_saved,
+            expected_saved,
+        )
 
     # -- _handle_voice_channel_input --
 
@@ -779,7 +790,7 @@ class TestDiscordVoiceChannelMethods:
         ]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("leave_returns", "budget"), [(True, 30.0), (False, 0.2)])
+    @pytest.mark.parametrize(("leave_returns", "budget"), [(True, 30.0), (False, 2.0)])
     async def test_disconnect_reports_each_call_it_ends(self, leave_returns, budget):
         """Disconnecting ends every call, so the runner must reset each bound text
         channel's voice mode, as it does after an inactivity timeout. The runner
@@ -803,14 +814,22 @@ class TestDiscordVoiceChannelMethods:
             vc.disconnect = AsyncMock()
             adapter._voice_clients[guild_id] = vc
             adapter._voice_text_channels[guild_id] = text_channel_id
+        leave_entered = asyncio.Event()
         if not leave_returns:
             async def leave_that_never_returns(guild_id):
+                leave_entered.set()
                 await asyncio.Event().wait()
 
             adapter.leave_voice_channel = leave_that_never_returns
 
-        completed = await GatewayRunner._wait_or_detach(
-            asyncio.ensure_future(adapter.disconnect()), budget)
+        disconnect_task = asyncio.ensure_future(adapter.disconnect())
+        try:
+            if not leave_returns:
+                await asyncio.wait_for(leave_entered.wait(), timeout=10.0)
+            completed = await GatewayRunner._wait_or_detach(disconnect_task, budget)
+        finally:
+            disconnect_task.cancel()
+            await asyncio.gather(disconnect_task, return_exceptions=True)
 
         assert (completed, ended) == (leave_returns, ["999", "888"])
 

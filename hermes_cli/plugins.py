@@ -194,6 +194,14 @@ VALID_HOOKS: Set[str] = {
     # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
     # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
     "gateway_platform_event",
+    # gateway_message_delivered (#64176 delivery half): observer, fired by gateway/delivery_hooks.py AFTER
+    # a successful outbound delivery the gateway decided is complete — kind="final" (non-streamed ledgered
+    # final + confirmed streamed final) and kind="cron" (live + standalone lanes). Kwargs: kind, platform,
+    # chat_id, thread_id, message_ids (send order, as the adapter reported them), last_message_id, text
+    # (bounded; privacy: full delivered text), session_key, job_id (cron), streamed, profile. Returns ignored;
+    # dispatched off the delivery path (background task / scheduled onto the gateway loop), timeout-bounded.
+    # Pair with ctx.platform_actions to act on the delivered message (e.g. set_message_buttons).
+    "gateway_message_delivered",
     # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape

@@ -3984,6 +3984,7 @@ class GatewayTurnMixin:
 
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result: str, fail_exc: str,
+        session_key: Optional[str] = None,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
         ``response["already_sent"]`` and log ``ok``. A returned failure logs ``fail_result`` as
@@ -4001,6 +4002,21 @@ class GatewayTurnMixin:
             return
         response["already_sent"] = True
         logger.info(*ok)
+        self._notify_streamed_final_delivered(_sc, source, session_key, content)
+
+    def _notify_streamed_final_delivered(self, _sc, source, session_key, text) -> None:
+        """``gateway_message_delivered`` (kind="final", streamed=True) once the runner has confirmed the
+        stream delivered the final reply. Scheduled in the turn's profile scope as a background task.
+        Only the final message id is known here (the consumer keeps no ordered id list); never raises."""
+        try:
+            from gateway.delivery_hooks import notify_message_delivered
+
+            notify_message_delivered(
+                kind="final", platform=getattr(source, "platform", None), chat_id=getattr(source, "chat_id", None),
+                thread_id=getattr(source, "thread_id", None), message_ids=[getattr(_sc, "message_id", None)],
+                text=text, session_key=session_key, streamed=True)
+        except Exception:
+            logger.debug("gateway_message_delivered notify failed (streamed final)", exc_info=True)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
         """Set ``response["already_sent"]`` when streaming already delivered the final reply.
@@ -4047,6 +4063,10 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
+            # An ambiguous fallback resend (timed out in flight) is assumed, not confirmed: no notice.
+            if _sc is not None and not getattr(_sc, "_delivery_ambiguous", False):
+                self._notify_streamed_final_delivered(
+                    _sc, source, session_key, getattr(_sc, "_delivered_final_text", None) or _final)
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.
@@ -4062,6 +4082,7 @@ class GatewayTurnMixin:
                     ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
+                    session_key=session_key,
                 )
             else:
                 logger.info(
@@ -4076,6 +4097,7 @@ class GatewayTurnMixin:
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result="Transformed-final edit failed for session %s (%s); sending transformed response via normal final send.",
                     fail_exc="Failed to edit streamed message for session %s: %s",
+                    session_key=session_key,
                 )
         elif _sc is not None and getattr(_sc, "stream_deltas_enabled", True):
             # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log

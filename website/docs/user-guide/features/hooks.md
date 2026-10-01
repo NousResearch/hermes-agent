@@ -477,6 +477,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
+| [`gateway_message_delivered`](#gateway_message_delivered) | Observer | After a delivery the gateway itself confirmed, once per delivery: agent final replies (`kind="final"`, non-streamed and confirmed-streamed) and cron output (`kind="cron"`, live and standalone lanes); dispatched off the delivery path and timeout-bounded; return ignored. | `kind`, `platform`, `chat_id`, `thread_id`, `message_ids`, `last_message_id`, `text`, `session_key`, `job_id`, `streamed`, `profile` | Full delivered text (bounded to 8192 chars) and chat/message identifiers. No SDK objects or adapter handles. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
@@ -1309,7 +1310,59 @@ Every payload is additive and event-specific; there is no monolithic gateway pay
 
 The bot's own progressive message edits (streaming) never fire `message_edited` on Discord — bot-authored events are dropped at the fire-site.
 
-This hook is observer-only: it does **not** add raw-event access or adapter access. **Raw SDK payload access is deliberately not shipped** — adapter SDK objects change shape without notice and would become un-evolvable API surface; where genuinely needed it requires its own explicit capability (`gateway.raw_events`) with a "no stability guarantee" label and its own design (tracked in #64228). For *acting* on a platform (adding a reaction, renaming a thread), use the capability-gated `ctx.platform_actions` facade documented in the [plugins guide](plugins.md#platform-actions) — it is gated off by default behind the `gateway.platform_actions` capability. `PluginContext.dispatch_tool()` can only call tools registered in the tool registry; `send_message` is intentionally not registered there (its transport is reserved for explicit CLI, cron, kanban, and MCP delivery paths). A future outbound-delivery contract must first provide stable delivered content/handles across all adapters; this slice does not pre-register an inert `gateway_message_delivered` hook.
+This hook is observer-only: it does **not** add raw-event access or adapter access. **Raw SDK payload access is deliberately not shipped** — adapter SDK objects change shape without notice and would become un-evolvable API surface; where genuinely needed it requires its own explicit capability (`gateway.raw_events`) with a "no stability guarantee" label and its own design (tracked in #64228). For *acting* on a platform (adding a reaction, renaming a thread), use the capability-gated `ctx.platform_actions` facade documented in the [plugins guide](plugins.md#platform-actions) — it is gated off by default behind the `gateway.platform_actions` capability. `PluginContext.dispatch_tool()` can only call tools registered in the tool registry; `send_message` is intentionally not registered there (its transport is reserved for explicit CLI, cron, kanban, and MCP delivery paths). Outbound deliveries are observed through the separate [`gateway_message_delivered`](#gateway_message_delivered) hook.
+
+---
+
+### `gateway_message_delivered` {#gateway_message_delivered}
+
+Fires once after an outbound delivery the **gateway** confirmed, never from inside a platform adapter, so every adapter shares one contract. Dispatch never sits on the delivery path: on the gateway loop it runs as a background task, the cron thread schedules it onto the gateway loop (so `async` callbacks share the loop that owns the adapters' clients), and callbacks are bounded by the plugin dispatcher's timeout. A slow or failing callback can neither delay nor fail a delivery.
+
+Each notice reaches the plugins of the profile that delivered it. Non-streamed finals are dispatched from that profile's home scope **without its secrets bound** (the handler's turn scope has already ended); streamed finals and cron run in the full turn/job scope. Read credentials through your plugin config rather than assuming a secret scope.
+
+Pair it with [`ctx.platform_actions`](plugins.md#platform-actions) to act on the delivered message, for example to put buttons under a cron report:
+
+```python
+async def on_delivered(kind, platform, chat_id, last_message_id, text, job_id=None, **kwargs):
+    if kind == "cron" and platform == "telegram" and last_message_id and "ACTION_REQUIRED" in (text or ""):
+        await CTX.platform_actions.set_message_buttons(
+            platform=platform, chat_id=chat_id, message_id=last_message_id,
+            buttons=[{"label": "Apply", "data": f"myplugin:apply:{job_id}"}],
+        )
+
+def register(ctx):
+    global CTX
+    CTX = ctx
+    ctx.register_hook("gateway_message_delivered", on_delivered)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `kind` | `str` | `"final"` (the agent's final reply to a user turn) or `"cron"` (cron job output). |
+| `platform` | `str` | Stable platform id (`"telegram"`, `"discord"`, …). |
+| `chat_id` | `str` | Target chat. |
+| `thread_id` | `str \| None` | Topic/thread the delivery targeted, when known. |
+| `message_ids` | `list[str]` | Every message id the delivery produced, in send order, as the adapter reported them. Empty when the adapter reports none. |
+| `last_message_id` | `str \| None` | The last message of the delivery — the one to put buttons under. |
+| `text` | `str \| None` | The text the gateway handed to the adapter (bounded to 8192 chars). Adapters may still reformat it on the wire. |
+| `session_key` | `str \| None` | Gateway session key for `kind="final"`; `None` for cron. |
+| `job_id` | `str \| None` | Cron job id for `kind="cron"`; `None` otherwise. |
+| `streamed` | `bool` | `True` when the final reply reached the user through the stream consumer. |
+| `profile` | `str \| None` | Active profile name in the delivering scope. |
+
+All ids are bounded strings; unknown values are `None` or `[]`, never guessed.
+
+**Coverage (v1, additive):**
+
+| Delivery | Fires | Notes |
+|----------|-------|-------|
+| Final reply, non-streamed (`send_final_ledgered`) | Yes | All adapters, after the delivery-ledger finalize. Ephemeral system replies (`/stop`, `/new` notices) are skipped. |
+| Final reply, streamed | Yes | Once the runner confirms the stream delivered the final reply, or after a successful reconcile edit. Only the final message id is known here, so `message_ids` has one entry. When the stream is not confirmed, the normal send delivers and fires instead — never both. Not when the stream's fallback resend timed out in flight (delivery is then assumed, not confirmed). |
+| Cron output, live adapter lane | Yes | Not when the confirmation timed out in flight (delivery is then assumed, not confirmed). |
+| Cron output, standalone lane | Yes | `message_ids` holds the last id the standalone sender reports. |
+| Delivery-ledger redelivery, the queued lane (streamed first response and reconcile edit), TTS voice captions, `/background` results, media-only deliveries with no text | Not yet | Planned as additive follow-ups; subscribe defensively. |
+
+This hook is observer-only and exposes no SDK objects or adapter handles. It carries the full delivered text: treat it like `post_llm_call` output for privacy purposes.
 
 ---
 

@@ -147,6 +147,14 @@ from gateway.platforms.base import (
 
 # Telegram truncates ``answerCallbackQuery`` text at 200 chars; ``BotCommand`` descriptions at 256.
 _TOAST_LIMIT = 200
+# callback_data prefixes that ``_handle_callback_query`` routes to core flows, matched with ``str.startswith``
+# exactly as the dispatcher does. ``ctx.platform_actions.set_message_buttons`` refuses them so a plugin cannot
+# mint buttons that drive exec approvals, clarify answers or the model picker (#64176). Keep in sync with the
+# dispatcher (tests/hermes_cli/test_platform_actions.py asserts it covers every dispatched prefix).
+CORE_CALLBACK_PREFIXES = (
+    "mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:", "cp:",
+    "gt:", "ea:", "sc:", "cl:", "update_prompt:",
+)
 _BOT_COMMAND_DESCRIPTION_LIMIT = 256
 
 
@@ -7192,6 +7200,25 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.debug("[%s] clear reactions failed: %s", self.name, _redact_telegram_error_text(e))
             else:
                 logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, _redact_telegram_error_text(e))
+            return False
+
+    async def set_message_buttons(self, chat_id: str, message_id: str, buttons: List[Dict[str, str]]) -> bool:
+        """Replace a sent message's inline keyboard, one button per row; ``[]`` removes it. Backs
+        ``ctx.platform_actions.set_message_buttons`` (#64176) — the facade validates ``buttons``
+        (``label``/``data``, reserved core prefixes) before this runs. Telegram's "message is not
+        modified" (the same keyboard is already set) counts as success."""
+        if not self._bot:
+            return False
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(text=b["label"], callback_data=b["data"])] for b in buttons]) if buttons else None
+        try:
+            await self._bot.edit_message_reply_markup(
+                chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), reply_markup=markup)
+            return True
+        except Exception as e:
+            if "not modified" in str(e).lower():
+                return True
+            logger.debug("[%s] edit_message_reply_markup failed: %s", self.name, _redact_telegram_error_text(e))
             return False
 
     async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:

@@ -790,7 +790,7 @@ class GatewayBusySessionMixin:
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""
-        from gateway.run import _build_media_placeholder
+        from gateway.run_inbound_media import _build_media_placeholder
         try:
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []

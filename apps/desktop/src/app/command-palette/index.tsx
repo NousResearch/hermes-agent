@@ -62,6 +62,7 @@ import { getServers } from '@/lib/mcp-servers'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
+import { toggleAgentsPanel } from '@/store/agents-panel'
 import { $repoWorktrees } from '@/store/coding-status'
 import {
   $commandPaletteOpen,
@@ -96,7 +97,7 @@ import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 import { buildSessionByAnyId, resolvePinnedSessions } from '../chat/sidebar/session-index'
 import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import {
-  AGENTS_ROUTE,
+
   ARTIFACTS_ROUTE,
   CAPABILITIES_ROUTE,
   COMMAND_CENTER_ROUTE,
@@ -910,7 +911,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             run: go(CRON_ROUTE)
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
-          { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) },
+          { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: () => toggleAgentsPanel() },
           {
             icon: Starmap,
             id: 'nav-starmap',

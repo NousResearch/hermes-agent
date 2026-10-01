@@ -1,0 +1,36 @@
+name: model-picker
+repo: https://github.com/aean0x/hermes-model-picker
+sha: 04a23c809d550ecb0a69749927b803e9250da656
+description: "Per-turn cost classifier that routes each turn to one of three model tiers and escalates when tools fail."
+maintainer: aean0x
+tier: community
+category: models
+docs_url: https://github.com/aean0x/hermes-model-picker#readme
+version: "0.11.1"
+capabilities:
+  provides_tools:
+    - escalate_model
+  provides_hooks:
+    - pre_llm_call
+    - pre_api_request
+    - post_tool_call
+  provides_middleware: []
+  requires_env:
+    - MODEL_PICKER_CLASSIFIER_TIMEOUT_S
+    - MODEL_PICKER_CONFIG
+    - MODEL_PICKER_DEFAULT_BEST_FOR
+    - MODEL_PICKER_DEFAULT_LABEL
+    - MODEL_PICKER_DEFAULT_MODEL
+    - MODEL_PICKER_DEFAULT_PROVIDER
+    - MODEL_PICKER_HIGH_BEST_FOR
+    - MODEL_PICKER_HIGH_LABEL
+    - MODEL_PICKER_HIGH_MODEL
+    - MODEL_PICKER_HIGH_PROVIDER
+    - MODEL_PICKER_LOW_BEST_FOR
+    - MODEL_PICKER_LOW_LABEL
+    - MODEL_PICKER_LOW_MODEL
+    - MODEL_PICKER_LOW_PROVIDER
+    - MODEL_PICKER_MEDIUM_BEST_FOR
+    - MODEL_PICKER_MEDIUM_LABEL
+    - MODEL_PICKER_MEDIUM_MODEL
+    - MODEL_PICKER_MEDIUM_PROVIDER

@@ -88,6 +88,8 @@ def validate_tool_calls(
     # Uniquify duplicate tool-call ids BEFORE any downstream consumer: the
     # pre-API sanitizer keeps only the first call/result per id.
     agent._uniquify_tool_call_ids(tool_calls)
+    from agent.message_sanitization import normalize_provider_tool_call_ids
+    normalize_provider_tool_call_ids(tool_calls)
 
     # Repair mismatched tool names before validating (model hallucinations).
     repaired_ids = set()

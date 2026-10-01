@@ -569,6 +569,49 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
         )
     return tool_calls
 
+_KNOWN_VENDOR_PREFIXES = ("chatcmpl-tool-",)
+
+def normalize_provider_tool_call_ids(tool_calls: list) -> list:
+    """Normalize provider-minted tool call ids in one assistant turn.
+    
+    Some providers (e.g. inference-api.nousresearch.com) accept a turn with multiple
+    parallel calls but reject a replay of that turn (502 JSON error injected into SSE stream)
+    if all parallel calls use the provider's minted prefix (e.g. chatcmpl-tool-).
+    We deterministically hash them so the replay is accepted and byte-stable.
+    """
+    if not tool_calls or len(tool_calls) < 2:
+        return tool_calls
+    
+    # Must all share a known vendor prefix to trigger replacement
+    for prefix in _KNOWN_VENDOR_PREFIXES:
+        if all(
+            (raw := (_tc_field(tc, "call_id") or _tc_field(tc, "id") or "")) and 
+            isinstance(raw, str) and raw.strip().startswith(prefix)
+            for tc in tool_calls
+        ):
+            import hashlib
+            for tc in tool_calls:
+                old = _tc_field(tc, "id")
+                raw = _tc_field(tc, "call_id") or old or ""
+                if not isinstance(raw, str):
+                    continue
+                cid = raw.strip().split("|", 1)[0]
+                new_id = "call_" + hashlib.sha256(cid.encode("utf-8")).hexdigest()[:24]
+                try:
+                    _tc_set(tc, "id", f"{new_id}|{old.split('|', 1)[1]}" if isinstance(old, str) and "|" in old else new_id)
+                    if _tc_field(tc, "call_id"):
+                        _tc_set(tc, "call_id", new_id)
+                except Exception:
+                    continue
+            logger.warning(
+                "Normalized %d parallel tool calls with provider prefix '%s' to determinisic hashes "
+                "to prevent 502 rejection on replay (see #130363).", len(tool_calls), prefix
+            )
+            break
+            
+    return tool_calls
+
+
 
 # -- reasoning_content policy: single owner of strip-vs-re-pad; adapters keep only SYNTAX --
 # Require side (echo-back enforced; replays 400 without the field): the families below. Kimi

@@ -504,12 +504,15 @@ class PeerRunsHTTPClient:
         try:
             recovered = self._admit_dispatch(checked, grant=grant)
         except PeerRunsHTTPError as exc:
+            failure = exc
             if checked.document_inputs and exc.not_admitted:
-                raise PeerRunsHTTPError(str(exc), ambiguous=True, retryable=exc.retryable,
-                                        status_code=exc.status_code, error_code=exc.error_code) from exc
-            if exc.retryable or exc.ambiguous:
+                failure = PeerRunsHTTPError(str(exc), ambiguous=True, retryable=exc.retryable,
+                                           status_code=exc.status_code, error_code=exc.error_code)
+            if failure.retryable or failure.ambiguous:
                 delay = self._next_poll_delay(backoff)
                 self._recovery_backoff = {key: {"delay": delay, "next_attempt_at": now + delay}}
+            if failure is not exc:
+                raise failure from exc
             raise
         self._recovery_backoff.pop(key, None)
         return recovered

@@ -5165,6 +5165,10 @@ export const zh = defineLocale({
     clipboard: '剪贴板',
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
+    carouselPlay: '播放幻灯片',
+    carouselPause: '暂停幻灯片',
+    carouselPrevious: '上一张',
+    carouselNext: '下一张',
     dropFiles: '拖放文件',
     handoff: {
       pickPlatform: '选择目标平台',

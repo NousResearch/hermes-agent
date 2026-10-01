@@ -14,10 +14,10 @@ _OWNER = 'gateway.hosted.owner.v1:'
 
 class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
+        self._remembered_attempts = {}  # tries per request a chat's remembered approval may answer
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
         super().__init__(None, db_path=authority.db.db_path)
-        self._remembered_attempts = {}  # tries per request a chat's remembered approval may answer
 
     def _make_rpc(self, server):
         # Member-specific canonical transports retain exact durable history. They

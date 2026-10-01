@@ -3,11 +3,11 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import { writeSecretFileAtomic } from './hardening'
+import type { SetupRoute } from './room-setup-types'
 
 export class RoomSetupError extends Error {
   constructor(readonly reason: string) {super(reason)}
 }
-export interface SetupRoute { connectionId: string; profile: string }
 export interface SetupRecord {
   id: string; setupId: string; kind: 'home' | 'peer'; route: SetupRoute; installationId: string
   roomId: string; committed?: boolean; creation?: Record<string, unknown>; invitation?: Record<string, unknown>; grant?: string

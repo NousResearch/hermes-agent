@@ -2,11 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
 import { RoomSetupError } from './room-setup-store'
-import type { roomSetupStore, SetupRecord, SetupRoute } from './room-setup-store'
+import type { roomSetupStore, SetupRecord } from './room-setup-store'
+import type { RoomSetupInput, RoomSetupMember, SetupRoute } from './room-setup-types'
 
 interface Client { request(method: string, params?: Record<string, unknown>): Promise<any>; close(): void }
-interface Member { member_id: string; handle: string; profile: string; display_name?: string; connectionId: string }
-export interface RoomSetupInput { home: SetupRoute; name: string; members: Member[] }
 const routeKey = (route: SetupRoute) => JSON.stringify([route.connectionId, route.profile])
 const validRoute = (route: SetupRoute) => route && typeof route.connectionId === 'string' && route.connectionId.length > 0 &&
   route.connectionId.length <= 256 && typeof route.profile === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(route.profile)
@@ -117,7 +116,7 @@ export function roomSetupCoordinator(options: {
       try {
         connections.set(routeKey(input.home), await open(input.home))
         const home = connections.get(routeKey(input.home))!
-        const prepared: Array<{ record: SetupRecord; client: Client; capability: any; member: Member }> = []
+        const prepared: Array<{ record: SetupRecord; client: Client; capability: any; member: RoomSetupMember }> = []
         const setupId = randomUUID(), roomId = randomUUID()
         const homeRecord: SetupRecord = { id: setupId, setupId, kind: 'home', route: input.home,
           installationId: home.capability.authority_gateway_id, roomId }

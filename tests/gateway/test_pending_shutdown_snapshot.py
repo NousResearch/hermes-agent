@@ -196,7 +196,7 @@ async def test_snapshot_projection_keeps_records_in_the_owning_profile(tmp_path,
 async def test_cancel_timeout_recovers_only_non_durable_completed_input(tmp_path, monkeypatch, durable):
     from gateway.session import SessionStore
     from hermes_state import SessionDB
-    import gateway.platforms.base as processing
+    import gateway.platforms.base_processing as processing
     from gateway.config import GatewayConfig
     from gateway.run import GatewayRunner
 

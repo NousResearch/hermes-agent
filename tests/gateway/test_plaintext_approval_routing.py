@@ -67,6 +67,7 @@ def _make_runner():
     # _unwrap_ephemeral is a real base-adapter method; emulate its contract.
     adapter._unwrap_ephemeral = lambda r: (r, 0) if isinstance(r, str) else (None, 0)
     runner.adapters = {Platform.TELEGRAM: adapter}
+    adapter._pending_messages = {}
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
@@ -112,21 +113,21 @@ def test_plaintext_yes_resolves_approval(reply):
 
 
 @pytest.mark.parametrize(
-    "reply",
+    "reply,expected",
     [
-        "/approve",          # direct slash
-        "/approve all",      # resolve all
-        "/approve session",  # session scope
-        "/approve always",   # permanent scope
-        pytest.param("> previous prompt\n/approve", id="quoted-previous-prompt-/approve"),
-        pytest.param("> quoted\n/approve all", id="quoted-/approve-all"),
-        pytest.param("> quoted\n/approve session", id="quoted-/approve-session"),
-        "!approve",          # Slack/Matrix display prefix
-        "/yes",              # alias slash
-        pytest.param("> quoted\n/yes", id="quoted-/yes"),
+        ("/approve", "once"),
+        ("/approve all", "once"),
+        ("/approve session", "session"),
+        ("/approve always", "always"),
+        pytest.param("> previous prompt\n/approve", "once", id="quoted-previous-prompt-/approve"),
+        pytest.param("> quoted\n/approve all", "once", id="quoted-/approve-all"),
+        pytest.param("> quoted\n/approve session", "session", id="quoted-/approve-session"),
+        ("!approve", "once"),
+        ("/yes", "once"),
+        pytest.param("> quoted\n/yes", "once", id="quoted-/yes"),
     ],
 )
-def test_approval_routing_handles_slash_and_quoted_replies(reply):
+def test_approval_routing_handles_slash_and_quoted_replies(reply, expected):
     """A quoted /approve (or last-line slash) must resolve, not be queued.
 
     Regression for #81026: the second (and subsequent) /approve in a session
@@ -139,13 +140,13 @@ def test_approval_routing_handles_slash_and_quoted_replies(reply):
     runner, adapter = _make_runner()
     session_key, entry = _register_blocking_approval(runner)
 
-    handled = asyncio.run(
-        runner._handle_active_session_busy_message(_make_event(reply), session_key)
-    )
+    event = _make_event(reply)
+    handled = asyncio.run(runner._handle_active_session_busy_message(event, session_key))
 
     assert handled is True
     assert entry.event.is_set()
-    assert entry.result in {"once", "session", "always"}
+    assert entry.result == expected
+    assert event.get_command() == "approve"
     adapter._send_with_retry.assert_awaited()
     _clear_approval_state()
 
@@ -164,7 +165,7 @@ def test_approval_routing_handles_slash_and_quoted_replies(reply):
 def test_approval_scope_word_order(reply, expected):
     """Reversed scope shorthand ("always approve" etc.) resolves correctly.
 
-    Regression from maintainer review on #81088: the helper previously
+    Regression from review on #81088: the helper previously
     synthesized "/approve approve" for "always approve", losing the scope.
     """
     _clear_approval_state()
@@ -179,6 +180,133 @@ def test_approval_scope_word_order(reply, expected):
     assert entry.event.is_set()
     assert entry.result == expected
     adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize("route", ["busy", "priority"])
+def test_two_sequential_quoted_approvals_resolve_without_queueing(route):
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    for index in range(2):
+        session_key, entry = _register_blocking_approval(runner)
+        event = _make_event("> pending command\n/approve")
+        event.message_id = f"approval-{index}"
+        if route == "busy":
+            handled = asyncio.run(runner._handle_active_session_busy_message(event, session_key))
+        else:
+            handled, reply = asyncio.run(runner._hm_busy_slash_or_photo(event, event.source, session_key))
+            assert reply
+        assert handled is True
+        assert entry.event.is_set() and entry.result == "once"
+        assert event.text == "/approve"
+        assert not adapter._pending_messages.get(session_key)
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize("route", ["busy", "priority"])
+@pytest.mark.parametrize("reply", [
+    "yes please explain", "approve this paragraph", "always use dry-run",
+    pytest.param("> quote\nyes", id="quoted-bare-yes"), "> /approve",
+])
+def test_pending_approval_does_not_consume_prose(route, reply):
+    _clear_approval_state()
+    runner, _ = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+    event = _make_event(reply)
+    if route == "busy":
+        handled = asyncio.run(runner._route_plaintext_approval_while_busy(event, session_key))
+    else:
+        handled, result = asyncio.run(runner._hm_busy_slash_or_photo(event, event.source, session_key))
+        assert result is None
+    assert handled is False
+    assert not entry.event.is_set()
+    assert event.text == reply
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize("route", ["busy", "priority"])
+@pytest.mark.parametrize("reply", [pytest.param("> quote\n/approve", id="quoted-approve"), "!deny"])
+def test_untrusted_control_text_cannot_resolve_approval(route, reply):
+    _clear_approval_state()
+    runner, _ = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+    event = _make_event(reply)
+    event.allow_gateway_control = False
+    if route == "busy":
+        handled = asyncio.run(runner._route_plaintext_approval_while_busy(event, session_key))
+    else:
+        handled, result = asyncio.run(runner._hm_busy_slash_or_photo(event, event.source, session_key))
+        assert result is None
+    assert handled is False
+    assert not entry.event.is_set()
+    assert event.text == reply
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize("route", ["busy", "priority"])
+@pytest.mark.parametrize("reply", [pytest.param("> quote\n/approve", id="quoted-approve"), "!deny", "yes"])
+def test_normalized_approval_obeys_slash_access(route, reply):
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    runner.config = GatewayConfig(platforms={
+        Platform.TELEGRAM: PlatformConfig(
+            enabled=True, token="***", extra={"allow_admin_from": ["admin"], "user_allowed_commands": []},
+        ),
+    })
+    session_key, entry = _register_blocking_approval(runner)
+    event = _make_event(reply)
+    if route == "busy":
+        handled = asyncio.run(runner._route_plaintext_approval_while_busy(event, session_key))
+        response = adapter._send_with_retry.call_args.kwargs["content"]
+    else:
+        handled, response = asyncio.run(runner._hm_busy_slash_or_photo(event, event.source, session_key))
+    assert handled is True
+    assert "admin-only" in response
+    assert not entry.event.is_set()
+    assert event.text == reply
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize("route", ["busy", "priority"])
+@pytest.mark.parametrize("reply,expected", [("ja", "once"), ("sitzung", "session"), ("yes", "once"), ("nein", "deny")])
+def test_localized_approval_words_remain_supported(route, reply, expected, monkeypatch):
+    from agent import i18n
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "de")
+    i18n.reset_language_cache()
+    _clear_approval_state()
+    try:
+        runner, _ = _make_runner()
+        session_key, entry = _register_blocking_approval(runner)
+        event = _make_event(reply)
+        if route == "busy":
+            handled = asyncio.run(runner._handle_active_session_busy_message(event, session_key))
+        else:
+            handled, response = asyncio.run(runner._hm_busy_slash_or_photo(event, event.source, session_key))
+            assert response
+        assert handled is True
+        assert entry.event.is_set() and entry.result == expected
+        assert event.get_command() == ("deny" if expected == "deny" else "approve")
+    finally:
+        _clear_approval_state()
+        i18n.reset_language_cache()
+
+
+@pytest.mark.parametrize("route", ["busy", "priority"])
+def test_quoted_denial_preserves_reason(route):
+    _clear_approval_state()
+    runner, _ = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+    event = _make_event("> pending command\n!deny Use DRY-RUN instead")
+    if route == "busy":
+        handled = asyncio.run(runner._handle_active_session_busy_message(event, session_key))
+    else:
+        handled, response = asyncio.run(runner._hm_busy_slash_or_photo(event, event.source, session_key))
+        assert response
+    assert handled is True
+    assert entry.event.is_set() and entry.result == "deny"
+    assert event.text == "/deny Use DRY-RUN instead"
+    assert entry.reason == "Use DRY-RUN instead"
     _clear_approval_state()
 
 
@@ -203,5 +331,3 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     from tools.approval import _gateway_queues
     assert session_key not in _gateway_queues
     _clear_approval_state()
-
-

@@ -644,3 +644,40 @@ def test_build_slash_event_routes_guild_profile_like_messages(adapter, monkeypat
     assert thread_event.source.guild_id == "1"
     assert thread_event.source.parent_chat_id == "100"
     assert thread_event.source.profile == "work"
+
+
+@pytest.mark.parametrize("query", ["", "model", "skills"])
+@pytest.mark.asyncio
+async def test_native_help_query_reaches_the_shared_help_executor(adapter, monkeypatch, query):
+    import inspect
+
+    from hermes_cli.slash_exec import CommandContext, execute_command
+
+    monkeypatch.setattr("agent.skill_commands.get_skill_commands", lambda: {
+        "/example-skill": {"description": "Example skill"},
+    })
+    adapter._register_slash_commands()
+    callback = adapter._client.tree.commands["help"]
+    signature = inspect.signature(callback)
+    query_parameter = signature.parameters.get("query")
+    assert query_parameter is not None
+    assert (tuple(signature.parameters), query_parameter.default) == (("interaction", "query"), "")
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"), channel_id=123, guild_id=456,
+        user=SimpleNamespace(id=42, name="Tester", display_name="Tester"),
+        response=SimpleNamespace(defer=AsyncMock()), delete_original_response=AsyncMock(),
+    )
+    adapter.handle_message = AsyncMock()
+
+    await callback(interaction, query=query)
+
+    awaited = adapter.handle_message.await_args
+    assert awaited is not None
+    event = awaited.args[0]
+    assert (event.text, event.get_command_args()) == (f"/help {query}".strip(), query)
+    reply = execute_command("help", CommandContext(surface="gateway", args=event.get_command_args())).text
+    if query == "skills":
+        assert "/example-skill" in reply and "`/model" not in reply
+        return
+    assert "`/model" in reply
+    assert ("`/restart" in reply) == (not query)

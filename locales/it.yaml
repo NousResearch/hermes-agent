@@ -1099,6 +1099,7 @@ platform:
         description: "Mostra l'utilizzo di token per questa sessione"
       help:
         description: "Mostra i comandi disponibili"
+        arg_query: "Usa skills per elencare le abilità, o testo per filtrare i comandi"
       insights:
         arg_days: "Numero di giorni da analizzare (predefinito: 7)"
       reload_skills:

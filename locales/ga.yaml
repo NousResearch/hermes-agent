@@ -1099,6 +1099,7 @@ platform:
         description: "Taispeáin úsáid tokens don seisiún seo"
       help:
         description: "Taispeáin na horduithe atá ar fáil"
+        arg_query: "Úsáid skills chun scileanna a liostú, nó téacs chun orduithe a scagadh"
       insights:
         arg_days: "Líon na laethanta le hanailísiú (réamhshocrú: 7)"
       reload_skills:

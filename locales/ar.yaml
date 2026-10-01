@@ -1099,6 +1099,7 @@ platform:
         description: "عرض استخدام الرموز لهذه الجلسة"
       help:
         description: "عرض الأوامر المتاحة"
+        arg_query: "استخدم skills لعرض المهارات، أو نصًا لتصفية الأوامر"
       insights:
         arg_days: "عدد الأيام المراد تحليلها (افتراضي: 7)"
       reload_skills:

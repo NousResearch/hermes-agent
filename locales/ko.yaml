@@ -1099,6 +1099,7 @@ platform:
         description: "이 세션의 토큰 사용량 보기"
       help:
         description: "사용 가능한 명령 보기"
+        arg_query: "skills로 스킬을 나열하거나 텍스트로 명령을 필터링합니다"
       insights:
         arg_days: "분석할 일수 (기본값: 7)"
       reload_skills:

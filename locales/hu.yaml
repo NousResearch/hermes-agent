@@ -1116,6 +1116,7 @@ platform:
         description: "Tokenhasználat megjelenítése ehhez a munkamenethez"
       help:
         description: "Elérhető parancsok megjelenítése"
+        arg_query: "A skills felsorolja a készségeket; szöveggel szűrhetők a parancsok"
       insights:
         arg_days: "Elemzendő napok száma (alapértelmezett: 7)"
       reload_skills:

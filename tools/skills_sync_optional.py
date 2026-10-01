@@ -21,10 +21,11 @@ def _ss():
 
 
 def _content_hash(directory: Path) -> str:
-    """Hub-lock hash style; provenance metadata only, so fall back to local MD5 sans guard deps."""
+    """Hub-lock hash style; provenance metadata only, so fall back to local MD5 sans guard deps.
+    Runtime caches are left out so the recorded hash equals the official bundle's."""
     try:
         from tools.skills_guard import content_hash
-        return content_hash(directory)
+        return content_hash(directory, ignore=_is_runtime_cache)
     except Exception:
         return _ss()._dir_hash(directory)
 

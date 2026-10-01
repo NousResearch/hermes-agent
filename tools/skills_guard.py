@@ -15,7 +15,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 
 SCANNER_VERSION = "skills-guard-v7"
@@ -651,7 +651,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
                       _build_summary(name, source, trust, verdict, findings))
 
 
-def _content_digest(skill_path: Path) -> str:
+def _content_digest(skill_path: Path, ignore: Optional[Callable[[Path, Path], bool]] = None) -> str:
     """Canonical SHA-256 over (POSIX relative path, file bytes) ORDERED by the rel-path STRING — Path sorting is
     case-insensitive on Windows and diverged from ``skills_hub.bundle_content_hash`` (every installed skill then
     reported ``update_available`` forever). String order keeps both sides byte-symmetric.
@@ -663,16 +663,18 @@ def _content_digest(skill_path: Path) -> str:
     if not skill_path.is_dir():
         return hashlib.sha256(skill_path.read_bytes()).hexdigest()
     h = hashlib.sha256()
-    for rel, p in sorted((p.relative_to(skill_path).as_posix(), p) for p in skill_path.rglob("*") if p.is_file()):
+    for rel, p in sorted((p.relative_to(skill_path).as_posix(), p) for p in skill_path.rglob("*")
+                         if p.is_file() and not (ignore and ignore(p, skill_path))):
         h.update(rel.encode("utf-8") + b"\x00")
         h.update(p.read_bytes())
     return h.hexdigest()
 
 
-def content_hash(skill_path: Path) -> str:
+def content_hash(skill_path: Path, ignore: Optional[Callable[[Path, Path], bool]] = None) -> str:
     """Short integrity hash (paths mixed in, so swapping two files' contents changes it). MUST stay symmetric
-    with ``tools.skills_hub_install.bundle_content_hash`` — change both at once."""
-    return f"sha256:{_content_digest(skill_path)[:16]}"
+    with ``tools.skills_hub_install.bundle_content_hash`` — change both at once. ``ignore(path, skill_path)``
+    drops files a bundle never ships, so an installed tree hashes like the bundle it came from."""
+    return f"sha256:{_content_digest(skill_path, ignore)[:16]}"
 
 
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",

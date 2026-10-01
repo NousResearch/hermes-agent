@@ -7,7 +7,7 @@ import type { MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 // field-sizing on top of Textarea's shared chrome; kill min-h-16 for one-liners.
-export const CLARIFY_TEXTAREA_CLASS = 'field-sizing-content max-h-40 min-h-0 resize-none'
+export const CLARIFY_TEXTAREA_CLASS = 'field-sizing-content max-h-40 min-h-0 resize-none text-start'
 
 export const CLARIFY_SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
 

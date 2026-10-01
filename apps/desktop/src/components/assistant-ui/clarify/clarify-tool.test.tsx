@@ -1153,3 +1153,40 @@ describe('ClarifyTool visible-card scoping', () => {
     })
   })
 })
+
+describe('ClarifyTool content direction', () => {
+  it('gives Arabic and mixed content independent direction boundaries', () => {
+    const question = 'هل نستخدم Codex أم DeepSeek؟'
+    const choice = 'استخدم Docker'
+    const choices = [`${choice} (Recommended)`, 'Keep Codex']
+    const args = { questions: [{ choices, question }] }
+    const pending = { ...liveClarifyProps(choices), args, argsText: JSON.stringify(args) }
+
+    const view = renderClarify(<ClarifyTool {...pending} />)
+
+    expect(screen.getByText(question).getAttribute('dir')).toBe('auto')
+    expect(screen.getByText(choice).closest('[dir]')?.getAttribute('dir')).toBe('auto')
+    expect(screen.getByText('Keep Codex').closest('[dir]')?.getAttribute('dir')).toBe('auto')
+    expect(screen.getByRole('textbox').getAttribute('dir')).toBe('auto')
+    expect(screen.getByText('(Recommended)').tagName).toBe('BDI')
+    expect(screen.getByText('A').closest('[dir="auto"]')).toBeNull()
+
+    view.rerender(
+      clarifyTree(
+        <ClarifyTool
+          {...settledClarifyProps(
+            args,
+            {
+              outcome: 'submitted',
+              responses: [{ question, status: 'answered', user_response: choice }]
+            },
+            'clarify-bidi-settled'
+          )}
+        />
+      )
+    )
+
+    expect(screen.getByText(question).getAttribute('dir')).toBe('auto')
+    expect(screen.getByText(choice).getAttribute('dir')).toBe('auto')
+  })
+})

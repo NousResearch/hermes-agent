@@ -38,7 +38,8 @@ def _assistant(messages, index: int):
         ("claude-opus-4-20250514", False),
         ("claude-sonnet-4-20250514", False),
         ("claude-opus-4-5-20251101", True),
-        ("claude-sonnet-4-6-20251101", True),
+        ("claude-opus-4-6-20250414", True),
+        ("claude-sonnet-4-5-20250929", False),
         ("claude-opus-5", True),
         ("claude-sonnet-5-5", True),
         ("claude-fable-5-1", True),
@@ -264,8 +265,11 @@ def _assembly_agent(db=None):
     agent._current_turn_timestamp = 1.0
     agent.ephemeral_system_prompt = ""
     agent.prefill_messages = []
-    agent._copy_reasoning_content_for_api = lambda source, target: target.pop(
-        "reasoning_content", None
+    from agent.agent_runtime_helpers import copy_reasoning_content_for_api
+
+    agent._needs_thinking_reasoning_pad = lambda: False
+    agent._copy_reasoning_content_for_api = (
+        lambda source, target: copy_reasoning_content_for_api(agent, source, target)
     )
     agent._should_sanitize_tool_calls = lambda: False
     agent._sanitize_api_messages = lambda value: value

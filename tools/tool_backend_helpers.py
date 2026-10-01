@@ -16,10 +16,14 @@ _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
 def _account_info(force_fresh: bool = False):
-    """The profile's normalized Portal account snapshot, or None when the read itself failed."""
+    """The profile's normalized Portal account snapshot, or None when the read itself failed.
+
+    The ``force_fresh`` branch is deliberate, not stylistic: callers stub this reader with a
+    zero-argument lambda, so the falsy path must invoke it without keyword arguments."""
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
-        return get_nous_portal_account_info(force_fresh=force_fresh)
+        return (get_nous_portal_account_info(force_fresh=True) if force_fresh
+                else get_nous_portal_account_info())
     except Exception:
         return None
 

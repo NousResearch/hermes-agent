@@ -225,8 +225,9 @@ class DiscordInboundContextMixin:
             _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
             _is_reply = message.reference is not None
             if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
+                batch = self._pending_history_batch(event, recovered=recovered)
                 _backfill_text = await self._fetch_channel_context(
-                    message.channel, before=message,
+                    message.channel, before=batch.raw_message if batch is not None else message,
                     reply_target=self._reply_target(message.reference) if _is_reply else None,
                 )
                 if _backfill_text:
@@ -255,18 +256,26 @@ class DiscordInboundContextMixin:
             await self._threads.mark_async(thread_id)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
         if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
+            if (getattr(event, "_discord_history_backfill_prepared", False)
+                    and self._batch_has_history_context(event, recovered=recovered)):
+                event.channel_context = attributed_context("Forwarded message", forwarded_text) if forwarded_text else None
+                delattr(event, "_discord_history_backfill_prepared")
             self._enqueue_text_event(event)
+            if getattr(event, "_discord_history_backfill_prepared", False):
+                pending = self._pending_text_batches.get(self._text_batch_key(event))
+                if pending is not None:
+                    setattr(pending, "_discord_history_backfill_prepared", True)
         else:
             await self.handle_message(event)
         return True
 
 
-    def _batch_has_history_context(self: DiscordAdapter, event: MessageEvent, *, recovered: bool) -> bool:
+    def _pending_history_batch(self: DiscordAdapter, event: MessageEvent, *, recovered: bool) -> MessageEvent | None:
         if recovered or event.message_type != MessageType.TEXT or self._text_batch_delay_seconds <= 0:
-            return False
+            return None
         pending = self._pending_text_batches.get(self._text_batch_key(event))
-        return (
-            pending is not None
-            and bool(getattr(pending, "_discord_history_backfill_prepared", False))
-            and _can_join_pending_event(pending, event)
-        )
+        return pending if pending is not None and _can_join_pending_event(pending, event) else None
+
+    def _batch_has_history_context(self: DiscordAdapter, event: MessageEvent, *, recovered: bool) -> bool:
+        pending = self._pending_history_batch(event, recovered=recovered)
+        return pending is not None and bool(getattr(pending, "_discord_history_backfill_prepared", False))

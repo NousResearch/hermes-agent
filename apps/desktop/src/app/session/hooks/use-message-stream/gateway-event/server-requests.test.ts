@@ -12,6 +12,16 @@ import type { ServerRequestContext } from './server-requests'
 
 vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
 
+const hasLivePreviewSurface = vi.hoisted(() => vi.fn((): boolean => false))
+const requestPopoutPreviewAct = vi.hoisted(() => vi.fn(async (_payload: unknown): Promise<unknown> => null))
+const requestPopoutPreviewRead = vi.hoisted(() => vi.fn(async (_payload: unknown): Promise<unknown> => null))
+
+vi.mock('@/app/chat/right-rail/preview-popout-bridge', () => ({
+  hasLivePreviewSurface: () => hasLivePreviewSurface(),
+  requestPopoutPreviewAct: (payload: unknown) => requestPopoutPreviewAct(payload),
+  requestPopoutPreviewRead: (payload: unknown) => requestPopoutPreviewRead(payload)
+}))
+
 const deps = {
   activeSessionIdRef: { current: null },
   sessionInterrupted: () => false,
@@ -181,9 +191,7 @@ describe('preview action request routing', () => {
 
 describe('window.read claim tolerance (#121609)', () => {
   beforeEach(() => {
-    setSessions([
-      { id: 'stored-a', title: 'HUD conversation', _lineage_root_id: 'root-a' } as SessionInfo
-    ])
+    setSessions([{ id: 'stored-a', title: 'HUD conversation', _lineage_root_id: 'root-a' } as SessionInfo])
   })
 
   afterEach(() => {
@@ -199,10 +207,21 @@ describe('window.read claim tolerance (#121609)', () => {
     // window has the conversation selected and its runtime id lineage-maps.
     setSelectedStoredSessionId('stored-a')
 
-    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'window.read', replayed: false, sessionId: 'root-a' })).toBe('run')
-    expect(previewSessionRoute({ activeSessionId: null, method: 'window.read', replayed: false, sessionId: 'root-a' })).toBe('run')
+    expect(
+      previewSessionRoute({ activeSessionId: 'runtime-x', method: 'window.read', replayed: false, sessionId: 'root-a' })
+    ).toBe('run')
+    expect(
+      previewSessionRoute({ activeSessionId: null, method: 'window.read', replayed: false, sessionId: 'root-a' })
+    ).toBe('run')
     // Plain stored-id ask (no rotation): selected matches directly.
-    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'window.read', replayed: false, sessionId: 'stored-a' })).toBe('run')
+    expect(
+      previewSessionRoute({
+        activeSessionId: 'runtime-x',
+        method: 'window.read',
+        replayed: false,
+        sessionId: 'stored-a'
+      })
+    ).toBe('run')
   })
 
   it('maps an unknown runtime id through the session-state cache to the shown conversation', () => {
@@ -211,14 +230,30 @@ describe('window.read claim tolerance (#121609)', () => {
     setSelectedStoredSessionId('stored-a')
     $sessionStates.set({ 'runtime-rotated': createClientSessionState('stored-a') })
 
-    expect(previewSessionRoute({ activeSessionId: 'runtime-rotated', method: 'window.read', replayed: false, sessionId: 'runtime-rotated' })).toBe('run')
+    expect(
+      previewSessionRoute({
+        activeSessionId: 'runtime-rotated',
+        method: 'window.read',
+        replayed: false,
+        sessionId: 'runtime-rotated'
+      })
+    ).toBe('run')
   })
 
   it('claims for a tile whose stored session lineage-matches the asked id', () => {
     $sessionTiles.set([{ runtimeId: 'tile-runtime', storedSessionId: 'stored-a' } as never])
 
-    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'root-a' })).toBe('run')
-    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'stored-a' })).toBe('run')
+    expect(
+      previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'root-a' })
+    ).toBe('run')
+    expect(
+      previewSessionRoute({
+        activeSessionId: 'session-b',
+        method: 'window.read',
+        replayed: false,
+        sessionId: 'stored-a'
+      })
+    ).toBe('run')
   })
 
   it('keeps every other window-owned method on the strict host check even when the identity is tolerated', () => {
@@ -228,23 +263,57 @@ describe('window.read claim tolerance (#121609)', () => {
     // converting later tour actions into 45s waits (review of #121715).
     setSelectedStoredSessionId('stored-a')
 
-    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'preview.read', replayed: false, sessionId: 'root-a' })).toBe('ignore')
-    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'terminal.read', replayed: false, sessionId: 'root-a' })).toBe('ignore')
-    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'preview.act', replayed: false, sessionId: 'root-a' })).toBe('ignore')
-    expect(previewSessionRoute({ activeSessionId: 'runtime-x', method: 'tour', replayed: false, sessionId: 'root-a' })).toBe('ignore')
+    expect(
+      previewSessionRoute({
+        activeSessionId: 'runtime-x',
+        method: 'preview.read',
+        replayed: false,
+        sessionId: 'root-a'
+      })
+    ).toBe('ignore')
+    expect(
+      previewSessionRoute({
+        activeSessionId: 'runtime-x',
+        method: 'terminal.read',
+        replayed: false,
+        sessionId: 'root-a'
+      })
+    ).toBe('ignore')
+    expect(
+      previewSessionRoute({ activeSessionId: 'runtime-x', method: 'preview.act', replayed: false, sessionId: 'root-a' })
+    ).toBe('ignore')
+    expect(
+      previewSessionRoute({ activeSessionId: 'runtime-x', method: 'tour', replayed: false, sessionId: 'root-a' })
+    ).toBe('ignore')
   })
 
   it('never claims a conversation this window does not show', () => {
     setSelectedStoredSessionId('stored-a')
 
-    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'session-unrelated' })).toBe('ignore')
-    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'root-other' })).toBe('ignore')
+    expect(
+      previewSessionRoute({
+        activeSessionId: 'session-b',
+        method: 'window.read',
+        replayed: false,
+        sessionId: 'session-unrelated'
+      })
+    ).toBe('ignore')
+    expect(
+      previewSessionRoute({
+        activeSessionId: 'session-b',
+        method: 'window.read',
+        replayed: false,
+        sessionId: 'root-other'
+      })
+    ).toBe('ignore')
   })
 
   it('claims nothing without a shown conversation — a background session stays unclaimed', () => {
     // No selection, no tiles: the tolerant branch must stay inert so a window
     // midsession cannot answer for a background conversation it never showed.
-    expect(previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'root-a' })).toBe('ignore')
+    expect(
+      previewSessionRoute({ activeSessionId: 'session-b', method: 'window.read', replayed: false, sessionId: 'root-a' })
+    ).toBe('ignore')
   })
 
   it('lets a shown-conversation window answer a window.read end to end without a resume', async () => {
@@ -259,6 +328,53 @@ describe('window.read claim tolerance (#121609)', () => {
 
     expect(handled).toBe(true)
     expect(respond).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('preview pop-out forwarding', () => {
+  beforeEach(() => {
+    hasLivePreviewSurface.mockReturnValue(false)
+    requestPopoutPreviewAct.mockClear()
+    requestPopoutPreviewAct.mockResolvedValue(null)
+    requestPopoutPreviewRead.mockClear()
+    requestPopoutPreviewRead.mockResolvedValue(null)
+  })
+
+  it('forwards an active-session act to the pop-out when this window has no live surface', async () => {
+    requestPopoutPreviewAct.mockResolvedValue({ acted: 'elements', success: true })
+
+    const { respond } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(requestPopoutPreviewAct).toHaveBeenCalledWith(expect.objectContaining({ kind: 'elements' }))
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'elements', success: true })
+  })
+
+  it('runs the act locally when this window has a live surface', async () => {
+    hasLivePreviewSurface.mockReturnValue(true)
+
+    const { respond } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(requestPopoutPreviewAct).not.toHaveBeenCalled()
+  })
+
+  it('reads from the pop-out when the chat window has no live surface', async () => {
+    requestPopoutPreviewRead.mockResolvedValue({ kind: 'url', text: 'page' })
+
+    const { respond } = deliver('preview.read', { count: 100, session_id: 'session-a', start: 0 }, 'session-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(requestPopoutPreviewRead).toHaveBeenCalledWith({ count: 100, start: 0 })
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ kind: 'url', text: 'page' })
+  })
+
+  it('falls back to the local read when no pop-out answers', async () => {
+    const { respond } = deliver('preview.read', { session_id: 'session-a' }, 'session-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(requestPopoutPreviewRead).toHaveBeenCalled()
+    expect(respond.mock.calls[0][0].value).toBe('')
   })
 })
 
@@ -294,7 +410,7 @@ describe('tour request routing', () => {
       const { handled, respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'stored-root')
 
       expect(handled).toBe(true)
-      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
       expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ ok: true })
     } finally {
       deps.sessionStateByRuntimeIdRef.current.clear()

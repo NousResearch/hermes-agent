@@ -1,5 +1,10 @@
 import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
 
+import {
+  hasLivePreviewSurface,
+  requestPopoutPreviewAct,
+  requestPopoutPreviewRead
+} from '@/app/chat/right-rail/preview-popout-bridge'
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import {
   abortPreviewTyping,
@@ -173,10 +178,7 @@ export function windowReadClaimsSession(sessionId: string, activeSessionId: null
 
   const sessions = $sessions.get()
 
-  const shown = [
-    $selectedStoredSessionId.get(),
-    ...$sessionTiles.get().map(tile => tile.storedSessionId)
-  ]
+  const shown = [$selectedStoredSessionId.get(), ...$sessionTiles.get().map(tile => tile.storedSessionId)]
 
   return shown.some(
     stored =>
@@ -482,9 +484,18 @@ const terminalRead: Handler = ({ request }) => {
 
 const previewRead: Handler = ({ request }) => {
   // read_preview tool: the active preview tab's page text is async. Empty = nothing open.
-  void readActivePreview({ count: num(request.params.count), start: num(request.params.start) }).then(result =>
+  // The window that passes the session gate may be the chat window while the
+  // live webview lives in the popped-out Browser renderer — forward there
+  // first; a null (no pop-out answered) falls back to the legacy local read.
+  const opts = { count: num(request.params.count), start: num(request.params.start) }
+
+  void (async () => {
+    const result = hasLivePreviewSurface()
+      ? await readActivePreview(opts)
+      : ((await requestPopoutPreviewRead(opts)) ?? (await readActivePreview(opts)))
+
     answerValue(request, result)
-  )
+  })()
 }
 
 const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
@@ -517,35 +528,50 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
       }, 50)
     : undefined
 
-  void loadPreviewEngine()
-    .then(run =>
-      run(
-        {
-          allowShortcut: p.allow_shortcut === true,
-          amount: p.amount as never,
-          key: p.key as never,
-          kind: (str(p.action) || '') as never,
-          max: p.max as never,
-          ref: p.ref as never,
-          selector: p.selector as never,
-          submit: p.submit as never,
-          text: p.text as never,
-          to: p.to as PreviewActAction['to']
-        },
-        signal
-      )
-    )
-    .then(
-      result => answerValue(request, result),
-      error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
-    )
-    .finally(() => {
+  const action = {
+    allowShortcut: p.allow_shortcut === true,
+    amount: p.amount as never,
+    key: p.key as never,
+    kind: (str(p.action) || '') as never,
+    max: p.max as never,
+    ref: p.ref as never,
+    selector: p.selector as never,
+    submit: p.submit as never,
+    text: p.text as never,
+    to: p.to as PreviewActAction['to']
+  }
+
+  void (async () => {
+    try {
+      // After pop-out the live webview lives in the Browser window; this
+      // window still owns the session gate, so forward the action there and
+      // answer with the pop-out's result. No pop-out answering (null) falls
+      // through to the local engine, which keeps the legacy NOTHING_OPEN
+      // error for a genuinely closed pane.
+      if (!hasLivePreviewSurface()) {
+        const remote = await requestPopoutPreviewAct(action)
+
+        if (remote) {
+          answerValue(request, remote)
+
+          return
+        }
+      }
+
+      const run = await loadPreviewEngine()
+      const result = await run(action, signal)
+
+      answerValue(request, result)
+    } catch (error) {
+      answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+    } finally {
       if (watch !== undefined) {
         clearInterval(watch)
       }
 
       releasePreviewTyping(request.id, signal)
-    })
+    }
+  })()
 }
 
 const windowRead: Handler = ({ request }) => {

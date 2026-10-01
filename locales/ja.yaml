@@ -179,7 +179,7 @@ gateway:
     label_normal: "標準"
     status_fast: "高速"
     status_normal: "標準"
-    picker_title: "⚡ **Priority Processing**\\n\\n現在のモード: `{mode}`\\n\\nオプションを選択:"
+    picker_title: "⚡ **Priority Processing**\n\n現在のモード: `{mode}`\n\nオプションを選択:"
     choice_fast: "fast — Priority Processing オン"
     choice_normal: "normal — 標準処理"
     choice_auto: "auto — 各ターンの最初の数秒間だけ高速"
@@ -282,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` はサポートされていません。グローバルのデフォルトを変更するには `/reasoning <level> --global` を使用してください。"
     reset_done: "🧠 ✓ セッションの推論オーバーライドをクリアしました。グローバル設定にフォールバックします。"
     unknown_arg: "⚠️ 不明な引数: `{arg}`\n\n**有効なレベル:** none, minimal, low, medium, high, xhigh, max, ultra\n**表示:** show, hide\n**永続化:** セッションを越えて保存するには `--global` を追加"
-    picker_title: "🧠 **推論設定**\\n\\n**強度:** `{level}`\\n**スコープ:** {scope}\\n**表示:** {display}\\n\\nオプションを選択:"
+    picker_title: "🧠 **推論設定**\n\n**強度:** `{level}`\n**スコープ:** {scope}\n**表示:** {display}\n\nオプションを選択:"
     choice_none: "none — 推論を無効化"
     choice_reset: "reset — セッション上書きをクリア"
     choice_show: "返信に推論を表示"
@@ -2261,7 +2261,6 @@ cli:
   clarify:
     bell_context: "確認"
     label: "確認"
-    timed_out_locked_answers: "（確認は {timeout} 秒でタイムアウトしました — 確定済みの回答を返しました）"
   connect:
     bell_context: "接続のセットアップ"
     cannot_restart: "この接続は再開できません。キャンセルして、エージェントにもう一度依頼してください。"

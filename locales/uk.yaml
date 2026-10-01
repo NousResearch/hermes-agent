@@ -179,7 +179,7 @@ gateway:
     label_normal: "ЗВИЧАЙНИЙ"
     status_fast: "швидкий"
     status_normal: "звичайний"
-    picker_title: "⚡ **Priority Processing**\\n\\nПоточний режим: `{mode}`\\n\\nОберіть варіант:"
+    picker_title: "⚡ **Priority Processing**\n\nПоточний режим: `{mode}`\n\nОберіть варіант:"
     choice_fast: "fast — Priority Processing увімкнено"
     choice_normal: "normal — стандартна обробка"
     choice_auto: "auto — швидко в перші секунди кожного ходу"
@@ -282,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` не підтримується. Використовуйте `/reasoning <level> --global`, щоб змінити глобальне значення за замовчуванням."
     reset_done: "🧠 ✓ Перевизначення мислення для сеансу скинуто; повернення до глобальної конфігурації."
     unknown_arg: "⚠️ Невідомий аргумент: `{arg}`\n\n**Дійсні рівні:** none, minimal, low, medium, high, xhigh, max, ultra\n**Показ:** show, hide\n**Зберегти:** додайте `--global`, щоб зберегти поза цим сеансом"
-    picker_title: "🧠 **Налаштування мислення**\\n\\n**Зусилля:** `{level}`\\n**Область:** {scope}\\n**Показ:** {display}\\n\\nОберіть варіант:"
+    picker_title: "🧠 **Налаштування мислення**\n\n**Зусилля:** `{level}`\n**Область:** {scope}\n**Показ:** {display}\n\nОберіть варіант:"
     choice_none: "none — вимкнути мислення"
     choice_reset: "reset — скинути перевизначення сесії"
     choice_show: "показувати мислення у відповідях"
@@ -2261,7 +2261,6 @@ cli:
   clarify:
     bell_context: "уточнення"
     label: "Уточнення"
-    timed_out_locked_answers: "(час на уточнення вийшов через {timeout} с — повернено зафіксовані відповіді)"
   connect:
     bell_context: "налаштування підключення"
     cannot_restart: "Це підключення не можна запустити повторно. Скасуйте й попросіть агента ще раз."

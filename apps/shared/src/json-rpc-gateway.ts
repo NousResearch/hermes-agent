@@ -38,14 +38,12 @@ export interface GatewayClientOptions {
 
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
-// `approval.respond` rides the SAME deadline the backend grants the user to
-// answer: tools/approval_context.py reads `approvals.timeout` (default 300s —
-// gateway push notifications may not be seen for minutes). A shorter client
-// timeout races that window: answer at t=130s and the frontend has already
-// rejected its own RPC while the backend happily applies the decision — the
-// desktop shows "request timed out" and freezes on a card that is actually
-// resolved (#60654). Match the backend default so the client only gives up
-// when the backend itself fails the approval closed.
+// `approval.respond` deadline, counted from the user's click. The prompt itself
+// has no answer window — the backend holds a Desktop approval until it is
+// answered — so this only bounds the answer's round trip, generously: during a
+// long stream WS writes can stall well past the generic deadline while the
+// decision still lands, and a client that gave up early froze on a card that was
+// actually resolved (#60654, #55433).
 export const APPROVAL_RESPOND_TIMEOUT_MS = 300_000
 
 const isGatewayReady = (event: GatewayEvent): event is GatewayEvent<'gateway.ready'> => event.type === 'gateway.ready'
@@ -538,11 +536,12 @@ export class JsonRpcGatewayClient {
 
     try {
       // `open_requests` on the answer are re-delivered by the channel itself.
-      const result = await this.request<{ events?: GatewayEvent[]; epoch?: string }>(
-        'session.events.since',
-        { session_id: sid, last_seen: lastSeen },
-        REPLAY_REQUEST_TIMEOUT_MS
-      )
+      const result = await this.request<{
+        epoch?: string
+        events?: GatewayEvent[]
+        latest_seq?: number
+        truncated?: boolean
+      }>('session.events.since', { session_id: sid, last_seen: lastSeen }, REPLAY_REQUEST_TIMEOUT_MS)
 
       // The socket that owned this replay was dropped while its requests were
       // settling. Its results and cleanup must not consume the replacement
@@ -562,6 +561,19 @@ export class JsonRpcGatewayClient {
 
       if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
         this.replayEpoch = epoch
+      }
+
+      if (result?.truncated === true) {
+        // The ring evicted events between our watermark and its oldest
+        // retained seq: the tail has a hole (missing message prefix, tool
+        // state, or terminal event), so never paint it as the gap. Skip the
+        // whole window up to the server's head; the barrier then resolves
+        // true, which lets the waiting history reads (the reconnect backstop,
+        // #94779) resync from the authoritative transcript. Parked live
+        // frames newer than that head still dispatch in the finally below.
+        this.skipTruncatedWindow(sid, result)
+
+        return
       }
 
       if (!Array.isArray(result?.events)) {
@@ -585,6 +597,18 @@ export class JsonRpcGatewayClient {
         this.flushReplayHold(sid, replayGeneration)
       }
     }
+  }
+
+  /** Advance the watermark past a truncated replay window without dispatching any of it. */
+  private skipTruncatedWindow(sid: string, result: { events?: GatewayEvent[]; latest_seq?: number }): void {
+    const seqs = (Array.isArray(result.events) ? result.events : []).map(event => event?.seq)
+
+    const head = Math.max(
+      this.lastSeenSeq.get(sid) ?? 0,
+      ...[result.latest_seq, ...seqs].filter((seq): seq is number => typeof seq === 'number' && Number.isFinite(seq))
+    )
+
+    this.lastSeenSeq.set(sid, head)
   }
 
   /**

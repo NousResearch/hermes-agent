@@ -21,6 +21,7 @@ const {
   deleteSession,
   getSession,
   getLatestSessionMessages,
+  renameSession,
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
@@ -199,6 +200,36 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
       profile: 'beta',
       body: { pinned: false, profile: 'beta' }
     })
+  })
+})
+
+describe('renameSession profile scoping', () => {
+  it('carries the owning profile in the PATCH body and request', async () => {
+    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler' } as never)
+
+    await renameSession('sess-r', 'Prep Butler', 'personal')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/sess-r',
+      profile: 'personal',
+      body: { title: 'Prep Butler', profile: 'personal' }
+    })
+  })
+
+  it('falls back to the active request profile when the argument is omitted', async () => {
+    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler' } as never)
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('personal')
+
+    await renameSession('sess-r2', 'Prep Butler')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/sess-r2',
+      profile: 'personal',
+      body: { title: 'Prep Butler', profile: 'personal' }
+    })
+    vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
   })
 })
 

@@ -2361,7 +2361,6 @@ cli:
   clarify:
     bell_context: "clarify"
     label: "Clarify"
-    timed_out_locked_answers: "(clarify timed out after {timeout}s — locked answers returned)"
   connect:
     bell_context: "connection setup"
     cannot_restart: "This connection cannot be started again. Cancel and ask the agent again."

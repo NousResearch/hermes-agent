@@ -144,3 +144,19 @@ async def test_attach_token_reuses_default_chat_after_active_session_fallback(
         ws2.send_bytes(b"again")
 
     assert pty_keepalive_harness == [["x", "fresh"]]
+
+
+def test_loopback_desktop_renderer_origin_is_allowed(monkeypatch):
+    """The packaged renderer's loopback origin must work with remote hosts."""
+    from types import SimpleNamespace
+
+    web_server.app.state.bound_host = "agent.example.internal"
+    web_server.app.state.trusted_public_hosts = frozenset()
+    ws = SimpleNamespace(
+        headers={
+            "host": "agent.example.internal:9121",
+            "origin": "http://127.0.0.1:47891",
+        }
+    )
+
+    assert _web_server_chat._ws_host_origin_reason(ws) is None

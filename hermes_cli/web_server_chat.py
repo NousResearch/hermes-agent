@@ -186,6 +186,11 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
         return None
+    # Packaged Desktop serves its renderer from a loopback HTTP origin.  That
+    # origin is local application chrome, not a remote web page; the ticket
+    # check remains the authentication boundary for the WebSocket.
+    if parsed.hostname == "127.0.0.1":
+        return None
     if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None

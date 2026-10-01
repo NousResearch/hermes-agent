@@ -32,7 +32,6 @@ export const SendHoldChip = memo(function SendHoldChip({ label, onCancel }: Send
       <button
         className={cn(composerFloatingPill, 'cursor-default')}
         onClick={onCancel}
-        title={label}
         type="button"
       >
         <Codicon className="shrink-0 opacity-70" name="loading" size="0.75rem" spinning />

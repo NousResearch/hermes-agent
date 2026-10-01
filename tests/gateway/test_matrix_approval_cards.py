@@ -1456,3 +1456,151 @@ async def test_decided_registered_card_consumes_reaction_before_followups(
         "followup": adapter._handle_followup_reaction.await_args_list,
         "registered": adapter._approval_prompts_by_event,
     } == {"model_picker": [], "choice_picker": [], "followup": [], "registered": {"$card": prompt}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['approval', 'model', 'choice'])
+@pytest.mark.parametrize('answer_on_seed', [1, 2])
+async def test_prompt_answer_during_seeding_preserves_delivery(monkeypatch, kind, answer_on_seed):
+    from unittest.mock import call
+
+    from gateway.platforms.base import SendResult
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    monkeypatch.setenv('MATRIX_ALLOWED_USERS', '@owner:example.org')
+    monkeypatch.setattr(approval, '_gateway_queues', {})
+    monkeypatch.setattr(approval, '_gateway_resolution_outcomes', {})
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token='test', extra={'homeserver': 'https://matrix.example.org'},
+    ))
+    adapter._client = object()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id='$card'))
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id='$card'))
+    adapter._schedule_reaction_redaction = MagicMock()
+    adapter.redact_message = AsyncMock(return_value=SendResult(success=True))
+    adapter._schedule_approval_summary = MagicMock()
+    callback = AsyncMock(return_value=None)
+    entry = _ApprovalEntry({'approval_id': 'a1'})
+    approval._gateway_queues['s1'] = [entry]
+    seed_calls = []
+    choices = {'approval': '✅', 'model': '1️⃣', 'choice': '1️⃣'}
+
+    async def seed(chat_id, message_id, emoji):
+        seed_calls.append((chat_id, message_id, emoji))
+        if len(seed_calls) == answer_on_seed:
+            handler = {
+                'approval': adapter._handle_approval_reaction,
+                'model': adapter._handle_model_picker_reaction,
+                'choice': adapter._handle_choice_picker_reaction,
+            }[kind]
+            await handler(chat_id, message_id, choices[kind], '@owner:example.org')
+        return f'$seed-{len(seed_calls)}'
+
+    adapter._send_reaction = seed
+    metadata = {'approval_id': 'a1', 'requester_user_id': '@owner:example.org'}
+    if kind == 'approval':
+        result = await adapter.send_exec_approval(
+            chat_id='!room:example.org', command='echo hi', session_key='s1', description='test',
+            metadata=metadata,
+        )
+        registry = adapter._approval_prompts_by_event
+        expected_callback = []
+    elif kind == 'model':
+        result = await adapter.send_model_picker(
+            '!room:example.org', [{'slug': 'custom', 'name': 'Custom', 'models': ['first', 'second']}],
+            'first', 'custom', 's1', callback, metadata=metadata,
+        )
+        registry = adapter._model_picker_prompts_by_event
+        expected_callback = [call('!room:example.org', 'first', 'custom')]
+    else:
+        result = await adapter.send_choice_picker(
+            '!room:example.org', 'Reasoning', [{'value': 'low', 'label': 'Low'}, {'value': 'high', 'label': 'High'}],
+            's1', callback, metadata=metadata,
+        )
+        registry = adapter._choice_picker_prompts_by_event
+        expected_callback = [call('!room:example.org', 'low')]
+
+    redacted = [args.args[:2] for args in adapter.redact_message.await_args_list]
+    redacted.extend(args.args[:2] for args in adapter._schedule_reaction_redaction.call_args_list)
+    expected_redactions = [( '!room:example.org', f'$seed-{i}') for i in range(1, answer_on_seed + 1)]
+    if kind == 'choice':
+        expected_redactions = [('!room:example.org', f'$seed-{answer_on_seed}')]
+    assert {
+        'result': result,
+        'seeds': seed_calls,
+        'redacted': redacted,
+        'registry': registry,
+        'callback': callback.await_args_list,
+        'summary_calls': adapter._schedule_approval_summary.call_args_list,
+    } == {
+        'result': SendResult(success=True, message_id='$card'),
+        'seeds': [('!room:example.org', '$card', emoji) for emoji in
+                  ({'approval': ['✅', '🌀'], 'model': ['1️⃣', '2️⃣'], 'choice': ['1️⃣', '2️⃣']}[kind][:answer_on_seed])],
+        'redacted': expected_redactions,
+        'registry': {},
+        'callback': expected_callback,
+        'summary_calls': [],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('choice', ['once', 'deny'])
+async def test_typed_approval_during_seeding_finishes_without_summary(monkeypatch, choice):
+    from gateway.platforms.base import SendResult
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.approval_cards import MatrixApprovalSummaryConfig
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    monkeypatch.setenv('MATRIX_ALLOWED_USERS', '@owner:example.org')
+    monkeypatch.setattr(approval, '_gateway_queues', {})
+    monkeypatch.setattr(approval, '_gateway_resolution_outcomes', {})
+    monkeypatch.setattr('plugins.platforms.matrix.approval_cards.load_matrix_approval_summary_config',
+                        lambda: MatrixApprovalSummaryConfig(enabled=True))
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token='test', extra={'homeserver': 'https://matrix.example.org'},
+    ))
+    adapter._client = object()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id='$card'))
+    adapter._schedule_reaction_redaction = MagicMock()
+    adapter._schedule_approval_summary = MagicMock()
+    terminal_done = asyncio.Event()
+
+    async def edit(*args, **kwargs):
+        terminal_done.set()
+        return SendResult(success=True, message_id='$card')
+
+    adapter.edit_message = AsyncMock(side_effect=edit)
+    entry = _ApprovalEntry({'approval_id': 'a1'})
+    approval._gateway_queues['s1'] = [entry]
+    seed_calls = []
+
+    async def seed(chat_id, message_id, emoji):
+        seed_calls.append((chat_id, message_id, emoji))
+        if len(seed_calls) == 1:
+            approval.resolve_gateway_approval('s1', choice)
+            if entry.settle is not None:
+                entry.settle('resolved')
+                await asyncio.wait_for(terminal_done.wait(), timeout=10)
+        return '$seed'
+
+    adapter._send_reaction = seed
+    result = await adapter.send_exec_approval(
+        chat_id='!room:example.org', command='echo hi', session_key='s1', description='test',
+        metadata={'approval_id': 'a1', 'requester_user_id': '@owner:example.org'},
+    )
+    tasks = list(adapter._approval_tasks)
+    if tasks:
+        await asyncio.gather(*tasks)
+    assert {
+        'result': result, 'choice': entry.result, 'seeds': seed_calls,
+        'registry': adapter._approval_prompts_by_event,
+        'summary_calls': adapter._schedule_approval_summary.call_args_list,
+        'redactions': [args.args[:2] for args in adapter._schedule_reaction_redaction.call_args_list],
+    } == {
+        'result': SendResult(success=True, message_id='$card'), 'choice': choice,
+        'seeds': [('!room:example.org', '$card', '✅')], 'registry': {},
+        'summary_calls': [], 'redactions': [('!room:example.org', '$seed')],
+    }

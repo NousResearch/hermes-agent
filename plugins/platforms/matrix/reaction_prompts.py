@@ -18,6 +18,7 @@ class MatrixReactionPromptMixin:
         _approval_timeout_seconds: int
         send: Any
         _send_reaction: Any
+        _schedule_reaction_redaction: Any
 
     async def _send_reaction_prompt(
         self, chat_id: str, text: str, metadata: Optional[dict], make_prompt, registry: dict, emojis,
@@ -32,9 +33,14 @@ class MatrixReactionPromptMixin:
             time.monotonic() + max(self._approval_timeout_seconds, 0))
         registry[result.message_id] = prompt
         for emoji in emojis:
+            if prompt.resolved or registry.get(result.message_id) is not prompt:
+                break
             try:
                 reaction_event_id = await self._send_reaction(chat_id, result.message_id, emoji)
                 if reaction_event_id:
+                    if prompt.resolved or registry.get(result.message_id) is not prompt:
+                        self._schedule_reaction_redaction(chat_id, str(reaction_event_id), f"{label} resolved")
+                        break
                     prompt.bot_reaction_events[emoji] = str(reaction_event_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to add %s reaction %s: %s", label, emoji, exc)

@@ -17,6 +17,7 @@ import unicodedata
 from agent.file_safety import (
     SHELL_RC_RELATIVE_PATHS,
     SHELL_RC_ZSH_FILENAMES,
+    _guard_homes,
     build_shell_rc_approval_paths,
 )
 
@@ -788,27 +789,29 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 def _rewrite_resolved_shell_rc_paths(command: str) -> str:
     """Fold relocated shell startup paths into the shared canonical forms."""
     try:
-        home = os.path.realpath(os.path.expanduser("~"))
-        paths: set[str] = set(build_shell_rc_approval_paths(home))
+        paths: dict[str, str] = {}
+        for home in _guard_homes():
+            for path in build_shell_rc_approval_paths(home):
+                relative = os.path.relpath(path, home)
+                path_name = os.path.basename(path)
+                if relative in SHELL_RC_RELATIVE_PATHS:
+                    canonical = f"~/{relative}"
+                elif path_name in SHELL_RC_ZSH_FILENAMES:
+                    canonical = f"~/{path_name}"
+                elif path.endswith(os.path.join("fish", "config.fish")):
+                    canonical = "~/.config/fish/config.fish"
+                else:
+                    # Arbitrary BASH_ENV / ENV filenames use the same rc gate.
+                    canonical = "~/.bashrc"
+                paths.setdefault(path, canonical)
     except Exception:
         return command
 
     for path in sorted(paths, key=lambda value: len(value), reverse=True):
-        relative: str = os.path.relpath(path, home)
-        path_name: str = os.path.basename(path)
-        if relative in SHELL_RC_RELATIVE_PATHS:
-            canonical = f"~/{relative}"
-        elif path_name in SHELL_RC_ZSH_FILENAMES:
-            canonical = f"~/{path_name}"
-        elif relative.endswith(os.path.join("fish", "config.fish")):
-            canonical = "~/.config/fish/config.fish"
-        else:
-            # BASH_ENV and ENV can point at arbitrary filenames, but they are
-            # sourced by a shell and therefore use the bashrc gate semantics.
-            canonical = "~/.bashrc"
         candidates: set[str] = {path, path.replace(os.sep, "/")}
         for candidate in candidates:
-            command = command.replace(candidate, canonical)
+            command = re.sub(re.escape(candidate) + _WRITE_TARGET_BOUNDARY,
+                             lambda match: paths[path], command)
     return command
 
 
@@ -826,12 +829,11 @@ def _normalize_command_for_detection(command: str) -> str:
     # and C:\Users\alice\.bashrc. Resolved at detection time (not import time) so it tracks HOME/HERMES_HOME set
     # later. MUST run before the backslash strip (which would dissolve C:\Users\alice to C:Usersalice). Hermes home
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
-    command = _rewrite_resolved_hermes_home(command)
-    # Relocated rc dirs can sit under $HOME (pytest tmp, XDG). Fold them
-    # before the user-home rewrite or the absolute ZDOTDIR prefix disappears.
-    command = _rewrite_resolved_shell_rc_env_dirs(command)
-    command = _rewrite_resolved_user_home(command)
+    # Fold exact rc targets first: an environment-selected file can live
+    # below either home prefix and would otherwise lose its absolute spelling.
     command = _rewrite_resolved_shell_rc_paths(command)
+    command = _rewrite_resolved_hermes_home(command)
+    command = _rewrite_resolved_user_home(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
     command = re.sub(r'\\([^\n])', r'\1', command)
     command = re.sub(r"''|\"\"", '', command)
@@ -899,32 +901,6 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     except Exception:
         return command
     return _fold_home_prefixes(command, paths, "~/.hermes")
-
-
-def _rewrite_resolved_shell_rc_env_dirs(command: str) -> str:
-    """Fold ZDOTDIR / XDG_CONFIG_HOME prefixes to the shared ``$zdotdir`` /
-    ``$xdg_config_home`` spellings so absolute relocated rc paths match."""
-    zdotdir = os.getenv("ZDOTDIR")
-    if zdotdir:
-        expanded = os.path.expanduser(os.path.expandvars(zdotdir)).strip()
-        if expanded:
-            paths = [expanded]
-            try:
-                paths.append(os.path.realpath(expanded))
-            except OSError:
-                pass
-            command = _fold_home_prefixes(command, paths, "$ZDOTDIR")
-    xdg = os.getenv("XDG_CONFIG_HOME")
-    if xdg:
-        expanded = os.path.expanduser(os.path.expandvars(xdg)).strip()
-        if expanded:
-            paths = [expanded]
-            try:
-                paths.append(os.path.realpath(expanded))
-            except OSError:
-                pass
-            command = _fold_home_prefixes(command, paths, "$XDG_CONFIG_HOME")
-    return command
 
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
@@ -1843,15 +1819,8 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     operand = argv[2]
     temp_dir = os.path.realpath(tempfile.gettempdir())
     basename = os.path.basename(operand)
-    allowed_parents = {temp_dir}
-    # macOS: /tmp is a symlink to /private/tmp. The existing test mocks
-    # gettempdir to /tmp and spells the operand that way; require the
-    # canonical parent, plus /tmp only when it realpaths to that same dir.
-    # Arbitrary user symlinks stay excluded (see the linked-temp test).
-    if os.path.realpath("/tmp") == temp_dir:
-        allowed_parents.add("/tmp")
     return (
-        os.path.dirname(operand) in allowed_parents
+        operand == os.path.join(temp_dir, basename)
         and os.path.dirname(os.path.realpath(operand)) == temp_dir
         and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
     )

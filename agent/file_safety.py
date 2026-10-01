@@ -27,6 +27,7 @@ SHELL_RC_RELATIVE_PATHS: tuple[str, ...] = (
     ".bash_aliases",
     ".profile",
     ".bash_profile",
+    ".bash_login",
     ".zshenv",
     ".zshrc",
     ".zprofile",
@@ -419,9 +420,9 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
 
 def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[str]:
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
-    # Approval-gated paths are allowed at this layer so interactive tools can
-    # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    if any(resolved in build_write_approval_paths(home) for home in homes):
+    # SSH config alone needs an exception to the .ssh/ prefix deny. Shell rc
+    # relocation must never reopen credential paths or the write-safe root.
+    if any(resolved == os.path.realpath(os.path.join(home, ".ssh", "config")) for home in homes):
         return None
 
     if any(
@@ -487,10 +488,10 @@ def is_shell_rc_path(path: str) -> bool:
     ``Match exec`` versus login-time sourcing) and callers gate them with
     independent approval keys so a session approval given for one class
     cannot silently authorize the other. This predicate lets the caller
-    select the right key without re-resolving the inventory.
+    select the right key across the same guarded homes as the write predicate.
     """
-    home, resolved = _home_and_resolved(path)
-    return resolved in build_shell_rc_approval_paths(home)
+    homes, resolved = _homes_and_resolved(path)
+    return any(resolved in build_shell_rc_approval_paths(home) for home in homes)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.

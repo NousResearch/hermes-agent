@@ -141,3 +141,41 @@ class TestApprovalKeyIndependence:
         assert err is None, f"mixed batch blocked with both keys approved: {err}"
 
         _approval.clear_session("test-key-mixed-pass")
+
+    def test_profile_switch_keeps_real_and_current_home_rc_keys(self, tmp_path, monkeypatch):
+        from agent.file_safety import is_shell_rc_path, is_write_approval_required
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from tools.file_tools import write_file_tool
+        import json
+
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        monkeypatch.setenv("HOME", str(real_home))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        for name in ("alpha", "beta", "alpha"):
+            profile = tmp_path / "profiles" / name
+            (profile / "home").mkdir(parents=True, exist_ok=True)
+            token = set_hermes_home_override(profile)
+            try:
+                for home in (real_home, profile / "home"):
+                    target = home / ".bash_login"
+                    assert is_write_approval_required(str(target)) is True
+                    assert is_shell_rc_path(str(target)) is True
+                    result = json.loads(write_file_tool(str(target), "echo startup\n"))
+                    assert "BLOCKED" in result["error"], result
+                    assert "shell startup" in result["error"], result
+                    assert not target.exists()
+            finally:
+                reset_hermes_home_override(token)
+
+    def test_custom_rc_does_not_reopen_hard_denied_credentials(self, tmp_path, monkeypatch):
+        from agent.file_safety import is_write_denied
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(tmp_path))
+        for relative in (".ssh/id_rsa", ".aws/credentials"):
+            target = tmp_path / relative
+            monkeypatch.setenv("BASH_ENV", str(target))
+            assert is_write_denied(str(target)) is True

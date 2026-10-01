@@ -9,6 +9,7 @@ class TestSensitiveCreateLinkPattern:
     def test_create_or_link_into_sensitive_path(self):
         for command in (
             "touch ~/.bashrc",
+            "touch ~/.bash_login",
             "touch ~/.bash_aliases",
             "touch ~/.zshenv",
             "touch ~/.zlogin",
@@ -24,6 +25,15 @@ class TestSensitiveCreateLinkPattern:
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
             assert key is not None, command
+
+    def test_custom_rc_under_home_keeps_exact_filename_boundary(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(tmp_path))
+        for variable in ("BASH_ENV", "ENV"):
+            target = tmp_path / f"{variable.lower()}-startup"
+            monkeypatch.setenv(variable, str(target))
+            assert detect_dangerous_command(f"touch {target}")[0] is True
+            assert detect_dangerous_command(f"touch {target}.bak")[0] is False
 
     def test_unrelated_touch_mkdir_ln_safe(self):
         for cmd in (

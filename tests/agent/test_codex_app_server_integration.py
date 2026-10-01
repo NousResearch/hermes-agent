@@ -68,6 +68,68 @@ def _make_codex_agent(**kwargs):
 
 
 
+def _breakdown(*, input_tokens: int, cached: int, output: int, reasoning: int = 0) -> dict:
+    return {"inputTokens": input_tokens, "cachedInputTokens": cached, "outputTokens": output,
+            "reasoningOutputTokens": reasoning, "totalTokens": input_tokens + output}
+
+
+def _add(a: dict, b: dict) -> dict:
+    return {k: a[k] + b[k] for k in a}
+
+
+def _usage_note(turn_id: str, *, last: dict, total: dict) -> dict:
+    return {"method": "thread/tokenUsage/updated", "params": {
+        "threadId": "thread-usage", "turnId": turn_id,
+        "tokenUsage": {"last": last, "total": total, "modelContextWindow": 272_000}}}
+
+
+def _install_scripted_client(monkeypatch, turns: list[list[dict]]) -> None:
+    """Drive the real CodexAppServerSession: each turn/start plays its scripted notifications,
+    then an agent message and turn/completed."""
+    import agent.transports.codex_app_server_session as session_mod
+
+    class ScriptedClient:
+        def __init__(self, **kwargs):
+            self._turns, self._queue = iter(enumerate(turns, start=1)), []
+
+        def initialize(self, **kwargs):
+            return {}
+
+        def request(self, method, params=None, timeout=30.0):
+            if method == "thread/start":
+                return {"thread": {"id": "thread-usage"}}
+            if method == "turn/start":
+                n, notes = next(self._turns)
+                turn_id = f"turn-{n}"
+                self._queue += [*notes, {"method": "item/completed", "params": {
+                    "threadId": "thread-usage", "turnId": turn_id,
+                    "item": {"type": "agentMessage", "id": f"m{n}", "text": "done"}}},
+                    {"method": "turn/completed", "params": {"threadId": "thread-usage", "turn": {
+                        "id": turn_id, "status": "completed", "error": None}}}]
+                return {"turn": {"id": turn_id}}
+            return {}
+
+        def take_notification(self, timeout=0.0):
+            return self._queue.pop(0) if self._queue else None
+
+        def take_server_request(self, timeout=0.0):
+            return None
+
+        def is_alive(self):
+            return True
+
+        def notify(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+        def stderr_tail(self, n=20):
+            return []
+
+    monkeypatch.setattr(session_mod, "CodexAppServerClient", ScriptedClient)
+
+
 class TestRunConversationCodexPath:
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
@@ -133,6 +195,53 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_completion_tokens == 25
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
+
+    def test_turn_usage_sums_every_model_request_while_context_tracks_the_newest(self, monkeypatch):
+        """A Codex turn is its own agent loop: one thread/tokenUsage/updated per model request.
+        Spend must cover every request; the context fill is the newest request's prompt alone."""
+        first = _breakdown(input_tokens=10_000, cached=8_000, output=300, reasoning=100)
+        second = _breakdown(input_tokens=10_900, cached=9_900, output=50, reasoning=20)
+        turn = [
+            _usage_note("turn-1", last=first, total=first),
+            # Codex re-emits a snapshot (rate-limit refresh): same request, unchanged cumulative total.
+            _usage_note("turn-1", last=first, total=first),
+            _usage_note("turn-1", last=second, total=_add(first, second)),
+        ]
+        _install_scripted_client(monkeypatch, [turn])
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        requests = (first, second)
+        assert agent.session_input_tokens == sum(r["inputTokens"] - r["cachedInputTokens"] for r in requests)
+        assert agent.session_cache_read_tokens == sum(r["cachedInputTokens"] for r in requests)
+        assert agent.session_output_tokens == sum(r["outputTokens"] for r in requests)
+        assert agent.session_reasoning_tokens == sum(r["reasoningOutputTokens"] for r in requests)
+        assert agent.session_total_tokens == sum(r["totalTokens"] for r in requests)
+        assert agent.context_compressor.last_prompt_tokens == second["inputTokens"]
+        assert result["last_prompt_tokens"] == second["inputTokens"]
+
+    def test_turn_start_reemit_of_previous_request_is_not_counted_again(self, monkeypatch):
+        """A snapshot re-emitted at the start of the next turn repeats a request already counted."""
+        first = _breakdown(input_tokens=4_000, cached=0, output=40)
+        second = _breakdown(input_tokens=5_000, cached=3_000, output=60)
+        third = _breakdown(input_tokens=5_200, cached=5_000, output=80)
+        _install_scripted_client(monkeypatch, [
+            [_usage_note("turn-1", last=first, total=first)],
+            [_usage_note("turn-2", last=first, total=first),
+             _usage_note("turn-2", last=second, total=_add(first, second)),
+             _usage_note("turn-2", last=third, total=_add(_add(first, second), third))],
+        ])
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("one")
+            agent.run_conversation("two")
+
+        requests = (first, second, third)
+        assert agent.session_output_tokens == sum(r["outputTokens"] for r in requests)
+        assert agent.session_total_tokens == sum(r["totalTokens"] for r in requests)
 
     def test_native_codex_compaction_updates_bookkeeping(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):

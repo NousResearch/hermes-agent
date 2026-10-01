@@ -171,22 +171,30 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     # ``inputTokens`` is INCLUSIVE of ``cachedInputTokens`` (same contract as the Responses API, see
     # normalize_usage's codex_responses branch); CanonicalUsage.prompt_tokens re-adds cache_read on top of
     # input_tokens, so the canonical input bucket must be the UNCACHED remainder or cached tokens count twice.
-    cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
-    canonical_usage = CanonicalUsage(
-        input_tokens=max(0, _coerce_usage_int(usage.get("inputTokens")) - cache_read_tokens),
-        output_tokens=_coerce_usage_int(usage.get("outputTokens")),
-        cache_read_tokens=cache_read_tokens, cache_write_tokens=0,
-        reasoning_tokens=_coerce_usage_int(usage.get("reasoningOutputTokens")), raw_usage=usage,
-    )
-    prompt_tokens = canonical_usage.prompt_tokens
-    total_tokens = _coerce_usage_int(usage.get("totalTokens")) or canonical_usage.total_tokens
-    token_counts = {f: getattr(canonical_usage, f) for f in
-                    ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")}
-    usage_dict = {"prompt_tokens": prompt_tokens, "completion_tokens": canonical_usage.output_tokens,
-                  "total_tokens": total_tokens, **token_counts}
+    count_fields = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+    def canonical(breakdown: dict) -> tuple[CanonicalUsage, dict[str, int]]:
+        cache_read_tokens = _coerce_usage_int(breakdown.get("cachedInputTokens"))
+        canonical_usage = CanonicalUsage(
+            input_tokens=max(0, _coerce_usage_int(breakdown.get("inputTokens")) - cache_read_tokens),
+            output_tokens=_coerce_usage_int(breakdown.get("outputTokens")),
+            cache_read_tokens=cache_read_tokens, cache_write_tokens=0,
+            reasoning_tokens=_coerce_usage_int(breakdown.get("reasoningOutputTokens")), raw_usage=breakdown,
+        )
+        return canonical_usage, {
+            "prompt_tokens": canonical_usage.prompt_tokens, "completion_tokens": canonical_usage.output_tokens,
+            "total_tokens": _coerce_usage_int(breakdown.get("totalTokens")) or canonical_usage.total_tokens,
+            **{f: getattr(canonical_usage, f) for f in count_fields},
+        }
+    # A Codex turn makes one model request per tool round: spend is every request summed, while the
+    # context fill (compressor, usage anchor) is the newest request's prompt alone.
+    canonical_usage, usage_dict = canonical(getattr(turn, "token_usage_turn", None) or usage)
+    _, latest = canonical(usage)
+    prompt_tokens, total_tokens = usage_dict["prompt_tokens"], usage_dict["total_tokens"]
+    token_counts = {f: usage_dict[f] for f in count_fields}
     if compressor is not None:
         try:
-            compressor.update_from_response(usage_dict)
+            compressor.update_from_response(latest)
             context_window = getattr(turn, "model_context_window", None)
             if isinstance(context_window, int) and context_window > 0:
                 compressor.context_length = context_window
@@ -195,7 +203,7 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     if isinstance(messages, list):
         from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 
-        anchor = capture_usage_anchor(prompt_tokens, canonical_usage.output_tokens, messages)
+        anchor = capture_usage_anchor(latest["prompt_tokens"], latest["completion_tokens"], messages)
         if anchor is not None:
             set_usage_anchor(agent, anchor)
     for key, value in usage_dict.items():
@@ -213,7 +221,7 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         counts=lambda: billing(**token_counts, **cost_fields,
                                billing_mode="subscription_included" if cost_result.status == "included" else None),
     )
-    return {**usage_dict, "last_prompt_tokens": prompt_tokens, **cost_fields}
+    return {**usage_dict, "last_prompt_tokens": latest["prompt_tokens"], **cost_fields}
 
 
 def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | None = None, force: bool = False) -> bool:

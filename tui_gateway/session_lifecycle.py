@@ -27,6 +27,7 @@ def _claim_session_turn(session: dict) -> int:
     seen ``running`` False."""
     session["running"] = True
     claim = session["_turn_claim"] = int(session.get("_turn_claim", 0)) + 1
+    session["_turn_cancel_requested"] = False
     return claim
 
 

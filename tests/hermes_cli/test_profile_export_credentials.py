@@ -34,7 +34,11 @@ _EXTRA_STORES = {
     "home/.git-credentials", "home/.config/gh/hosts.yml", "backups", "state-snapshots",
     DEFAULT_TEAMS_PIPELINE_STORE_FILENAME, "mem0.json",
     "browser-profiles/live/Default/Cookies", "browser_profiles/default/Default/Login Data",
+    "mcp-tokens/srv.json", "vault/vault.key", "platforms/pairing/approved.json", "slack_tokens.json",
+    "webhook_subscriptions.json",
 }
+# Single-file stores whose name has no dot; every other dotless store is a token directory.
+_DOTLESS_FILES = {"npmrc"}
 
 
 def _seed_stores(root):
@@ -46,7 +50,7 @@ def _seed_stores(root):
     (root / "config.yaml").write_text("model: gpt-4\n")
     (root / "platforms" / "keep.json").write_text("{}")
     for rel in stores:
-        is_dir = "." not in rel.rsplit("/", 1)[-1] and rel != "npmrc"  # token dirs vs single files
+        is_dir = "." not in rel.rsplit("/", 1)[-1] and rel not in _DOTLESS_FILES
         target = root / rel / "store" if is_dir else root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("fake-credential")
@@ -176,6 +180,15 @@ class TestCredentialExclusion:
                 install_distribution(str(update), name="dist", force=True)
             assert [s.read_text() for s in live] == ["installer-credential"] * 2
             assert (installed / "SOUL.md").read_text() == "v1"
+
+        # A store's ancestor shipped as a directory is merged, not replaced whole: the installer's
+        # platforms/whatsapp/session survives an update that ships platforms/whatsapp/config.json.
+        update = stage("v2-dir", "v2")
+        (update / "platforms" / "whatsapp").mkdir(parents=True)
+        (update / "platforms" / "whatsapp" / "config.json").write_text("{}")
+        install_distribution(str(update), name="dist", force=True)
+        assert (installed / "platforms" / "whatsapp" / "config.json").exists()
+        assert [s.read_text() for s in live] == ["installer-credential"] * 2
 
 
 class TestExportSecretScrub:

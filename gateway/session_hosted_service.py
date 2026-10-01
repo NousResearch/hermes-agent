@@ -26,6 +26,11 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         # intentionally use the runtime's receipt-capable (non-legacy) recovery path.
         return self
 
+    def _runtime_options(self):
+        # A peer turn its gateway never received is deferred with that proof, so the room's
+        # next turn runs; Retry (HostedControls) requeues it.
+        return {'defer_not_admitted_members': True}
+
     def profile_homes(self):
         from gateway.run import _load_gateway_config
         from gateway.hosted_rooms_common import IDENTIFIER_RE

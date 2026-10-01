@@ -2,6 +2,8 @@
 
 import concurrent.futures
 import json
+import subprocess
+import sys
 import time
 from unittest.mock import Mock
 
@@ -299,6 +301,37 @@ def test_later_prompt_and_every_synthetic_execution_path_are_fenced(store, monke
     forbidden.assert_not_called()
 
 
+def test_fenced_prompt_cannot_stop_voice_chat(store, monkeypatch):
+    from tools import voice_mode_transcript
+
+    sid = attach()["result"]["session_id"]
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setattr(voice_mode_transcript, "is_voice_stop_phrase", lambda text: True)
+    stop = Mock(side_effect=AssertionError("fenced prompt stopped voice"))
+    monkeypatch.setattr(server, "_end_voice_chat", stop)
+
+    refused = rpc("prompt.submit", session_id=sid, text="stop")
+    assert refused["error"]["data"]["reason"] == "attachment_execution_fenced"
+    assert refused["error"]["code"] == 4091
+    assert server._voice_mode_enabled()
+    assert server._voice_tts_enabled()
+    stop.assert_not_called()
+
+
+def test_fenced_prompt_cannot_mark_speech_interrupted(store, monkeypatch):
+    from tools import tts_streaming
+
+    sid = attach()["result"]["session_id"]
+    mark = Mock(side_effect=AssertionError("fenced prompt interrupted speech"))
+    monkeypatch.setattr(tts_streaming, "mark_speech_interrupted", mark)
+
+    refused = rpc("prompt.submit", session_id=sid, text="new question", interrupted=True)
+    assert refused["error"]["data"]["reason"] == "attachment_execution_fenced"
+    assert refused["error"]["code"] == 4091
+    mark.assert_not_called()
+
+
 def test_close_inert_attachment_does_not_end_repair_or_retire_prior_work(
     store, monkeypatch
 ):
@@ -390,6 +423,66 @@ def test_conflicting_live_lease_is_not_taken_over(store):
         assert active_session_registry_snapshot(store[2], strict=True) == before
     finally:
         lease.release()
+
+
+def test_surviving_runtime_with_own_lease_is_reused(store):
+    from hermes_cli.active_sessions import try_acquire_active_session
+
+    lease, error = try_acquire_active_session(
+        session_id="exact-parent",
+        surface="tui",
+        config={},
+        metadata={"live_session_id": "surviving-runtime"},
+        registry_home=store[2],
+    )
+    assert lease is not None and error is None
+    try:
+        record = live_record(store, active_session_lease=lease, running=True)
+        result = attach()["result"]
+        assert result["session_id"] == "surviving-runtime"
+        assert result["reused_runtime"] and not result["execution_fenced"]
+        assert record["active_session_lease"] is lease and not lease.released
+    finally:
+        lease.release()
+
+
+def test_reused_cold_attachment_refuses_new_foreign_owner(store):
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    first = attach()["result"]
+    sid = first["session_id"]
+    owner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from hermes_cli.active_sessions import try_acquire_active_session\n"
+            "import sys\n"
+            "lease, error = try_acquire_active_session(session_id='exact-parent', "
+            "surface='cli', config={}, registry_home=sys.argv[1])\n"
+            "if error: raise RuntimeError(error)\n"
+            "print('ready', flush=True)\n"
+            "sys.stdin.read()\n"
+            "lease.release()\n",
+            str(store[2]),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert owner.stdout.readline().strip() == "ready", owner.stderr.read()
+        before = active_session_registry_snapshot(store[2], strict=True)
+        refused = attach()
+        assert refused["error"]["code"] == 4090
+        assert refused["error"]["data"]["reason"] == "session_owned"
+        assert server._sessions[sid].get("active_session_lease") is None
+        assert active_session_registry_snapshot(store[2], strict=True) == before
+    finally:
+        owner.stdin.close()
+        owner.wait(timeout=15)
+        assert owner.returncode == 0, owner.stderr.read()
+    assert attach()["result"] == {**first, "reused_runtime": True}
 
 
 def test_ambiguous_runtime_and_unreadable_registry_fail_closed(store, monkeypatch):

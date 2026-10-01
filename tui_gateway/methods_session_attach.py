@@ -4,9 +4,10 @@ Legacy persistence has no terminal execution receipt. A cold attachment therefor
 stays fenced even when its crash marker is absent. It is not permission to resume.
 """
 
-from .method_ctx import HandlerRegistry, bind_module
-
+import contextlib
 from typing import TYPE_CHECKING
+
+from .method_ctx import HandlerRegistry, bind_module
 
 if TYPE_CHECKING:
     # Runtime binding is performed by method_ctx, like the other method siblings.
@@ -175,15 +176,36 @@ def _(rid, params):
                         )
                     if (refusal := _reattach_refusal(rid, sid, session)) is not None:
                         return refusal
-                    _rebind_live_transport(
-                        sid, session, current_transport() or _stdio_transport
+                    # A cold attachment has no lease. Recheck under the registry
+                    # lock before reusing it; another process may have claimed the
+                    # stored session since this inert record was created.
+                    from hermes_cli.active_sessions import active_session_liveness_guard
+
+                    ownership = (
+                        active_session_liveness_guard(
+                            target, registry_home=home or _hermes_home
+                        )
+                        if session.get("attachment_fence") is not None
+                        and session.get("active_session_lease") is None
+                        else contextlib.nullcontext(False)
                     )
-                    return _ok(
-                        rid,
-                        _attachment_descriptor(
-                            sid, session, target, profile, row, reused=True
-                        ),
-                    )
+                    with ownership as owned:
+                        if owned:
+                            return _err(
+                                rid,
+                                4090,
+                                "session has a live owner",
+                                {"reason": "session_owned"},
+                            )
+                        _rebind_live_transport(
+                            sid, session, current_transport() or _stdio_transport
+                        )
+                        return _ok(
+                            rid,
+                            _attachment_descriptor(
+                                sid, session, target, profile, row, reused=True
+                            ),
+                        )
             # This is observation, not an ownership claim. The existing execution
             # lease stays with its owner; the new cold record cannot execute at all.
             from hermes_cli.active_sessions import active_session_liveness_guard

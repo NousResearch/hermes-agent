@@ -1530,6 +1530,39 @@ export interface GroupsAttachmentDownloadResult {
   event_id?: string | null
   data_base64: string
 }
+export interface GroupsAttachmentListParams {
+  profile?: string | null
+  room_id: string
+  cursor?: string | null
+  limit?: number | null
+  query?: string | null
+  producer_member_id?: string | null
+}
+export interface GroupsAttachmentListResult {
+  room_id: string
+  authority: RoomAuthority
+  snapshot_seq: number
+  items: RoomFileItem[]
+  next_cursor: string | null
+  has_more: boolean
+}
+export interface RoomFileItem {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  event_id: string
+  seq: number
+  manifest_index: number
+  producer: RoomFileProducer
+  shared_at: number
+}
+export interface RoomFileProducer {
+  kind: string
+  id: string
+  label: string
+}
 export interface GroupsReplicateParams {
   profile?: string | null
   room_id: string
@@ -4931,6 +4964,8 @@ export interface RpcMethods {
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
   /** Read bytes bound to a canonical room event, subject to current viewer authorization. */
   'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: GroupsAttachmentDownloadResult }
+  /** List authorized published room-file versions with stable paging, search and producer filtering. */
+  'groups.attachment.list': { params: GroupsAttachmentListParams; result: GroupsAttachmentListResult }
   /** Upload owner-authorized bytes for a canonical room message. */
   'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: GroupsAttachmentResult }
   /** Describe the hosted-room protocol implemented by this gateway. */
@@ -5362,6 +5397,7 @@ export const RPC_METHODS = [
   'gateway.capabilities',
   'groups.approve',
   'groups.attachment.download',
+  'groups.attachment.list',
   'groups.attachment.upload',
   'groups.capabilities',
   'groups.create',

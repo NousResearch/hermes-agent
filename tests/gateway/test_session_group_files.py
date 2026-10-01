@@ -14,6 +14,10 @@ from gateway.session_controls import AuthorityConnection
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state import SessionDB
 from hermes_state_runtime import begin_runtime_epoch
+from tui_gateway.contracts.groups_bot_relay import (
+    GroupsAttachmentListParams, GroupsAttachmentListResult,
+    GroupsAttachmentResult, GroupsAttachmentDownloadResult,
+)
 
 
 @pytest.fixture
@@ -49,6 +53,7 @@ def reason(reply):
 def share(gateway, n, data, name="report.txt"):
     uploaded = call(gateway.owner, "groups.attachment.upload", room_id="room", upload_id=f"upload-{n}",
                     kind="file", name=name, mime="text/plain", data_base64=base64.b64encode(data).decode())["result"]
+    GroupsAttachmentResult.model_validate(uploaded)
     manifest = [{key: uploaded[key] for key in ("attachment_id", "kind", "name", "size", "mime")}]
     sent = call(gateway.owner, "groups.send", room_id="room", event_id=f"client-{n}",
                 payload={"text": f"version {n}", "thread_id": "files", "attachments": manifest})
@@ -60,9 +65,12 @@ def test_list_offers_exact_same_name_versions_that_download_serves(gateway):
     reader = AuthorityConnection(gateway.authority, object(), {"user_id": "alice", "capabilities": ["session:read"]})
     assert "groups.attachment.list" in call(reader, "groups.capabilities")["result"]["methods"]
 
+    GroupsAttachmentListParams.model_validate({"room_id": "room", "limit": 1})
     first = call(reader, "groups.attachment.list", room_id="room", limit=1)["result"]
     second = call(reader, "groups.attachment.list", room_id="room", limit=1, cursor=first["next_cursor"])["result"]
 
+    GroupsAttachmentListResult.model_validate(first)
+    GroupsAttachmentListResult.model_validate(second)
     assert first["room_id"] == "room" and first["has_more"] and not second["has_more"]
     assert first["authority"] == {"gateway_id": hosted_rooms.local_authority_gateway_id(), "epoch": 1}
     items = first["items"] + second["items"]
@@ -72,6 +80,7 @@ def test_list_offers_exact_same_name_versions_that_download_serves(gateway):
     for item in items:
         saved = call(reader, "groups.attachment.download", room_id="room", event_id=item["event_id"],
                      attachment_id=item["attachment_id"])["result"]
+        GroupsAttachmentDownloadResult.model_validate(saved)
         data = base64.b64decode(saved["data_base64"])
         assert data == versions[item["event_id"], item["attachment_id"]]
         assert saved["sha256"] == hashlib.sha256(data).hexdigest() and saved["size"] == item["size"] == len(data)

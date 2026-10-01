@@ -423,6 +423,45 @@ method("groups.attachment.download", params=GroupsAttachmentDownloadParams, resu
        doc="Read bytes bound to a canonical room event, subject to current viewer authorization.")
 
 
+class GroupsAttachmentListParams(RoomParams):
+    cursor: str | None = None
+    limit: int | None = None
+    query: str | None = None
+    producer_member_id: str | None = None
+
+
+class RoomFileProducer(Result):
+    kind: str
+    id: str
+    label: str
+
+
+class RoomFileItem(Result):
+    attachment_id: str
+    kind: str
+    name: str
+    size: int
+    mime: str
+    event_id: str
+    seq: int
+    manifest_index: int
+    producer: RoomFileProducer
+    shared_at: float
+
+
+class GroupsAttachmentListResult(Result):
+    room_id: str
+    authority: RoomAuthority
+    snapshot_seq: int
+    items: list[RoomFileItem]
+    next_cursor: str | None
+    has_more: bool
+
+
+method("groups.attachment.list", params=GroupsAttachmentListParams, result=GroupsAttachmentListResult,
+       doc="List authorized published room-file versions with stable paging, search and producer filtering.")
+
+
 # ── replication / authority takeover ──────────────────────────────────────────────────────────
 
 

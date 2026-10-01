@@ -1087,6 +1087,24 @@
       }
     },
     {
+      "name": "groups.attachment.list",
+      "summary": "List authorized published room-file versions with stable paging, search and producer filtering.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentListResult"
+        }
+      }
+    },
+    {
       "name": "groups.attachment.upload",
       "summary": "Upload owner-authorized bytes for a canonical room message.",
       "params": [
@@ -13991,6 +14009,128 @@
           "data_base64"
         ],
         "title": "GroupsAttachmentDownloadResult",
+        "type": "object"
+      },
+      "GroupsAttachmentListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
+          },
+          "producer_member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Producer Member Id"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "GroupsAttachmentListParams",
+        "type": "object"
+      },
+      "GroupsAttachmentListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "authority": {
+            "$ref": "#/components/schemas/RoomAuthority"
+          },
+          "snapshot_seq": {
+            "title": "Snapshot Seq",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RoomFileItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "authority",
+          "snapshot_seq",
+          "items",
+          "next_cursor",
+          "has_more"
+        ],
+        "title": "GroupsAttachmentListResult",
         "type": "object"
       },
       "GroupsAttachmentResult": {
@@ -27781,6 +27921,88 @@
           "policy_digest"
         ],
         "title": "RoomExecutionPolicy",
+        "type": "object"
+      },
+      "RoomFileItem": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "manifest_index": {
+            "title": "Manifest Index",
+            "type": "integer"
+          },
+          "producer": {
+            "$ref": "#/components/schemas/RoomFileProducer"
+          },
+          "shared_at": {
+            "title": "Shared At",
+            "type": "number"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "kind",
+          "name",
+          "size",
+          "mime",
+          "event_id",
+          "seq",
+          "manifest_index",
+          "producer",
+          "shared_at"
+        ],
+        "title": "RoomFileItem",
+        "type": "object"
+      },
+      "RoomFileProducer": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label"
+        ],
+        "title": "RoomFileProducer",
         "type": "object"
       },
       "RoomLinkCatalog": {

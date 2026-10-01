@@ -48,3 +48,9 @@ def test_explicit_env_beats_yaml_and_yaml_beats_default(monkeypatch):
     assert MatrixAdapter._extra_truthy(PlatformConfig(enabled=True, extra={}), "auto_thread", "MATRIX_AUTO_THREAD", "true") is True
     assert _extra_csv_set(PlatformConfig(enabled=True, extra={"free_response_rooms": []}),
                           "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS") == set()
+
+
+def test_matrix_supports_inchannel_continuable():
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    assert MatrixAdapter.supports_inchannel_continuable is True

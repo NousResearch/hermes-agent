@@ -410,13 +410,23 @@ class WebhookAdapter(BasePlatformAdapter):
                 logger.debug("[webhook] Dynamic subscriptions file removed, cleared dynamic routes")
             self._dynamic_routes_stat = None
             return
+        stat_key = (st.st_mtime_ns, st.st_size, st.st_ino)
+        if stat_key == self._dynamic_routes_stat:
+            return  # No change
         try:
-            stat_key = (st.st_mtime_ns, st.st_size, st.st_ino)
-            if stat_key == self._dynamic_routes_stat:
-                return  # No change
             data = json.loads(subs_path.read_text(encoding="utf-8-sig"))
-            if not isinstance(data, dict):
-                return  # keep the last good snapshot
+        except ValueError as e:
+            # Keep the last good snapshot, and remember this version so it is parsed once, not per POST.
+            self._dynamic_routes_stat = stat_key
+            logger.error("[webhook] Failed to parse dynamic routes: %s", e)
+            return
+        except OSError as e:
+            logger.error("[webhook] Failed to read dynamic routes: %s", e)
+            return
+        if not isinstance(data, dict):
+            self._dynamic_routes_stat = stat_key  # keep the last good snapshot; parse this version once
+            return
+        try:
             self._dynamic_routes = {  # static routes take precedence
                 k: v for k, v in data.items()
                 if isinstance(v, dict) and k not in self._static_routes and self._dynamic_route_allowed(k, v)

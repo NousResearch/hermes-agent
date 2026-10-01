@@ -230,15 +230,13 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         route["deliver_only"] = True
     if body.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
-    if isinstance(expected, dict) and expected.get("enabled") is False:
-        route["enabled"] = False
 
     def _save():
         try:
-            wh._replace_subscription(name, route, expected)
+            published = wh._replace_subscription(name, route, expected)
         except wh.SubscriptionMutationConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return _webhook_route_summary(name, route, wh._get_webhook_base_url())
+        return _webhook_route_summary(name, published, wh._get_webhook_base_url())
 
     summary = await config_scoped_to_thread(profile, _save)
     summary["secret"] = secret  # surfaced exactly once, on create

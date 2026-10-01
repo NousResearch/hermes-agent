@@ -20,7 +20,7 @@ from hermes_cli.config import cfg_get
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 _SUBSCRIPTIONS_FILE_MODE = 0o600
 _SUBSCRIPTIONS_LOCK_FILENAME = ".webhook_subscriptions.lock"
-_SUBSCRIPTIONS_THREAD_LOCK = threading.RLock()
+_SUBSCRIPTIONS_THREAD_LOCK = threading.Lock()
 _MISSING_SUBSCRIPTION = object()
 
 
@@ -47,31 +47,23 @@ def _subscriptions_lock():
             yield
 
 
-def _load_subscriptions_unlocked() -> tuple[Dict[str, dict], str | None]:
-    """Return one file snapshot and its content revision. Caller holds the store lock."""
-    path = _subscriptions_path()
+def _load_subscriptions_unlocked() -> Dict[str, dict]:
+    """Read one complete store snapshot; unreadable or malformed files read as empty."""
     try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return {}, None
-    except Exception:
-        return {}, None
-    revision = hashlib.sha256(raw).hexdigest()
+        raw = _subscriptions_path().read_bytes()
+    except OSError:
+        return {}
     try:
         data = json.loads(raw.decode("utf-8-sig"))
-        return (data if isinstance(data, dict) else {}), revision
-    except Exception:
-        return {}, revision
-
-
-def _load_subscriptions_snapshot() -> tuple[Dict[str, dict], str | None]:
-    """Read a coherent store snapshot; the revision changes with the file content."""
-    with _subscriptions_lock():
-        return _load_subscriptions_unlocked()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _load_subscriptions() -> Dict[str, dict]:
-    return _load_subscriptions_snapshot()[0]
+    """Lock-free read: writers publish by atomic rename, so a reader always sees one whole
+    snapshot, and read-only homes (no lock file can be created) keep working."""
+    return _load_subscriptions_unlocked()
 
 
 def _save_subscriptions_unlocked(subs: Dict[str, dict]) -> None:
@@ -80,24 +72,23 @@ def _save_subscriptions_unlocked(subs: Dict[str, dict]) -> None:
     atomic_json_write(_subscriptions_path(), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
 
 
-def _save_subscriptions(subs: Dict[str, dict]) -> None:
-    """Replace the whole store under its writer lock."""
-    with _subscriptions_lock():
-        _save_subscriptions_unlocked(subs)
-
-
 def _mutate_subscriptions(mutate: Callable[[Dict[str, dict]], Any]) -> Any:
     """Lock, re-read, mutate and atomically publish one complete store snapshot."""
     with _subscriptions_lock():
-        subscriptions, _ = _load_subscriptions_unlocked()
+        subscriptions = _load_subscriptions_unlocked()
         result = mutate(subscriptions)
         _save_subscriptions_unlocked(subscriptions)
         return result
 
 
-def _replace_subscription(name: str, route: dict, expected: object) -> None:
-    """CAS one route so a stale update cannot recreate a removed or disabled record."""
-    def replace(subscriptions: Dict[str, dict]) -> None:
+def _replace_subscription(name: str, route: dict, expected: object) -> dict:
+    """CAS one route so a stale update cannot recreate a removed or disabled record.
+
+    A general update is not an enable operation: an explicit ``enabled: False`` on the
+    replaced record survives (only the dashboard's dedicated enabled endpoint lifts it).
+    Returns the route as published.
+    """
+    def replace(subscriptions: Dict[str, dict]) -> dict:
         current = subscriptions.get(name, _MISSING_SUBSCRIPTION)
         expected_missing = expected is _MISSING_SUBSCRIPTION
         if (current is _MISSING_SUBSCRIPTION) != expected_missing or (
@@ -106,9 +97,13 @@ def _replace_subscription(name: str, route: dict, expected: object) -> None:
             raise SubscriptionMutationConflict(
                 f"Webhook subscription '{name}' changed concurrently; retry the operation."
             )
-        subscriptions[name] = route
+        published = route
+        if isinstance(current, dict) and current.get("enabled") is False:
+            published = {**route, "enabled": False}
+        subscriptions[name] = published
+        return published
 
-    _mutate_subscriptions(replace)
+    return _mutate_subscriptions(replace)
 
 
 def _get_webhook_config() -> dict:
@@ -212,11 +207,7 @@ def _cmd_subscribe(args):
             "Omit --secret to generate one automatically, or provide a different secret."
         )
         return
-    secret = (
-        (args.secret or secrets.token_urlsafe(32))
-        if profile_changed
-        else (args.secret or existing.get("secret") or secrets.token_urlsafe(32))
-    )
+    secret = args.secret or (None if profile_changed else existing.get("secret")) or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
@@ -227,10 +218,6 @@ def _cmd_subscribe(args):
         "deliver": args.deliver or "log",
         "profile": profile,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-    # A general subscription update is not an enable operation. Preserve an explicit revocation;
-    # only the dashboard's dedicated enabled endpoint may lift it.
-    if existing.get("enabled") is False:
-        route["enabled"] = False
 
     if getattr(args, "deliver_only", False):
         if getattr(args, "cron_job", ""):
@@ -268,7 +255,7 @@ def _cmd_subscribe(args):
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
     try:
-        _replace_subscription(name, route, expected)
+        route = _replace_subscription(name, route, expected)
     except SubscriptionMutationConflict as exc:
         print(f"Error: {exc}")
         return

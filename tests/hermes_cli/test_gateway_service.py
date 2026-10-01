@@ -175,6 +175,97 @@ class TestTempHomeServiceDefinitionGuard:
         assert gateway_cli._temp_home_in_service_definition(unit) is not None
 
 
+class TestStagedWorkspaceServiceDefinitionGuard:
+    """A worker-spawned `hermes gateway restart` must never write a unit that launches the
+    dependency environment's staged workspace: that launcher cannot boot, so the service
+    crash-loops under Restart=always with no way to repair itself from inside the gateway."""
+
+    STAGED = ("/home/u/.hermes/installs/abc123/environments/9f8e7d6c/workspace"
+              "/.hermes/bin/hermes")
+
+    def test_detects_staged_workspace_launcher_in_systemd_unit(self):
+        unit = f"[Service]\nExecStart={self.STAGED} gateway run\n"
+        assert (
+            gateway_cli._staged_workspace_root_in_service_definition(unit)
+            == "/home/u/.hermes/installs/abc123/environments/9f8e7d6c/workspace"
+        )
+
+    def test_detects_staged_workspace_in_launchd_plist_arguments(self):
+        plist = ("<plist><dict><key>ProgramArguments</key><array>\n"
+                 f"  <string>{self.STAGED}</string>\n"
+                 "  <string>gateway</string><string>run</string>\n"
+                 "</array></dict></plist>")
+        assert gateway_cli._staged_workspace_root_in_service_definition(plist) is not None
+
+    def test_normal_package_managed_root_is_allowed(self):
+        unit = ('[Service]\n'
+                'ExecStart="/home/u/.local/bin/hermes" gateway run\n'
+                'Environment="PATH=/home/u/.hermes/installs/abc123/environments/'
+                '9f8e7d6c/venv/bin:/usr/bin"\n')
+        assert gateway_cli._staged_workspace_root_in_service_definition(unit) is None
+
+    def test_generation_dir_without_workspace_is_not_refused(self):
+        # The environment's venv/bin legitimately appears in PATH; only a staged
+        # *workspace* as the project root is unbootable.
+        unit = ('[Service]\n'
+                'Environment="PATH=/home/u/.hermes/installs/abc123/environments/'
+                '9f8e7d6c/venv/bin:/usr/bin"\n')
+        assert gateway_cli._staged_workspace_root_in_service_definition(unit) is None
+
+    def test_dotdot_segments_do_not_smuggle_the_shape(self, tmp_path, monkeypatch):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setattr(Path, "resolve", lambda self, *a, **k: elsewhere)
+        unit = ('[Service]\n'
+                'ExecStart="/opt/hermes/installs/abc123/environments/9f8e7d6c/workspace'
+                '/../workspace/.hermes/bin/hermes" gateway run\n')
+        assert gateway_cli._staged_workspace_root_in_service_definition(unit) is None
+
+    def test_refusal_prints_actionable_guidance(self, capsys):
+        unit = f"[Service]\nExecStart={self.STAGED} gateway run\n"
+        assert gateway_cli._refuse_staged_workspace_service_write(unit, "systemd unit") is True
+        out = capsys.readouterr().out
+        assert "Refusing to write the gateway systemd unit" in out
+        assert "environments/<gen>/venv/bin" in out
+
+    def test_clean_definition_is_not_refused(self, capsys):
+        unit = '[Service]\nExecStart="/home/u/.local/bin/hermes" gateway run\n'
+        assert gateway_cli._refuse_staged_workspace_service_write(unit, "systemd unit") is False
+        assert capsys.readouterr().out == ""
+
+    def test_refresh_refuses_to_write_a_staged_workspace_unit(self, tmp_path, monkeypatch):
+        """The crash-loop trigger: a refresh driven from a worker must not persist the unit."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: f"[Service]\nExecStart={self.STAGED} gateway run\n",
+        )
+
+        ran = []
+        monkeypatch.setattr(
+            gateway_cli.subprocess, "run",
+            lambda cmd, check=True, **kwargs: (ran.append(cmd), SimpleNamespace(
+                returncode=0, stdout="", stderr=""))[1],
+        )
+
+        assert gateway_cli.refresh_systemd_unit_if_needed(system=False) is False
+        assert not any("daemon-reload" in str(c) for c in ran), \
+            "daemon-reload must not run when the write was refused"
+        assert unit_path.read_text(encoding="utf-8") == "old unit\n", \
+            "the installed unit must be left untouched"
+
+    def test_combined_guard_keeps_the_temp_home_refusal(self):
+        unit = '[Service]\nEnvironment="HERMES_HOME=/tmp/hermes-e2e-41264"\n'
+        assert gateway_cli._refuse_unlaunchable_service_write(unit, "systemd unit") is True
+        unit = f"[Service]\nExecStart={self.STAGED} gateway run\n"
+        assert gateway_cli._refuse_unlaunchable_service_write(unit, "systemd unit") is True
+        clean = '[Service]\nExecStart="/home/u/.local/bin/hermes" gateway run\n'
+        assert gateway_cli._refuse_unlaunchable_service_write(clean, "systemd unit") is False
+
+
 class TestRequireServiceInstalled:
     def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):
         unit_path = tmp_path / "hermes-gateway.service"

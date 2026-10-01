@@ -542,7 +542,7 @@ def refresh_launchd_plist_if_needed() -> bool:
         return False
 
     new_plist = _gw().generate_launchd_plist()
-    if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+    if _gw()._refuse_unlaunchable_service_write(new_plist, "launchd plist"):
         return False
 
     _gw()._prepare_service_launcher()
@@ -628,7 +628,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
 
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     new_plist = _gw().generate_launchd_plist()
-    if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+    if _gw()._refuse_unlaunchable_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
     _gw()._prepare_service_launcher()
@@ -683,7 +683,7 @@ def launchd_start():
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
         new_plist = _gw().generate_launchd_plist()
-        if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+        if _gw()._refuse_unlaunchable_service_write(new_plist, "launchd plist"):
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)

@@ -3416,6 +3416,57 @@ def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
     return True
 
 
+def _staged_workspace_root_in_service_definition(definition: str) -> str | None:
+    """Project root baked into a systemd unit / launchd plist that is a dependency
+    environment's staged workspace, or None.
+
+    A package-managed install stages its build-time source snapshot under
+    ``installs/<key>/environments/<gen>/workspace``. A launcher bound to that copy
+    cannot boot — no environment is committed for a workspace project root — so a
+    service pointing at one respawns forever under ``Restart=always``, and nothing
+    running inside the dead gateway can repair it. Workers inherit a PATH whose first
+    entry is that environment's ``venv/bin``, whose ``hermes`` console script is an
+    editable install bound to the staged workspace, so a restart issued from a cron job
+    or the terminal tool generates the unit from it.
+    """
+    import re
+
+    for match in re.finditer(r"/[^\s\"']*installs/[^/\s\"']+/environments/[^/\s\"']+/workspace", definition):
+        raw = match.group(0)
+        try:
+            parts = Path(raw).resolve().parts
+        except (OSError, ValueError):
+            continue
+        # Re-check on the resolved path: ``..`` segments and symlinks must not smuggle
+        # the shape past the guard.
+        for index in range(len(parts) - 4):
+            if (parts[index] == "installs" and parts[index + 2] == "environments"
+                    and parts[index + 4] == "workspace"):
+                return raw
+    return None
+
+
+def _refuse_staged_workspace_service_write(definition: str, kind: str) -> bool:
+    """Refuse (with guidance) when a service definition would launch a staged
+    dependency workspace instead of the install's own checkout."""
+    workspace = _staged_workspace_root_in_service_definition(definition)
+    if workspace is None:
+        return False
+    print(f"✗ Refusing to write the gateway {kind}: it would launch a staged dependency workspace ({workspace}).")
+    print("  A process the gateway started resolved `hermes` to the dependency environment's own console")
+    print("  script, so the service was generated from that environment's staged source snapshot. That")
+    print("  launcher cannot boot, and the service would respawn forever without reaching a usable state.")
+    print("  Restart the gateway from a shell where `hermes` resolves to this install's own launcher — a")
+    print("  PATH starting with .../installs/<key>/environments/<gen>/venv/bin resolves to the wrong one.")
+    return True
+
+
+def _refuse_unlaunchable_service_write(definition: str, kind: str) -> bool:
+    """Every reason a generated service definition must not be persisted."""
+    return (_refuse_temp_home_service_write(definition, kind)
+            or _refuse_staged_workspace_service_write(definition, kind))
+
+
 def _retire_hermes_replace_dropin(system: bool = False) -> bool:
     """Remove only the legacy ``--replace`` drop-in written by Hermes."""
     unit_path = get_systemd_unit_path(system=system)
@@ -3455,7 +3506,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     # Structural variant: refuse ANY temp-dir HERMES_HOME (manual E2E homes lack the pytest markers).
-    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+    if _refuse_unlaunchable_service_write(new_unit, "systemd unit"):
         return False
 
     _prepare_service_launcher(system=system, run_as_user=expected_user)
@@ -3675,7 +3726,7 @@ def systemd_install(
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
-    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+    if _refuse_unlaunchable_service_write(new_unit, "systemd unit"):
         return
     print(f"Installing {scope_label} systemd service to: {unit_path}")
     _prepare_service_launcher(system=system, run_as_user=run_as_user)

@@ -250,21 +250,26 @@ class TestSlashCommandSessionIsolation:
         assert event.source.scope_id == "T123"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("is_mpim, disable_dms, expected", [
-        (True, False, "dm"),       # group DM: a DM-style session, like its messages
-        (False, False, "group"),   # legacy private channel: also a G id, still a channel
-        (True, True, None),        # disable_dms covers group DMs on the slash path too
+    @pytest.mark.parametrize("channel_id, is_mpim, extra, expected", [
+        ("G123", True, {}, "dm"),         # group DM: a DM-style session, like its messages
+        ("G123", False, {}, "group"),     # legacy private channel: also a G id, still a channel
+        ("G123", True, {"disable_dms": True}, None),   # disable_dms covers group DMs too
+        ("C999", False, {"allowed_channels": "C123"}, None),   # outside allowed_channels
+        ("G123", True, {"allowed_channels": "C123"}, None),    # an MPIM obeys channel gating too
+        ("D123", False, {"allowed_channels": "C123"}, "dm"),   # a 1:1 DM is gated by disable_dms only
+        ("C123", False, {"ignored_channels": "C123"}, None),   # ignored channels are never touched
     ])
-    async def test_group_dm_slash_command_is_classified_like_its_messages(
-            self, adapter, is_mpim, disable_dms, expected):
-        """The message path treats channel_type im and mpim as DMs; a slash payload carries no
-        channel_type, so an MPIM (``G`` id) must still land in the DM-style session and obey
-        disable_dms."""
-        adapter.config.extra["disable_dms"] = disable_dms
+    async def test_slash_command_follows_the_message_paths_conversation_rules(
+            self, adapter, channel_id, is_mpim, extra, expected):
+        """A slash command obeys the rules a message in the same conversation does: the message
+        path treats channel_type im and mpim as DMs (a slash payload carries no channel_type, so an
+        MPIM ``G`` id is looked up), disable_dms covers both, and allowed_channels /
+        ignored_channels gate every conversation but a 1:1 DM."""
+        adapter.config.extra.update(extra)
         adapter._app.client.conversations_info = AsyncMock(
-            return_value={"ok": True, "channel": {"id": "G123", "is_mpim": is_mpim}})
+            return_value={"ok": True, "channel": {"id": channel_id, "is_mpim": is_mpim}})
         await adapter._handle_slash_command(
-            {"text": "hello", "user_id": "U123", "channel_id": "G123", "team_id": "T123"})
+            {"text": "hello", "user_id": "U123", "channel_id": channel_id, "team_id": "T123"})
 
         if expected is None:
             adapter.handle_message.assert_not_awaited()

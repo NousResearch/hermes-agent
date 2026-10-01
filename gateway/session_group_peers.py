@@ -87,11 +87,27 @@ def _revoke(authority, params):
     return {'revoked': True}
 
 
+def probe_route(client, grant, catalog, scope):
+    """Check a grant on the member's gateway: reachable, the same catalog, the same room scope."""
+    from gateway.hosted_room_peer import GatewayRoomCatalog, HostedRoomPeerError
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    try:
+        probe = client.probe(grant=grant)
+        live = GatewayRoomCatalog.from_mapping(probe.get('catalog'))
+    except PeerRunsHTTPError as exc:
+        reason = exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable'
+        raise RuntimeStoreError(reason) from exc
+    except HostedRoomPeerError as exc:
+        raise RuntimeStoreError('peer_target_mismatch') from exc
+    if live != catalog or any(probe.get(k) != v for k, v in scope.items()):
+        raise RuntimeStoreError('peer_target_mismatch')
+
+
 def register(service, params):
     """Bind a target grant to the room's pinned peer member, after a live scoped probe."""
     from gateway.hosted_room_peer import (
         GatewayRoomCatalog, HostedRoomPeerError, PROTOCOL_VERSION, validate_room_link_url)
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
     room_id, member_id, profile, grant = (params.get(k) for k in ('room_id', 'member_id', 'target_profile', 'grant'))
     if not all(isinstance(v, str) and v for v in (room_id, member_id, profile, grant)):
@@ -112,18 +128,9 @@ def register(service, params):
             or PROTOCOL_VERSION not in catalog.protocol_versions or 'direct' not in catalog.link_modes):
         raise RuntimeStoreError('peer_target_unsupported')
     client = PeerRunsHTTPClient(base_url=target_url, api_key='', receipt_db_path=service.db_path)
-    try:
-        probe = client.probe(grant=grant)
-        live = GatewayRoomCatalog.from_mapping(probe.get('catalog'))
-    except PeerRunsHTTPError as exc:
-        reason = exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable'
-        raise RuntimeStoreError(reason) from exc
-    except HostedRoomPeerError as exc:
-        raise RuntimeStoreError('peer_target_mismatch') from exc
-    scope = {'room_id': room_id, 'home_install_id': gateway_id, 'authority_gateway_id': gateway_id,
-             'authority_epoch': epoch, 'member_id': member_id, 'target_profile': profile}
-    if live != catalog or any(probe.get(k) != v for k, v in scope.items()):
-        raise RuntimeStoreError('peer_target_mismatch')
+    probe_route(client, grant, catalog, {
+        'room_id': room_id, 'home_install_id': gateway_id, 'authority_gateway_id': gateway_id,
+        'authority_epoch': epoch, 'member_id': member_id, 'target_profile': profile})
     # Route identity is derived, never random: a re-registered grant must replay an accepted
     # dispatch byte for byte, or the target's idempotency check reads the replay as a new run.
     seed = '\0'.join((gateway_id, room_id, member_id)).encode()

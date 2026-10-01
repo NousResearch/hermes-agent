@@ -35,6 +35,41 @@ class TestA2AToolsGate(unittest.TestCase):
     def test_inbound_platform_enabled_serves(self):
         self.assertTrue(self._avail({"platforms": {"a2a": {"enabled": True}}}))
 
+    def test_inbound_platform_enabled_at_documented_gateway_layer_serves(self):
+        """#109011: ``gateway.platforms.a2a.enabled`` is what the docs and
+        ``hermes gateway setup`` write, and what ``merge_platform_sections``
+        honours for the inbound server. The gate checked only the top-level
+        ``platforms`` block, so the five client tools stayed unserved."""
+        self.assertTrue(self._avail(
+            {"gateway": {"platforms": {"a2a": {"enabled": True, "extra": {"port": 9900}}}}}))
+        self.assertTrue(self._avail({"gateway": {"platforms": {"a2a": {"enabled": True}}}}))
+
+    def test_gateway_platform_subsection_layer_serves(self):
+        """Third layer ``merge_platform_sections`` merges: ``gateway.a2a:``."""
+        self.assertTrue(self._avail({"gateway": {"a2a": {"enabled": True}}}))
+
+    def test_list_valued_platform_layer_does_not_crash(self):
+        """``gateway.platforms: [telegram, api_server]`` (the shipped shape on a
+        real install) is a list, not a dict — the gate must skip it, not raise."""
+        self.assertFalse(self._avail({"gateway": {"platforms": ["telegram", "api_server"]}}))
+        self.assertFalse(self._avail(
+            {"gateway": {"platforms": ["telegram", "api_server"]},
+             "platforms": {"telegram": {"enabled": True}}}))
+
+    def test_list_platform_layer_still_honours_dict_sibling_layer(self):
+        self.assertTrue(self._avail(
+            {"gateway": {"platforms": ["telegram"]}, "platforms": {"a2a": {"enabled": True}}}))
+
+    def test_enabled_false_in_every_layer_serves_nothing(self):
+        self.assertFalse(self._avail(
+            {"gateway": {"platforms": {"a2a": {"enabled": False}}},
+             "platforms": {"a2a": {"enabled": False}}}))
+
+    def test_non_dict_platform_block_serves_nothing(self):
+        """A bare ``a2a: true``-shaped or string block is not a config block."""
+        self.assertFalse(self._avail({"platforms": {"a2a": "yes"}}))
+        self.assertFalse(self._avail({"platforms": {"a2a": True}}))
+
     def test_a2a_port_env_serves(self):
         os.environ["A2A_PORT"] = "9999"
         try:

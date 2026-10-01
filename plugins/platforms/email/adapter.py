@@ -244,7 +244,7 @@ def _first_body_part(msg: email_lib.message.Message, content_type: str) -> str:
 
 def _extract_text_body(msg: email_lib.message.Message, *, preserve_html: bool = False) -> str:
     """Prefer decoded HTML when opted in; otherwise retain plain-text extraction."""
-    if preserve_html and (html := _first_body_part(msg, "text/html")):
+    if preserve_html and (html := _first_body_part(msg, "text/html")).strip():
         return html
     if msg.is_multipart():
         html = _first_body_part(msg, "text/html")

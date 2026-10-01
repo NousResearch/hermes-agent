@@ -1174,6 +1174,9 @@ def _run_prompt_submit(
         _emit("message.start", sid)
 
     def run_body():
+        with session["history_lock"]:
+            if _cancel_pending_prompt_turn(sid, session, turn_claim) or not _holds_turn_claim(session, turn_claim):
+                return None
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
         # before any tool can commission a child (delegate_task captures it as authority).
         transport_token = bind_transport(session.get("transport"))
@@ -1267,7 +1270,9 @@ def _run_prompt_submit(
             can_start = _start_session_work(
                 run, name=f"prompt-turn-{sid}", session=session, turn_claim=turn_claim) is not None
     if not can_start:
-        _release_session_turn(session, turn_claim)
+        with session["history_lock"]:
+            if not _cancel_pending_prompt_turn(sid, session, turn_claim) and _owns_turn_claim(session, turn_claim):
+                session["running"] = False
     return can_start
 
 

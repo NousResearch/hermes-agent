@@ -398,3 +398,83 @@ def test_stale_auto_continue_does_not_stage_marker_inputs(monkeypatch, turn_env)
         turn_env.join_all()
         server._sessions.pop(SID, None)
     assert {"markers": marker_inputs, "staged": marker_state} == {"markers": [("user", None)], "staged": {}}
+
+
+@pytest.mark.parametrize("submitted", [False, True], ids=["automatic", "submit"])
+@pytest.mark.parametrize("stop_after_publication", [False, True], ids=["before-start", "after-publication"])
+def test_a_stop_during_worker_publication_emits_a_terminal_frame(
+    monkeypatch, turn_env, submitted, stop_after_publication
+):
+    session = _idle_session()
+    events, workers = [], []
+    worker_gate = threading.Event()
+    real_decide = server._decide_turn_thread
+    stopped = False
+
+    def stop():
+        nonlocal stopped
+        stopped = True
+        response = server.handle_request(
+            {"id": "stop", "method": "session.interrupt", "params": {"session_id": SID}})
+        assert response["result"] == {"status": "interrupted"}
+
+    class Worker(threading.Thread):
+        def start(self):
+            if not stop_after_publication:
+                stop()
+            super().start()
+
+    def spawn(target, *, name, **_kwargs):
+        def delayed_target():
+            if stop_after_publication:
+                assert worker_gate.wait(10)
+            target()
+
+        worker = Worker(target=delayed_target, name=name, daemon=True)
+        workers.append(worker)
+        return worker
+
+    def decide(target_session, worker, claim, decision):
+        admitted = real_decide(target_session, worker, claim, decision)
+        if stop_after_publication and threading.current_thread() is not worker and not stopped:
+            stop()
+            worker_gate.set()
+        return admitted
+
+    def prepare(_sid, _session, _st, text, _images):
+        turn_env.ran.append(turn_env.label(text))
+        return None
+
+    monkeypatch.setattr(server, "_prepare_turn_input", prepare)
+    monkeypatch.setattr("agent.memory_provider.spawn_context_thread", spawn)
+    monkeypatch.setattr(server, "_decide_turn_thread", decide)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+    monkeypatch.setattr(server, "_emit", lambda event, _sid, *payload: events.append((event, payload)))
+    server._sessions[SID] = session
+    try:
+        if submitted:
+            response = _user_submit()
+            assert response == {"status": "streaming"}
+            session["_run_thread"].join(10)
+        else:
+            with session["history_lock"]:
+                claim = server._claim_session_turn(session)
+            server._run_prompt_submit("automatic", SID, session, "automatic", turn_claim=claim)
+        for worker in workers:
+            worker.join(10)
+        outcome = {
+            "running": session["running"], "inflight": session.get("inflight_turn"),
+            "ran": turn_env.ran, "terminal": [payload for event, payload in events if event == "error"],
+        }
+    finally:
+        worker_gate.set()
+        turn_env.finish.set()
+        for worker in workers:
+            worker.join(10)
+        turn_env.join_all()
+        server._sessions.pop(SID, None)
+
+    assert outcome == {
+        "running": False, "inflight": None, "ran": [],
+        "terminal": [({"message": "Turn cancelled before the agent started"},)],
+    }

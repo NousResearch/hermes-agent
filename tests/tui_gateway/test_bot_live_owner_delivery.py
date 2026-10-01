@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from tui_gateway.method_ctx import rebind
 from tui_gateway.session_lifecycle import (
-    _claim_session_turn, _owns_turn_claim, _release_session_turn, _session_turn_admission)
+    _claim_session_turn, _holds_turn_claim, _owns_turn_claim, _release_session_turn, _session_turn_admission)
 from tui_gateway import session_notifications, session_auto_continue
 from tui_gateway.turn_marker import record_turn_start, read_turn_marker
 
@@ -47,6 +47,7 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         # Every dispatch binds the session's own row before the turn writes (#111999).
         "_ensure_session_db_row": noop,
         "_owns_turn_claim": _owns_turn_claim, "_release_session_turn": _release_session_turn,
+        "_holds_turn_claim": _holds_turn_claim, "_cancel_pending_prompt_turn": noop,
     })
     def terminal(outcome):
         mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],

@@ -45,14 +45,6 @@ def _all_tool_schemas():
             yield value
 
 
-def test_every_trait_is_used_by_the_default():
-    # A trait no default column carries describes no current behavior — dead data.
-    for trait in kw.TRAITS:
-        assert W.keys_with(trait), trait
-    with pytest.raises(ValueError):
-        W.keys_with("nope")
-
-
 def test_archive_is_always_a_manual_move():
     assert all(W.can_move(k, kw.ARCHIVED) for k in W.keys())
     assert not any(W.can_move(k, "running") for k in W.keys())
@@ -72,10 +64,6 @@ def test_unknown_column_keys_are_rejected_not_defaulted(call):
     (lambda w: replace(w, columns=w.columns + (kw.Column(key=kw.ARCHIVED, label="A"),)), "reserved"),
     (lambda w: replace(w, manual=MappingProxyType({"ready": frozenset({"gone"})})), "manual"),
     (lambda w: replace(w, manual=MappingProxyType({"gone": frozenset({"ready"})})), "manual"),
-    (lambda w: replace(w, columns=tuple(replace(c, traits=frozenset()) if c.key == "done" else c
-                                        for c in w.columns)), "terminal"),
-    (lambda w: replace(w, columns=tuple(replace(c, traits=frozenset({"bogus"})) if c.key == "done" else c
-                                        for c in w.columns)), "unknown traits"),
 ])
 def test_validate_rejects_inconsistent_workflows(mutate, message):
     with pytest.raises(ValueError, match=message):

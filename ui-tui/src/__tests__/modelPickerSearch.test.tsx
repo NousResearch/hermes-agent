@@ -27,11 +27,12 @@ import { DEFAULT_THEME } from '../theme.js'
 
 it('switches to a typed model on the provider that serves it', async () => {
   const providers = [
-    { name: 'OpenRouter', slug: 'openrouter', models: ['openai/gpt-6'] },
-    { name: 'OpenAI', slug: 'openai', models: ['gpt-6', 'gpt-6-mini'] }
+    { name: 'OpenRouter', slug: 'openrouter', models: ['qwen/qwen3-max'] },
+    { name: 'Alibaba', slug: 'alibaba', models: ['qwen3-max', 'qwen3-max-mini'] }
   ]
 
-  const request = vi.fn(async () => ({ model: 'gpt-6', providers }))
+  const request = vi.fn(async () => ({ model: 'qwen3-max', providers }))
+  const onCancel = vi.fn()
   const onSelect = vi.fn()
   const stdout = Object.assign(new PassThrough(), { columns: 100, isTTY: false, rows: 40 })
   let output = ''
@@ -43,7 +44,7 @@ it('switches to a typed model on the provider that serves it', async () => {
   const instance = renderSync(
     <ModelPicker
       gw={{ request } as unknown as GatewayClient}
-      onCancel={() => {}}
+      onCancel={onCancel}
       onSelect={onSelect}
       sessionId="s1"
       t={DEFAULT_THEME}
@@ -59,14 +60,16 @@ it('switches to a typed model on the provider that serves it', async () => {
   try {
     await vi.waitFor(() => expect(stripAnsi(output)).toContain('OpenRouter'), { timeout: 5000 })
 
-    for (const ch of 'gpt-6-mini') {
+    // A leading 'q' is search text, not the close key.
+    for (const ch of 'qwen3-max-mini') {
       inputHarness.handler?.(ch, {})
     }
 
-    await vi.waitFor(() => expect(stripAnsi(output)).toContain('OpenAI · gpt-6-mini'), { timeout: 5000 })
+    await vi.waitFor(() => expect(stripAnsi(output)).toContain('Alibaba · qwen3-max-mini'), { timeout: 5000 })
     inputHarness.handler?.('', { return: true })
 
-    expect(onSelect).toHaveBeenCalledWith(modelPickerCommand('gpt-6-mini', 'openai', false))
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(onSelect).toHaveBeenCalledWith(modelPickerCommand('qwen3-max-mini', 'alibaba', false))
   } finally {
     instance.unmount()
     instance.cleanup()

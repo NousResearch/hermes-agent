@@ -443,16 +443,10 @@ export function ModelPicker({
       return
     }
 
-    // List-stage Esc/q handling (overlay keys are disabled while on a list
-    // stage so 'q' can be typed into the filter).
+    // List-stage Esc handling (overlay keys are disabled while on a list
+    // stage so 'q' can be typed into the filter, e.g. a leading "qwen").
     if (key.escape) {
       back()
-
-      return
-    }
-
-    if (ch === 'q' && !filter) {
-      onCancel()
 
       return
     }

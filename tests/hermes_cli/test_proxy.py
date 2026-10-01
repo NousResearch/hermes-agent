@@ -375,6 +375,11 @@ def test_server_strips_client_auth_header():
     ("127.0.0.1", {"Origin": "null"}, False),                             # opaque browser origin
     ("127.0.0.1", {"Host": "localhost:80", "Origin": "http://localhost"}, True),  # Origin omits :80
     ("127.0.0.1", {"Sec-Fetch-Site": "cross-site"}, False),               # cross-site GET, no Origin
+    ("127.0.0.1", {"Host": "user@localhost:{port}"}, False),              # userinfo smuggled into Host
+    ("127.0.0.1", {"Origin": "http://{authority}/path"}, False),          # an Origin never has a path
+    ("192.0.2.10", {"Host": "192.0.2.10:{port}",                          # specific-IP bind: its own
+                    "Origin": "http://192.0.2.10:{port}"}, True),           # address and origin...
+    ("192.0.2.10", {"Host": "192.0.2.11:{port}"}, False),                 # ...but not a neighbour's
     ("0.0.0.0", {"Host": "lan-name.example:{port}"}, True),               # LAN API client, no Origin
     ("0.0.0.0", {"Host": "rebound.example:{port}",                        # DNS-rebound page: its
                  "Origin": "http://rebound.example:{port}"}, False),      # Origin equals its Host

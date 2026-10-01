@@ -97,7 +97,7 @@ def test_media_caption_and_filename_reach_model_through_cache(
     asyncio.run(exchange())
 
 
-@pytest.mark.parametrize("gateway", [10], indirect=True)
+@pytest.mark.parametrize("gateway_extra_config", ["gateway:\n  max_inbound_media_bytes: 10\n"])
 @pytest.mark.parametrize("payload, info", [
     pytest.param(b"small", {"mimetype": "text/plain", "size": 11}, id="declared-size"),
     pytest.param(b"eleven byte", {"mimetype": "text/plain"}, id="size-omitted"),

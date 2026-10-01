@@ -106,6 +106,15 @@ _BROWSERS = (
         ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
          "/opt/microsoft/msedge/microsoft-edge", "/opt/microsoft/msedge/msedge"),
         "microsoft-edge", linux_exec=("microsoft-edge", "microsoft-edge-stable")),
+    # Thorium: ungoogled Chromium fork, Linux-first (its own build lives under
+    # /opt/chromium.org/thorium). Profile dir is ``thorium`` under $XDG_CONFIG_HOME.
+    _Browser(
+        "thorium", "", ("Thorium",), (), (),
+        ("Thorium", "User Data"),
+        ("thorium-browser", "thorium"),
+        ("/usr/bin/thorium-browser", "/opt/chromium.org/thorium/thorium-browser",
+         "/opt/chromium.org/thorium/thorium"),
+        "thorium", linux_exec=("thorium-browser", "thorium")),
 )
 _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 
@@ -141,7 +150,8 @@ _LINUX_DESKTOP_MAP = (
     # ORDER MATTERS: ``brave-origin.desktop`` contains the bare ``brave`` fragment,
     # so the substring scan must hit the Origin entry first (#95549).
     ("brave-origin", "brave-origin"), ("brave", "brave"),
-    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"))
+    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"),
+    ("thorium", "thorium"))
 
 _LINUX_CHANNEL_FRAGMENTS = (
     "google-chrome-beta", "google-chrome-unstable", "google-chrome-canary",

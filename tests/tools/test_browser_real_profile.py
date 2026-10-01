@@ -480,6 +480,17 @@ class TestChannelIdentity:
                           return_value=Mock(stdout="google-chrome.desktop\n")):
             assert bc._detect_default_linux() == "chrome"
 
+    def test_linux_thorium_default_resolves(self):
+        """Thorium is a Chromium fork and must resolve to its own key, not None."""
+        import hermes_cli.browser_connect as bc
+        with patch.object(bc.subprocess, "run",
+                          return_value=Mock(stdout="thorium-browser.desktop\n")):
+            assert bc._detect_default_linux() == "thorium"
+        # A thorium key must carry a resolvable profile dir + exec name, else the
+        # feature resolves the browser but fails later at launch.
+        assert bc._BROWSER_BY_KEY["thorium"].linux_config == "thorium"
+        assert "thorium-browser" in bc._BROWSER_BY_KEY["thorium"].linux_exec
+
     def test_linux_flatpak_beta_not_stable(self):
         import hermes_cli.browser_connect as bc
         with patch.object(bc.subprocess, "run",

@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { clearDismissedToolRows } from '@/store/tool-dismiss'
 import { $hideCodeDiffs, $toolDisclosureStates } from '@/store/tool-view'
 
 vi.mock('@assistant-ui/react', async importOriginal => ({
@@ -17,8 +18,12 @@ const diff = '--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-before\n+after'
 const writeClipboard = vi.fn(async (_text: string) => {})
 let originalDesktop: typeof window.hermesDesktop
 
-function show(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>) {
-  render(<ToolFallback {...({ args, result, toolCallId: 'copy-path-call', toolName } as ComponentProps<typeof ToolFallback>)} />)
+function show(toolName: string, args: Record<string, unknown> | string, result: Record<string, unknown>) {
+  render(
+    <ToolFallback
+      {...({ args, result, toolCallId: 'copy-path-call', toolName } as ComponentProps<typeof ToolFallback>)}
+    />
+  )
 }
 
 beforeEach(() => {
@@ -29,9 +34,34 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  clearDismissedToolRows()
   $toolDisclosureStates.set({})
   $hideCodeDiffs.set(false)
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: originalDesktop })
+})
+
+it('copies serialized arguments through the browser fallback and keeps dismissal independent', async () => {
+  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: undefined })
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  const writeText = vi.fn(async (_text: string) => {})
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+
+  try {
+    const path = '/remote/project/full path.txt'
+    show('patch', JSON.stringify({ path }), { success: true, diff })
+    const toggle = screen.getByRole('button', { expanded: true })
+    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy path' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(path))
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(writeClipboard).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByRole('button', { name: 'Copied' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
+  } finally {
+    if (originalClipboard) {Object.defineProperty(navigator, 'clipboard', originalClipboard)}
+    else {Reflect.deleteProperty(navigator, 'clipboard')}
+  }
 })
 
 it('copies the supplied edit path without changing disclosure or replacing diff copy', async () => {

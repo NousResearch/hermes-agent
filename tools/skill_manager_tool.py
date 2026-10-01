@@ -781,6 +781,10 @@ def skill_manage(
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
                 old_string=old_string, new_string=new_string, replace_all=replace_all,
                 absorbed_into=absorbed_into)
+    # Reject malformed supporting-file paths before the approval gate. Staging an invalid
+    # request makes approval the first time the agent sees the actionable error.
+    if action in {"write_file", "remove_file"} and (path_err := _validate_file_path(file_path)) is not None:
+        return tool_error(path_err, success=False)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
     if (shape_err := _op_shape_error(action, args)) is not None:

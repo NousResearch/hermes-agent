@@ -102,6 +102,12 @@ def _validate_batch_ops(operations, default_name, tool_error):
             return fail(i, " needs a 'name' (the skill it targets).")
         # Reject a misfiled op here, before any sibling is applied: a runtime failure on
         # op[1] would first apply op[0] and then roll the whole batch back.
+        # Reject malformed supporting-file paths before the batch approval gate. Otherwise
+        # an invalid op is staged and the actionable error is delayed until approval.
+        if act in {"write_file", "remove_file"}:
+            from tools.skill_manager_tool import _validate_file_path
+            if (path_err := _validate_file_path(op.get("file_path"))) is not None:
+                return fail(i, f" ({act} on '{nm}'): {path_err}")
         if (shape_err := _op_shape_error(act, op)) is not None:
             return fail(i, f" ({act} on '{nm}'): {shape_err}")
         # create's category is resolved to a target dir before the snapshot: reject a bad one here

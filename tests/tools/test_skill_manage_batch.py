@@ -70,7 +70,7 @@ class TestSkillManageBatch(unittest.TestCase):
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
         r = self._call("probe", [
             {"action": "patch", "old_string": "Step 1.", "new_string": "Step ONE."},
-            {"action": "write_file", "file_path": "bad/nope.md", "file_content": "x"},
+            {"action": "remove_file", "file_path": "references/missing.md"},
         ])
         self.assertFalse(r["success"])
         self.assertEqual(r["failed_index"], 1)
@@ -201,8 +201,8 @@ class TestSkillManageBatch(unittest.TestCase):
                 {"name": "gamma", "action": "create", "content": SK.format(n="gamma")},
                 {"name": "gamma", "action": "write_file",
                  "file_path": "references/a.md", "file_content": "a"},
-                {"name": "beta", "action": "write_file",
-                 "file_path": "bad/nope.md", "file_content": "x"},
+                {"name": "beta", "action": "remove_file",
+                 "file_path": "references/missing.md"},
             ]))
         self.assertFalse(r["success"])
         self.assertEqual(r["failed_index"], 4)
@@ -225,7 +225,7 @@ class TestSkillManageBatch(unittest.TestCase):
         r = self._call("delta", [
             {"action": "create", "content": SK.format(n="delta")},
             {"action": "write_file", "file_path": "references/a.md", "file_content": "a"},
-            {"action": "write_file", "file_path": "bad/nope.md", "file_content": "x"},
+            {"action": "remove_file", "file_path": "references/missing.md"},
         ])
         self.assertFalse(r["success"])
         self.assertFalse(os.path.exists(delta))
@@ -256,8 +256,8 @@ class TestSkillManageBatch(unittest.TestCase):
             r = self._call("probe", [
                 {"action": "patch",
                  "old_string": "Step 1.", "new_string": "Step ONE."},
-                {"action": "write_file",
-                 "file_path": "bad/nope.md", "file_content": "x"},
+                {"action": "remove_file",
+                 "file_path": "references/missing.md"},
             ])
         self.assertFalse(r["success"], r)
         self.assertIn("ROLLBACK FAILED", r["error"])
@@ -267,6 +267,25 @@ class TestSkillManageBatch(unittest.TestCase):
         self.assertTrue(os.path.exists(skill_md))
         content = open(skill_md).read()
         self.assertIn("Step ONE.", content)
+
+    def test_invalid_file_path_is_rejected_before_approval_staging(self):
+        from unittest.mock import patch as _patch
+        import tools.write_approval as wa
+
+        class _Decision:
+            allow = False
+            blocked = False
+            message = "staged for review"
+
+        with _patch.object(wa, "evaluate_gate", return_value=_Decision()), \
+                _patch.object(wa, "stage_write") as stage:
+            result = self._call("probe", [{
+                "action": "write_file", "file_path": "agents/openai.yaml",
+                "file_content": "interface: {}\n",
+            }])
+        self.assertFalse(result["success"])
+        self.assertIn("File must be under", result["error"])
+        stage.assert_not_called()
 
     def test_single_op_path_unchanged(self):
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])

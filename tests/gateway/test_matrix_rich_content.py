@@ -15,7 +15,7 @@ import pytest
 from agent import secret_scope
 from agent.context_references import preprocess_context_references_async
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import merge_pending_message_event
+from gateway.platforms.base_pending_merge import merge_pending_message_event
 from gateway.platforms.event import MessageType
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.run_turn_runner import TurnRunner

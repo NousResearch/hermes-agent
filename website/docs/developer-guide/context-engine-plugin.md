@@ -328,15 +328,22 @@ The `compression` config block (`compression.threshold`, `compression.protect_la
 
 ## Bundled: the Certified Context Governor (`ri-context-governor`)
 
-Hermes bundles a receipt-carrying compaction engine backed by the
+Hermes bundles an optional receipt-carrying compaction engine backed by the
 [`context-governor`](https://crates.io/crates/context-governor) binary
-(`engine: "ri-context-governor"`). Unlike lossy summarization, every compaction
-produces a **certified V2 receipt** (HMAC-SHA256 integrity over canonical JSON) that
-records exactly what was dropped, with **exact-fallback references** — the host can
-recover the original content later, so compaction loss becomes *recoverable* rather than
-permanent. Optional memory preservation: policy flag
-`context.governor.semantic_memory_enabled: true` keeps recall-typed messages
-(`evidence_critical`, `keep_verbatim`) across compaction.
+(`engine: "ri-context-governor"`). Compaction produces a **V2 receipt** (HMAC-SHA256
+integrity over canonical JSON) bound to the dropped content's source references:
+records include receipt-bound compaction metadata and source references, and when a
+receipt carries exact-fallback references, retained content can be retrieved with
+`context_expand` (subject to retention and availability of those references).
+Optional memory preservation: policy flag
+`context.governor.semantic_memory_enabled: true` can preserve qualifying recall-typed
+messages (`evidence_critical`/`keep_verbatim`) across compaction — eligibility depends
+on configuration and policy, and staged-activation behavior applies only on hosts that
+provide the staged-boundary lifecycle (upstream uses a direct-commit flow; the adapter
+degrades to it automatically).
+
+Platform support: Linux and macOS (the governed transport requires
+`/proc/self/fd`; Windows activation is refused explicitly).
 
 Setup:
 

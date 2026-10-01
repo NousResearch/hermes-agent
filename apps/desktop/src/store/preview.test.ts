@@ -363,7 +363,8 @@ describe('preview store', () => {
   it('tombstones a confirmed-missing tab in place without closing it', () => {
     openPreview(fileTarget('/work/demo.html'))
     openPreview(fileTarget('/work/keep.html'))
-    const demoId = 'file:file:///work/demo.html'
+    // File tab ids are session-scoped; read the real one instead of rebuilding it.
+    const demoId = $previewTabs.get().find(tab => tab.target.url === fileTarget('/work/demo.html').url)!.id
 
     markPreviewTabMissing(demoId)
 

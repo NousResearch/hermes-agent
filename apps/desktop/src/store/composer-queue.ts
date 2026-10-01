@@ -1,6 +1,8 @@
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { createSendEnvelope, type SendEnvelope } from '@/lib/send-envelope'
+
 import {
   type ComposerAttachment,
   draftHasTerminalChips,
@@ -19,6 +21,8 @@ export interface RemoveQueuedPromptOptions {
 export interface QueuedPromptEntry {
   id: string
   text: string
+  /** Captured once at enqueue; absent only on queues persisted by older Desktop builds. */
+  readonly envelope?: SendEnvelope
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole
    *  expanded skill body as `text` — the UI shows the invocation instead.
@@ -149,6 +153,32 @@ type QueueState = Record<string, QueuedPromptEntry[]>
 
 const STORAGE_KEY = 'hermes.desktop.composerQueue.v1'
 
+const migrateLegacyQueueState = (state: QueueState): { changed: boolean; state: QueueState } => {
+  let changed = false
+
+  const migrated = Object.fromEntries(
+    Object.entries(state).map(([sid, queue]) => [
+      sid,
+      queue.map(entry => {
+        if (
+          entry.envelope ||
+          typeof entry.queuedAt !== 'number' ||
+          !Number.isFinite(entry.queuedAt) ||
+          entry.queuedAt < 0
+        ) {
+          return entry
+        }
+
+        changed = true
+
+        return { ...entry, envelope: createSendEnvelope(entry.queuedAt) }
+      })
+    ])
+  ) as QueueState
+
+  return { changed, state: changed ? migrated : state }
+}
+
 const load = (): QueueState => {
   if (typeof window === 'undefined') {
     return {}
@@ -157,8 +187,14 @@ const load = (): QueueState => {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
+    const state = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as QueueState) : {}
+    const migrated = migrateLegacyQueueState(state)
 
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as QueueState) : {}
+    if (migrated.changed) {
+      save(migrated.state)
+    }
+
+    return migrated.state
   } catch {
     return {}
   }
@@ -291,7 +327,17 @@ const sidOf = (key: string | null | undefined): null | string => {
   return trimmed ? trimmed : null
 }
 
-const queueFor = (sid: string) => $queuedPromptsBySession.get()[sid] ?? []
+const queueFor = (sid: string) => {
+  const current = $queuedPromptsBySession.get()
+  const migrated = migrateLegacyQueueState(current)
+
+  if (migrated.changed) {
+    $queuedPromptsBySession.set(migrated.state)
+    save(migrated.state)
+  }
+
+  return migrated.state[sid] ?? []
+}
 
 const nextId = () => `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -332,6 +378,7 @@ export const enqueueQueuedPrompt = (
   const entry: QueuedPromptEntry = {
     id: nextId(),
     text: payload.text,
+    envelope: createSendEnvelope(),
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
     attachments: cloneAttachments(payload.attachments),

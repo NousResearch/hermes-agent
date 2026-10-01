@@ -1,7 +1,10 @@
 """prompt.submit writes the user's message at send time, and the turn that follows adopts that row instead of
 writing a second one (#111868: a Desktop freeze during a slow first agent build left a session row with no message)."""
 
+import threading
 from types import SimpleNamespace
+
+import pytest
 
 from agent.turn_context import _stage_turn_user_message
 from hermes_state import SessionDB
@@ -78,6 +81,259 @@ def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkey
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_retried_idle_client_message_id_returns_original_ack_from_live_and_durable_state(
+    monkeypatch, tmp_path
+):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+
+    class DeferredThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(server.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
+    monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
+    monkeypatch.setattr(server.time, "time", lambda: 1_790_594_550.0)
+    request = {"id": "p", "method": "prompt.submit", "params": {
+        "session_id": sid,
+        "text": "idempotency probe",
+        "submitted_at": 1_790_594_548.125,
+        "client_message_id": "desktop-message-idempotent",
+    }}
+    try:
+        first = server.handle_request(request)
+        live_retry = server.handle_request({**request, "id": "live-retry"})
+
+        assert live_retry["result"] == first["result"]
+        assert not session.get("queued_prompt")
+        assert len(db.get_messages_as_conversation(key, include_row_ids=True)) == 1
+
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+        durable_retry = server.handle_request({**request, "id": "durable-retry"})
+
+        assert durable_retry["result"] == first["result"]
+        assert len(db.get_messages_as_conversation(key, include_row_ids=True)) == 1
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_pending_live_ack_never_falls_through_to_partial_durable_reconstruction(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, _key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    client_message_id = "desktop-pending-exact-ack"
+    try:
+        with session["history_lock"]:
+            session["running"] = True
+            server._start_inflight_turn(
+                session, "pending exact ack", user_timestamp=1_790_594_548.125,
+                client_message_id=client_message_id)
+            session["inflight_turn"]["_submit_ack"] = {
+                "status": "streaming",
+                "client_message_id": client_message_id,
+                "survivor_user_row_ids": [17],
+            }
+            session["inflight_turn"]["_submit_ack_ready"] = threading.Event()
+        assert server._persist_session_row_for_submit(
+            "rid", session, "pending exact ack", None,
+            {"client_message_id": client_message_id}, 1_790_594_548.125,
+        ) is None
+
+        assert server._client_message_ack(session, client_message_id) is None
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+
+def test_failed_submit_persistence_releases_client_ack_reservation(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, _key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    client_message_id = "client-failed-persist-retry"
+
+    def disk_full(_session):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(server, "_ensure_session_db_row", disk_full)
+    try:
+        with session["history_lock"]:
+            session["running"] = True
+            server._start_inflight_turn(
+                session, "retry after disk full", client_message_id=client_message_id)
+            ready = server._reserve_client_message_admission_locked(session, client_message_id)
+            session["inflight_turn"]["_submit_ack_ready"] = ready
+
+        response = server._persist_session_row_for_submit(
+            "failed", session, "retry after disk full", None,
+            {"client_message_id": client_message_id}, 1_790_594_548.125,
+        )
+
+        assert response["error"]["data"]["code"] == "disk_full"
+        assert client_message_id not in session.get("_client_message_admissions", {})
+        # A concurrent duplicate that was waiting on this admission learns the real cause.
+        duplicate = server._await_client_message_ack("duplicate", session, client_message_id, ready)
+        assert duplicate["id"] == "duplicate"
+        assert duplicate["error"] == response["error"]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_exact_client_ack_with_survivor_rebind_fields_is_not_evicted():
+    session = {"history_lock": threading.RLock()}
+    client_message_id = "truncate-original"
+    exact_ack = {
+        "status": "streaming",
+        "client_message_id": client_message_id,
+        "user_row_id": 41,
+        "user_timestamp": 1_790_594_548.125,
+        "survivor_user_row_ids": [17, None, 29],
+        "survivor_row_id_map": {"17": 117, "29": None},
+    }
+    with session["history_lock"]:
+        server._remember_client_message_ack_locked(session, client_message_id, exact_ack)
+        for n in range(128):
+            server._remember_client_message_ack_locked(
+                session,
+                f"sent-{n}",
+                {"status": "streaming", "client_message_id": f"sent-{n}", "user_row_id": n + 1},
+            )
+        replay, pending = server._live_client_message_admission_locked(session, client_message_id)
+
+    assert pending is None
+    assert replay == exact_ack
+
+
+def test_concurrent_idle_retries_share_one_admission_and_original_ack(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+
+    class DeferredThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            pass
+
+    rendezvous = threading.Barrier(2)
+    slot_checks = 0
+    slot_checks_lock = threading.Lock()
+
+    def synchronized_slot_check(*_args):
+        nonlocal slot_checks
+        with slot_checks_lock:
+            slot_checks += 1
+        rendezvous.wait(timeout=2)
+        return None
+
+    real_thread = threading.Thread
+    monkeypatch.setattr(server.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(server, "_ensure_active_session_slot", synchronized_slot_check)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
+    monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
+    monkeypatch.setattr(server.time, "time", lambda: 1_790_594_550.0)
+    request = {"method": "prompt.submit", "params": {
+        "session_id": sid,
+        "text": "one concurrent send",
+        "submitted_at": 1_790_594_548.125,
+        "client_message_id": "desktop-concurrent-idempotent",
+    }}
+    try:
+        replies = {}
+
+        def submit(request_id):
+            replies[request_id] = getattr(server, "handle_request")({**request, "id": request_id})
+
+        callers = [real_thread(target=submit, args=(request_id,)) for request_id in ("first", "retry")]
+        for caller in callers:
+            caller.start()
+        for caller in callers:
+            caller.join(timeout=5)
+        assert not any(caller.is_alive() for caller in callers)
+
+        first, retry = replies["first"], replies["retry"]
+        assert slot_checks == 2  # both requests passed the old pre-admission dedupe together
+        assert first["result"] == retry["result"]
+        assert first["result"]["status"] == "streaming"
+        assert isinstance(first["result"].get("user_row_id"), int)
+        assert session["inflight_turn"]["client_message_id"] == "desktop-concurrent-idempotent"
+        assert not session.get("queued_prompt")
+        assert not session.get("queued_prompts")
+        assert len(db.get_messages_as_conversation(key, include_row_ids=True)) == 1
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_submit_uses_valid_client_timestamp_and_persists_client_identity(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+
+    class InlineThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(server.threading, "Thread", InlineThread)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
+    monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
+    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: session.pop("_submit_user_row", None))
+    monkeypatch.setattr(server.time, "time", lambda: 1_790_594_550.0)
+    try:
+        response = server.handle_request({"id": "p", "method": "prompt.submit", "params": {
+            "session_id": sid,
+            "text": "timestamp identity probe",
+            "submitted_at": 1_790_594_548.125,
+            "client_message_id": "desktop-message-abc",
+        }})
+
+        assert response["result"]["user_timestamp"] == 1_790_594_548.125
+        assert response["result"]["client_message_id"] == "desktop-message-abc"
+        rows = db.get_messages_as_conversation(key, include_row_ids=True)
+        assert rows[0]["timestamp"] == 1_790_594_548.125
+        assert rows[0]["display_metadata"]["client_message_id"] == "desktop-message-abc"
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "client_message_id",
+    ["a" * 129, "contains space", "line\nbreak", "ümlaut"],
+)
+def test_invalid_client_message_id_is_ignored_without_rejecting_the_prompt(client_message_id):
+    received_at = 1_790_000_000.0
+
+    assert server._prompt_send_envelope(
+        {"submitted_at": received_at, "client_message_id": client_message_id}, received_at
+    ) == (received_at, None)
+
+
+@pytest.mark.parametrize(
+    "submitted_at",
+    [None, True, float("nan"), float("inf"), 946_684_799.999, 1_790_000_300.001, "1790000000"],
+)
+def test_invalid_or_absent_client_timestamp_falls_back_to_first_receipt(submitted_at):
+    received_at = 1_790_000_000.0
+
+    assert server._prompt_send_envelope(
+        {"submitted_at": submitted_at, "client_message_id": "client-a"}, received_at
+    ) == (received_at, "client-a")
 
 
 def test_turn_adopts_the_submit_row_and_writes_no_duplicate(monkeypatch, tmp_path):

@@ -100,7 +100,11 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })
+    const queued = enqueueQueuedPrompt('stored-session-a', {
+      text: 'continue in the background',
+      attachments: []
+    })
+
     clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
@@ -109,6 +113,7 @@ describe('useBackgroundQueueDrain', () => {
       expect(submitText).toHaveBeenCalledWith('continue in the background', {
         attachments: [],
         fromQueue: true,
+        sendEnvelope: queued?.envelope,
         sessionId: 'rt-session-a',
         storedSessionId: 'stored-session-a'
       })
@@ -166,12 +171,13 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', {
+    const queued = enqueueQueuedPrompt('stored-session-a', {
       text: 'look at @terminal:`zsh:23-58`',
       displayText: 'look at @terminal:`zsh:23-58`',
       attachments: [],
       frozenTransport: '```terminal\nselection A\n```\n\nlook at'
     })
+
     clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
@@ -181,6 +187,7 @@ describe('useBackgroundQueueDrain', () => {
         attachments: [],
         displayText: 'look at @terminal:`zsh:23-58`',
         fromQueue: true,
+        sendEnvelope: queued?.envelope,
         sessionId: 'rt-session-a',
         storedSessionId: 'stored-session-a'
       })
@@ -280,12 +287,12 @@ describe('useBackgroundQueueDrain', () => {
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
-      expect(submitText).toHaveBeenCalledWith('resume then send', {
+      expect(submitText).toHaveBeenCalledWith('resume then send', expect.objectContaining({
         attachments: [],
         fromQueue: true,
         sessionId: null,
         storedSessionId: 'stored-session-a'
-      })
+      }))
     })
   })
 
@@ -295,7 +302,7 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'retry me', attachments: [] })
+    const queued = enqueueQueuedPrompt('stored-session-a', { text: 'retry me', attachments: [] })
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
@@ -312,6 +319,10 @@ describe('useBackgroundQueueDrain', () => {
     })
 
     expect(submitText).toHaveBeenCalledTimes(2)
+    expect(submitText.mock.calls.map(([, options]) => options?.sendEnvelope)).toEqual([
+      queued!.envelope,
+      queued!.envelope
+    ])
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
   })
 
@@ -352,12 +363,12 @@ describe('useBackgroundQueueDrain', () => {
     setSessionsLoading(false)
 
     await waitFor(() => {
-      expect(submitText).toHaveBeenCalledWith('send after load', {
+      expect(submitText).toHaveBeenCalledWith('send after load', expect.objectContaining({
         attachments: [],
         fromQueue: true,
         sessionId: 'rt-session-a',
         storedSessionId: 'stored-session-a'
-      })
+      }))
     })
 
     await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))

@@ -151,6 +151,27 @@ describe('persistInFlightTurnState', () => {
     expect(tail?.parts).toEqual([{ type: 'text', text: 'partial answer grew' }])
   })
 
+  it('preserves client identity so repeated prose is not reconciled to the wrong user row', () => {
+    const pendingUser = user('user-new', 'same repeated prompt')
+    pendingUser.clientMessageId = 'client-new'
+    persistInFlightTurnState(
+      journalState({
+        messages: [pendingUser, assistant('assistant-stream-1', 'partial', { pending: true })]
+      })
+    )
+    vi.advanceTimersByTime(400)
+
+    const earlier = user('user-old', 'same repeated prompt')
+    earlier.clientMessageId = 'client-old'
+    const result = recoverInFlightTurnJournal('stored-1', [earlier])
+
+    expect(result.messages.map(message => [message.id, message.clientMessageId])).toEqual([
+      ['user-old', 'client-old'],
+      ['user-new', 'client-new'],
+      ['assistant-stream-1', undefined]
+    ])
+  })
+
   it('preserves a long user prompt exactly so recovery still matches its transcript row', () => {
     const prompt = 'prompt '.repeat(8_000)
 
@@ -545,6 +566,20 @@ describe('recoverInFlightTurnJournal', () => {
     expect(result.applied).toBe(true)
     expect(result.messages.map(m => m.id)).toEqual(['u0', 'a0', 'u1', 'assistant-stream-1'])
     expect(result.streamId).toBe('assistant-stream-1')
+  })
+
+  it('uses client identity across queued accept-row replacement', () => {
+    const journaled = user('queued-accept-row', 'run after this')
+    journaled.rowId = 41
+    journaled.clientMessageId = 'client-queued-replaced'
+    journalEntry([journaled, assistant('assistant-stream-1', 'partial', { pending: true })])
+
+    const replacement = user('queued-turn-row', 'run after this')
+    replacement.rowId = 57
+    replacement.clientMessageId = 'client-queued-replaced'
+    const result = recoverInFlightTurnJournal('stored-1', [replacement], { keepPending: true })
+
+    expect(result.messages.map(message => message.id)).toEqual(['queued-turn-row', 'assistant-stream-1'])
   })
 
   it('appends only the assistant tail when the user row was persisted', () => {

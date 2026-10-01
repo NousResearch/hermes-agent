@@ -191,7 +191,9 @@ export function useBackgroundQueueDrain({
           submitTextRef.current(resolved.transportText, {
             attachments: liveEntry.attachments,
             ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
+            ...(liveEntry.displayKind ? { displayKind: liveEntry.displayKind } : {}),
             fromQueue: true,
+            ...(liveEntry.envelope ? { sendEnvelope: liveEntry.envelope } : {}),
             sessionId: runtimeSessionId,
             storedSessionId: sessionKey
           })

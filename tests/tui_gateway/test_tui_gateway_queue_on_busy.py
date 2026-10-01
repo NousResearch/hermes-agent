@@ -80,6 +80,69 @@ def test_busy_interrupt_mode_redirects_active_turn(monkeypatch):
     assert session.get("queued_prompt") is None
 
 
+def test_busy_redirect_retry_returns_original_ack_without_redirecting_twice(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    redirect_entered = threading.Event()
+    release_redirect = threading.Event()
+    retry_waiting = threading.Event()
+    redirected = []
+
+    def redirect(text):
+        redirected.append(text)
+        redirect_entered.set()
+        assert release_redirect.wait(timeout=2)
+        return True
+
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=redirect,
+        interrupt=lambda *a, **k: None,
+    )
+    session = _session(agent=agent, running=True)
+    session["inflight_turn"] = {"user": "original request", "assistant": "partial reply"}
+    real_await = server._await_client_message_ack
+
+    def observe_wait(*args, **kwargs):
+        retry_waiting.set()
+        return real_await(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_await_client_message_ack", observe_wait)
+    replies = {}
+
+    def submit(name):
+        replies[name] = server._handle_busy_submit(
+            name, "sid", session, "redirect", "ws-1",
+            user_timestamp=1_790_594_548.125, client_message_id="client-busy-redirect",
+        )
+
+    first_thread = threading.Thread(target=submit, args=("first",))
+    retry_thread = threading.Thread(target=submit, args=("retry",))
+    try:
+        first_thread.start()
+        assert redirect_entered.wait(timeout=2)
+        retry_thread.start()
+        assert retry_waiting.wait(timeout=2)
+        release_redirect.set()
+        first_thread.join(timeout=2)
+        retry_thread.join(timeout=2)
+
+        assert not first_thread.is_alive() and not retry_thread.is_alive()
+        first = replies["first"]
+        retry = replies["retry"]
+        assert first["result"] == {
+            "status": "redirected",
+            "client_message_id": "client-busy-redirect",
+            "user_timestamp": 1_790_594_548.125,
+        }
+        assert retry["result"] == first["result"]
+        assert redirected == ["redirect"]
+        assert session["inflight_turn"]["corrections"] == ["redirect"]
+    finally:
+        release_redirect.set()
+        first_thread.join(timeout=2)
+        retry_thread.join(timeout=2)
+
+
 def test_successful_redirect_drops_queued_duplicate_of_inflight_user(monkeypatch):
     """#84417: correcting a live turn must not re-fire the original prompt from queue.
 
@@ -588,6 +651,7 @@ def test_busy_submit_claims_attached_image_for_queued_turn(monkeypatch):
         "text": "is this B?",
         "image_paths": ["/tmp/b.png"],
         "transport": None,
+        "user_timestamp": response["result"]["user_timestamp"],
     }
 
 
@@ -608,13 +672,16 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
     dispatched = []
     server._sessions["sid"] = session
     try:
-        server._methods["prompt.submit"]("b", {"session_id": "sid", "text": "B"})
+        b_response = server._methods["prompt.submit"]("b", {"session_id": "sid", "text": "B"})
         session["attached_images"] = ["/tmp/c.png"]
-        server._methods["prompt.submit"]("c", {"session_id": "sid", "text": "C"})
+        c_response = server._methods["prompt.submit"]("c", {"session_id": "sid", "text": "C"})
 
         assert session["queued_prompt"]["image_paths"] == ["/tmp/b.png"]
         assert [_visible(e) for e in session["queued_prompts"]] == [
-            {"text": "C", "image_paths": ["/tmp/c.png"], "transport": None}
+            {
+                "text": "C", "image_paths": ["/tmp/c.png"], "transport": None,
+                "user_timestamp": c_response["result"]["user_timestamp"],
+            }
         ]
 
         session["running"] = False
@@ -629,13 +696,21 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
             "drain-b",
             "sid",
             "B",
-            {"image_paths": ["/tmp/b.png"], "queued_prompt_generation": 0},
+            {
+                "image_paths": ["/tmp/b.png"], "queued_prompt_generation": 0,
+                "submit_ack": b_response["result"],
+                "user_timestamp": b_response["result"]["user_timestamp"],
+            },
         ),
         (
             "drain-c",
             "sid",
             "C",
-            {"image_paths": ["/tmp/c.png"], "queued_prompt_generation": 0},
+            {
+                "image_paths": ["/tmp/c.png"], "queued_prompt_generation": 0,
+                "submit_ack": c_response["result"],
+                "user_timestamp": c_response["result"]["user_timestamp"],
+            },
         ),
     ]
 
@@ -683,6 +758,38 @@ def test_drain_compute_host_forwards_queued_image_paths(monkeypatch):
 
 
 
+
+
+def test_drain_compute_host_binds_accept_ack_through_real_submit_path(monkeypatch):
+    frames = []
+
+    class Supervisor:
+        def submit_turn(self, frame, *, on_complete=None):
+            frames.append(frame)
+
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: Supervisor())
+    monkeypatch.setattr(server, "_session_cwd", lambda _session: "/tmp")
+    accepted = {
+        "status": "queued",
+        "client_message_id": "client-compute-queued",
+        "user_timestamp": 1_790_594_548.125,
+        "user_row_id": 41,
+    }
+    session = _session(
+        queued_prompt={
+            "text": "inspect",
+            "transport": "ws-9",
+            "client_message_id": "client-compute-queued",
+            "user_timestamp": 1_790_594_548.125,
+            "_submit_ack": accepted,
+        }
+    )
+
+    assert server._drain_queued_prompt("r1", "sid", session) is True
+    assert len(frames) == 1
+    assert frames[0]["submit_ack"] == accepted
+    assert session["running"] is True
 
 
 def test_drain_preserves_queued_prompt_when_session_is_closing(monkeypatch):

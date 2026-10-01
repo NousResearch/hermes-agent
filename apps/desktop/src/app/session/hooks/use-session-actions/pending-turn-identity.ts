@@ -10,10 +10,26 @@ export function transcriptRowIds(message: ChatMessage): number[] {
 
 /** Unknown identity is not a match, but remains eligible for legacy live projection. */
 export function conflictingTranscriptIdentity(local: ChatMessage, authoritative: ChatMessage): boolean {
+  if (
+    local.clientMessageId &&
+    authoritative.clientMessageId &&
+    local.clientMessageId === authoritative.clientMessageId
+  ) {
+    return false
+  }
+
   const localIds = transcriptRowIds(local)
   const authoritativeIds = transcriptRowIds(authoritative)
 
-  return Boolean(localIds.length && authoritativeIds.length && !localIds.some(id => authoritativeIds.includes(id)))
+  if (localIds.length && authoritativeIds.length) {
+    return !localIds.some(id => authoritativeIds.includes(id))
+  }
+
+  return Boolean(
+    local.clientMessageId &&
+      authoritative.clientMessageId &&
+      local.clientMessageId !== authoritative.clientMessageId
+  )
 }
 
 export function persistedTurnsEquivalent(a: ChatMessage['persistedTurn'], b: ChatMessage['persistedTurn']): boolean {
@@ -35,10 +51,15 @@ export function persistedTurnsEquivalent(a: ChatMessage['persistedTurn'], b: Cha
 export function acknowledgedTranscriptBoundary(next: ChatMessage[], previous: ChatMessage[]) {
   const byId = new Map(next.map((message, index) => [message.id, index]))
   const byRow = new Map<number, number>()
+  const byClientMessageId = new Map<string, number>()
 
   next.forEach((message, index) => {
     for (const id of transcriptRowIds(message)) {
       byRow.set(id, index)
+    }
+
+    if (message.clientMessageId) {
+      byClientMessageId.set(message.clientMessageId, index)
     }
   })
 
@@ -56,7 +77,11 @@ export function acknowledgedTranscriptBoundary(next: ChatMessage[], previous: Ch
     }
 
     const finalRowId = local.persistedTurn?.final_assistant_row_id ?? local.rowId
-    const storedIndex = finalRowId !== undefined ? byRow.get(finalRowId) : byId.get(local.id)
+
+    const storedIndex =
+      (finalRowId !== undefined ? byRow.get(finalRowId) : undefined) ??
+      (local.clientMessageId ? byClientMessageId.get(local.clientMessageId) : undefined) ??
+      byId.get(local.id)
 
     if (storedIndex === undefined) {
       continue

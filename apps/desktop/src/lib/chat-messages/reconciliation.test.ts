@@ -207,6 +207,43 @@ it('does not re-append a failed turn whose prompt hydration carries under a new 
   ])
 })
 
+it('uses client identity when a durable prompt rewrite leaves the local user row without a row id', () => {
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('stored-user', 'user', 'rewritten prompt', {
+        clientMessageId: 'client-rewrite',
+        rowId: 3
+      })
+    ],
+    [
+      row('optimistic-user', 'user', 'original prompt', { clientMessageId: 'client-rewrite' }),
+      row('local-failure', 'assistant', '', { error: 'upstream timeout' })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['stored-user', 'local-failure'])
+})
+
+it('uses client identity across row replacement and rewritten prose', () => {
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('stored-user', 'user', 'rewritten durable prompt', {
+        clientMessageId: 'client-queued-rewrite',
+        rowId: 57
+      })
+    ],
+    [
+      row('queued-accept-user', 'user', 'original queued prompt', {
+        clientMessageId: 'client-queued-rewrite',
+        rowId: 41
+      }),
+      row('local-failure', 'assistant', '', { error: 'upstream timeout' })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['stored-user', 'local-failure'])
+})
+
 it('moves a local error onto the durable row it already represents (#119326)', () => {
   const merged = preserveLocalAssistantErrors(
     [

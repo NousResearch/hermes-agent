@@ -105,6 +105,225 @@ def test_busy_accept_writes_the_queued_user_row_immediately(monkeypatch, tmp_pat
         db.close()
 
 
+def test_busy_queue_rolls_back_completely_when_accept_time_persistence_raises(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, _key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    _busy(session)
+    session["attached_images"] = ["/tmp/retry.png"]
+    original_queue = {"text": "already accepted", "transport": "ws-old"}
+    session["queued_prompt"] = original_queue
+    client_message_id = "client-disk-full-retry"
+
+    def disk_full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(server, "_persist_queued_user_row", disk_full)
+    try:
+        response = server._handle_busy_submit(
+            "failed", sid, session, "must not run later", "ws-1", queued=True,
+            display_kind=None, user_timestamp=1_790_594_548.125,
+            client_message_id=client_message_id,
+        )
+
+        assert response["error"]["data"]["code"] == "disk_full"
+        assert session.get("queued_prompt") == original_queue
+        assert not session.get("queued_prompts")
+        assert session["attached_images"] == ["/tmp/retry.png"]
+        assert client_message_id not in session.get("_client_message_admissions", {})
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_inflight_snapshot_carries_client_send_envelope():
+    session = {"inflight_turn": {
+        "user": "resume me",
+        "assistant": "working",
+        "streaming": True,
+        "client_message_id": "client-live",
+        "user_timestamp": 1_790_594_548.125,
+    }}
+
+    assert server._inflight_snapshot(session) == {
+        "user": "resume me",
+        "assistant": "working",
+        "streaming": True,
+        "client_message_id": "client-live",
+        "user_timestamp": 1_790_594_548.125,
+    }
+
+
+def test_queued_snapshot_carries_client_send_envelope():
+    session = {"queued_prompt": {
+        "text": "run next",
+        "client_message_id": "client-queued",
+        "user_timestamp": 1_790_594_548.125,
+    }}
+
+    assert server._queued_prompt_snapshot(session) == {
+        "user": "run next",
+        "client_message_id": "client-queued",
+        "user_timestamp": 1_790_594_548.125,
+    }
+
+
+def test_snapshots_keep_user_timestamp_without_client_identity():
+    inflight_session = {}
+    server._start_inflight_turn(
+        inflight_session, "resume me", user_timestamp=1_790_594_548.125)
+    queued_session = {"queued_prompt": {
+        "text": "run next",
+        "user_timestamp": 1_790_594_549.25,
+    }}
+
+    assert server._inflight_snapshot(inflight_session)["user_timestamp"] == 1_790_594_548.125
+    assert "client_message_id" not in server._inflight_snapshot(inflight_session)
+    assert server._queued_prompt_snapshot(queued_session) == {
+        "user": "run next",
+        "user_timestamp": 1_790_594_549.25,
+    }
+
+
+def test_identity_bearing_repeat_of_inflight_prose_is_enqueued():
+    session = {
+        "inflight_turn": {
+            "user": "same repeated prompt",
+            "display_metadata": {"client_message_id": "client-old"},
+        }
+    }
+
+    envelope = server._enqueue_prompt(
+        session, "same repeated prompt", "ws-1", client_message_id="client-new")
+
+    assert envelope is session["queued_prompt"]
+    assert envelope["client_message_id"] == "client-new"
+
+
+def test_identity_bearing_repeat_survives_queue_sanitization():
+    entry = {"text": "same repeated prompt", "client_message_id": "client-new"}
+
+    assert server._sanitize_queued_entry_vs_inflight_user(
+        entry, "same repeated prompt") is entry
+
+
+def test_retried_queued_client_message_id_returns_original_ack_without_duplicate(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    _busy(session)
+    request = {"id": "first", "method": "prompt.submit", "params": {
+        "session_id": sid,
+        "text": "queued idempotency probe",
+        "queued": True,
+        "submitted_at": 1_790_594_548.125,
+        "client_message_id": "desktop-queued-idempotent",
+    }}
+    try:
+        first = server.handle_request(request)
+        retry = server.handle_request({**request, "id": "retry"})
+
+        assert retry["result"] == first["result"]
+        assert session["queued_prompt"]["client_message_id"] == "desktop-queued-idempotent"
+        assert not session.get("queued_prompts")
+        assert len(db.get_messages_as_conversation(key, include_row_ids=True)) == 1
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_drained_queue_retry_keeps_the_original_queued_ack(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, _key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    _busy(session)
+    try:
+        accepted = server._handle_busy_submit(
+            "accept", sid, session, "queued ack probe", "ws-1", queued=True, display_kind=None,
+            display_metadata={"client_message_id": "client-drained"},
+            user_timestamp=1_790_594_548.125, client_message_id="client-drained",
+        )["result"]
+        assert accepted["status"] == "queued"
+        assert isinstance(accepted.get("user_row_id"), int)
+
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+
+        def begin_drained_turn(_rid, _sid, drained_session, text, **kwargs):
+            server._start_inflight_turn(
+                drained_session, text,
+                user_timestamp=kwargs.get("user_timestamp"),
+                client_message_id=kwargs.get("client_message_id"),
+                submit_ack=kwargs.get("submit_ack"),
+            )
+
+        monkeypatch.setattr(server, "_run_prompt_submit", begin_drained_turn)
+
+        assert server._drain_queued_prompt("drain", sid, session) is True
+        assert session["inflight_turn"]["_submit_ack"] == accepted
+        assert server._client_message_ack(session, "client-drained") == accepted
+        assert accepted["user_row_id"] != session["_submit_user_row"]["_row_id"]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_identity_bearing_busy_prompts_stay_separate_and_keep_their_envelopes(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        _busy(session)
+        first = server._handle_busy_submit(
+            "r1", sid, session, "first queued", "ws-1", queued=True, display_kind=None,
+            display_metadata={"client_message_id": "client-first"},
+            user_timestamp=1_790_594_548.125, client_message_id="client-first")
+        second = server._handle_busy_submit(
+            "r2", sid, session, "second queued", "ws-1", queued=True, display_kind=None,
+            display_metadata={"client_message_id": "client-second"},
+            user_timestamp=1_790_594_549.25, client_message_id="client-second")
+
+        assert first["result"] == {
+            "status": "queued", "client_message_id": "client-first",
+            "user_timestamp": 1_790_594_548.125,
+            "user_row_id": first["result"]["user_row_id"],
+        }
+        assert second["result"]["client_message_id"] == "client-second"
+        assert [session["queued_prompt"]["text"], session["queued_prompts"][0]["text"]] == [
+            "first queued", "second queued"]
+
+        rows = db.get_messages_as_conversation(
+            key, repair_alternation=False, include_row_ids=True)
+        assert [row["timestamp"] for row in rows] == [1_790_594_548.125, 1_790_594_549.25]
+        assert [row["display_metadata"]["client_message_id"] for row in rows] == [
+            "client-first", "client-second"]
+
+        db.append_message(key, "assistant", content="reply A")
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+        dispatched = {}
+        monkeypatch.setattr(
+            server, "_run_prompt_submit",
+            lambda _rid, _sid, _session, _text, **kwargs: dispatched.update(kwargs))
+
+        assert server._drain_queued_prompt("r3", sid, session) is True
+        assert dispatched["display_metadata"] == {"client_message_id": "client-first"}
+        assert dispatched["user_timestamp"] == 1_790_594_548.125
+        active = db.get_messages_as_conversation(
+            key, repair_alternation=False, include_row_ids=True)
+        queued_rows = [row for row in active if row["content"] in {"first queued", "second queued"}]
+        assert [(row["timestamp"], row["display_metadata"]["client_message_id"])
+                for row in queued_rows] == [
+            (1_790_594_548.125, "client-first"),
+            (1_790_594_549.25, "client-second"),
+        ]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_queued_turn_replays_as_its_own_turn_after_the_live_turn(monkeypatch, tmp_path):
     """The accept-time row lands BEFORE the in-flight turn's assistant rows (raw [uA, uB, aA]);
     the drain must re-place it at the transcript end, so the repaired projection keeps FOUR
@@ -120,6 +339,7 @@ def test_queued_turn_replays_as_its_own_turn_after_the_live_turn(monkeypatch, tm
         every = db.get_messages_as_conversation(key, include_inactive=True, include_row_ids=True)
         superseded = [r for r in every if "QUEUED-MARKER" in str(r["content"]) and r["_row_id"] != active[0]["_row_id"]]
         assert len(superseded) == 1  # durable history, never deleted
+        assert active[0]["message_uid"] == superseded[0]["message_uid"]
     finally:
         server._sessions.pop(sid, None)
         db.close()

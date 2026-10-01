@@ -385,7 +385,8 @@ def _inflight_text(value: Any) -> str:
 
 def _start_inflight_turn(
     session: dict, text: Any, *, display_kind: str | None = None,
-    display_metadata: dict | None = None,
+    display_metadata: dict | None = None, user_timestamp: float | None = None,
+    client_message_id: str | None = None, submit_ack: dict | None = None,
 ) -> None:
     now = time.time()
     turn = {
@@ -396,6 +397,18 @@ def _start_inflight_turn(
         turn["display_kind"] = display_kind
     if isinstance(display_metadata, dict):
         turn["display_metadata"] = dict(display_metadata)
+    if user_timestamp is not None:
+        turn["user_timestamp"] = user_timestamp
+    if client_message_id:
+        turn["client_message_id"] = client_message_id
+        turn["_submit_ack"] = (
+            dict(submit_ack)
+            if isinstance(submit_ack, dict)
+            else {
+                "status": "streaming", "client_message_id": client_message_id,
+                **({"user_timestamp": user_timestamp} if user_timestamp is not None else {}),
+            }
+        )
     session["inflight_turn"] = turn
 
 

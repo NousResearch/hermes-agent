@@ -1623,6 +1623,30 @@ class SessionMessagesMixin:
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
             include_summary_markers=repair_alternation)
 
+    def find_user_message_by_client_message_id(self, session_id: str, client_message_id: str) -> Optional[Dict[str, Any]]:
+        """Return the first durable user row carrying ``client_message_id`` across the resume lineage.
+
+        Inactive rows are intentional: queued prompts are written at acceptance and later re-placed at
+        the transcript tail, while the original acknowledgment remains bound to the first row.
+        """
+        session_ids = self._resume_lineage_ids(session_id)
+        if not session_ids or not client_message_id:
+            return None
+        row = self._read_one(
+            f"SELECT id, timestamp, display_metadata FROM messages "
+            f"WHERE session_id IN ({_placeholders(session_ids)}) AND role = 'user' "
+            f"AND {_sql_json_extract('display_metadata', '$.client_message_id')} = ? "
+            "ORDER BY id LIMIT 1",
+            (*session_ids, client_message_id),
+        )
+        if row is None:
+            return None
+        return {
+            "_row_id": row["id"],
+            "timestamp": row["timestamp"],
+            "display_metadata": self._decode_display_metadata(row["display_metadata"]) or {},
+        }
+
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> Tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation
         column-clones the concurrent tail into the child, so copies need not be adjacent: the exact

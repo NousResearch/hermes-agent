@@ -662,6 +662,7 @@ export type TimelineDisplayMetadata =
       display_text?: string
     }
   | { display_text: string }
+  | { client_message_id: string }
   | { reactions: MessageReaction[] }
   | { tool_result_metadata: ToolResultMetadata }
   | { error?: string; error_surface?: unknown }
@@ -777,6 +778,8 @@ export interface SessionResumeResult {
      *  (#112144). Omitted for genuine user input and by older gateways. */
     display_kind?: SessionMessage['display_kind']
     display_metadata?: SessionMessage['display_metadata']
+    client_message_id?: string
+    user_timestamp?: number
     /** Retained failed turn: the error the terminal frame carried (the frame
      *  itself may have been lost to a disconnect). */
     error?: string
@@ -790,6 +793,8 @@ export interface SessionResumeResult {
   }
   queued?: null | {
     user?: string
+    client_message_id?: string
+    user_timestamp?: number
   }
   // The oldest gateway approval still waiting for a response. This is returned
   // on resume so a reconnect can restore a prompt whose original event was

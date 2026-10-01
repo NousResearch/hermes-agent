@@ -145,7 +145,8 @@ def _ac_inflight_original(session: dict) -> str:
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
-                    turn_author: dict | None = None) -> dict | None:
+                    turn_author: dict | None = None, display_metadata: dict | None = None,
+                    user_timestamp: float | None = None, client_message_id: str | None = None) -> dict | None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing and authored ones stay separate
     envelopes so attachment chronology and the sender survive. ``transport`` is pinned so the drained turn
@@ -158,12 +159,20 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     _drop_queued_duplicates_of_inflight_user(session)
     text_only = not image_paths and isinstance(text, str)
     # A text-only self-copy of the live prompt would restart it on drain; an authored copy is another sender's message.
-    if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
+    if (text_only and not turn_author and not client_message_id
+            and text.strip() == _ac_inflight_original(session) != ""):
         return None
-    queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
-              **({"turn_author": turn_author} if turn_author else {})}
+    queued = {
+        "text": text, "transport": transport,
+        **({"image_paths": image_paths} if image_paths else {}),
+        **({"turn_author": turn_author} if turn_author else {}),
+        **({"display_metadata": dict(display_metadata)} if display_metadata else {}),
+        **({"user_timestamp": user_timestamp} if user_timestamp is not None else {}),
+        **({"client_message_id": client_message_id} if client_message_id else {}),
+    }
     existing = session.get("queued_prompt")
-    if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
+    if (existing and text_only and not turn_author and not client_message_id
+            and not existing.get("client_message_id") and isinstance(existing.get("text"), str)
             and not existing.get("image_paths") and not existing.get("turn_author")
             and not session.get("queued_prompts")):
         prev = existing["text"]
@@ -188,7 +197,8 @@ def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict |
     if not isinstance(entry, dict):
         return None
     text = entry.get("text")
-    if not original or entry.get("image_paths") or entry.get("turn_author") or not isinstance(text, str):
+    if (not original or entry.get("client_message_id") or entry.get("image_paths")
+            or entry.get("turn_author") or not isinstance(text, str)):
         return entry
     # A lossless text-merge may have glued the live original onto a later follow-up: keep the remainder.
     rest = next((text[len(original + sep):] for sep in ("\n\n", "\n") if text.startswith(original + sep)), text).strip()
@@ -243,7 +253,10 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
 
 
-def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: str, status: str) -> dict | None:
+def _ac_try_correction(
+    rid, session: dict, agent: Any, method: str, plain_text: str, status: str, *,
+    user_timestamp: float | None = None, client_message_id: str | None = None,
+) -> dict | None:
     """Apply ``agent.<method>(plain_text)`` (steer/redirect); on acceptance record the correction, scrub stale
     self-duplicates so the live turn's original text is not re-fired after settle, and return the ``status`` reply.
     None → caller falls through to the queue path."""
@@ -256,7 +269,13 @@ def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: 
         _record_inflight_correction(session, plain_text)
         _drop_queued_duplicates_of_inflight_user(session)
         session["last_active"] = time.time()
-    return _ok(rid, {"status": status})
+        ack = {
+            "status": status,
+            **({"client_message_id": client_message_id} if client_message_id else {}),
+            **({"user_timestamp": user_timestamp} if user_timestamp is not None else {}),
+        }
+        _remember_client_message_ack_locked(session, client_message_id, ack)
+    return _ok(rid, ack)
 
 
 def _session_compression_in_flight(session: dict) -> bool:
@@ -304,13 +323,19 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     # persistence, and a local accept-time row would double it on drain.
     if _session_uses_compute_host(session):
         return
-    _ensure_session_db_row(session)
+    # Only an identity-bearing send fails closed: its idempotent ack promises a durable row. Every
+    # other queued prompt keeps the fail-open contract above (the drained turn writes its own row).
+    strict = bool(envelope.get("client_message_id"))
+    if _ensure_session_db_row(session) is False and strict:
+        raise RuntimeError("queued prompt session row was not persisted")
     staged = envelope.get("_submit_user_row")
     if isinstance(staged, dict) and isinstance(staged.get("_row_id"), int):
         # Merge sync: the envelope text grew; the already-written row must not lag it.
         if staged.get("content") != envelope.get("text"):
             with _session_db(session) as db:
                 if db is None:
+                    if strict:
+                        raise RuntimeError("queued prompt row store is unavailable")
                     return
                 try:
                     # The staged dict records the session its row was written under; a rotated-away
@@ -324,6 +349,8 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                         db.set_user_message_content(key, live_id, envelope["text"]))
                 except Exception:
                     logger.debug("queued-prompt row merge update failed", exc_info=True)
+                    if strict:
+                        raise
                     return
             if not updated:
                 # No live row carries the prompt any more (compaction re-sequenced it away):
@@ -336,9 +363,16 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
     from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+    persist_metadata = dict(envelope.get("display_metadata") or {})
+    if envelope.get("client_message_id"):
+        persist_metadata["_prompt_submit_status"] = "queued"
     staged = _write_submit_user_row(
         session, envelope.get("text"), display_kind,
-        accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
+        accept_metadata={QUEUED_PROMPT_METADATA_KEY: True},
+        display_metadata=persist_metadata or None,
+        user_timestamp=envelope.get("user_timestamp"))
+    if strict and staged is None and isinstance(envelope.get("text"), str) and envelope["text"].strip():
+        raise RuntimeError("queued prompt user row was not persisted")
     if staged is not None:
         envelope["_submit_user_row"] = staged
         if display_kind:
@@ -350,7 +384,7 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
 
     The accept-time write lands BEFORE the in-flight turn's assistant rows (raw ``[uA, uB, aA]``), and
     ``repair_alternation`` would glue the two user turns into one. So on drain: write an identical row
-    with a fresh timestamp at the end via the normal ``_persist_submit_user_row`` — it slots
+    with the original authored timestamp at the end via the normal ``_persist_submit_user_row`` — it slots
     ``session["_submit_user_row"]``, so the turn's ``_adopt_submit_user_row`` adopts it and the flush
     writes no second row (the exact existing contract) — then deactivate the early row (durable
     history, never deleted). Steady-state raw order: ``[uA, aA, uB, aB]``. Caller holds
@@ -364,12 +398,18 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     # The DISPATCHING envelope's replacement carries no marker (its turn adopts the row immediately);
     # still-queued envelopes keep the never-drained marker (#125577) so a restart between drains
     # retires the row rather than gluing the never-run prompt into the previous turn.
+    identity = {"user_timestamp": queued.get("user_timestamp"), "message_uid": early.get("message_uid")}
     if is_dispatching:
-        _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
+        _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
+                                 display_metadata=queued.get("display_metadata"), **identity)
     else:
         from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+        still_queued = dict(queued.get("display_metadata") or {})
+        if queued.get("client_message_id"):
+            still_queued["_prompt_submit_status"] = "queued"
         _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
-                                 accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
+                                 accept_metadata={QUEUED_PROMPT_METADATA_KEY: True},
+                                 display_metadata=still_queued or None, **identity)
     fresh = session.get("_submit_user_row")
     if not (isinstance(fresh, dict) and isinstance(fresh.get("_row_id"), int)):
         return None  # re-append wrote nothing: keep the accept-time row active
@@ -395,8 +435,29 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     return fresh
 
 
+def _queued_prompt_persist_error(rid, exc: Exception) -> dict:
+    from hermes_state_user_copy import describe_storage_failure
+
+    failure = describe_storage_failure(exc)
+    if failure.code == "disk_full":
+        message = (
+            "Session storage could not be written, so this message was not queued: the disk is full. "
+            "Free some disk space, then send your message again."
+        )
+        code = 5070
+    else:
+        message = (
+            f"Session storage could not be written, so this message was not queued. Cause: {failure.gloss}. "
+            f"{failure.action} Then send your message again."
+        )
+        code = 5071
+    return _err(rid, code, message, data=_storage_error_data(failure, exc))
+
+
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
-                        turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
+                        turn_author: dict | None = None, display_kind: str | None = None,
+                        display_metadata: dict | None = None, user_timestamp: float | None = None,
+                        client_message_id: str | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
@@ -408,12 +469,21 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # follow-up drains when compression finishes — the Discord-gateway contract.
     if mode in ("steer", "interrupt") and _session_compression_in_flight(session):
         mode = "queue"
+    duplicate_ack = pending_ack = reservation = None
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
-        image_paths = list(session.get("attached_images", []))
-        if image_paths:
-            session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
+        duplicate_ack, pending_ack = _live_client_message_admission_locked(session, client_message_id)
+        image_paths = []
+        if duplicate_ack is None and pending_ack is None:
+            reservation = _reserve_client_message_admission_locked(session, client_message_id)
+            image_paths = list(session.get("attached_images", []))
+            if image_paths:
+                session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
+    if duplicate_ack is not None:
+        return _ok(rid, duplicate_ack)
+    if pending_ack is not None:
+        return _await_client_message_ack(rid, session, client_message_id, pending_ack)
     plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
     # Text-only corrections steer/redirect in place when supported; media payloads and older agents fall through to
     # the proven interrupt + queue path.
@@ -423,21 +493,64 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             "interrupt": getattr(agent, "_supports_active_turn_redirect", False) is True and hasattr(agent, "redirect")}
         method, status = {"steer": ("steer", "steered"), "interrupt": ("redirect", "redirected")}.get(mode, (None, None))
         if (method and supported[mode]
-                and (resp := _ac_try_correction(rid, session, agent, method, plain_text, status)) is not None):
+                and (resp := _ac_try_correction(
+                    rid, session, agent, method, plain_text, status,
+                    user_timestamp=user_timestamp, client_message_id=client_message_id)) is not None):
             return resp
     # Queue before asking the live turn to stop. Never call a provider/compute-host method under history_lock: an
     # interrupt can wait behind the op it cancels.
     with session["history_lock"]:
         if not session.get("running"):
+            _release_client_message_admission_locked(session, client_message_id)
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author)
-        # Durable AT ACCEPT (not when the turn runs): a cold resume sees the queued message and a
-        # backend restart cannot lose it. Lives on the envelope, never the shared session slot.
-        if envelope is not None:
-            _persist_queued_user_row(session, envelope, display_kind)
-        session["last_active"] = time.time()
+        duplicate_ack, pending_ack = _live_client_message_admission_locked(session, client_message_id)
+        if pending_ack is reservation:
+            pending_ack = None
+        if duplicate_ack is not None or pending_ack is not None:
+            if image_paths:
+                session["attached_images"] = image_paths + list(session.get("attached_images", []))
+            envelope = None
+        else:
+            queue_before = [
+                dict(entry)
+                for entry in (
+                    ([session["queued_prompt"]] if isinstance(session.get("queued_prompt"), dict) else [])
+                    + [entry for entry in (session.get("queued_prompts") or []) if isinstance(entry, dict)]
+                )
+            ]
+            envelope = _enqueue_prompt(
+                session, text, transport, image_paths=image_paths, turn_author=turn_author,
+                display_metadata=display_metadata, user_timestamp=user_timestamp,
+                client_message_id=client_message_id)
+            # Durable AT ACCEPT (not when the turn runs): a cold resume sees the queued message and a
+            # backend restart cannot lose it. Lives on the envelope, never the shared session slot.
+            if envelope is not None:
+                try:
+                    _persist_queued_user_row(session, envelope, display_kind)
+                except Exception as exc:
+                    _ac_set_queue(session, queue_before)
+                    if image_paths:
+                        session["attached_images"] = image_paths + list(session.get("attached_images", []))
+                    error = _queued_prompt_persist_error(rid, exc)
+                    _release_client_message_admission_locked(session, client_message_id, error)
+                    return error
+                staged = envelope.get("_submit_user_row") or {}
+                ack = {"status": "queued"}
+                if isinstance(staged.get("_row_id"), int):
+                    ack["user_row_id"] = staged["_row_id"]
+                if envelope.get("user_timestamp") is not None:
+                    ack["user_timestamp"] = envelope["user_timestamp"]
+                if envelope.get("client_message_id"):
+                    ack["client_message_id"] = envelope["client_message_id"]
+                envelope["_submit_ack"] = ack
+                _remember_client_message_ack_locked(session, client_message_id, ack)
+            session["last_active"] = time.time()
+    if duplicate_ack is not None:
+        return _ok(rid, duplicate_ack)
+    if pending_ack is not None:
+        return _await_client_message_ack(rid, session, client_message_id, pending_ack)
     # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
     # ``steer`` must NEVER escalate to a hard interrupt: it would kill the live turn AND drop ``AIAgent._pending_steer``
     # (earlier accepted steers); steer fall-throughs stay FIFO-queued.
@@ -447,7 +560,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # pending steer buffer — silently destroying the earlier messages of the burst. See #86134.
     if mode == "interrupt" and not image_paths:
         _interrupt_busy_session(sid, session, agent)
-    return _ok(rid, {"status": "queued"})
+    result = dict(envelope.get("_submit_ack") or {"status": "queued"}) if envelope is not None else {"status": "queued"}
+    return _ok(rid, result)
 
 
 def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
@@ -479,6 +593,14 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
+    if isinstance(queued.get("display_metadata"), dict):
+        kwargs["display_metadata"] = queued["display_metadata"]
+    if isinstance(queued.get("user_timestamp"), (int, float)):
+        kwargs["user_timestamp"] = queued["user_timestamp"]
+    if isinstance(queued.get("client_message_id"), str) and queued["client_message_id"]:
+        kwargs["client_message_id"] = queued["client_message_id"]
+    if isinstance(queued.get("_submit_ack"), dict):
+        kwargs["submit_ack"] = dict(queued["_submit_ack"])
     # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow
     # them, and slot the dispatching envelope's fresh row for adoption. EVERY queued envelope is
     # re-placed in acceptance order: a later-accepted prompt's row must never sit behind while an
@@ -530,6 +652,10 @@ def _inflight_snapshot(session: dict) -> dict | None:
     if not (user or assistant or streaming or error):
         return None
     snapshot = {"assistant": assistant, "streaming": streaming, "user": user}
+    if isinstance(client_message_id := turn.get("client_message_id"), str) and client_message_id:
+        snapshot["client_message_id"] = client_message_id
+    if isinstance(user_timestamp := turn.get("user_timestamp"), (int, float)):
+        snapshot["user_timestamp"] = float(user_timestamp)
     if isinstance(display_kind := turn.get("display_kind"), str) and display_kind:
         snapshot["display_kind"] = display_kind
     if isinstance(display_metadata := turn.get("display_metadata"), dict):
@@ -598,7 +724,15 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
     reconnect while it is still queued)."""
     queued = session.get("queued_prompt")
     user = _inflight_text(queued.get("text")) if isinstance(queued, dict) else ""
-    return {"user": user} if user else None
+    if not user or not isinstance(queued, dict):
+        return None
+    snapshot = {"user": user}
+    client_message_id = queued.get("client_message_id")
+    if isinstance(client_message_id, str) and client_message_id:
+        snapshot["client_message_id"] = client_message_id
+    if isinstance(user_timestamp := queued.get("user_timestamp"), (int, float)):
+        snapshot["user_timestamp"] = float(user_timestamp)
+    return snapshot
 
 
 def register(server) -> None:

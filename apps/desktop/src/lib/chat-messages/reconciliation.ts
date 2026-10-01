@@ -322,12 +322,35 @@ function hydratedIdResolver(mergedNextMessages: ChatMessage[]): (message: ChatMe
     mergedNextMessages.flatMap(message => (message.rowId === undefined ? [] : [[message.rowId, message.id] as const]))
   )
 
-  return (message: ChatMessage): string | undefined =>
-    existingIds.has(message.id)
-      ? message.id
-      : message.rowId === undefined
-        ? undefined
-        : hydratedIdByRowId.get(message.rowId)
+  const hydratedByClientMessageId = new Map(
+    mergedNextMessages.flatMap(message =>
+      message.clientMessageId === undefined ? [] : [[message.clientMessageId, message] as const]
+    )
+  )
+
+  return (message: ChatMessage): string | undefined => {
+    if (existingIds.has(message.id)) {
+      return message.id
+    }
+
+    if (message.rowId !== undefined) {
+      const rowMatch = hydratedIdByRowId.get(message.rowId)
+
+      if (rowMatch !== undefined) {
+        return rowMatch
+      }
+    }
+
+    const clientMatch = message.clientMessageId
+      ? hydratedByClientMessageId.get(message.clientMessageId)
+      : undefined
+
+    if (!clientMatch) {
+      return undefined
+    }
+
+    return clientMatch.id
+  }
 }
 
 // The refresh already carries this tail turn's error card, rebuilt from its

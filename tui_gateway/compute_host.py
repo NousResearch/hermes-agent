@@ -248,7 +248,17 @@ class ComputeHost:
                     self._reply("turn.error", sid, request_id, message="session busy")
                     return
                 session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
-                server._start_inflight_turn(session, inflight)
+                server._start_inflight_turn(
+                    session, inflight,
+                    display_kind=frame.get("display_kind") or None,
+                    display_metadata=(frame.get("display_metadata")
+                                      if isinstance(frame.get("display_metadata"), dict) else None),
+                    user_timestamp=(float(frame["user_timestamp"])
+                                    if isinstance(frame.get("user_timestamp"), (int, float))
+                                    and not isinstance(frame.get("user_timestamp"), bool) else None),
+                    client_message_id=(frame.get("client_message_id")
+                                       if isinstance(frame.get("client_message_id"), str) else None),
+                    submit_ack=(frame.get("submit_ack") if isinstance(frame.get("submit_ack"), dict) else None))
                 turn_started_at = time.time()
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
             with contextlib.suppress(Exception):
@@ -261,7 +271,13 @@ class ComputeHost:
             server._run_prompt_submit(
                 request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
                 display_metadata=(frame.get("display_metadata")
-                                  if isinstance(frame.get("display_metadata"), dict) else None))
+                                  if isinstance(frame.get("display_metadata"), dict) else None),
+                user_timestamp=(float(frame["user_timestamp"])
+                                if isinstance(frame.get("user_timestamp"), (int, float))
+                                and not isinstance(frame.get("user_timestamp"), bool) else None),
+                client_message_id=(frame.get("client_message_id")
+                                   if isinstance(frame.get("client_message_id"), str) else None),
+                submit_ack=(frame.get("submit_ack") if isinstance(frame.get("submit_ack"), dict) else None))
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():

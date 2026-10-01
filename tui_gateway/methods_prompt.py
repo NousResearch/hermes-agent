@@ -5,6 +5,8 @@ method_ctx.bind_module), so they reference server.py globals bare.
 """
 
 import contextlib
+import re
+
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -15,6 +17,27 @@ _profile_scoped = _registry.profile_scoped
 
 _STALE_TARGET_MSG = "target user message is no longer in session history"
 _GROUP_PROBE_FAILED_MSG = "Could not verify this group. Try again after the gateway recovers."
+_MIN_CLIENT_SUBMITTED_AT = 946_684_800.0  # 2000-01-01T00:00:00Z
+_MAX_CLIENT_CLOCK_LEAD_SECONDS = 5 * 60.0
+_CLIENT_MESSAGE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+
+
+def _prompt_send_envelope(params: dict, received_at: float) -> tuple[float, str | None]:
+    """Validate the optional client envelope once; bad values degrade to receipt time."""
+    from math import isfinite
+    raw_timestamp = params.get("submitted_at")
+    user_timestamp = received_at
+    if (isinstance(raw_timestamp, (int, float)) and not isinstance(raw_timestamp, bool)
+            and isfinite(raw_timestamp)
+            and _MIN_CLIENT_SUBMITTED_AT <= float(raw_timestamp) <= received_at + _MAX_CLIENT_CLOCK_LEAD_SECONDS):
+        user_timestamp = float(raw_timestamp)
+    raw_client_id = params.get("client_message_id")
+    client_message_id = (
+        raw_client_id
+        if isinstance(raw_client_id, str) and _CLIENT_MESSAGE_ID_RE.fullmatch(raw_client_id)
+        else None
+    )
+    return user_timestamp, client_message_id
 
 
 def _history_user_indices(history: list) -> list:
@@ -536,7 +559,9 @@ def _storage_error_data(failure, raw) -> dict:
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
-def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
+def _persist_session_row_for_submit(
+    rid, session, text=None, display_kind=None, display_metadata=None, user_timestamp=None
+):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
     resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
@@ -551,7 +576,9 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
-            _persist_submit_user_row(session, text, display_kind)
+            _persist_submit_user_row(
+                session, text, display_kind, display_metadata=display_metadata,
+                user_timestamp=user_timestamp)
             return None
     except Exception as exc:
         failure = describe_storage_failure(exc)
@@ -571,6 +598,10 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     # No turn thread will start, so neither resume nor the busy queue may see
     # this rejected prompt as live. Release the slot a turn would normally own.
     with session["history_lock"]:
+        turn = session.get("inflight_turn")
+        _signal_admission_ready(turn.get("_submit_ack_ready") if isinstance(turn, dict) else None, error)
+        _release_client_message_admission_locked(
+            session, turn.get("client_message_id") if isinstance(turn, dict) else None, error)
         session["running"] = False
         session["last_active"] = time.time()
         session.pop("_hosted_room_task", None)
@@ -580,7 +611,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback,
+    turn_author=None, user_timestamp=None
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -611,21 +643,105 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        user_timestamp=user_timestamp)
 
 
 _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
 
 
+def _live_client_message_admission_locked(
+    session: dict, client_message_id: str | None
+) -> tuple[dict | None, object | None]:
+    """Return the accepted live ack, or its pending completion event. Caller holds history_lock."""
+    if not client_message_id:
+        return None, None
+    admissions = session.get("_client_message_admissions")
+    admission = admissions.get(client_message_id) if isinstance(admissions, dict) else None
+    if isinstance(admission, dict):
+        ack = admission.get("ack")
+        if isinstance(ack, dict):
+            return dict(ack), None
+        ready = admission.get("ready")
+        if ready is not None:
+            return None, ready
+    inflight = session.get("inflight_turn")
+    if isinstance(inflight, dict) and inflight.get("client_message_id") == client_message_id:
+        ready = inflight.get("_submit_ack_ready")
+        is_set = getattr(ready, "is_set", None)
+        if callable(is_set) and not is_set():
+            return None, ready
+        ack = inflight.get("_submit_ack")
+        return (dict(ack), None) if isinstance(ack, dict) else (None, None)
+    queued = [session["queued_prompt"]] if isinstance(session.get("queued_prompt"), dict) else []
+    queued.extend(e for e in (session.get("queued_prompts") or []) if isinstance(e, dict))
+    for envelope in queued:
+        if (envelope.get("client_message_id") == client_message_id
+                and isinstance(envelope.get("_submit_ack"), dict)):
+            return dict(envelope["_submit_ack"]), None
+    return None, None
+
+
+def _reserve_client_message_admission_locked(
+    session: dict, client_message_id: str | None
+) -> object | None:
+    """Claim one client id before work leaves ``history_lock``."""
+    if not client_message_id:
+        return None
+    admissions = session.setdefault("_client_message_admissions", {})
+    ready = threading.Event()
+    admissions[client_message_id] = {"ready": ready}
+    return ready
+
+
+def _release_client_message_admission_locked(
+    session: dict, client_message_id: str | None, error_response: dict | None = None
+) -> None:
+    """Drop a reservation whose admission failed; a concurrent duplicate waiting on it
+    receives ``error_response``'s error instead of a generic retry."""
+    if not client_message_id:
+        return
+    admissions = session.get("_client_message_admissions")
+    admission = admissions.pop(client_message_id, None) if isinstance(admissions, dict) else None
+    ready = admission.get("ready") if isinstance(admission, dict) else None
+    _signal_admission_ready(ready, error_response)
+
+
+def _signal_admission_ready(ready: object, error_response: dict | None = None) -> None:
+    if ready is None:
+        return
+    if isinstance(error_response, dict) and isinstance(error_response.get("error"), dict):
+        ready.admission_error = dict(error_response["error"])
+    set_ready = getattr(ready, "set", None)
+    if callable(set_ready):
+        set_ready()
+
+
+def _remember_client_message_ack_locked(session: dict, client_message_id: str | None, ack: dict) -> None:
+    if not client_message_id:
+        return
+    admissions = session.setdefault("_client_message_admissions", {})
+    admission = admissions.setdefault(client_message_id, {"ready": threading.Event()})
+    admission["ack"] = dict(ack)
+    set_ready = getattr(admission.get("ready"), "set", None)
+    if callable(set_ready):
+        set_ready()
+
+
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
-    """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
-    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task,
+    display_kind=None, display_metadata=None, user_timestamp=None, client_message_id=None):
+    """Under ``history_lock``: dedupe or claim exactly one turn admission."""
     fields = {}
     with _session_turn_admission(session) as admitted:
         if not admitted:
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
+        duplicate_ack, pending_ack = _live_client_message_admission_locked(session, client_message_id)
+        if duplicate_ack is not None:
+            return _ok(rid, duplicate_ack), fields
+        if pending_ack is not None:
+            return {"_pending_client_message_ack": pending_ack}, fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(
@@ -646,8 +762,73 @@ def _lock_in_submit_turn(
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
-        _start_inflight_turn(session, text, display_kind=display_kind)
+        _start_inflight_turn(
+            session, text, display_kind=display_kind, display_metadata=display_metadata,
+            user_timestamp=user_timestamp, client_message_id=client_message_id)
+        if client_message_id:
+            session["inflight_turn"]["_submit_ack_ready"] = (
+                _reserve_client_message_admission_locked(session, client_message_id))
     return None, fields
+
+
+def _client_message_ack(session: dict, client_message_id: str | None) -> dict | None:
+    """Original prompt.submit result for a live, queued, or durable client envelope."""
+    if not client_message_id:
+        return None
+    with session["history_lock"]:
+        live_ack, pending_ack = _live_client_message_admission_locked(session, client_message_id)
+        if live_ack is not None:
+            return live_ack
+        if pending_ack is not None:
+            return None
+    key = str(session.get("session_key") or "")
+    if not key:
+        return None
+    with _session_db(session) as db:
+        if db is None:
+            return None
+        try:
+            row = db.find_user_message_by_client_message_id(key, client_message_id)
+        except Exception:
+            logger.debug("client message idempotency lookup failed", exc_info=True)
+            return None
+    if not isinstance(row, dict):
+        return None
+    metadata = row.get("display_metadata") if isinstance(row.get("display_metadata"), dict) else {}
+    ack: dict = {
+        "status": "queued" if metadata.get("_prompt_submit_status") == "queued" else "streaming",
+        "client_message_id": client_message_id,
+    }
+    if isinstance(row.get("timestamp"), (int, float)):
+        ack["user_timestamp"] = float(row["timestamp"])
+    if isinstance(row.get("_row_id"), int):
+        ack["user_row_id"] = row["_row_id"]
+    return ack
+
+
+def _remember_client_message_ack(session: dict, client_message_id: str | None, ack: dict) -> None:
+    if not client_message_id:
+        return
+    with session["history_lock"]:
+        _remember_client_message_ack_locked(session, client_message_id, ack)
+        inflight = session.get("inflight_turn")
+        if isinstance(inflight, dict) and inflight.get("client_message_id") == client_message_id:
+            inflight["_submit_ack"] = dict(ack)
+            ready = inflight.get("_submit_ack_ready")
+            set_ready = getattr(ready, "set", None)
+            if callable(set_ready):
+                set_ready()
+
+
+def _await_client_message_ack(rid, session: dict, client_message_id: str | None, ready: object) -> dict:
+    """Wait outside history_lock for the winning admission to publish its exact ack."""
+    wait = getattr(ready, "wait", None)
+    if callable(wait) and wait(timeout=30.0):
+        if isinstance(error := getattr(ready, "admission_error", None), dict):
+            return {"jsonrpc": "2.0", "id": rid, "error": dict(error)}
+        if (ack := _client_message_ack(session, client_message_id)) is not None:
+            return _ok(rid, ack)
+    return _err(rid, 4092, "matching prompt admission is still pending; retry")
 
 
 # Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
@@ -657,6 +838,8 @@ _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
+    received_at = time.time()
+    user_timestamp, client_message_id = _prompt_send_envelope(params, received_at)
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
@@ -664,11 +847,11 @@ def _(rid, params: dict) -> dict:
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
     title_preview = params.get("title_preview")
-    display_metadata = (
-        {"title_preview": title_preview[:1000]}
-        if isinstance(title_preview, str) and title_preview.strip()
-        else None
-    )
+    display_metadata = {
+        **({"title_preview": title_preview[:1000]}
+           if isinstance(title_preview, str) and title_preview.strip() else {}),
+        **({"client_message_id": client_message_id} if client_message_id else {}),
+    } or None
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.get("interrupted"):
@@ -693,6 +876,8 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
+    if (duplicate_ack := _client_message_ack(session, client_message_id)) is not None:
+        return _ok(rid, duplicate_ack)
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
@@ -743,7 +928,8 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
+            display_kind=display_kind, display_metadata=display_metadata,
+            user_timestamp=user_timestamp, client_message_id=client_message_id)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -751,18 +937,26 @@ def _(rid, params: dict) -> dict:
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task,
+        display_kind, display_metadata, user_timestamp, client_message_id)
+    if isinstance(err, dict) and (pending_ack := err.get("_pending_client_message_ack")) is not None:
+        return _await_client_message_ack(rid, session, client_message_id, pending_ack)
     if err is not None:
         return err
+    survivor_fields.update(
+        user_timestamp=user_timestamp,
+        **({"client_message_id": client_message_id} if client_message_id else {}))
     if turn_isolation:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            user_timestamp=user_timestamp, client_message_id=client_message_id)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
+            _remember_client_message_ack(session, client_message_id, isolated_response["result"])
             return isolated_response
         # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
         # submit sends a request that is indistinguishable, field by field, from a real rewind — same
@@ -775,23 +969,27 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
+    if (err := _persist_session_row_for_submit(
+            rid, session, text, display_kind, display_metadata, user_timestamp)) is not None:
         return err
     # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.
     staged_user = session.get("_submit_user_row") or {}
     if isinstance(staged_user.get("_row_id"), int):
         survivor_fields["user_row_id"] = staged_user["_row_id"]
+    submit_ack = {"status": "streaming", **survivor_fields}
+    _remember_client_message_ack(session, client_message_id, submit_ack)
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback,
+            turn_author, user_timestamp),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
+    return _ok(rid, submit_ack)
 
 
 @method("clipboard.paste")

@@ -129,15 +129,17 @@ export function isStrictAnswerTextExtension(next: string, previous: string): boo
  */
 function carryRowIdentity(next: ChatMessage, previous: ChatMessage): ChatMessage {
   const rowId = next.rowId === undefined ? previous.rowId : undefined
+  const clientMessageId = next.clientMessageId === undefined ? previous.clientMessageId : undefined
   const reactions = next.reactions === undefined && previous.reactions?.length ? previous.reactions : undefined
 
-  if (rowId === undefined && !reactions) {
+  if (rowId === undefined && clientMessageId === undefined && !reactions) {
     return next
   }
 
   return {
     ...next,
     ...(rowId !== undefined ? { rowId } : {}),
+    ...(clientMessageId !== undefined ? { clientMessageId } : {}),
     ...(reactions ? { reactions: [...reactions] } : {})
   }
 }
@@ -213,6 +215,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  'clientMessageId',
   'persistedTurn',
   'durableComplete',
   'recovered',
@@ -339,6 +342,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.rowId !== b.rowId ||
+    a.clientMessageId !== b.clientMessageId ||
     !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
     a.role !== b.role ||
     a.durableComplete !== b.durableComplete ||
@@ -411,11 +415,21 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 
   const previousByRoleOrdinal = new Map<string, ChatMessage>()
   const previousRoleCounts = new Map<string, number>()
+  const previousByRowId = new Map<number, ChatMessage>()
+  const previousByClientMessageId = new Map<string, ChatMessage>()
 
   for (const message of previousMessages) {
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
     previousByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
+
+    for (const rowId of transcriptRowIds(message)) {
+      previousByRowId.set(rowId, message)
+    }
+
+    if (message.clientMessageId) {
+      previousByClientMessageId.set(message.clientMessageId, message)
+    }
   }
 
   const nextRoleCounts = new Map<string, number>()
@@ -424,7 +438,21 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
 
-    const previous = previousByRoleOrdinal.get(`${message.role}:${ordinal}`)
+    const rowIdentityMatch = transcriptRowIds(message)
+      .map(rowId => previousByRowId.get(rowId))
+      .find((candidate): candidate is ChatMessage => candidate !== undefined)
+
+    const clientIdentityCandidate = message.clientMessageId
+      ? previousByClientMessageId.get(message.clientMessageId)
+      : undefined
+
+    const clientIdentityMatch =
+      clientIdentityCandidate && !conflictingTranscriptIdentity(clientIdentityCandidate, message)
+        ? clientIdentityCandidate
+        : undefined
+
+    const previous =
+      rowIdentityMatch ?? clientIdentityMatch ?? previousByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
     if (!previous || conflictingTranscriptIdentity(previous, message)) {
       return message
@@ -1226,10 +1254,34 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     break
   }
 
+  const inflightClientMessageId = (() => {
+    if (projection.inflight?.client_message_id) {
+      return projection.inflight.client_message_id
+    }
+
+    let metadata: unknown = projection.inflight?.display_metadata
+
+    if (typeof metadata === 'string') {
+      try {
+        metadata = JSON.parse(metadata)
+      } catch {
+        return undefined
+      }
+    }
+
+    const value = metadata && typeof metadata === 'object' ? (metadata as { client_message_id?: unknown }).client_message_id : null
+
+    return typeof value === 'string' && value ? value : undefined
+  })()
+
   const persistedInLatestRun = (text: string): boolean =>
-    latestUserRun.some(
-      message => textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
-    )
+    latestUserRun.some(message => {
+      if (inflightClientMessageId && message.clientMessageId) {
+        return inflightClientMessageId === message.clientMessageId
+      }
+
+      return textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
+    })
 
   const inflightUserAlreadyPersisted =
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
@@ -1246,13 +1298,22 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
         role: 'user',
         content: inflightUser,
         ...(displayKind ? { display_kind: displayKind } : {}),
-        ...(displayKind && projection.inflight?.display_metadata !== undefined
+        ...(projection.inflight?.display_metadata !== undefined
           ? { display_metadata: projection.inflight.display_metadata }
           : {})
       }
     ])
 
-    projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
+    projected.push(
+      ...typed.map(message => ({
+        ...message,
+        id: `user-inflight-${sessionId}`,
+        ...(inflightClientMessageId ? { clientMessageId: inflightClientMessageId } : {}),
+        ...(projection.inflight?.user_timestamp !== undefined
+          ? { timestamp: projection.inflight.user_timestamp }
+          : {})
+      }))
+    )
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -1430,7 +1491,9 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projected.push({
       id: `user-queued-${sessionId}`,
       role: 'user',
-      parts: [textPart(queuedUser)]
+      parts: [textPart(queuedUser)],
+      ...(projection.queued?.client_message_id ? { clientMessageId: projection.queued.client_message_id } : {}),
+      ...(projection.queued?.user_timestamp !== undefined ? { timestamp: projection.queued.user_timestamp } : {})
     })
   }
 
@@ -1513,9 +1576,14 @@ export function dedupeInflightUserAgainstTranscript(
 
   const persistedTail = persistedMessages.slice(suffixStart)
   const lastPersistedMessage = persistedTail[persistedTail.length - 1]
+  const inflightClientMessageId = projection.inflight?.client_message_id
+  const comparableClientIdentity = Boolean(inflightClientMessageId && lastPersistedMessage?.clientMessageId)
 
   const persistedUserPresent =
-    lastPersistedMessage?.role === 'user' && normalizedMessageText(lastPersistedMessage) === inflightUser
+    lastPersistedMessage?.role === 'user' &&
+    (comparableClientIdentity
+      ? lastPersistedMessage.clientMessageId === inflightClientMessageId
+      : normalizedMessageText(lastPersistedMessage) === inflightUser)
 
   if (!persistedUserPresent) {
     return projection

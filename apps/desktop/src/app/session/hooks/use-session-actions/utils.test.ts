@@ -504,6 +504,30 @@ describe('reconcileResumeMessages', () => {
     expect(out.attachmentRefs).toEqual(['@image:/tmp/photo.png'])
   })
 
+  it('matches a windowed repeated user prompt by row id then client id before role ordinal', () => {
+    const previous = [
+      msg('local-old', 'user', 'same prompt', {
+        attachmentRefs: ['@file:old.txt'],
+        clientMessageId: 'client-old'
+      }),
+      msg('local-new', 'user', 'same prompt', {
+        attachmentRefs: ['@file:new.txt'],
+        clientMessageId: 'client-new'
+      })
+    ]
+
+    const next = [
+      msg('stored-new', 'user', 'same prompt', {
+        clientMessageId: 'client-new',
+        rowId: 42
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toEqual(['@file:new.txt'])
+  })
+
   it('does not overwrite attachment refs already present on the resumed message', () => {
     const next = [
       msg('stored-user', 'user', 'describe this image', {
@@ -1555,6 +1579,57 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  it('hydrates client identity and authored time from live send envelopes', () => {
+    const inflight = appendLiveSessionProjection([], {
+      session_id: 'runtime-live',
+      inflight: {
+        user: 'live prompt',
+        assistant: '',
+        streaming: true,
+        client_message_id: 'client-live',
+        user_timestamp: 1_790_594_548.125
+      }
+    })
+
+    const queued = appendLiveSessionProjection([], {
+      session_id: 'runtime-queued',
+      queued: {
+        user: 'queued prompt',
+        client_message_id: 'client-queued',
+        user_timestamp: 1_790_594_549.25
+      }
+    })
+
+    expect(inflight.find(message => message.role === 'user')).toMatchObject({
+      clientMessageId: 'client-live',
+      timestamp: 1_790_594_548.125
+    })
+    expect(queued.find(message => message.role === 'user')).toMatchObject({
+      clientMessageId: 'client-queued',
+      timestamp: 1_790_594_549.25
+    })
+  })
+
+  it('uses client identity before repeated prose for an ordinary in-flight user row', () => {
+    const stored = [{ ...msg('stored-user', 'user', 'same repeated prompt'), clientMessageId: 'client-old', rowId: 10 }]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'same repeated prompt',
+        assistant: '',
+        streaming: true,
+        display_metadata: { client_message_id: 'client-new' }
+      }
+    })
+
+    expect(restored.map(message => [message.role, message.clientMessageId])).toEqual([
+      ['user', 'client-old'],
+      ['user', 'client-new'],
+      ['assistant', undefined]
+    ])
+  })
+
   // A synthetic starting prompt keeps the display typing its persisted row
   // will get: on reconnect it renders as the same timeline event as history,
   // never as a user bubble; a real user quoting the marker text stays a user
@@ -1944,6 +2019,41 @@ describe('dedupeInflightUserAgainstTranscript', () => {
 
     expect(deduped.inflight?.user).toBe('current prompt')
     expect(deduped.inflight?.assistant).toBe('partial answer')
+  })
+
+  it('does not let older equal prose with a different client id hide the live occurrence', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'earlier prompt', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'earlier answer', { timestamp: 2 })
+    ]
+
+    const persisted = [
+      ...runtime,
+      msg('persisted-repeat', 'user', 'same repeated prompt', {
+        clientMessageId: 'client-old',
+        rowId: 10,
+        timestamp: 3
+      })
+    ]
+
+    const projection = {
+      ...runningProjection('same repeated prompt'),
+      inflight: {
+        user: 'same repeated prompt',
+        assistant: 'partial answer',
+        streaming: true,
+        client_message_id: 'client-new'
+      }
+    }
+
+    const deduped = dedupeInflightUserAgainstTranscript(persisted, runtime, projection)
+    const restored = appendLiveSessionProjection(persisted, deduped)
+
+    expect(restored.filter(message => message.role === 'user').map(message => message.clientMessageId)).toEqual([
+      undefined,
+      'client-old',
+      'client-new'
+    ])
   })
 
   it('preserves the assistant boundary before a queued turn when the persisted in-flight user has no delta', () => {

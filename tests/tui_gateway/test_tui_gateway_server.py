@@ -279,6 +279,7 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         ),
     )
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake_supervisor)
+    monkeypatch.setattr(server.time, "time", lambda: 1_790_594_550.0)
 
     try:
         resp = server.handle_request(
@@ -288,10 +289,14 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
                 "params": {"session_id": "iso-sid", "text": "hello"},
             }
         )
-        assert resp["result"] == {"status": "streaming", "turn_isolation": True}
+        assert resp["result"] == {
+            "status": "streaming", "turn_isolation": True,
+            "user_timestamp": 1_790_594_550.0,
+        }
         assert fake_supervisor.frames[0]["type"] == "turn.start"
         assert fake_supervisor.frames[0]["sid"] == "iso-sid"
         assert fake_supervisor.frames[0]["text"] == "hello"
+        assert fake_supervisor.frames[0]["user_timestamp"] == 1_790_594_550.0
         assert fake_supervisor.frames[0]["history"] == seed_history
         assert server._sessions["iso-sid"]["history"] == seed_history
         assert parent_writes == {"ensure_session": 0, "persist_seed": 0}
@@ -309,6 +314,86 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         assert server._sessions["iso-sid"]["history_version"] == 1
     finally:
         server._sessions.pop("iso-sid", None)
+
+
+def test_fast_compute_host_completion_keeps_exact_ack_for_concurrent_retry(monkeypatch):
+    callback_done = threading.Event()
+    release_submit = threading.Event()
+    retry_waiting = threading.Event()
+
+    class FastSupervisor:
+        def __init__(self):
+            self.calls = 0
+
+        def submit_turn(self, frame, *, on_complete=None):
+            self.calls += 1
+            if self.calls == 1:
+                assert on_complete is not None
+                on_complete({
+                    "type": "turn.end",
+                    "sid": frame["sid"],
+                    "request_id": frame["request_id"],
+                    "history_version": 1,
+                })
+                callback_done.set()
+                assert release_submit.wait(timeout=2)
+
+    supervisor = FastSupervisor()
+    sid = "iso-fast-ack"
+    session = _session(history=[])
+    session["agent"] = None
+    session["agent_ready"] = threading.Event()
+    server._sessions[sid] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: supervisor)
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    real_await = server._await_client_message_ack
+
+    def observe_wait(*args, **kwargs):
+        retry_waiting.set()
+        return real_await(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_await_client_message_ack", observe_wait)
+    request = {
+        "method": "prompt.submit",
+        "params": {
+            "session_id": sid,
+            "text": "finish immediately",
+            "submitted_at": 1_790_594_548.125,
+            "client_message_id": "client-fast-compute-ack",
+        },
+    }
+    replies = {}
+
+    def submit(name):
+        replies[name] = server.handle_request({**request, "id": name})
+
+    first = threading.Thread(target=submit, args=("first",))
+    retry = threading.Thread(target=submit, args=("retry",))
+    try:
+        first.start()
+        assert callback_done.wait(timeout=2)
+        assert session.get("inflight_turn") is None
+        retry.start()
+        assert retry_waiting.wait(timeout=2)
+        release_submit.set()
+        first.join(timeout=2)
+        retry.join(timeout=2)
+
+        assert not first.is_alive() and not retry.is_alive()
+        assert supervisor.calls == 1
+        assert replies["retry"]["result"] == replies["first"]["result"] == {
+            "status": "streaming",
+            "turn_isolation": True,
+            "user_timestamp": 1_790_594_548.125,
+            "client_message_id": "client-fast-compute-ack",
+        }
+    finally:
+        release_submit.set()
+        first.join(timeout=2)
+        retry.join(timeout=2)
+        server._sessions.pop(sid, None)
 
 
 def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch):
@@ -387,6 +472,7 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     inline_calls = []
     monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _BrokenSupervisor())
+    monkeypatch.setattr(server.time, "time", lambda: 1_790_594_550.0)
     monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
     monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: None)
@@ -414,7 +500,7 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     assert resp == {
         "jsonrpc": "2.0",
         "id": "fallback-turn",
-        "result": {"status": "streaming"},
+        "result": {"status": "streaming", "user_timestamp": 1_790_594_550.0},
     }
     assert inline_calls == [("fallback-turn", "iso-fallback", "hello")]
     assert session.get("_compute_host_active") is not True
@@ -4780,9 +4866,15 @@ def test_compute_host_turn_frame_carries_the_session_login(monkeypatch):
                             history_lock=threading.Lock(), cwd="/tmp", cols=80)
     monkeypatch.setattr(server, "_session_cwd", lambda session: "/tmp")
 
-    frame = server._compute_host_turn_frame("rid", "sid-host", record, "hello")
+    frame = server._compute_host_turn_frame(
+        "rid", "sid-host", record, "hello",
+        display_metadata={"client_message_id": "client-host"},
+        user_timestamp=1_790_594_548.125, client_message_id="client-host")
 
     assert frame["auth_user_id"] == "basic:alice"
+    assert frame["display_metadata"] == {"client_message_id": "client-host"}
+    assert frame["user_timestamp"] == 1_790_594_548.125
+    assert frame["client_message_id"] == "client-host"
 
 
 def test_attaching_a_different_login_keeps_the_creator_and_warns_once(monkeypatch):
@@ -17919,6 +18011,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             "assistant": "partial answer",
             "streaming": True,
             "user": "write a long answer",
+            "user_timestamp": submit["result"]["user_timestamp"],
         }
         turn_started_at = resp["result"]["turn_started_at"]
         assert turn_started_at == server._sessions["sid-live"]["inflight_turn"]["started_at"]

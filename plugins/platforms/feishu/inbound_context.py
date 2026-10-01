@@ -8,12 +8,17 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 import logging
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
 logger = logging.getLogger("plugins.platforms.feishu.adapter")
 
 
 class FeishuInboundContextMixin:
     async def _process_inbound_message(
-        self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
+        self: FeishuAdapter, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
         from plugins.platforms.feishu.adapter import _build_mention_hint, _strip_edge_self_mentions
 
@@ -75,7 +80,7 @@ class FeishuInboundContextMixin:
         await self._dispatch_inbound_event(normalized)
 
 
-    async def _enqueue_text_event(self, event: MessageEvent) -> None:
+    async def _enqueue_text_event(self: FeishuAdapter, event: MessageEvent) -> None:
         """Debounce rapid Feishu text bursts into a single MessageEvent."""
         key = self._text_batch_key(event)
         chunk_len = len(event.text or "")

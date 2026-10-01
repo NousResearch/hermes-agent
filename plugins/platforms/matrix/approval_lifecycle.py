@@ -6,7 +6,7 @@ import asyncio
 import enum
 import logging
 import time
-from collections.abc import Awaitable, Callable, Coroutine, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING, TypeVar
@@ -104,7 +104,7 @@ class MatrixApprovalMixin:
 
         async def _send_reaction_prompt(
             self, chat_id: str, text: str, metadata: dict | None, make_prompt: Callable,
-            registry: dict, emojis: tuple[str, ...], label: str,
+            registry: dict, emojis: Iterable[str], label: str,
         ) -> SendResult: ...
 
         async def _claim_reaction_prompt(

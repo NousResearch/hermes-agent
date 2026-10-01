@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
@@ -41,11 +42,24 @@ class MatrixReactionControlMixin:
     if TYPE_CHECKING:
         _model_picker_prompts_by_event: dict
         _choice_picker_prompts_by_event: dict
-        _send_reaction_prompt: Any
-        _is_authorized_user: Any
-        _matrix_prompt_expired: Any
-        send: Any
-        redact_message: Any
+
+        async def _send_reaction_prompt(
+            self, chat_id: str, text: str, metadata: Optional[dict], make_prompt: Callable[..., Any],
+            registry: dict, emojis: Iterable[str], label: str,
+        ) -> SendResult: ...
+
+        def _is_authorized_user(self, user_id: str, room_id: str | None = None) -> bool: ...
+
+        def _matrix_prompt_expired(self, prompt: Any) -> bool: ...
+
+        async def send(
+            self, chat_id: str, content: str, reply_to: Optional[str] = None,
+            metadata: Optional[Dict[str, Any]] = None,
+        ) -> SendResult: ...
+
+        async def redact_message(
+            self, room_id: str, event_id: str, reason: str = "",
+        ) -> bool: ...
 
     async def _send_picker(
         self, chat_id: str, lines: list, choices: dict, session_key: str, on_selected, metadata, registry: dict,

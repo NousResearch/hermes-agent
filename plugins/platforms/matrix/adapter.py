@@ -2978,12 +2978,6 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixReacti
         return await self._handle_followup_reaction(
             room_id, reacts_to, key, sender, event_id, pending=pending)
 
-
-
-
-
-
-
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
         expires_at = getattr(prompt, "expires_at", None)
         return expires_at is not None and time.monotonic() >= float(expires_at)

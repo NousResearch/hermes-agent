@@ -18,6 +18,7 @@ interface RegistryGatewayWsUrlDependencies {
 }
 
 interface RemoteRequestDetails {
+  id?: number
   url: string
   requestHeaders?: Record<string, string>
 }
@@ -33,6 +34,8 @@ export interface RemoteHeaderSource {
 interface SessionLike {
   webRequest?: {
     onBeforeSendHeaders?: (listener: (details: RemoteRequestDetails, callback: RemoteRequestCallback) => void) => void
+    onCompleted?: (listener: (details: { id?: number }) => void) => void
+    onErrorOccurred?: (listener: (details: { id?: number }) => void) => void
   }
 }
 
@@ -113,9 +116,25 @@ export function attachRemoteRequestHeaderListener(
   headersForRequest: (requestUrl: string) => Record<string, string>,
   rendererOrigin = 'null'
 ) {
+  // Chromium carries app-set headers across redirects, so a configured secret
+  // injected into one hop rides along to the next. Track the header names we
+  // injected per request id: an out-of-scope hop of THAT request gets them
+  // stripped, while an unrelated request carrying the same name (even the
+  // same value) is left alone.
+  const injectedByRequest: InjectedHeadersByRequest = new Map()
+
   sessionLike?.webRequest?.onBeforeSendHeaders?.((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRequest, rendererOrigin)
+    applyRemoteRequestHeaders(details, callback, headersForRequest, injectedByRequest, rendererOrigin)
   })
+
+  const forget = (details: { id?: number }) => {
+    if (details?.id !== undefined) {
+      injectedByRequest.delete(details.id)
+    }
+  }
+
+  sessionLike?.webRequest?.onCompleted?.(forget)
+  sessionLike?.webRequest?.onErrorOccurred?.(forget)
 }
 
 export function createRemoteWsHeaderStore(limit = 100) {
@@ -167,30 +186,54 @@ export function createRemoteWsHeaderStore(limit = 100) {
   return { headersFor, remember }
 }
 
+/** Lower-cased header names this session injected, keyed by webRequest id. */
+export type InjectedHeadersByRequest = Map<number, Set<string>>
+
 export function applyRemoteRequestHeaders(
   details: RemoteRequestDetails,
   callback: RemoteRequestCallback,
   headersForRequest: (requestUrl: string) => Record<string, string>,
+  injectedByRequest: InjectedHeadersByRequest,
   rendererOrigin = 'null'
 ) {
   const headers = headersForRequest(details.url)
+  const headerEntries = Object.entries(headers)
+  const tracked = details.id === undefined ? undefined : injectedByRequest.get(details.id)
 
-  if (Object.keys(headers).length === 0) {
+  if (headerEntries.length === 0 && !tracked) {
     callback({})
 
     return
   }
 
-  const requestHeaders = { ...details.requestHeaders, ...headers }
+  // Names to drop from the outgoing request: whatever an earlier hop of this
+  // request had injected (it may be out of scope now) plus the names we are
+  // about to set (so a differently-cased copy does not survive alongside).
+  const strip = new Set(tracked)
+  const requestHeaders: Record<string, string> = {}
+
+  for (const [name, value] of headerEntries) {
+    strip.add(name.toLowerCase())
+    requestHeaders[name] = value
+  }
+
+  const outgoing: Record<string, string> = {}
+
+  for (const [name, value] of Object.entries(details.requestHeaders || {})) {
+    if (!strip.has(name.toLowerCase())) {
+      outgoing[name] = value
+    }
+  }
+
+  const injectedNames = new Set(headerEntries.map(([name]) => name.toLowerCase()))
 
   if (/^wss?:/.test(details.url) && headers.Origin) {
     const originalOrigin = Object.entries(details.requestHeaders || {}).find(
       ([name]) => name.toLowerCase() === 'origin'
     )?.[1]
 
-    // Match the serialized Origin main actually loads, not arbitrary loopback
-    // servers. Keep only the explicit legacy file/native spellings; arbitrary
-    // file/app URLs and malformed web origins are not renderer identities.
+    // Only the active renderer and explicit native spellings may borrow the
+    // exact remembered URL's stamp; arbitrary loopback/web origins may not.
     const nativeOrigin =
       !originalOrigin ||
       originalOrigin === 'null' ||
@@ -198,22 +241,23 @@ export function applyRemoteRequestHeaders(
       originalOrigin === 'app://hermes' ||
       originalOrigin === rendererOrigin
 
-    for (const name of Object.keys(requestHeaders)) {
-      if (name.toLowerCase() === 'origin') {
-        delete requestHeaders[name]
-      }
-    }
-
-    // Don't let an untrusted web frame borrow the native Origin stamp. Its
-    // original origin must still pass the remote dashboard's unchanged guard.
-    if (nativeOrigin) {
-      requestHeaders.Origin = headers.Origin
-    } else if (originalOrigin) {
+    if (!nativeOrigin) {
       requestHeaders.Origin = originalOrigin
+      // A foreign frame's original Origin is preserved, not app-injected, so
+      // an out-of-scope redirect must not strip it with the proxy credentials.
+      injectedNames.delete('origin')
     }
   }
 
-  callback({ requestHeaders })
+  if (details.id !== undefined) {
+    if (injectedNames.size > 0) {
+      injectedByRequest.set(details.id, injectedNames)
+    } else {
+      injectedByRequest.delete(details.id)
+    }
+  }
+
+  callback({ requestHeaders: { ...outgoing, ...requestHeaders } })
 }
 
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {

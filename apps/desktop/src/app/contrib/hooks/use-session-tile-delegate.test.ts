@@ -773,9 +773,7 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
       ]
     })
 
-    const stale = createClientSessionState(storedId, [
-      { id: 'u1', role: 'user', rowId: 1, parts: [textPart('a')] }
-    ])
+    const stale = createClientSessionState(storedId, [{ id: 'u1', role: 'user', rowId: 1, parts: [textPart('a')] }])
 
     const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, stale]]) }
     const runtimeIdByStoredSessionIdRef = { current: new Map([[storedId, runtimeId]]) }

@@ -11,7 +11,7 @@ Mixture of Agents is a virtual model provider. Each named MoA preset appears as 
 When you select a MoA preset, the preset's aggregator is the acting model. It is the model that writes the assistant response and emits tool calls. Reference models run first and provide analysis for the aggregator to use.
 
 :::info Who pays for a MoA run
-The **aggregator is billed for the whole run**: it runs every step of the tool loop, so almost all of a preset's cost lands on the aggregator's provider. References only advise once per user turn (with the default `fanout`). If your main model is on a subscription provider but the aggregator sits elsewhere, the run is billed to the aggregator's provider, not to your subscription — `hermes moa configure` and `hermes moa list` print a one-line notice whenever the aggregator's provider differs from `model.provider`, and the Desktop editor, `hermes model`, and `/model` mark the aggregator slot as the acting, billed model.
+The aggregator runs every step of the tool loop, so **most of the spend lands on its provider**, but it is not billed for the whole run. Each reference call is billed separately on that reference's own provider and rate (references advise once per user turn with the default `fanout`). Reference outputs are also appended to the aggregator's prompt, increasing its input tokens. If your main model is on a subscription provider but the aggregator sits elsewhere, `hermes moa configure` and `hermes moa list` print a one-line notice whenever the aggregator's provider differs from `model.provider`.
 :::
 
 Use MoA when a hard task benefits from multiple model perspectives but still needs Hermes' normal agent loop: tool calls, follow-up iterations, interrupts, transcript persistence, and the same session context as any other message.
@@ -218,10 +218,10 @@ hermes moa configure review       # create or update a named preset
 hermes moa delete review
 ```
 
-`hermes moa list` marks the aggregator as the acting model that carries almost all of the cost and lists references as advising once per user turn (by default). When the aggregator's provider differs from your main `model.provider`, both `list` and `configure` add:
+`hermes moa list` marks the aggregator as the acting model where most spend lands and lists references as advising once per user turn (by default). When the aggregator's provider differs from your main `model.provider`, both `list` and `configure` add:
 
 ```text
-Aggregator is on nous; the whole tool loop will be billed there, not to openai-codex.
+Aggregator is on nous; its tool-loop steps are billed there. Reference calls are billed on their own providers, and their outputs increase the aggregator's input.
 ```
 
 ## Benchmarks

@@ -488,6 +488,64 @@ async def test_read_writes_recheck_membership_and_owner_after_final_access(stage
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stop", ["interrupt", "deadline", "unchanged"])
+async def test_unread_reads_stop_the_owner_before_returning(monkeypatch, stop):
+    import threading
+    from tools import matrix_tool_runtime
+    from tools.interrupt import acting_for_tid, set_interrupt
+
+    adapter = _adapter()
+    parent = threading.get_ident()
+    token = acting_for_tid.set(parent)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    drained = asyncio.Event()
+    clock = [0.0]
+    monkeypatch.setattr(matrix_tool_runtime, "_monotonic", lambda: clock[0])
+
+    async def room_kind(*_args):
+        entered.set()
+        if stop == "interrupt":
+            set_interrupt(True, parent)
+        if stop == "deadline":
+            clock[0] = 31.0
+        try:
+            await release.wait()
+            return False
+        finally:
+            drained.set()
+
+    adapter._is_dm_room = AsyncMock(side_effect=room_kind)
+    pending = asyncio.create_task(_tool(adapter, "matrix_unread", {}))
+    forced_release = False
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=3.0)
+        if stop == "unchanged":
+            release.set()
+        try:
+            result = await asyncio.wait_for(asyncio.shield(pending), timeout=3.0)
+        except asyncio.TimeoutError:
+            forced_release = True
+            release.set()
+            result = await pending
+        expected = {
+            "room_id": ROOM, "account_user_id": BOT,
+            "count_basis": "bot_account_push_rules", "thread_id": "main",
+            "notification_count": None, "highlight_count": None,
+            "marked_unread": None, "status": "unavailable",
+            "observation_generation": None, "last_sync_age_seconds": None,
+        } if stop == "unchanged" else {
+            "error": f"Matrix unread request {'interrupted' if stop == 'interrupt' else 'timed out'}",
+        }
+        assert (result, drained.is_set(), forced_release) == (expected, True, False)
+    finally:
+        release.set()
+        await pending
+        set_interrupt(False, parent)
+        acting_for_tid.reset(token)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("cursor", [None, "saved-position"])
 async def test_initial_sync_requests_unread_counts_before_checkpointing(cursor):
     from mautrix.api import HTTPAPI, Method, Path

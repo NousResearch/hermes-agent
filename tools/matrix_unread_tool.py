@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -23,9 +22,10 @@ async def _matrix_unread_action(args: dict[str, Any], *, mark_read: bool) -> str
     thread_id = args.get("thread_id")
     if thread_id is None and not mark_read:
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or "main"
+    from tools.matrix_tool_runtime import run_matrix_mutation
+
     if mark_read:
         from plugins.platforms.matrix.unread import ReadProgress
-        from tools.matrix_tool_runtime import run_matrix_mutation
 
         progress = ReadProgress()
         response = await run_matrix_mutation(
@@ -42,16 +42,14 @@ async def _matrix_unread_action(args: dict[str, Any], *, mark_read: bool) -> str
             error = outcome["error"].removesuffix(" after the change was sent to the homeserver")
             return json.dumps(progress.interrupted_result(error), ensure_ascii=False)
         return response
-    operation = adapter.read_matrix_unread(room_id, thread_id, requester=requester)
-    if owner_loop is asyncio.get_running_loop():
-        return json.dumps(await operation, ensure_ascii=False)
-    try:
-        future = asyncio.run_coroutine_threadsafe(operation, owner_loop)
-    except RuntimeError:
-        operation.close()
-        return json.dumps({"error": "Matrix gateway loop is unavailable"})
-    result = await asyncio.shield(asyncio.wrap_future(future))
-    return json.dumps(result, ensure_ascii=False)
+    return await run_matrix_mutation(
+        owner_loop,
+        lambda _interrupted, _before_write: adapter.read_matrix_unread(
+            room_id, thread_id, requester=requester,
+        ),
+        operation_label="Matrix unread request",
+        next_step="Retry the read after the Matrix connection recovers",
+    )
 
 
 async def _matrix_unread(args: dict[str, Any]) -> str:

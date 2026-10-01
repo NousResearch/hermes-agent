@@ -162,3 +162,6 @@ too: no attribution tag ships by default.
 
 Matrix inbound event construction and server-time conversion are defined in
 `platforms/matrix/inbound_events.py`; callers use the adapter mixin.
+
+Matrix outbound upload payloads and encryption are defined in
+`platforms/matrix/media_upload.py`; the adapter includes its media mixin.

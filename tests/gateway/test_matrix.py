@@ -237,11 +237,20 @@ def _make_fake_mautrix():
 
     def encrypt_attachment(data):
         encrypted_file = MagicMock()
-        encrypted_file.serialize.side_effect = lambda: {
-            "url": str(encrypted_file.url),
-            "key": {"k": "testkey"}, "iv": "testiv",
-            "hashes": {"sha256": "testhash"}, "v": "v2",
-        }
+        encrypted_file.url = None
+
+        def serialize():
+            content = {
+                "key": {"k": "testkey"},
+                "iv": "testiv",
+                "hashes": {"sha256": "testhash"},
+                "v": "v2",
+            }
+            if encrypted_file.url is not None:
+                content["url"] = str(encrypted_file.url)
+            return content
+
+        encrypted_file.serialize.side_effect = serialize
         return (b"ciphertext_" + data, encrypted_file)
 
     mautrix_crypto_attachments.encrypt_attachment = encrypt_attachment
@@ -4203,6 +4212,73 @@ class TestMatrixSyncLoop:
 
 
 class TestMatrixUploadAndSend:
+
+    @pytest.mark.asyncio
+    async def test_encrypted_upload_assigns_uri_before_sdk_serialization(self):
+        pytest.importorskip("mautrix.types")
+        from mautrix.types import ContentURI, EncryptedFile, JSONWebKey
+        from gateway.platforms.base import SendResult
+
+        encrypted_file = EncryptedFile(
+            key=JSONWebKey(key="testkey"),
+            iv="testiv",
+            hashes={"sha256": "testhash"},
+        )
+        serialized_urls = []
+        serialize = EncryptedFile.serialize
+
+        def serialize_uploaded_file(value):
+            serialized_urls.append(value.url)
+            return serialize(value)
+
+        attachments = types.SimpleNamespace(
+            encrypt_attachment=MagicMock(return_value=(b"ciphertext", encrypted_file)),
+        )
+        adapter = _make_adapter()
+        adapter._encryption = True
+        client = MagicMock()
+        client.crypto = object()
+        client.state_store.is_encrypted = AsyncMock(return_value=True)
+        client.upload_media = AsyncMock(return_value="mxc://example.org/enc")
+        client.send_message_event = AsyncMock(return_value="$event")
+        adapter._client = client
+
+        with patch.dict("sys.modules", {"mautrix.crypto.attachments": attachments}):
+            with patch.object(EncryptedFile, "serialize", serialize_uploaded_file):
+                result = await adapter._upload_and_send(
+                    "!room:example.org",
+                    b"secret",
+                    "secret.txt",
+                    "text/plain",
+                    "m.file",
+                )
+
+        assert (
+            serialized_urls,
+            client.send_message_event.await_args_list[0].args[2],
+            result,
+        ) == (
+            [ContentURI("mxc://example.org/enc")],
+            {
+                "msgtype": "m.file",
+                "body": "secret.txt",
+                "info": {"mimetype": "text/plain", "size": 6},
+                "file": {
+                    "key": {
+                        "k": "testkey",
+                        "alg": "A256CTR",
+                        "ext": True,
+                        "kty": "oct",
+                        "key_ops": ["encrypt", "decrypt"],
+                    },
+                    "iv": "testiv",
+                    "hashes": {"sha256": "testhash"},
+                    "url": "mxc://example.org/enc",
+                    "v": "v2",
+                },
+            },
+            SendResult(success=True, message_id="$event"),
+        )
 
     @pytest.mark.asyncio
     async def test_upload_encrypted_room_uses_file_payload(self):

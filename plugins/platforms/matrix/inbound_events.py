@@ -8,8 +8,9 @@ from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType, QuotedMediaDependency
+from plugins.platforms.matrix.media_content import _inbound_media_caption
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache, MatrixReplyContext
+from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, _label_body
 
 
 def _matrix_event_timestamp_seconds(event: Any) -> float:
@@ -53,7 +54,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
         still change (reply-fallback strip); ``extra`` supplies media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
         downloading); resolving it twice would double the read receipt / thread mark."""
-        from .adapter import _normalize_matrix_bang_command, _inbound_media_caption, _label_body
+        from .adapter import _normalize_matrix_bang_command
 
         reply_target = MatrixRelation.from_content(relates_to).reply_target
         retained_parent = reply_parent or (self._event_context_cache.retain(room_id, reply_target) if reply_target else None)

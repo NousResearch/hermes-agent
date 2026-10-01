@@ -118,6 +118,7 @@ from gateway.platforms.helpers import ThreadParticipationTracker, bounded_put
 from gateway.session import SessionSource
 from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
 from plugins.platforms.matrix.approval_lifecycle import MatrixApprovalMixin
+from plugins.platforms.matrix.reaction_prompts import MatrixReactionPromptMixin
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 if TYPE_CHECKING:
@@ -846,7 +847,7 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
-class MatrixAdapter(MatrixApprovalMixin, MatrixFollowupMixin, MatrixContextMixin, BasePlatformAdapter):
+class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixFollowupMixin, MatrixContextMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -1831,28 +1832,6 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixFollowupMixin, MatrixContextMixin
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         return await self._send_local_file(chat_id, video_path, "m.video", caption, reply_to, metadata=metadata)
-
-    async def _send_reaction_prompt(
-        self, chat_id: str, text: str, metadata: Optional[dict], make_prompt, registry: dict, emojis,
-        label: str) -> SendResult:
-        """Send *text*, register ``make_prompt(message_id, requester, expires_at)`` under
-        the resulting event, then seed the bot's reaction controls (recording their IDs)."""
-        result = await self.send(chat_id, text, metadata=metadata)
-        if not result.success or not result.message_id:
-            return result
-        prompt = make_prompt(
-            result.message_id, str((metadata or {}).get("requester_user_id") or "") or None,
-            time.monotonic() + max(self._approval_timeout_seconds, 0))
-        registry[result.message_id] = prompt
-        for emoji in emojis:
-            try:
-                reaction_event_id = await self._send_reaction(chat_id, result.message_id, emoji)
-                if reaction_event_id:
-                    prompt.bot_reaction_events[emoji] = str(reaction_event_id)
-            except Exception as exc:
-                logger.debug("Matrix: failed to add %s reaction %s: %s", label, emoji, exc)
-        return result
-
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,

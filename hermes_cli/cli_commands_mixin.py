@@ -32,7 +32,7 @@ from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
-from hermes_cli.cli_agent_setup_mixin import _cli_turn_route_key, _retire_agent
+from hermes_cli.cli_agent_setup_mixin import _cli_route_key, _reset_cli_route_identity, _retire_agent
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -640,7 +640,7 @@ class CLICommandsMixin:
                     plugin_handler,
                     user_args,
                     session_id=getattr(self, "session_id", None),
-                    session_key=_cli_turn_route_key(getattr(self, "session_id", None)),
+                    session_key=_cli_route_key(self),
                     platform="cli",
                 )
             )
@@ -1328,6 +1328,7 @@ class CLICommandsMixin:
         old_session_id = self.session_id
         _end_current_session(self, "resumed_other")
         self.session_id, self._resumed, self._pending_title = target_id, True, None
+        _reset_cli_route_identity(self)
         _sync_process_session_id(target_id)
         # One lineage SELECT, two projections: model_history is alternation-repaired for live
         # replay (heals a durable user;user once); display_history is verbatim (as startup --resume).
@@ -1452,6 +1453,7 @@ class CLICommandsMixin:
         # Switch to the new session
         self._transfer_session_yolo(self.session_id, new_session_id)
         self.session_id, self.session_start, self._pending_title = new_session_id, now, None
+        _reset_cli_route_identity(self)
         self._resumed = True  # Prevents auto-title generation
         _sync_process_session_id(new_session_id)
         if self.agent:

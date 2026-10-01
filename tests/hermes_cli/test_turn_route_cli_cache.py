@@ -8,6 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_cli.runtime_provider import resolve_runtime_provider as real_resolve_runtime_provider
+from run_agent import AIAgent as RealAIAgent  # imported before routed_chat patches the facade
+
 
 def _import_cli():
     import hermes_cli.config as config_mod
@@ -436,3 +439,180 @@ def test_command_token_source_replacement_rebuilds_cached_chat_agent(routed_chat
     for agent in agents:
         assert "secret-a" not in repr(agent.__dict__)
         assert "secret-b" not in repr(agent.__dict__)
+
+
+@pytest.mark.parametrize("primary_uses_key_cmd", [False, True])
+def test_real_credential_precheck_keeps_routed_agent_for_equivalent_primary_source(
+    routed_chat, monkeypatch, tmp_path, primary_uses_key_cmd,
+):
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+    from hermes_cli.config import atomic_config_write
+
+    shell, selected, _credential, agents, _turn_agents = routed_chat
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def write_config(**primary_auth):
+        atomic_config_write(home / "config.yaml", {
+            "model": {"provider": "primary", "default": "alpha"},
+            "providers": {
+                "primary": {"base_url": "https://primary.example/v1", "default_model": "alpha", **primary_auth},
+                "alternate": {"base_url": "https://alternate.example/v1",
+                              "api_key": "synthetic-alternate", "default_model": "beta"},
+            },
+        })
+
+    write_config(**({"key_cmd": "printf token-one"} if primary_uses_key_cmd else {"api_key": "key-one"}))
+    shell.requested_provider = "primary"
+    shell.provider = "custom"
+    shell._explicit_api_key = None
+    shell._explicit_base_url = None
+    shell._maybe_print_free_tier_available_notice = lambda: None
+    shell._ensure_runtime_credentials = CLIAgentSetupMixin._ensure_runtime_credentials.__get__(shell)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", real_resolve_runtime_provider)
+    selected.update(model="beta", provider="alternate", requested_provider="alternate")
+
+    assert shell.chat("first routed turn") == "beta"
+    first = shell.agent
+    assert shell.chat("unchanged primary, same route") == "beta"
+    assert shell.agent is first
+    assert len(agents) == 1
+    assert not getattr(first, "released", False)
+
+    # A real replacement of the primary credential source still retires the agent.
+    write_config(**({"key_cmd": "printf token-two"} if primary_uses_key_cmd else {"api_key": "key-two"}))
+    assert shell.chat("replaced primary credential") == "beta"
+    assert shell.agent is not first
+    assert first.released
+
+
+def _rotating_compression_fixture(monkeypatch, tmp_path, parent, *, in_place):
+    """Real AIAgent compression publishing a child row into a temporary SessionDB."""
+    import httpx
+    from openai import OpenAI
+
+    from agent.context_compressor import SUMMARY_PREFIX
+    from hermes_state import SessionDB
+    from tests.agent.test_compression_rotation_state import _build_agent_with_db
+
+    # Restore the actual facade hidden by routed_chat's construction recorder.
+    monkeypatch.setattr("run_agent.AIAgent", RealAIAgent)
+    monkeypatch.setattr("agent.model_metadata.fetch_model_metadata", lambda **_kwargs: {
+        "test/model": {"context_length": 131072, "max_completion_tokens": 8192},
+    })
+
+    def client(_agent, kwargs, **_context):
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json={}))
+        return OpenAI(api_key="synthetic", base_url=kwargs["base_url"],
+                      http_client=httpx.Client(transport=transport))
+
+    monkeypatch.setattr(RealAIAgent, "_create_openai_client", client)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(parent, source="cli")
+    for i in range(10):
+        db.append_message(parent, "user", f"question {i}: " + "context " * 100)
+        db.append_message(parent, "assistant", f"answer {i}: " + "response " * 100)
+    db.append_message(parent, "user", "last question")
+    db.append_message(parent, "assistant", "last answer")
+    agent = _build_agent_with_db(db, parent, platform="cli")
+    agent.compression_in_place = in_place
+    agent._compression_feasibility_checked = True
+    agent.context_compressor.compress.return_value = [
+        {"role": "user", "content": SUMMARY_PREFIX + " earlier turns"},
+        {"role": "assistant", "content": "last answer"},
+    ]
+    return db, agent
+
+
+def _compress_and_settle(shell, db, agent, parent):
+    from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
+
+    compressed, _ = agent._compress_context(
+        db.get_messages_as_conversation(parent), "sys", approx_tokens=120000)
+    shell.agent = agent
+    shell._prompt_start_time = None
+    shell._flush_stream = shell._write_terminal_breadcrumb = lambda: None
+    CLIChatTurnMixin._chat_settle_turn(shell, SimpleNamespace(
+        result={"messages": compressed}, use_streaming_tts=False, text_queue=None))
+
+
+@pytest.mark.parametrize("control", ["off", "pin"])
+@pytest.mark.parametrize("in_place", [True, False])
+def test_route_control_survives_compression_rotation(routed_chat, monkeypatch, tmp_path, in_place, control):
+    from hermes_cli.plugins import PluginManager
+
+    shell, *_ = routed_chat
+    controls = {}
+
+    def command(args, *, session_key, **_context):
+        controls[session_key] = args
+
+    def select_route(route, *, session_key, **_context):
+        if controls.get(session_key) == "off":
+            return None
+        if controls.get(session_key) == "pin":
+            return {"route": {**route, "model": "pinned"}}
+        return {"route": {**route, "model": "beta"}}
+
+    manager = PluginManager()
+    manager._middleware["turn_route"] = [select_route]
+    monkeypatch.setattr("hermes_cli.plugins._delivery_manager", lambda: manager)
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", lambda _name: command)
+    parent = shell.session_id = "route-parent"
+    # Positive control: the registered selector runs before any command is saved.
+    assert shell._resolve_turn_agent_config("routing enabled")["model"] == "beta"
+    shell._run_plugin_slash_command("/route-control", control)
+    expected = "alpha" if control == "off" else "pinned"
+    assert shell._resolve_turn_agent_config("before compression")["model"] == expected
+
+    db, agent = _rotating_compression_fixture(monkeypatch, tmp_path, parent, in_place=in_place)
+    try:
+        _compress_and_settle(shell, db, agent, parent)
+        assert (shell.session_id == parent) is in_place
+        assert shell.session_id == agent.session_id
+        if not in_place:
+            assert db.get_session(shell.session_id)["parent_session_id"] == parent
+        assert shell._resolve_turn_agent_config("after compression")["model"] == expected
+        # Commands issued after rotation keep addressing the same logical conversation.
+        assert list(controls) == [f"cli:{parent}"]
+        shell._run_plugin_slash_command("/route-control", "off")
+        assert list(controls) == [f"cli:{parent}"]
+    finally:
+        agent.release_clients()
+        db.close()
+
+
+def test_new_conversation_gets_independent_route_identity_and_resume_follows_lineage(
+    routed_chat, monkeypatch, tmp_path,
+):
+    from hermes_cli.cli_agent_setup_mixin import _cli_route_key, _reset_cli_route_identity
+
+    shell, *_ = routed_chat
+    parent = shell.session_id = "route-parent"
+    db, agent = _rotating_compression_fixture(monkeypatch, tmp_path, parent, in_place=False)
+    try:
+        shell._session_db = db
+        assert _cli_route_key(shell) == f"cli:{parent}"
+        _compress_and_settle(shell, db, agent, parent)
+        child = shell.session_id
+        assert child != parent
+        assert _cli_route_key(shell) == f"cli:{parent}"
+
+        # Resuming the child later follows the lineage root.
+        _reset_cli_route_identity(shell)
+        assert _cli_route_key(shell) == f"cli:{parent}"
+
+        # A branch is a deliberate new conversation, not a compression continuation.
+        db.create_session("branched", source="cli", parent_session_id=child)
+        shell.session_id = "branched"
+        _reset_cli_route_identity(shell)
+        assert _cli_route_key(shell) == "cli:branched"
+
+        # /new style reset: a fresh conversation id is independent of the old lineage.
+        shell.session_id = "fresh-conversation"
+        _reset_cli_route_identity(shell)
+        assert _cli_route_key(shell) == "cli:fresh-conversation"
+    finally:
+        agent.release_clients()
+        db.close()

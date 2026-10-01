@@ -9,6 +9,8 @@
 import { Button, host, Input, useI18n } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
+import { useBots } from './i18n'
+
 // -- inline MCP setup (per-profile), driven by the mcp.servers.* gateway RPCs --
 // Feature-detected: if the gateway predates those RPCs the setup button hides
 // and the row falls back to the "run hermes mcp / Settings" hint. profile is
@@ -107,6 +109,7 @@ interface McpSetupButtonProps {
 
 export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSetupButtonProps) {
   const { t } = useI18n()
+  const b = useBots()
   // entry: { name, requires:[env keys], auth?, fromCatalog, installed }
   // profile may be null at first (New Bot: the profile isn't created yet).
   // ensureProfile() lazily creates it on the first setup action and returns the
@@ -115,7 +118,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   const [supported, setSupported] = useState<boolean | null>(null)
   const [keyValues, setKeyValues] = useState<Record<string, string>>({})
   const [message, setMessage] = useState('')
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const oauthEpoch = useRef(0)
   // Holds ONLY the profile this component created on demand. The live prop
   // wins wherever both exist, so there is nothing to mirror into the ref and
   // no render of lag between the parent supplying a profile and us using it.
@@ -142,8 +145,8 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
     return null
   }
 
-  // eslint-disable-next-line no-restricted-syntax -- clears a timer handle on unmount, not an atom mirror
   useEffect(() => {
+    const epoch = oauthEpoch
     let alive = true
     mcpSetupSupported().then(ok => {
       if (alive) {
@@ -154,10 +157,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
     return () => {
       alive = false
 
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
+      epoch.current++
     }
   }, [])
   const isOAuth = (entry.auth || '').toLowerCase() === 'oauth'
@@ -184,7 +184,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
 
       if (!add.ok) {
         setPhase('error')
-        setMessage(add.error || 'Could not add server')
+        setMessage(add.error || b.tools.addServerFailed)
 
         return
       }
@@ -199,7 +199,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
 
     if (!target) {
       setPhase('error')
-      setMessage('No target profile')
+      setMessage(b.tools.noTarget)
 
       return
     }
@@ -220,7 +220,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
 
       if (!r.ok) {
         setPhase('error')
-        setMessage(r.error || 'Failed to set ' + k)
+        setMessage(r.error || b.tools.setKeyFailed(k))
 
         return
       }
@@ -236,204 +236,75 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       setPhase('done')
       host.notify({
         kind: 'success',
-        message: entry.name + ' configured'
+        message: b.tools.configured(entry.name)
       })
       onDone && onDone()
     } else {
       setPhase('error')
-      setMessage(
-        (t.result && (t.result.error || (t.result.result && t.result.result.error))) || 'Server test failed after setup'
-      )
+      setMessage((t.result && (t.result.error || (t.result.result && t.result.result.error))) || b.tools.testFailed)
     }
   }
 
   const beginOAuth = async () => {
-    // A second click (retry, impatient double-click) must not orphan the
-    // previous poll interval — an overwritten pollRef leaks a 2s poller that
-    // runs until unmount and can flip phase from a stale OAuth session.
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
+    const epoch = ++oauthEpoch.current
+
+    const source =
+      profile && typeof profile === 'object'
+        ? { ...profile }
+        : { connectionId: host.state.connectionId.get(), profile: profile || host.state.profile.get() }
 
     setPhase('busy')
     setMessage('')
-    const profile = await resolveProfile()
+    const resolvedProfile = await resolveProfile()
 
-    if (!profile) {
+    if (!resolvedProfile) {
       setPhase('idle')
 
       return
     }
 
-    if (entry.fromCatalog && !entry.installed) {
-      const add = await mcpRpc('mcp.servers.add', {
-        profile,
-        name: entry.name,
-        preset: entry.name
+    const scope = {
+      ...source,
+      profile: typeof resolvedProfile === 'object' ? resolvedProfile.profile : resolvedProfile
+    }
+
+    try {
+      setPhase('oauth')
+      setMessage(b.tools.completeSignIn)
+      await host.completeMcpOAuth({
+        serverName: entry.name,
+        profile: scope,
+        catalogPreset: entry.fromCatalog && !entry.installed ? entry.name : undefined,
+        cancelled: () => oauthEpoch.current !== epoch
       })
 
-      if (!add.ok) {
-        setPhase('error')
-        setMessage(add.error || 'Could not add server')
-
+      if (oauthEpoch.current !== epoch) {
         return
       }
-    }
 
-    // Client-side callback listener (electron/mcp-oauth-callback-ipc.ts): the
-    // browser always runs on THIS machine, so hosting the OAuth redirect here
-    // works for local AND remote backends alike. Against a remote backend it
-    // is the only working flow — the gateway's own 127.0.0.1 listener is on
-    // the backend host, unreachable from this machine's browser. Falls back
-    // to the legacy gateway-listener flow when the bridge or the gateway-side
-    // callback RPC is unavailable (older builds).
-    const mcpOauthBridge =
-      typeof window !== 'undefined' && window.hermesDesktop && window.hermesDesktop.mcpOauth
-        ? window.hermesDesktop.mcpOauth
-        : null
-
-    let listener: { id: string; redirectUri: string } | null = null
-
-    if (mcpOauthBridge) {
-      try {
-        listener = await mcpOauthBridge.listen()
-      } catch {
-        listener = null
-      }
-    }
-
-    let start = await mcpRpc('mcp.servers.oauth.start', {
-      profile,
-      name: entry.name,
-      ...(listener ? { client_redirect_uri: listener.redirectUri } : {})
-    })
-
-    // Older gateway rejecting the loopback URI shape (or a stale build that
-    // validates differently): retry once on the legacy gateway-listener path.
-    if (!start.ok && listener) {
-      try {
-        await mcpOauthBridge!.cancel(listener.id)
-      } catch {
-        /* listener teardown is best-effort */
-      }
-
-      listener = null
-      start = await mcpRpc('mcp.servers.oauth.start', {
-        profile,
-        name: entry.name
-      })
-    }
-
-    const payload = start.result && (start.result.result || start.result)
-    const authUrl = payload && (payload.auth_url || payload.verification_url)
-    const sessionId = payload && payload.session_id
-
-    if (!start.ok || !authUrl || !sessionId) {
-      if (listener) {
-        try {
-          await mcpOauthBridge!.cancel(listener.id)
-        } catch {
-          /* listener teardown is best-effort */
-        }
+      setPhase('done')
+      host.notify({ kind: 'success', message: b.tools.authenticated(entry.name) })
+      onDone?.()
+    } catch (error) {
+      if (oauthEpoch.current !== epoch) {
+        return
       }
 
       setPhase('error')
-      setMessage(start.error || 'Could not start OAuth')
-
-      return
+      setMessage(error instanceof Error ? error.message : String(error))
     }
-
-    // With a client listener bound: await the provider redirect here and relay
-    // code/state to the gateway. Runs concurrently with the status poll below;
-    // errors surface through the poll (the gateway marks the flow failed).
-    if (listener) {
-      const listenerId = listener.id
-
-      void (async () => {
-        const cb = await mcpOauthBridge!.wait(listenerId)
-
-        if (cb.error === 'cancelled') {
-          return
-        }
-
-        const relay = await mcpRpc('mcp.servers.oauth.callback', {
-          profile,
-          name: entry.name,
-          session_id: sessionId,
-          code: cb.code || undefined,
-          state: cb.state || undefined,
-          error: cb.error || undefined
-        })
-
-        const rp = relay.result && (relay.result.result || relay.result)
-
-        if (!relay.ok || (rp && rp.ok === false)) {
-          setPhase('error')
-          setMessage((rp && rp.error_message) || relay.error || 'OAuth callback relay failed')
-        }
-      })()
-    }
-
-    // Open the auth URL in the native browser, same as provider OAuth.
-    // TODO(bot-mode-types): the plugin SDK's `host` has no `openExternal`, so this
-    // branch is dead and the window bridge / window.open fallbacks are the only
-    // live paths. `ctx.os.openExternal` is the real verb. Kept as-written under
-    // ts-expect-error, which reports itself as unused the day the SDK grows one.
-    try {
-      // @ts-expect-error TODO(bot-mode-types): not on the SDK host, branch is dead
-      if (host.openExternal) {
-        // @ts-expect-error TODO(bot-mode-types): not on the SDK host, branch is dead
-        host.openExternal(authUrl)
-      } else if (typeof window !== 'undefined' && window.hermesDesktop && window.hermesDesktop.openExternal) {
-        window.hermesDesktop.openExternal(authUrl)
-      } else {
-        window.open(authUrl, '_blank')
-      }
-    } catch {
-      /* fall through to poll; user can open the URL from the toast */
-    }
-
-    setPhase('oauth')
-    setMessage('Complete sign-in in your browser...')
-    pollRef.current = setInterval(async () => {
-      const poll = await mcpRpc('mcp.servers.oauth.poll', {
-        profile,
-        name: entry.name,
-        session_id: sessionId
-      })
-
-      const pd = poll.result && (poll.result.result || poll.result)
-      const status = pd && pd.status
-
-      if (status === 'approved') {
-        clearInterval(pollRef.current!)
-        pollRef.current = null
-        setPhase('done')
-        host.notify({
-          kind: 'success',
-          message: entry.name + ' authenticated'
-        })
-        onDone && onDone()
-      } else if (status === 'error') {
-        clearInterval(pollRef.current!)
-        pollRef.current = null
-        setPhase('error')
-        setMessage((pd && pd.error_message) || 'OAuth failed')
-      }
-    }, 2000)
   }
 
   if (supported === false) {
     return (
       <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
-        {'needs setup (' + requires.join(', ') + ') \u2014 restart the gateway to enable in-app setup'}
+        {b.tools.needsSetup(requires.join(', '))}
       </span>
     )
   }
 
   if (phase === 'done') {
-    return <span className="ml-1.5 text-[0.65rem] text-(--ui-success)">set up ✓</span>
+    return <span className="ml-1.5 text-[0.65rem] text-(--ui-success)">{b.tools.setUpDone}</span>
   }
 
   if (phase === 'keys') {
@@ -456,7 +327,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
         ))}
         <div className="flex gap-1">
           <Button onClick={() => void submitKeys()} size="xs" variant="secondary">
-            Save & test
+            {b.tools.saveTest}
           </Button>
           <Button onClick={() => setPhase('idle')} size="xs" variant="ghost">
             {t.common.cancel}
@@ -467,19 +338,19 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   }
 
   if (phase === 'oauth') {
-    return <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">{message || 'Authorizing\u2026'}</span>
+    return <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">{message || b.tools.authorizing}</span>
   }
 
   if (phase === 'busy') {
-    return <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">Working…</span>
+    return <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">{b.tools.working}</span>
   }
 
   if (phase === 'error') {
     return (
       <span className="ml-1.5 text-[0.65rem] text-(--ui-danger,#f87171)">
-        {(message || 'Setup failed') + ' '}
+        {(message || b.tools.setupFailed) + ' '}
         <Button className="underline" onClick={() => setPhase('idle')} size="inline" variant="link">
-          retry
+          {t.common.retry}
         </Button>
       </span>
     )
@@ -493,7 +364,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       size="inline"
       variant="link"
     >
-      {isOAuth ? 'Sign in\u2026' : 'Set up\u2026'}
+      {isOAuth ? b.tools.signIn : b.tools.setUp}
     </Button>
   )
 }

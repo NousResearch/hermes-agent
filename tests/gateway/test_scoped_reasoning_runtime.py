@@ -84,3 +84,29 @@ def test_unconfigured_channel_keeps_model_reasoning_unscoped():
         "effort": "low",
     }
     assert runner._has_scoped_reasoning_override(source=source) is False
+
+
+def test_scoped_reasoning_reads_yaml_from_each_profile_without_cross_talk(tmp_path, monkeypatch):
+    """The native YAML loader keeps topic values and disabled booleans profile-local."""
+    import yaml
+    from gateway.config import load_gateway_config
+
+    profiles = []
+    for label, effort in (("a", "high"), ("b", False)):
+        home = tmp_path / label
+        home.mkdir()
+        (home / "config.yaml").write_text(yaml.safe_dump({
+            "platforms": {"telegram": {"enabled": True, "channel_overrides": {
+                "-100123": {"reasoning_effort": "low"},
+                "-100123:188": {"reasoning_effort": effort},
+            }}},
+            "agent": {"reasoning_effort": "medium"},
+        }))
+        profiles.append((home, {"enabled": True, "effort": effort} if effort else {"enabled": False}))
+
+    for home, expected in (profiles[0], profiles[1], profiles[0]):
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        runner = _runner_with_override(None)
+        runner.config = load_gateway_config()
+        assert runner._resolve_session_reasoning_config(source=_topic_source()) == expected
+        assert runner._has_scoped_reasoning_override(source=_topic_source()) is True

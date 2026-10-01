@@ -31,6 +31,7 @@ class AuditEvent(enum.Enum):
     REFRESH_FAILURE = "refresh_failure"
     REVOKE = "revoke"
     SESSION_VERIFY_FAILURE = "session_verify_failure"
+    SESSION_REJECTED = "session_rejected"
     WS_TICKET_MINTED = "ws_ticket_minted"
     WS_TICKET_REJECTED = "ws_ticket_rejected"
     TOKEN_AUTH_SUCCESS = "token_auth_success"
@@ -63,11 +64,3 @@ def audit_log(event: AuditEvent, **fields: Any) -> None:
             f.write(line)
     except Exception as e:
         _log.warning("dashboard-auth audit log write failed: %s", e)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

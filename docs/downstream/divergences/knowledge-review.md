@@ -6,8 +6,9 @@
 
 ## Downstream intent
 
-One pass maintains memory, connection manuals and responsibilities. Use the
-source product's unified prompt and memory cadence; unsuccessful turns or
+One pass maintains memory, connection manuals and responsibilities as three
+distinct destinations. Adapt native combined-review guidance to those stores,
+keeping its proactive tone and the existing memory cadence; unsuccessful turns or
 refused starts must not lose a due review. Restrict dispatch to available
 memory/read/search/write/patch tools. Keep personal attribution and native
 cache parity. No skills pass, outward actions or automation declaration edits.
@@ -15,7 +16,7 @@ cache parity. No skills pass, outward actions or automation declaration edits.
 ## Reconciliation
 
 Keep native local scheduling rather than hosted job infrastructure. Preserve
-native fixes without restoring separate review prompts or widening tools.
+native learning guidance and fixes without restoring skills or widening tools.
 Memory describes personal/shared scopes using the source product's tool text.
 See [behavior and source mapping](../../specs/background-review.md).
 

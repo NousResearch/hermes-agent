@@ -940,6 +940,26 @@ def _pool_codex_credential() -> Tuple[str, str]:
     return "", ""
 
 
+def resolve_codex_catalog_credentials() -> Tuple[str, str]:
+    """``(access_token, base_url)`` for read-only model-catalog discovery; ``("", "")`` when none.
+
+    A usage-limit cooldown gates inference, not listing: the Codex ``/models`` endpoint still
+    answers for an exhausted account, so the picker must not fall back to a stale or hardcoded
+    catalog for the days a weekly limit can last. On the quota-exhausted error this returns the
+    cooling-down pool row's token, routed to that row's host (#121486). Never refreshes or writes.
+    """
+    from hermes_cli.auth import AuthError
+    try:
+        creds = resolve_codex_runtime_credentials(read_only=True)
+        return str(creds.get("api_key") or ""), str(creds.get("base_url") or "")
+    except AuthError as exc:
+        if exc.code != CODEX_RATE_LIMITED_CODE:
+            return "", ""
+    status = _codex_pool_rate_limit_status() or {}
+    token = str(status.get("access_token") or "")
+    return (token, _codex_pool_route_base_url(_stripped(status.get("base_url")))) if token else ("", "")
+
+
 def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool = False) -> None:
     """OpenAI Codex login: device code by default, browser PKCE when opted in (``--browser`` /
     ``auth.codex_login_flow``). Tokens stored in ~/.hermes/auth.json."""

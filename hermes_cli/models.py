@@ -1328,17 +1328,18 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     # until the runtime lease refreshes it.
     # The token and the host it is routed to come from the same resolution (#121486): a pooled
     # gateway key is only ever sent to that gateway, never to the chatgpt.com default.
+    # A usage-limit cooldown still lists models (resolve_codex_catalog_credentials).
     base_url = None
     try:
-        from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+        from hermes_cli.auth import _codex_access_token_is_expiring
+        from hermes_cli.auth_codex import resolve_codex_catalog_credentials
 
-        creds = resolve_codex_runtime_credentials(read_only=True)
-        access_token, base_url = creds.get("api_key"), creds.get("base_url")
-        if _codex_access_token_is_expiring(access_token, 0):
+        access_token, base_url = resolve_codex_catalog_credentials()
+        if not access_token or _codex_access_token_is_expiring(access_token, 0):
             access_token = None
     except Exception:
         access_token = None
-    return get_codex_model_ids(access_token=access_token, base_url=base_url)
+    return get_codex_model_ids(access_token=access_token, base_url=base_url or None)
 
 
 _COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest

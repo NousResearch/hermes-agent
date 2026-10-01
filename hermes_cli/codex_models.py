@@ -111,11 +111,13 @@ def codex_catalog_credential_identity() -> str:
     fallback must not outlive the refresh under the healthy principal's key. Opaque non-JWT tokens
     fall back to the token itself (the caller hashes every part before anything is persisted).
     """
-    from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+    from hermes_cli.auth import _codex_access_token_is_expiring
+    from hermes_cli.auth_codex import resolve_codex_catalog_credentials
 
     try:
-        token = str(resolve_codex_runtime_credentials(read_only=True).get("api_key") or "")
-    except Exception:  # AuthError (no/exhausted creds) or the pytest seat belt: no live catalog either way
+        # Same credential _codex_catalog lists with, so a quota cooldown keeps the principal's key.
+        token = resolve_codex_catalog_credentials()[0]
+    except Exception:  # pytest seat belt: no live catalog either way
         token = ""
     if not token:
         return "missing"

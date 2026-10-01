@@ -30,6 +30,8 @@ def _signed_turn(question: str, answer: str, sig: str, *, thinking: str | None =
 
 def _assistant(messages, index: int):
     return [m for m in messages if m["role"] == "assistant"][index]
+
+
 @pytest.mark.parametrize(
     ("model", "expected"),
     [
@@ -66,6 +68,8 @@ def test_formerly_latest_turn_stays_byte_stable_on_preserved_thinking_model():
 
     assert _assistant(short, 1) == _assistant(long, 1)
     assert _assistant(long, 1)["content"][0]["signature"] == "sig_2"
+
+
 def test_older_claude_keeps_latest_only_policy():
     messages = _signed_turn("Q1", "A1", "sig_1") + _signed_turn("Q2", "A2", "sig_2")
     _, converted = convert_messages_to_anthropic(messages, model="claude-sonnet-4-5")
@@ -115,6 +119,8 @@ def _agent(db):
         _session_db=db,
         _persist_disabled=False,
     )
+
+
 def _carrier_message():
     return {
         "role": "assistant",

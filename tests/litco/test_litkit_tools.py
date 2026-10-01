@@ -541,6 +541,21 @@ def test_review_create_billing_quote_then_confirm(fake, env):
     assert review.quotes == {"q1": "consumed"} and len(review.proposals) == 1
 
 
+def test_review_create_sends_optimizations_considered_only_when_given(fake, env):
+    FakeReview(fake)
+    base = {"action": "create", "criteriaSetId": _id(1), "tags": ["P"], "scope": {"workSetId": _id(2)}}
+    call("litkit_review", **base)
+    assert "optimizationsConsidered" not in fake.calls("POST", rf"/api/matters/{M}/review-jobs/propose")[-1].json()
+    notes = [" Jev first pass on: 4,000 topical docs ", "scope 2021-2023: 4,000 of 9,100", ""]
+    call("litkit_review", **base, optimizations_considered=notes)
+    sent = fake.calls("POST", rf"/api/matters/{M}/review-jobs/propose")[-1].json()
+    assert sent["optimizationsConsidered"] == ["Jev first pass on: 4,000 topical docs", "scope 2021-2023: 4,000 of 9,100"]
+    n = len(fake.requests)
+    assert "at most 5" in call("litkit_review", **base, optimizations_considered=[f"o{i}" for i in range(6)])["error"]
+    assert "200 characters" in call("litkit_review", **base, optimizations_considered=["x" * 201])["error"]
+    assert len(fake.requests) == n
+
+
 def test_review_create_second_approver_is_explained(fake, env):
     fake.route("POST", rf"/api/matters/{M}/review-jobs/propose",
                {"proposed": False, "requiresApproval": True, "needsSecondApprover": True,

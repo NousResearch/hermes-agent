@@ -1,7 +1,7 @@
 ---
 name: litkit-review-and-tag
 description: Build, propose, change, and follow a LitKit Review & Tag run from chat.
-version: 0.1.0
+version: 0.2.0
 author: LitCo, Hermes Agent
 platforms: [linux, macos]
 metadata:
@@ -34,7 +34,8 @@ The `litkit` toolset on a matter host. Every call acts for the lawyer on the tur
 | Register criteria | `litkit_review` action=criteria, criteriaAction=create, name, criteria | a criteria set, version 1 |
 | Scope | `litkit_review` action=work_sets; `litkit_work_sets` action=create | a work set id, or document ids, a filter, a Bates range |
 | First pass | `jev-first-pass-review` skill; `firstPass` on create | Jev screens first, or the run reads everything |
-| Propose | `litkit_review` action=create | proposalId, estimatedCount, estimate; or requiresApproval with a quote |
+| Optimize | scope counts; `litkit_review` action=list | at least one cheaper path, with its effect; the matter's active runs |
+| Propose | `litkit_review` action=create, with `optimizations_considered` | proposalId, estimatedCount, estimate; or requiresApproval with a quote |
 | Change criteria | criteriaAction=update (new version), then publish | a new version; propose again if the run is pending |
 | Follow | `litkit_review` action=list, status, records | progress, then per-document results |
 | Finish | `litkit_review` action=accept_tags, jobId | a finished run's proposed tags accepted, when the person asks |
@@ -46,15 +47,33 @@ The `litkit` toolset on a matter host. Every call acts for the lawyer on the tur
 3. **Criteria set.** `litkit_review` action=criteria, criteriaAction=create, with a name and one criterion per judgment: `title`, `description` (what counts and what does not, in the lawyer's terms), `tagName` (the tag that criterion writes), and optionally `seedQuery`. Keep the lawyer's numbering in the titles ("Part 11, item 6: REV-NR"). Then publish it (criteriaAction=publish).
 4. **Scope.** Use a work set when the documents are a named batch (`litkit_review` action=work_sets lists them; `litkit_work_sets` action=create makes one from up to 500 ids). Otherwise send `documentIds`, a `filter` (the review grid's filters: custodian, dateFrom, dateTo, query, tagIds, productionIds), or a `batesRange` {start, end}. The scope takes exactly one of these.
 5. **First pass (required).** Load the `jev-first-pass-review` skill and decide whether Jev screens the scope first. If it does, pass `firstPass: {enabled: true, thresholds: {low, priv}}` on create and name the thresholds in the proposal. If it does not, pass `firstPass: {enabled: false}` and give the reason in one sentence. Omit `firstPass` only when the server default (on when Jev is configured) is what you decided.
-6. **Propose.** `litkit_review` action=create with `criteriaSetId`, `scope`, and `tags` (every tag the run may write). Leave `applyTags` off so tags land as reviewable proposals unless the lawyer asked for direct tagging. Set `createMissingTags` only for tags the lawyer named that the matter lacks.
-7. **Price.** If the result has `requiresApproval`, nothing is proposed yet. Give the person the price and the document count and ask whether to proceed. After an explicit yes, and only then, call create again with the same arguments plus `quoteId` and `userConfirmed: true`. If the result says `needsSecondApprover`, a different matter admin must approve the quote in LitKit billing first; say so and wait.
-8. **Report the proposal.** Tell the person in two or three sentences what you proposed: the scope and its document count, the criteria set with its version, the tags, the first pass and its thresholds (or why there is none), and the estimated cost. Say that Launch is on the card in this thread.
-9. **Changes.** When the lawyer changes a criterion, fetch the set (criteriaAction=get), edit that criterion or add the new one, and send the full list with criteriaAction=update and a `changeNote` in the lawyer's words. That saves a new version. Publish it. If the earlier proposal has not launched, propose again so the card carries the new version, and say that the earlier card is superseded. If a run already launched on the old version, say so and ask whether to propose a new run over the same scope.
-10. **Follow the run.** After the person launches, find the job with action=list and note its jobId. Check it with action=status. If it will run past this turn, schedule a check with `cronjob_manage` action=create: a self-contained prompt naming the jobId, the lawyer's user id, and the tags, telling the job to call `litkit_review` action=status, and, when the run is done, to count the results by tag from action=records and send them with `litkit_notify` kind=`review_complete` and that userId. Remove the scheduled job once it has reported.
-11. **Completion.** Report the run in the thread when next asked, or through the notification: documents reviewed, the documents the first pass set aside and the ones it left uncertain, the count under each tag, documents that failed or were skipped, and whether the tags are applied or waiting as proposals. Accept all proposed tags (action=accept_tags) only when the person asks.
+6. **Optimize before you propose.** The person decides at the card, so they need the price and the cheaper paths in front of them when they do. Name at least one concrete optimization and its effect in documents or dollars:
+   - the Jev first pass on or off, and why (step 5);
+   - a narrower scope by date, custodian, or document type, with the count before and after;
+   - leaving out documents an earlier run already tagged under this criteria set;
+   - collapsing duplicates or email threads, where the scope supports it;
+   - a cheaper model tier, when the criteria ask only for responsiveness;
+   - running alongside a run already active on the matter.
+
+   Pass what you weighed as `optimizations_considered` on create: up to five short strings, such as `Jev first pass on: 4,000 topical docs`. If the person says "just run it," skip the suggestions and propose.
+7. **Propose.** First list the matter's runs (action=list) and note any that are active. Parallel runs are fine, so an active run is no reason to wait. Then call `litkit_review` action=create with `criteriaSetId`, `scope`, `tags` (every tag the run may write), and `optimizations_considered`. Prefer one run per criteria set to one giant run, because each run can then be paused, resumed, or proposed again alone. Leave `applyTags` unset: by default the run applies its tags and saves each rationale to the document's notes. Send `applyTags: false` only when the lawyer asked for suggest-only. Set `createMissingTags` only for tags the lawyer named that the matter lacks.
+8. **Price.** If the result has `requiresApproval`, nothing is proposed yet. Give the person the price and the document count and ask whether to proceed. After an explicit yes, and only then, call create again with the same arguments plus `quoteId` and `userConfirmed: true`. If the result says `needsSecondApprover`, a different matter admin must approve the quote in LitKit billing first; say so and wait.
+9. **Report the estimate, then the optimizations, then the card.** Tell the person, in this order:
+   - the cost, as the propose response breaks it out (first pass, full review, total), and the document count;
+   - the optimizations from step 6, each with its effect, and which of them the proposal already uses;
+   - the defaults: tags apply automatically, each rationale goes to the document's notes, and the person can switch to suggest-only on the card (state these; do not ask about them);
+   - any other run active on the matter;
+   - what you proposed: the scope, the criteria set with its version, the tags, and the first pass with its thresholds (or why there is none).
+
+   Then say that Launch is on the card in this thread. If the person takes an optimization, propose again and say that the earlier card is superseded.
+10. **Changes.** When the lawyer changes a criterion, fetch the set (criteriaAction=get), edit that criterion or add the new one, and send the full list with criteriaAction=update and a `changeNote` in the lawyer's words. That saves a new version. Publish it. If the earlier proposal has not launched, propose again so the card carries the new version, and say that the earlier card is superseded. If a run already launched on the old version, say so and ask whether to propose a new run over the same scope.
+11. **Follow the run.** After the person launches, find the job with action=list and note its jobId. Check it with action=status. If it will run past this turn, schedule a check with `cronjob_manage` action=create: a self-contained prompt naming the jobId, the lawyer's user id, and the tags, telling the job to call `litkit_review` action=status, and, when the run is done, to count the results by tag from action=records and send them with `litkit_notify` kind=`review_complete` and that userId. Remove the scheduled job once it has reported.
+12. **Completion.** Report the run in the thread when next asked, or through the notification: documents reviewed, the documents the first pass set aside and the ones it left uncertain, the count under each tag, documents that failed or were skipped, and whether the tags are applied or waiting as proposals. Accept all proposed tags (action=accept_tags) only when the person asks.
 
 ## Pitfalls
 
+- Never review documents by hand in the thread when a run would do. A run is auditable, it resumes after a failure, and it costs less than reading documents into the conversation.
+- Do not set concurrency. The server picks it from the model route: about 16 at a time on-prem, and on OpenRouter it starts at 64, ramps toward 256, and halves on a rate limit. Mention it only if asked.
 - Criteria prose does not route tags. A tag missing from `tags` is never applied, however clearly the criteria name it.
 - An estimate is an estimate. The count is taken again at launch, and the corpus may have grown.
 - Never invent a `quoteId`, and never send `userConfirmed` before the person has said yes to the quoted price.
@@ -65,5 +84,6 @@ The `litkit` toolset on a matter host. Every call acts for the lawyer on the tur
 
 - Each judgment the lawyer asked for has a tag, a criterion, and a place in the run's `tags` list.
 - The first-pass decision was made and stated, with thresholds when Jev screens.
+- Unless the person said "just run it," they heard the cost breakout and at least one optimization with its effect, and create carried `optimizations_considered`.
 - The proposal's count matches the scope's size within reason; a large gap means the scope is wrong.
 - After a criteria change, the pending proposal carries the new version.

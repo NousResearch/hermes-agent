@@ -748,6 +748,7 @@ CRITERION_DISPOSITIONS = ("apply", "propose", "propose_with_ambiguous")
 SCOPE_KINDS = ("workSetId", "documentIds", "filter", "batesRange")
 REVIEW_MAX_CRITERIA = 100
 REVIEW_MAX_TAGS = 25
+REVIEW_MAX_OPTIMIZATIONS = 5
 _SET_ID = re.compile(r"^builtin:[a-z0-9_-]{1,40}$")
 
 
@@ -841,6 +842,19 @@ def _first_pass(value: Any) -> Dict[str, Any]:
     return out
 
 
+def _optimizations(value: Any) -> List[str]:
+    """``optimizationsConsidered``: the short notes Ana weighed before proposing (shown on the Launch card)."""
+    if not isinstance(value, list):
+        raise ValueError("'optimizations_considered' must be a list of short strings")
+    notes = list(dict.fromkeys(str(v).strip() for v in value if str(v).strip()))
+    if len(notes) > REVIEW_MAX_OPTIMIZATIONS:
+        raise ValueError(f"'optimizations_considered' takes at most {REVIEW_MAX_OPTIMIZATIONS} entries")
+    too_long = [n for n in notes if len(n) > 200]
+    if too_long:
+        raise ValueError(f"each optimization is limited to 200 characters: {too_long[0][:40]}...")
+    return notes
+
+
 def _review_create(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Propose a review run. LitKit queues a proposal card in the thread; a person launches it there."""
     body: Dict[str, Any] = {"scope": _review_scope(args.get("scope"))}
@@ -861,6 +875,11 @@ def _review_create(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict
     first_pass = args.get("firstPass", args.get("first_pass"))
     if first_pass is not None:
         body["firstPass"] = _first_pass(first_pass)
+    optimizations = args.get("optimizations_considered", args.get("optimizationsConsidered"))
+    if optimizations is not None:
+        notes = _optimizations(optimizations)
+        if notes:
+            body["optimizationsConsidered"] = notes
     quote_id = str(args.get("quoteId") or "").strip()
     if args.get("userConfirmed") and not quote_id:
         raise ValueError("userConfirmed goes with the quoteId from the price quote; send both after the person's "
@@ -1532,8 +1551,9 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                    "{batesRange:{start, end}}"},
          "tags": {"type": "array", "items": {"type": "string"},
                   "description": "create: every tag name the run may write (only these can be applied)"},
-         "createMissingTags": _B, "applyTags": {"type": "boolean", "description": "true applies tags directly; "
-                                                "default leaves them as proposals"},
+         "createMissingTags": _B, "applyTags": {"type": "boolean", "description": "omit for the server default "
+                                                "(tags apply; the person can pick suggest-only on the card); false "
+                                                "leaves them as proposals"},
          "quoteId": {"type": "string", "description": "billing phase 2: the quote id from requiresApproval"},
          "userConfirmed": {"type": "boolean", "description": "billing phase 2: true only after the person said yes "
                            "to the quoted price"},
@@ -1543,7 +1563,10 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                        "configured). Decide it first: skill jev-first-pass-review",
                        "properties": {"enabled": _B, "thresholds": {"type": "object", "properties": {
                            "low": {"type": "number"}, "priv": {"type": "number"}}}},
-                       "required": ["enabled"]}}),
+                       "required": ["enabled"]},
+         "optimizations_considered": {"type": "array", "items": {"type": "string"}, "maxItems": 5,
+                                      "description": "create: up to 5 short notes (200 chars each) on the cost "
+                                      "optimizations you weighed, e.g. 'Jev first pass on: 4,000 topical docs'"}}),
     "litkit_jev": _jev.SCHEMA,
     "litkit_ingest": _schema(
         "litkit_ingest", "Production and ingest status (productions, production, progress, exceptions, ingests, "

@@ -5154,6 +5154,7 @@ export const zh = defineLocale({
     savingImage: '正在保存图片',
     zoomIn: '放大',
     zoomOut: '缩小',
+    warmView: 'Warm view',
     resetZoom: '重置缩放',
     imagePreviewFailed: '图片预览失败',
     imageAttach: '附加图片',

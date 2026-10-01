@@ -234,6 +234,12 @@ async def test_require_mention_m_mentions_other_user_ignored(monkeypatch):
 
 
 @pytest.mark.parametrize(("body", "mentions", "formatted_body"), [
+    ("ping @kelly:hermes", None, None),
+    ("join #hermes", None, None),
+    ("join #hermes:example.org", None, None),
+    ("ping @kelly:hermes", {"user_ids": ["@bob:example.org"]}, None),
+    ("join #hermes", {"user_ids": ["@bob:example.org"]}, None),
+    ("join #hermes:example.org", {"user_ids": ["@bob:example.org"]}, None),
     ("hey @hermes-kelly:example.org", None, None),
     ("hey @hermes+kelly:example.org", None, None),
     ("hey @hermes/kelly:example.org", None, None),
@@ -282,6 +288,35 @@ async def test_legacy_mention_forms_still_dispatch(body):
     await adapter._on_room_message(event)
 
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.parametrize("localpart", ["hermes", "hermes.bot", "hermes+bot"])
+@pytest.mark.parametrize("mentioned_users", [None, ["@bob:example.org"]])
+@pytest.mark.asyncio
+async def test_localpart_mentions_respect_identifier_boundaries(localpart, mentioned_users):
+    adapter = _make_adapter()
+    adapter._user_id = f"@{localpart}:example.org"
+    bare_text = f"{localpart}, please help"
+    cases = [
+        (f"ping @kelly:{localpart}", None),
+        (f"join #{localpart}", None),
+        (f"join #{localpart}:example.org", None),
+        (f"@{localpart} please help", "please help"),
+        (f"Question:@{localpart}, please help", "Question:, please help"),
+        (f"@{localpart}:example.org. please help", ". please help"),
+        (bare_text, bare_text if not mentioned_users else None),
+        (f"({localpart}), please help", f"({localpart}), please help" if not mentioned_users else None),
+    ]
+
+    for index, (body, _) in enumerate(cases):
+        await adapter._on_room_message(_make_event(
+            body, event_id=f"$boundary-{index}", mention_user_ids=mentioned_users))
+
+    observed = [(call.args[0].message_id, call.args[0].text)
+                for call in adapter.handle_message.await_args_list]
+    expected = [(f"$boundary-{index}", text)
+                for index, (_, text) in enumerate(cases) if text is not None]
+    assert observed == expected
 
 
 @pytest.mark.parametrize("mentions", [{}, {"user_ids": []}])

@@ -2942,9 +2942,14 @@ class MatrixAdapter(BasePlatformAdapter):
         localpart = self._user_localpart()
         if not localpart:
             return False
-        local_mention = (_MATRIX_MENTION_LOCALPART_START + (r"@?" if bare_localpart else r"@")
-                         + re.escape(localpart) + _MATRIX_MENTION_LOCALPART_END)
-        return bool(re.search(local_mention, body, re.IGNORECASE))
+        mention_end = re.escape(localpart) + _MATRIX_MENTION_LOCALPART_END
+        local_mention = _MATRIX_MENTION_LOCALPART_START + r"@" + mention_end
+        if re.search(local_mention, body, re.IGNORECASE):
+            return True
+        if not bare_localpart:
+            return False
+        bare_mention = _MATRIX_MENTION_LOCALPART_START + r"(?<![:#])" + mention_end
+        return bool(re.search(bare_mention, body, re.IGNORECASE))
 
     def _voice_may_park(self, room_id: str, body: str, content: dict, relates_to: dict,
                         mention_claimed: bool) -> bool:

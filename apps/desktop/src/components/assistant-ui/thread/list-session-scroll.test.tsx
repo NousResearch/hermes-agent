@@ -441,6 +441,24 @@ describe('list session-scroll restore', () => {
     }
   })
 
+  it('pins to the exact bottom when a remembered offset sits within one viewport of the live tail', async () => {
+    // A small offset is follow-drift or a touch-scroll, not a deliberate
+    // reading position — restoring it reads as "opened a hair above the bottom".
+    saveThreadScrollPosition('near', { fromBottom: 260, kind: 'offset' })
+
+    const { container } = render(<ScrollHarness messages={sessionMessages('near')} sessionKey="near" />)
+    const vp = viewportEl(container)
+
+    await settleScroll()
+
+    expect(vp.scrollTop).toBeGreaterThanOrEqual(SCROLL_H - CLIENT_H - 1)
+
+    // The switch-away record self-heals: a pinned near-bottom open is filed as
+    // `bottom`, so the next open no longer carries the tiny offset.
+    act(() => window.dispatchEvent(new Event('beforeunload')))
+    expect(getThreadScrollPosition('near')).toEqual({ kind: 'bottom' })
+  })
+
   it.each([0, 800])('restores a kept-alive pane after hidden layout drift (offset %i)', async offset => {
     if (offset) {
       saveThreadScrollPosition('a', { fromBottom: offset, kind: 'offset' })

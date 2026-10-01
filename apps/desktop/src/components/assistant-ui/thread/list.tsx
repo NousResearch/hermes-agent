@@ -35,6 +35,7 @@ import {
   resetPublishedThreadScroll,
   saveThreadScrollPosition,
   shouldReapplyFrozenThreadScrollOffset,
+  snapNearBottomScrollOffset,
   THREAD_SCROLL_BOTTOM,
   type ThreadScrollState,
   threadScrollStateFromMetrics,
@@ -1006,7 +1007,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const remembered = sessionKey ? getThreadScrollPosition(sessionKey, storageKey) : undefined
-    let target = remembered ?? THREAD_SCROLL_BOTTOM
+    // A small remembered offset (within one viewport of the live tail) is
+    // drift or a touch-scroll, not a reading position — pin the exact bottom.
+    let target = remembered ? snapNearBottomScrollOffset(remembered, el.clientHeight) : THREAD_SCROLL_BOTTOM
 
     // The previous session's parting state must not leak into this one: from
     // here every scroll/RO event describes the restored session.

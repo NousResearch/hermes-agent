@@ -349,7 +349,16 @@ class CLILoopsMixin:
 
     def _queue_remove(self, rest: str) -> None:
         from cli import _cprint
-        idx = int(rest)
+        # ``_cmd_queue`` routes a bare ``/queue rm`` here as management (its
+        # ``not rest`` fallback), and an index verb with trailing words
+        # (``rm 2 extra``) as management too, so ``rest`` is not always a bare
+        # integer. Parse the leading token instead of trusting the whole string,
+        # or int() raises out of the slash handler and kills the TUI.
+        bits = rest.split()
+        if len(bits) != 1 or not bits[0].isdigit():
+            _cprint(f"  {t('cli.queue.usage_remove')}")
+            return
+        idx = int(bits[0])
         removed: list = []
         before, _ = self._mutate_pending_input(
             lambda items: (removed.append(items.pop(idx - 1)) or items) if 1 <= idx <= len(items) else items)

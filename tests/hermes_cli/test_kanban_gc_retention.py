@@ -1,7 +1,9 @@
 """Retention bounds for ``kanban gc``: a negative window builds a future cutoff
 that matches every row; zero disables the sweep rather than deleting all."""
 import argparse
+import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -150,17 +152,28 @@ def _shared_scratch(conn) -> tuple[str, str, Path]:
     return archived, live, shared
 
 
+def _deferred_reasons(conn, task_id: str) -> list:
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND kind=? ORDER BY id",
+        (task_id, "workspace_cleanup_deferred_shared"),
+    ).fetchall()
+    return [json.loads(r["payload"])["reason"] for r in rows]
+
+
 def test_cmd_gc_keeps_a_scratch_dir_a_live_task_still_uses(board):
+    from hermes_cli import kanban_db_workspace as kbw
+
     with kbc.connect_closing() as conn:
         archived, _live, shared = _shared_scratch(conn)
     assert kanban_ops._cmd_gc(_args()) == 0
     assert (shared / "note.txt").read_text(encoding="utf-8") == "still needed"
     with kbc.connect_closing() as conn:
-        kinds = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id=? AND kind=?",
-            (archived, "workspace_cleanup_deferred_shared"),
-        ).fetchall()
-    assert kinds
+        assert _deferred_reasons(conn, archived) == ["shared"]
+    # Once the dir is gone there is nothing to defer: no scan, no new event.
+    shutil.rmtree(shared)
+    with kbc.connect_closing() as conn:
+        kbw._cleanup_workspace(conn, archived)
+        assert _deferred_reasons(conn, archived) == ["shared"]
 
 
 def test_cleanup_workspace_keeps_scratch_when_other_boards_cannot_be_listed(board, monkeypatch):
@@ -181,6 +194,21 @@ def test_cleanup_workspace_keeps_scratch_when_other_boards_cannot_be_listed(boar
                 "UPDATE tasks SET status=?, workspace_kind='scratch', workspace_path=? WHERE id=?",
                 (status, str(shared), task_id),
             )
+    # Real scan: the other board's live task holds the dir, under a different
+    # id and under the very id being cleaned up (boards mint ids independently).
+    with kbc.connect_closing() as conn:
+        kbw._cleanup_workspace(conn, archived)
+    assert (shared / "note.txt").exists()
+    with kbc.connect_closing(board="other") as other, kb.write_txn(other):
+        other.execute("UPDATE tasks SET id=? WHERE id=?", (archived, live))
+    with kbc.connect_closing() as conn:
+        kbw._cleanup_workspace(conn, archived)
+        assert _deferred_reasons(conn, archived) == ["shared", "shared"]
+    assert (shared / "note.txt").exists()
+
+    # Nobody holds it any more, but the boards cannot be listed: fail closed.
+    with kbc.connect_closing(board="other") as other, kb.write_txn(other):
+        other.execute("UPDATE tasks SET status='done' WHERE id=?", (archived,))
     real_iterdir = Path.iterdir
 
     def iterdir(self):
@@ -191,4 +219,5 @@ def test_cleanup_workspace_keeps_scratch_when_other_boards_cannot_be_listed(boar
     monkeypatch.setattr(Path, "iterdir", iterdir)
     with kbc.connect_closing() as conn:
         kbw._cleanup_workspace(conn, archived)
+        assert _deferred_reasons(conn, archived) == ["shared", "shared", "unknown"]
     assert (shared / "note.txt").read_text(encoding="utf-8") == "still needed"

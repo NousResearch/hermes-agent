@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import subprocess
 import sys
 from typing import NoReturn, Optional
 
@@ -105,6 +106,26 @@ def _profile_status(args):
     print()
 
 
+def _profile_gateway_scope(profile) -> str:
+    """Return the Linux service-manager scope that owns a profile's gateway, if any."""
+    if sys.platform != "linux":
+        return "—"
+    unit = "hermes-gateway" if profile.is_default else f"hermes-gateway-{profile.name}"
+    for scope, prefix in (("user", ["systemctl", "--user"]), ("system", ["systemctl"])):
+        try:
+            result = subprocess.run(
+                prefix + ["list-units", "--all", f"{unit}.service", "--no-legend", "--plain", "--no-pager"],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if fields and fields[0] == f"{unit}.service":
+                return scope
+    return "—"
+
+
 def _profile_list(args):
     from hermes_cli.profiles import format_profile_label, get_active_profile_name, list_profiles
     profiles = list_profiles()
@@ -112,16 +133,20 @@ def _profile_list(args):
     if not profiles:
         print("No profiles found.")
         return
-    print(f"\n {'Profile':<16} {'Model':<28} {'Gateway':<12} {'Alias':<12} {'Distribution'}")
-    print(f" {'─' * 15}    {'─' * 27}    {'─' * 11}    {'─' * 11}    {'─' * 20}")
+    headers = ("Profile", "Model", "Gateway", "Scope", "Alias", "Distribution")
+    widths = (16, 28, 12, 8, 12, 20)
+    print("\n " + "  ".join(f"{header:<{width}}" for header, width in zip(headers, widths)).rstrip())
+    print(" " + "  ".join("─" * width for width in widths))
     for p in profiles:
         marker = " ◆" if _is_active(p, active) else "  "
         name = format_profile_label(p.name, p.display_name)
-        model = (p.model or "—")[:26]
+        model = (p.model or "—")[:widths[1]]
         gw = "running" if p.gateway_running else "stopped"
+        scope = _profile_gateway_scope(p)
         alias = (p.alias_name or p.name) if p.alias_path and not p.is_default else "—"
-        dist = f"{p.distribution_name}@{p.distribution_version or '?'}"[:30] if p.distribution_name else "—"
-        print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
+        dist = f"{p.distribution_name}@{p.distribution_version or '?'}"[:widths[5]] if p.distribution_name else "—"
+        values = (name, model, gw, scope, alias, dist)
+        print(marker + "  ".join(f"{value:<{width}}" for value, width in zip(values, widths)).rstrip())
     print()
     for line in _shared_credential_warnings(profiles):
         print(line)

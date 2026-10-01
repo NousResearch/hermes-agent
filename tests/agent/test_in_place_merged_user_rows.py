@@ -22,10 +22,15 @@ def _call(call_id):
 
 
 _UNANSWERED = ("user", "U12x this prompt never got a reply", {})
+_MERGED = "\n\n".join([_UNANSWERED[1], "U13 please continue with the next step"])
+_REPEATED = [("user", "U12x continue", {}), ("assistant", "U12x ok", {})] * 2
+# rows the killed turn left -> the live rows that mention them afterwards
 KILLED_TURN_LEFT = {
-    "prompt": [_UNANSWERED],  # #125564: user;user, the unanswered prompt must not be sent twice
-    "tool_call": [_UNANSWERED, _call("call_killed")],  # #129123: the dropped tool row is accounted for
-    "benign": [],  # plain alternating history: compaction is unchanged
+    "prompt": ([_UNANSWERED], [_MERGED]),  # #125564: user;user, the unanswered prompt must not be sent twice
+    "tool_call": ([_UNANSWERED, _call("call_killed")], [_MERGED]),  # #129123: the dropped tool row is accounted for
+    # Identical durable rows on an id-less reload cannot be named: the watermark path, never a re-clone behind U15.
+    "repeated": (_REPEATED, [c for _, c, _ in _REPEATED]),
+    "benign": ([], []),  # plain alternating history: compaction is unchanged
 }
 
 
@@ -36,7 +41,8 @@ def test_compaction_over_an_unanswered_prompt_keeps_one_copy_of_every_row(sessio
     cli = SimpleNamespace(conversation_history=[])
     for n in range(1, 13):
         _turn(db, agent, cli, surface, n, 5_000)
-    for role, content, fields in KILLED_TURN_LEFT[left]:
+    rows, expected = KILLED_TURN_LEFT[left]
+    for role, content, fields in rows:
         db.append_message("sid", role, content, **fields)
     if surface == "cli":  # ACP and the classic CLI restore start from the repaired reload
         cli.conversation_history = db.get_messages_as_conversation("sid", repair_alternation=True)
@@ -50,14 +56,12 @@ def test_compaction_over_an_unanswered_prompt_keeps_one_copy_of_every_row(sessio
     assert getattr(agent, "_last_compaction_in_place", None) is True
     assert {f"A{n}" for n in range(1, 16)} <= _replies_displayed(db)
     live = [m["content"] for m in db.get_messages_as_conversation("sid") if isinstance(m.get("content"), str)]
-    # The prompts the killed turn left are in exactly one live row, the merged carried copy.
-    unanswered = [c for role, c, _ in KILLED_TURN_LEFT[left] if role == "user"]
-    merged = "\n\n".join([*unanswered, "U13 please continue with the next step"])
-    assert [c for c in live if "U12x" in c or "U12y" in c] == ([merged] if unanswered else [])
+    # The rows the killed turn left are live exactly once (an unanswered prompt only as the merged carried copy).
+    assert [c for c in live if "U12x" in c] == expected
     recalled = [row["content"] for row in db._conn.execute(
         "SELECT content FROM messages WHERE session_id = 'sid' AND (active = 1 OR compacted = 1)").fetchall()]
     carried = live[next(i for i, c in enumerate(live) if "Numbered steps" in c) + 1:]
-    assert [recalled.count(content) for content in carried] == [1] * len(carried)
+    assert [recalled.count(content) for content in carried] == [carried.count(content) for content in carried]
     # No turn here uses a tool, so a live tool row is the killed turn's, appended behind the running turn.
     assert db._conn.execute(
         "SELECT COUNT(*) FROM messages WHERE session_id = 'sid' AND active = 1"

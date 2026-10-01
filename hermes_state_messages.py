@@ -1085,12 +1085,15 @@ class SessionMessagesMixin:
         self, conn, session_id: str, covered_ids: Optional[List[int]],
         unresolved_held: Optional[List[Dict[str, Any]]], watermark: Optional[int] = None,
     ) -> Optional[Tuple[List[int], Set[int]]]:
-        """``(ids safe to archive as summarized, ids merged into another held dict)``.
+        """``(ids safe to archive as summarized, ids merged into another held dict)``, or None when
+        a durable held row cannot be named.
 
-        Only an absent named-coverage request permits watermark archival. A durable
-        dict whose provenance cannot be resolved uniquely contributes no ids; its
-        originals stay live, along with every unseen row, rather than expanding
-        coverage to a watermark that cannot prove what the compressor held.
+        An unresolved dict that still carries the persist marker was loaded from the DB.
+        Failing to name it means the watermark path, which archives the rows the compressor
+        saw, including ones whose ids were stripped. A marker-less miss is an unpersisted
+        turn: it names nothing, and it is not a reason to abandon the ids we do have.
+        Several active rows with the same content are ambiguous, so that also abandons,
+        and so does a merged dict whose run cannot be named.
         The second set holds only merges the caller could not count: a dict that lists its
         own ``_absorbed_row_ids`` is already counted in ``tail_count``.
         """
@@ -1110,7 +1113,7 @@ class SessionMessagesMixin:
                 # The dict's own row, recorded before a fold rewrote its text, is its own tail slot.
                 matches = self._matching_retired_ids(conn, session_id, message, watermark)
                 if len(matches) != 1:
-                    continue
+                    return None
                 proved.extend(matches)
                 if not message.get(OWN_ROW):
                     merged_away.update(matches)
@@ -1124,11 +1127,11 @@ class SessionMessagesMixin:
             # resolved first, and a stamped dict that names none is still durable, never an unpersisted turn.
             run = self._merged_user_run(conn, session_id, message, watermark)
             if message.get(MERGED_DURABLE_ROWS) and not run:
-                continue
+                return None
             matches = [] if run else self._matching_active_ids(conn, session_id, message)
             if len(matches) > 1 or (
                     message.get(_DB_PERSISTED_MARKER) and len(matches) != 1 and not run):
-                continue
+                return None
             proved.extend(matches or run)
             merged_away.update(set(run[1:]) - set(message.get("_absorbed_row_ids") or ()))
         return list(dict.fromkeys(proved)), merged_away

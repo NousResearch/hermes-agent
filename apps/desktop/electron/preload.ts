@@ -62,6 +62,30 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:wake-indicator:state', listener)
     }
   },
+  scanline: {
+    getState: () => ipcRenderer.invoke('hermes:scanline:get'),
+    setState: state => ipcRenderer.send('hermes:scanline:set', state),
+    onState: callback => {
+      const listener = (_event, state) => callback(state)
+      ipcRenderer.on('hermes:scanline:state', listener)
+
+      return () => ipcRenderer.removeListener('hermes:scanline:state', listener)
+    }
+  },
+  askChoice: {
+    // The dialog renderer receives the request to display (pushed from main).
+    onRequest: callback => {
+      const listener = (_event, request) => callback(request)
+      ipcRenderer.on('hermes:ask-choice:request', listener)
+
+      return () => ipcRenderer.removeListener('hermes:ask-choice:request', listener)
+    },
+    // The user's decision (a button click or a number key) — main persists it
+    // for the `ask_choice` tool.
+    respond: payload => ipcRenderer.send('hermes:ask-choice:respond', payload),
+    // Esc / dismiss — main records a cancel so the tool reports it accurately.
+    cancel: payload => ipcRenderer.send('hermes:ask-choice:cancel', payload)
+  },
   chatOnboarding: {
     grow: request => ipcRenderer.send('hermes:chat-onboarding:grow', request),
     soloBoot: () => ipcRenderer.send('hermes:chat-onboarding:solo-boot')
@@ -174,6 +198,66 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:hud:game-overlay', listener)
     }
   },
+  // Kirsin Agent Window: the persistent always-on-top floating chat, summoned by
+  // the global shortcut (main owns the OS chord + the window; see main's
+  // registerKirsinShortcut / registerKirsinIpc). A full app renderer that adopts
+  // the `kirsin` backend at boot — the HUD surface MINUS the transient-band
+  // machinery: no frost (the panel is always solid), no ignore-mouse /
+  // click-through (a persistent chat never fades), no cursor / game-overlay
+  // feeds. What remains is exactly what a draggable, resizable, closable
+  // floating window needs.
+  kirsin: {
+    open: () => ipcRenderer.invoke('hermes:kirsin:open'),
+    close: () => ipcRenderer.invoke('hermes:kirsin:close'),
+    beginMove: () => ipcRenderer.send('hermes:kirsin:begin-move'),
+    endMove: () => ipcRenderer.send('hermes:kirsin:end-move'),
+    moveBy: delta => ipcRenderer.send('hermes:kirsin:move-by', delta),
+    setBounds: bounds => ipcRenderer.send('hermes:kirsin:set-bounds', bounds),
+    resetLayout: () => ipcRenderer.invoke('hermes:kirsin:reset-layout'),
+    // A dictated transcript from the listen overlay (mode: 'dictate') lands
+    // here as plain text — the Kirsin window submits it through its own
+    // normal prompt path, exactly like a typed message. Never fires unless
+    // the user explicitly picked Dictate for that capture.
+    onDictate: callback => {
+      const listener = (_event, text) => callback(text)
+      ipcRenderer.on('hermes:listen-overlay:dictate', listener)
+
+      return () => ipcRenderer.removeListener('hermes:listen-overlay:dictate', listener)
+    }
+  },
+  // Listen overlay: the global Ctrl+Shift+L live-transcription HUD. Main owns
+  // the OS shortcut, the window and the pc-audio-monitor engine child process
+  // (electron/listen-overlay.ts); the overlay window only renders state pushed
+  // over `state` and asks to be dismissed via `close` (which also stops the
+  // engine). The transcript stays in that window — main never hands it to
+  // any other renderer or session (see the module comment in listen-overlay.ts).
+  listenOverlay: {
+    close: () => ipcRenderer.send('hermes:listen-overlay:close'),
+    getState: () => ipcRenderer.invoke('hermes:listen-overlay:get-state'),
+    beginMove: () => ipcRenderer.send('hermes:listen-overlay:begin-move'),
+    endMove: () => ipcRenderer.send('hermes:listen-overlay:end-move'),
+    moveBy: delta => ipcRenderer.send('hermes:listen-overlay:move-by', delta),
+    // Picker: choose which app's own audio to capture next (0 = system-wide).
+    selectTarget: pid => ipcRenderer.send('hermes:listen-overlay:select-target', pid),
+    // Device picker: 'auto' | 'gpu' | 'cpu' — takes effect on the next capture.
+    selectDevice: pref => ipcRenderer.send('hermes:listen-overlay:select-device', pref),
+    // Mode picker: 'subtitle' (default) | 'dictate' — takes effect on the
+    // next capture's final pass. Never persisted (see ListenMode's comment
+    // in electron/listen-overlay.ts).
+    selectMode: mode => ipcRenderer.send('hermes:listen-overlay:select-mode', mode),
+    // Explicit Start control — same effect as the shortcut while idle.
+    start: () => ipcRenderer.send('hermes:listen-overlay:start'),
+    // Lets ANOTHER window (the Kirsin mic button) drive the same toggle the
+    // global Ctrl+Shift+L shortcut does.
+    toggle: () => ipcRenderer.send('hermes:listen-overlay:toggle'),
+    // Overlay window subscribes to state pushes (caption/status/lang/etc).
+    onState: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:listen-overlay:state', listener)
+
+      return () => ipcRenderer.removeListener('hermes:listen-overlay:state', listener)
+    }
+  },
   // macOS native screenshot gesture; captures require a main-issued request.
   screenshot: process.platform === 'darwin' ? {
     getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
@@ -189,13 +273,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     onRequest: callback => {
       const channel = 'hermes:screenshot:request'
       const listener = (_event, requestId) => callback(requestId)
+
       if (ipcRenderer.listenerCount(channel) === 0) {
         ipcRenderer.send('hermes:screenshot:subscribe', true)
       }
+
       ipcRenderer.on(channel, listener)
 
       return () => {
         ipcRenderer.removeListener(channel, listener)
+
         if (ipcRenderer.listenerCount(channel) === 0) {
           ipcRenderer.send('hermes:screenshot:subscribe', false)
         }

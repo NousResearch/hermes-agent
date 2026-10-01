@@ -92,7 +92,7 @@ import {
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
-import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isKirsinWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
@@ -1244,12 +1244,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const api = useMemo<WiringApi>(
     () => ({
+      actions,
       chatRoutes: chatRoutesNode,
       sidebar: sidebarNode,
       statusbar: statusbarNode,
       terminal: terminalNode
     }),
-    [chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
+    [actions, chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
   )
 
   // The REAL titlebar tool clusters (sidebar/flip toggles, haptics, keybinds,
@@ -1307,7 +1308,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         {/* HUD and the popped-out Browser have no titlebar to hang these off —
             the clusters are `fixed`, so without this they'd float over the
             surface as orphaned buttons. */}
-        {!isHudWindow() && !isBrowserWindow() && (
+        {!isHudWindow() && !isBrowserWindow() && !isKirsinWindow() && (
           <TitlebarControls
             leftTools={leftTitlebarTools}
             onOpenSettings={() => navigate(SETTINGS_ROUTE)}
@@ -1458,16 +1459,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {/* Petdex floating mascot — renders nothing unless installed + enabled.
           Never in the HUD: that window is the chat bar and nothing else. */}
-      {!isHudWindow() && !isBrowserWindow() && <FloatingPet />}
+      {!isHudWindow() && !isBrowserWindow() && !isKirsinWindow() && <FloatingPet />}
 
       {/* In-app tips. Renders nothing until the app is quiet and has something
           to point at, and nothing at all once they're off or all retired. The
           HUD and browser windows have none of the surfaces a tip talks about. */}
-      {!isHudWindow() && !isBrowserWindow() && <TipHost />}
+      {!isHudWindow() && !isBrowserWindow() && !isKirsinWindow() && <TipHost />}
 
       {/* Single persistent xterm host chasing the terminal pane's slot rect.
           The HUD has no terminal pane, so it has nothing to chase. */}
-      {!isHudWindow() && !isBrowserWindow() && (
+      {!isHudWindow() && !isBrowserWindow() && !isKirsinWindow() && (
         <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
       )}
     </ContribWiringContext.Provider>

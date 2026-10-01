@@ -3894,4 +3894,31 @@ export interface Translations {
       toggle: (open: boolean) => string
     }
   }
+
+  // Kirsin Agent Window — the pinned floating copilot shell.
+  kirsin: {
+    sessions: string
+    newSession: string
+    loading: string
+    noSessions: string
+    // PIN toggle (Phase 8) — the Kirsin-window end. (The Quick Entry end is an
+    // intentionally English-only capture surface — no I18nProvider there — so it
+    // keeps a hardcoded label and has no key here.)
+    pinClose: string
+    collapse: string
+    expand: string
+    // Orb morph (Phase 9) — the header button that shrinks the window to the
+    // glowing circle, and the orb's own controls: Stop (only while a turn runs)
+    // and Expand (reopens the chat — no more "click the dot to reopen").
+    orbCollapse: string
+    orbExpand: string
+    orbStop: string
+    close: string
+    // Compact-strip turn status (the pulsing dot line).
+    thinking: string
+    ready: string
+    // Mic button (dictate-to-Kirsin integration): opens/advances the SAME
+    // listen overlay Ctrl+Shift+L drives.
+    listenToggle: string
+  }
 }

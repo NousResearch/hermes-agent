@@ -76,7 +76,7 @@ import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
-import { isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isBrowserWindow, isHudWindow, isKirsinWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
@@ -92,6 +92,7 @@ import {
 } from '../chat/session-tile'
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
+import { KirsinShell } from '../kirsin/kirsin-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
 
@@ -426,11 +427,11 @@ discoverBundledPlugins()
 watchContributedPanes()
 
 // Session + route (page) tiles: persisted splits register panes docked beside
-// main. A popped-out Browser and the HUD have no layout tree — registering
-// tiles there would still run, and preview-tile watching would try to dock
-// into a tree this window never renders (and, in the HUD, paint a webview
-// into the transparent overlay).
-if (!isBrowserWindow() && !isHudWindow()) {
+// main. A popped-out Browser, the HUD, and the Kirsin window have no layout
+// tree — registering tiles there would still run, and preview-tile watching
+// would try to dock into a tree this window never renders (and, in the HUD and
+// Kirsin, paint a webview into the transparent overlay).
+if (!isBrowserWindow() && !isHudWindow() && !isKirsinWindow()) {
   watchSessionTiles()
   startUnrestoredTileTitleBackfill()
   watchRouteTiles()
@@ -781,6 +782,19 @@ export function ContribController() {
       <ContribWiring>
         <AppContextMenu />
         <HudShell />
+      </ContribWiring>
+    )
+  }
+
+  // Kirsin mode is the same idea as HUD — the SAME app with a different shell —
+  // but for a persistent, always-on-top floating panel pinned to the `kirsin`
+  // profile instead of the auto-hiding HUD band. The composer and transcript are
+  // the real ones (see HudShell's rationale); only the frame differs.
+  if (isKirsinWindow()) {
+    return (
+      <ContribWiring>
+        <AppContextMenu />
+        <KirsinShell />
       </ContribWiring>
     )
   }

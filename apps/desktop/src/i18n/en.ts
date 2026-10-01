@@ -4579,5 +4579,22 @@ export const en: Translations = {
       description: 'Displays the mobile sidebar.',
       toggle: open => `${open ? 'Show' : 'Hide'} sidebar`
     }
+  },
+
+  kirsin: {
+    sessions: 'Sessions',
+    newSession: 'New session',
+    loading: 'Loading sessions…',
+    noSessions: 'No sessions yet',
+    pinClose: 'Unpin (close the Kirsin window)',
+    collapse: 'Collapse to pill',
+    expand: 'Expand chat',
+    orbCollapse: 'Morph to orb',
+    orbExpand: 'Expand Kirsin',
+    orbStop: 'Stop',
+    close: 'Close',
+    thinking: 'Thinking…',
+    ready: 'Ready',
+    listenToggle: 'Listen to PC audio (Ctrl+Shift+L)'
   }
 }

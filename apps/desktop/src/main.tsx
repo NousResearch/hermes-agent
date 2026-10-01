@@ -56,7 +56,7 @@ if (winParam === 'hud') {
 // window) and `browser` are ordinary opaque windows and are deliberately not
 // in here. index.html's pre-paint script skips exactly this list — keep the
 // two in step.
-const TRANSPARENT_WINDOWS = new Set(['hud', 'overlay', 'quick', 'wake', 'intro'])
+const TRANSPARENT_WINDOWS = new Set(['hud', 'overlay', 'quick', 'scanline', 'wake', 'intro', 'listen', 'askchoice'])
 
 // Each transparent root used to force its host layers see-through when it
 // MOUNTED. That is far too late: `styles.css` above paints the theme's opaque
@@ -74,8 +74,14 @@ if (winParam && TRANSPARENT_WINDOWS.has(winParam)) {
 
 if (winParam === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
+} else if (winParam === 'listen') {
+  void import('./app/listen-overlay/overlay-root').then(({ mountListenOverlay }) => mountListenOverlay())
 } else if (winParam === 'quick') {
   void import('./app/quick-entry/quick-entry-root').then(({ mountQuickEntry }) => mountQuickEntry())
+} else if (winParam === 'scanline') {
+  void import('./app/scanline-overlay/scanline-root').then(({ mountScanlineOverlay }) => mountScanlineOverlay())
+} else if (winParam === 'askchoice') {
+  void import('./app/ask-choice/ask-choice-root').then(({ mountAskChoice }) => mountAskChoice())
 } else if (winParam === 'wake') {
   void import('./app/wake-indicator/wake-indicator-root').then(({ mountWakeIndicator }) => mountWakeIndicator())
 } else if (winParam === 'intro') {

@@ -40,6 +40,8 @@ import {
   withRetry
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import { resolveAskChoiceAnswerPath, resolveAskChoiceRequestPath } from './ask-choice'
+import { createAskChoiceWindowController } from './ask-choice-window'
 import {
   stopBackendChild as stopBackendChildImpl,
   stopBackendTreesForUpdate,
@@ -249,8 +251,22 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
+import {
+  applyKirsinResetBounds,
+  defaultKirsinBounds,
+  KIRSIN_HEIGHT,
+  KIRSIN_MIN_HEIGHT,
+  KIRSIN_MIN_WIDTH,
+  KIRSIN_WIDTH
+} from './kirsin-geometry'
+import { registerKirsinIpc } from './kirsin-ipc'
+import { buildKirsinWindowUrl } from './kirsin-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
+import {
+  createListenOverlayWindowController,
+  sanitizeListenDevicePreference
+} from './listen-overlay'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -375,6 +391,8 @@ import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
+import { resolveScanlineScopePath } from './scanline'
+import { createScanlineWindowController } from './scanline-window'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -10189,9 +10207,11 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
 })
+
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
@@ -12477,6 +12497,7 @@ function startPoolIdleReaper() {
         const retiring = entry.process
           ? poolRetirer.retireIdle(profile, poolIdleMs())
           : stopPoolBackend(profile)
+
         void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
       }
     }
@@ -12764,6 +12785,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   const startFailed = new Promise((_resolve, reject) => {
     rejectStart = reject
   })
+
   // Exit/error can now arrive while the ownership claim is still pending.
   startFailed.catch(() => {})
 
@@ -12799,6 +12821,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     describeOutputTail: () => outputTail.describe(),
     readyFile
   })
+
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
@@ -12881,10 +12904,12 @@ const poolStopper = createPoolStopper({
 
 function stopPoolBackend(profile: string): Promise<void> {
   const entry = backendPool.get(profile)
+
   const stopping = releaseLocalBackendSlotAfterExit(
     () => releaseLocalBackendSlot(entry),
     () => poolStopper.stop(profile)
   )
+
   // Fire-and-forget callers still need diagnostics; awaiters receive the
   // rejection, while physical ownership and the exit finalizer remain live.
   void stopping.catch(error => {
@@ -12915,6 +12940,7 @@ const poolRetirer = createPoolRetirer({
   onRetiring: broadcastPoolBackendRetiring,
   log: rememberLog
 })
+
 localBackendLifecycle.signal.addEventListener('abort', poolRetirer.dispose, { once: true })
 
 async function teardownPoolBackendAndWait(profile) {
@@ -13047,6 +13073,7 @@ function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error =
     if (primaryExitRecovery.isCrashLooping()) {
       const message =
         'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+
       rememberLog(`[supervisor] ${message}`)
       sendBackendExit({ code, signal, error: message })
 
@@ -13864,6 +13891,7 @@ function createInstanceWindow(
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
     { connectionId: null, profile: primaryProfileKey() }
   )
+
   validateDesktopProfileRoute(route)
   const icon = getAppIconPath()
 
@@ -13947,6 +13975,35 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
 })
 
+// A full-screen, click-through "reading the display" scanline sweep that runs
+// while a `computer_use` capture tool call is in flight. Unlike the wake cue
+// it is cross-platform (the user's OS is Windows) and spans every display.
+const scanlineController = createScanlineWindowController({
+  devServer: DEV_SERVER,
+  loadWindowUrl,
+  log: rememberLog,
+  preloadPath: PRELOAD_PATH,
+  rendererIndex: resolveRendererIndex,
+  scopePath: resolveScanlineScopePath(HERMES_HOME),
+  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('scanline'))
+})
+
+// A small always-on-top dialog (on the primary display) that asks a short
+// multiple-choice question in its OWN window instead of the chat, driven by the
+// `ask_choice` tool via a request/response file pair (same bridge as the
+// scanline scope file). Unlike the scanline it is a focusable, clickable panel —
+// the user answers by clicking a button (or pressing Esc / a number key).
+const askChoiceController = createAskChoiceWindowController({
+  devServer: DEV_SERVER,
+  loadWindowUrl,
+  log: rememberLog,
+  preloadPath: PRELOAD_PATH,
+  rendererIndex: resolveRendererIndex,
+  requestPath: resolveAskChoiceRequestPath(HERMES_HOME),
+  answerPath: resolveAskChoiceAnswerPath(HERMES_HOME),
+  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('scanline'))
+})
+
 const introRevealController = createIntroRevealWindowController({
   devServer: DEV_SERVER,
   enabled: GUEST_ONBOARDING,
@@ -13962,6 +14019,57 @@ const introRevealController = createIntroRevealWindowController({
   },
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('petOverlay'))
 })
+
+// The listen overlay: a global Ctrl+Shift+L toggle that spawns the
+// pc-audio-monitor skill's live_listen.py (WASAPI loopback + rolling
+// faster-whisper) and shows rolling captions, then the corrected final
+// transcript, in a small always-on-top HUD. The transcript stays in that
+// window — it is never submitted as a prompt to any session (see
+// electron/listen-overlay.ts's module comment for why).
+const LISTEN_OVERLAY_CONFIG_PATH = path.join(app.getPath('userData'), 'listen-overlay.json')
+
+function readListenDevicePreference() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(LISTEN_OVERLAY_CONFIG_PATH, 'utf8'))
+
+    return sanitizeListenDevicePreference(raw?.devicePref)
+  } catch {
+    // Missing / unreadable / malformed → default ('auto': try GPU, fall back to CPU).
+    return sanitizeListenDevicePreference(undefined)
+  }
+}
+
+function writeListenDevicePreference(pref) {
+  try {
+    fs.mkdirSync(path.dirname(LISTEN_OVERLAY_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(LISTEN_OVERLAY_CONFIG_PATH, JSON.stringify({ devicePref: pref }, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[listen-overlay] write failed: ${error.message}`)
+  }
+}
+
+const listenOverlayController = createListenOverlayWindowController({
+  devServer: DEV_SERVER,
+  getDevicePreference: readListenDevicePreference,
+  // Both are forward references to declarations later in this file
+  // (spawnKirsinWindow/openKirsinWindow/kirsinWindow) — safe because these
+  // closures only run on demand, long after the whole module has evaluated.
+  getKirsinWindow: () => kirsinWindow,
+  hermesHome: HERMES_HOME,
+  loadWindowUrl,
+  log: rememberLog,
+  openKirsinWindow: () => openKirsinWindow(),
+  preloadPath: PRELOAD_PATH,
+  rendererIndex: resolveRendererIndex,
+  setDevicePreference: writeListenDevicePreference,
+  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('petOverlay'))
+})
+
+// Lets a renderer (the Kirsin window's mic button) trigger the SAME toggle
+// Ctrl+Shift+L drives — one control surface, two ways to reach it. Any
+// window may call this (not gated to Kirsin specifically): it just opens or
+// advances the same overlay the global shortcut does.
+ipcMain.on('hermes:listen-overlay:toggle', () => listenOverlayController.toggle())
 
 registerChatOnboardingWindow({
   enabled: GUEST_ONBOARDING,
@@ -14636,6 +14744,259 @@ function closeHudWindow() {
   broadcastHudState(false)
 }
 
+// ── Kirsin Agent Window ─────────────────────────────────────────────────────
+//
+// The Kirsin Agent Window is "a HUD pinned to the `kirsin` profile, with a
+// Kirsin-branded shell": a FULL app renderer that adopts the kirsin backend at
+// boot (`?win=kirsin&profile=kirsin`, see kirsin-url.ts + windowProfileOverride),
+// rendered in a persistent always-on-top floating panel instead of the HUD's
+// auto-hiding band. It is summoned by a standalone `Ctrl+Shift+K` global
+// shortcut and toggled — like the HUD it does NOT hide the main window and does
+// not snap to the pointer, but unlike the HUD it never blur-dismisses: once
+// open it stays put (a persistent copilot chat), the user moves it by dragging
+// the header and closes it explicitly.
+//
+// Main owns the window lifecycle + the shortcut + the persisted geometry. The
+// renderer is the HUD's `chatRoutes` surface (real composer + transcript +
+// model pill), skinned as Kirsin.
+
+const KIRSIN_STATE_PATH = path.join(app.getPath('userData'), 'kirsin-state.json')
+const KIRSIN_WINDOW_TITLE = `${APP_NAME} Kirsin`
+const KIRSIN_SHORTCUT = 'CommandOrControl+Shift+K'
+
+let kirsinWindow = null
+
+function readKirsinState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(KIRSIN_STATE_PATH, 'utf8'))
+
+    if (
+      [raw?.x, raw?.y, raw?.width, raw?.height].every(v => Number.isFinite(v)) &&
+      raw.width >= KIRSIN_WIDTH &&
+      raw.height >= KIRSIN_MIN_HEIGHT
+    ) {
+      // Only the POSITION is user state: the shell always boots EXPANDED
+      // (kirsin-shell.tsx) and the window is non-resizable, so a size persisted
+      // mid-collapse (96px pill / 196px orb) would re-open the window too small
+      // for the expanded surface. Restore the expanded size, keep x/y.
+      return { x: raw.x, y: raw.y, width: KIRSIN_WIDTH, height: KIRSIN_HEIGHT }
+    }
+  } catch {
+    // First run / unreadable — fall through to defaults.
+  }
+
+  return null
+}
+
+function persistKirsinState() {
+  if (!kirsinWindow || kirsinWindow.isDestroyed()) {
+    return
+  }
+
+  try {
+    const { x, y, width, height } = kirsinWindow.getNormalBounds()
+    fs.mkdirSync(path.dirname(KIRSIN_STATE_PATH), { recursive: true })
+    writeFileAtomic(KIRSIN_STATE_PATH, JSON.stringify({ x, y, width, height }, null, 2))
+  } catch (err) {
+    rememberLog(`[kirsin-state] persist failed: ${err?.message || err}`)
+  }
+}
+
+const schedulePersistKirsinState = debounce(persistKirsinState, 250)
+
+function kirsinBounds() {
+  // Remembered spot first — validated against the LIVE displays so a panel
+  // parked on an unplugged monitor comes back on-screen instead of lost.
+  const saved = readKirsinState()
+
+  if (saved) {
+    const onScreen = screen.getAllDisplays().some(d => {
+      const a = d.workArea
+
+      return (
+        saved.x < a.x + a.width - 40 &&
+        saved.x + saved.width > a.x + 40 &&
+        saved.y < a.y + a.height - 40 &&
+        saved.y + saved.height > a.y + 40
+      )
+    })
+
+    if (onScreen) {
+      return saved
+    }
+  }
+
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const area = display?.workArea
+
+  return defaultKirsinBounds(area)
+}
+
+function kirsinUrl() {
+  // No `profile=` override: the Kirsin window adopts the PRIMARY (default)
+  // backend at boot, so the floating panel chats with the default agent and
+  // shows its sessions. (It was originally pinned to the now-deleted `kirsin`
+  // profile; the window kept its name but now fronts the primary agent.)
+  return buildKirsinWindowUrl(null, {
+    devServer: DEV_SERVER,
+    rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+  })
+}
+
+function resetKirsinWindowLayout(): boolean {
+  if (!kirsinWindow || kirsinWindow.isDestroyed()) {
+    return false
+  }
+
+  const win = kirsinWindow
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const bounds = defaultKirsinBounds(display?.workArea)
+
+  if (!applyKirsinResetBounds(win, bounds)) {
+    rememberLog('[kirsin-state] reset layout failed while applying native bounds')
+
+    return false
+  }
+
+  persistKirsinState()
+
+  return true
+}
+
+function spawnKirsinWindow() {
+  const win = new BrowserWindow({
+    ...kirsinBounds(),
+    // The window morphs between the 560px chat, the 96px pill and the 196px
+    // orb (see kirsin-shell.tsx), so the native size floor must admit the orb
+    // (KIRSIN_MIN_WIDTH / KIRSIN_MIN_HEIGHT) — a 576/360 floor would clamp
+    // setBounds and the morphs would silently fail.
+    minWidth: KIRSIN_MIN_WIDTH,
+    minHeight: KIRSIN_MIN_HEIGHT,
+    title: KIRSIN_WINDOW_TITLE,
+    frame: false,
+    transparent: true,
+    // NOT resizable (system edge hot-zone — same reason as the HUD). Resizing
+    // is done by the renderer's edge/corner handles through
+    // `hermes:kirsin:set-bounds`, which flips resizable on for the call.
+    resizable: false,
+    enableLargerThanScreen: true,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: !IS_MAC,
+    hasShadow: false,
+    alwaysOnTop: true,
+    roundedCorners: true,
+    // The panel is ALWAYS solid (no idle/fade state), so the default
+    // 'followWindow' visual-effect lifecycle is fine; we simply never hide it.
+    visualEffectState: 'active',
+    hiddenInMissionControl: IS_MAC,
+    show: false,
+    backgroundColor: '#00000000',
+    // Full chat webPreferences — this window streams a real transcript, so it
+    // needs everything a chat window needs (preload bridge, autoplay, the
+    // shared throttling contract).
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+  })
+
+  applyHudElectronOverlay(win, process.platform)
+  win.setHiddenInMissionControl?.(true)
+
+  // Stream-aware unthrottling + zoom wiring, exactly as the HUD's chat window.
+  streamThrottle.register(win)
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+
+  // Remember where the user parks and sizes it (debounced — these fire many
+  // times mid-drag).
+  bindGeometryPersistence(win, schedulePersistKirsinState)
+
+  wireWindowReveal(win)
+
+  win.on('closed', () => {
+    if (kirsinWindow === win) {
+      kirsinWindow = null
+    }
+  })
+
+  attachRendererConsoleCapture(win, 'kirsin', rememberLog)
+  // Log-only lifecycle (same as the HUD): a dead renderer should be
+  // diagnosable, not resurrected.
+  installWindowRendererLifecycle(win, { kind: 'kirsin', callbacks: { log: rememberLog } })
+  // Without this the window is born hidden and EMPTY — ready-to-show /
+  // did-finish-load never fire, wireWindowReveal never reveals, and
+  // Ctrl+Shift+K / the Quick Entry pin appear dead even though the window
+  // object exists. (Dropped during Phase 3 extraction — the HUD's spawn
+  // carries the same call.)
+  loadWindowUrl(win, kirsinUrl(), 'Kirsin window')
+
+  return win
+}
+
+function openKirsinWindow() {
+  if (kirsinWindow && !kirsinWindow.isDestroyed()) {
+    focusWindow(kirsinWindow)
+
+    return kirsinWindow
+  }
+
+  kirsinWindow = spawnKirsinWindow()
+
+  return kirsinWindow
+}
+
+function closeKirsinWindow() {
+  const win = kirsinWindow
+
+  if (win && !win.isDestroyed()) {
+    win.close()
+
+    return
+  }
+
+  kirsinWindow = null
+}
+
+function toggleKirsinWindow() {
+  if (kirsinWindow && !kirsinWindow.isDestroyed() && kirsinWindow.isVisible()) {
+    closeKirsinWindow()
+
+    return
+  }
+
+  openKirsinWindow()
+}
+
+let kirsinShortcutRegistered = false
+
+function registerKirsinShortcut() {
+  if (kirsinShortcutRegistered) {
+    return
+  }
+
+  const ok = globalShortcut.register(KIRSIN_SHORTCUT, toggleKirsinWindow)
+
+  if (ok) {
+    kirsinShortcutRegistered = true
+  } else {
+    rememberLog(`[kirsin] shortcut ${KIRSIN_SHORTCUT} is already taken by another application`)
+  }
+}
+
+function disposeKirsinShortcut() {
+  if (!kirsinShortcutRegistered) {
+    return
+  }
+
+  try {
+    globalShortcut.unregister(KIRSIN_SHORTCUT)
+  } catch {
+    // Best effort — a dead accelerator must not block shutdown.
+  }
+
+  kirsinShortcutRegistered = false
+}
+
 // ── Quick Entry ─────────────────────────────────────────────────────────────
 //
 // A global shortcut summons a small frameless always-on-top composer from
@@ -14975,6 +15336,8 @@ function createWindow() {
   mainWindow.on('closed', () => {
     closePetOverlay()
     wakeIndicatorController.close()
+    scanlineController.close()
+    askChoiceController.close()
     introRevealController.destroy()
 
     if (mainWindow === createdMainWindow) {
@@ -15420,6 +15783,19 @@ ipcMain.handle('hermes:wake-indicator:get', () => wakeIndicatorController.getSta
 ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
   wakeIndicatorController.setState(state)
 })
+ipcMain.handle('hermes:scanline:get', () => scanlineController.getState())
+ipcMain.on('hermes:scanline:set', (_event, state) => {
+  scanlineController.setState(state)
+})
+// The choice dialog reports the user's decision back; main persists it to the
+// answer file the `ask_choice` tool is polling. `respond` = a button/number-key
+// pick; `cancel` = Esc / the window was closed.
+ipcMain.on('hermes:ask-choice:respond', (_event, payload) => {
+  askChoiceController.respond(payload)
+})
+ipcMain.on('hermes:ask-choice:cancel', (_event, payload) => {
+  askChoiceController.cancel(payload)
+})
 
 // --- Text size (zoom) -------------------------------------------------------
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
@@ -15460,6 +15836,16 @@ const hudIpc = registerHudIpc({
   setHudSessionId: value => {
     hudSessionId = value
   }
+})
+
+// Kirsin Agent Window IPC (drag / resize / close / reset). The window handle
+// and open/close/reset orchestration are injected — main owns the lifecycle and
+// the persistent `Ctrl+Shift+K` shortcut toggles it.
+registerKirsinIpc({
+  getKirsinWindow: () => kirsinWindow,
+  openKirsinWindow,
+  closeKirsinWindow,
+  resetKirsinLayout: resetKirsinWindowLayout
 })
 
 ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
@@ -16882,6 +17268,7 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
+
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
@@ -18407,6 +18794,12 @@ app.whenReady().then(() => {
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
 
+  // Kirsin Agent Window: a standalone persistent global shortcut (Ctrl+Shift+K)
+  // summons the floating copilot chat from anywhere, like the HUD's — but unlike
+  // the HUD's transient band it is registered once for the app's lifetime and
+  // never re-armed per open.
+  registerKirsinShortcut()
+
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
@@ -18603,6 +18996,8 @@ app.on('before-quit', event => {
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
   wakeIndicatorController.close()
+  scanlineController.close()
+  askChoiceController.close()
   introRevealController.destroy()
 
   // Same for the HUD — an always-on-top panel outliving the app would leave a
@@ -18617,6 +19012,18 @@ app.on('before-quit', event => {
   }
 
   hudWindow = null
+
+  // Same for the Kirsin Agent Window — release its persistent global accelerator
+  // and destroy the floating panel so a quitting Hermes never leaves a
+  // always-on-top chat with nothing behind it or keeps the chord hostage.
+  disposeKirsinShortcut()
+
+  if (kirsinWindow && !kirsinWindow.isDestroyed()) {
+    kirsinWindow.removeAllListeners('closed')
+    kirsinWindow.destroy()
+  }
+
+  kirsinWindow = null
 
   // Same for the Quick Entry composer — and release its global accelerator so a
   // quitting Hermes never keeps another app's chord hostage.

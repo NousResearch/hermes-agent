@@ -5,7 +5,10 @@ import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 
+import type { AskChoiceRequest } from './lib/ask-choice'
+import type { ScanlineState } from './lib/scanline'
 import type { WakeIndicatorState } from './lib/wake-indicator'
+import type { ListenOverlayState } from './store/listen-overlay'
 import type {
   PetOverlayBounds,
   PetOverlayControl,
@@ -98,6 +101,23 @@ declare global {
         setState: (state: WakeIndicatorState) => void
         onState: (callback: (state: WakeIndicatorState) => void) => () => void
       }
+      // The full-screen screen-analysis scanline overlay. The active renderer
+      // drives it from `computer_use` capture tool events (active while a
+      // capture is in flight); the overlay window only reflects state.
+      scanline?: {
+        getState: () => Promise<ScanlineState>
+        setState: (state: ScanlineState) => void
+        onState: (callback: (state: ScanlineState) => void) => () => void
+      }
+      // The on-screen choice dialog: a small always-on-top card (on the primary
+      // display) that asks a short multiple-choice question. `onRequest` receives
+      // the request to display; `respond` reports the user's click (or Esc) back
+      // to main, which persists it for the `ask_choice` tool.
+      askChoice?: {
+        onRequest: (callback: (request: AskChoiceRequest) => void) => () => void
+        respond: (payload: { request_id: string; choice: string }) => void
+        cancel: (payload: { request_id: string }) => void
+      }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -169,6 +189,44 @@ declare global {
         onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
         onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
         onGameOverlay: (callback: (state: { active: boolean; app: string }) => void) => () => void
+      }
+      // Kirsin Agent Window: the persistent always-on-top floating chat. Main
+      // owns the OS window + the global shortcut; this is the renderer-facing
+      // bridge for the same drag / resize / close / reset IPC the HUD has,
+      // MINUS the transient-band machinery (no frost, ignore-mouse, cursor or
+      // game-overlay feeds — a persistent chat never fades over other apps).
+      kirsin?: {
+        open: () => Promise<{ ok: boolean }>
+        close: () => Promise<{ ok: boolean }>
+        beginMove: () => void
+        endMove: () => void
+        moveBy: (delta: { height: number; width: number }) => void
+        setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
+        resetLayout: () => Promise<{ ok: boolean }>
+        // A dictated transcript from the listen overlay (mode: 'dictate'),
+        // delivered as plain text — the Kirsin window submits it through its
+        // own normal prompt path. Never fires unless the user explicitly
+        // picked Dictate for that capture.
+        onDictate: (callback: (text: string) => void) => () => void
+      }
+      // Listen overlay: the global Ctrl+Shift+L live PC-audio transcription HUD.
+      // Main owns the shortcut, the window and the pc-audio-monitor engine
+      // child process; the overlay renders state pushed over `onState` and can
+      // ask to be dismissed via `close`. In 'subtitle' mode (the default) the
+      // transcript stays local to that window; 'dictate' mode delivers the
+      // final transcript to the Kirsin window as a real prompt.
+      listenOverlay?: {
+        close: () => void
+        getState: () => Promise<ListenOverlayState>
+        beginMove: () => void
+        endMove: () => void
+        moveBy: (delta: { height: number; width: number }) => void
+        selectTarget: (pid: number) => void
+        selectDevice: (pref: 'auto' | 'gpu' | 'cpu') => void
+        selectMode: (mode: 'subtitle' | 'dictate') => void
+        start: () => void
+        toggle: () => void
+        onState: (callback: (payload: ListenOverlayState) => void) => () => void
       }
       // macOS native screenshot gesture; absent on other platforms.
       screenshot?: ScreenshotApi

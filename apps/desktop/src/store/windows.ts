@@ -54,6 +54,33 @@ export function isHudWindow(): boolean {
   return result
 }
 
+// A "kirsin" window is the Kirsin Agent Window: a persistent, always-on-top
+// floating chat pinned to the `kirsin` profile. Like the HUD it is a FULL app
+// renderer with its own gateway (it adopts the kirsin backend at boot via the
+// `?profile=` override), but the flag tells the shell to render the
+// Kirsin-branded persistent panel — draggable, position-remembered, no
+// blur-dismiss — instead of the HUD's auto-hiding band. Read from
+// location.search for the same reason as the flags above.
+let kirsinWindowCache: boolean | null = null
+
+export function isKirsinWindow(): boolean {
+  if (kirsinWindowCache !== null) {
+    return kirsinWindowCache
+  }
+
+  let result = false
+
+  try {
+    result = new URLSearchParams(window.location.search).get('win') === 'kirsin'
+  } catch {
+    result = false
+  }
+
+  kirsinWindowCache = result
+
+  return result
+}
+
 // A "watch" window spectates a session that is being driven elsewhere (a
 // running subagent). It resumes lazily — the gateway registers history + a
 // transport for the live mirror without building an agent, so opening it is
@@ -108,10 +135,12 @@ export function windowBrowserTabId(): null | string {
 }
 
 // True for any window that is NOT the primary app instance — a secondary
-// session window, the HUD, or a popped-out Browser. Single-claim channels
-// (the quick-entry capture bridge, the pet overlay control bridge) and the
-// install/onboarding overlays belong to the primary alone.
-export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow() || isBrowserWindow()
+// session window, the HUD, the Kirsin quick-chat panel, or a popped-out
+// Browser. Single-claim channels (the quick-entry capture bridge, the pet
+// overlay control bridge) and the install/onboarding overlays belong to the
+// primary alone.
+export const isAuxiliaryWindow = (): boolean =>
+  isSecondaryWindow() || isHudWindow() || isBrowserWindow() || isKirsinWindow()
 
 // A full peer window renders the ordinary app shell against the backend that
 // Electron already has running. It is not an auxiliary/specialized renderer,

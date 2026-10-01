@@ -73,6 +73,10 @@ export interface WiringActions extends SidebarActions, ChatActions {
 /** The four wired surfaces the controller publishes; `WiredPane` renders one by
  *  key inside a registered pane / chrome slot. */
 export interface WiringApi {
+  /** The controller's stable callback bag (see {@link WiringActions}) — exposed
+   *  so non-pane chrome (the Kirsin / HUD shells) can drive controller-owned
+   *  actions like `onCancel` without their own gateway wiring. */
+  actions: WiringActions
   sidebar: ReactNode
   chatRoutes: ReactNode
   terminal: ReactNode

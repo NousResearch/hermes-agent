@@ -3644,3 +3644,786 @@ html[data-hud-window] [data-slot='popover-content'] {
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
 }
+
+/* ── Kirsin Agent Window ───────────────────────────────────────────────────
+   The persistent always-on-top floating chat. Unlike the HUD's auto-hiding
+   band (transparent, edge-detect, fades on idle), Kirsin is a PERSISTENT,
+   SOLID panel: it keeps its background, remembers its position, never
+   dismisses on blur, and stays above other windows. So this block is the
+   opposite of the HUD's — instead of stripping the surface to glass, it
+   paints a real frame around the same chat surface.
+
+   Phase 2 is just this: the frame + the header drag strip, skinned. The
+   branded header content (logo, pin, collapse chevron, close), the two-state
+   compact↔expanded morph, the session switcher and the narration transcript
+   land in later phases and hang off these hooks.
+
+   The HOST LAYERS are forced transparent at mount by KirsinShell (the same
+   !important style tag the HUD / pet overlay / quick entry inject), so the
+   shell div below is the ONLY painted thing in the window — make it the
+   panel. Palette is locked (see the plan): dark bg, near-white text, teal
+   theme accent (NOT pink), teal running dot. */
+
+[data-kirsin-shell] {
+  --kirsin-bg: #1A1D2E;
+  --kirsin-text: #F2F3F7;
+  --kirsin-muted: #8A8D99;
+  --kirsin-border: #34384A;
+  --kirsin-accent: var(--ui-accent);
+  --kirsin-running: #5EEAD4;
+  /* easeInOutQuad — the EXACT curve KirsinShell's setBounds tween uses, so
+     the CSS radius/halo/size transitions stay in step with the native frame
+     (the duration rides --kirsin-morph-ms, set per morph in JS). */
+  --kirsin-morph-ease: cubic-bezier(0.455, 0.03, 0.515, 0.955);
+
+  /* A flat radial gradient (identical stops) rather than a solid color, so
+     the orb's tinted radial cross-fades — a color can't interpolate to a
+     gradient. Stop positions (0/48/100) mirror the orb's gradient exactly. */
+  background: radial-gradient(120% 120% at 50% 28%,
+    var(--kirsin-bg) 0%,
+    var(--kirsin-bg) 48%,
+    var(--kirsin-bg) 100%);
+  color: var(--kirsin-text);
+  /* A floating panel reads as one rounded card above the desktop. Inset the
+     paint slightly so the always-on-top window doesn't bleed to the screen
+     edge with a hard line, and let the rounded corners show the desktop. */
+  border: 1px solid var(--kirsin-border);
+  border-radius: 12px;
+  /* The two outer layers are the orb's glow halo, parked at transparent so
+     the orb's accent shadow interpolates in the SAME layers (a layer-count
+     change would pop). */
+  box-shadow:
+    0 0 22px 2px transparent,
+    0 0 56px 10px transparent,
+    0 12px 32px -8px rgb(0 0 0 / 0.55),
+    0 2px 8px rgb(0 0 0 / 0.35);
+  /* The morph (see "Orb morph (Phase 9)" below): radius + tint + halo tween
+     in step with the JS setBounds tween (same duration + ease). Size is NOT
+     transitioned — the 60fps setBounds tween already drives it, and a
+     transition on top would double-ease the frame. */
+  transition:
+    border-radius var(--kirsin-morph-ms, 300ms) var(--kirsin-morph-ease),
+    background var(--kirsin-morph-ms, 300ms) var(--kirsin-morph-ease),
+    border-color var(--kirsin-morph-ms, 300ms) var(--kirsin-morph-ease),
+    box-shadow var(--kirsin-morph-ms, 300ms) var(--kirsin-morph-ease);
+}
+
+/* The header strip is the drag handle (Phase 4 wires the pointer handlers to
+   data-kirsin-header). Keep it visually distinct from the chat below: a hair
+   of elevation + a subtle bottom divider, and never eat the clicks meant for
+   the chat surface underneath. */
+[data-kirsin-shell] [data-kirsin-header] {
+  background: color-mix(in srgb, var(--kirsin-bg) 92%, #ffffff 8%);
+  border-bottom: 1px solid var(--kirsin-border);
+  cursor: grab;
+  /* The wordmark sits in the theme accent (the locked "teal, not pink"
+     Kirsin brand mark), not the dim muted text it ships as in Phase 1. */
+  color: var(--kirsin-accent);
+}
+/* While a drag is in flight the whole header reads as grabbed (the buttons
+   keep their own cursor — they stopPropagation on pointerdown anyway). */
+[data-kirsin-shell] [data-kirsin-header][data-kirsin-dragging] {
+  cursor: grabbing;
+}
+
+/* The chat surface below the header. Kirsin is a solid panel, so (unlike the
+   HUD, which strips the surface to transparent-over-glass) the surface keeps
+   its own background — it IS the panel body. No extra chrome here; the app's
+   transcript + composer render as they do in the workspace. */
+[data-kirsin-shell] [data-chat-surface] {
+  background: var(--kirsin-bg);
+}
+
+/* Hide the app's top-level chrome that a floating chat doesn't want (the
+   window is its own frame). The chat surface's own scrollbars stay — a
+   persistent panel is expected to scroll normally. */
+html[data-kirsin-window] [data-slot='composer-root'] > .pointer-events-none {
+  display: none !important;
+}
+
+/* ── Branded header content (Phase 3) ──────────────────────────────────────
+   The Phase-2 header strip was a skinned drag handle; this paints the brand
+   mark + wordmark on the left and the three controls (collapse chevron, pin,
+   close) on the right. The whole strip STAYS the drag handle — only the
+   buttons stopPropagation on pointerdown so a click never starts a drag. */
+[data-kirsin-shell] [data-kirsin-logo] {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 10px;
+  border-radius: 7px;
+  background: var(--kirsin-accent);
+  /* dark glyph on the teal chip so the brand mark pops */
+  color: #0b0d16;
+}
+[data-kirsin-shell] [data-kirsin-logo] svg {
+  width: 13px;
+  height: 13px;
+}
+[data-kirsin-shell] [data-kirsin-wordmark] {
+  margin-left: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* The header controls share one quiet treatment: a small hit area, a
+   near-invisible resting state, a soft hover fill. */
+[data-kirsin-shell] [data-kirsin-ctl] {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--kirsin-muted);
+  cursor: default;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+[data-kirsin-shell] [data-kirsin-ctl] svg {
+  width: 15px;
+  height: 15px;
+}
+[data-kirsin-shell] [data-kirsin-ctl]:hover {
+  background: color-mix(in srgb, #ffffff 8%, transparent);
+  color: var(--kirsin-text);
+}
+/* the pin glows while the window is pinned */
+[data-kirsin-shell] [data-kirsin-ctl][data-kirsin-pinned='true'] {
+  color: var(--kirsin-accent);
+}
+[data-kirsin-shell] [data-kirsin-ctl]:last-child {
+  margin-right: 8px;
+}
+
+/* ── Two-state morph (Phase 3) ─────────────────────────────────────────────
+   The shell is a flex column: the 38px header + one of two bodies. EXPANDED
+   (default) shows the chat surface; COMPACT shows the status pill. The
+   [data-kirsin-collapsed] attribute KirsinShell sets on the chevron click
+   switches which body is painted HERE, while the setBounds call that resizes
+   the native window happens in JS. The chat surface stays MOUNTED in both
+   states (a running turn + the composer draft must survive the collapse), so
+   this only toggles visibility — nothing is unmounted. */
+[data-kirsin-shell] [data-kirsin-compact] {
+  display: none;
+}
+[data-kirsin-shell][data-kirsin-collapsed] [data-kirsin-body] {
+  display: none;
+}
+[data-kirsin-shell][data-kirsin-collapsed] [data-kirsin-compact] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  padding: 0 14px;
+}
+
+/* Compact pill: live turn indicator on the left, active model on the right.
+   The dot pulses teal while a turn is running ("Thinking…"), goes quiet on
+   "Ready" — the reference's running-state dot, re-skinned to the theme. */
+[data-kirsin-shell] [data-kirsin-status] {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--kirsin-muted);
+  white-space: nowrap;
+}
+[data-kirsin-shell] [data-kirsin-status]::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--kirsin-muted);
+  flex: none;
+}
+[data-kirsin-shell] [data-kirsin-status][data-kirsin-thinking='true'] {
+  color: var(--kirsin-text);
+}
+[data-kirsin-shell] [data-kirsin-status][data-kirsin-thinking='true']::before {
+  background: var(--kirsin-running);
+  animation: kirsin-pulse 1.2s ease-out infinite;
+}
+[data-kirsin-shell] [data-kirsin-model] {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--kirsin-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 52%;
+}
+
+/* ── Narration transcript (Phase 6) ─────────────────────────────────────────
+   Rosario's display choice: user + assistant TEXT only — no bubbles, no
+   avatars, no tool rows, no thinking/reasoning, no action rows. The chat
+   surface is the app's real transcript (WiredPane part="chatRoutes"), so the
+   narration is pure presentation: these rules only hide/reshape nodes inside
+   the Kirsin shell; the underlying components stay the app's. Everything is
+   scoped to [data-kirsin-shell], so the normal workspace is untouched. */
+
+/* Tool calls, the "Hermes is working" status row, the streaming cursor, the
+   per-message action bar + reactions + turn duration, thinking/reasoning
+   bodies, and the agent-to-agent delivery note are all chrome, not narration.
+   (The thinking row is exactly what the compact pill's live "Thinking…"
+   already conveys when collapsed, so hiding it loses nothing.) */
+[data-kirsin-shell] [data-tool-row],
+[data-kirsin-shell] [data-slot='aui_turn-activity'],
+[data-kirsin-shell] [data-slot='aui_message-streaming-marker'],
+[data-kirsin-shell] [data-slot='aui_msg-actions'],
+[data-kirsin-shell] [data-slot='aui_msg-reactions'],
+[data-kirsin-shell] [data-slot='aui_turn-duration'],
+[data-kirsin-shell] [data-slot='aui_thinking-disclosure'],
+[data-kirsin-shell] [data-slot='aui_thinking-body'],
+[data-kirsin-shell] [data-slot='aui_reasoning-text'],
+[data-kirsin-shell] [data-slot='aui_agent-message-note'] {
+  display: none !important;
+}
+
+/* Left-justify the transcript. In the workspace the user row is `self-end`
+   (right) + sticky + full-bleed, and the assistant row is `self-center`;
+   narration is one plain left column. This window has no titlebar (the header
+   is a solid 38px strip), so the sticky park that the full-bleed row serves is
+   gone too — make the row flow normally and drop the bubble's card chrome. */
+[data-kirsin-shell] [data-role='user'] {
+  position: static !important;
+  align-self: flex-start !important;
+  margin: 0 !important;
+  width: auto !important;
+  max-width: 100% !important;
+}
+[data-kirsin-shell] [data-role='assistant'] {
+  align-self: flex-start !important;
+}
+
+/* The user bubble is a rounded glass card (`composer-human-message`). Narration
+   is text, not a card: strip the background/border/shadow and the full-width
+   fill so it reads as a plain block. A hair of medium weight (vs the
+   assistant's normal) is the only thing left to tell the two voices apart —
+   no bubble, no avatar. */
+[data-kirsin-shell] [data-role='user'] .composer-human-message {
+  width: auto !important;
+  max-width: 100% !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 0 2px 0 !important;
+  font-weight: 500;
+}
+
+@keyframes kirsin-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--kirsin-running) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--kirsin-running) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--kirsin-running) 0%, transparent);
+  }
+}
+
+/* ── Session switcher (Phase 7) ─────────────────────────────────────────────
+   A Kirsin-ONLY dropdown in the header: a quiet message glyph opens a menu of
+   this window's own sessions (the backend is `kirsin`, so the list is already
+   scoped — no profile picker). The trigger reuses the header-control look; the
+   menu is a solid panel that hangs to the LEFT of the trigger (the trigger is
+   near the right edge, so it extends into the window, never off it). Everything
+   is scoped to [data-kirsin-shell], so the normal workspace is untouched. */
+[data-kirsin-shell] [data-kirsin-switcher] {
+  position: relative;
+}
+[data-kirsin-shell] [data-kirsin-switcher-trigger] {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 24px;
+  margin-left: 2px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--kirsin-muted);
+  cursor: default;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+[data-kirsin-shell] [data-kirsin-switcher-trigger] svg {
+  width: 15px;
+  height: 15px;
+}
+[data-kirsin-shell] [data-kirsin-switcher-trigger]:hover {
+  background: color-mix(in srgb, #ffffff 8%, transparent);
+  color: var(--kirsin-text);
+}
+/* the glyph stays lit while the menu is open, so the open state is obvious */
+[data-kirsin-shell] [data-kirsin-switcher-trigger][data-kirsin-open='true'] {
+  background: color-mix(in srgb, #ffffff 8%, transparent);
+  color: var(--kirsin-accent);
+}
+
+/* Outside-press catcher: a transparent layer over the whole window that closes
+   the menu. It sits under the menu (z-50) but above the chat, so a press
+   anywhere except the menu dismisses it. `fixed` is fine here — the window
+   never CSS-transforms an ancestor (drags use native setBounds). */
+[data-kirsin-shell] [data-kirsin-switcher-catcher] {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+[data-kirsin-shell] [data-kirsin-switcher-menu] {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  width: 264px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--kirsin-bg) 92%, #ffffff 8%);
+  border: 1px solid var(--kirsin-border);
+  border-radius: 10px;
+  box-shadow:
+    0 12px 32px -8px rgb(0 0 0 / 0.55),
+    0 2px 8px rgb(0 0 0 / 0.35);
+  color: var(--kirsin-text);
+}
+/* the "New session" row — the accent-colored action at the top of the menu */
+[data-kirsin-shell] [data-kirsin-new] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--kirsin-accent);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: default;
+}
+[data-kirsin-shell] [data-kirsin-new] svg {
+  width: 14px;
+  height: 14px;
+}
+[data-kirsin-shell] [data-kirsin-new]:hover {
+  background: color-mix(in srgb, #ffffff 8%, transparent);
+}
+[data-kirsin-shell] [data-kirsin-switcher-divider] {
+  height: 1px;
+  margin: 6px 4px;
+  background: color-mix(in srgb, #ffffff 10%, transparent);
+}
+/* the session list — capped + scrollable so it never overflows the panel */
+[data-kirsin-shell] [data-kirsin-switcher-rows] {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow-y: auto;
+}
+[data-kirsin-shell] [data-kirsin-row] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--kirsin-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: default;
+}
+[data-kirsin-shell] [data-kirsin-row] svg {
+  width: 14px;
+  height: 14px;
+  color: var(--kirsin-muted);
+  flex: none;
+}
+[data-kirsin-shell] [data-kirsin-row]:hover {
+  background: color-mix(in srgb, #ffffff 8%, transparent);
+}
+/* the session on the current route is the active one — accent + a dot */
+[data-kirsin-shell] [data-kirsin-row][data-kirsin-active='true'] {
+  color: var(--kirsin-accent);
+}
+[data-kirsin-shell] [data-kirsin-row][data-kirsin-active='true'] svg {
+  color: var(--kirsin-accent);
+}
+[data-kirsin-shell] [data-kirsin-row-title] {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-kirsin-shell] [data-kirsin-row-time] {
+  flex: none;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--kirsin-muted);
+}
+[data-kirsin-shell] [data-kirsin-row-dot] {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--kirsin-accent);
+}
+[data-kirsin-shell] [data-kirsin-empty] {
+  padding: 10px 8px;
+  font-size: 12px;
+  color: var(--kirsin-muted);
+}
+
+/* ── Orb morph (Phase 9) ────────────────────────────────────────────────────
+   The THIRD state (Rosario's Augmentor reference): the header orb button
+   tweens the native window to 216×216 (JS, 60fps setBounds) while THIS CSS
+   rounds the frame into a perfect circle, fades the chat out, and paints the
+   glowing orb in. Every transition below rides --kirsin-morph-ms (set by the
+   shell per morph: 300ms collapse / 450ms expand) with --kirsin-morph-ease
+   (easeInOutQuad) — the exact curve of the JS tween, so the native frame and
+   its content never drift.
+   The 196px window paints a 150px disc centered in it: the ~23px margin keeps
+   the glow halo inside the window (a box-shadow would otherwise be clipped at
+   the edge). */
+
+/* The orb itself — always MOUNTED (so it can fade in on the collapse AND
+   fade out on the expand; a display swap would kill the fade-out), but
+   parked invisible + click-through until the orb state. The window is
+   196×196; the disc is 150px, centered, with a 23px halo margin around. */
+[data-kirsin-shell] [data-kirsin-orb] {
+  display: flex;
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  /* The reference's resting orb: dark indigo fill with a top-lit accent
+     sheen, a thin lighter border. The halo lives HERE on the disc, NOT on
+     the shell (the shell fills the window edge, where any glow would be
+     clipped): the outer layer reaches ~21px, inside the 22px margin. */
+  border: 1px solid color-mix(in srgb, var(--kirsin-accent) 55%, var(--kirsin-border));
+  background: radial-gradient(120% 120% at 50% 28%,
+    color-mix(in srgb, var(--kirsin-accent) 20%, var(--kirsin-bg)) 0%,
+    color-mix(in srgb, var(--kirsin-accent) 7%, var(--kirsin-bg)) 48%,
+    var(--kirsin-bg) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.05),
+    inset 0 -14px 26px -18px color-mix(in srgb, var(--kirsin-accent) 30%, transparent),
+    0 0 18px 3px color-mix(in srgb, var(--kirsin-accent) 28%, transparent);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  cursor: grab;
+  /* Parked: invisible + click-through. The visibility delay (the morph
+     duration) keeps the disc laid out until the fade-out finishes on
+     expand, then removes it from the a11y tree. */
+  opacity: 0;
+  transform: scale(0.55);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--kirsin-morph-ms, 300ms) var(--kirsin-morph-ease),
+    transform var(--kirsin-morph-ms, 300ms) var(--kirsin-morph-ease),
+    visibility 0s linear var(--kirsin-morph-ms, 300ms);
+}
+/* In the orb state the disc blooms in (collapse: scale 0.55 → 1 + fade over
+   the 300ms tween) and STAYS lit at rest; on expand the attribute drops and
+   it fades + shrinks back over the 450ms tween. */
+[data-kirsin-shell][data-kirsin-orb] [data-kirsin-orb] {
+  opacity: 1;
+  transform: scale(1);
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity var(--kirsin-morph-ms, 300ms) var(--kirsin-morph-ease),
+    transform var(--kirsin-morph-ms, 300ms) var(--kirsin-morph-ease),
+    visibility 0s;
+}
+[data-kirsin-shell][data-kirsin-orb] [data-kirsin-orb][data-kirsin-dragging] {
+  cursor: grabbing;
+}
+
+/* The frame rounds to a full circle in the orb state: the JS setBounds tween
+   shrinks the window to 180×180 over the same duration + ease, so the 50%
+   radius arrives as a perfect circle. The shell's own border + shadow + fill
+   are dropped — the DISC carries the visible ring + glow; the shell is just
+   the transparent circle behind it. The fill fades through a STRUCTURALLY
+   IDENTICAL gradient (three stops, same position) so it cross-fades instead
+   of jumping: at rest the desktop shows through the margin ring around the
+   disc, and the disc's halo glows onto it. */
+[data-kirsin-shell][data-kirsin-orb] {
+  border-radius: 50%;
+  border-color: transparent;
+  background: radial-gradient(120% 120% at 50% 28%,
+    transparent 0%,
+    transparent 48%,
+    transparent 100%);
+  box-shadow: none;
+}
+/* While a turn is running the whole orb BREATHEs (a slow scale swell on the
+   disc, the reference's "it's thinking" pulse). */
+[data-kirsin-shell][data-kirsin-orb][data-kirsin-busy='true'] [data-kirsin-orb] {
+  /* 2026-09-25 (Rosario): slowed to the reference's calm "few-second" organic
+     swell; the keyframe now also swells the outer bloom in lockstep.
+     2026-09-26 (Rosario): 3.0s = 2 swells per 6s MASTER cycle (the hologram
+     membrane's orbit time). Every orb tempo is an integer number of cycles per
+     master — membrane 1, breathe 2, dot 4, letter wave + radar sweep 5 — so the
+     whole ensemble realigns in phase together every 6s instead of drifting
+     (the old 6/5/3.2/1.4/1.2 mix only realigned every ~28min). */
+  animation: kirsin-orb-breathe 3s ease-in-out infinite;
+}
+
+/* The comet rim-light was REPLACED by the hologram's radar sweep (Approach C,
+   2026-09-26): a second light orbiting the same rim read as a double-sweep, so
+   the conic comet is gone. The canvas's drawHolo paints the sweep instead. */
+
+/* The Jarvis-style HOLOGRAM (Approach C, 2026-09-26 — Rosario: "create
+   something Jarvis-like"): a single rAF-driven <canvas> replacing the two SVG
+   wave rings (and the comet above). It paints, in the theme accent with
+   additive bloom (drawHolo in kirsin-shell.tsx): a soft reactor glow, a
+   rotating dot-matrix sphere core, concentric sonar rings, a radial tick dial,
+   a bright radar sweep (busy only, one lap / 2s), and the undulating
+   energy-membrane rim. Canvas drawing is NOT a CSS animation, so the blanket
+   reduced-motion rule (OS "show animations" off) leaves it fully alive.
+   Window-sized (196×196, inset:0) so its center is the window center and the
+   75px rim rides the 150px disc's edge; z-index 1 lifts it above the disc
+   fill but BELOW the label/dot/controls (which sit at z-index 2). */
+[data-kirsin-shell] [data-kirsin-orb-holo] {
+  position: absolute;
+  /* The canvas's containing block is the 150px DISC (the [data-kirsin-orb]
+     box, centered in the 196px window), NOT the window. `inset:0` + an
+     explicit 196px box anchored the canvas at the disc's TOP-LEFT corner,
+     shifting the whole hologram +23px right/down (bottom-right) and clipping
+     it on the right/bottom (Rosario 2026-09-26: "totally off-centered,
+     bottom-right"). Center the 196px box on the disc's center (= the window
+     center) with a -50%/-50% translate instead: the canvas fills the full
+     window and the 75px rim lands exactly on the 150px disc's edge. */
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  width: 196px;
+  height: 196px;
+  pointer-events: none;
+}
+
+/* The status label — INSIDE the disc (the reference layout). Fades in last,
+   after the frame has regrown: the 260ms delay is expand-only, so on
+   collapse the label leaves with the panel. z-index 2 keeps it ABOVE the
+   hologram canvas (z-index 1), so the sphere core never washes out the text. */
+[data-kirsin-shell] [data-kirsin-orb-label] {
+  position: relative;
+  z-index: 2;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  color: var(--kirsin-text);
+  opacity: 0;
+  transform: translateY(2px);
+  transition:
+    opacity 200ms var(--kirsin-morph-ease),
+    transform 200ms var(--kirsin-morph-ease);
+}
+[data-kirsin-shell][data-kirsin-orb] [data-kirsin-orb-label] {
+  opacity: 1;
+  transform: translateY(0);
+}
+/* While a turn runs the label's LETTERS hop in a staggered wave — the
+   reference's "thinking" signal, now carried by the label since the spinner
+   no longer spins. Only the per-letter <span> children animate; the parent
+   keeps its morph fade-in transition. */
+[data-kirsin-shell][data-kirsin-orb][data-kirsin-orb-thinking='true'] [data-kirsin-orb-label] > span {
+  display: inline-block;
+  animation: kirsin-think-wave 1.7s ease-in-out infinite;
+}
+
+/* Orb controls — the EXPLICIT buttons on the disc (Stop while a turn runs,
+   Expand to re-open the chat, and the listen-overlay mic toggle). They reuse
+   the header's [data-kirsin-ctl] base,
+   which is why the drag guard (kirsin-drag.ts's closest('[data-kirsin-ctl]'))
+   already ignores them, so pressing one never moves the window. They're
+   circular + a touch larger than the header icons to sit on the 150px disc.
+   The base [data-kirsin-ctl] rule hands its last child an 8px right margin
+   (the header's pin-button spacing) — inside the orb's centered row that
+   nudges the last button ~4px off-center, so zero it back out (applies to
+   whichever button ends up last — currently the mic toggle). The
+   plain `> button` margin lost the specificity battle ((0,2,1) vs the base's
+   (0,3,0) :last-child), so the :last-child duplicate below ((0,3,1)) wins. */
+[data-kirsin-shell] [data-kirsin-orb-controls] {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 3px;
+}
+[data-kirsin-shell] [data-kirsin-orb-controls] > button,
+[data-kirsin-shell] [data-kirsin-orb-controls] > button:last-child {
+  width: 30px;
+  height: 30px;
+  margin: 0;
+  border-radius: 50%;
+  color: var(--kirsin-text);
+  cursor: pointer;
+}
+[data-kirsin-shell] [data-kirsin-orb-controls] > button svg {
+  width: 17px;
+  height: 17px;
+}
+/* Stop only EXISTS while a turn runs; hidden otherwise, and the row re-centers
+   to the lone Expand button at rest. */
+[data-kirsin-shell] [data-kirsin-orb-stop]:not([data-kirsin-orb-stop-visible]) {
+  display: none;
+}
+/* Stop is an active interrupt — warm accent + a soft ring so it reads as
+   "click to halt" against the quiet Expand. */
+[data-kirsin-shell] [data-kirsin-orb-stop] {
+  color: var(--kirsin-running);
+  background: color-mix(in srgb, var(--kirsin-running) 16%, transparent);
+}
+[data-kirsin-shell] [data-kirsin-orb-stop]:hover {
+  background: color-mix(in srgb, var(--kirsin-running) 30%, transparent);
+  color: #fff;
+}
+[data-kirsin-shell] [data-kirsin-orb-expand]:hover {
+  background: color-mix(in srgb, #ffffff 10%, transparent);
+  color: var(--kirsin-accent);
+}
+
+/* The orb state hides the header + pill (display-swap, exactly like the pill
+   collapse) — but only once the morph tween has SETTLED (the shell flips
+   [data-kirsin-surface-hidden] in the tween's onDone), so during the 300ms
+   shrink the panel is still laid out and just rounds + fades with the
+   frame. The chat body stays MOUNTED: a running turn + the composer draft
+   must survive the collapse. */
+[data-kirsin-shell][data-kirsin-orb] [data-kirsin-header],
+[data-kirsin-shell][data-kirsin-orb] [data-kirsin-compact],
+[data-kirsin-shell][data-kirsin-orb] [data-kirsin-body] {
+  opacity: 0;
+  transition: opacity 180ms var(--kirsin-morph-ease);
+  pointer-events: none;
+}
+[data-kirsin-shell][data-kirsin-orb][data-kirsin-surface-hidden] [data-kirsin-header],
+[data-kirsin-shell][data-kirsin-orb][data-kirsin-surface-hidden] [data-kirsin-compact],
+[data-kirsin-shell][data-kirsin-orb][data-kirsin-surface-hidden] [data-kirsin-body] {
+  display: none;
+}
+
+/* Breathe: a slow, organic scale swell whose outer BLOOM swells in lockstep
+   (the reference's "thinking" pulse — the halo is brightest where the edge
+   bulges). The inset ring + inner sheen stay constant; only scale + the outer
+   glow animate. */
+@keyframes kirsin-orb-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.05),
+      inset 0 -14px 26px -18px color-mix(in srgb, var(--kirsin-accent) 30%, transparent),
+      0 0 18px 3px color-mix(in srgb, var(--kirsin-accent) 28%, transparent);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.05),
+      inset 0 -14px 26px -18px color-mix(in srgb, var(--kirsin-accent) 34%, transparent),
+      0 0 26px 6px color-mix(in srgb, var(--kirsin-accent) 42%, transparent);
+  }
+}
+/* Think-wave: the "Thinking…" label's letters hop in a gentle staggered wave
+   while a turn runs — the reference's "it's thinking" signal, now carried by
+   the LABEL (the spinner no longer spins). 1.7s per cycle = a 1.2s wave + a
+   0.5s hold (2026-09-28, Rosario: 1.2s → 2s "too fast" → 1.5s + 0.5s
+   re-trigger → "even 1.5s is too slow" → 1.2s + 0.5s). The letters travel in
+   the FIRST 70.588% of the cycle (rise 0→35.294%, fall 35.294→70.588%) and
+   hold still through the 0.5s re-trigger gap (70.588→100%), so the wave reads
+   as a distinct pulse instead of back-to-back. The 9-letter × 50ms stagger
+   still spans 450ms, so it flows across the loop. */
+@keyframes kirsin-think-wave {
+  0%,
+  70.588%,
+  100% {
+    transform: translateY(0);
+  }
+  /* One letter's own path is a little oscillation (dip → rise → settle), so
+     the per-letter stagger reads as a travelling WAVE rather than a flat
+     uniform hop (2026-09-28, Rosario: wave "feels flat" → then "a tiny bit
+     less wavy"). */
+  16% {
+    transform: translateY(1.5px);
+  }
+  35.294% {
+    transform: translateY(-4px);
+  }
+  56% {
+    transform: translateY(1px);
+  }
+}
+
+/* Respect reduced-motion: the orb's ambient CSS animations (breathe, label
+   wave, dot pulse) are the only ones left (the comet + the wavy-border SVGs
+   are gone — Approach C's hologram is a <canvas>, and the label wave + dot
+   pulse are the "thinking" signal, so they are OPTED BACK IN below). The
+   hologram itself is rAF/canvas-driven — NOT a CSS animation — so it keeps
+   living even under the blanket reduced-motion rule (OS "show animations"
+   OFF). The global rule (top of file) already clamps every CSS animation;
+   the overrides here restore the two opt-ins. */
+@media (prefers-reduced-motion: reduce) {
+  /* The status label's letter-wave and the running dot's pulse are OPTED BACK
+     IN under reduced motion: they are the "thinking" signal. The blanket
+     reduced-motion rule (top of file, `animation-duration: 0.01ms !important`
+     on `*`) was freezing them — and this block used to set them to `none`.
+     The `!important` here is higher-specificity than the blanket rule, so it
+     wins and they keep animating even with the OS "show animations" OFF. The
+     wavy border is JS/rAF-driven (unaffected either way); the breathe glow
+     stays still — those are the ambient layers reduced-motion is meant to
+     quiet. */
+  [data-kirsin-shell][data-kirsin-orb][data-kirsin-orb-thinking='true'] [data-kirsin-orb-label] > span {
+    /* LONGHAND, not the `animation` shorthand: the shorthand resets
+       animation-delay to 0s, and `!important` would beat the per-letter inline
+       animationDelay (i*50ms) — collapsing the stagger so every letter bounces
+       in unison instead of a traveling wave. Longhand leaves delay untouched,
+       so the inline stagger survives and the letters wave as before. */
+    animation-name: kirsin-think-wave !important;
+    animation-duration: 1.7s !important;
+    animation-timing-function: ease-in-out !important;
+    animation-iteration-count: infinite !important;
+  }
+  [data-kirsin-shell][data-kirsin-orb][data-kirsin-busy='true'] [data-kirsin-orb] {
+    animation: none;
+  }
+}
+
+/* ── Toasts in the Kirsin ORB window ───────────────────────────────────
+   The shared NotificationStack ports its regions to document.body, so they
+   are NOT inside this shell — reach them from the body via :has()
+   (Chromium 105+). In the orb the viewport is the ~218px circle; a toast
+   like "Approval timed out" (long message that wraps to many narrow lines
+   + a button) is ~300px tall, so its button was cut off BELOW the window
+   (CDP-measured: card bottom at y≈357 in a 219px viewport). The title is
+   already capped + scrolls (see toastTitleClassName); the message <p> was
+   uncapped. Here we cap the region so nothing escapes the circle, and let
+   the message scroll inside its card (same 4.5em cap as the title) so the
+   button stays reachable. Scoped to the orb only — full windows are fine. */
+body:has([data-kirsin-shell][data-kirsin-orb]) [data-toast-region] {
+  max-height: calc(100% - 54px);
+  overflow: hidden;
+}
+body:has([data-kirsin-shell][data-kirsin-orb]) [data-toast-region] p {
+  max-height: 4.5em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}

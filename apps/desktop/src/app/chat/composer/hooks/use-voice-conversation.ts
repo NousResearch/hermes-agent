@@ -112,6 +112,7 @@ export function useVoiceConversation({
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
   const bargedRef = useRef(false)
+  const generationInterruptRequestedRef = useRef(false)
   // Reply text that was playing when the barge tripped ('' for a
   // generation-phase trip: nothing audible, so nothing to echo).
   const bargeEchoTextRef = useRef('')
@@ -193,6 +194,7 @@ export function useVoiceConversation({
     stopBargeMonitorRef.current = null
     bargeCapturePendingRef.current = false
     bargedRef.current = false
+    generationInterruptRequestedRef.current = false
     bargeEchoTextRef.current = ''
     speechSessionRef.current = null
     responseIdRef.current = null
@@ -498,10 +500,16 @@ export function useVoiceConversation({
           return
         }
 
-        // A spoken stop command while barging means "stop everything" — the
-        // turn/playback was already cut at trip time; now end the conversation
-        // instead of submitting "stop" as a new prompt.
+        // A spoken stop command while barging means "stop everything". This is
+        // a confirmed utterance, so take the deferred cut before ending the
+        // conversation instead of submitting "stop" as a new prompt.
         if (isVoiceStopCommand(transcript)) {
+          if (!bargedRef.current) {
+            bargedRef.current = true
+            markVoicePlaybackInterrupted()
+            stopVoicePlayback()
+          }
+
           dropSpeechSession()
           setStatus('idle')
           onStopWordRef.current?.()
@@ -522,13 +530,18 @@ export function useVoiceConversation({
         }
 
         // Cut playback only after STT confirms a real utterance; false VAD
-        // trips then leave the reply and conversation untouched.
-        markVoicePlaybackInterrupted()
-        stopVoicePlayback()
+        // trips then leave the reply and conversation untouched. Generation
+        // was already cut at the VAD trip, so do not repeat that interrupt.
+        if (!bargedRef.current) {
+          bargedRef.current = true
+          markVoicePlaybackInterrupted()
+          stopVoicePlayback()
+        }
 
-        if (busyRef.current) {
+        if (busyRef.current && !generationInterruptRequestedRef.current) {
           // Mid-generation: stop the in-flight turn so the captured utterance
           // becomes the next one instead of queueing behind a stale reply.
+          generationInterruptRequestedRef.current = true
           void onInterruptRef.current?.()
         }
 
@@ -598,7 +611,17 @@ export function useVoiceConversation({
         // empty or filler transcript, so keep playback alive until STT
         // confirms a real, non-echo utterance.
         bargeCapturePendingRef.current = true
-        bargedRef.current = true
+
+        // Generation has no speaker bleed to guard against: preserve the old
+        // immediate interrupt contract for the in-flight turn. Playback cuts
+        // remain deferred until STT confirms a real, non-echo utterance.
+        if (busyRef.current && !generationInterruptRequestedRef.current) {
+          generationInterruptRequestedRef.current = true
+          bargedRef.current = true
+          markVoicePlaybackInterrupted()
+          stopVoicePlayback()
+          void onInterruptRef.current?.()
+        }
       },
       onUtterance: audio => {
         bargeCapturePendingRef.current = false

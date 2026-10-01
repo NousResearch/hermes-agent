@@ -621,7 +621,7 @@ class CLIAgentSetupMixin:
         # Reasoning policy is model-owned. Keep an explicit CLI --reasoning choice,
         # otherwise resolve the per-model/global policy for the route selected for this turn.
         if route["model"] == self.model or getattr(self, "_explicit_reasoning_config", None) is not None:
-            runtime["reasoning_config"] = self.reasoning_config
+            runtime["reasoning_config"] = getattr(self, "reasoning_config", None)
         else:
             from cli import CLI_CONFIG
             from hermes_constants import resolve_reasoning_config

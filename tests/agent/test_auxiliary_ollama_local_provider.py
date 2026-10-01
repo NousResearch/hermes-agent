@@ -20,7 +20,7 @@ import pytest
 def _keyless_environment(monkeypatch):
     for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
         monkeypatch.delenv(key, raising=False)
-    # The key ladder inherits the main config's key on a host match; the placeholder
+    # The key ladder inherits the main config's key on a same-origin match; the placeholder
     # assertions below need that rung empty.
     with patch("agent.auxiliary_client._read_main_api_key_if_same_origin", return_value=None):
         yield
@@ -44,7 +44,7 @@ def _client_attr(client, attr: str) -> str:
         ("", "", "no-key-required"),
         ("test-key-123", "", "test-key-123"),
         # SECURITY: a keyless local-server lane must not borrow OPENAI_API_KEY (or the main
-        # key on a host match) — that would send an OpenAI secret to the lane's base_url.
+        # key on a same-origin match) — that would send an OpenAI secret to the lane's base_url.
         ("", "sk-USER-OPENAI-SECRET", "no-key-required"),
     ],
 )

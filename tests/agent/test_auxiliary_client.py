@@ -4855,8 +4855,7 @@ class TestCustomEndpointApiKeyInheritance:
             aux.shutdown_cached_clients()
             aux.clear_runtime_main()
 
-        assert served[:2] == ["sk-first-session", "sk-second-session"]
-        assert served[2] == expected_third  # keyless explicit endpoint → placeholder; runtime endpoint → no client
+        assert served == ["sk-first-session", "sk-second-session", expected_third]
 
 
 class TestNoProgressTimeoutTaskConfigGating:

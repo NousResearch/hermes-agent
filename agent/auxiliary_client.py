@@ -2526,7 +2526,7 @@ def _read_main_api_key_if_same_origin(aux_base_url: str) -> Union[str, Callable[
     if live.get("base_url") or live.get("api_key"):
         if aux_origin != base_url_origin(live.get("base_url", "")):
             return ""
-        return _normalize_api_key(live.get("api_key", ""))
+        return live.get("api_key", "")
     if aux_origin != base_url_origin(_read_main_base_url()):
         return ""
     return _read_main_api_key()

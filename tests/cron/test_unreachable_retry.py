@@ -129,7 +129,7 @@ def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home
     assert remaining is None or remaining.get(ur.STATE_KEY) is None
 
 
-@pytest.mark.parametrize("rung_tail", ["finish", "crash"])
+@pytest.mark.parametrize("rung_tail", ["finish", "crash", "worker", "ownership_lost"])
 def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypatch, rung_tail):
     """A ladder re-run repeats an occurrence that already counted toward ``repeat``, so it must
     not count again. Otherwise an outage that outlasts the ladder retires a finite job with zero
@@ -157,6 +157,25 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
         if rung_tail == "crash" and held:
             assert sched._run_one_job_body(run) is False
             assert get_job(job_id)["repeat"]["completed"] == 1, "a crashed rung must not count"
+            return
+        if rung_tail == "worker" and held:
+            # A rung whose restart-safe worker died is recovered as an unknown outcome.
+            monkeypatch.setattr(
+                sched, "get_execution", lambda *_a, **_kw: {"status": "unknown", "error": "worker died"})
+            from cron.scheduler_worker_failure import record_unknown_worker_outcome
+            assert record_unknown_worker_outcome(run)
+            assert get_job(job_id)["repeat"]["completed"] == 1, "a dead-worker rung must not count"
+            return
+        if rung_tail == "ownership_lost" and held:
+            # A rung cancelled at the transport (dashboard drain) is recorded as interrupted.
+            import threading
+            cancelled = threading.Event()
+            cancelled.set()
+            monkeypatch.setattr(sched, "run_job", lambda *_a, **_kw: (True, "out", "done", None))
+            assert sched._run_one_job_body(run, transport_cancel=cancelled) is True
+            j = get_job(job_id)
+            assert j["last_error"] == sched._OWNERSHIP_LOST_INTERRUPTED
+            assert j["repeat"]["completed"] == 1, "an interrupted rung must not count"
             return
         run["_model_unreachable"] = True
         held.append(ur.will_retry(run))

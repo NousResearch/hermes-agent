@@ -3,8 +3,9 @@ import { useEffect, useMemo, useState } from 'react'
 
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
+import { desktopGit } from '@/lib/desktop-git'
 import { mapPool } from '@/lib/pool'
-import { $sidebarWorkspaceCollapsedIds, toggleWorkspaceNodeCollapsed } from '@/store/layout'
+import { $sidebarWorkspaceNodeOpen, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { $worktreeRefreshToken } from '@/store/projects'
 
 import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
@@ -14,6 +15,25 @@ export const SIDEBAR_GROUP_PAGE = 5
 
 // Recent sessions previewed under each project in the overview.
 export const PROJECT_PREVIEW_COUNT = 3
+
+// Rows each "Show more" adds once a project's full list is open (an expanded
+// overview row, an entered lane, entered Home). Large enough that 50+ sessions
+// are a click or two away, small enough that a 5000-chat Home never mounts
+// every row at once.
+export const PROJECT_SESSION_PAGE = 50
+
+// Reveal `rows` a page at a time: the first `first`, then PROJECT_SESSION_PAGE
+// per `showMore()`. `more` is the next step's size (0 once everything shows).
+export function useRevealedRows<T>(rows: T[], first: number): { more: number; shown: T[]; showMore: () => void } {
+  const [count, setCount] = useState(first)
+  const shown = rows.length > count ? rows.slice(0, count) : rows
+
+  return {
+    more: Math.min(PROJECT_SESSION_PAGE, rows.length - shown.length),
+    shown,
+    showMore: () => setCount(current => current + PROJECT_SESSION_PAGE)
+  }
+}
 
 // Max concurrent `git worktree list` probes when a project spans many repos.
 const WORKTREE_PROBE_CONCURRENCY = 4
@@ -44,11 +64,28 @@ const projectActivityTime = (project: SidebarProjectTree): number =>
 export const latestProjectSessions = (project: SidebarProjectTree, limit: number): SessionInfo[] =>
   [...projectSessions(project)].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
 
+// The overview payload carries only the most-recent preview rows per project.
+// Once the user asks for the rest, the project's full lanes are fetched on
+// demand; fold them under the (live-overlaid) preview so a just-created
+// session keeps its place and nothing renders twice.
+export const expandedProjectSessions = (preview: SessionInfo[], hydrated: SidebarProjectTree): SessionInfo[] => {
+  const seen = new Set(preview.map(session => session.id))
+
+  return [...preview, ...latestProjectSessions(hydrated, Infinity).filter(session => !seen.has(session.id))]
+}
+
+// Home is a fixture, not a project: it always leads the overview, above the
+// active project and outside any hand-picked order.
+const homeFirst = (projects: SidebarProjectTree[]): SidebarProjectTree[] =>
+  projects[0]?.isNoProject || !projects.some(project => project.isNoProject)
+    ? projects
+    : [...projects.filter(project => project.isNoProject), ...projects.filter(project => !project.isNoProject)]
+
 export function sortProjectsForOverview(
   projects: SidebarProjectTree[],
   activeProjectId: null | string
 ): SidebarProjectTree[] {
-  return [...projects].sort((a, b) => {
+  const sorted = [...projects].sort((a, b) => {
     const aActive = Boolean(activeProjectId && a.id === activeProjectId && !a.isAuto)
     const bActive = Boolean(activeProjectId && b.id === activeProjectId && !b.isAuto)
 
@@ -72,6 +109,41 @@ export function sortProjectsForOverview(
       a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
     )
   })
+
+  return homeFirst(sorted)
+}
+
+// Layer the user's manual drag-order over the deterministic sort.
+//
+// This can't just be `orderByIds`: that surfaces every id missing from the saved
+// order at the TOP, which is right for sessions (a new chat should not sink) but
+// wrong here. The overview also lists repos found by the disk scan that have
+// zero Hermes sessions, and those arrive continuously — so once the user dragged
+// anything, every freshly-scanned checkout jumped above the projects they
+// actually work in.
+//
+// Fresh projects keep their place in the deterministic sort instead: ones with
+// real activity go on top (a project you just started still surfaces), and
+// zero-session discoveries sink below the hand-ordered list.
+export function orderProjectsByIds(projects: SidebarProjectTree[], orderIds: string[]): SidebarProjectTree[] {
+  if (!orderIds.length) {
+    return projects
+  }
+
+  const byId = new Map(projects.map(project => [project.id, project]))
+  const ordered = orderIds.map(id => byId.get(id)).filter((p): p is SidebarProjectTree => Boolean(p))
+  const seen = new Set(ordered.map(project => project.id))
+  const fresh = projects.filter(project => !seen.has(project.id))
+
+  if (!fresh.length) {
+    return homeFirst(ordered)
+  }
+
+  return homeFirst([
+    ...fresh.filter(project => project.sessionCount > 0),
+    ...ordered,
+    ...fresh.filter(project => project.sessionCount <= 0)
+  ])
 }
 
 // Project drill-in lanes are git-driven: source them from `git worktree list` so
@@ -88,7 +160,7 @@ export function useRepoWorktreeMap(
   const refreshToken = useStore($worktreeRefreshToken)
 
   useEffect(() => {
-    const git = window.hermesDesktop?.git
+    const git = desktopGit()
 
     if (!enabled || !repoPaths.length || !git?.worktreeList) {
       setMap({})
@@ -122,14 +194,13 @@ export function useRepoWorktreeMap(
 // Persisted open/collapse for a repo/worktree node. Lets a project's folder
 // layout auto-restore when you enter it, and survive reloads.
 //
-// The persisted set is an OVERRIDE of `defaultOpen`, not an absolute "collapsed"
-// list: XOR lets one store serve both polarities. A default-open node (repo,
-// populated lane) lists collapses; a default-collapsed node (an EMPTY lane — no
-// sessions yet) instead records an explicit expand. So empty worktree/branch
-// lanes start collapsed and only open when the user clicks in.
+// State is stored as the RESOLVED boolean per node (see `$sidebarWorkspaceNodeOpen`),
+// so a node whose `defaultOpen` flips — an empty worktree/branch lane defaults
+// collapsed, then defaults open once it holds a session — keeps whatever the
+// user explicitly chose instead of having it silently reinterpreted. An absent
+// id follows `defaultOpen`, so empty lanes still start collapsed until opened.
 export function useWorkspaceNodeOpen(id: string, defaultOpen = true): [boolean, () => void] {
-  const collapsed = useStore($sidebarWorkspaceCollapsedIds)
-  const overridden = collapsed.includes(id)
+  const state = useStore($sidebarWorkspaceNodeOpen)
 
-  return [defaultOpen ? !overridden : overridden, () => toggleWorkspaceNodeCollapsed(id)]
+  return [state[id] ?? defaultOpen, () => toggleWorkspaceNodeCollapsed(id, defaultOpen)]
 }

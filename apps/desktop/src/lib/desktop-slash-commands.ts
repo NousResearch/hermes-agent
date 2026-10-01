@@ -1,14 +1,43 @@
+import { translateNow } from '@/i18n/runtime'
+import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
+
+import desktopSlashRegistry from './desktop-slash-registry.json'
+
 export interface CommandsCatalogSection {
   name: string
   pairs: [string, string][]
 }
 
+export interface CommandCatalogMeta {
+  argument_mode?: 'mixed' | 'options' | 'text' | null
+  desktop?: string | null
+  /** Subcommands the desktop surface may offer and forward; absent = all. */
+  desktop_subcommands?: readonly string[] | null
+}
+
 export interface CommandsCatalogLike {
+  canon?: Record<string, string>
   categories?: CommandsCatalogSection[]
+  commands?: Record<string, CommandCatalogMeta>
   pairs?: [string, string][]
   skill_count?: number
+  skills?: SkillCatalogMap
   warning?: string
 }
+
+/**
+ * Per-skill ranking data from `commands.catalog`, keyed by slash command.
+ * Absent on older backends — every helper below degrades to "no ranking,
+ * hide nothing".
+ */
+export interface SkillCatalogEntry {
+  /** Where the skill came from; matches `/api/skills` provenance ('agent' = 'local'). */
+  origin?: 'bundled' | 'hub' | 'local'
+  /** Observed activity (use + view + patch) — the same number Capabilities shows. */
+  usage?: number
+}
+
+export type SkillCatalogMap = Record<string, SkillCatalogEntry>
 
 export interface DesktopSlashCompletion {
   display: string
@@ -29,23 +58,30 @@ export interface DesktopThemeCommandOption {
  * keyed by the id.
  */
 export type DesktopActionId =
+  | 'background'
   | 'branch'
   | 'browser'
+  | 'btw'
+  | 'compress'
   | 'handoff'
   | 'hatch'
   | 'help'
+  | 'journey'
   | 'new'
   | 'pet'
   | 'profile'
+  | 'reasoning'
   | 'skin'
+  | 'stop'
   | 'title'
+  | 'wake'
   | 'yolo'
 
 /** A command fulfilled by opening a desktop overlay picker. */
 export type DesktopPickerId = 'model' | 'session'
 
 /** Why a known Hermes command has no desktop UI surface. */
-export type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | 'terminal'
+export type DesktopUnavailableReason = 'advanced' | 'composer-voice' | 'messaging' | 'settings' | 'terminal'
 
 /**
  * How the desktop fulfils a command. This is the single discriminator the
@@ -54,16 +90,50 @@ export type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | '
  * - `action`     → handled by a local client handler (new chat, branch, …)
  * - `picker`     → opens an overlay (`/model`, `/resume`); a typed arg is
  *                  resolved by that picker instead of falling through
+ * - `rpc`        → dedicated gateway RPC named on the surface. The dispatcher
+ *                  calls it directly with the params built by `buildParams`,
+ *                  bypassing `slash.exec` / `command.dispatch`. Reserved for
+ *                  commands that have a first-class RPC handler in
+ *                  `tui_gateway/server.py` (e.g. `/save` → session.save).
  * - `exec`       → runs on the backend via slash.exec / command.dispatch and
- *                  renders its text output inline
+ *                  renders its text output inline. Only commands WITHOUT a
+ *                  dedicated RPC should stay here.
  * - `unavailable`→ a known command with genuinely no desktop UI (terminal-only,
  *                  messaging-only, …); shows a reason instead of executing
  */
 export type DesktopCommandSurface =
   | { kind: 'action'; action: DesktopActionId }
   | { kind: 'picker'; picker: DesktopPickerId }
+  | {
+      kind: 'rpc'
+      rpc: string
+      timeoutMs?: number
+      buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown>
+    }
   | { kind: 'exec' }
   | { kind: 'unavailable'; reason: DesktopUnavailableReason }
+
+/**
+ * Inputs a `buildParams` function receives. The dispatcher passes session id,
+ * the typed arg, and the canonical command name so handlers can construct
+ * the exact JSON the gateway method expects.
+ */
+export interface SlashCommandBuildCtx {
+  arg: string
+  command: string
+  name: string
+  sessionId: string
+}
+
+/**
+ * How arguments behave in the Desktop composer.
+ *
+ * - `options` → a finite completion list; picking or fully typing an option may
+ *               commit the complete directive as a chip.
+ * - `text`    → arbitrary prose; the command and its argument stay editable.
+ * - `mixed`   → offers subcommand completions but also accepts arbitrary prose.
+ */
+export type DesktopSlashArgumentMode = 'mixed' | 'options' | 'text'
 
 export interface DesktopCommandSpec {
   /** Canonical command, leading slash included (e.g. `/resume`). */
@@ -78,12 +148,16 @@ export interface DesktopCommandSpec {
    * the status bar), so the popover doesn't dead-end on inline completion.
    */
   hidden?: boolean
+  /** Composer behavior for text following the command token. */
+  argumentMode?: DesktopSlashArgumentMode
   /**
-   * The command has an inline options "screen" (theme / personality / session /
-   * platform / toolset list). Picking the bare command in the popover expands to
-   * that argument step instead of committing — mirroring typing `/<cmd> ` by hand.
+   * Subcommands (first argument token) the desktop may forward when the
+   * command is exec-routed. Absent = the whole family is allowed. Registry
+   * commands declare this as `desktop_subcommands` so a desktop-relevant
+   * review slice can be exposed without widening CLI-hub mutations
+   * (e.g. `/skills install`).
    */
-  args?: boolean
+  desktopSubcommands?: readonly string[]
 }
 
 const exec = (): DesktopCommandSurface => ({ kind: 'exec' })
@@ -92,13 +166,34 @@ const picker = (id: DesktopPickerId): DesktopCommandSurface => ({ kind: 'picker'
 const unavailable = (reason: DesktopUnavailableReason): DesktopCommandSurface => ({ kind: 'unavailable', reason })
 
 /**
- * THE source of truth for desktop slash commands. Everything below — execution
- * gating, popover suggestions, catalog filtering, pill grouping, and the
- * dispatcher's behavior — derives from this one table.
+ * Route a command directly to its dedicated gateway RPC. Prefer this over
+ * `exec()` whenever `tui_gateway/server.py` exposes a `@method(...)` for the
+ * command — bypassing `slash.exec` keeps the path short and the response
+ * structured.
+ *
+ * The dispatcher calls `requestGateway(surface.rpc, surface.buildParams(ctx))`
+ * and then runs `renderRpcResult` to format the response.
+ */
+const rpc = (
+  rpcName: string,
+  buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown>,
+  timeoutMs?: number
+): DesktopCommandSurface => ({ kind: 'rpc', rpc: rpcName, timeoutMs, buildParams })
+
+/**
+ * Local desktop overlay — actions, pickers, and dedicated RPCs the Electron
+ * client owns. Registry commands without a row here are `exec` unless the
+ * catalog marks them unavailable/hidden. New commands and plugins declare
+ * `argument_mode` / `desktop` on the Python registry instead of adding a row.
  */
 const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
-  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
+  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset', '/clear'], surface: action('new') },
+  {
+    name: '/stop',
+    description: 'Stop the active turn and background processes',
+    surface: action('stop')
+  },
   {
     name: '/branch',
     description: 'Branch the latest message into a new chat',
@@ -107,20 +202,43 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
   { name: '/yolo', description: 'Toggle YOLO — auto-approve dangerous commands', surface: action('yolo') },
   {
+    name: '/reasoning',
+    description: 'Reasoning effort or display [<level> [--global]|show|hide|full|clamp]',
+    surface: action('reasoning'),
+    argumentMode: 'options'
+  },
+  {
+    name: '/wake',
+    description: 'Control the desktop wake-word listener [on|off|status]',
+    surface: action('wake'),
+    argumentMode: 'options'
+  },
+  {
     name: '/handoff',
     description: 'Hand off this session to a messaging platform',
     surface: action('handoff'),
-    args: true
+    argumentMode: 'options'
   },
   { name: '/profile', description: 'Switch the active Hermes profile', surface: action('profile') },
-  { name: '/skin', description: 'Switch desktop theme or cycle to the next one', surface: action('skin'), args: true },
-  { name: '/title', description: 'Rename the current session', surface: action('title') },
+  {
+    name: '/skin',
+    description: 'Switch desktop theme or cycle to the next one',
+    surface: action('skin'),
+    argumentMode: 'options'
+  },
+  { name: '/title', description: 'Rename the current session', surface: action('title'), argumentMode: 'text' },
   { name: '/help', description: 'Show desktop slash commands', aliases: ['/commands'], surface: action('help') },
   {
     name: '/browser',
     description: 'Manage browser CDP connection [connect|disconnect|status] (local gateway only)',
     surface: action('browser'),
-    args: true
+    argumentMode: 'options'
+  },
+  {
+    name: '/journey',
+    description: 'Open the memory graph — skills + memories over time',
+    aliases: ['/learning', '/memory-graph'],
+    surface: action('journey')
   },
 
   // Overlay pickers
@@ -130,26 +248,52 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Resume a saved session',
     aliases: ['/sessions', '/switch'],
     surface: picker('session'),
-    args: true
+    // `mixed`, not `options`: the argument is a free-text search the picker
+    // fuzzy-matches against titles and previews, so multi-word queries have to
+    // stay typeable. Its completion list also always carries a trailing
+    // "Browse all sessions…" action row, which meant Space-to-accept could
+    // never fall through — the first space wiped the composer and threw the
+    // user into the overlay.
+    argumentMode: 'mixed'
   },
 
-  // Backend-executed commands that render useful inline output
+  // /compress must be an action (session.compress RPC), not exec: the slash
+  // worker route times out on large sessions (30s WS / 45s pipe) before the
+  // LLM summarise call finishes, then command.dispatch surfaces a bogus
+  // "not a quick/plugin/skill command: compress" (#44456).
   {
-    name: '/agents',
-    description: 'Show active desktop sessions and running tasks',
-    aliases: ['/tasks'],
-    surface: exec()
+    name: '/compress',
+    description: 'Compress this conversation context',
+    aliases: ['/compact'],
+    surface: action('compress'),
+    argumentMode: 'text'
   },
-  { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg', '/btw'], surface: exec() },
-  { name: '/compress', description: 'Compress this conversation context', surface: exec() },
-  { name: '/debug', description: 'Create a debug report', surface: exec() },
-  { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
-  { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
+  // /btw must be an action (prompt.btw RPC), not exec: the slash worker
+  // prints the answer after process_command returns, so Desktop only ever
+  // saw the acknowledgement (#99065). The answer arrives as btw.complete.
+  {
+    name: '/btw',
+    description: 'Ask a side question about this conversation without interrupting it',
+    surface: action('btw'),
+    argumentMode: 'text'
+  },
+  // /bg (alias /background) must be an action (prompt.background RPC — the
+  // TUI's path), not exec: the slash worker's HermesCLI prints the completion
+  // from a fire-and-forget thread after process_command already returned,
+  // past the worker's stdout capture window, so the result never reached the
+  // desktop conversation that started the task (#97635, #57444).
+  {
+    name: '/bg',
+    description: 'Run a prompt in a background session',
+    aliases: ['/background'],
+    surface: action('background'),
+    argumentMode: 'text'
+  },
   {
     name: '/pet',
     description: 'Toggle or adopt a petdex mascot (/pet, /pet list, /pet boba)',
     surface: action('pet'),
-    args: true
+    argumentMode: 'options'
   },
   {
     name: '/hatch',
@@ -157,80 +301,212 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     aliases: ['/generate-pet'],
     surface: action('hatch')
   },
-  { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },
-  { name: '/retry', description: 'Retry the last user message', surface: exec() },
-  { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
-  { name: '/save', description: 'Save the current transcript to JSON', surface: exec() },
-  { name: '/status', description: 'Show current session status', surface: exec() },
-  { name: '/steer', description: 'Steer the current run after the next tool call', surface: exec() },
-  { name: '/stop', description: 'Stop running background processes', surface: exec() },
-  { name: '/tools', description: 'List or toggle tools available to the agent', surface: exec(), args: true },
-  { name: '/undo', description: 'Remove the last user/assistant exchange', surface: exec() },
-  { name: '/usage', description: 'Show token usage for this session', surface: exec() },
-  { name: '/version', description: 'Show Hermes Agent version', surface: exec() },
-
-  // No desktop surface, but carry an alias (underscore spelling variants).
-  { name: '/reload-mcp', aliases: ['/reload_mcp'], surface: unavailable('advanced') },
-  { name: '/reload-skills', aliases: ['/reload_skills'], surface: unavailable('advanced') }
+  {
+    name: '/save',
+    description: 'Save the current transcript to JSON',
+    surface: rpc('session.save', ctx => ({ session_id: ctx.sessionId }))
+  },
+  {
+    name: '/status',
+    description: 'Show current session status',
+    surface: rpc('session.status', ctx => ({ session_id: ctx.sessionId }))
+  },
+  {
+    // Keep this explicit so a current Desktop can review staged writes even
+    // when connected to an older backend whose catalog still says the Skills
+    // sidebar owns the command. The sidebar manages installed skills; it does
+    // not expose the write-approval queue (#98330).
+    name: '/skills',
+    description: 'Review staged skill writes and approval mode',
+    surface: exec(),
+    argumentMode: 'options',
+    desktopSubcommands: ['pending', 'approve', 'reject', 'diff', 'approval']
+  }
 ]
 
-// Known commands with no desktop surface (and no alias) — a flat name list
-// per reason beats 40 identical object literals.
-const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
-  terminal: [
-    '/busy',
-    '/clear',
-    '/compact',
-    '/config',
-    '/copy',
-    '/cron',
-    '/details',
-    '/exit',
-    '/footer',
-    '/gateway',
-    '/history',
-    '/image',
-    '/indicator',
-    '/logs',
-    '/mouse',
-    '/paste',
-    '/platforms',
-    '/plugins',
-    '/quit',
-    '/redraw',
-    '/reload',
-    '/restart',
-    '/sb',
-    '/set-home',
-    '/sethome',
-    '/snap',
-    '/snapshot',
-    '/statusbar',
-    '/toolsets',
-    '/update',
-    '/verbose'
-  ],
-  messaging: ['/approve', '/deny'],
-  settings: ['/skills', '/pets'],
-  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning', '/voice']
+/**
+ * Offline fallback for the registry's `desktop=` metadata, dumped from
+ * `hermes_cli/commands.py::desktop_surface_registry` by
+ * `scripts/dump_desktop_slash_registry.py`. The live `commands.catalog` answers
+ * first (`specFromCatalog`); this copy only covers the gap before the backend
+ * replies. A Python test and `desktop-slash-commands.test.ts` both fail when
+ * the JSON drifts from either side, so the Python registry stays the single
+ * place a command's desktop disposition is authored.
+ */
+const REGISTRY_DESKTOP_SURFACE: Readonly<Record<string, string | null>> = desktopSlashRegistry
+
+/**
+ * Commands the Python registry has never heard of, so they cannot ride the
+ * dump above. `/density`, `/details`, `/logs`, `/mouse` are Ink-process-local
+ * display toggles handled inside `ui-tui/src/app/slash/commands/core.ts`
+ * (three are advertised through `tui_gateway/server.py::_TUI_EXTRA`); `/pets`
+ * is the plural typo of the desktop's own `/pet` action and points at the
+ * sidebar instead of falling through as an unknown skill.
+ */
+export const TS_ONLY_NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
+  advanced: [],
+  'composer-voice': [],
+  messaging: [],
+  settings: ['/pets'],
+  terminal: ['/density', '/details', '/logs', '/mouse']
+}
+
+const LOCAL_SPEC_NAMES = new Set(DESKTOP_COMMAND_SPECS.flatMap(spec => [spec.name, ...(spec.aliases ?? [])]))
+
+/** Registry rows the local table doesn't already curate. A row with a real
+ *  unavailability reason blocks the command; a `null` row is an OFFERED
+ *  built-in (`/context`, `/usage`, …) and becomes a plain `exec` spec, so the
+ *  desktop recognizes every registry command offline — otherwise, before the
+ *  first `commands.catalog` round-trip (or against an older gateway whose
+ *  `complete.slash` rows carry no `kind`), `/context` read as a skill: Skills
+ *  group in the popover, skill chip on paste, extension dispatch (#116159).
+ *  `hidden` (e.g. `/model`) is a popover flag on an executable command and is
+ *  read from the live catalog by `specFromCatalog`; a local spec always wins
+ *  over the dump. */
+function registryDerivedSpecs(): DesktopCommandSpec[] {
+  return Object.entries(REGISTRY_DESKTOP_SURFACE).flatMap(([name, value]) => {
+    if (LOCAL_SPEC_NAMES.has(name)) {
+      return []
+    }
+
+    if (value === null) {
+      return [{ name, surface: exec() }]
+    }
+
+    const reason = asUnavailableReason(value)
+
+    return reason ? [{ name, surface: unavailable(reason) }] : []
+  })
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [
   ...DESKTOP_COMMAND_SPECS,
-  ...(Object.entries(NO_DESKTOP_SURFACE) as [DesktopUnavailableReason, readonly string[]][]).flatMap(
+  ...registryDerivedSpecs(),
+  ...(Object.entries(TS_ONLY_NO_DESKTOP_SURFACE) as [DesktopUnavailableReason, readonly string[]][]).flatMap(
     ([reason, names]) => names.map(name => ({ name, surface: unavailable(reason) }))
   )
 ]
 
 const SPEC_BY_NAME = new Map<string, DesktopCommandSpec>(ALL_SPECS.map(spec => [spec.name, spec]))
 
+/** Names whose only local spec is the dump's offline `exec` placeholder. The
+ *  live catalog knows more about these (argument mode, `hidden`), so it wins
+ *  once it has answered; the placeholder only covers the cold gap. */
+const REGISTRY_OFFERED_NAMES = new Set(
+  Object.entries(REGISTRY_DESKTOP_SURFACE).flatMap(([name, value]) =>
+    value === null && !LOCAL_SPEC_NAMES.has(name) ? [name] : []
+  )
+)
+
 const ALIAS_TO_CANONICAL = new Map<string, string>(
   ALL_SPECS.flatMap(spec => (spec.aliases ?? []).map(alias => [alias, spec.name] as const))
 )
 
+let rememberedCatalog: CommandsCatalogLike | undefined
+
+/** Last catalog the composer saw — used so Space/Enter know argument mode
+ *  without waiting for another `/` keystroke. */
+export function rememberDesktopCommandsCatalog(catalog: CommandsCatalogLike | undefined): void {
+  rememberedCatalog = catalog
+}
+
+function liveCatalog(): CommandsCatalogLike | undefined {
+  return rememberedCatalog ?? peekCachedSlashCompletion<CommandsCatalogLike>('catalog')
+}
+
+function catalogMeta(command: string): CommandCatalogMeta | undefined {
+  const commands = liveCatalog()?.commands
+
+  if (!commands) {
+    return undefined
+  }
+
+  const normalized = normalizeCommand(command)
+  const canonical = ALIAS_TO_CANONICAL.get(normalized) || catalogCanonical(normalized) || normalized
+
+  return commands[canonical] ?? commands[normalized]
+}
+
+function catalogCanonical(normalized: string): string | undefined {
+  const canon = liveCatalog()?.canon
+
+  if (!canon) {
+    return undefined
+  }
+
+  return canon[normalized] ?? canon[normalized.toLowerCase()]
+}
+
+function asUnavailableReason(value: string | null | undefined): DesktopUnavailableReason | null {
+  if (
+    value === 'advanced' ||
+    value === 'composer-voice' ||
+    value === 'messaging' ||
+    value === 'settings' ||
+    value === 'terminal'
+  ) {
+    return value
+  }
+
+  return null
+}
+
+function asArgumentMode(value: string | null | undefined): DesktopSlashArgumentMode | undefined {
+  if (value === 'options' || value === 'text' || value === 'mixed') {
+    return value
+  }
+
+  return undefined
+}
+
+function specFromCatalog(command: string): DesktopCommandSpec | null {
+  const entry = catalogMeta(command)
+
+  if (!entry) {
+    return null
+  }
+
+  const name = canonicalDesktopSlashCommand(command)
+  const reason = asUnavailableReason(entry.desktop)
+
+  if (reason) {
+    return { name, surface: unavailable(reason) }
+  }
+
+  return {
+    name,
+    surface: exec(),
+    hidden: entry.desktop === 'hidden',
+    argumentMode: asArgumentMode(entry.argument_mode),
+    desktopSubcommands: asSubcommandList(entry.desktop_subcommands)
+  }
+}
+
+function asSubcommandList(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+
+  return value.filter((sub): sub is string => typeof sub === 'string' && sub.trim() !== '')
+}
+
+function isAliasCommand(command: string): boolean {
+  const normalized = normalizeCommand(command)
+
+  if (ALIAS_TO_CANONICAL.has(normalized)) {
+    return true
+  }
+
+  const resolved = catalogCanonical(normalized)
+
+  return Boolean(resolved && resolved.toLowerCase() !== normalized)
+}
+
 const UNAVAILABLE_MESSAGE: Record<DesktopUnavailableReason, (command: string) => string> = {
   advanced: command =>
     `${command} is not shown in the desktop slash palette. Use the relevant desktop control or terminal interface instead.`,
+  'composer-voice': () =>
+    'Voice chat lives in the composer here: click the microphone button and choose "Start voice chat", or use the voice shortcut from Settings → Keyboard Shortcuts.',
   messaging: command => `${command} is only used from messaging platforms.`,
   settings: command => `${command} is managed from the desktop sidebar.`,
   terminal: command => `${command} is only available in the terminal interface.`
@@ -251,18 +527,140 @@ function normalizeCommand(command: string): string {
 export function canonicalDesktopSlashCommand(command: string): string {
   const normalized = normalizeCommand(command)
 
-  return ALIAS_TO_CANONICAL.get(normalized) || normalized
+  return ALIAS_TO_CANONICAL.get(normalized) || catalogCanonical(normalized) || normalized
 }
 
 /** Resolve a command (or alias) to its desktop spec, or null for unknown/extension commands. */
 export function resolveDesktopCommand(command: string): DesktopCommandSpec | null {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command)) ?? null
+  const canonical = canonicalDesktopSlashCommand(command)
+  const local = SPEC_BY_NAME.get(canonical)
+  const catalog = specFromCatalog(command)
+
+  if (local && catalog?.desktopSubcommands !== undefined) {
+    return { ...local, desktopSubcommands: catalog.desktopSubcommands }
+  }
+
+  if (local && REGISTRY_OFFERED_NAMES.has(canonical)) {
+    return catalog ?? local
+  }
+
+  return local ?? catalog
+}
+
+/** Subcommands the desktop may forward for *command*; null = unrestricted. */
+export function desktopSubcommandAllowlist(command: string): readonly string[] | null {
+  return resolveDesktopCommand(command)?.desktopSubcommands ?? null
+}
+
+/**
+ * Execution gate for exec-routed commands whose spec narrows the family to a
+ * subcommand allowlist (see `desktop_subcommands` on the Python registry).
+ * The first argument token must name an allowed subcommand — anything else
+ * (including a bare command, which the CLI would answer with its interactive
+ * hub) stays off the desktop exec path. Returns the message to render instead
+ * of forwarding, or null when the command may run.
+ */
+export function desktopSubcommandUnavailableMessage(command: string, arg: string): string | null {
+  const allowed = desktopSubcommandAllowlist(command)
+
+  if (!allowed) {
+    return null
+  }
+
+  const display = command.trim().startsWith('/') ? command.trim() : `/${command.trim()}`
+
+  if (allowed.length === 0) {
+    return `${display} is not available in the desktop app — use the terminal for it.`
+  }
+
+  const first = arg.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+
+  if (!first) {
+    return `${display} needs a subcommand here: ${allowed.join(', ')}.`
+  }
+
+  if (!allowed.some(sub => sub.toLowerCase() === first)) {
+    return `${display} ${first} is not available in the desktop app — use the terminal for it. Available here: ${allowed.join(', ')}.`
+  }
+
+  return null
+}
+
+/**
+ * Drop backend `complete.slash` items whose subcommand token the exec gate
+ * above would refuse, so the popover never suggests a dead end. Command-stage
+ * completions pass through. When `stage.isArgCompletion` is provided, that
+ * backend `replace_from` flag wins over re-parsing whitespace in `text`.
+ */
+export function filterDesktopSubcommandCompletions<T extends { text?: string }>(
+  text: string,
+  items: readonly T[],
+  stage?: { isArgCompletion: boolean }
+): T[] {
+  const command = normalizeCommand(text)
+  const allowed = desktopSubcommandAllowlist(command)
+  const trimmedText = text.trimStart()
+  const normalizedText = trimmedText.startsWith('/') ? trimmedText : `/${trimmedText}`
+  const rest = normalizedText.slice(command.length)
+  // Prefer the backend's replace_from stage when the caller has it. Re-parsing
+  // the query from whitespace disagrees with that flag in both directions.
+  const inArgStage = stage?.isArgCompletion ?? /^\s/.test(rest)
+
+  // Only the argument stage (`/skills …`, including a bare trailing space)
+  // carries subcommand items; command-token completions pass through.
+  if (!allowed || !inArgStage) {
+    return [...items]
+  }
+
+  const argumentText = rest.trimStart()
+  const secondTokenBoundary = argumentText.search(/\s/)
+
+  // Once an allowed first argument is complete, the backend owns completion
+  // of its value (for example `approval on` or `approve <id>`). Keep refusing
+  // value completions for a hub mutation that the execution gate would block.
+  if (secondTokenBoundary >= 0) {
+    const first = argumentText.slice(0, secondTokenBoundary).toLowerCase()
+
+    return allowed.some(entry => entry.toLowerCase() === first) ? [...items] : []
+  }
+
+  return items.filter(item => {
+    if (typeof item.text !== 'string') {
+      return false
+    }
+
+    const sub = item.text.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+
+    return sub !== '' && allowed.some(entry => entry.toLowerCase() === sub)
+  })
+}
+
+/** Actions that fork their own run instead of speaking into the current turn. */
+const SIDE_TASK_ACTIONS: ReadonlySet<DesktopActionId> = new Set(['background', 'btw'])
+
+/**
+ * True for a slash command that runs beside the live turn (`/btw`, `/bg`,
+ * `/background`): it answers from a snapshot or a separate session, so it must
+ * not resolve a clarify/connection card parked on the current turn.
+ */
+export function isSideTaskSlashCommand(text: string): boolean {
+  if (!text.trim().startsWith('/')) {
+    return false
+  }
+
+  const surface = resolveDesktopCommand(text)?.surface
+
+  return surface?.kind === 'action' && SIDE_TASK_ACTIONS.has(surface.action)
 }
 
 function isKnownHermesSlashCommand(command: string): boolean {
   const normalized = normalizeCommand(command)
 
-  return SPEC_BY_NAME.has(normalized) || ALIAS_TO_CANONICAL.has(normalized)
+  if (SPEC_BY_NAME.has(normalized) || ALIAS_TO_CANONICAL.has(normalized)) {
+    return true
+  }
+
+  return catalogMeta(normalized) !== undefined
 }
 
 /**
@@ -281,12 +679,41 @@ export function isDesktopSlashExtensionCommand(command: string): boolean {
   return !isKnownHermesSlashCommand(normalized)
 }
 
-/** Gates execution: true unless the command is a known no-desktop-surface command. */
-export function isDesktopSlashCommand(command: string): boolean {
+/**
+ * Popover group for a `complete.slash` row. The backend already tags each
+ * item `skill` | `command`; trust that so a new registry command isn't
+ * dumped into Skills just because this table has no row yet. Older backends
+ * omit `kind` — then the table is the fallback.
+ */
+export function slashCompletionGroup(command: string, kind?: string | null): 'Commands' | 'Skills' {
+  if (kind === 'skill') {
+    return 'Skills'
+  }
+
+  if (kind === 'command') {
+    return 'Commands'
+  }
+
+  return isDesktopSlashExtensionCommand(command) ? 'Skills' : 'Commands'
+}
+
+/** Gates execution: true unless the command is a known no-desktop-surface
+ *  command. Pass the typed `arg` for registry-narrowed commands
+ *  (`desktop_subcommands`): when the invocation's first token is an allowed
+ *  subcommand (`/skills pending`) it execs even though the bare command
+ *  resolves to `unavailable`. */
+export function isDesktopSlashCommand(command: string, arg = ''): boolean {
   const spec = resolveDesktopCommand(command)
 
   if (spec) {
-    return spec.surface.kind !== 'unavailable'
+    if (spec.surface.kind !== 'unavailable') {
+      return true
+    }
+
+    const allowed = spec.desktopSubcommands
+    const first = arg.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+
+    return Boolean(allowed?.some(sub => sub.toLowerCase() === first))
   }
 
   return isDesktopSlashExtensionCommand(command)
@@ -294,17 +721,32 @@ export function isDesktopSlashCommand(command: string): boolean {
 
 /** Gates discovery in the popover/completions. */
 export function isDesktopSlashSuggestion(command: string): boolean {
+  return isDesktopSlashSuggestionWithOptions(command, {})
+}
+
+/**
+ * Same gate, with the one escape hatch the composer needs: an alias the user
+ * typed EXACTLY (`/reset`, not a browsing prefix) must surface, or the empty
+ * "no matches" popover reads as "this command doesn't exist" while Enter still
+ * executes it (#57641). Gated on `isDesktopSlashCommand` so aliases whose
+ * canonical has no desktop surface (e.g. `/reload_mcp`) stay hidden.
+ */
+export function isDesktopSlashSuggestionWithOptions(command: string, options: { exactAlias?: string } = {}): boolean {
   const normalized = normalizeCommand(command)
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.
-  if (ALIAS_TO_CANONICAL.has(normalized)) {
+  if (isAliasCommand(normalized)) {
+    if (options.exactAlias != null) {
+      return normalizeCommand(options.exactAlias) === normalized && isDesktopSlashCommand(normalized)
+    }
+
     return false
   }
 
-  const spec = SPEC_BY_NAME.get(normalized)
+  const spec = resolveDesktopCommand(normalized)
 
   if (spec) {
-    return spec.surface.kind !== 'unavailable' && !spec.hidden
+    return spec.surface.kind !== 'unavailable' && !spec.hidden && spec.desktopSubcommands?.length !== 0
   }
 
   // Skill / quick commands the backend provides.
@@ -332,7 +774,7 @@ export function isModelPickerCommand(command: string): boolean {
 
 export function desktopSlashUnavailableMessage(command: string): string | null {
   const canonical = canonicalDesktopSlashCommand(command)
-  const surface = SPEC_BY_NAME.get(canonical)?.surface
+  const surface = resolveDesktopCommand(canonical)?.surface
 
   if (!surface) {
     return null
@@ -350,16 +792,23 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
+  const canonical = canonicalDesktopSlashCommand(command)
+  const key = `composer.commandDescs.${canonical}`
+  const translated = translateNow(key)
+  const description = translated !== key ? translated : SPEC_BY_NAME.get(canonical)?.description
+
+  if (!description) {
+    return fallback
+  }
+
+  // Keep backend-owned flags and placeholders verbatim when replacing prose.
+  const usage = fallback.match(/\s+\(usage:\s+(.+)\)$/s)?.[0] ?? ''
+
+  return `${description}${usage}`
 }
 
-/**
- * True when picking the bare command should expand to its inline argument
- * options (theme / personality / session / platform / toolset) rather than
- * committing immediately. Lets the popover act as a two-step picker.
- */
-export function desktopSlashCommandTakesArgs(command: string): boolean {
-  return resolveDesktopCommand(command)?.args ?? false
+export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {
+  return resolveDesktopCommand(command)?.argumentMode ?? asArgumentMode(catalogMeta(command)?.argument_mode) ?? null
 }
 
 export function desktopSkinSlashCompletions(
@@ -394,7 +843,46 @@ export function desktopSkinSlashCompletions(
   return commands.filter(item => item.text.slice('/skin '.length).toLowerCase().startsWith(prefix))
 }
 
+/**
+ * Order skill rows by how much the user actually uses them, most-used first,
+ * A–Z within a tie. A `/` menu sorted alphabetically buries the handful of
+ * skills someone reaches for daily under a hundred they have never opened.
+ *
+ * `pruneUnusedBuiltins` additionally drops bundled skills with no recorded
+ * activity — the ones that ship with Hermes and were never asked for. It is
+ * for BROWSING (a bare `/`) only: typing a query is a search, and a search
+ * must never hide a match.
+ *
+ * Older backends send no `skills` map; then nothing is reordered or dropped.
+ */
+export function rankSkillCommands<T extends { text: string }>(
+  rows: readonly T[],
+  skills: SkillCatalogMap | undefined,
+  { pruneUnusedBuiltins = false }: { pruneUnusedBuiltins?: boolean } = {}
+): T[] {
+  if (!skills) {
+    return [...rows]
+  }
+
+  const entryOf = (row: T): SkillCatalogEntry | undefined => skills[canonicalDesktopSlashCommand(row.text)]
+  const usageOf = (row: T): number => entryOf(row)?.usage ?? 0
+
+  const kept = pruneUnusedBuiltins
+    ? rows.filter(row => {
+        const entry = entryOf(row)
+
+        // Unknown to the map (a quick command, a newer skill the catalog
+        // hasn't classified) stays — only a confirmed never-used built-in goes.
+        return !entry || entry.origin !== 'bundled' || (entry.usage ?? 0) > 0
+      })
+    : [...rows]
+
+  return kept.sort((a, b) => usageOf(b) - usageOf(a) || a.text.localeCompare(b.text))
+}
+
 export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): CommandsCatalogLike {
+  rememberDesktopCommandsCatalog(catalog)
+
   const categories = catalog.categories
     ?.map(section => ({
       ...section,

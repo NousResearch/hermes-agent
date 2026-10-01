@@ -1,6 +1,16 @@
 import { atom } from 'nanostores'
 
-import { $petInfo, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { normalize } from '@/lib/text'
+import {
+  $petInfo,
+  hasPetSpriteForMeta,
+  mergePetInfoMeta,
+  type PetInfo,
+  type PetInfoMeta,
+  petProfile,
+  setPetInfo
+} from '@/store/pet'
 
 /**
  * Feature store for the petdex gallery picker (Cmd+K "Pets…" + Settings).
@@ -55,12 +65,6 @@ const petRpc = <T>(request: GatewayRequest, method: string, params: Record<strin
   request<T>(method, { ...params, profile: petProfile() })
 
 /** A JSON-RPC "method not found" — the backend predates the pet RPCs. */
-function isMissingMethod(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-
-  return /method not found|-32601|unknown method|no such method/i.test(message)
-}
-
 export const $petGallery = atom<PetGallery | null>(null)
 export const $petGalleryStatus = atom<PetGalleryStatus>('idle')
 export const $petGalleryError = atom<string | null>(null)
@@ -127,9 +131,9 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
     try {
       // Phase 1: local pets only — instant, never blocks on the remote petdex
       // manifest. The user's own/generated pets render right away.
-      const [local, info] = await Promise.all([
+      const [local] = await Promise.all([
         petRpc<PetGallery>(request, 'pet.gallery', { localOnly: true }),
-        petRpc<PetInfo>(request, 'pet.info')
+        syncInfo(request)
       ])
 
       if (local) {
@@ -138,12 +142,8 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
         $petGalleryError.set(null)
         localOk = true
       }
-
-      if (info) {
-        setPetInfo(info)
-      }
     } catch (e) {
-      if (isMissingMethod(e)) {
+      if (isMissingRpcMethod(e)) {
         $petGalleryStatus.set('stale')
       } else if (!$petGallery.get()) {
         // Only surface a hard error when we have nothing to show; a transient
@@ -178,6 +178,46 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
 // network gallery — the floating pet repaints, the picker keeps its cache.
 async function syncInfo(request: GatewayRequest): Promise<void> {
   try {
+    let meta: PetInfoMeta | null = null
+
+    try {
+      meta = await petRpc<PetInfoMeta>(request, 'pet.info.meta')
+    } catch (e) {
+      if (!isMissingRpcMethod(e)) {
+        throw e
+      }
+
+      const info = await petRpc<PetInfo>(request, 'pet.info')
+
+      if (info) {
+        setPetInfo(info)
+      }
+
+      return
+    }
+
+    if (!meta) {
+      return
+    }
+
+    if (!meta.enabled) {
+      setPetInfo({ enabled: false })
+
+      return
+    }
+
+    const current = $petInfo.get()
+
+    if (hasPetSpriteForMeta(current, meta)) {
+      const merged = mergePetInfoMeta(current, meta)
+
+      if (merged !== current) {
+        setPetInfo(merged)
+      }
+
+      return
+    }
+
     const info = await petRpc<PetInfo>(request, 'pet.info')
 
     if (info) {
@@ -218,7 +258,7 @@ export function rankedGalleryPets(gallery: PetGallery | null, query = ''): Galle
     return []
   }
 
-  const needle = query.trim().toLowerCase()
+  const needle = normalize(query)
 
   // User-generated pets first, then the active pet, then installed, then curated.
   // Guard every term with a boolean — local-only pets omit curated/generated, and
@@ -263,7 +303,7 @@ async function mutate(
 
     return true
   } catch (e) {
-    if (isMissingMethod(e)) {
+    if (isMissingRpcMethod(e)) {
       $petGalleryStatus.set('stale')
     } else {
       $petGalleryError.set(e instanceof Error ? e.message : fallback)

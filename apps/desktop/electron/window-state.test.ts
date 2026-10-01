@@ -1,0 +1,273 @@
+/**
+ * Unit tests for the pure window-state geometry helpers. These cover the logic
+ * that protects the user: garbage rejection, off-screen fallback, oversized
+ * clamping, and the debounce that collapses mid-drag write storms.
+ */
+
+import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+
+import { test, vi } from 'vitest'
+
+import {
+  bindGeometryPersistence,
+  computeWindowOptions,
+  debounce,
+  matchingWorkArea,
+  MIN_HEIGHT,
+  MIN_WIDTH,
+  sanitizeWindowState
+} from './window-state'
+
+// A single 1920×1080 monitor (work area trimmed for the taskbar).
+const PRIMARY = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }]
+// A laptop panel left behind after a bigger external monitor is unplugged.
+const LAPTOP = [{ workArea: { x: 0, y: 0, width: 1366, height: 728 } }]
+
+// ─── sanitizeWindowState ───────────────────────────────────────────────────
+
+test('sanitizeWindowState rejects missing/garbage input', () => {
+  for (const bad of [
+    null,
+    undefined,
+    'nope',
+    42,
+    {},
+    { width: 'x', height: 800 },
+    { width: NaN, height: 800 },
+    { width: 1000 }
+  ]) {
+    assert.equal(sanitizeWindowState(bad), null)
+  }
+})
+
+test('sanitizeWindowState keeps a valid full state and rounds HiDPI fractions', () => {
+  assert.deepEqual(sanitizeWindowState({ x: 100.6, y: 50.2, width: 1400.4, height: 900.7, isMaximized: true }), {
+    x: 101,
+    y: 50,
+    width: 1400,
+    height: 901,
+    isMaximized: true
+  })
+})
+
+test('sanitizeWindowState floors size to the minimums', () => {
+  const state = sanitizeWindowState({ width: 10, height: 10 })
+  assert.equal(state.width, MIN_WIDTH)
+  assert.equal(state.height, MIN_HEIGHT)
+})
+
+test('sanitizeWindowState drops a partial position but keeps the size', () => {
+  assert.deepEqual(sanitizeWindowState({ x: 100, width: 1400, height: 900 }), {
+    width: 1400,
+    height: 900,
+    isMaximized: false
+  })
+})
+
+test('sanitizeWindowState treats isMaximized strictly', () => {
+  assert.equal(sanitizeWindowState({ width: 1400, height: 900, isMaximized: 'yes' }).isMaximized, false)
+})
+
+test('sanitizeWindowState treats boundsCapturedFullScreen strictly and stays optional', () => {
+  assert.equal(
+    sanitizeWindowState({ width: 1400, height: 900, boundsCapturedFullScreen: true }).boundsCapturedFullScreen,
+    true
+  )
+  assert.equal(
+    sanitizeWindowState({ width: 1400, height: 900, boundsCapturedFullScreen: 'yes' }).boundsCapturedFullScreen,
+    undefined
+  )
+  assert.equal(sanitizeWindowState({ width: 1400, height: 900 }).boundsCapturedFullScreen, undefined)
+})
+
+// ─── matchingWorkArea ──────────────────────────────────────────────────────────────
+
+test('matchingWorkArea accepts a window on the primary or a secondary display', () => {
+  const dual = [...PRIMARY, { workArea: { x: 1920, y: 0, width: 2560, height: 1400 } }]
+  assert.notEqual(matchingWorkArea({ x: 100, y: 100, width: 1220, height: 800 }, PRIMARY), null)
+  assert.notEqual(matchingWorkArea({ x: 2200, y: 200, width: 1220, height: 800 }, dual), null)
+})
+
+test('matchingWorkArea rejects off-screen, slivers, and bad input', () => {
+  assert.equal(matchingWorkArea({ x: 3000, y: 100, width: 1220, height: 800 }, PRIMARY), null) // past right edge
+  assert.equal(matchingWorkArea({ x: 100, y: -900, width: 1220, height: 800 }, PRIMARY), null) // above top
+  assert.equal(matchingWorkArea({ x: 1910, y: 100, width: 1220, height: 800 }, PRIMARY), null) // ~10px sliver
+  assert.equal(matchingWorkArea({ x: 0, y: 0, width: 1220, height: 800 }, []), null)
+  assert.equal(matchingWorkArea({ x: 0, y: 0, width: 1220, height: 800 }, null), null)
+})
+
+// ─── computeWindowOptions ──────────────────────────────────────────────────
+
+test('computeWindowOptions restores an on-screen position', () => {
+  const saved = sanitizeWindowState({ x: 200, y: 100, width: 1400, height: 900 })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 1400, height: 900, x: 200, y: 100 })
+})
+
+test('computeWindowOptions clamps a trusted saved position fully inside its display work area', () => {
+  const saved = sanitizeWindowState({ x: -102, y: 175, width: 960, height: 1032 })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 960, height: 1032, x: 0, y: 8 })
+})
+
+test('computeWindowOptions caps a positioned window to the display it overlaps', () => {
+  const dual = [
+    { workArea: { x: 0, y: 0, width: 2560, height: 1400 } },
+    { workArea: { x: 2560, y: 0, width: 1366, height: 728 } }
+  ]
+
+  const saved = sanitizeWindowState({ x: 2700, y: 100, width: 1400, height: 900 })
+  assert.deepEqual(computeWindowOptions(saved, dual), { width: 1366, height: 728, x: 2560, y: 0 })
+})
+
+test('computeWindowOptions keeps the size but drops an off-screen position', () => {
+  const saved = sanitizeWindowState({ x: 5000, y: 150, width: 1400, height: 900 })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 1400, height: 900 })
+})
+
+test('computeWindowOptions clamps a size larger than the only display', () => {
+  const saved = sanitizeWindowState({ width: 2560, height: 1440 })
+  assert.deepEqual(computeWindowOptions(saved, LAPTOP), { width: 1366, height: 728 })
+})
+
+test('computeWindowOptions keeps the MIN floor on a sub-minimum display', () => {
+  const tiny = [{ workArea: { x: 0, y: 0, width: 360, height: 480 } }]
+  const saved = sanitizeWindowState({ width: 2000, height: 1500 })
+  assert.deepEqual(computeWindowOptions(saved, tiny), { width: MIN_WIDTH, height: MIN_HEIGHT })
+})
+
+test('computeWindowOptions does not clamp when displays are unknown', () => {
+  const saved = sanitizeWindowState({ width: 2560, height: 1440 })
+  assert.deepEqual(computeWindowOptions(saved, []), { width: 2560, height: 1440 })
+})
+
+test('computeWindowOptions recovers stale fullscreen normal bounds to a centered windowed size on Windows', () => {
+  const saved = sanitizeWindowState({
+    x: 0,
+    y: 0,
+    width: 1920,
+    height: 1040,
+    isMaximized: false,
+    boundsCapturedFullScreen: true
+  })
+
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions recovers a legacy exact-work-area snapshot written before the provenance flag', () => {
+  // Pre-boundsCapturedFullScreen snapshot: fullscreen bounds persisted as
+  // normal, matching the work area to the pixel. Unambiguous, so recovered.
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1040, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions recovers a legacy snapshot matching the full display bounds', () => {
+  // A fullscreen window over a hidden taskbar reports the display's full
+  // bounds, not the work area. Still an exact match, so still recovered.
+  const displays = [
+    { workArea: { x: 0, y: 0, width: 1920, height: 1040 }, bounds: { x: 0, y: 0, width: 1920, height: 1080 } }
+  ]
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1080, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, displays, 'win32'), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions preserves a deliberate near-fullscreen normal window near the origin on Windows', () => {
+  // The reviewer's case: a valid normal window the user sized on purpose,
+  // satisfying the old ≥90% + near-origin predicates. It must survive
+  // restore untouched (position clamped inside the work area).
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1824, height: 988, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), {
+    width: 1824,
+    height: 988,
+    x: 0,
+    y: 0
+  })
+})
+
+test('computeWindowOptions preserves deliberate near-fullscreen normal bounds outside Windows', () => {
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1040, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'darwin'), {
+    width: 1920,
+    height: 1040,
+    x: 0,
+    y: 0
+  })
+})
+
+test('computeWindowOptions preserves full bounds when the saved state is actually maximized', () => {
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1040, isMaximized: true })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1920, height: 1040, x: 0, y: 0 })
+})
+
+test('computeWindowOptions does not shrink a large normal window away from the work-area origin', () => {
+  const saved = sanitizeWindowState({ x: 240, y: 120, width: 1740, height: 950, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1740, height: 950, x: 180, y: 90 })
+})
+
+// ─── debounce ──────────────────────────────────────────────────────────────
+
+test('debounce coalesces a burst into one trailing run', () => {
+  vi.useFakeTimers()
+  let calls = 0
+
+  const d = debounce(() => {
+    calls += 1
+  }, 250)
+
+  d()
+  d()
+  d()
+  assert.equal(calls, 0)
+  vi.advanceTimersByTime(249)
+  assert.equal(calls, 0)
+  vi.advanceTimersByTime(1)
+  assert.equal(calls, 1)
+
+  vi.useRealTimers()
+})
+
+test('debounce.flush runs now and cancels the pending timer', () => {
+  vi.useFakeTimers()
+  let calls = 0
+
+  const d = debounce(() => {
+    calls += 1
+  }, 250)
+
+  d()
+  d.flush()
+  assert.equal(calls, 1)
+  vi.advanceTimersByTime(1000)
+  assert.equal(calls, 1)
+
+  vi.useRealTimers()
+})
+
+// ─── bindGeometryPersistence ───────────────────────────────────────────────
+
+test('bindGeometryPersistence saves on drag and on resize', () => {
+  const win = new EventEmitter()
+  let saves = 0
+
+  bindGeometryPersistence(win, () => {
+    saves += 1
+  })
+
+  win.emit('move')
+  win.emit('resize')
+  assert.equal(saves, 2)
+})
+
+// The regression this exists for: `moved`/`resized` never fire on Linux, so a
+// window bound only to those pretends to persist and silently forgets its place
+// every launch. A window that emits nothing else must still save.
+test('a window that never emits moved/resized still saves its geometry', () => {
+  const win = new EventEmitter()
+  let saves = 0
+
+  bindGeometryPersistence(win, () => {
+    saves += 1
+  })
+
+  win.emit('move')
+  assert.ok(saves > 0)
+})

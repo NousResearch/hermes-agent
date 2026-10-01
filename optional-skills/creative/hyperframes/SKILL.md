@@ -1,6 +1,6 @@
 ---
 name: hyperframes
-description: Create HTML-based video compositions, animated title cards, social overlays, captioned talking-head videos, audio-reactive visuals, and shader transitions using HyperFrames. HTML is the source of truth for video. Use when the user wants a rendered MP4/WebM from an HTML composition, wants to animate text/logos/charts over media, needs captions synced to audio, wants TTS narration, or wants to convert a website into a video.
+description: Render MP4/WebM videos from HTML compositions.
 version: 1.0.0
 author: heygen-com
 license: Apache-2.0
@@ -43,10 +43,12 @@ Do **not** use this skill for:
 npx hyperframes init my-video               # scaffold a project
 cd my-video
 npx hyperframes lint                        # validate before preview/render
-npx hyperframes preview                     # live-reload browser preview (port 3002)
+npx hyperframes preview                     # live-reload preview (long-lived server, port 3002)
 npx hyperframes render --output final.mp4   # render to MP4
 npx hyperframes doctor                      # diagnose environment issues
 ```
+
+`preview` is a **long-lived** Next.js server that holds Chrome render workers open. Always stop it when done (see [Cleanup](#cleanup)) — a forgotten preview keeps idle `chrome-headless-shell` workers alive that, on GPU-less hosts (WSL, containers, CI), spin a CPU core each indefinitely via software WebGL (swiftshader).
 
 Render flags: `--quality draft|standard|high` · `--fps 24|30|60` · `--format mp4|webm` · `--docker` (reproducible) · `--strict`.
 
@@ -150,7 +152,22 @@ npx hyperframes render --quality high --output final.mp4     # final delivery
 
 Use the 7-step capture-to-video workflow in [references/website-to-video.md](references/website-to-video.md): capture → DESIGN.md → SCRIPT.md → storyboard → composition → render → deliver.
 
+## Cleanup
+
+`render` is one-shot (workers exit when it finishes). `preview` is **not** — it runs a background Next.js server that keeps Chrome workers resident until you stop it. Never leave one running: on GPU-less hosts each idle worker's swiftshader process pegs a CPU core, and a preview left open for days stacks up multiple.
+
+Stop a preview when the user is done reviewing (or before starting a new one):
+
+```bash
+pkill -f "hyperframes.*preview"     # the Studio server (frees port 3002)
+pkill -f chrome-headless-shell      # its render workers; only safe if nothing else uses them
+```
+
+If unsure whether other tools use `chrome-headless-shell`, check first: `pgrep -af chrome-headless-shell`. Recover a wedged host (many idle workers spinning CPU) the same way — see [references/troubleshooting.md](references/troubleshooting.md#runaway-cpu-from-leftover-preview-workers).
+
 ## Pitfalls
+
+- **Leaving `preview` running** — it's a long-lived server holding Chrome workers; on WSL/containers/CI those idle workers spin a CPU core each (software WebGL). Stop it when done — see [Cleanup](#cleanup).
 
 - **`HeadlessExperimental.beginFrame' wasn't found`** — Chromium 147+ removed this protocol. Ensure you're on `hyperframes@>=0.4.2` (auto-detects and falls back to screenshot mode). Escape hatch: `export PRODUCER_FORCE_SCREENSHOT=true`. See [hyperframes#294](https://github.com/heygen-com/hyperframes/issues/294) and [references/troubleshooting.md](references/troubleshooting.md).
 - **System Chrome (not `chrome-headless-shell`)** — renders hang for 120s then timeout. Run `npx puppeteer browsers install chrome-headless-shell` (setup.sh does this). `hyperframes doctor` reports which binary will be used.

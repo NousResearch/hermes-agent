@@ -269,6 +269,9 @@ def test_copy_failure_preserves_previous_python(installed_uv, monkeypatch, damag
     binary_rel = python.binary(source, target).relative_to(source)
     (source / binary_rel).parent.mkdir(parents=True, exist_ok=True)
     (source / binary_rel).write_bytes(b"new interpreter")
+    cache = source / "Lib" / "site-packages" / "pip" / "_internal" / "operations" / "build" / "__pycache__"
+    cache.mkdir(parents=True)
+    (cache / ("x" * 80 + ".cpython-314.pyc")).write_bytes(b"runtime cache")
     facts.record("python", "test", entry_name, {}, shipped,
                  target=target, artifacts=[digest], digest=tree_digest(source))
     previous = writable / entry_name
@@ -300,6 +303,7 @@ def test_copy_failure_preserves_previous_python(installed_uv, monkeypatch, damag
         ensure._install(python, ensure._lockfile(), previous_facts, Store(writable), target,
                         copy_from=(facts, Store(shipped)))
         assert tree_digest(previous) == tree_digest(source)
+        assert not (previous / cache.relative_to(source)).exists()
         assert previous_facts.get("python")["digest"] == facts.get("python")["digest"]
     else:
         with pytest.raises(InstallError, match="verification|copied bytes|publication refused"):

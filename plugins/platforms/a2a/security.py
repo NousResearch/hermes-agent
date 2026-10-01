@@ -101,28 +101,16 @@ class A2ASecurityContext:
 
     def is_loopback_bind(self) -> bool:
         """True when the resolved bind host is loopback."""
-        host = (self.resolve_bind_host() or "").strip()
-        if host.lower() in {"127.0.0.1", "localhost", "::1"}:
-            return True
-        try:
-            return ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            return False
+        from agent.proxy_bypass import is_loopback_host
+        return is_loopback_host(self.resolve_bind_host())
 
     def is_trusted_peer(self, identity: str) -> bool:
         """Fail closed on network-exposed binds with no allow-list; loopback
         binds without an allow-list stay open for backward compatibility."""
-        if self.allow_all_users:
+        if self.allow_all_users or self.localhost_only():
             return True
         if not self.trusted_peers:
-            if self.is_loopback_bind():
-                return True
-            logger.error(
-                "A2A: adapter exposed on a non-loopback bind (%s) with no A2A_TRUSTED_PEERS; "
-                "refusing dispatch. Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.",
-                self.resolve_bind_host(),
-            )
-            return False
+            return self.is_loopback_bind()  # the misconfiguration is logged once in A2AAdapter.connect()
         return identity in self.trusted_peers
 
     def sign_push_payload(self, payload: dict) -> str:

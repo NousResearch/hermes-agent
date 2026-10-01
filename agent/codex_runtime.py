@@ -202,11 +202,11 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     for key, value in usage_dict.items():
         setattr(agent, f"session_{key}", getattr(agent, f"session_{key}") + value)
     if prompt_tokens > 0:
-        agent.session_usage_report_calls += 1
+        agent.session_usage_report_calls = getattr(agent, "session_usage_report_calls", 0) + 1
         agent.session_last_prompt_tokens = prompt_tokens
-        agent.session_context_usage_report_calls += 1
+        agent.session_context_usage_report_calls = getattr(agent, "session_context_usage_report_calls", 0) + 1
         if "cachedInputTokens" in usage:
-            agent.session_cache_usage_report_calls += 1
+            agent.session_cache_usage_report_calls = getattr(agent, "session_cache_usage_report_calls", 0) + 1
     cost_result = estimate_usage_cost(
         agent.model, canonical_usage, provider=agent.provider, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
     )

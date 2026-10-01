@@ -9,8 +9,8 @@ import os
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from gateway.platforms.base_pending import (
-    _PendingDispatchReservation, pending_dispatch_scope, release_pending_dispatch, pending_dispatch_needs_snapshot,
-)
+    _PendingDispatchReservation, pending_dispatch_scope, release_pending_dispatch,
+    pending_dispatch_records, reserve_pending_dispatch, release_pending_dispatch_record, pending_dispatch_needs_snapshot)
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 
@@ -83,9 +83,11 @@ class BaseProcessingMixin:
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._requeue_counts.pop(session_key, None)
-        self._session_tasks.pop(session_key, None)
+        task = self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
-        getattr(self, "_pending_dispatch_reservations", {}).pop(session_key, None)
+        for record in pending_dispatch_records(self, session_key):
+            if record.task is task:
+                release_pending_dispatch_record(self, session_key, record)
         return True
 
     def _start_session_processing(self, event: MessageEvent, session_key: str, *,
@@ -95,14 +97,16 @@ class BaseProcessingMixin:
         (False)."""
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
+        reserved = reserve_pending_dispatch(self, session_key, event)
         task = asyncio.create_task(self._process_message_background(event, session_key))
-        if not self._track_session_task(session_key, task):
+        if not self._track_session_task(session_key, task, event):
+            release_pending_dispatch_record(self, session_key, reserved)
             self._session_tasks.pop(session_key, None)
             self._release_session_guard(session_key, guard=guard)
             return False
         return True
 
-    def _track_session_task(self, session_key: str, task: Any) -> bool:
+    def _track_session_task(self, session_key: str, task: Any, event: MessageEvent | None = None) -> bool:
         """Record ``task`` as the session owner and track it for shutdown; False when
         ``create_task`` was stubbed with an unhashable sentinel (tests) — the owner entry is left
         for the caller."""
@@ -114,10 +118,11 @@ class BaseProcessingMixin:
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
-            reserved = getattr(self, "_pending_dispatch_reservations", {}).get(session_key)
+            reserved = next((record for record in pending_dispatch_records(self, session_key)
+                             if record.event is event), None)
             if reserved is not None:
                 reserved.task = task
-                task.add_done_callback(lambda _: release_pending_dispatch(self, session_key, reserved.event))
+                task.add_done_callback(lambda _: release_pending_dispatch_record(self, session_key, reserved))
         return True
 
     def _finish_cancelled_pending_dispatch(
@@ -131,7 +136,7 @@ class BaseProcessingMixin:
                 restore = getattr(self.gateway_runner, "_restore_pending_dispatch", None)
                 if callable(restore):
                     restore(session_key, reserved.event, self)
-            release_pending_dispatch(self, session_key, reserved.event)
+            release_pending_dispatch_record(self, session_key, reserved)
 
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
                                         discard_pending: bool = True) -> None:
@@ -139,11 +144,9 @@ class BaseProcessingMixin:
         reset-like commands finish atomically; the await is bounded (5s) so a wedged finally can't
         stall."""
         self._requeue_counts.pop(session_key, None)
-        reservations = getattr(self, "_pending_dispatch_reservations", {})
-        reserved = reservations.get(session_key)
         task = self._session_tasks.pop(session_key, None)
-        reserved_inputs = ([reserved] if reserved is not None
-                           and (task is None or reserved.task is None or reserved.task is task) else [])
+        reserved_inputs = [record for record in pending_dispatch_records(self, session_key)
+                           if record.task is task or record.task is None]
         for reserved in reserved_inputs:
             reserved.preserve_on_completion = not discard_pending
         if task is not None and not task.done():
@@ -169,7 +172,7 @@ class BaseProcessingMixin:
             self._finish_cancelled_pending_dispatch(session_key, reserved_inputs)
             if discard_pending:
                 for reserved in reversed(reserved_inputs):
-                    release_pending_dispatch(self, session_key, reserved.event)
+                    release_pending_dispatch_record(self, session_key, reserved)
         if discard_pending:
             self._pending_messages.pop(session_key, None)
             self._discard_text_debounce(session_key)
@@ -190,9 +193,17 @@ class BaseProcessingMixin:
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         _thread_metadata = _thread_metadata_for_event(event)
+        record = reserve_pending_dispatch(self, session_key, event)
+        record.task = asyncio.current_task()
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
+            if record.withdrawn:
+                return
             await self._run_processing_hook("on_processing_start", event)
+            if record.withdrawn:
+                await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.CANCELLED)
+                return
+            _thread_metadata = _thread_metadata_for_event(event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             with pending_dispatch_scope(self, session_key, event):
                 response = await self._message_handler(event)
@@ -273,6 +284,7 @@ class BaseProcessingMixin:
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes
                     self._pending_messages.pop(session_key)
+                    reserve_pending_dispatch(self, session_key, pending_event).task = asyncio.current_task()
                     self._stage_next_queued_event(session_key, pending_event)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
@@ -293,7 +305,7 @@ class BaseProcessingMixin:
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
-            release_pending_dispatch(self, session_key, event)
+            release_pending_dispatch_record(self, session_key, record)
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
@@ -322,9 +334,11 @@ class BaseProcessingMixin:
         # Capture the guard this drain owns now: a /stop//new guard swapped in during the
         # back-off must survive the slot-empty exit (#48300).
         guard = self._active_sessions.get(session_key)
+        if not delay:
+            reserve_pending_dispatch(self, session_key, pending_event)
         self._track_session_task(
             session_key,
-            asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
+            asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)), pending_event)
 
     async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
                            guard: Optional[asyncio.Event]) -> None:
@@ -345,10 +359,11 @@ class BaseProcessingMixin:
         # Re-drain (max 5 rounds): a message arriving mid-gather spawns a task clear() would
         # untrack.
         for _ in range(5):
-            for key, reserved in getattr(self, "_pending_dispatch_reservations", {}).items():
+            for key in list(getattr(self, "_pending_dispatch_reservations", {})):
                 recorded = pending_reservations.setdefault(key, [])
-                if not any(previous is reserved for previous in recorded):
-                    recorded.append(reserved)
+                for reserved in pending_dispatch_records(self, key):
+                    if not any(previous is reserved for previous in recorded):
+                        recorded.append(reserved)
             tasks = [task for task in self._background_tasks if not task.done()]
             if not tasks:
                 break
@@ -375,7 +390,9 @@ class BaseProcessingMixin:
         for key, records in pending_reservations.items():
             for reserved in records:
                 if key not in persisted and pending_dispatch_needs_snapshot(self, reserved):
-                    self._pending_dispatch_reservations.setdefault(key, reserved)
+                    if not any(existing is reserved for existing in pending_dispatch_records(self, key)):
+                        reserved.previous = getattr(self, "_pending_dispatch_reservations", {}).get(key)
+                        self._pending_dispatch_reservations[key] = reserved
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,

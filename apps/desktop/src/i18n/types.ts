@@ -3990,6 +3990,9 @@ export interface Translations {
           unknown: string
           unreadable: string
         }
+        /** `~{amount} full file` — raw size, not this file's share of the totals. */
+        fullFileEstimate: (amount: string) => string
+        fullFileEstimateNote: string
         empty: string
         loading: string
         percentFull: (percent: number) => string

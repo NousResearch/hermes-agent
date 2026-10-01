@@ -3455,6 +3455,8 @@ export const ja = defineLocale({
           unknown: '状態を取得できません',
           unreadable: '未読み込み — ファイルを読み取れませんでした'
         },
+        fullFileEstimate: amount => `~${amount} ファイル全体`,
+        fullFileEstimateNote: '切り詰め前のファイル全体の見積もりです。上の合計の使用量ではありません。',
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
         percentFull: percent => `${percent}% 使用中`,

@@ -5144,6 +5144,9 @@ export const frOverrides = {
           unknown: 'État indisponible',
           unreadable: 'Non chargé — impossible de lire le fichier'
         },
+        fullFileEstimate: amount => `~${amount} fichier entier`,
+        fullFileEstimateNote:
+          'Estimations du fichier entier avant troncature, pas les jetons du total ci-dessus.',
         empty: 'Aucune donnée de contexte pour le moment',
         loading: 'Chargement du détail…',
         percentFull: percent => `${percent}% plein`,

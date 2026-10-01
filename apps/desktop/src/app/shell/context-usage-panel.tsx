@@ -102,22 +102,29 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
           </DropdownMenuItem>
 
           {contextFilesOpen && (
-            <ul className="mt-2 flex flex-col gap-2" id={contextFilesId}>
-              {contextFiles.map(source => (
-                <li className="min-w-0" data-status={source.status} key={`${source.path}:${source.label}`}>
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="truncate font-medium text-foreground">{source.label}</span>
-                    <span className="shrink-0 tabular-nums text-foreground">~{compactNumber(source.est_tokens)}</span>
-                  </div>
+            <div id={contextFilesId}>
+              <p className="mt-2 text-[0.6875rem] leading-snug text-muted-foreground">{copy.fullFileEstimateNote}</p>
 
-                  <OverflowTip boundary="viewport" label={source.path} side="left">
-                    <span className="block truncate text-[0.6875rem] text-muted-foreground">{source.path}</span>
-                  </OverflowTip>
+              <ul className="mt-2 flex flex-col gap-2">
+                {contextFiles.map(source => (
+                  <li className="min-w-0" data-status={source.status} key={`${source.path}:${source.label}`}>
+                    {/* Beside the name, not the category total column: raw file size, not that file's share. */}
+                    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                      <span className="min-w-0 max-w-full truncate font-medium text-foreground">{source.label}</span>
+                      <span className="text-[0.6875rem] tabular-nums text-muted-foreground">
+                        {copy.fullFileEstimate(compactNumber(source.est_tokens))}
+                      </span>
+                    </div>
 
-                  <p className="text-[0.6875rem] text-muted-foreground">{source.statusLabel}</p>
-                </li>
-              ))}
-            </ul>
+                    <OverflowTip boundary="viewport" label={source.path} side="left">
+                      <span className="block truncate text-[0.6875rem] text-muted-foreground">{source.path}</span>
+                    </OverflowTip>
+
+                    <p className="text-[0.6875rem] text-muted-foreground">{source.statusLabel}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </section>
       )}

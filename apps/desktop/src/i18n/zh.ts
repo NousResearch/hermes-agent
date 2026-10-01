@@ -4437,6 +4437,8 @@ export const zh = defineLocale({
           unknown: '状态不可用',
           unreadable: '未加载 — 无法读取文件'
         },
+        fullFileEstimate: amount => `~${amount} 完整文件`,
+        fullFileEstimateNote: '截断前的完整文件估算，不是上方上下文总量里的用量。',
         empty: '暂无上下文数据',
         loading: '正在加载明细…',
         percentFull: percent => `已用 ${percent}%`,

@@ -5122,6 +5122,9 @@ export const esOverrides = {
           unknown: 'Estado no disponible',
           unreadable: 'No cargado — no se pudo leer el archivo'
         },
+        fullFileEstimate: amount => `~${amount} archivo completo`,
+        fullFileEstimateNote:
+          'Estimaciones del archivo completo antes de truncar, no los tokens del total de arriba.',
         empty: 'Aún no hay datos de contexto',
         loading: 'Cargando desglose…',
         percentFull: percent => `${percent}% lleno`,

@@ -3641,6 +3641,8 @@ export const zhHant = defineLocale({
           unknown: '無法取得狀態',
           unreadable: '未載入 — 無法讀取檔案'
         },
+        fullFileEstimate: amount => `~${amount} 完整檔案`,
+        fullFileEstimateNote: '截斷前的完整檔案估算，不是上方上下文總量裡的用量。',
         empty: '尚無上下文資料',
         loading: '正在載入明細…',
         percentFull: percent => `已用 ${percent}%`,

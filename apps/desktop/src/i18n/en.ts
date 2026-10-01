@@ -4736,6 +4736,9 @@ export const en: Translations = {
           unknown: 'Status unavailable',
           unreadable: 'Not loaded — file could not be read'
         },
+        fullFileEstimate: amount => `~${amount} full file`,
+        fullFileEstimateNote:
+          'These are full-file estimates before truncation, not tokens used in the context total above.',
         empty: 'No context data yet',
         loading: 'Loading breakdown…',
         percentFull: percent => `${percent}% Full`,

@@ -3692,6 +3692,8 @@ export const ru = defineLocale({
           unknown: 'Статус недоступен',
           unreadable: 'Не загружен — файл не удалось прочитать'
         },
+        fullFileEstimate: amount => `~${amount} весь файл`,
+        fullFileEstimateNote: 'Оценка всего файла до обрезки, а не токены в итоге контекста выше.',
         empty: 'Данных контекста пока нет',
         loading: 'Загрузка разбивки…',
         percentFull: percent => `${percent}% занято`,

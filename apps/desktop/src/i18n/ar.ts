@@ -2979,6 +2979,8 @@ export const ar = defineLocale({
           unknown: 'الحالة غير متاحة',
           unreadable: 'لم يُحمّل — تعذرت قراءة الملف'
         },
+        fullFileEstimate: amount => `~${amount} الملف كاملاً`,
+        fullFileEstimateNote: 'تقديرات الملف كاملاً قبل الاقتطاع، وليست الرموز في إجمالي السياق أعلاه.',
         empty: 'لا توجد بيانات سياق بعد',
         loading: 'جار تحميل التفاصيل…',
         percentFull: percent => `ممتلئ بنسبة ${percent}%`,

@@ -6290,7 +6290,7 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
 
 
 def _user_set_task_timeout(task: str) -> Optional[float]:
-    """``auxiliary.<task>.timeout`` (> 0) when the user's config sets it; the schema default is None."""
+    """``auxiliary.<task>.timeout`` (> 0) from config.yaml alone, so a schema default never counts as a choice."""
     from hermes_cli.config_effective import load_user_config_effective
     aux = load_user_config_effective().get("auxiliary")
     block = aux.get(task) if isinstance(aux, dict) else None

@@ -683,20 +683,6 @@ def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
 
 
-def _migrate_to_50(results: Dict[str, Any], quiet: bool) -> None:
-    # 49 → 50: the compression floor now yields to a saved timeout, so a saved 120 (the old default,
-    # copied by pre-May-2026 saves) is dropped to keep the floor. Other values stay.
-    config = read_raw_config()
-    compression = _dict_at(_dict_at(config, "auxiliary"), "compression")
-    if compression.get("timeout") != 120:
-        return
-    del compression["timeout"]
-    _commit(
-        config, results, quiet,
-        "auxiliary.compression.timeout unset (follows the default)",
-        "  ✓ auxiliary.compression.timeout: dropped the old default (120). Set it to choose your own deadline.")
-
-
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -828,8 +814,6 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (48, _migrate_to_48),
     # 48 → 49: the seeded Vercel runtime pin is dropped so fresh sandboxes use the managed image (see _migrate_to_49).
     (49, _migrate_to_49),
-    # 49 → 50: a saved old-default compression timeout is dropped so the floor covers it (see _migrate_to_50).
-    (50, _migrate_to_50),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

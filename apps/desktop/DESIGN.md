@@ -557,6 +557,10 @@ long transcript or a busy terminal.
   tone consistent across all of them. `fr`, `de`, and `es` are complete
   `Translations` objects, so a key missing there fails the type check; the
   `defineLocale()` overlays fall back to English instead.
+- The type contract is **sharded by topic**: `src/i18n/types_<topic>.ts` owns one
+  domain's members (`interface <Topic>Translations`), and `src/i18n/types.ts`
+  composes them into `Translations`. Add a string surface in its topic shard,
+  not in `types.ts`.
 
 ## State (TypeScript)
 

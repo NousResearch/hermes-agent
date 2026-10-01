@@ -114,11 +114,9 @@ class A2ASecurityContext:
         binds without an allow-list stay open for backward compatibility."""
         if self.allow_all_users:
             return True
-        if self.is_loopback_bind():
-            if not self.trusted_peers:
-                return True
-            return identity in self.trusted_peers
         if not self.trusted_peers:
+            if self.is_loopback_bind():
+                return True
             logger.error(
                 "A2A: adapter exposed on a non-loopback bind (%s) with no A2A_TRUSTED_PEERS; "
                 "refusing dispatch. Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.",

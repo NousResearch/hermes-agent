@@ -3286,6 +3286,7 @@ cli:
     shallow_clone_keeping: "⚠ Vlak kloon — kan nie stootstatus verifieer nie, word behou: {path}"
     next_session_deepens: "Die volgende `hermes -w`-sessie verdiep die kloon en snoei saamgevoegde werkbome outomaties."
     unpushed_keeping: "⚠ Werkboom het ongestootte commits, word behou: {path}"
+    uncommitted_keeping: "⚠ Werkboom het ongecommitte veranderinge, word behou: {path}"
     clean_up_manually: "Om met die hand op te ruim: git worktree remove --force {path}"
     cleaned_up: "✓ Werkboom opgeruim: {path}"
 display:

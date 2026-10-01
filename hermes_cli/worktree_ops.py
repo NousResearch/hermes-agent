@@ -309,20 +309,32 @@ def _ensure_worktrees_gitignored(repo_root: str) -> None:
         logger.debug("Could not update .gitignore: %s", e)
 
 
+def _worktreeinclude_entries(repo_root) -> list:
+    """Non-blank, non-comment entries of *repo_root*/``.worktreeinclude`` (``[]`` when absent).
+
+    utf-8-sig, not the locale default: a cp1251/GBK locale would mojibake or raise on a UTF-8
+    list, and a Notepad BOM would glue to the first entry.
+    """
+    include_file = Path(repo_root) / ".worktreeinclude"
+    if not include_file.is_file():
+        return []
+    entries = []
+    for line in include_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        entry = line.strip()
+        if entry and not entry.startswith("#"):
+            entries.append(entry)
+    return entries
+
+
 def _copy_worktree_includes(repo_root: str, wt_path: Path) -> None:
     """Copy/symlink the entries listed in ``.worktreeinclude`` (gitignored files the agent needs)."""
-    include_file = Path(repo_root) / ".worktreeinclude"
-    if not include_file.exists():
-        return
     try:
+        entries = _worktreeinclude_entries(repo_root)
+        if not entries:
+            return
         repo_root_resolved = Path(repo_root).resolve()
         wt_path_resolved = wt_path.resolve()
-        # utf-8-sig, not the locale default: a cp1251/GBK locale would mojibake or raise
-        # (swallowed below) on a UTF-8 list; a Notepad BOM would glue to the first entry.
-        for line in include_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-            entry = line.strip()
-            if not entry or entry.startswith("#"):
-                continue
+        for entry in entries:
             src, dst = Path(repo_root) / entry, wt_path / entry
             # Traversal/symlink-escape guard: both resolved endpoints must stay inside their roots.
             try:
@@ -508,11 +520,43 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
         return True
 
 
-def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
-    """Whether a worktree has staged/unstaged/untracked changes. Fails SAFE toward True."""
+def _include_symlink_paths(worktree_path: str, repo_root) -> set:
+    """Relative paths in *worktree_path* that are ``.worktreeinclude`` directory symlinks.
+
+    ``_copy_worktree_includes`` symlinks included directories back to the main checkout
+    (*repo_root*). A trailing-slash gitignore pattern
+    (``node_modules/``) never matches a symlink, so git reports each one as untracked. Only a
+    symlink at a listed entry that resolves to that same entry in the main repo qualifies —
+    anything else is real user state.
+    """
+    root = Path(repo_root)
+    wt = Path(worktree_path)
+    paths = set()
+    for entry in _worktreeinclude_entries(root):
+        dst = wt / entry
+        if dst.is_symlink() and dst.resolve() == (root / entry).resolve():
+            paths.add(Path(entry).as_posix().rstrip("/"))  # git status paths use "/" on Windows too
+    return paths
+
+
+def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool:
+    """Whether a worktree has staged/unstaged/untracked changes. Fails SAFE toward True.
+
+    Untracked ``.worktreeinclude`` directory symlinks back to the main checkout *repo_root* are
+    ignored: they are our own scaffolding, and counting them would keep every worktree of such a
+    repo forever.
+    """
     try:
-        status = _git_out(["status", "--porcelain"], worktree_path, timeout=timeout)
-        return status is None or bool(status)
+        result = _git(["status", "--porcelain", "-z"], worktree_path, timeout=timeout)
+        if result.returncode != 0:
+            return True
+        entries = [e for e in result.stdout.split("\0") if e]
+        if not entries:
+            return False
+        if any(not e.startswith("?? ") for e in entries):
+            return True
+        include_links = _include_symlink_paths(worktree_path, repo_root)
+        return any(e[3:].rstrip("/") not in include_links for e in entries)
     except Exception:
         return True
 
@@ -809,7 +853,7 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
     def _classify(item):
         entry, mtime, force = item
         # Never delete real work regardless of age: only clean, merged/pushed trees are reaped.
-        if _worktree_is_dirty(str(entry), timeout=5):
+        if _worktree_is_dirty(str(entry), repo_root, timeout=5):
             return (entry, mtime, force, "dirty", None)
         keep_branch = False
         if _worktree_has_unpushed_commits(str(entry), timeout=5):

@@ -1373,6 +1373,8 @@ def restore_primary_runtime(agent) -> bool:
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
     try:
         _apply_primary_runtime_fields(agent, rt)
+        from agent.turn_recovery import reset_codex_reasoning_replay
+        reset_codex_reasoning_replay(agent)
         _restore_runtime_capabilities(agent, rt)
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout for snapshots predating the native-vs-proxy split.
@@ -2055,6 +2057,7 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
+    "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
 )
 _MISSING = object()
 
@@ -2213,6 +2216,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     # New api_mode may need a different transport.
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
+    from agent.turn_recovery import reset_codex_reasoning_replay
+    reset_codex_reasoning_replay(agent)
     if api_key:
         agent.api_key = api_key
     # Reload the credential pool on provider change: a pool with a mismatched provider makes

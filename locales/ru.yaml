@@ -3286,6 +3286,7 @@ cli:
     shallow_clone_keeping: "⚠ Неглубокий клон (shallow) — не могу проверить состояние push, оставляю: {path}"
     next_session_deepens: "Следующий сеанс `hermes -w` углубит клон и автоматически удалит слитые worktree."
     unpushed_keeping: "⚠ В worktree есть неотправленные коммиты, оставляю: {path}"
+    uncommitted_keeping: "⚠ В worktree есть незакоммиченные изменения, оставляю: {path}"
     clean_up_manually: "Чтобы очистить вручную: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree очищен: {path}"
 display:

@@ -302,11 +302,11 @@ def _build_scale_note(scale_info: Optional[dict], crop_offset: Optional[dict]) -
 
 
 def _import_pillow_for_resize():
-    """Return ``PIL.Image`` or None (Pillow is a lazy-installable soft dependency). ``prompt=False``:
-    a blocking input() deadlocks the CLI where prompt_toolkit owns stdin; the install is already
-    gated by security.allow_lazy_installs."""
+    """Return ``(PIL.Image, PIL.ImageOps)`` or ``(None, None)`` (Pillow is a lazy-installable
+    soft dependency). ``prompt=False``: a blocking input() deadlocks the CLI where prompt_toolkit
+    owns stdin; the install is already gated by security.allow_lazy_installs."""
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
     except ImportError:
         try:
             from tools.lazy_deps import ensure as _ensure_dep
@@ -314,10 +314,10 @@ def _import_pillow_for_resize():
             # prompt_toolkit owns stdin, so a bare input() deadlocks the terminal (#40490). The install is
             # already gated by security.allow_lazy_installs, so reaching here is opt-in.
             _ensure_dep("tool.vision", prompt=False)
-            from PIL import Image
+            from PIL import Image, ImageOps
         except Exception:
-            return None
-    return Image
+            return None, None
+    return Image, ImageOps
 
 
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
@@ -352,7 +352,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 
     def _raw() -> str:
         return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
-    Image = _import_pillow_for_resize()
+    Image, ImageOps = _import_pillow_for_resize()
     if Image is None:
         logger.info("Pillow not installed — cannot auto-resize oversized image")
         return _raw()  # caller will raise the size error
@@ -364,6 +364,9 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     pil_format, out_mime = ("PNG", "image/png") if is_png else ("JPEG", "image/jpeg")
     try:
         img = Image.open(image_path)
+        # Apply EXIF orientation so portrait phone photos keep their displayed orientation
+        # after resize (exif_transpose is a no-op when there is no Orientation tag). Fixes #130364.
+        img = ImageOps.exif_transpose(img)
     except Exception as exc:
         logger.info("Pillow cannot open image for resizing: %s", exc)
         return _raw()

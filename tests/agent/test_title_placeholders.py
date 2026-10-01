@@ -1,6 +1,9 @@
-# Tests for agent.title_placeholders (spec §4, ticket t_a642ab85).
+# Tests for agent.title_placeholders (spec §4, ticket t_a642ab85) and its
+# re-arm consumer in agent.title_generator (ticket t_f0122159).
 
+from agent.title_generator import _has_upgraded_title
 from agent.title_placeholders import is_rejected_placeholder
+from hermes_state import SessionDB
 
 # --- Real strings captured from the live DB, 2026-09-30 (map card t_15b3bcbd) ---
 
@@ -111,3 +114,47 @@ class TestEdgeCases:
         # §4.4: rejection suppresses the subject, never the rename itself —
         # the predicate only classifies; empty-subject composition is legal.
         assert is_rejected_placeholder("[voice message could not be transcribed]")
+
+
+class TestHasUpgradedTitleRearms:
+    """The terminal-state guard re-arms over a rejected placeholder: an STT note is not
+    a name the lane should be stuck behind, so a late real title can still replace it."""
+
+    def _titled(self, tmp_path, title, *, source):
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.create_session("s1", source="telegram")
+            db.set_auto_title("s1", title, source=source) if source != "user" \
+                else db.set_session_title("s1", title)
+            return db
+        except Exception:
+            db.close()
+            raise
+
+    def test_rejected_placeholder_rearms_even_at_llm_authority(self, tmp_path):
+        db = self._titled(tmp_path, "[voice message could not be transcribed]", source="llm")
+        try:
+            assert not _has_upgraded_title(db, "s1")
+        finally:
+            db.close()
+
+    def test_normal_llm_title_is_terminal(self, tmp_path):
+        db = self._titled(tmp_path, "Deploy cron pipeline", source="llm")
+        try:
+            assert _has_upgraded_title(db, "s1")
+        finally:
+            db.close()
+
+    def test_manual_user_title_is_terminal(self, tmp_path):
+        db = self._titled(tmp_path, "Deploy cron pipeline", source="user")
+        try:
+            assert _has_upgraded_title(db, "s1")
+        finally:
+            db.close()
+
+    def test_unreadable_store_fails_open(self):
+        class Broken:
+            def get_session_title_source(self, _sid):
+                raise RuntimeError("store unreadable")
+
+        assert _has_upgraded_title(Broken(), "s1")

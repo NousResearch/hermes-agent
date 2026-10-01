@@ -10,7 +10,9 @@ unit outside that tree.
 from __future__ import annotations
 
 import functools
+import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -18,6 +20,113 @@ import sys
 import pytest
 
 import tools.terminal_tool_sudo as terminal_tool
+
+
+_STUB_SYSTEMD_RUN_TEMPLATE = r'''#!@PYTHON@
+"""Stub systemd-run emulating --user --pipe environment semantics.
+
+A real user unit does NOT inherit the caller's environment: the unit child
+gets the user manager's environment plus EnvironmentFile/--setenv
+assignments, minus UnsetEnvironment names. This stub builds exactly that
+(a minimal manager env — PATH and HOME — plus the parsed assignments),
+records what the child received, and runs the command with it.
+"""
+import json
+import os
+import shlex
+import subprocess
+import sys
+
+RECORD_PATH = @RECORD_PATH@
+
+
+def _parse_env_file(path):
+    env = {}
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            name, sep, value = line.partition("=")
+            if not sep:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                inner = value[1:-1]
+                out = []
+                i = 0
+                while i < len(inner):
+                    ch = inner[i]
+                    if ch == "\\" and i + 1 < len(inner):
+                        nxt = inner[i + 1]
+                        out.append({"n": "\n", "r": "\r"}.get(nxt, nxt))
+                        i += 2
+                    else:
+                        out.append(ch)
+                        i += 1
+                value = "".join(out)
+            env[name] = value
+    return env
+
+
+def main():
+    argv = sys.argv[1:]
+    try:
+        dash = argv.index("--")
+    except ValueError:
+        print("stub systemd-run: missing '--' separator", file=sys.stderr)
+        return 125
+    opts, cmd = argv[:dash], argv[dash + 1:]
+    env_file = None
+    unset_names = []
+    setenv = {}
+    working_directory = None
+    for opt in opts:
+        if opt.startswith("--property=EnvironmentFile="):
+            env_file = shlex.split(opt.split("=", 2)[2])[0]
+        elif opt.startswith("--property=UnsetEnvironment="):
+            unset_names = shlex.split(opt.split("=", 2)[2])[0].split()
+        elif opt.startswith("--setenv="):
+            name, _, value = opt.split("=", 1)[1].partition("=")
+            setenv[name] = value
+        elif opt.startswith("--working-directory="):
+            working_directory = shlex.split(opt.split("=", 1)[1])[0]
+        # --user --pipe --wait --quiet --collect --expand-environment=no
+        # --unit=... carry no env semantics for this stub.
+    child_env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+    }
+    if env_file:
+        child_env.update(_parse_env_file(env_file))
+    for name in unset_names:
+        child_env.pop(name, None)
+    child_env.update(setenv)
+    with open(RECORD_PATH, "w", encoding="utf-8") as fh:
+        json.dump(child_env, fh, sort_keys=True)
+    if working_directory:
+        os.chdir(working_directory)
+    if not cmd:
+        return 126
+    return subprocess.run(cmd, env=child_env, stdin=subprocess.DEVNULL).returncode
+
+
+sys.exit(main())
+'''
+
+
+def _write_systemd_run_stub(directory, record_path) -> str:
+    """Materialize the stub systemd-run and return its path."""
+    directory.mkdir(parents=True, exist_ok=True)
+    stub = directory / "systemd-run"
+    stub.write_text(
+        _STUB_SYSTEMD_RUN_TEMPLATE
+        .replace("@PYTHON@", sys.executable)
+        .replace("@RECORD_PATH@", repr(str(record_path))),
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return str(stub)
 
 
 @functools.cache
@@ -268,6 +377,54 @@ def test_unit_for_kill_comes_from_proc_not_environment():
     assert terminal_tool._nnp_sudo_unit_from_proc(proc_b) == "hermes-nnp-sudo-2-bbbbbbbb.service"
 
 
+@pytest.mark.platforms("posix")
+def test_execute_env_propagates_through_stub_systemd_run(monkeypatch, tmp_path):
+    """Real ``LocalEnvironment.execute()``: a late profile env reaches the unit child.
+
+    The CI Linux runner has no user systemd bus, so the real-bus test above
+    skips there (and on every macOS host) — proving nothing where it matters.
+    This one runs everywhere the wrap can fire: ``execute()`` is driven
+    end-to-end with a stub ``systemd-run`` standing in for the trusted binary.
+    The stub emulates ``--user --pipe`` env semantics: the unit child does NOT
+    inherit the caller's environment, it gets a minimal manager env plus the
+    EnvironmentFile the wrap writes (``_run_bash``), and it records exactly
+    what the child received.
+
+    The sentinel is set on the environment AFTER construction, so it is
+    provably absent from the init-session snapshot the wrapper sources — the
+    per-process EnvironmentFile is the only channel. ``nnp-unfiled-marker``
+    rides the caller's env but cannot be written to the EnvironmentFile (its
+    key fails the writer's name regex), so it reaching the child would mean
+    the stub leaked the parent env; its absence proves the recorded env was
+    really built from the EnvironmentFile. Removing the env-file handoff — or
+    making it lossy — fails this test; passing it does not.
+    """
+    from tools.environments.local import LocalEnvironment
+
+    record_path = tmp_path / "stub-child-env.json"
+    stub = _write_systemd_run_stub(tmp_path / "bin", record_path)
+    monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
+    monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: stub)
+
+    sentinel_value = "hermes-nnp-sentinel-via-stub"
+    local = LocalEnvironment(cwd=str(tmp_path))
+    local.env["HERMES_NNP_TEST_SENTINEL"] = sentinel_value
+    local.env["nnp-unfiled-marker"] = "must-not-arrive"
+    result = local.execute(
+        'printf "%s" "$HERMES_NNP_TEST_SENTINEL" && sudo -n true',
+        timeout=60,
+    )
+    output = result.get("output") or ""
+    combined = output.lower()
+    assert "no new privileges" not in combined, output
+    assert "failed to connect" not in combined, output
+    assert sentinel_value in output, output
+    recorded = json.loads(record_path.read_text(encoding="utf-8"))
+    assert recorded.get("HERMES_NNP_TEST_SENTINEL") == sentinel_value, recorded
+    assert "nnp-unfiled-marker" not in recorded, recorded
+
+
+@pytest.mark.platforms("linux")
 @pytest.mark.skipif(
     not os.path.isfile("/usr/bin/systemd-run") or not _user_systemd_bus_usable(),
     reason="/usr/bin/systemd-run + a reachable user systemd bus required for a real wrapped execute()",

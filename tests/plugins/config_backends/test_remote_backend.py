@@ -621,6 +621,53 @@ def test_bulk_save_after_migration_sends_only_the_edit(plane):
         assert "compression" not in json.dumps(p["body"])
 
 
+def test_unrelated_write_keeps_an_old_profile_stamp_so_later_reads_still_migrate(plane):
+    """Orchestrator ruling (option 1): the profile level stamped 46 still stores a pre-migration
+    key; an unrelated write must not re-stamp it, or every later reader would skip 46->47."""
+    from hermes_cli.config import read_raw_config, set_config_value
+    assert backend_mod._latest_config_version() > 46
+    plane.profile("default").update(values={"compression": {"threshold_tokens": 256000}}, writer=46)
+    assert "threshold_tokens" not in (read_raw_config().get("compression") or {}), "precondition"
+
+    set_config_value("display.personality", "pirate")
+
+    (patch,) = plane.patches()
+    assert "writerConfigVersion" not in patch["body"]
+    assert plane.profile("default")["writer"] == 46
+    assert plane.profile("default")["values"]["compression"] == {"threshold_tokens": 256000}
+
+    remote_pkg._reset_for_tests()  # a later process reads the same profile level
+    doc = read_raw_config()
+    assert "threshold_tokens" not in (doc.get("compression") or {})  # 46->47 still ran
+    assert doc["display"]["personality"] == "pirate"
+    assert len(plane.patches()) == 1  # D12: the later read wrote nothing back
+
+
+@pytest.mark.parametrize("stored", ["latest", None])
+def test_write_stamps_a_current_or_unstamped_profile_level(plane, stored):
+    from hermes_cli.config import set_config_value
+    latest = backend_mod._latest_config_version()
+    plane.profile("default")["writer"] = latest if stored == "latest" else None
+
+    set_config_value("display.personality", "pirate")
+
+    (patch,) = plane.patches()
+    assert patch["body"]["writerConfigVersion"] == latest
+    assert plane.profile("default")["writer"] == latest
+
+
+def test_write_never_lowers_a_newer_profile_stamp(plane):
+    from hermes_cli.config import set_config_value
+    newer = backend_mod._latest_config_version() + 1
+    plane.profile("default")["writer"] = newer
+
+    set_config_value("display.personality", "pirate")
+
+    (patch,) = plane.patches()
+    assert "writerConfigVersion" not in patch["body"]
+    assert plane.profile("default")["writer"] == newer
+
+
 def _dashboard_put(config):
     import asyncio
 

@@ -15,8 +15,8 @@ _registry = HandlerRegistry()
 
 # ── Live-session slash output ────────────────────────────────────────
 
-# Answered from the live session ONLY when the agent lives on a compute host.
-_ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
+# Read-only commands use the live session whenever one is available; routing them
+# through the slash worker loses access to the serve process's active agent.
 
 _NO_AGENT_USAGE = "(._.) No active agent -- send a message first."
 _NO_AGENT = "No active agent -- send a message first."
@@ -220,8 +220,6 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     arg = arg or ""
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
-    if name in _ISOLATED_SESSION_READ_COMMANDS and not (session is not None and _session_uses_compute_host(session)):
-        return None
     entry = _LIVE_SLASH_OUTPUT.get(name)
     if entry is None:
         return None

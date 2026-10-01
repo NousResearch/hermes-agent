@@ -1523,6 +1523,59 @@ function persistTiles() {
   writeJson(TILES_KEY, Object.keys(tilesByProfile).length === 0 ? null : tilesByProfile)
 }
 
+// Backend sync (store/open-tabs-backend-sync) listens for real strip edits.
+// Adopting a remote snapshot must not echo a PUT back at the file we just read.
+let openTabsListener: (() => void) | null = null
+let suppressOpenTabsNotify = false
+
+export function setOpenTabsPersistListener(fn: (() => void) | null): void {
+  openTabsListener = fn
+}
+
+export function openTabsSyncScopeKey(): string {
+  return visibleTileScope
+}
+
+export function currentOpenSessionTabs(): Array<{
+  anchor?: string
+  before?: null | string
+  dir?: SessionTile['dir']
+  storedSessionId: string
+}> {
+  return $sessionTiles
+    .get()
+    .filter((tile: SessionTile) => tile.workspaceMode !== 'bots')
+    .map((tile: SessionTile) => ({
+      storedSessionId: tile.storedSessionId,
+      ...(tile.dir ? { dir: tile.dir } : {}),
+      ...(tile.anchor ? { anchor: tile.anchor } : {}),
+      ...(tile.before !== undefined ? { before: tile.before } : {})
+    }))
+}
+
+export function adoptRemoteOpenTabs(
+  tabs: Array<{ anchor?: string; before?: null | string; dir?: SessionTile['dir']; storedSessionId: string }>
+): void {
+  const bots = $sessionTiles.get().filter((tile: SessionTile) => tile.workspaceMode === 'bots')
+
+  const sessionTiles: SessionTile[] = tabs
+    .filter(tile => typeof tile.storedSessionId === 'string' && tile.storedSessionId.trim())
+    .map(tile => ({
+      storedSessionId: tile.storedSessionId,
+      ...(tile.dir ? { dir: tile.dir } : {}),
+      ...(tile.anchor ? { anchor: tile.anchor } : {}),
+      ...(tile.before !== undefined ? { before: tile.before } : {})
+    }))
+
+  suppressOpenTabsNotify = true
+
+  try {
+    saveTiles([...sessionTiles, ...bots])
+  } finally {
+    suppressOpenTabsNotify = false
+  }
+}
+
 function saveTiles(tiles: SessionTile[]) {
   const stored = tiles.map(toStored)
   const sessionTiles = stored.filter(tile => tile.workspaceMode !== 'bots')
@@ -1542,6 +1595,10 @@ function saveTiles(tiles: SessionTile[]) {
 
   persistTiles()
   $sessionTiles.set(tiles)
+
+  if (!suppressOpenTabsNotify && openTabsListener && !isSecondaryWindow() && !isBrowserWindow()) {
+    openTabsListener()
+  }
 }
 
 function saveTileBucket(bucket: string, tiles: SessionTile[]) {

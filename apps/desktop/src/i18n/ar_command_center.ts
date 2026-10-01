@@ -623,5 +623,5 @@ export const arCommandCenter = {
     promptScheduleRequired: 'الرسالة والجدول مطلوبان',
     saveChanges: 'حفظ التغييرات',
     createAction: 'إنشاء'
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'commandCenter' | 'messaging' | 'profiles' | 'cron'>

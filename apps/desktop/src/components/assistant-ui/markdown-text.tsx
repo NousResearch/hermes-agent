@@ -21,6 +21,7 @@ import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { FOLDER_LINK_PREFIX } from '@/lib/folder-links'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -47,6 +48,7 @@ import { useForcedTextDirection } from '@/store/text-direction'
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
+import { FolderLink } from './folder-link'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
 
@@ -282,6 +284,10 @@ function flattenChildrenToText(node: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  if (href?.startsWith(FOLDER_LINK_PREFIX)) {
+    return <FolderLink href={href}>{children}</FolderLink>
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {

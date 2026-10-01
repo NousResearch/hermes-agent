@@ -120,6 +120,12 @@ export const ru = defineLocale({
       `${count.toLocaleString('ru')} ${RU_PLURAL(count, 'результат', 'результата', 'результатов')}`,
     back: 'Назад к результатам'
   },
+  folderLinks: {
+    localConnectionRequired: 'Ссылки на папки требуют текущего локального подключения этой сессии.',
+    unavailable: 'Открытие папок в системе недоступно.',
+    openFailed: 'Не удалось открыть папку.',
+    openFailedWithMessage: message => `Не удалось открыть папку: ${message}`
+  },
   sessionImport: {
     title: 'Продолжить из другого приложения',
     subtitle: 'Перенесите разговор в Hermes и продолжите с того места, где остановились.',

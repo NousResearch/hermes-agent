@@ -104,6 +104,12 @@ export const zh = defineLocale({
     results: (count: number) => `${count.toLocaleString('zh')} 个结果`,
     back: '返回结果'
   },
+  folderLinks: {
+    localConnectionRequired: '文件夹链接需要此会话当前的本地连接。',
+    unavailable: '无法使用系统的文件夹打开功能。',
+    openFailed: '无法打开文件夹。',
+    openFailedWithMessage: message => `无法打开文件夹：${message}`
+  },
   connectors: {
     title: '连接你的应用',
     connect: '连接',

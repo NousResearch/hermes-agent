@@ -102,6 +102,12 @@ export const ar = defineLocale({
     results: (count: number) => `النتائج: ${count.toLocaleString('ar')}`,
     back: 'العودة إلى النتائج'
   },
+  folderLinks: {
+    localConnectionRequired: 'تتطلب روابط المجلدات الاتصال المحلي الحالي لهذه الجلسة.',
+    unavailable: 'فتح المجلدات عبر النظام غير متاح.',
+    openFailed: 'تعذر فتح المجلد.',
+    openFailedWithMessage: message => `تعذر فتح المجلد: ${message}`
+  },
   sessionImport: {
     title: 'المتابعة من تطبيق آخر',
     subtitle: 'انقل محادثة إلى Hermes وتابع من حيث توقفت.',

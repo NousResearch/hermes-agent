@@ -109,6 +109,12 @@ export const en: Translations = {
     results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
     back: 'Back to results'
   },
+  folderLinks: {
+    localConnectionRequired: 'Folder links require this session’s current local connection.',
+    unavailable: 'Native folder opening is unavailable.',
+    openFailed: 'Could not open folder.',
+    openFailedWithMessage: message => `Could not open folder: ${message}`
+  },
   connectors: {
     title: 'Connect your apps',
     connect: 'Connect',

@@ -169,6 +169,12 @@ export interface Translations {
     results: (count: number) => string
     back: string
   }
+  folderLinks: {
+    localConnectionRequired: string
+    unavailable: string
+    openFailed: string
+    openFailedWithMessage: (message: string) => string
+  }
   connectors: {
     title: string
     connect: string

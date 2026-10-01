@@ -44,7 +44,8 @@ registerFsIpc({
   expandUserPath: value => (value.startsWith('~/') ? path.join(scratch, value.slice(2)) : value),
   resolveRequestedPathForIpc: value => value,
   directoryExists: value => fs.existsSync(value),
-  resolveGitBinary: () => 'git'
+  resolveGitBinary: () => 'git',
+  openExistingDirectory: vi.fn(async () => ({ ok: false, error: 'Not used by this fixture' }))
 })
 
 const reveal = (target: string) => electron.handlers.get('hermes:fs:reveal')!({}, target)

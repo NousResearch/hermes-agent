@@ -279,7 +279,40 @@ def _assembly_agent(db=None):
     agent._use_prompt_caching = False
     agent._usage_anchor = None
     agent.context_compressor = SimpleNamespace()
+    agent._extract_reasoning = lambda message: getattr(message, "reasoning", None)
+    agent._strip_think_blocks = lambda text: text
+    agent.verbose_logging = False
+    agent.reasoning_callback = None
+    agent.stream_delta_callback = None
+    agent._stream_callback = None
     return agent
+
+
+def _native_stored_assistant(agent, size, signature):
+    from agent.chat_completion_helpers import build_assistant_message
+    from agent.transports.anthropic import AnthropicTransport
+
+    transport = AnthropicTransport()
+    response = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="thinking", thinking="x" * size, signature=signature),
+            SimpleNamespace(type="text", text="A"),
+        ],
+        stop_reason="end_turn",
+        stop_details=None,
+    )
+    normalized = transport.normalize_response(response)
+    return build_assistant_message(agent, normalized, normalized.finish_reason)
+
+
+def _native_history(agent, size):
+    return [
+        {"role": "user", "content": "Q1"},
+        _native_stored_assistant(agent, size, "sig_1"),
+        {"role": "user", "content": "Q2"},
+        _native_stored_assistant(agent, size, "sig_2"),
+        {"role": "user", "content": "continue"},
+    ]
 
 
 def _patch_assembly_loop(monkeypatch, selector=None):
@@ -316,30 +349,26 @@ def _assemble(agent, history):
     )
 
 
-def test_full_assembly_prices_surviving_non_tool_thinking(monkeypatch):
+def test_full_producer_to_wire_prices_surviving_non_tool_thinking(monkeypatch):
+    from agent.transports.anthropic import AnthropicTransport
+
     _patch_assembly_loop(monkeypatch)
     agent = _assembly_agent()
 
-    small = (
-        _signed_turn("Q1", "A1", "sig_1", thinking="x")
-        + _signed_turn("Q2", "A2", "sig_2", thinking="x")
-        + [{"role": "user", "content": "continue"}]
-    )
-    large = (
-        _signed_turn("Q1", "A1", "sig_1", thinking="x" * 8000)
-        + _signed_turn("Q2", "A2", "sig_2", thinking="x" * 8000)
-        + [{"role": "user", "content": "continue"}]
-    )
-
-    small_request = _assemble(agent, copy.deepcopy(small))
-    large_request = _assemble(agent, copy.deepcopy(large))
+    small_request = _assemble(agent, _native_history(agent, 1))
+    large_request = _assemble(agent, _native_history(agent, 8000))
     assert large_request.approx_tokens - small_request.approx_tokens >= 3500
     assert large_request.request_pressure_tokens == large_request.approx_tokens
 
-    _, native = convert_messages_to_anthropic(large_request.api_messages, model=agent.model)
+    kwargs = AnthropicTransport().build_kwargs(
+        agent.model,
+        large_request.api_messages,
+        tools=[],
+        base_url=agent.base_url,
+    )
     emitted = sum(
         len(block.get("thinking", ""))
-        for message in native
+        for message in kwargs["messages"]
         for block in (message.get("content") if isinstance(message.get("content"), list) else [])
         if isinstance(block, dict) and block.get("type") == "thinking"
     )

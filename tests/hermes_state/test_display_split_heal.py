@@ -121,3 +121,22 @@ def test_display_projection_places_unindexed_rows_after_indexed_rows(tmp_path):
 
     assert [row["id"] for row in rows] == sorted(row["id"] for row in rows)
     assert rows[-1]["id"] == newest_id
+
+
+def test_latest_page_includes_newest_unindexed_row(tmp_path):
+    from pathlib import Path
+
+    db = SessionDB(Path(tmp_path) / "state.db")
+    db.create_session("chat", source="desktop")
+    db.append_message("chat", "user", "indexed")
+    newest_id = db.append_message("chat", "assistant", "newest")
+
+    def clear_display_order(conn):
+        conn.execute("UPDATE messages SET display_order = NULL WHERE id = ?", (newest_id,))
+
+    db._execute_write(clear_display_order)
+    rows = db._read_retrying_ioerr(
+        lambda conn: db._display_rows_from_conn(conn, "chat", latest=True, limit=1)
+    )
+
+    assert [row["id"] for row in rows] == [newest_id]

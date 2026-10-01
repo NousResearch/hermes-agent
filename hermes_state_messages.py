@@ -1432,13 +1432,63 @@ class SessionMessagesMixin:
     def _display_rows_from_conn(conn, session_id: str, *, limit: Optional[int] = None,
                                 offset: int = 0, latest: bool = False):
         """One display-history projection for normal reads and transactional verification."""
-        direction = "DESC" if latest else "ASC"
-        return conn.execute(
-            f"""WITH page AS (
+        has_unindexed = bool(conn.execute(
+            f"SELECT 1 FROM messages WHERE session_id = ? AND display_order IS NULL "
+            f"AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL} LIMIT 1",
+            (session_id,),
+        ).fetchone())
+        if latest and not has_unindexed:
+            page_sql = f"""WITH page AS (
+                   SELECT display_order, MIN(id) AS fallback_id FROM messages
+                   WHERE session_id = ? AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL}
+                   GROUP BY display_order
+                   ORDER BY display_order DESC
+                   LIMIT ? OFFSET ?
+               )
+               SELECT chosen.* FROM page
+               JOIN messages AS chosen ON chosen.id = (
+                   SELECT candidate.id FROM messages AS candidate
+                   WHERE candidate.session_id = ? AND candidate.display_order = page.display_order
+                     AND (candidate.active = 1 OR candidate.compacted = 1){DISPLAY_VISIBLE_SQL}
+                   ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+               )
+               ORDER BY page.display_order ASC"""
+            params = (session_id, -1 if limit is None else limit, offset, session_id)
+        elif latest:
+            page_sql = f"""WITH page AS (
+                   SELECT display_order, id AS fallback_id, 1 AS null_rank
+                   FROM messages
+                   WHERE session_id = ? AND display_order IS NULL
+                     AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL}
+                   UNION ALL
+                   SELECT display_order, MIN(id) AS fallback_id, 0 AS null_rank
+                   FROM messages
+                   WHERE session_id = ? AND display_order IS NOT NULL
+                     AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL}
+                   GROUP BY display_order
+               ), paged AS (
+                   SELECT display_order, fallback_id FROM page
+                   ORDER BY null_rank DESC, display_order DESC
+                   LIMIT ? OFFSET ?
+               )
+               SELECT chosen.* FROM paged AS page
+               JOIN messages AS chosen ON chosen.id = (
+                   SELECT candidate.id FROM messages AS candidate
+                   WHERE candidate.session_id = ?
+                     AND (candidate.display_order = page.display_order
+                          OR (candidate.display_order IS NULL AND page.display_order IS NULL
+                              AND candidate.id = page.fallback_id))
+                     AND (candidate.active = 1 OR candidate.compacted = 1){DISPLAY_VISIBLE_SQL}
+                   ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+               )
+               ORDER BY (page.display_order IS NULL) ASC, page.display_order ASC"""
+            params = (session_id, session_id, -1 if limit is None else limit, offset, session_id)
+        else:
+            page_sql = f"""WITH page AS (
                    SELECT display_order, MIN(id) AS fallback_id FROM messages
                    WHERE session_id = ? AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL}
                    GROUP BY display_order, CASE WHEN display_order IS NULL THEN id ELSE 0 END
-                   ORDER BY (display_order IS NULL) ASC, display_order {direction}
+                   ORDER BY (display_order IS NULL) ASC, display_order ASC
                    LIMIT ? OFFSET ?
                )
                SELECT chosen.* FROM page
@@ -1451,8 +1501,11 @@ class SessionMessagesMixin:
                      AND (candidate.active = 1 OR candidate.compacted = 1){DISPLAY_VISIBLE_SQL}
                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
                )
-               ORDER BY (page.display_order IS NULL) ASC, page.display_order ASC""",
-            (session_id, -1 if limit is None else limit, offset, session_id),
+               ORDER BY (page.display_order IS NULL) ASC, page.display_order ASC"""
+            params = (session_id, -1 if limit is None else limit, offset, session_id)
+        return conn.execute(
+            page_sql,
+            params,
         ).fetchall()
 
     def display_message_count(self, session_id: str) -> int:

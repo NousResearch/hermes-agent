@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "cead"
     label: "Cead"
-    timeout_denying: "⏱ Teorainn ama — ag diúltú don ordú"
-    timed_out_no_response: "imithe thar am (gan freagra)"
     outcome_once: "ceadaithe uair amháin"
     outcome_session: "ceadaithe don seisiún"
     outcome_always: "curtha leis an liosta ceadaithe"
@@ -2261,7 +2259,6 @@ cli:
   clarify:
     bell_context: "soiléiriú"
     label: "Soiléirigh"
-    timed_out_locked_answers: "(chuaigh an soiléiriú thar am tar éis {timeout}s — seoladh na freagraí glasáilte ar ais)"
   connect:
     bell_context: "socrú ceangail"
     cannot_restart: "Ní féidir an ceangal seo a thosú arís. Cealaigh agus iarr ar an ngníomhaire arís."

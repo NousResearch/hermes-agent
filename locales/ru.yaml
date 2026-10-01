@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "одобрение"
     label: "Одобрение"
-    timeout_denying: "⏱ Тайм-аут — команда отклонена"
-    timed_out_no_response: "тайм-аут (нет ответа)"
     outcome_once: "разрешено один раз"
     outcome_session: "разрешено на сеанс"
     outcome_always: "добавлено в список разрешённых"
@@ -2261,7 +2259,6 @@ cli:
   clarify:
     bell_context: "уточняющий вопрос"
     label: "Уточнение"
-    timed_out_locked_answers: "(уточняющий вопрос: тайм-аут через {timeout} с — возвращены зафиксированные ответы)"
   connect:
     bell_context: "настройка подключения"
     cannot_restart: "Это подключение нельзя запустить повторно. Отмените и попросите агента ещё раз."

@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "схвалення"
     label: "Схвалення"
-    timeout_denying: "⏱ Час вийшов — команду відхилено"
-    timed_out_no_response: "час вийшов (без відповіді)"
     outcome_once: "дозволено один раз"
     outcome_session: "дозволено для сеансу"
     outcome_always: "додано до списку дозволених"
@@ -2261,7 +2259,6 @@ cli:
   clarify:
     bell_context: "уточнення"
     label: "Уточнення"
-    timed_out_locked_answers: "(час на уточнення вийшов через {timeout} с — повернено зафіксовані відповіді)"
   connect:
     bell_context: "налаштування підключення"
     cannot_restart: "Це підключення не можна запустити повторно. Скасуйте й попросіть агента ще раз."

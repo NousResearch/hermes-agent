@@ -68,6 +68,28 @@ def _make_background_cli_stub():
 
 
 class TestCliApprovalUi:
+    def test_panel_waits_for_an_answer_past_approvals_timeout(self):
+        """The CLI is attended: ``approvals.timeout`` (the messaging knob) must not deny an unanswered
+        panel, and the hint row shows no countdown."""
+        cli = _make_cli_stub()
+        cli._secret_state = cli._slash_confirm_state = cli._connection_state = cli._clarify_state = None
+        result = {}
+        with patch("cli.CLI_CONFIG", {"approvals": {"timeout": 1}}):
+            thread = threading.Thread(
+                target=lambda: result.__setitem__("value", cli._approval_callback("rm -rf /tmp/x", "delete")),
+                daemon=True)
+            thread.start()
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            thread.join(timeout=2.5)
+            assert thread.is_alive() and cli._approval_state is not None
+            assert cli._approval_deadline is None
+            assert cli._tui_hint_text()[-1] == ('class:clarify-countdown', '')
+            cli._approval_state["response_queue"].put("once")
+            thread.join(timeout=2)
+        assert result["value"] == "once"
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}

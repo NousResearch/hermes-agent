@@ -24,9 +24,10 @@ test('SSH attachment pins native credentials to its tunnel and retires no gatewa
     async forward(...args: any[]) {forwards.push(args)},
     async cancelForward() {throw new Error('not closed yet')}
   }
-  const connection = await attachSshGateway({ ssh, profile: '', remoteHermesPath: '/usr/bin/hermes', pickLocalPort: async () => 8765 })
+  const connection = await attachSshGateway({ ssh, profile: 'remote-name', profileAlias: 'default', remoteHermesPath: '/usr/bin/hermes', pickLocalPort: async () => 8765 })
   expect(connection).not.toBeNull()
   expect(forwards).toEqual([[8765, 4321, '127.0.0.1']])
+  expect(routedGatewayEndpoint(connection!.gatewayEndpoint, 'default', '/local/wrong')).toBe(connection!.gatewayEndpoint)
   const secondary = routedGatewayEndpoint(connection!.gatewayEndpoint, 'work', '/local/wrong')
   expect(secondary.profile_id).toBe(endpoint.profile_id)
   expect(secondary.ssh_profile).toBe('work')

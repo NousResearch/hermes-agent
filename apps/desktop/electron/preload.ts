@@ -418,6 +418,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
     pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')
   },
+  roomSetup: {
+    create: input => ipcRenderer.invoke('hermes:room-setup:create', input),
+    recover: () => ipcRenderer.invoke('hermes:room-setup:recover')
+  },
   preparedSubmissions: {
     owner: () => ipcRenderer.invoke('hermes:prepared-submissions:owner'),
     compareAndSet: (key, expected, entry) => ipcRenderer.invoke('hermes:prepared-submissions:compare-and-set', key, expected, entry),

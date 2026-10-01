@@ -15,8 +15,10 @@ only explicit gateway lifecycle commands stop the owner.
 Native tickets cross the private preload IPC transiently, are removed from the URL before
 WebSocket construction, and are offered as subprotocols. Electron removes Origin only for
 an unexpired one-use dial bound to the requesting window. No public dashboard token is
-scraped or added to the public connection descriptor. SSH/URL intent retains its existing
-remote resolution and exposure lifecycle; a remote failure must never start a local owner.
+scraped or added to the public connection descriptor. Linux/macOS SSH can attach through remote `gateway ensure` and private `gateway ticket` over its
+existing authenticated SSH transport; closing that tunnel never stops the canonical owner.
+Only runtimes positively lacking canonical ensure use the classic SSH path. URL/Cloud and
+Windows SSH retain their existing exposure lifecycle; a remote failure must never start a local owner.
 
 The gateway `gateway ensure` attaches to is **one multiplexing owner per home**: `HERMES_DESKTOP=1`
 is not how the app finds it, and no per-profile `hermes serve --port 0` child is spawned. One

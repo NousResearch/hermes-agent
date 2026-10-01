@@ -15,7 +15,7 @@ interface Ssh {
 
 export async function attachSshGateway(options: {
   ssh: Ssh; profile: string; remoteHermesPath: string; pickLocalPort: () => Promise<number>
-  signal?: AbortSignal
+  signal?: AbortSignal; profileAlias?: string
 }) {
   const { ssh, profile } = options
   const hermesPath = await locateHermes(ssh, options.remoteHermesPath)
@@ -46,7 +46,7 @@ export async function attachSshGateway(options: {
   }
   const baseUrl = `http://127.0.0.1:${localPort}`
   const transportId = crypto.randomUUID()
-  const gatewayEndpoint: GatewayEndpoint = { ...connection.gatewayEndpoint, ssh_transport_id: transportId }
+  const gatewayEndpoint: GatewayEndpoint = { ...connection.gatewayEndpoint, ssh_transport_id: transportId, ssh_profile_alias: options.profileAlias || profile || 'default' }
   const release = registerGatewayTicketTransport(transportId, baseUrl, async (endpoint, purpose) => {
     const mintCommand = `${scoped} gateway ticket`
     let reply

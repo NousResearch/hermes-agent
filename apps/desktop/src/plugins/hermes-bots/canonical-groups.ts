@@ -175,6 +175,43 @@ export function canonicalGroupEligibility(
   return { eligible: true, roster }
 }
 
+/** Cross-gateway creation is a native setup action; work stays on the home. */
+export function canonicalPeerGroupEligibility(route: CanonicalGroupRoute, members: GroupMember[]): boolean {
+  if (members.length < 2 || members.length > 6) {return false}
+  const handles = new Set(['all', 'everyone'])
+  const targets = new Set<string>()
+  let peer = false
+  for (const member of members) {
+    const connectionId = member.route?.connectionId ?? member.connectionId ?? route.connectionId
+    const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
+    const handle = member.handle ?? profile
+    if (!connectionId || !profile || !handle || handles.has(handle.toLowerCase())) {return false}
+    const target = JSON.stringify([connectionId, profile.toLowerCase()])
+    if (targets.has(target)) {return false}
+    targets.add(target); handles.add(handle.toLowerCase())
+    if (connectionId !== route.connectionId) {
+      if (profile !== 'default') {return false}
+      peer = true
+    }
+  }
+  return peer
+}
+
+export async function createCanonicalPeerGroup(route: CanonicalGroupRoute, name: string, members: GroupMember[]) {
+  if (!canonicalPeerGroupEligibility(route, members) || !window.hermesDesktop?.roomSetup) {
+    throw Object.assign(new Error('peer_setup_failed'), { roomSetupReason: 'canonical_connection_required' })
+  }
+  const result = await window.hermesDesktop.roomSetup.create({ home: route, name, members: members.map((member, index) => ({
+    member_id: `member-${index + 1}`, connectionId: member.route?.connectionId ?? member.connectionId ?? route.connectionId,
+    profile: member.route?.targetProfile ?? member.targetProfile ?? member.name,
+    handle: member.handle ?? member.name, ...(member.display_name ? { display_name: member.display_name } : {})
+  })) })
+  if (!result.ok || !result.room) {
+    throw Object.assign(new Error('peer_setup_failed'), { roomSetupReason: result.reason || 'setup_failed' })
+  }
+  return { room: result.room, binding: { ...route, roomId: result.room.room_id } }
+}
+
 export function isCanonicalGroupCreateRefusal(error: unknown): boolean {
   const refusal = error as { code?: unknown; data?: { reason?: unknown } } | null
 

@@ -153,6 +153,7 @@ class GroupsCapabilitiesParams(ProfileParams):
 
 
 class GroupsCapabilitiesResult(Result):
+    server_time: float | None = None
     protocol_version: int
     driver: bool
     persistent_process: bool
@@ -552,6 +553,8 @@ method("groups.demote", params=GroupsDemoteParams, result=GroupsDemoteResult,
 
 
 class GroupsPeerInviteParams(ProfileParams):
+    request_id: str | None = None
+    requested_at: float | None = None
     room_id: str | None = None
     home_install_id: str | None = None
     authority_gateway_id: str | None = None
@@ -568,6 +571,8 @@ class GroupsPeerInviteParams(ProfileParams):
 
 
 class GroupsPeerInviteResult(Result):
+    expires_at: float | None = None
+    status_expires_at: float | None = None
     grant: str
     target_profile: str
     catalog: RoomLinkCatalog

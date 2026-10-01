@@ -29,6 +29,7 @@ import path from 'node:path'
 
 export interface GatewayEndpoint {
   ssh_transport_id?: string
+  ssh_profile_alias?: string
   ssh_profile?: string
   profile_id: string
   instance_id: string
@@ -106,7 +107,7 @@ export function isStaleLocalGatewayError(error: unknown): boolean {
 
 export async function redialLocalGateway<TEndpoint, TResult>(deps: {
   ensure: () => Promise<TEndpoint>
-  forget: () => Promise<void> | void
+  forget: (endpoint: TEndpoint) => Promise<void> | void
   use: (endpoint: TEndpoint) => Promise<TResult>
 }): Promise<TResult> {
   const first = await deps.ensure()
@@ -115,7 +116,7 @@ export async function redialLocalGateway<TEndpoint, TResult>(deps: {
     return await deps.use(first)
   } catch (error) {
     if (!isStaleLocalGatewayError(error)) {throw error}
-    await deps.forget()
+    await deps.forget(first)
 
     return deps.use(await deps.ensure())
   }
@@ -180,7 +181,9 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
   const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? new URL(urlOrProfile).searchParams.get('profile') : urlOrProfile)?.trim()
 
   if (!profile || profile === 'current') {return endpoint}
-  if (endpoint.ssh_transport_id) {return { ...endpoint, ssh_profile: profile }}
+  if (endpoint.ssh_transport_id) {
+    return profile === endpoint.ssh_profile_alias ? endpoint : { ...endpoint, ssh_profile: profile }
+  }
   const paths = path
   const own = paths.basename(endpoint.profile_id)
   const ownName = paths.basename(paths.dirname(endpoint.profile_id)) === 'profiles' ? own : 'default'
@@ -188,7 +191,7 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
   if (profile === ownName) {return endpoint}
 
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {throw new Error('Invalid profile route')}
-  const root = paths.basename(paths.dirname(endpoint.profile_id)) === 'profiles' ? paths.dirname(paths.dirname(endpoint.profile_id)) : endpoint.ssh_transport_id ? endpoint.profile_id : launchHome
+  const root = paths.basename(paths.dirname(endpoint.profile_id)) === 'profiles' ? paths.dirname(paths.dirname(endpoint.profile_id)) : launchHome
   const home = profile === 'default' ? root : paths.join(root, 'profiles', profile)
 
   return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }

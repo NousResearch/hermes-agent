@@ -14272,6 +14272,18 @@
       "GroupsCapabilitiesResult": {
         "additionalProperties": false,
         "properties": {
+          "server_time": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Server Time"
+          },
           "protocol_version": {
             "title": "Protocol Version",
             "type": "integer"
@@ -14772,6 +14784,30 @@
             "default": null,
             "title": "Profile"
           },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          },
+          "requested_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Requested At"
+          },
           "room_id": {
             "anyOf": [
               {
@@ -14911,6 +14947,30 @@
       "GroupsPeerInviteResult": {
         "additionalProperties": false,
         "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expires At"
+          },
+          "status_expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Expires At"
+          },
           "grant": {
             "title": "Grant",
             "type": "string"

@@ -48,7 +48,7 @@ _FIELDS = {
                        'choice', 'request_id'},
     'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
-                           'member_id', 'ttl_seconds', 'status_ttl_seconds', 'replication', 'work_records', 'passive_only'},
+                           'member_id', 'ttl_seconds', 'status_ttl_seconds', 'replication', 'work_records', 'passive_only', 'request_id', 'requested_at'},
     'groups.peer.revoke': {'grant'},
     'groups.replica_state': {'room_id'},
     'groups.replication.prepare': {'room_id', 'target_install_id', 'endpoint', 'enrollment_id',
@@ -97,14 +97,16 @@ async def dispatch_group_control(connection, method, params, *, author=None, rem
                 return _profiles(authority, actor, home, supplied)
             try:
                 if method in peers.TARGET_METHODS:
-                    return peers.dispatch_target(authority, method, supplied)
+                    return peers.dispatch_target(authority, method, supplied, actor_subject=actor.subject)
                 if method in replication.TARGET_METHODS:
                     return replication.dispatch_target(authority, method, supplied)
                 return _group(authority, actor, home, method, supplied, author=author, remember=remember)
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
-                raise RuntimeStoreError(getattr(exc, 'reason', None) or 'invalid_params') from exc
+                from gateway.hosted_rooms import RoomNotFoundError
+                reason = getattr(exc, 'reason', None) or ('room_not_found' if method == 'groups.disband' and isinstance(exc, RoomNotFoundError) else 'invalid_params')
+                raise RuntimeStoreError(reason) from exc
             except (ValueError, TypeError) as exc:
                 raise RuntimeStoreError('invalid_params') from exc
     return await asyncio.to_thread(invoke)
@@ -153,11 +155,12 @@ def _group(authority, actor, home, method, params, *, author=None, remember=None
         return prepare(service, params)
 
     def capabilities():
+        import time
         from gateway.session_group_peers import room_link
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
-                'persistent_process': True, 'authority_gateway_id': gateway_id,
+                'persistent_process': True, 'authority_gateway_id': gateway_id, 'server_time': time.time(),
                 'room_link': room_link(authority),
-                'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
+                'features': ['room_identity', 'monotonic_log', 'replayable_disband', 'peer_setup_recovery'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT}
 
     def listing():

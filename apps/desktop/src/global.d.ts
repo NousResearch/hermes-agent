@@ -6,9 +6,11 @@ import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
+import type { RoomSetupInput } from '../electron/room-setup'
 import type { GrowRequest } from '../electron/window-growth'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
+import type { CanonicalRoom } from './plugins/hermes-bots/canonical-groups'
 import type {
   PetOverlayBounds,
   PetOverlayControl,
@@ -395,6 +397,10 @@ declare global {
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
+      }
+      roomSetup?: {
+        create: (input: RoomSetupInput) => Promise<{ ok: boolean; reason?: string; room?: CanonicalRoom }>
+        recover: () => Promise<{ ok: boolean; pending?: number; reason?: string }>
       }
       preparedSubmissions?: {
         owner?: () => Promise<string>

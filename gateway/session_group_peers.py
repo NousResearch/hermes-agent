@@ -48,14 +48,14 @@ def room_link(authority):
             'authentication': 'proof-v2'}
 
 
-def dispatch_target(authority, method, params):
+def dispatch_target(authority, method, params, *, actor_subject=None):
     """Operator-only target controls; ``room_id`` names the home's room, not a local one."""
     if method == 'groups.peer.invite':
-        return _invite(authority, params)
+        return _invite(authority, params, actor_subject=actor_subject)
     return _revoke(authority, params)
 
 
-def _invite(authority, params):
+def _invite(authority, params, *, actor_subject=None):
     from gateway.platforms.api_server_room_grants import _issue_invitation
     identity = ('room_id', 'home_install_id', 'authority_gateway_id', 'member_id')
     if (not all(isinstance(params.get(k), str) and params[k] for k in identity)
@@ -64,9 +64,15 @@ def _invite(authority, params):
         raise RuntimeStoreError('invalid_params')
     if not room_link(authority)['enabled']:
         raise RuntimeStoreError('room_link_unavailable')
-    invitation = _issue_invitation(_api_server(authority), params, 'default')
+    if 'request_id' in params or 'requested_at' in params:
+        from gateway.session_group_invitations import issue
+        invitation = issue(authority, actor_subject, params,
+            lambda conn: _issue_invitation(_api_server(authority), params, 'default', conn=conn))
+    else:
+        invitation = _issue_invitation(_api_server(authority), params, 'default')
     return {'grant': invitation['grant'], 'target_profile': invitation['target_profile'],
-            'catalog': invitation['catalog'], 'endpoint': invitation['catalog']['endpoint']}
+            'catalog': invitation['catalog'], 'endpoint': invitation['catalog']['endpoint'],
+            'expires_at': invitation['expires_at'], 'status_expires_at': invitation['status_expires_at']}
 
 
 def _revoke(authority, params):
@@ -76,7 +82,7 @@ def _revoke(authority, params):
     if not isinstance(params.get('grant'), str) or not params['grant']:
         raise RuntimeStoreError('invalid_params')
     try:
-        claims = decode_room_grant(gateway_room_grant_secret(), params['grant'], permission='status')
+        claims = decode_room_grant(gateway_room_grant_secret(), params['grant'], permission='status', allow_expired_for_revocation=True)
     except HostedRoomPeerError as exc:
         raise RuntimeStoreError('invalid_room_grant') from exc
     if (claims['target_profile'], claims['target_install_id']) != (

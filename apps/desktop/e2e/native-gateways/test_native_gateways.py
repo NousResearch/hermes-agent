@@ -2,7 +2,6 @@
 import json
 import os
 from pathlib import Path
-import pwd
 import shlex
 import socket
 import tempfile
@@ -13,12 +12,15 @@ import time
 
 import pytest
 
+pytest_plugins = ['tests.conftest']
+pytestmark = pytest.mark.platforms('macos')
+
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon
 
 
-@pytest.mark.platforms('macos')
 def test_desktop_ssh_attaches_to_owner_without_owning_its_lifetime(tmp_path):
-    root = Path(__file__).resolve().parents[2]
+    import pwd
+    root = Path(__file__).resolve().parents[4]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700); user.mkdir()
     (home / 'config.yaml').write_text(json.dumps({'model': {'provider': 'custom', 'default': 'fixture',
@@ -62,3 +64,32 @@ def test_desktop_ssh_attaches_to_owner_without_owning_its_lifetime(tmp_path):
         finally:
             server.terminate(); server.wait(timeout=10)
             shutil.rmtree(control_dir)
+
+
+def test_native_peer_setup_lost_issuance_recovery_and_new_viewer(tmp_path):
+    from tests.gateway.test_session_group_peer_daemons import _gateway, _model
+    root = Path(__file__).resolve().parents[4]
+    home_model, peer_model = _model('HOME_REPLY'), _model('PEER_REPLY')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0)); api_port = sock.getsockname()[1]
+    home, home_env = _gateway(tmp_path, 'home', home_model, root)
+    peer, peer_env = _gateway(tmp_path, 'peer', peer_model, root, api_port=api_port)
+    fixture = tmp_path / 'room-setup.mjs'
+    subprocess.run([str(root / 'node_modules/.bin/esbuild'),
+        str(root / 'apps/desktop/electron/room-setup-live-fixture.ts'), '--bundle', '--platform=node', '--format=esm',
+        "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
+        '--outfile=' + str(fixture)], cwd=root, check=True, capture_output=True)
+    try:
+        with daemon(root, home, home_env, barrier=False) as (_, home_desc), daemon(root, peer, peer_env, barrier=False) as (_, peer_desc):
+            def descriptor(home, desc):
+                return {'baseUrl': desc['api_origin'], 'gatewayEndpoint': desc | {'profile_id': str(home)}}
+            request = {'home': descriptor(home, home_desc), 'peer': descriptor(peer, peer_desc),
+                       'directory': str(tmp_path / 'custody')}
+            result = subprocess.run(['node', str(fixture)], input=json.dumps(request), text=True,
+                                    capture_output=True, timeout=120)
+            assert result.returncode == 0, result.stderr
+            assert all(json.loads(result.stdout).values())
+            assert len(peer_model.requests) == 1
+    finally:
+        for model in (home_model, peer_model):
+            model.shutdown(); model.server_close()

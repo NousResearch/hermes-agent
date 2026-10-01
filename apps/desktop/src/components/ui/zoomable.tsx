@@ -69,7 +69,9 @@ function ZoomPanViewer({
   onOpenChange: (open: boolean) => void
   open: boolean
 }) {
-  const { panning, reset, stageProps, style, zoomIn, zoomOut } = useZoomPan()
+  const { panning, ref, reset, stageProps, style, zoomIn, zoomOut } = useZoomPan<HTMLDivElement>({
+    enabled: open
+  })
 
   useEffect(() => {
     if (open) {
@@ -89,6 +91,7 @@ function ZoomPanViewer({
             'relative flex-1 touch-none select-none overflow-hidden',
             panning ? 'cursor-grabbing' : 'cursor-grab'
           )}
+          ref={ref}
           {...stageProps}
         >
           <div className="absolute inset-0 grid place-items-center">

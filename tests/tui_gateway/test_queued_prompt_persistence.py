@@ -9,6 +9,7 @@ stored raw transcript stays [user, assistant, user, assistant] and the turn adop
 instead of writing a duplicate.
 """
 
+import threading
 import types
 
 import pytest
@@ -311,12 +312,20 @@ def test_queued_turn_replays_as_its_own_turn_after_the_live_turn(monkeypatch, tm
 
 def test_queued_prompt_survives_a_backend_restart(monkeypatch, tmp_path):
     """A queued prompt is durable at accept: a brand-new SessionDB on the same file (the shape a
-    restarted backend opens) reads the queued message back."""
+    restarted backend opens) reads the queued message back. A client retry after the restart is
+    acknowledged from the row the transcript shows: a drained prompt by its live replacement row
+    ("streaming"); a prompt ``reopen_session`` retired (#125577) not at all, so the retry runs it
+    instead of being told "queued" for a prompt that will never run."""
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
         _busy(session)
+        for client_message_id in ("client-drained", "client-retired"):
+            server._handle_busy_submit(
+                client_message_id, sid, session, f"queued {client_message_id}", "ws-1", queued=True,
+                display_kind=None, display_metadata={"client_message_id": client_message_id},
+                user_timestamp=1_790_594_548.125, client_message_id=client_message_id)
         server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", "ws-1",
                                    queued=True, display_kind=None)
         fresh = SessionDB(db_path=tmp_path / "state.db")  # a restarted backend opens a new handle
@@ -324,6 +333,27 @@ def test_queued_prompt_survives_a_backend_restart(monkeypatch, tmp_path):
             assert any(r["role"] == "user" and "queued text QUEUED-MARKER" in str(r["content"])
                        for r in fresh.get_messages_as_conversation(key, repair_alternation=True,
                                                                    include_row_ids=True))
+        finally:
+            fresh.close()
+
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+        monkeypatch.setattr(server, "_run_prompt_submit", lambda *_args, **_kwargs: None)
+        assert server._drain_queued_prompt("drain", sid, session) is True  # "client-drained" only
+        drained_row_id = session["_submit_user_row"]["_row_id"]
+
+        # The process dies: queue, admissions and in-flight turn are gone with it.
+        fresh = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            fresh.reopen_session(key)
+            monkeypatch.setattr(server, "_get_db", lambda: fresh)
+            restarted = {"history_lock": threading.RLock(), "session_key": key}
+
+            assert server._client_message_ack(restarted, "client-retired") is None
+            assert server._client_message_ack(restarted, "client-drained") == {
+                "status": "streaming", "client_message_id": "client-drained",
+                "user_timestamp": 1_790_594_548.125, "user_row_id": drained_row_id}
         finally:
             fresh.close()
     finally:

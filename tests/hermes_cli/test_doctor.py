@@ -784,6 +784,72 @@ def test_run_doctor_vendor_slug_policy_for_openai_api_endpoint(
     assert (warning in buf.getvalue()) is expects_warning
 
 
+@pytest.mark.parametrize("declares_vendor_slugs", [True, False])
+def test_run_doctor_vendor_slug_policy_for_plugin_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, declares_vendor_slugs: bool
+) -> None:
+    """A plugin provider fronting an aggregator declares accepts_vendor_model_slugs on its profile
+    instead of being hardcoded in _VENDOR_SLUG_PROVIDERS; undeclared profiles keep the warning."""
+    import providers as providers_mod
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(
+        name="openrouter-latency",
+        base_url="https://openrouter.ai/api/v1",
+        accepts_vendor_model_slugs=declares_vendor_slugs,
+    )
+    real_get = providers_mod.get_provider_profile
+
+    def get_provider_profile(name: str) -> ProviderProfile | None:
+        return profile if name == "openrouter-latency" else real_get(name)
+
+    monkeypatch.setattr(providers_mod, "get_provider_profile", get_provider_profile)
+
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openrouter-latency\n"
+        "  default: deepseek/deepseek-v4.1-flash\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    def check_tool_availability(*args: object, **kwargs: object) -> tuple[list[str], list[str]]:
+        return [], []
+
+    def no_auth_status() -> dict[str, object]:
+        return {}
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=check_tool_availability,
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", no_auth_status)
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", no_auth_status)
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", no_auth_status)
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    warning = (
+        "model.default 'deepseek/deepseek-v4.1-flash' uses a vendor/model slug "
+        "but provider is 'openrouter-latency'"
+    )
+    assert (warning in buf.getvalue()) is not declares_vendor_slugs
+
+
 
 
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):

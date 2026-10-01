@@ -36,7 +36,7 @@ def _shutdown_listener(rec: Dict[str, Any]) -> None:
     rec["httpd"] = None
 
 
-def register_flow(flow, *, httpd=None) -> Dict[str, Any]:
+def register_flow(flow, *, httpd=None, check_pending: bool = False) -> Dict[str, Any]:
     """Register a callback-relay flow so both RPC and card starts share ownership checks."""
     rec = {
         "session_id": flow.flow_id,
@@ -47,6 +47,14 @@ def register_flow(flow, *, httpd=None) -> Dict[str, Any]:
         "created_at": time.time(),
     }
     with _sessions_lock:
+        if check_pending:
+            active = [r for r in _sessions.values() if not r["flow"].worker_done]
+            if len(active) >= _MAX_PENDING:
+                raise RuntimeError("Too many MCP OAuth flows are already in progress")
+            if any(r["server_name"] == flow.server_name
+                   and r["hermes_home"] == flow.hermes_home
+                   for r in active):
+                raise RuntimeError(f"MCP OAuth for '{flow.server_name}' is already in progress")
         _sessions[flow.flow_id] = rec
     return rec
 
@@ -72,23 +80,24 @@ def start_flow(
     with _sessions_lock:
         for sid in [sid for sid, rec in _sessions.items() if rec["created_at"] < cutoff]:
             _shutdown_listener(_sessions.pop(sid))
-    with _sessions_lock:
-        active = [r for r in _sessions.values() if not r["flow"].worker_done]
-        if len(active) >= _MAX_PENDING:
-            raise RuntimeError("Too many MCP OAuth flows are already in progress")
-        if any(r["server_name"] == server_name and r["hermes_home"] == hermes_home for r in active):
-            raise RuntimeError(f"MCP OAuth for '{server_name}' is already in progress")
-
     session_id = secrets.token_urlsafe(24)
     flow = DashboardOAuthFlow(
         flow_id=session_id, server_name=server_name, profile=None, hermes_home=hermes_home,
         redirect_uri="", reconnect_live=reconnect_live)
-    httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
-    rec = register_flow(flow, httpd=httpd)
-    threading.Thread(
-        target=run_worker, args=(hermes_home, server_name, dict(cfg), reconnect_live),
-        kwargs={"flow": flow, "on_done": lambda: _shutdown_listener(rec)},
-        daemon=True, name=f"mcp-oauth-{server_name}").start()
+    # Reserve under the same lock as admission; listener setup can block while another
+    # request starts. A failed setup must release the reservation so a retry can proceed.
+    rec = register_flow(flow, check_pending=True)
+    try:
+        rec["httpd"] = choose_callback_receiver(flow, cfg, client_redirect_uri)
+        threading.Thread(
+            target=run_worker, args=(hermes_home, server_name, dict(cfg), reconnect_live),
+            kwargs={"flow": flow, "on_done": lambda: _shutdown_listener(rec)},
+            daemon=True, name=f"mcp-oauth-{server_name}").start()
+    except BaseException:
+        with _sessions_lock:
+            _sessions.pop(session_id, None)
+        _shutdown_listener(rec)
+        raise
     try:
         auth_url = None
         # wait_for_authorization_url is async; run its wait synchronously.

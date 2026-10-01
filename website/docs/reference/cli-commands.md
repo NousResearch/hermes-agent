@@ -1058,6 +1058,8 @@ hermes doctor [--fix]
 
 Exit status: `0` when the report lists no unresolved problems, `1` when at least one remains (including problems `--fix` could not repair), so a health gate or CI step can trust `hermes doctor` as a check.
 
+The state database check reports logical-attempt preparation as prepared, pending and held counts. The owning gateway prepares existing inventory in bounded background batches, yielding between them and resuming its durable cursor after restart. Held evidence is retained and revisited; it never becomes proof that a task was absent. Doctor only reads this state, including a recorded worker failure, and does not prepare or clear it. If preparation has stopped, inspect the gateway logs before restarting the owning gateway.
+
 The **API Connectivity** section includes an `IPv6 route` check: it opens one short (2 s) IPv6 TCP connection to a known dual-stack host. A route that is advertised but only times out (a blackholed IPv6 prefix) is reported as a warning naming the remedy, `network.force_ipv4: true`. Having no IPv6 route at all is healthy and reported as OK; the check is skipped when `force_ipv4` is already set.
 
 Custom-endpoint config checks (both warn-only; `--fix` does not rewrite them):

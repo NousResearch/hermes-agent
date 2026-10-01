@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { EditorView } from '@codemirror/view'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
@@ -139,11 +139,7 @@ it.each(['connection', 'profile', 'local', 'api-route'] as const)(
 
         releaseRead()
       })
-      await waitFor(() =>
-        expect(
-          screen.queryByRole('button', { name: 'Edit' }) || screen.queryByText(/original connection/)
-        ).not.toBeNull()
-      )
+      await screen.findByText(/original connection/)
       expect(await readFile(otherFile, 'utf8')).toBe('unrelated valuable contents')
       expect(writes).toEqual([])
       expect(editor.dom.isConnected).toBe(true)

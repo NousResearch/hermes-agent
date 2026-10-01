@@ -365,7 +365,7 @@ async function activeProjectsContext(profile = projectProfile()): Promise<Active
     gateway = await ensureActiveGatewayOpen()
   }
 
-  if (!gateway || gateway !== activeGateway() || profile !== normalizeProfileKey($activeGatewayProfile.get())) {
+  if (!gateway || !stillOnWritableProjectOwner({ gateway, profile })) {
     throw new Error('Active Hermes profile changed while connecting')
   }
 

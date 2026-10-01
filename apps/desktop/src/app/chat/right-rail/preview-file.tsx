@@ -191,10 +191,10 @@ function isTypableElement(el: Element | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable
 }
 
-function fileEditScopeKey(fsKey = desktopFsCacheKey()) {
+function fileEditScopeKey() {
   // The REST wrapper has its own routing authority. Include it while the
   // resolved connection descriptor is catching up with an activation.
-  return JSON.stringify([fsKey, getApiRequestConnection()])
+  return JSON.stringify([desktopFsCacheKey(), getApiRequestConnection()])
 }
 
 function filePathForTarget(target: PreviewTarget) {
@@ -966,7 +966,7 @@ export function LocalFilePreview({
 
   const beginEdit = () => {
     const text = state.text ?? ''
-    editorScopeRef.current = fileEditScopeKey(fsCacheKey)
+    editorScopeRef.current = fileEditScopeKey()
     baselineRef.current = text
     draftRef.current = text
     setDirty(false)

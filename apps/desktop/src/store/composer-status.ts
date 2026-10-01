@@ -372,11 +372,14 @@ function applyBackgroundProcesses(sid: string, procs: GatewayProcessEntry[]) {
   for (const [id, item] of fresh) {
     if (item.state !== 'running' && prevState.get(id) === 'running') {
       let body = item.title
+
       if (item.exitCode !== undefined) {
         body += ` (exit ${item.exitCode})`
       }
+
       if (item.output) {
         const tailLines = item.output.trim().split('\n').slice(-3)
+
         if (tailLines.length > 0) {
           body += '\n' + tailLines.join('\n')
         }

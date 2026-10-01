@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import cli as cli_module
 from agent.i18n import t
 from cli import HermesCLI
+from tools import approval_context
 
 
 class _FakeBuffer:
@@ -68,6 +69,28 @@ def _make_background_cli_stub():
 
 
 class TestCliApprovalUi:
+    def test_panel_waits_for_an_answer_past_approvals_timeout(self):
+        """The CLI is attended: ``approvals.timeout`` (the messaging knob) must not deny an unanswered
+        panel, and the hint row shows no countdown."""
+        cli = _make_cli_stub()
+        cli._secret_state = cli._slash_confirm_state = cli._connection_state = cli._clarify_state = None
+        result = {}
+        with patch("cli.CLI_CONFIG", {"approvals": {"timeout": 1}}):
+            thread = threading.Thread(
+                target=lambda: result.__setitem__("value", cli._approval_callback("rm -rf /tmp/x", "delete")),
+                daemon=True)
+            thread.start()
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            thread.join(timeout=2.5)
+            assert thread.is_alive() and cli._approval_state is not None
+            assert cli._approval_deadline is None
+            assert cli._tui_hint_text()[-1] == ('class:clarify-countdown', '')
+            cli._approval_state["response_queue"].put("once")
+            thread.join(timeout=2)
+        assert result["value"] == "once"
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}
@@ -239,6 +262,7 @@ class TestCliApprovalUi:
 
                 seen["approval"] = _get_approval_callback()
                 seen["sudo"] = _get_sudo_password_callback()
+                seen["approval_wait"] = approval_context.approval_wait_seconds()
                 return {
                     "final_response": "done",
                     "messages": [],
@@ -247,6 +271,7 @@ class TestCliApprovalUi:
                 }
 
         with patch("run_agent.AIAgent", FakeAgent), \
+             patch.object(approval_context, "_get_approval_config", lambda: {"timeout": 1}), \
              patch.object(cli_module, "_cprint"), \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()
@@ -262,6 +287,8 @@ class TestCliApprovalUi:
         assert seen["approval"].__func__ is HermesCLI._approval_callback
         assert seen["sudo"].__self__ is cli
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
+        # The panel waits until answered, so the turn's accounting must too (not approvals.timeout).
+        assert seen["approval_wait"] > 1
         assert not cli._background_tasks
 
 

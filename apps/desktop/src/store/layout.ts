@@ -5,6 +5,8 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { allPaneIds, type GroupNode } from '@/components/pane-shell/tree/model'
 import {
   $collapsedTreeSides,
+  $hiddenTreePanes,
+  $layoutTree,
   layoutHasRootSide,
   paneRootSide,
   restoreHiddenTreeSideTabs,
@@ -582,6 +584,56 @@ export function toggleSidebarOpen() {
   }
 }
 
+// POSITIONAL left-side toggle — the mirror of toggleRightSide below. ⌘B and the
+// left titlebar button mean "the sessions sidebar" (pane-bound, above) — but
+// the titlebar's POSITIONAL contract (see titlebar-controls.tsx) says the left
+// button folds everything physically left of main. After ⌘\ the sidebar sits
+// right and the file tree left, so the pane-bound button folds the wrong
+// column; resolve the target from the TREE instead, exactly like the right
+// side: the outermost root-row column left of main, then fold/unfold it
+// through the tree's zone minimize (round-trips like the zone chevron).
+export function toggleLeftSide() {
+  if (revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
+    return
+  }
+
+  const group = leftSideGroup()
+
+  if (!group) {
+    // No foldable column on the left: fall back to the semantic sidebar
+    // branch, never the right side.
+    toggleSidebarOpen()
+
+    return
+  }
+
+  if (leftSideShown(group)) {
+    setTreeGroupMinimized(group.id, true)
+
+    return
+  }
+
+  // Hidden — minimized, or its side collapsed by the side's owner (the files
+  // toggle when flipped, or the sidebar). Reopen through that owner so the
+  // store the titlebar reads agrees, then restore the zone like its
+  // rail/chevron does.
+  const pane = group.active ?? group.panes[0]
+  const side = paneRootSide(pane)
+
+  if (side && $collapsedTreeSides.get().has(side)) {
+    const openSide = side === sidebarSide() ? setSidebarOpen : setFileBrowserOpen
+
+    openSide(true)
+  }
+
+  restoreTreePane(pane)
+}
+
+/** ⌘-positional-left's dispatch gate: something foldable lives left of main. */
+export function layoutHasLeftSide(): boolean {
+  return leftSideGroup() !== null || layoutHasRootSide('left')
+}
+
 export function toggleFileBrowserOpen() {
   if (revealNarrowPane(FILE_BROWSER_PANE_ID, 'toggle')) {
     return
@@ -676,6 +728,42 @@ function rightSideGroup(): GroupNode | null {
 
   return row.children.some(child => allPaneIds(child).some(isMainSurface)) ? edge : null
 }
+
+// The POSITIONAL left side, derived from the live tree — the mirror of
+// rightSideGroup: the outermost root-row column, when it is a leaf group
+// physically LEFT of main. Catches the same "dragged/preview column" cases the
+// right walk does (here: the file tree after a ⌘\ flip). Null when main is
+// leftmost or the left is a nested split — callers fall back to the semantic
+// sidebar toggle.
+function leftSideGroup(): GroupNode | null {
+  const row = rootRow()
+  const edge = row?.children.at(0)
+
+  if (!row || edge?.type !== 'group' || edge.panes.some(isMainSurface)) {
+    return null
+  }
+
+  return row.children.some(child => allPaneIds(child).some(isMainSurface)) ? edge : null
+}
+
+// Shown-state for the positional left column, same shape as rightSideShown.
+function leftSideShown(group: GroupNode): boolean {
+  const side = paneRootSide(allPaneIds(group)[0])
+
+  return !group.minimized && !(side && $collapsedTreeSides.get().has(side)) && shownPanesInGroup(group).length > 0
+}
+
+// The positional LEFT edge's open state, for the titlebar button. Falls back
+// to the semantic sidebar flag whenever no leaf column lives left of main
+// (nested split, main leftmost) — the same fallback toggleLeftSide presses.
+export const $leftSideOpen: ReadableAtom<boolean> = computed(
+  [$layoutTree, $collapsedTreeSides, $hiddenTreePanes, $sidebarOpen],
+  () => {
+    const group = leftSideGroup()
+
+    return group ? leftSideShown(group) : $sidebarOpen.get()
+  }
+)
 
 // Is the zone actually on screen? `minimized` alone isn't the whole state: a
 // side collapse or chrome-hidden panes take it off screen un-minimized.

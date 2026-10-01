@@ -25,7 +25,7 @@ import {
   TAB_SLOT_COUNT
 } from '@/lib/keybinds/actions'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
-import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
@@ -552,6 +552,25 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
           event.preventDefault()
           requestComposerFocus('active', { typeChar: combo === '/' ? '/' : undefined })
 
+          return
+        }
+
+        // The close-tab chord over a focused user terminal is the shell's word
+        // erase (readline ^W). Main already claimed the default chord on
+        // every platform (window-accelerator) and routes it through the IPC
+        // rung above, so this guards the DEFAULT binding when it reaches the
+        // dispatcher anyway, plus a chord rebound onto another key with the
+        // same bare shape. Returning without preventDefault hands the key to
+        // xterm, whose data handler writes the ^W byte to the PTY. Read-only
+        // agent mirrors carry only [data-terminal], so they keep close.
+        if (
+          actionId === 'view.closeTab' &&
+          event.key.toLowerCase() === 'w' &&
+          (IS_MAC ? event.metaKey : event.ctrlKey) &&
+          !event.altKey &&
+          !event.shiftKey &&
+          isFocusWithin('[data-interactive-terminal]')
+        ) {
           return
         }
 

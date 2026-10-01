@@ -179,7 +179,7 @@ gateway:
     label_normal: "NORMAL"
     status_fast: "fast"
     status_normal: "normal"
-    picker_title: "⚡ **优先处理**\\n\\n当前模式：`{mode}`\\n\\n请选择："
+    picker_title: "⚡ **优先处理**\n\n当前模式：`{mode}`\n\n请选择："
     choice_fast: "fast — 开启优先处理"
     choice_normal: "normal — 标准处理"
     choice_auto: "auto — 每轮的前几秒快速"
@@ -282,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。"
     reset_done: "🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。"
     unknown_arg: "⚠️ 未知参数：`{arg}`\n\n**有效级别：** none, minimal, low, medium, high, xhigh, max, ultra\n**显示：** show, hide\n**持久化：** 添加 `--global` 以跨会话保存"
-    picker_title: "🧠 **推理设置**\\n\\n**强度：** `{level}`\\n**作用域：** {scope}\\n**显示：** {display}\\n\\n请选择："
+    picker_title: "🧠 **推理设置**\n\n**强度：** `{level}`\n**作用域：** {scope}\n**显示：** {display}\n\n请选择："
     choice_none: "none — 关闭推理"
     choice_reset: "reset — 清除会话覆盖"
     choice_show: "在回复中显示推理"
@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "审批"
     label: "审批"
-    timeout_denying: "⏱ 超时——拒绝执行命令"
-    timed_out_no_response: "已超时（无响应）"
     outcome_once: "已允许一次"
     outcome_session: "本会话内已允许"
     outcome_always: "已加入允许列表"
@@ -2261,7 +2259,6 @@ cli:
   clarify:
     bell_context: "澄清"
     label: "澄清"
-    timed_out_locked_answers: "（澄清在 {timeout} 秒后超时——已返回锁定的答案）"
   connect:
     bell_context: "连接设置"
     cannot_restart: "此连接无法再次启动。请取消后重新向代理发起请求。"

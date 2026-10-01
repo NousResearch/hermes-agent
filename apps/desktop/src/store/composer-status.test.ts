@@ -162,6 +162,7 @@ describe('reconcileBackgroundProcesses', () => {
       session_id: 'build-task',
       status: 'exited'
     }
+
     reconcileBackgroundProcesses('sess-notify', [completedProc])
 
     expect(dispatchNativeNotification).toHaveBeenCalledWith(
@@ -176,12 +177,14 @@ describe('reconcileBackgroundProcesses', () => {
     reconcileBackgroundProcesses('sess-no-exit', [running('task-x')])
     vi.clearAllMocks()
 
-    reconcileBackgroundProcesses('sess-no-exit', [{
-      command: 'task-x',
-      output_tail: 'line1\nline2\nline3',
-      session_id: 'task-x',
-      status: 'exited'
-    }])
+    reconcileBackgroundProcesses('sess-no-exit', [
+      {
+        command: 'task-x',
+        output_tail: 'line1\nline2\nline3',
+        session_id: 'task-x',
+        status: 'exited'
+      }
+    ])
 
     expect(dispatchNativeNotification).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -194,12 +197,14 @@ describe('reconcileBackgroundProcesses', () => {
     reconcileBackgroundProcesses('sess-empty', [running('quick-cmd')])
     vi.clearAllMocks()
 
-    reconcileBackgroundProcesses('sess-empty', [{
-      command: 'quick-cmd',
-      exit_code: 1,
-      session_id: 'quick-cmd',
-      status: 'exited'
-    }])
+    reconcileBackgroundProcesses('sess-empty', [
+      {
+        command: 'quick-cmd',
+        exit_code: 1,
+        session_id: 'quick-cmd',
+        status: 'exited'
+      }
+    ])
 
     expect(dispatchNativeNotification).toHaveBeenCalledWith(
       expect.objectContaining({

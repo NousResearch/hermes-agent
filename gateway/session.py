@@ -1045,6 +1045,7 @@ class SessionStore(
             chat_type=source.chat_type, was_auto_reset=decision.reset_reason is not None,
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
             prev_session_id=decision.prev_session_id, transport_profile=transport_profile_of(source),
+            metadata={"first_agent_turn_pending": True},
         )
         with self._lock:
             current = self._entries.get(session_key)

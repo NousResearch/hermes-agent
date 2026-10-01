@@ -48,10 +48,12 @@ def _is_new_session(entry) -> bool:
     Kept in-sync with the production check so this test fails loudly if the
     upstream logic regresses.
     """
+    first_agent_turn_pending = entry.metadata.pop("first_agent_turn_pending", False)
     return (
         entry.created_at == entry.updated_at
         or getattr(entry, "was_auto_reset", False)
         or getattr(entry, "is_fresh_reset", False)
+        or first_agent_turn_pending
     )
 
 
@@ -92,12 +94,23 @@ class TestVanillaBehaviorUnaffected:
     def test_ongoing_session_not_flagged_as_new(self, tmp_path):
         store = _make_store(tmp_path)
         source = _make_source()
-        store.get_or_create_session(source)
-
-        # Second message on the same session — updated_at bumps,
-        # is_fresh_reset was never set
         entry = store.get_or_create_session(source)
+        _is_new_session(entry)  # first agent turn consumes the pending marker
+
+        # A later message has an advanced activity clock and no pending marker.
+        entry.updated_at = entry.created_at.replace(microsecond=entry.created_at.microsecond + 1)
         assert entry.is_fresh_reset is False
+        assert _is_new_session(entry) is False
+
+    def test_read_only_command_before_first_message_still_flags_first_turn(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+
+        # A read-only command creates the routing entry before the first agent turn.
+        entry = store.get_or_create_session(source)
+        entry.updated_at = entry.created_at.replace(microsecond=entry.created_at.microsecond + 1)
+
+        assert _is_new_session(entry) is True
         assert _is_new_session(entry) is False
 
 

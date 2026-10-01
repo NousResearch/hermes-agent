@@ -157,70 +157,74 @@ async def test_textless_quoted_media_placeholders_use_the_routed_cache_a_b_a(two
         "homeserver": "https://matrix.example.org", "user_id": "@bot:example.org",
     }))
     runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))
-    runner.adapters[Platform.MATRIX] = adapter
-    runner._delivery_adapter_for = lambda _source: adapter
-    runner._draining = False
-    turns = []
-    expected = []
+    try:
+        runner.adapters[Platform.MATRIX] = adapter
+        runner._delivery_adapter_for = lambda _source: adapter
+        runner._draining = False
+        turns = []
+        expected = []
 
-    for home, profile in ((launch, "default"), (routed, "b"), (launch, "default")):
-        _adapter_cached(launch, "images", "quoted-parent.jpg")
-        failed_copy = home == routed and failure is not None
-        received = []
-        agent = SimpleNamespace(interrupt=received.append)
-        source = SessionSource(Platform.MATRIX, "!room:example.org", chat_type="dm", user_id="@sender:example.org")
-        event = MessageEvent(
-            text="", source=source, message_id="$reply", media_urls=[original], media_types=["image/jpeg"],
-            reply_to_message_id="$parent", reply_to_text="quoted image", reply_to_author_id="@other:example.org",
-            reply_to_author_name="Other", reply_to_is_own_message=False, reply_to_author_authorized=True,
-            _quoted_media_dependencies=(QuotedMediaDependency(source.chat_id, "$parent", 0, "parent-image"),),
-        )
-
-        async def dispatch(incoming, key):
-            if path == "priority-interrupt":
-                await runner._hm_busy_interrupt(incoming, incoming.source, agent, key)
-                return
-            if path == "busy-interrupt":
-                await runner._interrupt_running_agent_for_busy_event(incoming, adapter, agent)
-                return
-            adapter._pending_messages[key] = incoming
-            if path == "pending-monitor":
-                await runner._run_agent_fire_pending_interrupt(
-                    adapter, agent, incoming.source, key, asyncio.Event(), [None],
-                    log_context="quoted-media", log=lambda: None,
-                )
-                return
-            pending_event, text = await runner._run_agent_drain_pending(
-                {"final_response": "previous answer"}, adapter, incoming.source, key,
+        for home, profile in ((launch, "default"), (routed, "b"), (launch, "default")):
+            _adapter_cached(launch, "images", "quoted-parent.jpg")
+            failed_copy = home == routed and failure is not None
+            received = []
+            agent = SimpleNamespace(interrupt=received.append)
+            source = SessionSource(Platform.MATRIX, "!room:example.org", chat_type="dm", user_id="@sender:example.org")
+            event = MessageEvent(
+                text="", source=source, message_id="$reply", media_urls=[original], media_types=["image/jpeg"],
+                reply_to_message_id="$parent", reply_to_text="quoted image", reply_to_author_id="@other:example.org",
+                reply_to_author_name="Other", reply_to_is_own_message=False, reply_to_author_authorized=True,
+                _quoted_media_dependencies=(QuotedMediaDependency(source.chat_id, "$parent", 0, "parent-image"),),
             )
-            assert pending_event is incoming
-            received.append(text)
 
-        runner._handle_active_session_busy_message = dispatch
-        with monkeypatch.context() as transfer_patch:
-            if failed_copy and failure == "missing":
-                Path(original).unlink()
-            if failed_copy and failure == "io-error":
-                def refuse_copy(_source, _destination):
-                    raise OSError("quoted copy refused")
-                transfer_patch.setattr(run_inbound_media.shutil, "copy2", refuse_copy)
-            await runner._make_profile_busy_session_handler(profile)(event, "incoming")
-        own_path = home / "cache" / "images" / "quoted-parent.jpg"
-        with _profile_runtime_scope(home):
-            visible = to_agent_visible_cache_path(str(own_path))
-        reply = (event.reply_to_message_id, event.reply_to_text, event.reply_to_author_id,
-                 event.reply_to_author_name, event.reply_to_is_own_message, event.reply_to_author_authorized)
-        turns.append({"input": received, "paths": event.media_urls,
-                      "media_types": event.media_types, "dependencies": event._quoted_media_dependencies,
-                      "source_bytes": Path(original).read_bytes() if Path(original).is_file() else None,
-                      "routed_bytes": own_path.read_bytes() if own_path.is_file() else None,
-                      "reply": reply, "profile": event.source.profile})
-        expected.append({"input": ["[attachment unavailable]" if failed_copy else f"[User sent an image: {visible}]"],
-                         "paths": [] if failed_copy else [str(own_path)],
-                         "media_types": [] if failed_copy else ["image/jpeg"],
-                         "dependencies": () if failed_copy else (QuotedMediaDependency(source.chat_id, "$parent", 0, "parent-image"),),
-                         "source_bytes": None if failed_copy and failure == "missing" else b"\xff\xd8\xff\xe0 jpeg",
-                         "routed_bytes": None if failed_copy else b"\xff\xd8\xff\xe0 jpeg",
-                         "reply": ("$parent", "quoted image", "@other:example.org", "Other", False, True),
-                         "profile": profile})
-    assert turns == expected
+            async def dispatch(incoming, key):
+                if path == "priority-interrupt":
+                    await runner._hm_busy_interrupt(incoming, incoming.source, agent, key)
+                    return
+                if path == "busy-interrupt":
+                    await runner._interrupt_running_agent_for_busy_event(incoming, adapter, agent)
+                    return
+                adapter._pending_messages[key] = incoming
+                if path == "pending-monitor":
+                    await runner._run_agent_fire_pending_interrupt(
+                        adapter, agent, incoming.source, key, asyncio.Event(), [None],
+                        log_context="quoted-media", log=lambda: None,
+                    )
+                    return
+                pending_event, text = await runner._run_agent_drain_pending(
+                    {"final_response": "previous answer"}, adapter, incoming.source, key,
+                )
+                assert pending_event is incoming
+                received.append(text)
+
+            runner._handle_active_session_busy_message = dispatch
+            with monkeypatch.context() as transfer_patch:
+                if failed_copy and failure == "missing":
+                    Path(original).unlink()
+                if failed_copy and failure == "io-error":
+                    def refuse_copy(_source, _destination):
+                        raise OSError("quoted copy refused")
+                    transfer_patch.setattr(run_inbound_media.shutil, "copy2", refuse_copy)
+                await runner._make_profile_busy_session_handler(profile)(event, "incoming")
+            own_path = home / "cache" / "images" / "quoted-parent.jpg"
+            with _profile_runtime_scope(home):
+                visible = to_agent_visible_cache_path(str(own_path))
+            reply = (event.reply_to_message_id, event.reply_to_text, event.reply_to_author_id,
+                     event.reply_to_author_name, event.reply_to_is_own_message, event.reply_to_author_authorized)
+            turns.append({"input": received, "paths": event.media_urls,
+                          "media_types": event.media_types, "dependencies": event._quoted_media_dependencies,
+                          "source_bytes": Path(original).read_bytes() if Path(original).is_file() else None,
+                          "routed_bytes": own_path.read_bytes() if own_path.is_file() else None,
+                          "reply": reply, "profile": event.source.profile})
+            expected.append({"input": ["[attachment unavailable]" if failed_copy else f"[User sent an image: {visible}]"],
+                             "paths": [] if failed_copy else [str(own_path)],
+                             "media_types": [] if failed_copy else ["image/jpeg"],
+                             "dependencies": () if failed_copy else (QuotedMediaDependency(source.chat_id, "$parent", 0, "parent-image"),),
+                             "source_bytes": None if failed_copy and failure == "missing" else b"\xff\xd8\xff\xe0 jpeg",
+                             "routed_bytes": None if failed_copy else b"\xff\xd8\xff\xe0 jpeg",
+                             "reply": ("$parent", "quoted image", "@other:example.org", "Other", False, True),
+                             "profile": profile})
+        assert turns == expected
+
+    finally:
+        runner.session_store.close_all_db_handles()

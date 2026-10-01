@@ -120,6 +120,10 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                 session["_auto_continue_scheduled"] = False
             return
         with session["history_lock"]:
+            if not _holds_turn_claim(session, turn_claim):
+                if _owns_turn_claim(session, turn_claim):
+                    session["_auto_continue_scheduled"] = False
+                return
             # Marker inputs read back by _run_prompt_submit: attempt count (crash breaker) and the ORIGINAL prompt (no
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]

@@ -228,7 +228,7 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
         self._summary_api_key = ""
         self._summary_base_url = ""
         self._llm_checkpoint_count = 0
-        # Ares owns lifecycle under the profile root. No config-supplied key
+        # The profile home root owns lifecycle. No config-supplied key
         # path is ever a canonical signing authority.
         self._key_state = ContextGovernorKeyState(get_hermes_home(), self.binary)
 
@@ -277,11 +277,7 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 
     @staticmethod
     def _default_binary() -> str:
-        return (
-            shutil.which("context-governor")
-            or "/home/sikmindz/.local/bin/context-governor"
-            or "context-governor"
-        )
+        return shutil.which("context-governor") or "context-governor"
 
     def _load_policy_from_config(self) -> None:
         """Load policy overrides from config.yaml context.governor section."""
@@ -481,13 +477,13 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
         A capabilities-only probe cannot detect a payload-shape drift such as
         ``finalize-v2`` changing from a flattened response to the certified
         ``{candidate, compacted_messages}`` envelope. That drift previously let
-        Ares report a healthy governor while every live compaction failed before
+        the host report a healthy governor while every live compaction failed before
         receipt finalization. This bounded probe writes only to a temporary
         directory, stages one authenticated no-op receipt, and discards it.
         """
-        with TemporaryDirectory(prefix="ares-context-governor-probe-") as store_dir:
+        with TemporaryDirectory(prefix="context-governor-probe-") as store_dir:
             request = {
-                "session_id": "ares-activation-contract-probe",
+                "session_id": "context-governor-activation-probe",
                 "messages": [{"role": "user", "content": "continue"}],
                 "policy": {
                     "target_tokens": 64,
@@ -579,7 +575,7 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
                 raise ValueError("discard-v2 did not remove the probe receipt")
 
             return {
-                "schema": "AresContextGovernorProtocolProbeV1",
+                "schema": "ContextGovernorProtocolProbeV1",
                 "verified": True,
                 "stages": ["compact-v2", "finalize-v2", "prepare-v2", "discard-v2"],
             }
@@ -1567,7 +1563,7 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
         # request-only repair must not replace the authenticated transcript
         # identity owned by context-governor. Rehydrate the exact parent prefix
         # whenever the current prefix is provably the host-repaired projection
-        # of a stored receipt. Older Ares archives may also be missing the
+        # of a stored receipt. Older archives may also be missing the
         # provider-facing ``name`` fields, which the same narrow bridge covers.
         governor_messages = self._rehydrate_legacy_parent_prefix(governor_messages)
 
@@ -2153,7 +2149,7 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
         """Restore a receipt prefix transformed for provider-safe replay.
 
         Live session restore repairs role alternation on an in-memory copy;
-        older Ares builds also dropped ``name`` while archiving compacted
+        older builds also dropped ``name`` while archiving compacted
         messages. Both transformations can make a resumed transcript differ
         from its authenticated parent receipt. This is deliberately narrow: a
         candidate is accepted only when applying the same deterministic host

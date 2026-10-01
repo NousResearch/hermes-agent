@@ -105,6 +105,26 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
+async def check_internal_admission(event, session_key: str, *, gateway) -> bool:
+    """Run ``gateway_internal_admission``: True admits; a ``block`` or any failure refuses.
+
+    Shared by the ``handle_message`` lane and the non-push (``api_server``) wake lane in
+    ``gateway.wake``, which never reaches ``handle_message``."""
+    from hermes_cli.lifecycle import ainvoke_hook
+    # Same contract as pre_gateway_dispatch: async callbacks are awaited on this loop (and bounded
+    # by plugins.hook_callback_timeout); sync callbacks run inline and must not block. A plugin
+    # that wants to tell the chat why sends through ``gateway`` itself, with its own routing.
+    try:
+        results = await ainvoke_hook("gateway_internal_admission", event=event,
+                                     session_key=session_key, gateway=gateway)
+        if not any(isinstance(r, dict) and r.get("action") == "block" for r in results):
+            return True
+        logger.info("Automatic event blocked before LLM: session=%s", session_key)
+    except Exception:
+        logger.exception("Automatic event admission failed closed: session=%s", session_key)
+    return False
+
+
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
@@ -122,11 +142,7 @@ class GatewayInboundMixin:
             if isinstance(getattr(event, "metadata", None), dict):
                 event.metadata["internal_admission_exempt"] = True
             return True
-        # ponytail: one gateway-wide lock serializes deterministic notices; per-route locks only
-        # if notification throughput makes this measurable.
-        if getattr(self, "_internal_admission_lock", None) is None:
-            self._internal_admission_lock = asyncio.Lock()
-        async with self._internal_admission_lock:
+        async with self._internal_admission_guard():
             # The routed profile's plugins decide, not the receiving transport's (multiplexed gateways).
             async with self._async_profile_scope_for_source(event.source):
                 admitted = await self._check_internal_admission(event, session_key)
@@ -146,20 +162,15 @@ class GatewayInboundMixin:
                     slot[session_key] = nxt
         return admitted
 
+    def _internal_admission_guard(self) -> asyncio.Lock:
+        # ponytail: one gateway-wide lock serializes deterministic notices; per-route locks only
+        # if notification throughput makes this measurable.
+        if getattr(self, "_internal_admission_lock", None) is None:
+            self._internal_admission_lock = asyncio.Lock()
+        return self._internal_admission_lock
+
     async def _check_internal_admission(self, event, session_key: str) -> bool:
-        from hermes_cli.lifecycle import ainvoke_hook
-        # Same contract as pre_gateway_dispatch: async callbacks are awaited on this loop (and bounded
-        # by plugins.hook_callback_timeout); sync callbacks run inline and must not block. A plugin
-        # that wants to tell the chat why sends through ``gateway`` itself, with its own routing.
-        try:
-            results = await ainvoke_hook("gateway_internal_admission", event=event,
-                                         session_key=session_key, gateway=self)
-            if not any(isinstance(r, dict) and r.get("action") == "block" for r in results):
-                return True
-            logger.info("Automatic event blocked before LLM: session=%s", session_key)
-        except Exception:
-            logger.exception("Automatic event admission failed closed: session=%s", session_key)
-        return False
+        return await check_internal_admission(event, session_key, gateway=self)
 
     async def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource

@@ -222,3 +222,113 @@ def test_hook_contract():
     assert "gateway_internal_admission" in SHELL_UNSUPPORTED_HOOKS  # shell hooks cannot express a block
     # Not caller-thread: an async callback stays bounded by plugins.hook_callback_timeout.
     assert "gateway_internal_admission" not in plugins_dispatch._HOOK_CALLER_THREAD_HOOKS
+
+
+class _NonPushAdapter:
+    """api_server shape: no handle_message lane, the wake self-posts or runs in-process."""
+    supports_async_delivery = False
+
+    def __init__(self, runner=None):
+        self.gateway_runner = runner
+        self.turns = []
+
+    async def handle_message(self, event):  # pragma: no cover - must not be reached
+        raise AssertionError("non-push wakes never reach handle_message")
+
+    async def run_internal_session_turn(self, **kwargs):
+        self.turns.append(kwargs)
+
+
+@pytest.mark.asyncio
+async def test_non_push_wake_block_runs_no_turn(monkeypatch):
+    from gateway.config import Platform
+    from gateway.wake import deliver_wake
+    calls = _hook(monkeypatch, {"action": "block"})
+    adapter = _NonPushAdapter()
+    await deliver_wake(adapter, text="[background process finished]", session_id="raw-1", profile="p1")
+    assert adapter.turns == []
+    [call] = calls
+    assert call["session_key"] == "raw-1"
+    assert call["event"].internal is True
+    assert call["event"].source.platform == Platform.API_SERVER
+
+
+@pytest.mark.asyncio
+async def test_non_push_wake_blocked_before_http_self_post(monkeypatch):
+    import gateway.wake as wake
+    _hook(monkeypatch, {"action": "block"})
+    posted = AsyncMock()
+    monkeypatch.setattr(wake, "_self_post_chat_completion", posted)
+    await wake.deliver_wake(_NonPushAdapter(), text="done", session_id="raw-1")
+    posted.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_push_wake_gates_slash_text(monkeypatch):
+    # This lane never dispatches commands: "/recap" would reach the model as plain text.
+    from gateway.wake import deliver_wake
+    calls = _hook(monkeypatch, {"action": "block"})
+    adapter = _NonPushAdapter()
+    await deliver_wake(adapter, text="/recap", session_id="raw-1", profile="p1")
+    assert adapter.turns == [] and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_push_wake_hook_runs_in_the_routed_profile_scope(monkeypatch):
+    import contextlib
+    from gateway.wake import deliver_wake
+    seen, active = [], []
+
+    @contextlib.asynccontextmanager
+    async def scope(source):
+        seen.append(source.profile)
+        active.append(True)
+        try:
+            yield
+        finally:
+            active.pop()
+
+    async def fake_invoke(name, **kwargs):
+        assert active, "hook ran outside the routed profile scope"
+        return []
+
+    monkeypatch.setattr(lifecycle, "ainvoke_hook", fake_invoke)
+    runner, _ = _runner()
+    runner._async_profile_scope_for_source = scope
+    adapter = _NonPushAdapter(runner)
+    await deliver_wake(adapter, text="done", session_id="raw-1", profile="p1")
+    assert seen == ["p1"] and len(adapter.turns) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_push_wake_admitted_runs_its_turn(monkeypatch):
+    from gateway.wake import deliver_wake
+    _hook(monkeypatch)
+    adapter = _NonPushAdapter()
+    await deliver_wake(adapter, text="done", session_id="raw-1", profile="p1")
+    assert [t["session_id"] for t in adapter.turns] == ["raw-1"]
+
+
+@pytest.mark.asyncio
+async def test_non_push_wake_hook_failure_blocks(monkeypatch):
+    from gateway.wake import deliver_wake
+    _hook(monkeypatch, raises=RuntimeError("boom"))
+    adapter = _NonPushAdapter()
+    await deliver_wake(adapter, text="done", session_id="raw-1", profile="p1")
+    assert adapter.turns == []
+
+
+@pytest.mark.asyncio
+async def test_non_push_wake_uses_the_gateway_admission_lock(monkeypatch):
+    import asyncio
+    from gateway.wake import deliver_wake
+    _hook(monkeypatch)
+    runner, _ = _runner()
+    lock = runner._internal_admission_guard()
+    adapter = _NonPushAdapter(runner)
+    async with lock:
+        task = asyncio.ensure_future(deliver_wake(adapter, text="done", session_id="raw-1", profile="p1"))
+        await asyncio.sleep(0)
+        assert not task.done() and adapter.turns == []
+    await task
+    assert len(adapter.turns) == 1

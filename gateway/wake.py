@@ -107,12 +107,42 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
     if not session_id:
         raise ValueError("deliver_wake: non-push adapter (supports_async_delivery=False) "
                          "requires the raw session id to self-post the wake turn")
+    if not await _admit_self_post(adapter, text=text, session_id=session_id, profile=profile,
+                                  notification_category=notification_category):
+        return  # Blocked: the wake is consumed and no turn runs, as on the push lane.
     extra: dict = {}
     if profile:
         extra["profile"] = profile
     if notification_category == "diagnostic":
         extra["notification_category"] = notification_category
     await _self_post_chat_completion(adapter, text=text, session_id=session_id, **extra)
+
+
+async def _admit_self_post(adapter: Any, *, text: str, session_id: str, profile: Optional[str],
+                           notification_category: str) -> bool:
+    """``gateway_internal_admission`` for the non-push lane, which never reaches handle_message.
+
+    Runs before either self-post route starts a turn, under the routed profile's runtime scope
+    exactly as the push lane binds it (a caller's scope may be a no-op, for example a Kanban wake
+    without ``multiplex_profiles`` once multi-profile hosting is active). ``session_key`` is the
+    raw session id. Unlike the push lane, slash-command text is gated too: this lane never
+    dispatches commands, so ``/x`` would reach the model as ordinary text."""
+    import contextlib
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.run_inbound import check_internal_admission
+    from gateway.session import SessionSource
+    event = MessageEvent(text=text, message_type=MessageType.TEXT, internal=True,
+                         source=SessionSource(platform=Platform.API_SERVER, chat_id=session_id,
+                                              profile=profile or None),
+                         metadata={"notification_category": notification_category})
+    runner = getattr(adapter, "gateway_runner", None)
+    guard = getattr(runner, "_internal_admission_guard", None)
+    lock = guard() if callable(guard) else asyncio.Lock()
+    scope_for = getattr(runner, "_async_profile_scope_for_source", None)
+    async with lock:
+        async with (scope_for(event.source) if callable(scope_for) else contextlib.nullcontext()):
+            return await check_internal_admission(event, session_id, gateway=runner)
 
 
 def _delegation_display_metadata(evt: dict) -> dict:

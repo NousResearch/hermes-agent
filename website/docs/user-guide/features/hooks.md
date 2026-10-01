@@ -1286,10 +1286,10 @@ def my_callback(event, session_key, gateway, **kwargs):
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `event` | `MessageEvent` | The internal event (`.text`, `.source`, `.internal`). |
-| `session_key` | `str` | The gateway session key the event routes to. |
+| `session_key` | `str` | The gateway session key the event routes to. For a non-push (`api_server`) wake it is the raw session id (`X-Hermes-Session-Id`), and `event.source.platform` is `api_server`. |
 | `gateway` | `GatewayRunner` | The active gateway, so a plugin can tell the chat why it blocked. Resolve the sending bot with `gateway._delivery_adapter_for(event.source)` — under a multiplexed gateway `gateway.adapters` holds only the default profile's bots. |
 
-**Fires:** From `GatewayRunner._handle_message()` before the busy-session path, in `_handle_active_session_busy_message()`, at the top of `_handle_message_with_agent()`, and when a queued follow-up is dequeued in `_run_agent_queued_followup()` — so an event that waited behind a busy turn is checked against the state at the moment it would run. Checks are serialized by one gateway-wide lock. **One event can be checked more than once** (an idle event passes `_handle_message()` and then `_handle_message_with_agent()`), so callbacks must be idempotent: decide from current state, never from "have I seen this event before".
+**Fires:** From `GatewayRunner._handle_message()` before the busy-session path, in `_handle_active_session_busy_message()`, at the top of `_handle_message_with_agent()`, and when a queued follow-up is dequeued in `_run_agent_queued_followup()` — so an event that waited behind a busy turn is checked against the state at the moment it would run. Non-push adapters (`api_server`, `supports_async_delivery = False`) never reach `_handle_message()`: `gateway.wake.deliver_wake()` checks their wake once, before it self-posts `/v1/chat/completions` or runs the turn in-process, and a `block` there consumes the wake the same way. Checks are serialized by one gateway-wide lock. **One event can be checked more than once** (an idle event passes `_handle_message()` and then `_handle_message_with_agent()`), so callbacks must be idempotent: decide from current state, never from "have I seen this event before".
 
 **Return value:**
 

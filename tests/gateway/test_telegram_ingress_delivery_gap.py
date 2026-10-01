@@ -1,11 +1,15 @@
-"""Telegram ingress dispatch accounting (#102260).
+"""Telegram ingress dispatch accounting (#102260, #130407).
 
 The transport probes prove getUpdates round-trips complete; these pin the one signal they cannot
 give — whether PTB's dispatcher hands the fetched updates to a handler — and the once-per-adapter
 report for an adapter with no gateway message handler at all.
+
+Recovery escalation (warn + supervisor rebuild) is pinned separately in
+``test_telegram_ingress_dispatch_recovery.py``; the counting tests below stub
+``_schedule_polling_recovery`` so the real fatal handoff does not fire mid-test.
 """
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -58,9 +62,10 @@ async def test_stall_reported_once_on_backlog_regardless_of_update_age(caplog):
     _heartbeats(adapter, 3)
     assert _deaf_reports(caplog) == []
 
-    for _ in range(3):  # a fresh update lands before every heartbeat, none dispatched
-        _receive(adapter, 1)
-        adapter._check_ingress_dispatch_stall()
+    with patch.object(adapter, "_schedule_polling_recovery"):
+        for _ in range(3):  # a fresh update lands before every heartbeat, none dispatched
+            _receive(adapter, 1)
+            adapter._check_ingress_dispatch_stall()
     (report,) = _deaf_reports(caplog)
     assert "2 update(s) fetched" in report and "4 received, 2 dispatched" in report
 
@@ -69,15 +74,16 @@ async def test_stall_reported_once_on_backlog_regardless_of_update_age(caplog):
 async def test_dispatch_progress_rearms_the_report(caplog):
     adapter = _polling_adapter()
     caplog.set_level(logging.WARNING)
-    _receive(adapter, 3)
-    _heartbeats(adapter, 3)
-    assert len(_deaf_reports(caplog)) == 1
+    with patch.object(adapter, "_schedule_polling_recovery"):
+        _receive(adapter, 3)
+        _heartbeats(adapter, 3)
+        assert len(_deaf_reports(caplog)) == 1
 
-    await _dispatch(adapter, 1)  # partial drain: progress, backlog remains
-    adapter._check_ingress_dispatch_stall()
-    assert len(_deaf_reports(caplog)) == 1
-    _heartbeats(adapter, 2)
-    assert len(_deaf_reports(caplog)) == 2
+        await _dispatch(adapter, 1)  # partial drain: progress, backlog remains
+        adapter._check_ingress_dispatch_stall()
+        assert len(_deaf_reports(caplog)) == 1
+        _heartbeats(adapter, 2)
+        assert len(_deaf_reports(caplog)) == 2
 
 
 def test_new_generation_restarts_backlog_and_ignores_fenced_polls(caplog):

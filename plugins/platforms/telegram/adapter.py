@@ -470,9 +470,10 @@ _POLLING_PROGRESS_TIMEOUT = 60.0  # generation unhealthy until getUpdates return
 # #92991) and no other probe can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
-# Ingress dispatch stall (#102260): the transport probes prove getUpdates round-trips complete, not
+# Ingress dispatch stall (#102260, #130407): the transport probes prove getUpdates round-trips complete, not
 # that PTB's dispatcher ever handed the fetched updates to a handler. Two heartbeats (180s) with a
-# backlog and no dispatch progress: diagnostic only, never drives recovery (#71240 owns that).
+# backlog and no dispatch progress: warn once per stall and hand the adapter to the supervisor for a
+# rebuild (an in-place polling restart keeps the wedged dispatcher). Re-arms on dispatch progress.
 _INGRESS_DISPATCH_STALL_HEARTBEATS = 2
 # sendVideo transcodes before answering, outlasting the 20s read timeout; also how long a user waits
 # to hear the attachment failed, so kept modest.
@@ -504,6 +505,15 @@ class _PollingStallError(RuntimeError):
 
     Typed so the recovery ladder can hand the adapter to the supervisor instead of classifying log text:
     restarting the same Updater cannot heal a wedged long-poll consumer whose stop() did not quiesce (#113618).
+    """
+
+
+class _IngressDispatchStallError(_PollingStallError):
+    """A confirmed PTB dispatcher stall: getUpdates fetches but no handler dispatch (#102260, #130407).
+
+    Subclasses ``_PollingStallError`` so the recovery ladder hands the adapter to the supervisor for a
+    rebuild instead of restarting the same Updater in place: an in-place polling restart keeps the same
+    ``Application`` (and its wedged dispatcher task), while a rebuild constructs a fresh dispatcher.
     """
 
 
@@ -2349,14 +2359,15 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_error_task = asyncio.get_running_loop().create_task(self._handle_polling_network_error(RuntimeError(reason)))
 
     def _check_ingress_dispatch_stall(self) -> None:
-        """Report fetched updates PTB's dispatcher is not handing to handlers (#102260).
+        """Escalate fetched updates PTB's dispatcher is not handing to handlers (#102260, #130407).
 
         ``received`` and ``dispatched`` count the same population (every fetched update reaches the
         group-99 catch-all: no handler raises ApplicationHandlerStop, no error handler is registered),
         so a backlog with no dispatch progress across ``_INGRESS_DISPATCH_STALL_HEARTBEATS`` heartbeats
-        is a wedged dispatcher at any traffic rate. Reports once per stall, re-arms on progress.
+        is a wedged dispatcher at any traffic rate. Warns once per stall, marks the adapter degraded,
+        and hands it to the supervisor for a rebuild; re-arms on dispatch progress.
         """
-        if self._webhook_mode or self._teardown_started or self.has_fatal_error:
+        if self._webhook_mode or self._teardown_started or self.has_fatal_error or self._recovery_in_flight():
             return
         received = getattr(self, "_updates_received_total", 0)
         dispatched = getattr(self, "_updates_dispatched_total", 0)
@@ -2370,12 +2381,25 @@ class TelegramAdapter(BasePlatformAdapter):
         self._ingress_stalled_heartbeats = stalled + 1
         if stalled + 1 < _INGRESS_DISPATCH_STALL_HEARTBEATS:
             return
+        backlog = received - dispatched
         logger.warning(
             "[%s] Telegram ingress is healthy but deaf: %d update(s) fetched by getUpdates have not been "
             "dispatched to any handler across %d heartbeats (%d received, %d dispatched, generation %d). "
             "Polling is fine; PTB's dispatcher is not draining its queue.",
-            self.name, received - dispatched, _INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
+            self.name, backlog, _INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
             getattr(self, "_polling_generation", 0))
+        try:
+            self._schedule_polling_recovery(
+                _IngressDispatchStallError(
+                    "PTB dispatcher made no progress for %d heartbeats "
+                    "(%d received, %d dispatched, generation %d; ingress dispatch stall watchdog)"
+                    % (_INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
+                       getattr(self, "_polling_generation", 0))),
+                reason="ingress dispatch stall watchdog")
+        except RuntimeError:
+            # No running event loop (unit-test direct call): the warning above is the
+            # diagnostic; the next heartbeat with a loop drives recovery.
+            logger.debug("[%s] Ingress dispatch stall recovery deferred (no running loop)", self.name)
 
     async def _check_polling_stall(self) -> None:
         """Watchdog the last successful getUpdates round-trip: a long-poll can wedge without raising

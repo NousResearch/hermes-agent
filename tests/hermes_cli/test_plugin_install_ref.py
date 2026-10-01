@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
-import argparse
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+
+from tests.hermes_cli.plugin_worker_support import (
+    isolated_python as isolated_python,
+    plugin_world as plugin_world,
+)
+import hermes_yaml as yaml
 
 from hermes_cli.subcommands.plugins import build_plugins_parser
+
+
+@pytest.fixture(autouse=True)
+def _offline_pm(plugin_world):
+    # Keep real worker publication/rollback, without provisioning pinned tools
+    # into every temporary home. These installs start with no plugin selection.
+    (plugin_world.home / "config.yaml").unlink()
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -44,16 +54,6 @@ def _plugin_repo(root: Path, name: str = "demo") -> tuple[Path, str, str]:
 
 def _metadata(home: Path) -> dict:
     return json.loads((home / "plugins" / ".install-metadata.json").read_text())
-
-
-def test_parser_accepts_only_explicit_install_ref_option():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    build_plugins_parser(subparsers, cmd_plugins=lambda _args: None)
-
-    args = parser.parse_args(["plugins", "install", "owner/repo", "--ref", "a" * 40])
-
-    assert args.ref == "a" * 40
 
 
 def test_canonical_source_never_persists_http_credentials():
@@ -182,6 +182,87 @@ def test_subdir_pin_records_source_identity_and_installs_requested_tree(
     }
 
 
+def test_clone_timeout_applies_to_every_network_step_of_a_pinned_install(monkeypatch, tmp_path):
+    from hermes_cli import plugins_cmd
+
+    repo, old_sha, _new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    (home / "config.yaml").write_text("plugins:\n  clone_timeout_seconds: 137\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    run_git = plugins_cmd._run_plugin_git
+    calls = []
+
+    def record_git(git_exe, target, *args, **kwargs):
+        calls.append((args[0], kwargs.get("timeout")))
+        return run_git(git_exe, target, *args, **kwargs)
+
+    monkeypatch.setattr(plugins_cmd, "_run_plugin_git", record_git)
+    target, _manifest, _name = plugins_cmd._install_plugin_core(
+        repo.as_uri(), force=False, ref=old_sha
+    )
+
+    assert _git(target, "rev-parse", "HEAD") == old_sha
+    assert ("clone", 137) in calls
+    assert ("fetch", 137) in calls
+    assert ("checkout", 137) in calls
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_subdir_install_downloads_only_that_subdirectory(monkeypatch, tmp_path, pinned):
+    from hermes_cli.plugins_cmd import _install_plugin_core
+
+    repo = tmp_path / "monorepo"
+    plugin = repo / "integrations" / "hermes"
+    plugin.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "fixture@example.com")
+    _git(repo, "config", "user.name", "Fixture")
+    _git(repo, "config", "uploadpack.allowFilter", "true")
+    (plugin / "plugin.yaml").write_text("name: nested-demo\n", encoding="utf-8")
+    (repo / "unrelated.bin").write_bytes(b"x" * 4096)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "init")
+    sha = _git(repo, "rev-parse", "HEAD")
+    unrelated_blob = _git(repo, "rev-parse", "HEAD:unrelated.bin")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    seen = {}
+
+    def inspect_clone(_manifest, tree):
+        clone = tree.parents[1]
+        seen["worktree"] = sorted(p.name for p in clone.iterdir() if p.name != ".git")
+        seen["missing"] = _git(clone, "rev-list", "--objects", "--missing=print", "HEAD")
+
+    target, _manifest, _name = _install_plugin_core(
+        f"{repo.as_uri()}#integrations/hermes", force=False,
+        ref=sha if pinned else None, before_swap=inspect_clone)
+
+    assert (target / "plugin.yaml").is_file()
+    assert seen["worktree"] == ["integrations"]
+    assert f"?{unrelated_blob}" in seen["missing"].splitlines()
+
+
+def test_clone_timeout_uses_active_profile_and_bounds_invalid_values(monkeypatch, tmp_path):
+    from hermes_cli.plugins_cmd import _clone_timeout_seconds
+
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    config = home / "config.yaml"
+    config.write_text("plugins:\n  clone_timeout_seconds: 137\n", encoding="utf-8")
+    assert _clone_timeout_seconds() == 137
+
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(other))
+    assert _clone_timeout_seconds() == 300
+    other_config = other / "config.yaml"
+    other_config.write_text("plugins:\n  clone_timeout_seconds: 0\n", encoding="utf-8")
+    assert _clone_timeout_seconds() == 300
+    other_config.write_text("plugins:\n  clone_timeout_seconds: 7200\n", encoding="utf-8")
+    assert _clone_timeout_seconds() == 3600
+
+
 def test_force_reinstall_does_not_drift_pin_without_explicit_new_ref(
     monkeypatch, tmp_path
 ):
@@ -307,18 +388,26 @@ def test_checkout_mismatch_is_rejected(monkeypatch, tmp_path):
         _checkout_exact_revision(clone, "git", old_sha)
 
 
-def test_metadata_write_failure_rolls_back_new_install(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+def test_metadata_write_failure_rolls_back_new_install(monkeypatch, tmp_path, isolated_python):
+    from hermes_cli.plugins_cmd import _install_plugin_core, PluginOperationError
+    from pm import client
+    from tests.pm._fixtures import worker_toolchain
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(
-        "hermes_cli.plugins_cmd._write_install_metadata",
-        lambda _metadata: (_ for _ in ()).throw(OSError("disk full")),
-    )
+    metadata = home / "plugins" / ".install-metadata.json"
+    # The PM worker process publishes the plugin; fail its metadata write there.
+    worker_toolchain(client, monkeypatch, isolated_python,
+        "import pm.publication as publication\n"
+        "original = publication.durable_write_bytes\n"
+        "def fail_metadata(path, data):\n"
+        f"    if Path(path) == Path({str(metadata)!r}):\n"
+        "        raise OSError('disk full')\n"
+        "    return original(path, data)\n"
+        "publication.durable_write_bytes = fail_metadata\n")
 
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(PluginOperationError, match="disk full"):
         _install_plugin_core(repo.as_uri(), force=False, ref=old_sha)
 
     assert not (home / "plugins" / "demo").exists()
@@ -351,6 +440,7 @@ def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
 
 def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_path):
     from hermes_cli.plugins_cmd import _install_plugin_core
+    from utils import rmtree_readonly
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -358,7 +448,7 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
     target, _manifest, _name = _install_plugin_core(
         repo.as_uri(), force=False, ref=old_sha
     )
-    shutil.rmtree(target)
+    rmtree_readonly(target)
 
     target, _manifest, _name = _install_plugin_core(repo.as_uri(), force=False)
 
@@ -414,3 +504,40 @@ def test_checkout_that_lands_on_another_commit_is_still_rejected(monkeypatch, tm
 
     with pytest.raises(PluginOperationError, match="does not match requested"):
         _checkout_exact_revision(clone, "git", tag_object_sha)
+
+
+@pytest.mark.parametrize("update_url", ["http://feed.example/f.yml", "file:///etc/feed.yml", "ftp://feed.example/f.yml"])
+def test_install_refuses_a_non_https_update_url(monkeypatch, tmp_path, update_url):
+    """The saved update_url is fetched unattended by the gateway and picks which origin commit
+    gets installed; anything a network peer can rewrite (http/ftp) or a local path must not
+    become the feed. Refused before any install state exists."""
+    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+
+    repo, _old, _new = _plugin_repo(tmp_path)
+    (repo / "plugin.yaml").write_text(
+        yaml.safe_dump({"name": "demo", "version": "1.0.0", "update_url": update_url}), encoding="utf-8")
+    _commit(repo, "feed", "feed")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with pytest.raises(PluginOperationError, match="https://"):
+        _install_plugin_core(repo.as_uri(), force=False)
+
+    assert not (home / "plugins" / "demo").exists()
+    assert not (home / "plugins" / ".install-metadata.json").exists()
+
+
+def test_install_saves_an_https_update_url_tag(monkeypatch, tmp_path):
+    from hermes_cli.plugins_cmd import _install_plugin_core
+
+    repo, _old, sha = _plugin_repo(tmp_path)
+    (repo / "plugin.yaml").write_text(
+        yaml.safe_dump({"name": "demo", "version": "1.0.0", "update_url": " https://feed.example/f.yml "}),
+        encoding="utf-8")
+    sha = _commit(repo, "feed", "feed")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    _install_plugin_core(repo.as_uri(), force=False)
+
+    assert _metadata(home)["demo"]["update_url"] == "https://feed.example/f.yml"

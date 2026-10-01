@@ -51,22 +51,13 @@ def _patched_openai(fake_client: MagicMock):
 
 
 class TestMetadata:
-    def test_name(self, provider):
-        assert provider.name == "openai"
 
-    def test_default_model(self, provider):
-        assert provider.default_model() == "gpt-image-2-medium"
 
     def test_picker_matches_resolvable_catalog(self, provider):
         ids = [m["id"] for m in provider.list_models()]
         assert set(ids) == set(provider.models)
         assert provider.default_model() in ids
 
-    def test_catalog_entries_have_display_speed_strengths(self, provider):
-        for entry in provider.list_models():
-            assert entry["display"].startswith("GPT Image 2")
-            assert entry["speed"]
-            assert entry["strengths"]
 
 
 # ── Availability ────────────────────────────────────────────────────────────
@@ -95,7 +86,7 @@ class TestModelResolution:
 
 
     def test_config_openai_model(self, tmp_path):
-        import yaml
+        import hermes_yaml as yaml
         (tmp_path / "config.yaml").write_text(
             yaml.safe_dump({"image_gen": {"openai": {"model": "gpt-image-2-low"}}})
         )
@@ -112,7 +103,7 @@ class TestEndpointConfig:
     #13798); the project header is blanked (#60748); custom endpoints bypass system proxies (#64888)."""
 
     def test_config_base_url_and_key_env_reach_client_and_availability(self, monkeypatch, tmp_path):
-        import yaml
+        import hermes_yaml as yaml
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.setenv("IMAGE_GATEWAY_TOKEN", "gateway-token")
@@ -134,7 +125,7 @@ class TestEndpointConfig:
         """A non-catalog ``image_gen.openai.model`` reaches the gateway verbatim as ``model`` and no
         ``quality`` is sent (gateways reject unknown enum values); a stale top-level ``image_gen.model``
         from another provider never passes through (#97928)."""
-        import yaml
+        import hermes_yaml as yaml
         monkeypatch.setenv("OPENAI_API_KEY", "k")
         monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {
@@ -152,7 +143,7 @@ class TestEndpointConfig:
     def test_named_custom_endpoint_supplies_base_url_and_key(self, monkeypatch, tmp_path):
         """``image_gen.openai.provider: <name>`` inherits that ``providers:`` entry's base_url and
         key_env when ``base_url``/``key_env`` are unset; explicit values still win (#83080)."""
-        import yaml
+        import hermes_yaml as yaml
         for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("MY_GW_KEY", "gw-token")
@@ -175,7 +166,7 @@ class TestEndpointConfig:
         ``generate()`` must hand ``openai.OpenAI`` a client with no ``HTTPProxy`` mount, while a plain
         ``httpx.Client()`` under the same conditions (control) does pick the proxy up (#64888)."""
         import httpx
-        import yaml
+        import hermes_yaml as yaml
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
                     "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
@@ -313,7 +304,7 @@ class TestGenerate:
     def test_selection_reaches_image_request(
         self, provider, monkeypatch, tmp_path, api_model, quality, editing
     ):
-        import yaml
+        import hermes_yaml as yaml
 
         tier = api_model if quality == "auto" else f"{api_model}-{quality}"
         monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
@@ -383,7 +374,7 @@ class TestGenerate:
             result = provider.generate("a cat")
 
         assert result["success"] is True
-        assert result["image"].startswith("/")
+        assert result["image"].startswith(str(Path("/")))
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
 

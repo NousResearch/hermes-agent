@@ -41,6 +41,9 @@ TEXT_RESOLVED = "resolved"
 TEXT_REJECTED_PROSE = "rejected_prose"
 TEXT_REJECTED_SELECTION = "rejected_selection"
 TEXT_NO_PENDING = "no_pending"
+SKIP_WORD = "skip"
+SKIPPED = "\x00skipped"
+CANCELLED = "\x00cancelled"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
@@ -167,8 +170,9 @@ def _coerce_text_response_detailed(entry: _ClarifyEntry, response: str) -> tuple
     ``awaiting_text`` accept any text; numeric picks and exact labels always resolve; multi-select
     returns a JSON array string (decoded tool-side); one bad token rejects the whole reply."""
     text = str(response).strip()
+    is_skip = text.casefold() == SKIP_WORD
     if not entry.choices:
-        return text, None
+        return (SKIPPED if is_skip else text), None
     if entry.multi_select:
         coerced = _coerce_multi_select_text(entry, text)
         selection_shaped = _selection_attempt_tokens(text, entry.choices) is not None
@@ -179,6 +183,8 @@ def _coerce_text_response_detailed(entry: _ClarifyEntry, response: str) -> tuple
         coerced = entry.choices[idx] if 0 <= idx < len(entry.choices) else _match_label(text, entry.choices)
     if coerced is not None:
         return coerced, None
+    if is_skip:
+        return SKIPPED, None
     if entry.awaiting_text:
         return text, None
     return None, "invalid_selection" if selection_shaped else "prose"
@@ -239,9 +245,7 @@ def has_pending(session_key: str) -> bool:
 
 def clear_session(session_key: str) -> int:
     """Drop every pending clarify for a session (``/new``, shutdown, cached-agent eviction) so
-    blocked agent threads don't outlive it; returns how many were cancelled. Cancelled waiters
-    see "" (callers tell it from a real reply only via their own timeout bookkeeping; most treat
-    any falsy result as no response). First-writer-wins: an already-set entry was answered for
+    blocked agent threads don't outlive it; returns how many were cancelled. First-writer-wins: an already-set entry was answered for
     real, so it is dropped but its response preserved. The loop stays inside the lock so a button
     callback cannot slip between pop and check; entries go regardless of state so a cleared
     session is never resurrected by late callbacks."""
@@ -250,16 +254,16 @@ def clear_session(session_key: str) -> int:
         for entry in (_entries.pop(cid, None) for cid in list(_session_index.pop(session_key, []) or [])):
             if entry is None or entry.event.is_set():
                 continue
-            entry.response = ""
+            entry.response = CANCELLED
             entry.event.set()
             cancelled += 1
     return cancelled
 
 
 def resolve_clarify_timeout(config: dict) -> int:
-    """Clarify timeout (seconds): legacy ``clarify.timeout`` if explicitly set, else
-    ``agent.clarify_timeout``, else 3600 — the single source of truth for every surface
-    (gateway, CLI, TUI). ``<= 0`` is kept verbatim (unlimited); non-numeric -> 3600."""
+    """Clarify timeout (seconds) on messaging platforms: legacy ``clarify.timeout`` if explicitly set,
+    else ``agent.clarify_timeout``, else 3600. CLI, TUI and Desktop never time a clarify out — the user
+    is at the screen it is painted on. ``<= 0`` is kept verbatim (unlimited); non-numeric -> 3600."""
     raw = (config.get("clarify") or {}).get("timeout")
     if raw is None:
         raw = (config.get("agent") or {}).get("clarify_timeout", 3600)
@@ -282,27 +286,3 @@ def get_clarify_timeout() -> int:
         return resolve_clarify_timeout(load_config() or {})
     except Exception:
         return 3600
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def get_notify(session_key: str) -> Optional[Callable[[_ClarifyEntry], None]]:
-    with _lock:
-        return _notify_cbs.get(session_key)
-
-def register_notify(session_key: str, cb: Callable[[_ClarifyEntry], None]) -> None:
-    """Register a per-session notify callback used by ``clarify_callback``."""
-    with _lock:
-        _notify_cbs[session_key] = cb
-
-def unregister_notify(session_key: str) -> None:
-    """Drop the per-session notify callback and cancel any pending clarify entries."""
-    with _lock:
-        _notify_cbs.pop(session_key, None)
-    # Cancel any pending entries so blocked threads unwind when the run
-    # ends (interrupt, completion, gateway shutdown).
-    clear_session(session_key)
-# ---- END PLUGIN-COMPAT ----

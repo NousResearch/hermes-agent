@@ -28,6 +28,8 @@ from hermes_state_common import (
 )
 from hermes_state_fts import _drop_orphan_fts_shadow_tables
 from hermes_state_holders import _read_proc_argv
+from hermes_state_search import _delete_meta, _meta_row
+from hermes_state_errors import is_sqlite_lock_error
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -42,6 +44,11 @@ _FTS_HOLDER_FUTILE_SECONDS = 1800.0
 # retries are non-blocking probes whose spacing doubles up to the cap.
 _FTS_STALE_RETRY_SECONDS = 60.0
 _FTS_STALE_RETRY_MAX_SECONDS = 3600.0
+# message_uid legacy backfill: rows per UPDATE (short write-lock holds) and the extra time one open may spend.
+_MESSAGE_UID_BACKFILL_DONE = "message_uid_backfill"
+_MESSAGE_UID_BACKFILL_CURSOR = "message_uid_backfill_id"
+_MESSAGE_UID_BACKFILL_CHUNK = 2000
+_MESSAGE_UID_BACKFILL_BUDGET_S = 1.0
 
 
 def _holder_cmdline(pid: int) -> str:
@@ -767,7 +774,7 @@ class SessionSchemaMixin:
                         # A sibling process won the ADD race; store is correct.
                         logger.debug("reconcile %s.%s: %s", table_name, col_name, exc)
                         continue
-                    if "locked" in message or "busy" in message:
+                    if is_sqlite_lock_error(exc):
                         # Swallowing lock contention left the store half-reconciled ("no such
                         # column" on every read). Re-raise so the lock-patience wrapper retries init.
                         raise
@@ -985,7 +992,8 @@ class SessionSchemaMixin:
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
             cursor.executemany(
                 "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
-                [("store_instance_id", str(uuid.uuid4())), ("store_created_at_utc", now_iso)],
+                [("store_instance_id", str(uuid.uuid4())), ("store_created_at_utc", now_iso),
+                 (_MESSAGE_UID_BACKFILL_DONE, "1")],  # a fresh store has no legacy rows to backfill
             )
         else:
             self._run_data_migrations(cursor, row[0], fts5_available)
@@ -1050,6 +1058,7 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        self._advance_message_uid_backfill(cursor)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);
@@ -1099,6 +1108,32 @@ class SessionSchemaMixin:
         # one skip: claiming current would lie.
         if current_version < SCHEMA_VERSION and fts_migrations_complete and fts5_available:
             cursor.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
+
+    def _advance_message_uid_backfill(self, cursor: sqlite3.Cursor) -> None:
+        """Mint ``message_uid`` onto rows written before the column existed, one bounded slice per open.
+
+        A single full-table UPDATE held the write lock for 261 s on an 835k-row / 4.8 GB store, so every
+        sibling process timed out with "database is locked". Id-range chunks commit one at a time (the
+        writer connection is autocommit) and an open spends at most ``_MESSAGE_UID_BACKFILL_BUDGET_S``
+        after its first chunk, so a large store converges over later opens. Until then a legacy row
+        simply has no uid, which every reader already treats as "no identity yet"."""
+        if _meta_row(cursor, _MESSAGE_UID_BACKFILL_DONE) is not None:
+            return
+        row = _meta_row(cursor, _MESSAGE_UID_BACKFILL_CURSOR)
+        done_through = int(row[0]) if row else 0
+        high = cursor.execute("SELECT MAX(id) FROM messages").fetchone()[0] or 0
+        deadline = time.monotonic() + _MESSAGE_UID_BACKFILL_BUDGET_S
+        while done_through < high:
+            upper = done_through + _MESSAGE_UID_BACKFILL_CHUNK
+            cursor.execute(
+                "UPDATE messages SET message_uid = lower(hex(randomblob(16))) "
+                "WHERE id > ? AND id <= ? AND message_uid IS NULL", (done_through, upper))
+            done_through = upper
+            if done_through < high and time.monotonic() >= deadline:
+                self.set_meta(_MESSAGE_UID_BACKFILL_CURSOR, str(done_through), cursor=cursor)
+                return
+        self.set_meta(_MESSAGE_UID_BACKFILL_DONE, "1", cursor=cursor)
+        _delete_meta(cursor, _MESSAGE_UID_BACKFILL_CURSOR)
 
     def _migrate_v22_session_model_usage(self, cursor: sqlite3.Cursor) -> None:
         """v22: ``task`` joins the session_model_usage PRIMARY KEY ('' = main loop; aux calls

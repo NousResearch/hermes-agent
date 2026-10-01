@@ -22,7 +22,7 @@ from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
-from agent.message_metadata import append_message, stamp_message_timestamp
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
@@ -157,22 +157,25 @@ def append_notes_to_multimodal_content(content: Any, notes: Optional[str]) -> bo
     return False
 
 
-# Surfaces whose sessions must not be auto-titled: cron names its own session and
-# its opener is a delivery hint; subagent sessions are hidden from every picker.
-_UNTITLED_PLATFORMS = frozenset({"cron", "subagent"})
+# Cron sessions are never auto-titled: cron names its own session and its opener is a delivery hint.
+# Subagent runs get a cheap ``Subagent: <goal>`` title instead of a model call (apply_subagent_title).
+_UNTITLED_PLATFORMS = frozenset({"cron"})
 
 
-def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
+def _maybe_title_session_at_turn_start(
+    agent: Any, messages: List[Any], title_user_message: Optional[str] = None,
+) -> None:
     """Kick off auto-titling for the session's first user message; never fatal."""
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not session_db or not session_id:
         return
-    if str(getattr(agent, "platform", "") or "").lower() in _UNTITLED_PLATFORMS:
+    platform = str(getattr(agent, "platform", "") or "").lower()
+    if platform in _UNTITLED_PLATFORMS:
         return
     try:
         from agent.message_content import flatten_message_text
-        from agent.title_generator import maybe_auto_title
+        from agent.title_generator import apply_subagent_title, maybe_auto_title
 
         # Turn's user message as text; image-only turns yield "" and are skipped.
         user_text = ""
@@ -184,6 +187,8 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 if isinstance(metadata, dict) and isinstance(metadata.get("title_preview"), str):
                     title_preview = metadata["title_preview"]
                 break
+        if title_user_message is not None:
+            user_text = title_user_message.strip()
         if not user_text:
             return
         # The session row is created lazily; force it now or the title write matches
@@ -194,6 +199,9 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 ensure()
             if not getattr(agent, "_session_db_created", False):
                 return
+        if platform == "subagent":
+            apply_subagent_title(session_db, session_id, user_text)
+            return
         # Snapshot runtime identity so the background titler can skip if the user
         # switches models before it fires.
         # ``session_id`` rides along so the background titler's OpenCode request carries the
@@ -569,6 +577,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None),
+    ("_harness_metrics_turn", None),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
@@ -986,6 +995,7 @@ def build_turn_context(
     restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
+    title_user_message: Optional[str]=None,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -1036,12 +1046,20 @@ def build_turn_context(
 
     _preview_text = summarize_user_message_for_log(user_message)
     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")
-    logger.info(
-        "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
+    _turn_fmt = (
+        "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r"
+    )
+    _turn_args = [
         agent.session_id or "none", agent.model, agent.provider or "unknown",
         agent.platform or "unknown", len(conversation_history or []),
         _msg_preview.replace("\n", " "),
-    )
+    ]
+    # Fork turns (background review, side questions) reuse the parent's session_id and
+    # model; tag their turn-start line so logs can tell them apart (#118693).
+    if (_turn_origin := getattr(agent, "_turn_origin", None)):
+        _turn_fmt += " origin=%s"
+        _turn_args.append(_turn_origin)
+    logger.info(_turn_fmt, *_turn_args)
 
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
@@ -1126,7 +1144,7 @@ def build_turn_context(
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,
     # no-op once titled; it ensures the session row itself.
-    _maybe_title_session_at_turn_start(agent, messages)
+    _maybe_title_session_at_turn_start(agent, messages, title_user_message)
 
     # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
@@ -1212,11 +1230,12 @@ def build_api_messages(
         # persisted history via nested containers; see _clone_message_for_send.
         api_msg = _clone_message_for_send(msg)
         # api_content is bookkeeping (exact bytes sent), never a provider field — pop
-        # it from EVERY outgoing copy. display_* is display-only timeline metadata
-        # (strict OpenAI backends reject unknown keys); _row_id is the durable row id
-        # from _rows_to_conversation and only chat-completions strips underscore keys.
+        # it from EVERY outgoing copy. Persistence/display fields (display_*, _row_id,
+        # timestamp) are local bookkeeping: strict OpenAI backends reject unknown keys
+        # and only chat-completions strips underscore keys. The token estimator drops
+        # the same set, so it never prices bytes the provider never receives.
         _api_content = api_msg.pop("api_content", None)
-        for key in ("display_kind", "display_metadata", "_row_id"):
+        for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
             api_msg.pop(key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
@@ -1276,29 +1295,3 @@ def build_api_messages(
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
     return api_messages, effective_system
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'IDLE_COMPACTION_STATUS_TEMPLATE': ('agent.conversation_compression', 'IDLE_COMPACTION_STATUS_TEMPLATE'),
-    'PREFLIGHT_COMPRESSION_STATUS_TEMPLATE': ('agent.conversation_compression', 'PREFLIGHT_COMPRESSION_STATUS_TEMPLATE'),
-    'automatic_compaction_status_message': ('agent.context_engine', 'automatic_compaction_status_message'),
-    'compression_skipped_due_to_lock': ('agent.conversation_compression', 'compression_skipped_due_to_lock'),
-    'conversation_history_after_compression': ('agent.conversation_compression', 'conversation_history_after_compression'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

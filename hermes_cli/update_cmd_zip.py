@@ -7,14 +7,12 @@ resolving/monkeypatching. Origin helpers are imported lazily per function (no cy
 import logging
 from contextlib import suppress
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Collection, Optional
-
-from hermes_cli.update_cmd_common import _best_effort
-from hermes_constants import project_venv_dir
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -373,11 +371,6 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
-    """Reinstall Python deps (uv preferred, pip fallback) and re-arm active tool deps."""
-    from hermes_cli.update_cmd import (
-        _ensure_uv_for_termux, _ensure_venv_pip, _m, _refuse_update_for_contended_shims, _shim_quarantine_error_type,
-    )
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
     update_managed_uv()  # keep managed uv current — runs `uv self update` if we already have one
@@ -428,6 +421,14 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windo
     opts = _resolve_update_options(args, gateway_mode)
     # Snapshot before files are replaced, for the completion line.
     pre_update_version = _read_project_version()
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
+                   target_sha: str | None = None, target_repository: str | None = None,
+                   completion_request=None) -> bool:
+    """Update via ZIP when Windows git file I/O fails; dependency/build failures propagate.
+
+    A supplied commit keeps the archive on the target selected before Git failed.
+    """
+    from hermes_cli.update_cmd import _m, _complete_source_update
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
@@ -515,3 +516,19 @@ def _finish_zip_update(
         from hermes_cli.update_receipt import finalize_update_receipt
         finalize_update_receipt("success" if update_complete and not node_failures else "partial")
     return update_complete
+    # Older callers lack the snapshot/receipt/lifecycle handoff. Refuse before swap.
+    if completion_request is None:
+        from hermes_cli._old_updater import stop_for_relaunch
+        stop_for_relaunch(incomplete=True)
+    if target_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+        raise ValueError("ZIP update requires an exact full commit SHA")
+    ref = target_sha if target_sha is not None else f"refs/heads/{branch}"
+    repository = target_repository or "NousResearch/hermes-agent"
+    if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+            or any(part in (".", "..") for part in repository.split("/"))):
+        raise ValueError("ZIP update requires a GitHub owner/repository")
+    _download_and_swap_zip(branch, f"https://github.com/{repository}/archive/{ref}.zip")
+    completion_request["expected_sha"] = target_sha
+    completion_request["apply_mode"] = "zip"
+    _complete_source_update(completion_request)
+    return True

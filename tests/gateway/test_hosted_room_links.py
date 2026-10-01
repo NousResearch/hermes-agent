@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat
+import pytest
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -73,6 +74,14 @@ def test_room_link_store_has_private_posix_mode(tmp_path, _platform):
             cancellation_scope_id="cancel-1", trace_id="trace-1",
         ),
     )
+@pytest.mark.platforms("posix")
+def test_room_link_store_has_owner_only_mode(tmp_path):
+    path = tmp_path / "state.db"
+    save_room_link(path, make_stored_link(
+        room_id="room", member_id="member", target_url="https://peer.example.test",
+        target_profile="default", grant="grant", catalog=_catalog(),
+        cancellation_scope_id="cancel", trace_id="trace",
+    ))
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 

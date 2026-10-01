@@ -14,6 +14,9 @@ import { SkillCatalog } from './skill-catalog'
 import { $catalogCardView } from './store'
 
 const getOfficialSkills = vi.fn()
+import { parseCatalog } from './catalog/catalog-data'
+import { $catalogCardView } from './catalog/store'
+
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const setSkillEnabled = vi.fn()
@@ -110,6 +113,7 @@ beforeEach(() => {
   getOfficialSkills.mockResolvedValue({ skills: [] })
   // Scope/install cases exercise the retained list layout; cards have dedicated coverage.
   $catalogCardView.set(false)
+  $catalogCardView.set(true)
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
@@ -123,6 +127,7 @@ beforeEach(() => {
   // Single profile by default → the scope selector stays hidden (>1 gate),
   // so existing tests see unchanged single-profile behavior.
   getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }] })
+  queryClient.setQueryData(['public-catalog', 'skills'], [])
 })
 
 afterEach(() => {
@@ -222,8 +227,9 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    // The selector renders on the Skills tab too (Capabilities-wide).
-    const trigger = await screen.findByRole('combobox')
+    // The selector renders on the Skills tab too (Capabilities-wide), above the catalog's sort select.
+    await waitFor(() => expect(screen.getAllByRole('combobox')).toHaveLength(2))
+    const [trigger] = screen.getAllByRole('combobox')
     await act(async () => {
       fireEvent.click(trigger)
     })
@@ -243,7 +249,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() => expect(setSkillEnabled).toHaveBeenCalledWith('web-research', false, 'researcher'))
   })
 
-  it('shows the FULL skill in the detail pane — frontmatter metadata + body', async () => {
+  it('shows the FULL skill body in the detail pane, not just the description or raw frontmatter', async () => {
+    $catalogCardView.set(false)
     getSkills.mockResolvedValue([
       {
         name: 'web-research',
@@ -265,13 +272,10 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    // Frontmatter renders as metadata rows, the body as full text — not just
-    // the one-line description.
     await waitFor(() => expect(getSkillContent).toHaveBeenCalled())
     expect(getSkillContent.mock.calls[0][0]).toBe('web-research')
-    expect(await screen.findByText('version')).toBeTruthy()
-    expect(await screen.findByText('1.2.0')).toBeTruthy()
     expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
+    expect(screen.queryByText(/version: 1\.2\.0/)).toBeNull()
   })
 
   it.each(['web-research', 'official/research/web-research'])(
@@ -296,6 +300,18 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
           <SkillCatalog installedNames={new Set([installedName])} profile="researcher" />
         </QueryClientProvider>
       )
+  it('keeps installed skills on their toggle and installs new cards into the pinned remote profile', async () => {
+    const { installHubSkill } = await import('@/store/hub-actions')
+    getSkills.mockResolvedValue([
+      { name: 'web-research', description: 'Research', enabled: true, category: 'research' }
+    ])
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        { name: 'web-research', source: 'official', identifier: 'official/research/web-research' },
+        { name: 'gif-search', source: 'official', identifier: 'official/gifs/gif-search' }
+      ])
+    )
 
       fireEvent.click(screen.getByRole('button', { name: /^web-research/ }))
       const installed = screen.getByRole('button', { name: 'Installed' })
@@ -383,6 +399,13 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       finishSecond = resolve
     })
     vi.mocked(installHubSkill).mockReturnValueOnce(firstInstall).mockReturnValueOnce(secondInstall)
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <CapabilitiesView embedded fixedConnection="homelab" fixedProfile="inbox-bot" />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
 
     const scopedView = (connectionId: string, profile: string) => (
       <QueryClientProvider client={queryClient}>
@@ -390,6 +413,16 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
           <CapabilitiesView embedded fixedConnection={connectionId} fixedProfile={profile} />
         </MemoryRouter>
       </QueryClientProvider>
+    await screen.findByRole('switch', { name: 'web-research' })
+    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added web-research' }).disabled).toBe(true)
+    expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
+    const available = screen.getByRole('button', { name: 'gif-search' }).closest('article')!
+    fireEvent.click(within(available).getByRole('switch', { name: 'Add gif-search' }))
+    await waitFor(() =>
+      expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', {
+        connectionId: 'homelab',
+        profile: 'inbox-bot'
+      })
     )
     const view = render(scopedView('homelab', 'researcher'))
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
@@ -430,6 +463,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     })
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Install' }).disabled).toBe(false)
     expect(installHubSkill).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('iframe')).toBeNull()
   })
 
   it('loads the public catalog only on Browse and reuses it across skills and tools tab switches', async () => {
@@ -451,12 +485,22 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
     expect(fetchCatalog).not.toHaveBeenCalled()
     cleanup()
+  it('fetches the public catalog once across remounts and keeps one search input', async () => {
+    queryClient.clear()
 
     await act(async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [{ name: 'example', source: 'official', identifier: 'official/example' }]
+    })
+
+    vi.stubGlobal('fetch', fetch)
+
+    const view = () =>
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/capabilities']}>
-            <CapabilitiesView embedded />
+          <MemoryRouter>
+            <CapabilitiesView embedded fixedProfile="default" />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -538,6 +582,19 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(document.querySelector('iframe')).toBeTruthy()
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.queryByRole('switch')).toBeNull()
+    try {
+      const first = view()
+      await screen.findByRole('button', { name: 'example' })
+      expect(fetch).toHaveBeenCalledTimes(1)
+      first.unmount()
+      view()
+      await screen.findByRole('button', { name: 'example' })
+      expect(fetch).toHaveBeenCalledTimes(1)
+      expect(screen.getAllByRole('textbox', { name: 'Search skills' })).toHaveLength(1)
+      expect(document.querySelector('iframe')).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {
@@ -709,6 +766,11 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     // carries an Install button (no toggle until installed) that routes
     // through the standard hub action pipeline scoped to the Capabilities
     // profile. Already-installed catalog entries are filtered out.
+  it('lists the built-in optional-skills catalog with Add switches that route through the hub pipeline', async () => {
+    // Official optional skills merge into the same catalog as installed ones;
+    // an uninstalled row carries an Add switch that routes through the hub
+    // action pipeline scoped to the Capabilities profile. A name collision with
+    // an installed skill keeps the installed toggle, never a second Add.
     const { installHubSkill } = await import('@/store/hub-actions')
 
     getSkills.mockResolvedValue([
@@ -760,15 +822,10 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    // Catalog section header + the one genuinely-available row. Rows already
-    // installed (lock flag OR name collision with the installed list) are gone.
-    expect(await screen.findByText('gif-search')).toBeTruthy()
-    expect(screen.queryByText('ascii-art')).toBeNull()
-
-    // The installed skill still shows its toggle; the catalog row shows
-    // Install instead of a switch.
+    const install = await screen.findByRole('switch', { name: 'Add gif-search' })
     expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
-    const install = screen.getByRole('button', { name: 'Install' })
+    expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
+    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added ascii-art' }).disabled).toBe(true)
 
     await act(async () => {
       fireEvent.click(install)
@@ -777,5 +834,43 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() =>
       expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
     )
+  })
+
+  it('drops community feed rows that only share a name with an installed skill', async () => {
+    // Installs are name-keyed, so a community lookalike of an installed skill
+    // can neither be added beside it nor is it the installed skill itself —
+    // it must not surface as a second "installed" row under the same name.
+    getSkills.mockResolvedValue([
+      {
+        name: 'docx',
+        description: 'Bundled document tools',
+        category: 'documents',
+        enabled: true,
+        usage: 0,
+        provenance: 'bundled'
+      }
+    ])
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        { name: 'docx', source: 'ClawHub', identifier: 'wordpro' },
+        { name: 'gif-search', source: 'ClawHub', identifier: 'gif-raccoon' }
+      ])
+    )
+
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    // The feed settles first; then only the installed row keeps the name,
+    // while the distinct community skill stays installable.
+    await screen.findByRole('switch', { name: 'Add gif-search' })
+    expect(screen.getAllByRole('button', { name: 'docx' })).toHaveLength(1)
   })
 })

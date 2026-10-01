@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -62,22 +63,55 @@ _UPSTREAM_CONTEXT_INTRO = (
     "your analysis."
 )
 
+# Run-document length frames. The writer (``cron.scheduler.run_job``) stamps
+# these labels; the reader below parses them. Defined here (not in scheduler.py)
+# because this module binds ``_sched`` only at import tail, so module-level
+# patterns cannot be built from scheduler attributes without an import cycle.
+_PROMPT_FRAME = "**Prompt Characters:** "
+_RESPONSE_FRAME = "**Response Characters:** "
+_PROMPT_HEADING = "## Prompt\n\n"
+_RESPONSE_HEADING = "## Response\n\n"
+_PROMPT_SEPARATOR = "\n\n"  # writer's blank line after the prompt body
+_RESPONSE_TERMINATOR = "\n"  # writer's trailing newline after the response body
+_PROMPT_FRAME_RE = re.compile(
+    rf"(?m)^{re.escape(_PROMPT_FRAME)}(\d+)\n{re.escape(_PROMPT_HEADING)}")
+_RESPONSE_FRAME_RE = re.compile(
+    rf"(?m)^{re.escape(_RESPONSE_FRAME)}(\d+)\n{re.escape(_RESPONSE_HEADING)}")
+
 
 def _archive_answer(archive: str) -> str | None:
-    """The reusable answer of a stored run: the text after the last ``## Response``.
+    """The reusable answer of a stored run, using its length frame when available.
 
-    Archives without the heading (script-mode runs) stay whole-document. The LAST
-    occurrence is the writer's boundary — the assembled prompt half can itself carry
-    the literal heading (a skill documenting its response format, an injected previous
-    answer quoting it), so an early split would re-inject the prompt noise this
+    Framed runs (``_PROMPT_FRAME``/``_RESPONSE_FRAME`` stamps) validate the
+    response length before whitespace normalization, so quoted frames inside the
+    prompt or answer can never become boundaries and a truncated write is
+    rejected. Archives without the heading (script-mode runs) stay whole-document.
+    For legacy unframed archives the LAST ``## Response`` occurrence is the
+    writer's boundary — the assembled prompt half can itself carry the literal
+    heading (a skill documenting its response format, an injected previous answer
+    quoting it), so an early split would re-inject the prompt noise this
     extraction exists to drop.
     ``None`` marks "no usable answer" — a blank or silent response (any form the
     delivery lane itself suppresses) — so the caller falls through to an older
     archive instead of injecting prompt noise the job already has.
     """
-    if "## Response" not in archive:
-        return archive
-    answer = archive.rpartition("## Response")[2].strip()
+    # New writers stamp the prompt length outside user-owned text. Jump past
+    # that prompt instead of searching its quoted markers for a response frame.
+    prompt_frame = _PROMPT_FRAME_RE.search(archive)
+    if (prompt_frame is not None
+            and archive.find(_PROMPT_HEADING) == prompt_frame.end() - len(_PROMPT_HEADING)):
+        response_start = prompt_frame.end() + int(prompt_frame.group(1)) + len(_PROMPT_SEPARATOR)
+        frame = _RESPONSE_FRAME_RE.match(archive, response_start)
+        tail = archive[frame.end():] if frame is not None else ""
+        # A missing or truncated writer-owned boundary is unusable.
+        if (frame is None or len(tail) != int(frame.group(1)) + len(_RESPONSE_TERMINATOR)
+                or not tail.endswith(_RESPONSE_TERMINATOR)):
+            return None
+        answer = tail[:-len(_RESPONSE_TERMINATOR)].strip()
+    elif "## Response" not in archive:
+        return archive.strip()
+    else:
+        answer = archive.rpartition("## Response")[2].strip()
     if not answer or _sched._is_cron_silence_response(answer):
         return None
     return answer
@@ -122,7 +156,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8").strip()
+                candidate = output_file.read_text(encoding="utf-8-sig")
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
@@ -131,7 +165,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
-                if not candidate or silent_audit:
+                if not candidate.strip() or silent_audit:
                     continue
                 answer = _archive_answer(candidate)
                 if answer is None:
@@ -273,7 +307,8 @@ def _build_job_prompt(
         success, script_output = (
             prerun_script if prerun_script is not None
             else _script._run_job_script(
-                script_path, workdir=_sched._resolve_job_workdir(job, str(job.get("id") or ""))))
+                script_path, workdir=_sched._resolve_job_workdir(job, str(job.get("id") or "")),
+                interpreter=job.get("interpreter")))
         if success and not script_output:
             return None  # no output → nothing to report, skip the AI call
         heading, intro = (

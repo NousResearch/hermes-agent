@@ -382,6 +382,7 @@ def test_reply_roundtrip_and_id_validation(home):
     assert "error" in err
 
 
+@pytest.mark.platforms("any")
 def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_path):
     """A failed payload write must not leak the relay DM tempfile."""
     import glob
@@ -400,12 +401,14 @@ def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_pat
     class _BrokenWriter:
         def __init__(self, fd):
             self._fd = fd
+            self.fd = fd
 
         def __enter__(self):
             return self
 
         def __exit__(self, *exc_info):
             os.close(self._fd)
+            os.close(self.fd)
             return False
 
         def write(self, content):

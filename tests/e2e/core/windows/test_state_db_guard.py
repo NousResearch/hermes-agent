@@ -27,7 +27,7 @@ from tests.e2e.core.windows._helpers import (
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration, pytest.mark.live_system_guard_bypass]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration, pytest.mark.live_system_guard_bypass]
 
 def _running(home) -> bool:
     try:

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { type ReactElement, useEffect } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
@@ -19,42 +19,24 @@ import {
   setAutomaticUpdateChecksEnabled,
   startActiveUpdate
 } from '@/store/updates'
+import { UpdateStatusCard, VersionHero } from '@/components/update-status'
+import { VersionDetails } from '@/components/version-details'
+import { useI18n } from '@/i18n'
+import { RefreshCw } from '@/lib/icons'
+import { $connection } from '@/store/session'
+import { $desktopVersion, checkBackendUpdates, refreshDesktopVersion } from '@/store/updates'
 
 import { SectionHeading, SettingsContent, ToggleRow } from './primitives'
+import { SectionHeading, SettingsContent } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { UninstallSection } from './uninstall-section'
 import { useSettingDeepLink } from './use-setting-deep-link'
-
-const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
-const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
-
-function relativeTime(ms: number | undefined, a: Translations['settings']['about']) {
-  if (!ms) {
-    return a.never
-  }
-
-  const diff = Date.now() - ms
-
-  if (diff < 60_000) {
-    return a.justNow
-  }
-
-  if (diff < 3_600_000) {
-    return a.minAgo(Math.round(diff / 60_000))
-  }
-
-  if (diff < 86_400_000) {
-    return a.hoursAgo(Math.round(diff / 3_600_000))
-  }
-
-  return a.daysAgo(Math.round(diff / 86_400_000))
-}
 
 interface AboutSettingsProps {
   subpage?: string
 }
 
-export function AboutSettings({ subpage }: AboutSettingsProps = {}) {
+export function AboutSettings({ subpage }: AboutSettingsProps = {}): ReactElement {
   useSettingDeepLink('about', page => subpage === undefined || page === subpage)
 
   if (subpage === 'uninstall') {
@@ -68,23 +50,24 @@ export function AboutSettings({ subpage }: AboutSettingsProps = {}) {
   return <AppUpdatesSettings includeUninstall={subpage === undefined} />
 }
 
-function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean }) {
+interface AppUpdatesSettingsProps {
+  includeUninstall: boolean
+}
+
+function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): ReactElement {
   const { t } = useI18n()
-  const a = t.settings.about
   const version = useStore($desktopVersion)
   const status = useStore($updateStatus)
   const apply = useStore($updateApply)
   const checking = useStore($updateChecking)
   const automaticUpdateChecksEnabled = useStore($automaticUpdateChecksEnabled)
   const [justChecked, setJustChecked] = useState(false)
+  const connection = useStore($connection)
+  const remote = connection?.mode === 'remote'
 
-  // The version atom is loaded once at app boot, which makes About show a
-  // stale number after a self-update (the running binary is current, the
-  // displayed string is not). Re-read on mount so opening About always
-  // reflects the running build.
-  useEffect(() => {
+  // Refresh the running version when About opens or the active gateway changes.
+  useEffect((): void => {
     void refreshDesktopVersion()
-  }, [])
 
   const behind = status?.behind ?? 0
   // behind is null when the exact count is unknowable (shallow clone): the
@@ -127,67 +110,14 @@ function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean })
   } else {
     statusLine = a.tapCheck
   }
+    if (remote) {
+      void checkBackendUpdates()
+    }
+  }, [connection, remote])
 
   return (
     <SettingsContent>
-      <div className="flex flex-col items-center gap-3 pt-6 pb-2 text-center">
-        <BrandMark className="size-16" />
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight">{a.heading}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {version?.appVersion ? a.version(version.appVersion) : a.versionUnavailable}
-          </p>
-        </div>
-        {(version?.bundleOutOfSync || version?.bundleSwapPending) && (
-          <div className="mx-auto w-full max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-left text-sm">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-              <div className="min-w-0">
-                {version?.bundleSwapPending ? (
-                  // The updated app is already on disk — the updater swapped it
-                  // under this running process — so a restart loads it. Saying
-                  // "App build out of date" here would repeat the contradiction
-                  // this banner is meant to resolve: the Updates card below
-                  // already reports the runtime as current.
-                  <>
-                    <p className="font-medium">{a.bundleSwapPending}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{a.bundleSwapPendingDesc}</p>
-                    <Button
-                      className="mt-2"
-                      onClick={() => void window.hermesDesktop?.relaunchApp?.()}
-                      size="sm"
-                      variant="textStrong"
-                    >
-                      <RefreshCw className="size-3" />
-                      {a.bundleSwapPendingAction}
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <p className="font-medium">{a.bundleOutOfSync}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{a.bundleOutOfSyncDesc}</p>
-                    <Button asChild className="mt-2" size="sm" variant="textStrong">
-                      <a
-                        href={INSTALLER_URL}
-                        onClick={event => {
-                          event.preventDefault()
-                          void window.hermesDesktop?.openExternal?.(INSTALLER_URL)
-                        }}
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        <ExternalLink className="size-3" />
-                        {a.bundleOutOfSyncAction}
-                      </a>
-                    </Button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
+      <VersionHero version={version} />
       <div className="mx-auto mt-4 w-full max-w-2xl">
         <SectionHeading icon={RefreshCw} title={a.updates} />
 
@@ -257,6 +187,11 @@ function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean })
               </a>
             </Button>
           </div>
+        <SectionHeading icon={RefreshCw} title={t.settings.about.updates} />
+        <div className="grid gap-3" id={settingElementId(SETTING_IDS.about.updates)}>
+          <UpdateStatusCard target="client" />
+          {/* Client and remote backend updates are independent. Only the client has release notes. */}
+          {remote && <UpdateStatusCard showReleaseNotes={false} target="backend" />}
         </div>
 
         <ToggleRow
@@ -268,6 +203,7 @@ function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean })
           onChange={setAutomaticUpdateChecksEnabled}
         />
 
+        {version && <VersionDetails version={version} />}
         {includeUninstall && <UninstallSection />}
       </div>
     </SettingsContent>

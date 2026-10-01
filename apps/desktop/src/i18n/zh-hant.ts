@@ -1,7 +1,16 @@
-import { defineFieldCopy } from '@/app/settings/field-copy'
-
 import { defineLocale } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
+import { zhHantArtifacts } from './zh-hant_artifacts'
+import { zhHantAssistant } from './zh-hant_assistant'
+import { zhHantBoot } from './zh-hant_boot'
+import { zhHantCapabilities } from './zh-hant_capabilities'
+import { zhHantChat } from './zh-hant_chat'
+import { zhHantChrome } from './zh-hant_chrome'
+import { zhHantCommandCenter } from './zh-hant_command_center'
+import { zhHantCommon } from './zh-hant_common'
+import { zhHantConnectors } from './zh-hant_connectors'
+import { zhHantDiagnostics } from './zh-hant_diagnostics'
+import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHant = defineLocale({
   catalog: {
@@ -309,6 +318,45 @@ export const zhHant = defineLocale({
       portal: 'Nous Portal 支援',
       discord: 'Discord'
     }
+  externalOpenFailed: {
+    title: '無法開啟此連結',
+    message: '沒有註冊用於開啟此位址的瀏覽器。請複製連結並手動開啟。',
+    copyUrl: '複製連結',
+    close: '關閉'
+  },
+  sharedMetrics: {
+    consentTitle: '協助改進 Hermes？',
+    consentBody:
+      '共享指標只包含有上限的計數，絕不包含提示詞、檔案、路徑或錯誤文字。收集僅在本機進行；傳送給 Nous 需要另行同意。',
+    whatIsCollected: '收集哪些內容',
+    collectedIntro: '僅限有上限的計數：',
+    collectedActivity: '活動、工作階段長度、結果和錯誤類別',
+    collectedModels: '模型路由和 token 總量',
+    collectedNames: '內建工具、指令和目錄項名稱',
+    collectedMilestones: '分組的設定計數',
+    collectedReliability: '更新結果與耗時、當機、啟動與回覆速度、訊息平台狀態',
+    collectedUsage:
+      'Hermes 的使用方式：代理的準確度與效率（編輯是否成功、迴圈、錯誤後的恢復、每個任務的 token 與工具呼叫數、快取中斷），各介面與 Desktop 模式的活躍時間，哪些應用程式區域、操作與設定被使用、很快關閉或被關閉，以及供應商設定的結果',
+    collectedMachine:
+      '概略的機器資訊：記憶體範圍、GPU 類型、Hermes 版本新舊與發行通道、落後的更新數、是否使用本機模型伺服器',
+    installId:
+      '傳送會把每日資料包上傳到 Nous 遙測服務。資料包帶有此設定檔的安裝 ID：一個不含個人資訊的固定隨機 UUID，刪除共享指標目錄即可重設。',
+    consentWindow:
+      '只有整個收集期間都落在已記錄同意時段內的資料包才會被傳送——你同意之前的資料，或傳送關閉期間的資料，都會留在本機。你可以隨時再次關閉傳送。',
+    readDocs: '查看完整說明',
+    share: '收集並傳送給 Nous',
+    local: '僅在本機收集',
+    off: '不用了',
+    changeLater: '你可以隨時在 設定 → 安全性 中變更。',
+    saveFailed: '無法儲存你的選擇',
+    collectLabel: '收集使用統計',
+    collectDesc: '在此裝置上保存有上限的計數。絕不包含提示詞、檔案、路徑或錯誤文字。',
+    sendLabel: '向 Nous 傳送使用統計',
+    sendDesc: '將每日資料包上傳到 Nous 遙測服務。只傳送同意時段內的資料。需要先開啟收集。',
+    unavailable: '請更新 Hermes 後端以變更此設定。',
+    stripBody: '僅限有界計數器，絕不包含提示詞或檔案。',
+    stripChoices: { share: '傳送給 Nous', local: '僅限本機', off: '不用了' },
+    stripDetails: '詳細資訊'
   },
 
   titlebar: {
@@ -2441,6 +2489,83 @@ export const zhHant = defineLocale({
     failedRename: '重新命名設定檔失敗'
   },
 
+  intro: introZhHant,
+  catalog: {
+    add: '新增',
+    added: '已新增',
+    discover: '探索',
+    featured: '精選',
+    explorePlugins: '探索外掛',
+    exploreSkills: '探索技能',
+    mostStarred: '星標最多',
+    newest: '最新發布',
+    recentlyUpdated: '最近更新',
+    alphabetical: '名稱',
+    sortBy: '排序方式',
+    seeAll: '查看全部',
+    related: '類似推薦',
+    tags: '標籤',
+    screenshots: '螢幕截圖',
+    listView: '清單檢視',
+    cardView: '卡片檢視',
+    installTitle: (name: string) => `安裝「${name}」？`,
+    installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
+    installTo: '安裝至',
+    thisComputer: '這部電腦',
+    installing: '正在安裝…',
+    installComplete: (name: string) => `已安裝「${name}」`,
+    destinationChanged: '安裝目標已變更。請關閉此對話框並重新開啟安裝連結。',
+    installed: '已安裝',
+    searchSkills: '搜尋技能',
+    searchPlugins: '搜尋外掛',
+    allSources: '所有來源',
+    allCategories: '所有分類',
+    about: '簡介',
+    author: '作者',
+    source: '來源',
+    category: '分類',
+    version: '版本',
+    platforms: '支援的平台',
+    requires: '相依項目',
+    tools: '工具',
+    hooks: '掛鉤',
+    middleware: '中介軟體',
+    commands: '指令',
+    license: '授權條款',
+    addedDate: '新增日期',
+    updatedDate: '更新日期',
+    repository: '程式碼儲存庫',
+    documentation: '文件',
+    noResults: '沒有符合的項目',
+    tryAnother: '請嘗試其他搜尋或清除篩選條件。',
+    clearFilters: '清除篩選條件',
+    filters: '篩選條件',
+    loadFailed: '無法載入目錄',
+    retry: '再試一次',
+    more: '顯示更多',
+    pinned: '已審核的提交',
+    snapshotHint: '內容來自 Hermes 目錄。瀏覽時不會連線至來源程式碼儲存庫。',
+    installHint: '安裝前請檢查原始碼。變更將於新的工作階段生效。',
+    results: (count: number) => `${count.toLocaleString('zh-Hant')} 個結果`,
+    back: '返回結果'
+  },
+  sessionImport: zhHantConnectors.sessionImport,
+  common: zhHantCommon.common,
+  fileMenu: zhHantChrome.fileMenu,
+  boot: zhHantBoot.boot,
+  notifications: zhHantDiagnostics.notifications,
+  remoteDisplayBanner: zhHantBoot.remoteDisplayBanner,
+  billingBlock: zhHantCommon.billingBlock,
+  sendDiagnostics: zhHantDiagnostics.sendDiagnostics,
+  titlebar: zhHantChrome.titlebar,
+  language: zhHantSettings.language,
+  settings: zhHantSettings.settings,
+  skills: zhHantCapabilities.skills,
+  starmap: zhHantCapabilities.starmap,
+  agents: zhHantCapabilities.agents,
+  commandCenter: zhHantCommandCenter.commandCenter,
+  messaging: zhHantCommandCenter.messaging,
+  profiles: zhHantCommandCenter.profiles,
   modelAssignment: {
     saveFailed: 'Hermes 未儲存該模型變更。',
     confirmTitle: '模型選擇警告',
@@ -3744,6 +3869,22 @@ export const zhHant = defineLocale({
     }
   },
 
+  cron: zhHantCommandCenter.cron,
+  artifacts: zhHantArtifacts.artifacts,
+  artifactCard: zhHantArtifacts.artifactCard,
+  artifactPreview: zhHantArtifacts.artifactPreview,
+  sidebar: zhHantChrome.sidebar,
+  composer: zhHantChat.composer,
+  statusStack: zhHantChat.statusStack,
+  updates: zhHantBoot.updates,
+  guidedGreeting: zhHantBoot.guidedGreeting,
+  install: zhHantBoot.install,
+  onboarding: zhHantBoot.onboarding,
+  modelPicker: zhHantSettings.modelPicker,
+  modelVisibility: zhHantSettings.modelVisibility,
+  shell: zhHantChrome.shell,
+  rightSidebar: zhHantChrome.rightSidebar,
+  preview: zhHantArtifacts.preview,
   interfaceMode: {
     title: '介面模式',
     hint: '只改變顯示的內容，不改變 Hermes 的能力。',
@@ -3757,545 +3898,12 @@ export const zhHant = defineLocale({
       description: '面向開發者。終端機、檔案、差異、狀態列和版面配置，按你的設定顯示。'
     }
   },
-
-  zones: {
-    showTabStrip: '顯示分頁',
-    hideTabStrip: '隱藏分頁',
-    showStripTab: title => `顯示 ${title}`,
-    hideStripTab: title => `隱藏 ${title}`,
-    lastTabKeptTitle: '保留最後一個分頁',
-    lastTabKeptBody: '此區域至少需要一個可見分頁。請先顯示另一個分頁，或收合整個側邊欄。',
-    toggleStripTab: title => `切換 ${title} 分頁`,
-    minimize: '最小化',
-    restore: '還原',
-    reload: '重新載入',
-    closeOthers: '關閉其他',
-    closeToRight: '關閉右側',
-    closeAll: '全部關閉',
-    newSessionTab: '新增工作階段分頁',
-    newTab: '新增分頁',
-    pluginDisabled: pluginId => `外掛「${pluginId}」已停用`,
-    pluginDisabledBody: '在 技能與工具 → 外掛 中重新啟用即可恢復面板。',
-    missingPane: paneId => `缺少面板：${paneId}`,
-    editTitle: '版面配置',
-    editHint: '選擇一個版面配置，或在區域之間拖曳面板。',
-    reset: '重設',
-    templates: '範本',
-    custom: '自訂',
-    newGridLayout: '新增網格版面',
-    saveCurrentAs: '將目前排列儲存為範本',
-    nameLayoutPlaceholder: '為版面命名…',
-    deletePreset: name => `刪除 ${name}`,
-    zoneEditorTitle: '區域編輯器',
-    editorHintPre: '點擊分割 · ',
-    editorHintPost: ' 翻轉分割線 · 拖曳跨越多個區域可合併 · 拖曳共用邊可調整大小',
-    templateColumns: '欄',
-    templateRows: '列',
-    templateGrid: '網格',
-    templatePriority: '優先',
-    zoneTag: index => `區域 ${index}`,
-    mergeZones: count => `合併 ${count} 個區域`,
-    customZoneName: count => `自訂 ${count} 區`,
-    layoutNamePlaceholder: fallback => `版面名稱（${fallback}）`,
-    saveApply: '儲存並套用',
-    notExpressible: '此排列互相咬合（風車形）——暫時無法表示為巢狀分割',
-    zoneCount: count => `${count} 個區域`,
-    tabCount: count => `${count} 個分頁`
-  },
-
-  contextMenu: {
-    link: {
-      openInApp: '在應用程式內瀏覽器中開啟',
-      openExternal: '在外部瀏覽器中開啟',
-      copyUrl: '複製 URL',
-      copyResolvedUrl: '複製解析後的 URL'
-    },
-    image: {
-      copyImage: '複製圖片',
-      copyImageAddress: '複製圖片位址',
-      saveImageAs: '圖片另存為…'
-    },
-    edit: {
-      cut: '剪下',
-      paste: '貼上',
-      selectAll: '全選',
-      addToDictionary: '新增至字典'
-    },
-    page: {
-      copyPageUrl: '複製頁面 URL',
-      inspectElement: '檢查元素'
-    }
-  },
-
-  assistant: {
-    catalogInstall: {
-      preparing: '正在準備安裝…',
-      install: '安裝',
-      advanced: '進階',
-      skip: '略過',
-      installing: '正在安裝…',
-      installed: '已安裝',
-      notInstalled: '未安裝',
-      failed: '失敗',
-      showNames: '顯示名稱',
-      hideNames: '隱藏名稱',
-      skill: name => `技能 ${name}`,
-      kind: { plugin: '外掛', skill: '技能' },
-      tier: { official: '官方', community: '社群' },
-      targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
-      sendFailed: '無法傳送你的回覆，請再試一次。',
-      commitLabel: '提交',
-      subdirLabel: '資料夾',
-      securityHeading: '安全性',
-      scan: { passed: '掃描通過', warnings: '掃描發現警告', failed: '掃描未通過' },
-      requirementsLabel: '需求',
-      credentialsHeading: '憑證'
-    },
-    thread: {
-      loadingSession: '正在載入工作階段',
-      showEarlier: '顯示較早的訊息',
-      loadingResponse: 'Hermes 正在載入回覆',
-      resumeWhenBackgroundDone: count =>
-        count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,
-      thinking: '思考中',
-      thought: '已思考',
-      thoughtBriefly: '思考了片刻',
-      thoughtFor: duration => `思考了 ${duration}`,
-      turnDuration: duration => `本輪耗時 ${duration}`,
-      today: time => `今天，${time}`,
-      yesterday: time => `昨天，${time}`,
-      copy: '複製',
-      refresh: '重新整理',
-      moreActions: '更多動作',
-      branchNewChat: '在新聊天中分支',
-      react: '回應',
-      dismissError: '关闭错误',
-      errorGenericProvider: 'AI 服務',
-      errorLayerBodies: {
-        generic: 'Hermes 回覆時發生問題。請重試；若問題持續，請複製錯誤詳細資訊。',
-        provider: 'AI 服務無法完成此請求。請稍後重試或切換服務商。',
-        endpoint: 'Hermes 無法連線至你的自訂模型伺服器。請確認它正在執行，然後重新傳送訊息。',
-        streaming: '回覆完成前連線已中斷。請重試以重新傳送。'
-      },
-      errorCodes: {
-        provider_policy_blocked: {
-          title: '帳戶設定封鎖了此模型',
-          body: provider => `${provider} 無法依你帳戶的資料或隱私設定路由此請求。請選擇其他模型或切換服務商。`
-        },
-        content_policy_blocked: {
-          title: 'AI 服務拒絕回答此請求',
-          body: provider => `${provider} 拒絕回答這則訊息。請修改後重新傳送。`
-        },
-        format_error: {
-          title: 'AI 服務拒絕了請求格式',
-          body: provider => `${provider} 不接受此請求的建構方式。請切換服務商，或傳送診斷資訊以便我們排查。`
-        },
-        invalid_response: {
-          title: 'AI 服務傳回了無法讀取的回覆',
-          body: provider => `${provider} 傳回了 Hermes 無法讀取的內容。請稍後重試。`
-        },
-        empty_response: {
-          title: 'AI 服務傳回了空回覆',
-          body: provider => `${provider} 沒有為此訊息傳回內容。請稍後重試。`
-        },
-        rate_limit: {
-          title: 'AI 服務忙碌中',
-          body: provider => `${provider} 正在限制請求數量。請稍等片刻後重試。`
-        },
-        upstream_rate_limit: {
-          title: 'AI 服務忙碌中',
-          body: provider => `${provider} 正在限制請求數量。請稍等片刻後重試。`
-        },
-        overloaded: {
-          title: 'AI 服務負載過高',
-          body: provider => `${provider} 目前遇到問題。請稍後重試或切換服務商。`
-        },
-        server_error: {
-          title: 'AI 服務發生錯誤',
-          body: provider => `${provider} 傳回了伺服器錯誤。請稍後重試或切換服務商。`
-        },
-        timeout: {
-          title: '回覆逾時',
-          body: provider => `${provider} 未及時回應。請重試以重新傳送。`
-        },
-        ssl_cert_verification: {
-          title: '安全連線失敗',
-          body: provider => `Hermes 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
-        }
-      },
-      errorLayers: {
-        auth: '認證錯誤',
-        billing: '額度不足',
-        disk: '磁碟已滿',
-        endpoint: '自訂端點錯誤',
-        gateway: '閘道錯誤',
-        generic: '本輪失敗',
-        provider: '模型服務商錯誤',
-        runtime: '本機執行環境錯誤',
-        streaming: '串流連線錯誤'
-      },
-      errorRetry: '重試',
-      errorLimitResets: time => `限額將於 ${time} 重設`,
-      errorRetryAtReset: time => `限額重設後重試（${time}）`,
-      errorRetryScheduled: (time, wait) => `將於 ${time} 重試 — 還剩 ${wait}`,
-      errorRetryScheduledCancel: '取消',
-      errorStartNewSession: '開始新工作階段',
-      errorSwitchProvider: '切換服務商',
-      errorSignInAgain: provider => `重新登入 ${provider}`,
-      errorOauthExpired: provider => `您的 ${provider} 登入已過期或被撤銷。請重新登入以繼續對話。`,
-      errorOpenLogs: '開啟日誌',
-      errorOpenLogsFailed: '無法開啟日誌資料夾',
-      errorOpenDesktopLogs: '開啟桌面端日誌',
-      errorCopyDiagnostics: '複製錯誤詳細資訊',
-      errorSendDiagnostics: '傳送診斷資訊',
-      filesChanged: count => `${count} 個檔案已變更`,
-      reviewChanges: '檢視',
-      readAloudFailed: '朗讀失敗',
-      preparingAudio: '正在準備音訊...',
-      stopReading: '停止朗讀',
-      readAloud: '朗讀',
-      editMessage: '編輯訊息',
-      stop: '停止',
-      restorePrevious: '還原至上一個檢查點',
-      restoreCheckpoint: '還原檢查點',
-      restoreFromHere: '還原檢查點 — 從此提示重新執行',
-      restoreTitle: '還原至此檢查點？',
-      restoreBody: '此提示之後的所有訊息將從對話中移除，並從此處重新執行該提示。',
-      restoreConfirm: '還原並重新執行',
-      restoreNext: '還原至下一個檢查點',
-      goForward: '前進',
-      sendEdited: '傳送編輯後的訊息',
-      attachingFile: '正在附加…'
-    },
-    approval: {
-      gatewayDisconnected: 'Hermes 閘道未連線',
-      sendFailed: '無法傳送核准回應',
-      run: '執行',
-      command: '指令',
-      moreOptions: '更多核准選項',
-      allowSession: '允許本工作階段',
-      alwaysAllowMenu: '一律允許…',
-      jumpToApproval: '需要核准',
-      reject: '拒絕',
-      alwaysTitle: '一律允許此指令？',
-      alwaysDescription: pattern =>
-        `這會將「${pattern}」模式加入永久允許清單（~/.hermes/config.yaml）。Hermes 對類似指令將不再詢問，包括目前工作階段和未來工作階段。`,
-      alwaysAllow: '一律允許'
-    },
-    clarify: {
-      notReady: '澄清請求尚未就緒',
-      gatewayDisconnected: 'Hermes 閘道未連線',
-      sendFailed: '無法傳送澄清回應',
-      loadingQuestion: '正在載入問題…',
-      other: '其他（輸入您的答案）',
-      placeholder: '輸入您的答案…',
-      skip: '略過',
-      skipped: '已略過',
-      continueLabel: '繼續',
-      confirmAndContinueLabel: '確認並繼續',
-      answeredBadge: '已回答',
-      questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
-      lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
-      lateAnswerTip: '將此回答起草為後續訊息',
-      lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'
-    },
-    tool: {
-      copyCode: '複製程式碼',
-      renderingImage: '正在渲染圖片',
-      copyOutput: '複製輸出',
-      copyCommand: '複製指令',
-      copyContent: '複製內容',
-      copyUrl: '複製 URL',
-      copyResults: '複製結果',
-      copyQuery: '複製查詢',
-      copyFile: '複製檔案',
-      copyPath: '複製路徑',
-      failedCalls: (count: number) => `${count} 次工具呼叫失敗`,
-      skillActivity: {
-        loading: '正在載入技能',
-        loaded: '已載入技能',
-        loadFailed: '技能載入失敗',
-        readingResource: '正在讀取技能資源',
-        readResource: '已讀取技能資源',
-        resourceFailed: '技能資源讀取失敗',
-        listing: '正在列出技能',
-        listed: '已列出技能',
-        listFailed: '技能清單取得失敗',
-        unavailable: '技能結果無法使用'
-      },
-      outputAlt: '工具輸出',
-      rawResponse: '原始回應',
-      copyActivity: '複製活動',
-      recoveredOne: '在 1 個失敗步驟後已復原',
-      recoveredMany: count => `在 ${count} 個失敗步驟後已復原`,
-      failedOne: '1 個步驟失敗',
-      failedMany: count => `${count} 個步驟失敗`,
-      statusRunning: '執行中',
-      statusError: '錯誤',
-      statusRecovered: '已復原',
-      statusDone: '完成',
-      resultUnavailable: '結果無法使用',
-      resultInterrupted: '已中斷',
-      memoryWriteNoted: '已記下記憶寫入',
-      actions: {
-        read: '已讀取',
-        reading: '正在讀取',
-        opened: '已開啟',
-        opening: '正在開啟',
-        failedToOpen: '開啟失敗',
-        searched: '已搜尋',
-        searching: '正在搜尋',
-        ran: '已執行',
-        running: '正在執行',
-        ranCode: '已執行程式碼',
-        runningCode: '正在撰寫腳本'
-      },
-      prefixes: {
-        browser: '瀏覽器',
-        web: '網頁'
-      },
-      titleTemplates: {
-        actionCommand: (action, command) => `${action} ${command}`,
-        actionQuoted: (action, value) => `${action}「${value}」`,
-        actionTarget: (action, target) => `${action} ${target}`,
-        prefixedDone: (prefix, action) => `${prefix}${action}`,
-        runningPrefixedTool: (prefix, action) => `正在執行${prefix}${action}`,
-        runningTool: action => `正在執行 ${action}`
-      },
-      titles: {
-        browser_click: { done: '已點擊頁面元素', pending: '正在點擊頁面元素', pendingAction: '正在點擊' },
-        browser_fill: { done: '已填寫表單欄位', pending: '正在填寫表單欄位', pendingAction: '正在填寫' },
-        browser_navigate: { done: '已開啟頁面', pending: '正在開啟頁面', pendingAction: '正在開啟' },
-        browser_snapshot: { done: '已擷取頁面快照', pending: '正在擷取頁面快照', pendingAction: '正在擷取' },
-        browser_take_screenshot: { done: '已擷取截圖', pending: '正在擷取截圖', pendingAction: '正在擷取' },
-        browser_type: { done: '已在頁面輸入', pending: '正在頁面輸入', pendingAction: '正在輸入' },
-        clarify: { done: '已提問', pending: '正在提問', pendingAction: '正在提問' },
-        cronjob: { done: 'Cron 工作', pending: '正在安排 Cron 工作', pendingAction: '正在安排' },
-        edit_file: { done: '已編輯檔案', pending: '正在編輯檔案', pendingAction: '正在編輯' },
-        execute_code: { done: '已執行程式碼', pending: '正在撰寫腳本', pendingAction: '正在撰寫腳本' },
-        image_generate: { done: '已生成圖片', pending: '正在生成圖片', pendingAction: '正在生成' },
-        list_files: { done: '已列出檔案', pending: '正在列出檔案', pendingAction: '正在列出' },
-        memory: { done: '已儲存至記憶', pending: '正在儲存至記憶', pendingAction: '正在儲存' },
-        patch: { done: '已修補檔案', pending: '正在修補檔案', pendingAction: '正在修補' },
-        read_file: { done: '已讀取檔案', pending: '正在讀取檔案', pendingAction: '正在讀取' },
-        search_files: { done: '已搜尋檔案', pending: '正在搜尋檔案', pendingAction: '正在搜尋' },
-        session_search_recall: {
-          done: '已搜尋工作階段歷史',
-          pending: '正在搜尋工作階段歷史',
-          pendingAction: '正在搜尋'
-        },
-        terminal: { done: '已執行指令', pending: '正在執行指令', pendingAction: '正在執行' },
-        todo: { done: '已更新待辦', pending: '正在更新待辦', pendingAction: '正在更新' },
-        vision_analyze: { done: '已分析圖片', pending: '正在分析圖片', pendingAction: '正在分析' },
-        web_extract: { done: '已讀取網頁', pending: '正在讀取網頁', pendingAction: '正在讀取' },
-        web_search: { done: '已搜尋網頁', pending: '正在搜尋網頁', pendingAction: '正在搜尋' },
-        write_file: { done: '已編輯檔案', pending: '正在編輯檔案', pendingAction: '正在編輯' }
-      }
-    }
-  },
-
-  prompts: {
-    gatewayDisconnected: 'Hermes 閘道未連線',
-    sudoSendFailed: '無法傳送 sudo 密碼',
-    secretSendFailed: '無法傳送密鑰',
-    sudoTitle: '管理員密碼',
-    sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
-    sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
-    sudoInstallDesc:
-      'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
-    sudoPlaceholder: 'sudo 密碼',
-    secretTitle: '需要密鑰',
-    secretDesc: 'Hermes 需要一個憑證才能繼續。',
-    secretPlaceholder: '密鑰值',
-    vaultUnlockSendFailed: '無法傳送主密碼',
-    vaultUnlockTitle: name => `解鎖 ${name}`,
-    vaultUnlockDesc: name =>
-      `代理想使用儲存在 ${name} 中的登入資訊登入網站。輸入主密碼以在本工作階段解鎖——它會直接交給本機的 ${name}，不會被儲存或顯示給代理。`,
-    vaultUnlockPlaceholder: '主密碼',
-    vaultUnlockKeepLocked: '保持鎖定',
-    vaultUnlockConfirm: '解鎖',
-    vaultSaveSendFailed: '無法儲存登入資訊',
-    vaultSaveTitle: site => `儲存 ${site} 的登入資訊？`,
-    vaultSaveDesc: origin =>
-      `Hermes 到達了 ${origin} 的登入頁，但沒有為它儲存的登入資訊。在此輸入一次；它會在本機加密儲存並直接填入頁面，模型永遠看不到密碼。`,
-    vaultSaveIdentifierLabel: '電子郵件或使用者名稱',
-    vaultSaveIdentifierPlaceholder: 'you@example.com',
-    vaultSavePasswordPlaceholder: '密碼',
-    vaultSaveFootnote: '在「設定 → 密碼與登入」中管理已儲存的登入資訊。',
-    vaultSaveDecline: '不儲存',
-    vaultSaveConfirm: '儲存並登入',
-    vaultCodeSendFailed: '無法傳送驗證碼',
-    vaultCodeTitle: site => `${site} 的驗證碼`,
-    vaultCodeDesc: site =>
-      `${site} 要求輸入一次性驗證碼（簡訊、電子郵件或驗證器應用程式）。在此輸入，Hermes 會將其填入頁面；模型永遠看不到它。`,
-    vaultCodeLabel: '驗證碼',
-    vaultCodeFootnote: '提示：在「設定 → 密碼與登入」中為此登入儲存驗證器金鑰後，Hermes 會自動填寫驗證碼。',
-    vaultCodeSkip: '略過',
-    vaultCodeConfirm: '輸入驗證碼'
-  },
-
-  desktop: {
-    audioReadFailed: '無法讀取錄製的音訊',
-    sessionUnavailable: '工作階段不可用',
-    createSessionFailed: '無法建立新工作階段',
-    promptFailed: '提示詞傳送失敗',
-    providerCredentialRequired: '傳送第一則訊息前請先新增提供方憑證。',
-    emptySlashCommand: '空的斜線指令',
-    desktopCommands: '桌面端指令',
-    skillCommandsAvailable: count => `${count} 個技能指令可用。`,
-    warningLine: message => `警告：${message}`,
-    yoloArmed: '此聊天已啟用 YOLO',
-    yoloOff: 'YOLO 已關閉',
-    yoloSystem: active => `此工作階段 YOLO ${active ? '已開啟' : '已關閉'}`,
-    yoloTitle: 'YOLO',
-    yoloToggleFailed: '無法切換 YOLO',
-    profileStatus: current => `設定檔：${current}。使用 /profile <name> 或「新工作階段」選擇器在其他設定檔中開始聊天。`,
-    unknownProfile: '未知設定檔',
-    noProfileNamed: (target, available) => `沒有名為「${target}」的設定檔。可用的：${available}`,
-    newChatsProfile: name => `新聊天將使用設定檔 ${name}。`,
-    setProfileFailed: '設定設定檔失敗',
-    sttDisabled: '設定中已停用語音轉文字。',
-    stopFailed: '停止失敗',
-    regenerateFailed: '重新生成失敗',
-    editFailed: '編輯失敗',
-    editTurnUnavailable: '此回合已不在伺服器歷史中（可能已被壓縮移除）。',
-    resumeFailed: '繼續失敗',
-    readOnlyTranscriptTitle: '已以唯讀方式開啟',
-    readOnlyTranscriptBody:
-      '尚無已連線的後端認領這個較早的對話，因此它以唯讀逐字稿方式開啟。歷史紀錄完好；在有後端認領之前無法傳送訊息。',
-    readOnlyTranscriptSendBlocked: '此對話目前以唯讀逐字稿方式開啟——傳送已停用。',
-    resumeStrandedTitle: '無法載入此工作階段',
-    resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
-    poolSlotTimeoutBody:
-      '所有本機設定檔後端插槽目前都在使用中。請在「設定」→「進階」中增加 Warm Bot Backends，或等待閒置後端被移除後重試。',
-    poolSlotTimeoutOpenSettings: '開啟進階設定',
-    resumeRetry: '重試',
-    nothingToBranch: '沒有可分支的內容',
-    branchNeedsChat: '分支前請先開始或繼續一個聊天。',
-    sessionBusy: '工作階段忙碌中',
-    branchStopCurrent: '分支此聊天前請先停止目前回合。',
-    branchNoText: '此訊息沒有可用於分支的文字。',
-    branchTitle: n => `草稿：分支 #${n}`,
-    branchFailed: '分支失敗',
-    deleteFailed: '刪除失敗',
-    archived: '已封存',
-    archiveFailed: '封存失敗',
-    cwdChangeFailed: '工作目錄變更失敗',
-    cwdStagedTitle: '工作目錄已暫存',
-    cwdStagedMessage: '重新啟動桌面後端後，工作目錄變更才會套用至此作用中工作階段。',
-    modelSwitchConfirmBody: '此模型切換需要確認。',
-    modelSwitchConfirmLabel: '仍然切換',
-    modelSwitchConfirmTitle: (model: string) => `切換到 ${model}？`,
-    modelSwitchConfirmTitleFallback: '切換模型？',
-    modelSwitchFailed: '模型切換失敗',
-    modelSwitchKeepLabel: '保留目前模型',
-    modelSwitchStaleNotice: '選擇已變更 — 未套用模型切換。',
-    hydrationSyncing: (profile: string) => `正在同步 ${profile}\u2026`,
-    sessionExported: '工作階段已匯出',
-    sessionExportFailed: '無法匯出工作階段',
-    imageSaved: '圖片已儲存',
-    downloadStarted: '下載已開始',
-    restartToUseSaveImage: '重新啟動 Hermes Desktop 後可使用儲存圖片。',
-    restartToSaveImages: '重新啟動 Hermes Desktop 以儲存圖片',
-    imageDownloadFailed: '圖片下載失敗',
-    openImage: '開啟圖片',
-    downloadImage: '下載圖片',
-    savingImage: '正在儲存圖片',
-    imagePreviewFailed: '圖片預覽失敗',
-    imageAttach: '附加圖片',
-    imageWriteFailed: '無法將圖片寫入磁碟。',
-    imageAttachFailed: '附加圖片失敗',
-    pastedContent: '貼上內容',
-    pasteAttachFailed: '無法附加貼上的文字',
-    attachImages: '附加圖片',
-    clipboard: '剪貼簿',
-    noClipboardImage: '剪貼簿中沒有圖片',
-    clipboardPasteFailed: '剪貼簿貼上失敗',
-    dropFiles: '拖曳檔案',
-    handoff: {
-      pickPlatform: '選擇目標平台',
-      success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,
-      systemNote: platform => `↻ 已移交到 ${platform} — 隨時可在此處恢復。`,
-      failed: error => `移交失敗：${error}`,
-      timedOut: '等待閘道逾時。`hermes gateway` 是否正在執行？'
-    }
-  },
-
-  errors: {
-    genericFailure: '發生錯誤',
-    boundaryTitle: '介面出現問題',
-    boundaryDesc: '此檢視遇到意外錯誤。您的聊天和設定是安全的。',
-    reloadWindow: '重新載入視窗',
-    openLogs: '開啟記錄'
-  },
-
-  tips: {
-    close: '不再顯示這則提示',
-    items: {
-      'new-session': {
-        title: '從頭開始',
-        text: '新對話擁有獨立的上下文、終端機與工作目錄。'
-      },
-      skills: {
-        title: '教一次就夠',
-        text: '技能是一組說明檔，Hermes 會在需要時自行載入。'
-      },
-      messaging: {
-        title: '離開電腦也能用',
-        text: '接上 Telegram、Discord、Slack 等 — 同一個代理，同一份記憶。'
-      },
-      artifacts: {
-        title: 'Hermes 做過的一切',
-        text: '所有工作階段的圖片、檔案與連結，都彙整在這裡。'
-      },
-      cron: {
-        title: '會自己執行的工作',
-        text: '讓一則提示按小時、按夜間，或依 cron 運算式定時執行。'
-      },
-      'command-palette': {
-        title: '一個輸入框搞定一切',
-        text: '工作階段、設定、技能與指令都能從命令選單找到。'
-      },
-      profiles: {
-        title: '設定檔彼此獨立',
-        text: '每個都是獨立的 Hermes — 自己的金鑰、記憶與工作階段。'
-      },
-      'composer-mentions': {
-        title: '附件與指令',
-        text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
-      },
-      'local-runtime-update': {
-        title: '本機引擎有可用更新',
-        text: '更新執行本機模型的引擎。進行中的本機請求可能會中斷。',
-        action: '立即更新'
-      },
-      'local-setup': {
-        title: '這台電腦可以本地執行模型',
-        text: '你的硬體可以執行本地模型。對話不離開你的電腦，而且完全免費。',
-        action: '立即設定'
-      },
-      'right-pane': {
-        title: '工作面板',
-        text: '檔案、終端機、審閱與內建瀏覽器都在側邊面板裡。'
-      }
-    }
-  },
-
-  ui: {
-    search: {
-      clear: '清除搜尋'
-    },
-    pagination: {
-      label: '分頁',
-      previous: '上一頁',
-      previousAria: '前往上一頁',
-      next: '下一頁',
-      nextAria: '前往下一頁'
-    },
-    sidebar: {
-      title: '側邊欄',
-      description: '顯示行動裝置側邊欄。',
-      toggle: open => `${open ? '顯示' : '隱藏'}側邊欄`
-    }
-  }
+  zones: zhHantChrome.zones,
+  contextMenu: zhHantChrome.contextMenu,
+  assistant: zhHantAssistant.assistant,
+  prompts: zhHantChat.prompts,
+  desktop: zhHantChat.desktop,
+  errors: zhHantDiagnostics.errors,
+  tips: zhHantChat.tips,
+  ui: zhHantCommon.ui
 })

@@ -70,7 +70,7 @@ jobs:
 
       - name: Checkout code
         if: steps.gate.outputs.configured != '0'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Install uv
         if: steps.gate.outputs.configured != '0'
@@ -82,17 +82,17 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.14
         if: steps.gate.outputs.configured != '0'
         uses: ./.github/actions/retry
         with:
-          command: uv python install 3.11
+          command: uv python install 3.14
 
       - name: Install dependencies
         if: steps.gate.outputs.configured != '0'
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic
+          command: uv sync --locked --python 3.14 --extra all --group dev --extra anthropic
 
       - name: Run live canaries
         if: steps.gate.outputs.configured != '0'
@@ -132,7 +132,7 @@ jobs:
 
       - name: Upload results
         if: always() && steps.gate.outputs.configured != '0'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: live-provider-canaries
           path: |

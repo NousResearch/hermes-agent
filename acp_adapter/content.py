@@ -97,6 +97,16 @@ def _path_from_file_uri(uri: str) -> Path | None:
         if parsed.scheme == "file" and parsed.netloc and parsed.netloc not in {"", "localhost"}:
             return None
         path_text = unquote(parsed.path or "") if parsed.scheme == "file" else unquote(raw)
+    # urlparse treats a bare Windows drive as a URI scheme.
+    if len(raw) >= 3 and raw[0].isalpha() and raw[1] == ":" and raw[2] in "/\\":
+        raw = "file:///" + raw.replace("\\", "/")
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.scheme != "file":
+        return None
+
+    if parsed.scheme == "file" and parsed.netloc and parsed.netloc not in {"", "localhost"}:
+        return None
+    path_text = unquote(parsed.path or "") if parsed.scheme == "file" else unquote(raw)
 
     # file:///C:/Users/... or C:\Users\...
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
@@ -113,6 +123,11 @@ def _path_from_file_uri(uri: str) -> Path | None:
     if is_wsl():
         return Path("/mnt") / drive.lower() / normalized_rest
     return Path(f"{drive}:/{normalized_rest}")
+    import os
+    rest = rest.lstrip("/\\").replace("\\", "/")
+    if os.name == "nt":
+        return Path(f"{drive}:/{rest}")
+    return Path("/mnt") / drive.lower() / rest
 
 
 def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:

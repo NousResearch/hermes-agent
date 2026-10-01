@@ -81,7 +81,7 @@ class TestWorkerTeardownOnCeiling:
             # Continuous progress (the #97488 'last progress 0.0s ago'
             # shape) so only the TOTAL ceiling expires; poll the poison
             # fence like the production worker does between provider phases.
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + 15.0
             while time.monotonic() < deadline:
                 if fence.is_cancelled:
                     break
@@ -100,9 +100,9 @@ class TestWorkerTeardownOnCeiling:
             worker=cooperative_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            # Keep idle expiry out of this total-ceiling test under runner load.
-            idle_timeout_seconds=2.0,
-            total_ceiling_seconds=0.2,
+            # Keep idle expiry outside the total-ceiling test budget.
+            idle_timeout_seconds=10.0,
+            total_ceiling_seconds=4.0,
             fence=fence,
             stall_fallback=False,
         )

@@ -641,11 +641,19 @@ def cmd_mcp_add(args):
         _info('  hermes mcp add myserver --preset mypreset')
         return
 
-    if name in _get_mcp_servers() and not _confirm(
+    # Overwriting an existing server is a re-add, not an install; cancels are not recorded either.
+    fresh = name not in _get_mcp_servers()
+    if not fresh and not _confirm(
         f"Server '{name}' already exists. Overwrite?", default=False
     ):
         _info("Cancelled.")
         return
+
+    def _record(saved: bool) -> None:
+        if fresh:
+            from hermes_cli.mcp_catalog import record_mcp_install
+
+            record_mcp_install("url" if url else "local", None, "success" if saved else "failed")
 
     if url:
         server_config["url"] = url
@@ -659,6 +667,7 @@ def cmd_mcp_add(args):
         server_config["connect_timeout"] = raw_connect_timeout
 
     if not _validate_or_warn(name, server_config):
+        _record(False)
         return
     if url and not _configure_http_auth(name, url, auth_type, server_config):
         return
@@ -670,29 +679,37 @@ def cmd_mcp_add(args):
     except Exception as exc:
         _error(f"Failed to connect: {_probe_failure_reason(exc)}")
         _info(_probe_failure_next_step(name, exc))
+        saved = False
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
-            if _save_mcp_server(name, server_config):
+            saved = _save_mcp_server(name, server_config)
+            if saved:
                 _success(f"Saved '{name}' to config (disabled)")
                 _info("Fix the issue, then: hermes mcp test " + name)
+        _record(saved)
         return
 
     if not tools:
         _warning("Server connected but reported no tools.")
-        if _confirm("Save config anyway?", default=True) and _save_mcp_server(name, server_config):
-            _success(f"Saved '{name}' to config")
+        if _confirm("Save config anyway?", default=True):
+            saved = _save_mcp_server(name, server_config)
+            _record(saved)
+            if saved:
+                _success(f"Saved '{name}' to config")
         return
 
     tool_count = _choose_tools(name, tools, server_config)
     if tool_count is None:
         return
     server_config["enabled"] = True
-    if _save_mcp_server(name, server_config):
+    saved = _save_mcp_server(name, server_config)
+    _record(saved)
+    if saved:
         print()
         _success(
             f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{len(tools)} tools enabled)"
         )
-        _info("Start a new session to use these tools.")
+        _info("Start a new session to use these tools, or run /reload-mcp to load them into open sessions.")
 
 
 def cmd_mcp_remove(args):
@@ -771,9 +788,12 @@ def _probe_failure_reason(exc: BaseException) -> str:
 def _probe_failure_next_step(name: str, exc: BaseException) -> str:
     """The one command that fixes the common probe failures (sign-in, missing command, everything else)."""
     from tools.mcp_tool_errors import _format_connect_error, _is_auth_error, _unwrap_exception_group
+    from tools.mcp_tool_node_abi import NodeAbiMismatchError
     root = _unwrap_exception_group(exc)
     if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
         return f"The server rejected the sign-in. Run: hermes mcp login {name}"
+    if isinstance(root, NodeAbiMismatchError):
+        return f"After rebuilding it under Hermes's Node as above, run: hermes mcp test {name}"
     if "missing executable" in _format_connect_error(exc):
         return (f"Install that command, or set mcp_servers.{name}.command in {display_hermes_home()}/config.yaml "
                 "to its full path.")
@@ -1064,7 +1084,7 @@ def cmd_mcp_configure(args):
     config.setdefault("mcp_servers", {})[name] = server_entry
     save_config(config)
     _success(f"Updated config: {len(chosen)}/{total} tools enabled")
-    _info("Start a new session for changes to take effect.")
+    _info("Run /reload-mcp for changes to take effect.")
 
 
 _MCP_USAGE = (

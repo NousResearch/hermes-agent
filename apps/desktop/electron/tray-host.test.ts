@@ -12,7 +12,7 @@ import { watchLinuxTrayHost } from './tray-host'
 
 function bus(hostRegistered: boolean) {
   const connection = Object.assign(new EventEmitter(), { stream: { destroy: vi.fn() } })
-  const invoke = vi.fn(async () => ({ signature: 'b', value: hostRegistered }))
+  const invoke = vi.fn(async (): Promise<unknown> => ({ signature: 'b', value: hostRegistered }))
 
   const instance = {
     connection,
@@ -40,6 +40,15 @@ test('a registered host is required, and losing its owner reports loss exactly o
   instance.connection.emit('close')
   expect(lost).toHaveBeenCalledOnce()
   expect(instance.connection.stream.destroy).toHaveBeenCalledOnce()
+  dispose()
+})
+
+test('dbus-native 0.15 returns the registered flag as a bare boolean', async () => {
+  const instance = bus(true)
+  instance.invoke.mockResolvedValue(true)
+  const lost = vi.fn()
+  const dispose = await watchLinuxTrayHost(lost)
+  expect(lost).not.toHaveBeenCalled()
   dispose()
 })
 

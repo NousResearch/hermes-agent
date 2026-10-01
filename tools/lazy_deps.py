@@ -1,29 +1,9 @@
-"""Lazy dependency installer for opt-in Hermes backends.
+"""Shims to suppress old updater work until relaunch. New code must not use these."""
 
-Backends call :func:`ensure(feature)` on first import; missing packages are installed into the
-active venv (or the durable target) unless ``security.allow_lazy_installs: false``, in which
-case :class:`FeatureUnavailable` carries a remediation hint. Security model: venv-scoped
-(never system Python); durable-target mode (``HERMES_LAZY_INSTALL_TARGET``, sealed images)
-APPENDS the target to ``sys.path`` so core site-packages wins every collision and a lazy
-package can only add modules, never shadow core; PyPI-by-name specs only (``_spec_is_safe``);
-``ensure`` accepts only the :data:`LAZY_DEPS` allowlist; failures surface pip's stderr, no retry.
-"""
+from typing import NoReturn
 
-from __future__ import annotations
+from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
 
-import configparser
-import contextlib
-import logging
-import os
-import re
-import shutil
-import site
-import subprocess
-import sys
-import sysconfig
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -761,113 +741,22 @@ class InstallSpecsResult:
     command: str = ""
     stdout: str = ""
     stderr: str = ""
+def ensure(feature: str, *, prompt: bool = True) -> NoReturn:
+    # Shim to suppress old updater work until relaunch. Do not claim readiness.
+    # Preserve the dependency-unavailable failure without claiming a completed install.
+    raise ImportError("Dependencies are unknown to this old updater. Please relaunch Hermes.")
 
 
 def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
-                  constraints: list[str] | tuple[str, ...] = (), dry_run: bool = False,
-                  policy: str = "plugin") -> InstallSpecsResult:
-    """Install data-driven pip specs (plugin manifest ``python_dependencies``) with the same routing and
-    gating as :func:`ensure`, but unknown packages are allowed — the caller owns manifest trust, this
-    owns spec hygiene. *constraints* are requirement lines the resolver must honour; *dry_run* only
-    resolves; *policy* defaults to ``"plugin"`` (the plugin's own dependency policy, not Hermes's
-    ``exclude-newer`` quarantine — :data:`INSTALL_POLICIES`). Never raises; inspect the
-    :class:`InstallSpecsResult`."""
-    cleaned = tuple(str(s).strip() for s in specs if str(s).strip())
-    if not cleaned:
-        return InstallSpecsResult(ok=True, command="")
-    if policy not in INSTALL_POLICIES:
-        return InstallSpecsResult(ok=False, blocked=True, reason=f"unknown install policy {policy!r}")
-    for spec in cleaned:
-        if not _spec_is_safe(spec):
-            return InstallSpecsResult(ok=False, blocked=True, reason=f"refusing to install unsafe spec {spec!r}")
-    target = _lazy_install_target()
-    if not _allow_lazy_installs():
-        sealed = os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1" and target is None
-        reason = ("runtime installs are disabled on this deployment: the agent environment is immutable "
-                  "and no writable install target is configured (HERMES_LAZY_INSTALL_TARGET)"
-                  ) if sealed else "runtime installs disabled (security.allow_lazy_installs=false)"
-        return InstallSpecsResult(ok=False, blocked=True, reason=reason)
-    display = "uv pip install " + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
-    logger.info("%s pip specs %s (target=%s)", "Resolving" if dry_run else "Installing", " ".join(cleaned), target or "venv")
-    try:
-        result = _venv_pip_install(cleaned, timeout=timeout, constraint_lines=tuple(constraints), dry_run=dry_run,
-                                   policy=policy)
-    except Exception as exc:
-        logger.warning("install_specs failed unexpectedly: %s", exc)
-        return InstallSpecsResult(ok=False, command=display, stderr=f"install failed: {exc}")
-
-    _invalidate_import_caches()  # dashboard rechecks availability inline
-    return InstallSpecsResult(ok=result.success, command=display, stdout=result.stdout, stderr=result.stderr)
-
-
-def active_features() -> list[str]:
-    """Features whose ANCHOR package (first spec) is present at any version — shared helpers like
-    asyncpg are deliberately not proof a backend was enabled. Drives ``hermes update``."""
-    return [f for f, specs in LAZY_DEPS.items() if specs and _is_present(specs[0])]
-
-
-def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
-    """Re-run ``ensure`` for every active feature (``hermes update``); returns
-    ``{feature: "current" | "refreshed" | "failed: <reason>" | "skipped: <reason>"}``. Never raises."""
-    return _refresh_features(active_features(), prompt=prompt, restoring=False)
-
-
-def restore_features(features: list[str]) -> dict[str, str]:
-    """Restore features captured before a managed-runtime rebuild; opt-out -> "skipped"."""
-    return _refresh_features(features, prompt=False, restoring=True)
-
-
-def _refresh_features(features: list[str], *, prompt: bool, restoring: bool) -> dict[str, str]:
-    """Refresh or restore a known set of allowlisted lazy features."""
-    results: dict[str, str] = {}
-    for feature in features:
-        if feature not in LAZY_DEPS:
-            continue
-        if not feature_missing(feature):
-            results[feature] = "current"
-            continue
-        if unsupported := _unsupported_feature_reason(feature):
-            results[feature] = f"skipped: {unsupported}"
-            continue
-        try:
-            ensure(feature, prompt=False if restoring else prompt)
-            results[feature] = "restored" if restoring else "refreshed"
-        except FeatureUnavailable as e:  # opt-outs and platform-incompatible features are skips, not failures
-            skip = "lazy installs disabled" in str(e) or "declined" in str(e) or e.reason.startswith("unsupported ")
-            results[feature] = f"skipped: {e.reason}" if skip else f"failed: {e.reason}"
-        except Exception as e:
-            results[feature] = f"failed: {e}"
-    return results
-
-
-def ensure_and_bind(feature: str, importer: Callable[[], dict[str, Any]], target_globals: dict, *, prompt: bool = False) -> bool:
-    """:func:`ensure` the feature, then ``target_globals.update(importer())`` so module-level names are
-    rebound after a lazy install (``importer`` returns ``{name: obj}`` and runs only after ensure
-    succeeds). Returns False (and logs) if deps could not be installed or imported."""
-    try:
-        ensure(feature, prompt=prompt)
-    except FeatureUnavailable as exc:
-        logger.warning("%s", exc)
-        return False
-    except Exception as exc:
-        logger.warning("Failed to ensure feature %r: %s", feature, exc)
-        return False
-    try:
-        target_globals.update(importer())
-    except ImportError as exc:
-        logger.warning("Failed to import feature %r after install: %s", feature, exc)
-        return False
-    return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def feature_specs(feature: str) -> tuple[str, ...]:
-    """Return the registered specs for a feature, or raise KeyError."""
-    if feature not in LAZY_DEPS:
-        raise KeyError(f"Unknown lazy feature: {feature!r}")
-    return LAZY_DEPS[feature]
-# ---- END PLUGIN-COMPAT ----
+                  constraints: list | None = None, dry_run: bool = False) -> NoReturn:
+    # Plugins still call this retired API during normal agent construction.
+    # Only an actual updater call stack may transfer control to the updater;
+    # argv can still say "serve" or "gateway" when /update runs in-process.
+    # Historical updaters also passed constraints/dry_run; accepted and ignored.
+    if in_historical_update():
+        # never returns: hands off to the takeover child and exits
+        stop_for_relaunch()
+    raise ImportError(
+        "tools.lazy_deps.install_specs is retired; runtime dependency "
+        "installation is unavailable."
+    )

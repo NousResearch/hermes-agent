@@ -16,12 +16,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import {
-  buildPathExtCandidates,
-  chooseUpdaterArgs,
-  getVenvSitePackagesEntries,
-  resolveVenvHermesCommand
-} from './windows-hermes-path'
+import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
 
 test('buildPathExtCandidates: Windows tries PATHEXT extensions before the empty extension', () => {
   const extensions = buildPathExtCandidates('.COM;.EXE;.BAT;.CMD', true)
@@ -44,43 +39,9 @@ test('buildPathExtCandidates: non-Windows only tries the bare name', () => {
   assert.deepEqual(buildPathExtCandidates(undefined, false), [''])
 })
 
-test('chooseUpdaterArgs: gentle --update when both updater runtime files exist', () => {
-  assert.deepEqual(chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: true, hasVenvPython: true }, 'main'), [
-    '--update',
-    '--branch',
-    'main'
-  ])
-})
-
-test('chooseUpdaterArgs: marker-only install uses --repair when the venv is gone', () => {
-  assert.deepEqual(
-    chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: false, hasVenvPython: false }, 'main'),
-    ['--repair', '--branch', 'main']
-  )
-})
-
-test('chooseUpdaterArgs: partial updater runtimes use --repair', () => {
-  assert.deepEqual(chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: false, hasVenvPython: true }, 'main'), [
-    '--repair',
-    '--branch',
-    'main'
-  ])
-  assert.deepEqual(chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: true, hasVenvPython: false }, 'main'), [
-    '--repair',
-    '--branch',
-    'main'
-  ])
-})
-
-test('chooseUpdaterArgs: passes the branch through unchanged in both modes', () => {
-  assert.deepEqual(
-    chooseUpdaterArgs({ hasBootstrapMarker: false, hasVenvHermes: true, hasVenvPython: true }, 'release/1.2'),
-    ['--update', '--branch', 'release/1.2']
-  )
-  assert.deepEqual(
-    chooseUpdaterArgs({ hasBootstrapMarker: false, hasVenvHermes: false, hasVenvPython: false }, 'release/1.2'),
-    ['--repair', '--branch', 'release/1.2']
-  )
+test('chooseUpdaterArgs preserves the target and requires a usable runtime, not a marker', () => {
+  assert.deepEqual(chooseUpdaterArgs({ runtimeUsable: true }, 'release/1.2'), ['--update', '--branch', 'release/1.2'])
+  assert.deepEqual(chooseUpdaterArgs({ runtimeUsable: false }, 'release/1.2'), ['--repair', '--branch', 'release/1.2'])
 })
 
 function makeDeps(overrides: Partial<Parameters<typeof resolveVenvHermesCommand>[2]> = {}) {
@@ -91,9 +52,7 @@ function makeDeps(overrides: Partial<Parameters<typeof resolveVenvHermesCommand>
     directoryExists: () => false,
     canImportHermesCli: async () => true,
     getVenvPython: (venvRoot: string) => `${venvRoot}/Scripts/python.exe`,
-    getVenvSitePackagesEntries: () => [],
     buildDesktopBackendEnv: () => ({ FAKE_ENV: '1' }),
-    hermesHome: '/fake/hermes-home',
     resolvePath: (...segments: string[]) => segments.join('/').replace(/\/+/g, '/'),
     dirname: (p: string) => p.slice(0, p.lastIndexOf('/')) || '/',
     basename: (p: string) => p.slice(p.lastIndexOf('/') + 1),

@@ -23,6 +23,7 @@ import time
 import pytest
 
 pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms("windows")  # live Windows background-executor E2E
 
 
 @pytest.fixture()

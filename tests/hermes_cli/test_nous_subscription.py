@@ -1,11 +1,15 @@
 """Tests for Nous subscription feature detection."""
 
 import shutil
+import sys
+
+import pytest
 
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
 from tools import tool_backend_helpers
 from tools import browser_tool_install as bt_install
+from tools.image_generation_catalog import DEFAULT_MODEL as FAL_DEFAULT_MODEL
 
 
 _POOL_COVERAGE = {
@@ -203,6 +207,24 @@ def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch
 
     assert set(result.features) == set(ns._FEATURES)
     assert result.modal.available is True  # entitled + gateway ready → managed modal is offered
+
+
+@pytest.mark.parametrize(
+    "image_cfg, partner",
+    [
+        ({"provider": "nous", "model": "krea-2-medium"}, "Krea"),
+        ({"model": FAL_DEFAULT_MODEL}, "FAL"),
+        ({"provider": "nous", "model": "openai/gpt-image-2"}, "Nous Portal"),
+        ({"model": "openai/gpt-image-2"}, "FAL"),
+        ({"use_gateway": True, "model": "openai/gpt-image-2"}, "FAL"),  # managed-model routing ignores legacy use_gateway
+        ({"provider": "openai", "model": "gpt-image-2"}, None),
+    ],
+)
+def test_managed_image_partner_follows_the_stored_model(image_cfg, partner):
+    """The partner is the gateway the runtime dispatcher routes to (tools.image_generation_managed.
+    managed_route): the stored model decides under the managed pick, Portal ids only with an
+    explicit ``nous``; a direct vendor owns its model id."""
+    assert ns.managed_image_partner({"image_gen": image_cfg}) == partner
 
 
 def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
@@ -419,6 +441,12 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
 
 
 
+
+
+
+
+
+
 def _block_legacy_agent_browser_checks(monkeypatch):
     """Make the legacy checks (PATH lookup + local node_modules/.bin) find nothing."""
     real_which = shutil.which
@@ -432,42 +460,21 @@ def _block_legacy_agent_browser_checks(monkeypatch):
     monkeypatch.setattr("hermes_constants.agent_browser_runnable", lambda path: False)
 
 
-def test_has_agent_browser_true_for_npx_only_resolution(monkeypatch):
-    """No PATH binary and no runnable node_modules copy, but the browser_tool
-    cascade resolves the npx fallback: browser capability is available."""
+def test_has_agent_browser_uses_passive_runtime_resolution(monkeypatch):
+    """Readiness shares the runtime resolver without acquiring a package."""
     _block_legacy_agent_browser_checks(monkeypatch)
 
     calls = []
 
     def fake_find_agent_browser(*, validate=True):
         calls.append({"validate": validate})
-        return "npx agent-browser"
+        return "/prepared/agent-browser"
 
     monkeypatch.setattr(bt_install, "_find_agent_browser", fake_find_agent_browser)
-    monkeypatch.setattr(
-        "tools.browser_tool_install._requires_real_termux_browser_install", lambda cmd: False
-    )
 
     assert ns._has_agent_browser() is True
     # A readiness probe must resolve without spawning the daemon.
     assert calls and all(call["validate"] is False for call in calls)
-
-
-def test_has_agent_browser_false_for_termux_local_bare_npx(monkeypatch):
-    """On Termux in local mode the bare npx fallback is not a usable install."""
-    _block_legacy_agent_browser_checks(monkeypatch)
-
-    monkeypatch.setattr(
-        bt_install,
-        "_find_agent_browser",
-        lambda *, validate=True: "npx agent-browser",
-    )
-    monkeypatch.setattr(
-        "tools.browser_tool_install._requires_real_termux_browser_install",
-        lambda cmd: cmd.strip() == "npx agent-browser",
-    )
-
-    assert ns._has_agent_browser() is False
 
 
 def test_has_agent_browser_false_when_nothing_resolvable(monkeypatch):
@@ -481,7 +488,22 @@ def test_has_agent_browser_false_when_nothing_resolvable(monkeypatch):
     assert ns._has_agent_browser() is False
 
 
+def test_has_agent_browser_import_failure_does_not_run_another_resolver(monkeypatch):
+    """A broken runtime resolver cannot advertise an unchecked fallback."""
+    monkeypatch.setitem(sys.modules, "tools.browser_tool_install", None)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *args, **kwargs: (
+            "/fake/bin/agent-browser"
+            if cmd == "agent-browser"
+            else real_which(cmd, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_constants.agent_browser_runnable",
+        lambda path: path == "/fake/bin/agent-browser",
+    )
 
-
-
-
+    assert ns._has_agent_browser() is False

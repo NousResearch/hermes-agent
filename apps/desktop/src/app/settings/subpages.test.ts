@@ -126,6 +126,7 @@ describe('settings subpage routing', () => {
         'Keep computer awake',
         'Auto-archive stale chats',
         'Automatic update checks'
+        TRANSLATIONS.en.settings.about.updates
       ])
     )
   })

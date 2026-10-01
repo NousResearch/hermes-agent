@@ -540,6 +540,21 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
+def out_of_scope_reason(name: str) -> Optional[str]:
+    """Fail-fast reason for a registered session-gated GUI tool outside this session's
+    scope (#120413). The generic scope block ("not available ... Use tool_search") sends
+    the model on a round-trip tool_search can never satisfy — the tool is not in this
+    session's catalog at all. Name the missing surface instead. None for anything else
+    (the generic message still applies). Fail-open: never raises."""
+    try:
+        if _registry_toolset(name) in _DIRECT_SURFACE_TOOLSETS:
+            return (f"'{name}' needs a desktop-app session with a GUI surface (preview/terminal panes). "
+                    "This session has none: use it only from the Hermes desktop app, not via tool_search.")
+    except Exception:
+        pass
+    return None
+
+
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
@@ -579,50 +594,5 @@ __all__ = [
     "build_catalog_listing_with_form", "listing_token_budget", "search_catalog",
     "bridge_tool_schemas", "assemble_tool_defs", "is_bridge_tool", "dispatch_tool_search",
     "dispatch_tool_describe", "resolve_underlying_call", "scoped_deferrable_names",
-    "validate_deferred_call_args", "normalize_tool_call_entries",
+    "out_of_scope_reason", "validate_deferred_call_args", "normalize_tool_call_entries",
     "CONNECTOR_BATCH_SENTINEL", "is_connector_name"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Literal  # noqa: F401,E402
-import copy  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
-import re  # noqa: F401,E402
-import snowballstemmer  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-def build_catalog_listing(
-    deferrable: List[Dict[str, Any]],
-    *,
-    max_tokens: int = 4000,
-) -> Optional[str]:
-    """Render a skills-style manifest of the deferred catalog.
-
-    One line per tool — ``name: short description`` — grouped under a
-    heading per source (MCP server / plugin toolset), exactly like the
-    bundled-skills listing in the system prompt:
-
-        github tools: (44)
-        - create_issue: Open a new issue in a GitHub repository.
-        - merge_pull_request: Merge an open pull request.
-        ...
-
-    Ordering is deterministic (groups and tools sorted by name) so the
-    rendered block is byte-stable across assemblies of the same catalog —
-    this keeps the request prefix cacheable across turns.
-
-    Token-budget fallbacks (cheap chars/4 estimate, same rule as the
-    activation gate):
-      1. full listing (names + short descriptions)
-      2. names-only listing, still grouped
-      3. server-level summary — one line per MCP server / plugin toolset
-         (name + tool count), so the model always knows WHICH domains are
-         reachable through the bridge even when per-tool names don't fit
-      4. ``None`` — only when the summary itself exceeds the budget
-    """
-    text, _form = build_catalog_listing_with_form(deferrable, max_tokens=max_tokens)
-    return text
-# ---- END PLUGIN-COMPAT ----

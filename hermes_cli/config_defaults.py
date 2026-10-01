@@ -5,6 +5,18 @@ docs of config.yaml.
 """
 
 
+#: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
+#: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
+#: (the 3.14 pin shipped between the two without a migration); a saved config still holding one
+#: is the template copied, and the config migration unsets it, never a user's own pin.
+DEFAULT_SANDBOX_IMAGE = "nousresearch/hermes-sandbox:desktop"
+LEGACY_SANDBOX_IMAGES = ("nikolaik/python-nodejs:python3.11-nodejs20", "nikolaik/python-nodejs:python3.14-nodejs22")
+LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
+# Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
+DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
+LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
+
+
 def _aux(timeout, *, reasoning_effort=True, **extra):
     """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
 
@@ -49,6 +61,16 @@ DEFAULT_CONFIG = {
         # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
         # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
+    },
+    # Where the TUI/desktop gateway stages session file attachments (uploads, pasted
+    # text). "hermes-home" (default) keeps <profile home>/attachments — the dir
+    # container backends bind-mount, so @file: refs resolve in the sandbox (#76577).
+    # "workspace" opts into <session workspace>/.hermes/attachments: staging lands
+    # inside the allowed ref root, so the same profile's agent can always read its
+    # own attachments back (#110662). Read per profile from that profile's config;
+    # a remote (ssh) workspace keeps the profile home dir either way.
+    "attachments": {
+        "storage": "hermes-home",
     },
     "agent": {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
@@ -325,16 +347,20 @@ DEFAULT_CONFIG = {
         # go first because n/nvm/asdf write PATH exports there without an interactivity guard. Turn
         # off if an rc file misbehaves when sourced non-interactively (exits on TTY check).
         "auto_source_bashrc": True,
-        "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # The default sandbox for every container backend: the nikolaik/python-nodejs base
+        # (Python 3.13 / Node 26) plus a display stack, so Bot Screen, computer_use and the
+        # bot's browser run INSIDE the sandbox and the pane can watch them (see bot_desktop).
+        "docker_image": DEFAULT_SANDBOX_IMAGE,
         "docker_forward_env": [],
         # Exact key-value env pairs set inside Docker containers (unlike docker_forward_env, which
         # reads host values) — useful under systemd without the user's shell env. Example:
         # {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
         "docker_env": {},
-        "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-        "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
+        "singularity_image": f"docker://{DEFAULT_SANDBOX_IMAGE}",
+        "modal_image": DEFAULT_SANDBOX_IMAGE,
+        "daytona_image": DEFAULT_SANDBOX_IMAGE,
+        "vercel_image": DEFAULT_VERCEL_IMAGE,  # vercel_sandbox backend only: a Vercel-managed or VCR image
+        "vercel_runtime": "",  # deprecated by Vercel; a legacy runtime pin (node24 | node22 | python3.13) overrides vercel_image
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
@@ -563,11 +589,10 @@ DEFAULT_CONFIG = {
         # are floored at 0.75 (raise-only) so compaction doesn't fire with half the window free; set
         # above 0.75 to override the floor.
         "threshold": 0.50,
-        # threshold_tokens: absolute token cap — compression triggers at the lower of the ratio
-        # threshold and this count. Clamped to the model's context length. 256K bounds 1M-window
-        # models (their 50% trigger sat at 500K, so compaction never fired) while every lower
-        # ratio trigger still wins; null = ratio-only.
-        "threshold_tokens": 256_000,
+        # threshold_tokens: optional absolute token cap — when set, compression triggers at the
+        # lower of the ratio threshold and this count. Clamped to the model's context length.
+        # Off by default: no single count suits windows from 64K to 1M+, so the ratio decides.
+        "threshold_tokens": None,
         # "progress_notices": False,    # opt-in (#52995): when True, routine compression
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked
@@ -816,6 +841,9 @@ DEFAULT_CONFIG = {
         # Interface bare `hermes`/`hermes chat` launches: "cli" (prompt_toolkit REPL) | "tui" (Ink).
         # Flags win: `--cli` forces the REPL, `--tui` / HERMES_TUI=1 forces the TUI.
         "interface": "cli",
+        # Native TUI uses the terminal's primary buffer and scrollback instead of the custom
+        # alternate-screen viewport. Flags win: `--native` / `--tui-native` and `--cli`.
+        "tui_native": False,
         # `hermes --tui` auto-resumes the most recent human-facing session (like `hermes -c`).
         # HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
@@ -1239,26 +1267,23 @@ DEFAULT_CONFIG = {
         "surface": "auto",  # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
         "input_device": None,  # PortAudio input device index/name; null = process default
         "capture": "auto",  # auto | local | client (desktop streams mic via wake.feed)
-        # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine"
-        # (premium; needs PORCUPINE_ACCESS_KEY)
-        "provider": "openwakeword",
+        # auto: first platform-supported engine (openwakeword, sherpa, porcupine).
+        # Explicit choices stay pinned. Porcupine needs PORCUPINE_ACCESS_KEY.
+        "provider": "auto",
         # sherpa: this IS the detected phrase; other engines: cosmetic label (detection is keyed by
         # the model/keyword below)
         "phrase": "hey hermes",
         "sensitivity": 0.6,  # 0.0-1.0 threshold, consistent across engines (higher = stricter)
-        # openWakeWord only: consecutive over-threshold frames to fire (higher = fewer false
-        # triggers, more latency; 1 = single-frame)
+        # openWakeWord/pyopen-wakeword only: consecutive over-threshold frames to fire (higher = fewer
+        # false triggers, more latency; 1 = single-frame)
         "confirmation_frames": 3,
         "start_new_session": True,  # fresh session on wake vs. continue the current one
         # sherpa only: listen for every wake-enabled profile's phrase and route to it
         "profile_routing": True,
         "openwakeword": {
             # "hey_hermes" | built-in openWakeWord name ("hey_jarvis", "alexa", ...) | path to a
-            # custom .onnx/.tflite model
+            # custom .tflite model
             "model": "hey_hermes",
-            # "" (auto: tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite" — onnx scores
-            # near-zero on macOS ARM64 (arms but never fires)
-            "inference_framework": "",
         },
         "sherpa": {
             # sherpa-onnx KWS model dir; empty = auto-download the small English zipformer
@@ -1698,10 +1723,13 @@ DEFAULT_CONFIG = {
         # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
         # abandoned. 0 = no deadline (load inline). Max 600.
         "load_timeout_seconds": 10,
-        # Keep loading external plugins that still import pre-decomposition module paths after the
-        # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
-        # old paths raise ImportError once the compat layer is actually removed.
-        "allow_deprecated_imports": False,
+        # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
+        # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
+        # scan-gated by that same pipeline).
+        "auto_update_check_hours": 24,
+        # Opt-in unattended apply for the cadence check. Git-row plugins ONLY; every apply runs the
+        # same security scan / consent pipeline as the manual update command.
+        "auto_apply": False,
     },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
@@ -2066,6 +2094,7 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,
@@ -2248,6 +2277,9 @@ DEFAULT_CONFIG = {
         "auto_archive": False,
         # Idle days before auto-archive hides a session (only when auto_archive is true).
         "auto_archive_days": 3,
+        # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
+        # nested under their parent. Off by default: they are machinery, not conversations.
+        "show_subagents": False,
         # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE). VACUUM
         # blocks writes (~seconds per 100MB), so it runs only at startup, only when ≥1 session was
         # deleted AND freelist/page_count > 25%.
@@ -2368,6 +2400,14 @@ DEFAULT_CONFIG = {
         # finish in budget, while every other workspace keeps its diagnostics. Must be a list —
         # any other shape logs a warning and skips LSP for every workspace until fixed.
         "exclude_roots": [],
+        # Directories (~ expanded; everything under an entry counts) whose projects a language
+        # server may load code from: the project's own .venv/venv interpreter, node_modules
+        # TypeScript SDK, svelte.config.js, build files (cargo, Gradle, mix, ...). The worktree of
+        # the launch dir or the session's workspace (hermes -w, a Desktop project, terminal.cwd) is
+        # always trusted; in any other checkout (a clone the agent made) only servers that run no
+        # project code start, pinned to Hermes-side tools, and the npx tsc / rustfmt lint fallbacks
+        # are skipped.
+        "trusted_workspaces": [],
         # Missing server binaries: auto = install via npm/go/pip into <HERMES_HOME>/lsp/bin/ on
         # first use; manual = only binaries on PATH; off = alias for manual.
         "install_strategy": "auto",
@@ -2487,11 +2527,27 @@ DEFAULT_CONFIG = {
         # long; it restarts on the next use. Idle Xvnc + Xfce hold ~220 MB, an abandoned browser far more.
         # 0 keeps screens up until stopped.
         "idle_stop_minutes": 30,
+        # Where the screen (and with it computer_use and the bot's browser) runs.
+        #   auto      follow the terminal backend: inside the docker / ssh / singularity sandbox when one is
+        #             configured, on the gateway host when terminal.backend is local. A sandbox backend that
+        #             cannot host a screen (modal, daytona, vercel) REFUSES rather than quietly running the
+        #             desktop on the host beside the sandbox you chose for the agent.
+        #   terminal  always inside the terminal backend (error when it cannot host one).
+        #   gateway   always on the gateway host, even with a sandbox terminal: the agent's screen, browser
+        #             and computer_use then act OUTSIDE the terminal sandbox. Explicit opt-in.
+        # The sandbox image needs the desktop stack: nousresearch/hermes-sandbox:desktop.
+        "placement": "auto",
     },
     "computer_use": {
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,
+        # Windows only: opt IN to the per-boot cua-driver-serve logon task. False (default)
+        # keeps the driver on-demand — Computer Use starts it per session, exactly as on
+        # macOS/Linux, and install/enable flows register no scheduled task (#97389). True
+        # registers (or repairs) the task at install time — needed to drive Windows over SSH,
+        # where Session 0 has no interactive desktop (see the computer-use guide).
+        "autostart": False,
         "native_wayland": False,
         # Cap driver screenshot longest edge (pixels) via set_config at session start; shrinks SOM
         # multimodal payloads. 0 disables.
@@ -2561,7 +2617,9 @@ DEFAULT_CONFIG = {
         # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
         # theme's face. The terminal pane is terminal.font_family.
         "font_family": "",
-        # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
+        # Git repo discovery for the Projects sidebar. Empty roots are a safe
+        # no-op; users must explicitly configure roots for filesystem scanning.
+        # Session-derived projects remain available.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],
@@ -2589,6 +2647,10 @@ DEFAULT_CONFIG = {
         # gnome-libsecret|kwallet|kwallet5|kwallet6|basic force one (basic = unencrypted). Bridged
         # to HERMES_DESKTOP_PASSWORD_STORE; ignored off-Linux.
         "password_store": "auto",
+        # Expose the renderer's accessibility tree to the OS (macOS/Windows) so dictation/IME tools
+        # that insert text via the accessibility APIs can reach the composer (#118271, #92607).
+        # False bridges to HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0 and skips the tree (perf opt-out).
+        "renderer_accessibility": True,
         # Linux: False preserves an existing custom XDG launcher entry; missing entries
         # are still created. True keeps the generated entry current on each launch.
         "manage_launcher_entry": True,
@@ -2596,6 +2658,11 @@ DEFAULT_CONFIG = {
         # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
         # updates. Empty = default ad-hoc identifier-pinned signing.
         "macos_signing_identity": "",
+        # Windows only: explicit ssh client for SSH connections, the -G config probe and SSH
+        # terminals, e.g. "C:\\Program Files\\Git\\usr\\bin\\ssh.exe" when the in-box OpenSSH is
+        # missing or broken. Empty = System32 OpenSSH, then Git for Windows' ssh.exe, then PATH.
+        # Read by the app before its first window; restart to apply. Ignored off-Windows.
+        "ssh_path": "",
         # Auto-continue a turn killed by a crash: resuming re-submits the interrupted prompt if
         # fresh; a stale one just shows the recovered partial transcript.
         "auto_continue": {
@@ -2641,8 +2708,7 @@ DEFAULT_CONFIG = {
     "local_runtime": {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
-        # Pinned llama.cpp release tag; bumped by Hermes releases after validation.
-        "tag": "b10964",
+        # Engine versions and every dependent library are pinned by pm/lock.json.
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",
@@ -2651,7 +2717,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 46,  # Config schema version - bump this when adding new required fields
+    "_config_version": 49,  # Config schema version - bump this when adding new required fields
 }
 
 

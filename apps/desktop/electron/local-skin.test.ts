@@ -44,7 +44,10 @@ test('reads the active named profile instead of the root home', () => {
     fs.mkdirSync(path.join(profileHome, 'skins'), { recursive: true })
     fs.writeFileSync(path.join(home, 'config.yaml'), 'display:\n  skin: root\n')
     fs.writeFileSync(path.join(profileHome, 'config.yaml'), 'display:\n  skin: profile\n')
-    fs.writeFileSync(path.join(profileHome, 'skins', 'profile.yaml'), 'name: profile\ncolors:\n  ui_accent: "#00ffff"\n')
+    fs.writeFileSync(
+      path.join(profileHome, 'skins', 'profile.yaml'),
+      'name: profile\ncolors:\n  ui_accent: "#00ffff"\n'
+    )
 
     const skin = readLocalDisplaySkin(home, 'research')
 
@@ -63,7 +66,10 @@ test('uses a routed session or hud profile before any gateway can connect', () =
   try {
     fs.mkdirSync(path.join(profileHome, 'skins'), { recursive: true })
     fs.writeFileSync(path.join(profileHome, 'config.yaml'), 'display:\n  skin: research\n')
-    fs.writeFileSync(path.join(profileHome, 'skins', 'research.yaml'), 'name: research\ncolors:\n  ui_accent: "#00ffff"\n')
+    fs.writeFileSync(
+      path.join(profileHome, 'skins', 'research.yaml'),
+      'name: research\ncolors:\n  ui_accent: "#00ffff"\n'
+    )
 
     const payload = readLocalSkinPayload(home, 'research', 'default')
 

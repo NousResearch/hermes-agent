@@ -37,4 +37,6 @@ export function pluginCatalogInstallUrl(plugin: { name: string; repo: string; su
     sha: plugin.sha,
     enable: '1'
   })}`
+export function pluginCatalogInstallUrl(plugin: { name: string }): string {
+  return `hermes://plugin/install?${new URLSearchParams({ catalog: plugin.name })}`
 }

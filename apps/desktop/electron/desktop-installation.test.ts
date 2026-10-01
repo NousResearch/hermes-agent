@@ -46,6 +46,10 @@ test.runIf(process.platform !== 'win32')('loadOrCreateInstallationId creates an 
     const filePath = path.join(directory, 'desktop-installation.json')
     loadOrCreateInstallationId(filePath, () => ID_A)
     assert.equal(fs.statSync(filePath).mode & 0o777, 0o600)
+
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(filePath).mode & 0o777, 0o600)
+    }
   }))
 
 test.runIf(process.platform !== 'win32')('loadOrCreateInstallationId tightens an existing identity file', () =>

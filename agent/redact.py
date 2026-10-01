@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import threading
+import unicodedata
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -63,17 +64,38 @@ def clear_vault_redaction_values() -> None:
         _VAULT_REDACTION_VALUES.pop(_vault_scope(), None)
 
 
-def redact_registered_vault_values(text: str) -> str:
-    """Exact-substring scrub of every vault secret value registered for the current profile."""
+def redact_registered_vault_values(text: str, *, prose: bool = False) -> str:
+    """Scrub registered values without recursively scrubbing generated markers.
+
+    Strict substring matching remains the default for raw tools and browser data.
+    Assistant-authored prose may opt into word-aware matching of very short values
+    (1-3 characters); these values still redact when presented as separate tokens.
+    Longer values always use exact-substring matching. No values are discarded.
+    """
     if not isinstance(text, str) or not text:
         return text
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
         values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first: a substring never shadows its superstring
-    for value in values:
-        if value in text:
-            text = text.replace(value, "«redacted-vault-secret»")
-    return text
+    if not values:
+        return text
+    marker = "«redacted-vault-secret»"
+    # Match the original input once. Both existing markers and new replacements
+    # are opaque, even if a registered value occurs inside the marker itself.
+    pattern = "|".join(re.escape(value) for value in sorted({marker, *values}, key=len, reverse=True))
+
+    def replace(match):
+        value = match.group()
+        if prose and len(value) < 4:
+            before = text[match.start() - 1:match.start()] if match.start() else ""
+            after = text[match.end():match.end() + 1]
+            # Combining marks belong to their word too (Arabic/Latin accents).
+            if any(c == "_" or c.isalnum() or unicodedata.category(c).startswith("M")
+                   for c in before + after):
+                return value
+        return marker
+
+    return re.sub(pattern, replace, text)
 
 # Sensitive query-string param names (case-insensitive): opaque tokens / OAuth
 # codes / pre-signed signatures with no vendor prefix.
@@ -83,6 +105,7 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "access_token", "refresh_token", "id_token", "token", "api_key", "apikey",
     "client_secret", "password", "auth", "jwt", "session", "secret", "key",
     "code", "signature", "x-amz-signature",
+    "x-goog-signature", "sig",  # GCS V4 signed URLs, Azure SAS tokens
 })
 
 # Snapshot at import time so runtime env mutations (e.g. an LLM-generated
@@ -559,7 +582,7 @@ _STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]
 # authority stops at path/query/fragment delimiters. Anchored on the mandatory
 # ``//`` — an optional-scheme prefix backtracked O(n²) on long alphanumeric runs
 # (~55s per sub() on a 320KB compaction payload).
-_STRICT_URL_USERINFO_RE = re.compile(r"(//)([^/\s?#@]+)@")
+_STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@]+@")
 
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
@@ -665,6 +688,12 @@ def _is_python_repr_secret_key(key: str) -> bool:
     return folded.endswith(_PYTHON_REPR_CREDENTIAL_SUFFIXES)
 
 
+def is_secret_field_name(key: object) -> bool:
+    """True when a mapping field named ``key`` holds a credential — the repr-field policy, for callers
+    that mask structured config by field instead of by text."""
+    return isinstance(key, str) and _is_python_repr_secret_key(key)
+
+
 def _redact_python_repr_fields(text: str) -> str:
     """Fully mask credential fields in Python mapping ``repr`` output."""
     def _sub(match: re.Match) -> str:
@@ -740,7 +769,10 @@ def _canonical_url_param_name(name: str) -> str:
         if next_value == decoded:
             break
         decoded = next_value
-    return decoded.casefold().replace("-", "_")
+    folded = decoded.casefold()
+    # Preserve policy names that are canonically hyphenated (for example
+    # x-amz-signature) before accepting underscore-normalized aliases.
+    return folded if folded in _SENSITIVE_QUERY_PARAMS else folded.replace("-", "_")
 
 
 def _redact_strict_url_credentials(text: str) -> str:
@@ -749,9 +781,7 @@ def _redact_strict_url_credentials(text: str) -> str:
     text = _STRICT_URL_PARAM_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}=***"
         if _canonical_url_param_name(m.group(2)) in _SENSITIVE_QUERY_PARAMS else m.group(0), text)
-    return _STRICT_URL_USERINFO_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2).partition(':')[0]}:***@" if ":" in m.group(2) else f"{m.group(1)}***@",
-        text)
+    return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
 
 
 def redact_cdp_url(value: object) -> str:
@@ -870,15 +900,20 @@ def _redact_phone(m):
 
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
                           file_read: bool = False, secret_file: bool = False,
-                          redact_url_credentials: bool = False) -> str:
+                          redact_url_credentials: bool = False,
+                          vault_prose: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe on any string. Enabled by default (``security.redact_secrets: false``
     disables); ``force=True`` is for safety boundaries that must never return
     raw secrets regardless.
 
+    ``vault_prose=True`` is only for assistant-authored prose: 1-3-character
+    vault values match whole tokens, not fragments of ordinary words. It is
+    ignored for file/source payloads. Browser/tool data must keep the default.
+
     ``redact_url_credentials=True``: also redact credential-named query params
-    and ``user:pass@`` userinfo — off by default because OAuth-callback /
+    and the entire URL userinfo (``***:***@``) — off by default because OAuth-callback /
     magic-link / pre-signed URLs must survive ordinary tool flows unchanged.
     ``code_file=True``: skip the ENV/JSON assignment passes for known source
     code (``MAX_TOKENS=***``, ``"apiKey": "test"`` fixtures). ``file_read=True``
@@ -914,7 +949,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not text:
         return text
     # Vault secrets are a hard model-egress boundary: scrubbed regardless of the redact_secrets preference.
-    text = redact_registered_vault_values(text)
+    # Only assistant-authored prose opts in; raw tool/browser/file data stays strict.
+    text = redact_registered_vault_values(
+        text, prose=vault_prose and not (file_read or secret_file or code_file))
     if not (force or _redact_enabled()):
         return text
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not

@@ -24,6 +24,9 @@ import {
   isTimeoutError,
   RECONNECT_ATTEMPT_TIMEOUT_MS,
   TimeoutError,
+  isTimeoutError,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
   withTimeout
 } from '@/lib/with-timeout'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
@@ -400,6 +403,19 @@ function claimActivationHandoff(scope: string, signal: AbortSignal | undefined):
 
   return handoff.activation
 }
+// How long a mid-dial activation holds its prune lease: it must outlast every
+// dial the renderer still treats as in flight, or the pruner reaps the switch
+// target mid-dial and the click resolves on a socket that is already closed
+// (#89622's mechanism, one budget change later). The activation dials now carry
+// SOURCE_SWITCH_DIAL_TIMEOUT_MS — the whole remote bring-up chain (ssh connect,
+// the platform/locate/version probes, the remote spawn's ready sentinel, the
+// forward) — so this is DERIVED from it rather than picked independently: at
+// the old 30 s literal, raising the dial budget to 135 s left the switch target
+// prunable for the last ~105 s of a *healthy* dial. The margin covers the
+// settle that releases the lease (the renderer's switch commit). Bounded on
+// purpose: a leaked lease still expires on its own and the reaper reclaims the
+// entry.
+const ACTIVATION_LEASE_MS = SOURCE_SWITCH_DIAL_TIMEOUT_MS + 15_000
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -431,6 +447,9 @@ interface GatewayRegistryState {
   secondaries: Map<string, Secondary>
   // Auth rejection outlives the disposable socket, including background request leases.
   reauthFailures: Map<string, { connectionId: string | null; error: Error }>
+  // Dial failures outlive the disposable socket too: a background request lease disposes its
+  // entry on failure, so history kept on the entry reset on every poll (#121865).
+  dialFailures: Map<string, { at: number; streak: number; connectionId: string | null }>
   /** Scopes that opened in this renderer generation, even if later pruned. */
   openedSecondaryScopes?: Set<string>
   /** Scopes whose re-activation after a connection redial has not landed yet. */
@@ -458,6 +477,7 @@ function createRegistryState(): GatewayRegistryState {
     activationHandoffs: new WeakMap(),
     secondaries: new Map<string, Secondary>(),
     reauthFailures: new Map(),
+    dialFailures: new Map(),
     openedSecondaryScopes: new Set<string>(),
     reactivatingScopes: new Set<string>(),
     turnLeases: new Map<string, { release: () => void }>(),
@@ -490,6 +510,7 @@ function gatewayState(): GatewayRegistryState {
 
     // Existing dev-HMR containers predate whole-turn leases.
     store[STATE_KEY].reauthFailures ??= new Map()
+    store[STATE_KEY].dialFailures ??= new Map()
     store[STATE_KEY].turnLeases ??= new Map()
     store[STATE_KEY].turnLeaseReleaseTimers ??= new Map()
     store[STATE_KEY].activationHandoffs ??= new WeakMap()
@@ -616,6 +637,24 @@ export function setPrimaryGatewayConnectionId(
   if (g.activeKey === g.primaryProfile) {
     setApiRequestConnection(g.primaryConnectionId)
   }
+}
+
+/**
+ * Mode of the socket this window already dialed for `(connectionId, profile)`,
+ * following gatewayForProfile's precedence: the primary socket when it serves
+ * that profile, else a secondary's own descriptor. Null until one is dialed.
+ */
+export function dialedGatewayModeFor(connectionId: null | string, profile: string): 'local' | 'remote' | null {
+  const id = String(connectionId ?? '').trim() || null
+  const key = normKey(profile)
+
+  if (key === g.primaryProfile && (!id || id === g.primaryConnectionId) && g.primaryConnectionMode) {
+    return g.primaryConnectionMode
+  }
+
+  const mode = g.secondaries.get(registryBackendScopeKey(id, key))?.connection?.mode
+
+  return mode === 'local' || mode === 'remote' ? mode : null
 }
 
 /** Publish the registry source owned by the window primary socket. */
@@ -1042,6 +1081,12 @@ async function openSecondary(
     // this secondary (SSH terminal, messaging DELETE, session send, …) never
     // settles either. Bound the same way use-gateway-boot.ts bounds the
     // primary's equivalent awaits.
+    //
+    // Two bring-ups with different legitimate worst cases: a registry route is a
+    // backend coming up on ANOTHER machine (ssh connect + probes + remote spawn +
+    // ready sentinel), which is the SOURCE_SWITCH_DIAL budget, while a local
+    // profile's pooled child spawns on this machine (measured ~9 s; the
+    // reconnect-class budget is not the binding constraint there).
     const conn =
       entry.connectionId && desktop.getConnectionFor
         ? await withSpawnIpcTimeout(
@@ -1052,6 +1097,13 @@ async function openSecondary(
                 ...(dialOptions(spawnPriority, speculative) ?? {})
               }),
             activation,
+        ? await withTimeout(
+            desktop.getConnectionFor({
+              connectionId: entry.connectionId,
+              profile: entry.profile,
+              ...dialPriority(spawnPriority)
+            }),
+            SOURCE_SWITCH_DIAL_TIMEOUT_MS,
             `Timed out connecting to profile "${entry.profile}"`
           )
         : await withSpawnIpcTimeout(
@@ -1197,6 +1249,12 @@ function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'
 
   g.reauthFailures.delete(entry.scope)
 
+  // Only an explicit (foreground) re-arm resets dial history: every background request rearms
+  // its scope before dialing, so clearing it here would lift the throttle on each poll.
+  if (priority === 'foreground') {
+    g.dialFailures.delete(entry.scope)
+  }
+
   if (entry.retiredByPool && priority !== 'foreground') {
     throw new Error(`Backend for "${entry.profile}" was retired; open it explicitly to reconnect.`)
   }
@@ -1204,6 +1262,56 @@ function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'
   entry.wantOpen = true
   entry.stalledDials = 0
   entry.retiredByPool = false
+}
+
+function recordDialFailure(entry: Secondary, error?: unknown): void {
+  // Auth rejection has its own ledger (reauthFailures) that already fails background callers fast.
+  if (error !== undefined && isGatewayReauthRequired(error)) {
+    return
+  }
+
+  const previous = g.dialFailures.get(entry.scope)
+
+  g.dialFailures.set(entry.scope, {
+    at: Date.now(),
+    streak: (previous?.streak ?? 0) + 1,
+    connectionId: entry.connectionId ?? null
+  })
+}
+
+/** True while a background caller must leave redialing to the ladder: the scope's last dial
+ *  failed (or its socket died before RECONNECT_STABLE_OPEN_MS) inside a window that widens with
+ *  the failure streak, on the same ceilings as the reconnect ladder. History clears on proof of
+ *  health (a served RPC, or a socket that lived) and on a fresh start (foreground re-arm, connection
+ *  removal, full teardown) — never on a bare open, so an accept-then-close backend keeps escalating. */
+function backgroundDialCoolingDown(scope: string, now = Date.now()): boolean {
+  const failure = g.dialFailures.get(scope)
+
+  return failure !== undefined && now - failure.at < reconnectBackoffDelayMs(failure.streak - 1, { jitter: false })
+}
+
+/** Dial a request's secondary if it is down. Both request paths (a plain profile via
+ *  gatewayForProfile, a registry route via requestGatewayForAgent) used to dial straight past
+ *  the reconnect ladder, and openSecondary only coalesces CONCURRENT dials, so a poller against
+ *  a scope whose socket accepts and then dies redialed once per tick (session.control.read on a
+ *  cross-profile session, #121865). After a failure, background callers fail fast and leave
+ *  redialing to scheduleReconnect; a user action (foreground) still dials at once. */
+async function openSecondaryForRequest(entry: Secondary, spawnPriority: SpawnPriority): Promise<void> {
+  if (isOpen(entry.gateway)) {
+    return
+  }
+
+  if (spawnPriority !== 'foreground' && backgroundDialCoolingDown(entry.scope)) {
+    scheduleReconnect(entry)
+    throw new Error(`Backend for "${entry.profile}" is reconnecting; retry after it settles.`)
+  }
+
+  try {
+    await openSecondary(entry, spawnPriority)
+  } catch (error) {
+    recordDialFailure(entry, error)
+    throw error
+  }
 }
 
 function scheduleReconnect(entry: Secondary): void {
@@ -1248,6 +1356,10 @@ async function reconnectSecondary(
   try {
     await openSecondary(entry, spawnPriority, speculative)
   } catch (error) {
+    // Restart the background-request cooldown from the ladder's own failure too, or a poll
+    // could slip a dial in between two ladder attempts on an older, expired window.
+    recordDialFailure(entry, error)
+
     if (isGatewayReauthRequired(error)) {
       notifyError(error, translateNow('boot.errors.gatewaySignInRequired'), { action: RECOVERY_ACTIONS.openGateways() })
 
@@ -1374,6 +1486,9 @@ function createSecondary(profile: string, connectionId: null | string = null): S
       // is a failed attempt, so the ladder resets only after a socket that lived.
       if (isStableOpen(entry.openedAt)) {
         entry.reconnectAttempt = 0
+        g.dialFailures.delete(scope)
+      } else if (entry.openedAt !== null) {
+        recordDialFailure(entry)
       }
 
       entry.openedAt = null
@@ -1478,6 +1593,15 @@ async function gatewayForProfile(
       releaseActivationLease(entry, activation)
     }
 
+  // sharedPrimaryRoute is itself a dial into main (it can start the profile's spawn), so a
+  // cooling-down scope has to be held back before it, not just before openSecondary.
+  const existing = g.secondaries.get(key)
+
+  if (spawnPriority !== 'foreground' && !(existing && isOpen(existing.gateway)) && backgroundDialCoolingDown(key)) {
+    throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
+  }
+
+  if (await sharedPrimaryRoute(key, spawnPriority)) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 
@@ -1545,6 +1669,7 @@ async function gatewayForProfile(
     }
 
     assertActivationLive(activation, `Timed out connecting to profile "${key}"`)
+    await openSecondaryForRequest(entry, spawnPriority)
   } catch (error) {
     release()
     throw error
@@ -1585,9 +1710,15 @@ export async function requestGatewayForProfile<T>(
     // Same arity contract as the ambient path in session-request-router: only
     // pass the deadline args through when the caller set them, so a plain
     // profile-routed RPC keeps its two-argument call shape.
-    return await (timeoutMs === undefined && signal === undefined
+    const result = await (timeoutMs === undefined && signal === undefined
       ? route.gateway.request<T>(method, routedParams)
       : route.gateway.request<T>(method, routedParams, timeoutMs, signal))
+
+    // A served RPC proves the backend answers, not just accepts, so it clears the dial history.
+    // Lease requests dispose their entry right after, before a close could prove the socket stable.
+    g.dialFailures.delete(route.key)
+
+    return result
   } finally {
     route.release()
   }
@@ -1656,13 +1787,15 @@ export async function requestGatewayForAgent<T>(
   entry.activeRequests += 1
 
   try {
-    if (!isOpen(entry.gateway)) {
-      await openSecondary(entry, spawnPriority)
-    }
+    await openSecondaryForRequest(entry, spawnPriority)
 
-    return await (timeoutMs === undefined && signal === undefined
+    const result = await (timeoutMs === undefined && signal === undefined
       ? entry.gateway.request<T>(method, params)
       : entry.gateway.request<T>(method, params, timeoutMs, signal))
+
+    g.dialFailures.delete(entry.scope)
+
+    return result
   } finally {
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
@@ -2963,6 +3096,12 @@ export function closeLegacySecondaryGateways(): void {
     }
   }
 
+  for (const [scope, failure] of g.dialFailures) {
+    if (failure.connectionId === null) {
+      g.dialFailures.delete(scope)
+    }
+  }
+
   closeSecondariesWhere(isLegacySecondary)
 }
 
@@ -2981,6 +3120,7 @@ export function closeSecondaryGateways(): void {
   }
 
   g.turnLeases.clear()
+  g.dialFailures.clear()
 
   closeSecondariesWhere(() => true)
   openedSecondaryScopes().clear()
@@ -3048,6 +3188,13 @@ export function disposeSecondariesForConnection(connectionId: string, opts: { re
   for (const [scope, failure] of g.reauthFailures) {
     if (failure.connectionId === id) {
       g.reauthFailures.delete(scope)
+    }
+  }
+
+  // Replacing a connection is a fresh start: its old failures must not hold back the new dial.
+  for (const [scope, failure] of g.dialFailures) {
+    if (failure.connectionId === id) {
+      g.dialFailures.delete(scope)
     }
   }
 

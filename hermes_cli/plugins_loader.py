@@ -372,9 +372,9 @@ class PluginLoaderMixin:
             )
 
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
-        """Warn about declared pip dependencies missing at load time. Installing happens at
-        ``hermes plugins install``/``enable`` and after ``hermes update`` (``hermes_cli.plugin_python_deps``)
-        under core constraints; the loader itself never installs — import time is not a consent point.
+        """Report missing dependencies without installing during discovery.
+
+        Plugin admission and PM repair own dependency changes.
         """
         deps = manifest.python_dependencies
         if not deps:
@@ -384,9 +384,9 @@ class PluginLoaderMixin:
         if missing:
             logger.warning(
                 "Plugin %s declares Python dependencies that are not "
-                "installed: %s. Run `hermes plugins enable %s` to install them, "
-                "or install them yourself: pip install %s",
-                key, ", ".join(missing), key, " ".join(f"'{m}'" for m in missing),
+                "installed: %s. For an enabled plugin, run hermes pm repair, "
+                "then restart Hermes. Discovery does not install dependencies.",
+                key, ", ".join(missing),
             )
         else:
             logger.debug("Plugin %s python_dependencies satisfied: %s", key, ", ".join(deps))
@@ -437,15 +437,6 @@ class PluginLoaderMixin:
             logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
             self._plugins[plugin_key] = loaded
             return
-        # After the compat-removal date an external plugin that still imports pre-decomposition paths is
-        # skipped with a clear reason instead of dying on ImportError mid-register (hermes_cli.plugin_compat).
-        from hermes_cli.plugin_compat import disable_reason
-        reason = disable_reason(manifest)
-        if reason:
-            loaded.error = reason
-            logger.warning("Plugin '%s' not loaded: %s", manifest.name, reason)
-            self._plugins[plugin_key] = loaded
-            return
         registration_start = len(self._registration_order)
         module_name = self._policy_module_name(manifest)
         self._track_tool_override_policy(manifest, module_name)
@@ -453,10 +444,15 @@ class PluginLoaderMixin:
 
         def _import_and_register() -> bool:
             """Import + register() — the part a plugin controls, so the part the deadline covers."""
+            # Declared language packs register before any plugin code runs, inside the same ledger slice
+            # so a failing register() unwinds them too.
+            self._register_declared_locales(manifest, ctx)
             # Reuse a deferred platform's already-imported package so its body doesn't run twice.
             # See #78050.
             module = self._predeclared_modules.pop(plugin_key, None)
             if module is None and manifest.source in {"user", "project", "bundled"}:
+                if self._is_manifest_only_language_pack(manifest):
+                    return True  # pure pack: locales/ is the whole plugin, no register() to run
                 module = self._load_directory_module(manifest, module_name=module_name)
             elif module is None:
                 module = self._load_entrypoint_module(manifest)
@@ -504,6 +500,26 @@ class PluginLoaderMixin:
         if not loaded.enabled:
             self._predeclared_tools.pop(plugin_key, None)
         self._plugins[plugin_key] = loaded
+
+    @staticmethod
+    def _is_manifest_only_language_pack(manifest: PluginManifest) -> bool:
+        """A ``provides_locales`` plugin with no ``__init__.py`` is complete without Python — like a
+        manifest-only desktop plugin, it loads from its declared files alone."""
+        return bool(manifest.provides_locales and manifest.path
+                    and not (Path(manifest.path) / "__init__.py").is_file())
+
+    def _register_declared_locales(self, manifest: PluginManifest, ctx) -> None:
+        """``provides_locales`` -> ``ctx.register_locale_dir(<plugin>/locales)``; a declared id with no file
+        is a warning (the pack promised a language it does not ship), never a load failure."""
+        if not manifest.provides_locales or not manifest.path:
+            return
+        locales_dir = Path(manifest.path) / "locales"
+        handles = ctx.register_locale_dir(locales_dir, metadata=manifest.locale_metadata)
+        registered = {handle.key.split(".", 1)[0] for handle in handles}
+        for lang_id in manifest.provides_locales:
+            if lang_id not in registered:
+                logger.warning("Plugin '%s' declares provides_locales %r but %s has no %s.yaml",
+                               manifest.name, lang_id, locales_dir, lang_id)
 
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
         """Install the plugin's tool-override policy in tools.registry as a ledger-owned lease."""

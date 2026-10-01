@@ -16,6 +16,7 @@ import { VaultAddDialog } from './vault-settings-add-dialog'
 import { useVaultData, type VaultItem, type VaultSourceName } from './vault-settings-data'
 import type { VaultKind } from './vault-settings-form'
 import { VaultSources } from './vault-settings-sources'
+import { SettingsProfileScope } from './profile-scope'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
 // late response from profile A can never paint under profile B.
@@ -69,6 +70,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
 
   return (
     <SettingsContent>
+      {/* The vault is per profile (its RPCs ride the (connection, profile) owner above), so the
+          page must SAY which profile it is showing — without the chip a non-default selection
+          looked like the default vault with entries missing (#121966). */}
+      <SettingsProfileScope className="mb-5" />
       {(subpage === undefined || subpage === 'credentials') && (
         <>
           <SectionHeading

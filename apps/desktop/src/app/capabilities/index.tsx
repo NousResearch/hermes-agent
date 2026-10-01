@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,7 @@ import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { CapabilityTabs, type CapabilityView } from './capability-tabs'
+import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
 import { ConnectorsTab } from './connectors/connectors-tab'
 import { PluginsTab } from './plugins/plugins-tab'
 import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
@@ -88,7 +89,6 @@ export function CapabilitiesView({
   // pair, because the counts stay live for the tab the user is NOT on.
   const { data: skills, isError: skillsFailed, error: skillsError } = useSkillsQuery(scope.profile)
   const { data: toolsets, isError: toolsetsFailed } = useToolsetsQuery(scope.profile)
-  const installedSkillNames = useMemo(() => new Set((skills ?? []).map(skill => skill.name)), [skills])
 
   const refreshCapabilities = useCallback(async () => {
     await Promise.all([
@@ -103,6 +103,10 @@ export function CapabilitiesView({
   }, [scope.profile])
 
   useRefreshHotkey(refreshCapabilities)
+
+  // Plugins is small enough to warm from any tab. Skills (~100k rows) only
+  // loads when asked for: an idle parse of it would still block the page.
+  useEffect(() => (mode === 'plugins' ? undefined : prefetchCatalogWhenIdle('plugins')), [mode])
 
   // Rotating placeholder nudges from the user's own data — teach that search
   // understands categories and tool names, not just titles.
@@ -119,7 +123,7 @@ export function CapabilitiesView({
   }, [mode, skills, t, toolsets])
 
   // MCP and Plugins load independently of the installed Skills/Tools lists.
-  const gated = mode === 'toolsets' || mode === 'skills'
+  const gated = mode === 'toolsets'
   const pending = gated && !(skills && toolsets)
 
   const loadGate = !pending ? null : skillsFailed || toolsetsFailed ? (
@@ -148,8 +152,7 @@ export function CapabilitiesView({
         profile={scope.profile}
       />
     ),
-    // Agent plugins for the scoped profile (selector in the section header),
-    // app-level desktop plugins, and the docs catalog picker underneath.
+    // Agent plugins for the scoped profile and app-level desktop plugins.
     plugins: () => (
       <PluginsTab
         key={`plugins-${scope.key}`}
@@ -179,6 +182,18 @@ export function CapabilitiesView({
           skills={skills ?? []}
         />
       ),
+    skills: () => (
+      <SkillsTab
+        installedError={skillsError}
+        installedPending={!skills || skillsFailed}
+        key={`skills-${scope.key}`}
+        onQueryChange={setQuery}
+        onRefresh={() => void refreshCapabilities()}
+        profile={scope.profile}
+        query={query}
+        skills={skills ?? []}
+      />
+    ),
     toolsets: () => (
       <ToolsetsTab key={`toolsets-${scope.key}`} profile={scope.profile} query={query} toolsets={toolsets ?? []} />
     )
@@ -192,12 +207,15 @@ export function CapabilitiesView({
       onTabChange={id => setMode(id as CapabilityMode)}
       // Connectors and Hub own their search fields.
       searchHidden={mode === 'connectors' || mode === 'hub'}
+      // Catalogs keep search beside their results; Connectors owns its field too.
+      searchHidden={mode !== 'toolsets'}
       searchHints={searchHints}
       searchPlaceholder={
         mode === 'plugins'
           ? t.catalog.searchPlugins
           : mode === 'skills'
             ? t.skills.searchSkills
+            ? t.catalog.searchSkills
             : t.skills.searchToolsets
       }
       searchValue={query}
@@ -231,6 +249,7 @@ export function CapabilitiesView({
             />
           )}
         </div>
+        <div className="flex min-h-0 flex-1 flex-col">{loadGate ?? tabContent[mode]()}</div>
       </div>
     </PageSearchShell>
   )

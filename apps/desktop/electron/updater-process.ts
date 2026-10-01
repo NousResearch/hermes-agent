@@ -1,26 +1,170 @@
-import { spawn, type SpawnOptions } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { existsSync, realpathSync, statSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
-import { resolveVenvDir } from './venv-blocker-scan'
-import { hiddenWindowsChildOptions } from './windows-child-options'
+/** Historical layouts still matter when uninstalling or migrating a source install. */
+export function resolveVenvDir(updateRoot: string): string {
+  for (const name of ['venv', '.venv']) {
+    const candidate: string = path.join(updateRoot, name)
 
-/** File prerequisites only: dependency recovery must remain reachable through update. */
-export function windowsUpdatePrerequisiteError(updateRoot: string): string | null {
-  const maintainedDir = path.join(updateRoot, 'scripts', 'desktop-update')
-  const required = [path.join(resolveVenvDir(updateRoot), 'Scripts', 'python.exe')]
-
-  // Pre-reorg flat scripts remain supported; damaged modern trees do not.
-  if (existsSync(maintainedDir)) {
-    required.push(path.join(maintainedDir, 'windows.ps1'))
+    try {
+      if (statSync(candidate).isDirectory()) {
+        return candidate
+      }
+    } catch {
+      // Try the other supported layout, then retain the legacy diagnostic path.
+    }
   }
 
-  for (const candidate of required) {
+  return path.join(updateRoot, 'venv')
+}
+
+import { platformDefaultHermesHome } from './data-paths'
+import { hiddenWindowsChildOptions } from './windows-child-options'
+
+/** Exact installation identity; PATH may refer to another checkout. */
+export function resolveInstallationLauncher(
+  updateRoot: string,
+  isWindows: boolean = process.platform === 'win32',
+  hermesHome: string = process.env.HERMES_HOME ?? ''
+): string | null {
+  const names: string[] = isWindows ? ['hermes.exe', 'hermes.cmd'] : ['hermes']
+
+  for (const name of names) {
+    const candidate: string = path.join(updateRoot, '.hermes', 'bin', name)
+
     if (stagedFileExists(candidate)) {
-      continue
+      return candidate
+    }
+  }
+
+  // Earlier PM installers published only to user-bin. Trust that historical
+  // launcher only after its existing version surface proves exact source identity.
+  if (stagedFileExists(path.join(updateRoot, 'hermes_cli', '_launchers.py'))) {
+    const extraDirs: string[] = isWindows ? [path.join(path.dirname(updateRoot), 'bin')] : []
+
+    for (const candidate of userBinLaunchers(isWindows, hermesHome, extraDirs)) {
+      if (launcherTargetsInstallation(candidate, updateRoot)) {
+        return candidate
+      }
+    }
+  }
+
+  // An old shim is a migration rung, never a damaged PM install fallback.
+  if (!existsSync(path.join(updateRoot, 'pm'))) {
+    const legacy: string = path.join(updateRoot, 'venv', isWindows ? 'Scripts' : 'bin', names[0])
+
+    if (stagedFileExists(legacy)) {
+      return legacy
+    }
+  }
+
+  return null
+}
+
+// cmd.exe re-parses its command line, so a launcher path carrying any of
+// these would change the command instead of naming a file.
+const CMD_UNSAFE_PATH: RegExp = /["%&|<>^\r\n]/
+
+/** Published user-bin launchers, at fixed locations: a GUI launch's PATH may omit them. */
+function userBinLaunchers(isWindows: boolean, hermesHome: string, extraDirs: string[] = []): string[] {
+  const names: string[] = isWindows ? ['hermes.exe', 'hermes.cmd'] : ['hermes']
+  const defaultHome: string = platformDefaultHermesHome(os.homedir(), process.env, isWindows ? 'win32' : 'linux')
+
+  const dirs: string[] = isWindows
+    ? [path.join(hermesHome || defaultHome, 'bin'), path.join(defaultHome, 'bin'), ...extraDirs]
+    : [path.join(os.homedir(), '.local', 'bin'), path.join(hermesHome || defaultHome, 'bin'), ...extraDirs]
+
+  return [...new Set(dirs)]
+    .flatMap((dir: string): string[] => names.map((name: string): string => path.join(dir, name)))
+    .filter(stagedFileExists)
+}
+
+/**
+ * A source install outside the canonical root (install.sh --dir, a
+ * setup-hermes.sh clone) is reachable only through the user-bin launcher it
+ * published. Return the install directory that launcher reports, when it is a
+ * Hermes source tree; the caller still resolves and probes it by root.
+ */
+export function userLauncherInstallRoot(
+  isWindows: boolean = process.platform === 'win32',
+  hermesHome: string = process.env.HERMES_HOME ?? ''
+): { launcher: string; root: string } | null {
+  for (const launcher of userBinLaunchers(isWindows, hermesHome)) {
+    const root: string | null = launcherInstallDirectory(launcher)
+
+    if (root && existsSync(path.join(root, 'hermes_cli', 'main.py'))) {
+      return { launcher, root }
+    }
+  }
+
+  return null
+}
+
+export function launcherTargetsInstallation(launcher: string, root: string): boolean {
+  try {
+    const reported: string | null = launcherInstallDirectory(launcher, root)
+
+    return reported !== null && reported === realpathSync(root)
+  } catch {
+    return false
+  }
+}
+
+/** The real install directory a launcher's `--version` reports, or null. */
+function launcherInstallDirectory(launcher: string, root?: string): string | null {
+  try {
+    // Node refuses to exec a .cmd directly (CVE-2024-27980), and `shell:true`
+    // would hand an interpolated path to cmd.exe wholesale. Invoke cmd.exe
+    // explicitly instead: a fixed argv, the path quoted verbatim and screened
+    // for cmd metacharacters, and nothing else for the shell to interpret.
+    const viaCmd: boolean = process.platform === 'win32' && /\.cmd$/i.test(launcher)
+
+    if (viaCmd && CMD_UNSAFE_PATH.test(launcher)) {
+      return null
     }
 
-    return `Update aborted: ${candidate} is missing or unreadable. Repair the installation and review antivirus quarantine before retrying.`
+    const command: string = viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : launcher
+    const args: string[] = viaCmd ? ['/d', '/s', '/c', `""${launcher}" --version"`] : ['--version']
+
+    const probe: SpawnSyncReturns<string> = spawnSync(command, args, {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 15000,
+      windowsHide: true,
+      windowsVerbatimArguments: viaCmd,
+      env: root ? { ...process.env, HERMES_INSTALL_ROOT: root } : process.env
+    })
+
+    if (probe.error || probe.status !== 0) {
+      return null
+    }
+
+    const reported: string | undefined = /^Install directory: (.+)$/m.exec(probe.stdout)?.[1]?.trim()
+
+    return reported ? realpathSync(reported) : null
+  } catch {
+    return null
+  }
+}
+
+/** File prerequisites only: dependency recovery remains reachable through update. */
+export function windowsUpdatePrerequisiteError(updateRoot: string, hermesHome?: string): string | null {
+  if (!resolveInstallationLauncher(updateRoot, true, hermesHome)) {
+    return `Update aborted: the installation launcher under ${updateRoot} is missing. Repair this installation before retrying.`
+  }
+
+  const maintainedDir: string = path.join(updateRoot, 'scripts', 'desktop-update')
+
+  if (existsSync(maintainedDir)) {
+    for (const name of ['windows.ps1']) {
+      const candidate: string = path.join(maintainedDir, name)
+
+      if (!stagedFileExists(candidate)) {
+        return `Update aborted: ${candidate} is missing or unreadable. Repair the installation and review antivirus quarantine before retrying.`
+      }
+    }
   }
 
   return null

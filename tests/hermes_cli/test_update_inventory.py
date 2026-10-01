@@ -7,7 +7,6 @@ import pytest
 
 import hermes_cli.update_inventory as ui
 
-
 def _write_state(home: Path, pid: int, sha: str | None = None, version: str | None = None,
                  gateway_state: str = "running"):
     record = {"pid": pid, "gateway_state": gateway_state}
@@ -16,7 +15,6 @@ def _write_state(home: Path, pid: int, sha: str | None = None, version: str | No
     if version:
         record["code_version"] = version
     (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
-
 
 @pytest.fixture()
 def fleet(monkeypatch, tmp_path):
@@ -44,13 +42,12 @@ def fleet(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
     monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda exclude_pids=None: [])
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8, "version": "1.0", "source": "git"},
     )
     monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "git")
     monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: None)
     return tmp_path
-
 
 class TestCollectInventory:
     def test_two_profile_fleet(self, fleet):
@@ -124,7 +121,7 @@ class TestCollectInventory:
 
         for target in (
             "hermes_cli.config.detect_install_method",
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             "hermes_cli.profiles._get_default_hermes_home",
             "hermes_cli.gateway._get_service_pids",
             "hermes_cli.gateway.find_profile_gateway_processes",
@@ -144,9 +141,6 @@ class TestCollectInventory:
         assert len(restored["runtimes"]) == 2
         assert restored["runtimes"][0]["kind"] == "gateway"
 
-
-
-
 class TestReceiptIntegration:
     def test_plan_recorded_into_active_receipt(self, fleet, monkeypatch, tmp_path):
         import hermes_cli.update_receipt as ur
@@ -154,7 +148,6 @@ class TestReceiptIntegration:
         home = tmp_path / "receipt_home"
         home.mkdir()
         monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home, raising=False)
-        ur._current = None
         ur.begin_update_receipt()
         plan = ui.collect_runtime_inventory()
         ui.record_plan_in_receipt(plan)
@@ -162,4 +155,3 @@ class TestReceiptIntegration:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["plan"]["install_method"] == "git"
         assert len(payload["plan"]["runtimes"]) == 2
-

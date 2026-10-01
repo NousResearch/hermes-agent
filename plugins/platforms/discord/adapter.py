@@ -31,6 +31,7 @@ from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
+from agent.i18n import get_language, t
 from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
@@ -93,83 +94,125 @@ _DISCORD_MAX_APP_COMMANDS = 100
 #   [(choice label, value), ...] or None)], command-text template, follow-up message)
 # Placeholders are the arg names; text is `.strip()`ped unless ``strip`` is False.
 _REQUIRED = object()
-_NATIVE_SLASH_COMMANDS: tuple = (
-    ("new", "Start a new conversation", (), "/reset", "New conversation started~"),
-    ("reset", "Reset your Hermes session", (), "/reset", "Session reset~"),
-    ("model", "Show or change the model",
-     (("name", str, "", "Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.", None),),
+# Text slots hold ``platform.discord.command.*`` / ``slash.*`` catalog keys; ``_native_slash_commands()``
+# resolves them for the active language (a language change re-syncs: the fingerprint carries it).
+_NATIVE_SLASH_COMMAND_SPECS: tuple = (
+    ("new", "platform.discord.command.new.description", (), "/reset", "platform.discord.command.new.followup"),
+    ("reset", "platform.discord.command.reset.description", (), "/reset", "platform.discord.command.reset.followup"),
+    ("model", "platform.discord.command.model.description",
+     (("name", str, "", "platform.discord.command.model.arg_name", None),),
      "/model {name}", None),
-    ("reasoning", "Show/change reasoning effort, or toggle showing it",
-     (("effort", str, "", "Pick a level, reset the override, or show/hide reasoning. Leave empty to see current.",
+    ("reasoning", "platform.discord.command.reasoning.description",
+     (("effort", str, "", "platform.discord.command.reasoning.arg_effort",
        # One `/reasoning <arg>` handler; Discord has no free-text subcommand, so list every value.
-       (("none — disable reasoning", "none"), ("minimal", "minimal"), ("low", "low"),
+       # Choice labels are (key-or-literal, value); bare level names are identifiers, not prose.
+       (("platform.discord.command.reasoning.choice_none", "none"), ("minimal", "minimal"), ("low", "low"),
         ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
-        ("ultra — maximum reasoning", "ultra"), ("reset — clear this session's override", "reset"),
-        ("show — reveal reasoning in replies", "show"), ("hide — hide reasoning from replies", "hide"))),),
+        ("platform.discord.command.reasoning.choice_ultra", "ultra"), ("platform.discord.command.reasoning.choice_reset", "reset"),
+        ("platform.discord.command.reasoning.choice_show", "show"), ("platform.discord.command.reasoning.choice_hide", "hide"))),),
      "/reasoning {effort}", None),
-    ("personality", "Set a personality",
-     (("name", str, "", "Personality name. Leave empty to list available.", None),),
+    ("personality", "platform.discord.command.personality.description",
+     (("name", str, "", "platform.discord.command.personality.arg_name", None),),
      "/personality {name}", None),
-    ("retry", "Retry your last message", (), "/retry", "Retrying~"),
-    ("undo", "Remove the last exchange", (), "/undo", None),
-    ("status", "Show Hermes session status", (), "/status", "Status sent~"),
-    ("sethome", "Set this chat as the home channel", (), "/sethome", None),
-    ("stop", "Stop the running Hermes agent", (), "/stop", "Stop requested~"),
-    ("steer", "Inject a message after the next tool call (no interrupt)",
-     (("prompt", str, _REQUIRED, "Text to inject into the agent's next tool result", None),),
+    ("retry", "platform.discord.command.retry.description", (), "/retry", "platform.discord.command.retry.followup"),
+    ("undo", "platform.discord.command.undo.description", (), "/undo", None),
+    ("status", "platform.discord.command.status.description", (), "/status", "platform.discord.command.status.followup"),
+    ("sethome", "slash.sethome.description", (), "/sethome", None),
+    ("stop", "platform.discord.command.stop.description", (), "/stop", "platform.discord.command.stop.followup"),
+    ("steer", "platform.discord.command.steer.description",
+     (("prompt", str, _REQUIRED, "platform.discord.command.steer.arg_prompt", None),),
      "/steer {prompt}", None),
-    ("plan", "Write a markdown implementation plan (no execution)",
-     (("task", str, "", "What to plan. Leave empty to infer from the conversation.", None),),
+    ("plan", "platform.discord.command.plan.description",
+     (("task", str, "", "platform.discord.command.plan.arg_task", None),),
      "/plan {task}", None),
-    ("compress", "Compress conversation context", (), "/compress", None),
-    ("title", "Set or show the session title",
-     (("name", str, "", "Session title. Leave empty to show current.", None),),
+    ("compress", "platform.discord.command.compress.description", (), "/compress", None),
+    ("title", "platform.discord.command.title.description",
+     (("name", str, "", "platform.discord.command.title.arg_name", None),),
      "/title {name}", None),
-    ("resume", "Resume a previously-named session",
-     (("name", str, "", "Session name to resume. Leave empty to list sessions.", None),),
+    ("resume", "slash.resume.description",
+     (("name", str, "", "platform.discord.command.resume.arg_name", None),),
      "/resume {name}", None),
-    ("usage", "Show token usage for this session", (), "/usage", None),
-    ("help", "Show available commands", (), "/help", None),
-    ("insights", "Show usage insights and analytics",
-     (("days", int, 7, "Number of days to analyze (default: 7)", None),),
+    ("usage", "platform.discord.command.usage.description", (), "/usage", None),
+    ("help", "platform.discord.command.help.description", (), "/help", None),
+    ("insights", "slash.insights.description",
+     (("days", int, 7, "platform.discord.command.insights.arg_days", None),),
      "/insights {days}", None),
-    ("reload-mcp", "Reload MCP servers from config", (), "/reload-mcp", None),
-    ("reload-skills", "Re-scan ~/.hermes/skills/ for new or removed skills", (), "/reload-skills", None),
-    ("voice", "Toggle voice reply mode",
-     (("mode", str, "", "Voice mode: join, channel, leave, on, tts, off, or status",
+    ("reload-mcp", "slash.reload_mcp.description", (), "/reload-mcp", None),
+    ("reload-skills", "platform.discord.command.reload_skills.description", (), "/reload-skills", None),
+    ("voice", "platform.discord.command.voice.description",
+     (("mode", str, "", "platform.discord.command.voice.arg_mode",
        # `join` and `channel` both hit _handle_voice_channel_join; expose both to match docs.
-       (("join — join your voice channel", "join"), ("channel — join your voice channel (alias)", "channel"),
-        ("leave — leave voice channel", "leave"), ("on — voice reply to voice messages", "on"),
-        ("tts — voice reply to all messages", "tts"), ("off — text only", "off"),
-        ("status — show current mode", "status"))),),
+       (("platform.discord.command.voice.choice_join", "join"), ("platform.discord.command.voice.choice_channel", "channel"),
+        ("platform.discord.command.voice.choice_leave", "leave"), ("platform.discord.command.voice.choice_mode_on", "on"),
+        ("platform.discord.command.voice.choice_tts", "tts"), ("platform.discord.command.voice.choice_mode_off", "off"),
+        ("platform.discord.command.voice.choice_status", "status"))),),
      "/voice {mode}", None),
-    ("update", "Update Hermes Agent to the latest version", (), "/update", "Update initiated~"),
-    ("restart", "Gracefully restart the Hermes gateway", (), "/restart", "Restart requested~"),
-    ("approve", "Approve a pending dangerous command",
-     (("scope", str, "", "Optional: 'all', 'session', 'always', 'all session', 'all always'", None),),
+    ("update", "slash.update.description", (), "/update", "platform.discord.command.update.followup"),
+    ("restart", "platform.discord.command.restart.description", (), "/restart", "platform.discord.command.restart.followup"),
+    ("approve", "slash.approve.description",
+     (("scope", str, "", "platform.discord.command.approve.arg_scope", None),),
      "/approve {scope}", None),
-    ("deny", "Deny a pending dangerous command",
-     (("scope", str, "", "Optional: 'all' to deny all pending commands", None),),
+    ("deny", "platform.discord.command.deny.description",
+     (("scope", str, "", "platform.discord.command.deny.arg_scope", None),),
      "/deny {scope}", None),
     # /thread: template None -> registered by _register_thread_slash (auth-gated defer).
-    ("thread", "Create a new thread and start a Hermes session in it", (), None, None),
-    ("queue", "Queue a prompt for the next turn (doesn't interrupt)",
-     (("prompt", str, _REQUIRED, "The prompt to queue", None),),
-     "/queue {prompt}", "Queued for the next turn."),
-    ("bg", "Run a prompt in a separate background session",
-     (("prompt", str, _REQUIRED, "The prompt to run in the background", None),),
-     "/bg {prompt}", "Background task started~"),
-    ("btw", "Ask a side question about the current conversation",
-     (("question", str, _REQUIRED, "The side question to answer without interrupting", None),),
-     "/btw {question}", "Side question dispatched~"),
+    ("thread", "platform.discord.command.thread.description", (), None, None),
+    ("queue", "platform.discord.command.queue.description",
+     (("prompt", str, _REQUIRED, "platform.discord.command.queue.arg_prompt", None),),
+     "/queue {prompt}", "platform.discord.command.queue.followup"),
+    ("bg", "slash.bg.description",
+     (("prompt", str, _REQUIRED, "platform.discord.command.bg.arg_prompt", None),),
+     "/bg {prompt}", "platform.discord.command.bg.followup"),
+    ("btw", "platform.discord.command.btw.description",
+     (("question", str, _REQUIRED, "platform.discord.command.btw.arg_question", None),),
+     "/btw {question}", "platform.discord.command.btw.followup"),
 )
+# Discord rejects the whole bulk sync (error 50035) when ONE description / parameter description /
+# Choice name exceeds 100 UTF-16 units, so every localized slot is cut at the cap.
+_DISCORD_APP_COMMAND_TEXT_LIMIT = 100
+
+
+def _default_voice_ack_phrases() -> list:
+    """Spoken while the agent works (``voice_fx.ack_phrases`` in config overrides them)."""
+    return [t(f"platform.discord.voice.ack_{i}") for i in range(1, 6)]
+
+
+def _t_discord(key: str, limit: int, **kwargs: Any) -> str:
+    """``t()`` cut to a Discord field cap (UTF-16 units)."""
+    return _truncate_discord_component_text(t(key, **kwargs), limit)
+
+
+def _native_slash_commands() -> tuple:
+    """``_NATIVE_SLASH_COMMAND_SPECS`` with descriptions, parameter descriptions and Choice names
+    resolved for the active language: ``(name, description, args, template, followup_key)``.
+    Follow-ups stay KEYS — ``_run_simple_slash`` resolves them when the command actually runs."""
+    def _text(key: str) -> str:
+        return _t_discord(key, _DISCORD_APP_COMMAND_TEXT_LIMIT)
+
+    def _choice_label(label: str) -> str:
+        return _text(label) if "." in label else label
+
+    out = []
+    for name, description_key, args, template, followup_key in _NATIVE_SLASH_COMMAND_SPECS:
+        localized_args = tuple(
+            (arg_name, arg_type, default, _text(desc_key),
+             tuple((_choice_label(lbl), val) for lbl, val in choices) if choices else None)
+            for arg_name, arg_type, default, desc_key, choices in args)
+        out.append((name, _text(description_key), localized_args, template, followup_key))
+    return tuple(out)
+
+
 _DISCORD_SELECT_FIELD_LIMIT = 100
+# Select placeholders cap at 150 chars.
+_DISCORD_SELECT_PLACEHOLDER_LIMIT = 150
 # Discord caps a single select menu at 25 options; a View holds at most 5 rows.
 _DISCORD_SELECT_MAX_OPTIONS = 25
 _DISCORD_SELECT_MAX_ROWS = 5
 # Model-select capacity: keep 2 rows for Back/Cancel, fill the rest with selects.
 _DISCORD_MODEL_SELECT_CAPACITY = (_DISCORD_SELECT_MAX_ROWS - 2) * _DISCORD_SELECT_MAX_OPTIONS
 _DISCORD_BUTTON_LABEL_LIMIT = 80
+# Embed titles cap at 256 chars.
+_DISCORD_EMBED_TITLE_LIMIT = 256
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational", "non_conversational_history",
@@ -262,7 +305,6 @@ from gateway.platforms.helpers import (
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
@@ -277,8 +319,12 @@ from gateway.platforms._shared import (
     yaml_env_setter as _yaml_env_setter
 )
 
-# Every refusal (slash command, approval button, picker, prompt) says the same thing.
-_UNAUTHORIZED = unauthorized_action_notice(Platform.DISCORD)
+
+
+def _unauthorized() -> str:
+    """Every refusal (slash command, approval button, picker, prompt) says the same thing — resolved
+    per click so the active language applies (never bound at import)."""
+    return unauthorized_action_notice(Platform.DISCORD)
 
 
 async def _read_url_image_with_redirect_guard(
@@ -461,7 +507,7 @@ class _DiscordNonConversationalMessageTracker:
         if not path.exists():
             return []
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
             if isinstance(data, list):
                 return [str(message_id) for message_id in data if str(message_id).strip()]
         except Exception:
@@ -580,14 +626,18 @@ def discord_deps_present() -> bool:
 
 
 def check_discord_requirements() -> bool:
-    """Check Discord deps; lazy-installs discord.py on first call and re-binds
-    module globals so ``DISCORD_AVAILABLE`` becomes True."""
+    """Check if Discord dependencies are available.
+
+    Lazy-installs discord.py via ``pm.ensure_import("discord")``
+    on first call if not present. After successful install, re-binds module
+    globals so ``DISCORD_AVAILABLE`` becomes True.
+    """
     global DISCORD_AVAILABLE, discord, DiscordMessage, Intents, commands
     if DISCORD_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.discord", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("discord")
     except Exception:
         return False
     try:
@@ -1961,7 +2011,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             path = self._command_sync_state_path()
             if not path.exists():
                 return {}
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
@@ -1983,7 +2033,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 for command in tree.get_commands()
             ]
         desired.sort(key=lambda item: (item.get("type", 1), item.get("name", "")))
-        payload = json.dumps(desired, sort_keys=True, separators=(",", ":"))
+        # Descriptions are baked into Discord at sync time, so the language is part of the identity:
+        # a display.language change must re-sync even if the texts happened to be identical.
+        payload = json.dumps({"language": get_language(), "commands": desired}, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _command_sync_skip_reason(self, app_id: Any, fingerprint: str) -> Optional[str]:
@@ -2988,12 +3040,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return chunks
         kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
         dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
-        notice = (
-            f"\n\n⚠️ **Response truncated** — this reply exceeded the "
-            f"delivery limit ({self.MAX_SPLIT_MESSAGES} messages). "
-            f"{dropped_chars} characters were not delivered; the full "
-            f"response is in the session logs."
-        )
+        notice = "\n\n" + t(
+            "platform.discord.limits.response_truncated",
+            max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars))
         if self.warning_text(notice):
             kept.append(notice)
         return kept
@@ -3136,7 +3185,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     hint = getattr(file, "filename", "") or ""
                 elif files:
                     hint = getattr(files[0], "filename", "") or ""
-            thread_name = _derive_forum_thread_name(hint) if hint.strip() else "New Post"
+            thread_name = _derive_forum_thread_name(hint) if hint.strip() else t("platform.discord.forum.default_title")
         kwargs: Dict[str, Any] = {"name": thread_name}
         if content:
             kwargs["content"] = content
@@ -3355,10 +3404,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             "lead_silence_ms": 200,  # silence prepended to each clip so the
                                      # voice socket's warm-up doesn't clip the first word
             "ack_enabled": True,     # speak a short phrase before tool calls
-            "ack_phrases": [
-                "Let me look into that.", "One moment.", "Checking on that now.", "Give me a sec.",
-                "On it.",
-            ],
+            "ack_phrases": None,     # None = the localized defaults (``_default_voice_ack_phrases``)
         }
         try:
             from hermes_cli.config import read_raw_config
@@ -3502,7 +3548,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return False
         if phrase is None:
             import random
-            phrases = self._voice_fx_cfg.get("ack_phrases") or ["One moment."]
+            phrases = self._voice_fx_cfg.get("ack_phrases") or _default_voice_ack_phrases()
             phrase = random.choice(phrases)
         import uuid as _uuid
         audio_path = os.path.join(
@@ -3746,7 +3792,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             ch = self._client.get_channel(text_ch_id)
             if ch:
                 try:
-                    await ch.send("Left voice channel (inactivity timeout).")
+                    await ch.send(t("platform.discord.voice.left_inactivity"))
                 except Exception:
                     pass
 
@@ -3836,7 +3882,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
         """Convert PCM -> WAV -> STT -> callback."""
-        from tools.voice_mode import is_whisper_hallucination
+        from tools.voice_mode_transcript import is_whisper_hallucination
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
         tmp_f.close()
@@ -4088,7 +4134,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         try:
             await interaction.response.send_message(
-                _UNAUTHORIZED, ephemeral=True,
+                _unauthorized(), ephemeral=True,
             )
         except Exception as e:
             # Interaction may already be responded to (caller deferred, Discord retry).
@@ -4160,13 +4206,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 home = config.get_home_channel(target)
                 if not home or not getattr(home, "chat_id", None):
                     continue
-                msg = (
-                    "⚠️ Unauthorized Discord slash attempt\n"
-                    f"User: {user_name} ({user_id})\n"
-                    f"Channel: {chan_id} (guild {guild_id})\n"
-                    f"Command: {command_text}\n"
-                    f"Reason: {reason}"
-                )
+                msg = t(
+                    "platform.discord.security.unauthorized_slash_alert",
+                    user_name=user_name, user_id=user_id, chan_id=chan_id, guild_id=guild_id,
+                    command_text=command_text, reason=reason)
                 # Policy is the DISCORD owner's (self) evaluated for the foreign target lane; a veto
                 # is not transport failure or permission to reroute to the next target.
                 from gateway.warning_notifications import present_notification
@@ -4381,7 +4424,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         try:
             if followup_msg:
-                await interaction.edit_original_response(content=followup_msg)
+                # Native commands pass a catalog key; plugin callers may still pass literal text.
+                await interaction.edit_original_response(content=t(followup_msg))
             else:
                 await interaction.delete_original_response()
         except Exception as e:
@@ -4390,7 +4434,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _slash_proxy(self, name: str, args: tuple, template: str, followup: Optional[str], *,
                      strip: bool = True, prefix: str = "slash_"):
         """Build a slash callback rendering ``template`` from its args via ``_run_simple_slash``;
-        the introspected signature is synthesised from ``args`` (see ``_NATIVE_SLASH_COMMANDS``)."""
+        the introspected signature is synthesised from ``args`` (see ``_NATIVE_SLASH_COMMAND_SPECS``)."""
         async def _handler(interaction: discord.Interaction, **kwargs):
             text = template.format(**kwargs)
             call_args = (text.strip() if strip else text,) + (() if followup is None else (followup,))
@@ -4413,8 +4457,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _register_thread_slash(self, tree, name: str, description: str) -> None:
         @tree.command(name=name, description=description)
         @discord.app_commands.describe(
-            name="Thread name", message="Optional first message to send to Hermes in the thread",
-            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080)",
+            name=_t_discord("platform.discord.command.thread.arg_name", _DISCORD_APP_COMMAND_TEXT_LIMIT),
+            message=_t_discord("platform.discord.command.thread.arg_message", _DISCORD_APP_COMMAND_TEXT_LIMIT),
+            auto_archive_duration=_t_discord("platform.discord.command.thread.arg_auto_archive", _DISCORD_APP_COMMAND_TEXT_LIMIT),
         )
         async def slash_thread(
             interaction: discord.Interaction, name: str, message: str = "",
@@ -4428,7 +4473,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not self._client:
             return
         tree = self._client.tree
-        for name, description, args, template, followup in _NATIVE_SLASH_COMMANDS:
+        for name, description, args, template, followup in _native_slash_commands():
             if template is None:
                 self._register_thread_slash(tree, name, description)
                 continue
@@ -4450,10 +4495,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if len(already_registered) >= slot_cap:
                 dropped_over_cap += 1
                 return
-            args = (("args", str, "", f"Arguments: {args_hint}"[:100], None),) if args_hint else ()
+            args = ((("args", str, "",
+                      _t_discord("platform.discord.command.auto_args_description", _DISCORD_APP_COMMAND_TEXT_LIMIT, args_hint=args_hint),
+                      None),) if args_hint else ())
             template = f"/{name} {{args}}" if args_hint else f"/{name}"
             auto_cmd = discord.app_commands.Command(
-                name=discord_name, description=(description or f"Run /{name}")[:100],
+                name=discord_name,
+                description=_truncate_discord_component_text(
+                    description or t("platform.discord.command.auto_description_fallback", name=name),
+                    _DISCORD_APP_COMMAND_TEXT_LIMIT),
                 callback=self._slash_proxy(name, args, template, None, strip=bool(args_hint), prefix="auto_slash_"),
             )
             try:
@@ -4575,7 +4625,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return choices
 
             @discord.app_commands.describe(
-                name="Which skill to run", args="Optional arguments for the skill",
+                name=_t_discord("platform.discord.command.skill.arg_name", _DISCORD_APP_COMMAND_TEXT_LIMIT),
+                args=_t_discord("platform.discord.command.skill.arg_args", _DISCORD_APP_COMMAND_TEXT_LIMIT),
             )
             @discord.app_commands.autocomplete(name=_autocomplete_name)
             async def _skill_handler(interaction: "discord.Interaction", name: str, args: str = ""):
@@ -4585,15 +4636,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 entry = self._skill_lookup.get(name)
                 if not entry:
                     await interaction.response.send_message(
-                        f"Unknown skill: `{name}`. Start typing for "
-                        f"autocomplete suggestions.",
-                        ephemeral=True,
-                    )
+                        t("platform.discord.command.skill.unknown", name=name), ephemeral=True)
                     return
                 _desc, cmd_key = entry
                 await self._run_simple_slash(interaction, f"{cmd_key} {args}".strip())
             cmd = discord.app_commands.Command(
-                name="skill", description="Run a Hermes skill", callback=_skill_handler,
+                name="skill", description=_t_discord("platform.discord.command.skill.description", _DISCORD_APP_COMMAND_TEXT_LIMIT),
+                callback=_skill_handler,
             )
             tree.add_command(cmd)
             logger.info(
@@ -4704,15 +4753,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             interaction, name=name, message=message, auto_archive_duration=auto_archive_duration,
         )
         if not result.get("success"):
-            error = result.get("error", "unknown error")
+            error = result.get("error") or t("platform.discord.command.thread.error_unknown")
             if deferred_response:
-                await interaction.followup.send(f"Failed to create thread: {error}", ephemeral=True)
+                await interaction.followup.send(t("platform.discord.command.thread.failed", error=error), ephemeral=True)
             return
         thread_id = result.get("thread_id")
         thread_name = result.get("thread_name") or name
         link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
         if deferred_response:
-            await interaction.followup.send(f"Created thread {link}", ephemeral=True)
+            await interaction.followup.send(t("platform.discord.command.thread.created", link=link), ephemeral=True)
         # Track thread participation so follow-ups don't require @mention
         if thread_id:
             await self._threads.mark_async(thread_id)
@@ -5241,18 +5290,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Create a thread in the current channel; falls back to seed message + create_thread on rejection (e.g. permissions)."""
         name = (name or "").strip()
         if not name:
-            return {"error": "Thread name is required."}
+            return {"error": t("platform.discord.command.thread.error_name_required")}
         if auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
             allowed = ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES))
-            return {"error": f"auto_archive_duration must be one of: {allowed}."}
+            return {"error": t("platform.discord.command.thread.error_invalid_archive", allowed=allowed)}
         channel = await self._resolve_interaction_channel(interaction)
         if channel is None:
-            return {"error": "Could not resolve the current Discord channel."}
+            return {"error": t("platform.discord.command.thread.error_no_channel")}
         if isinstance(channel, discord.DMChannel):
-            return {"error": "Discord threads can only be created inside server text channels, not DMs."}
+            return {"error": t("platform.discord.command.thread.error_dm_not_supported")}
         parent_channel = self._thread_parent_channel(channel)
         if parent_channel is None:
-            return {"error": "Could not determine a parent text channel for the new thread."}
+            return {"error": t("platform.discord.command.thread.error_no_parent")}
         display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
         reason = f"Requested by {display_name} via /thread"
         starter_message = (message or "").strip()
@@ -5265,7 +5314,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return self._thread_created(thread, name)
         except Exception as direct_error:
             try:
-                seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
+                seed_content = starter_message or t("platform.discord.thread.seed_message", name=name)
                 seed_msg = await parent_channel.send(seed_content)
                 thread = await seed_msg.create_thread(
                     name=name, auto_archive_duration=auto_archive_duration, reason=reason,
@@ -5273,10 +5322,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return self._thread_created(thread, name)
             except Exception as fallback_error:
                 return {
-                    "error": (
-                        "Discord rejected direct thread creation and the fallback also failed. "
-                        f"Direct error: {direct_error}. Fallback error: {fallback_error}"
-                    )
+                    "error": t(
+                        "platform.discord.command.thread.error_both_failed",
+                        direct_error=str(direct_error), fallback_error=str(fallback_error)),
                 }
 
     @staticmethod
@@ -5301,7 +5349,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         content = re.sub(r"<@[!&]?\d+>", "", content)
         content = re.sub(r"<#\d+>", "", content)
         content = re.sub(r"\s+", " ", content).strip()
-        thread_name = content[:80] if content else "Hermes"
+        thread_name = content[:80] if content else t("platform.discord.thread.default_name")
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
         return thread_name
@@ -5334,9 +5382,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             except Exception as direct_error:
                 last_direct_error = direct_error
                 try:
-                    seed_msg = await message.channel.send(
-                        f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
-                    )
+                    seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
                     thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
                     return self._stamp_auto_thread_name(thread, thread_name)
                 except Exception as fallback_error:
@@ -5439,7 +5485,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             send = getattr(parent, "send", None)
             if send is None:
                 return None
-            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+            seed_msg = await send(t("platform.discord.thread.handoff_seed", name=thread_name))
             thread = await seed_msg.create_thread(
                 name=thread_name, auto_archive_duration=1440, reason=reason,
             )
@@ -5463,7 +5509,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         else:
             prefix = f"{header}\n\n"
             suffix = tail
-        truncated_suffix = "\n... [truncated]"
+        truncated_suffix = "\n" + t("platform.discord.prompt.truncated_marker")
         budget = max(0, self.MAX_MESSAGE_LENGTH - len(prefix) - len(suffix))
         if len(body) > budget:
             body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
@@ -5498,14 +5544,26 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.warning("[%s] %s failed: %s", self.name, fail_log, e)
             return SendResult(success=False, error=str(e))
 
-    # Payload lives in plain content: embeds can be invisible/detached on web/mobile.
-    _EA_HEADER = (f"⚠️ **{EA_HEADER_TEXT}**\n\n"
-                  "Do you want Hermes to run this command?\n\n"
-                  "**Requested command:**\n")
+    # Payload lives in plain content: embeds can be invisible/detached on web/mobile. Properties, not
+    # class constants: the wording comes from the catalog for the language active at send time.
+    @property
+    def _EA_HEADER(self) -> str:  # noqa: N802 — shadows the base class attr
+        return (f"⚠️ **{t('gateway.exec_approval.header')}**\n\n"
+                f"{t('platform.discord.approval.question')}\n\n"
+                f"**{t('platform.discord.approval.requested_command_label')}**\n")
+
     _EA_CODE_OPEN = "```bash\n"
     _EA_CODE_CLOSE = "\n```\n"
-    _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
-    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+
+    @property
+    def _EA_REASON_LABEL(self) -> str:  # noqa: N802
+        return f"**{t('gateway.exec_approval.reason_label')}:** "
+
+    @property
+    def _EA_SMART_DENY_LINE(self) -> str:  # noqa: N802
+        line = t("gateway.exec_approval.smart_deny_line")
+        label, sep, rest = line.partition(":")
+        return "\n\n" + (f"**{label}:**{rest}" if sep else f"**{line}**")
     # The reason shares the 2000-char content cap with the command; unbounded it would starve
     # the command preview to zero and push the content past the cap.
     _EA_REASON_BUDGET = 300
@@ -5526,7 +5584,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if mention_content:
                 content = f"{mention_content}\n{content}"
             embed = discord.Embed(
-                title=f"⚠️ {EA_HEADER_TEXT}",
+                title=_truncate_discord_component_text(f"⚠️ {t('gateway.exec_approval.header')}", _DISCORD_EMBED_TITLE_LIMIT),
                 color=discord.Color.orange(),
             )
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
@@ -5555,8 +5613,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         def _build(_channel):
             # Header-only card (same rule as the exec approval prompt): the message lives in
             # content only, so embed-rendering clients don't see it twice (#114693).
-            embed = discord.Embed(title=title or "Confirm", color=discord.Color.orange())
-            content = self._self_contained_prompt_content(f"**{title or 'Confirm'}**", message)
+            header = title or t("platform.discord.approval.confirm_title")
+            embed = discord.Embed(title=_truncate_discord_component_text(header, _DISCORD_EMBED_TITLE_LIMIT), color=discord.Color.orange())
+            content = self._self_contained_prompt_content(f"**{header}**", message)
             view = SlashConfirmView(
                 session_key=session_key, confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
@@ -5590,21 +5649,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         def _build(_channel):
             # Header-only card (same rule as the exec approval prompt): the question and hint live
             # in content only, so embed-rendering clients don't see them twice (#114693).
-            embed = discord.Embed(title="❓ Hermes needs your input", color=discord.Color.orange())
+            clarify_title = t("platform.discord.prompt.clarify_title")
+            embed = discord.Embed(
+                title=_truncate_discord_component_text(f"❓ {clarify_title}", _DISCORD_EMBED_TITLE_LIMIT), color=discord.Color.orange())
             # 5 buttons × 5 rows = 25; one slot is reserved for "Other".
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
             if clean_choices:
-                hint = "Pick one below, or click ✏️ Other to type a custom answer."
+                hint = t("platform.discord.prompt.clarify_hint_buttons")
                 view = ClarifyChoiceView(
                     choices=clean_choices, clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                 )
             else:
-                hint = "Reply in this channel with your answer."
+                hint = t("platform.discord.prompt.clarify_hint_text")
                 view = None
             content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(), tail=f"\n\n{hint}",
+                f"❓ **{clarify_title}**", str(question or "").strip(), tail=f"\n\n{hint}",
             )
             send_kwargs = {"content": content, "embed": embed}
             if view:
@@ -5618,15 +5679,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Yes/No prompt for the gateway ``/update`` watcher when ``hermes update --gateway`` needs input."""
         def _build(_channel):
-            default_hint = f" (default: {default})" if default else ""
+            default_hint = t("platform.discord.prompt.default_hint", default=default) if default else ""
+            update_title = t("platform.discord.prompt.update_title")
             embed = discord.Embed(
-                title="☤ Update Needs Your Input", description=f"{prompt}{default_hint}", color=discord.Color.gold(),
+                title=_truncate_discord_component_text(f"☤ {update_title}", _DISCORD_EMBED_TITLE_LIMIT),
+                description=f"{prompt}{default_hint}", color=discord.Color.gold(),
             )
             view = UpdatePromptView(
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            content = self._self_contained_prompt_content("☤ **Update Needs Your Input**", f"{prompt}{default_hint}")
+            content = self._self_contained_prompt_content(f"☤ **{update_title}**", f"{prompt}{default_hint}")
             return {"content": content, "embed": embed, "view": view}, view
         result = await self._send_prompt(chat_id, metadata, _build)
         if result.success and _metadata_marks_nonconversational(metadata):
@@ -5645,12 +5708,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             except Exception:
                 provider_label = current_provider
             embed = discord.Embed(
-                title="⚙ Model Configuration",
-                description=(
-                    f"Current model: `{current_model or 'unknown'}`\n"
-                    f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
-                ),
+                title=_t_discord("platform.discord.picker.title", _DISCORD_EMBED_TITLE_LIMIT),
+                description=t(
+                    "platform.discord.picker.select_provider",
+                    model=current_model or t("platform.discord.picker.unknown_model"), provider=provider_label),
                 color=discord.Color.blue(),
             )
             view = ModelPickerView(
@@ -5669,7 +5730,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         etc. Each choice: ``{"value": str, "label": str, "is_current": bool}``."""
         def _build(_channel):
             embed = discord.Embed(
-                title="⚙ " + (title.splitlines()[0] if title else "Choose an option"),
+                title=_truncate_discord_component_text(
+                    "⚙ " + (title.splitlines()[0] if title else t("platform.discord.picker.choice_default_title")),
+                    _DISCORD_EMBED_TITLE_LIMIT),
                 description="\n".join(title.splitlines()[1:]) or None, color=discord.Color.blue(),
             )
             view = ChoicePickerView(
@@ -6023,9 +6086,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         # recovers, and skip agent invocation for this message. See #20243.
                         await message.channel.send(
                             self.warning_text(
-                                "⚠️ Hermes could not create a Discord thread for "
-                                "this message, so the request was not processed. Please retry.",
-                                "The request was not processed. Please retry.")
+                                t("platform.discord.thread.auto_create_failed"),
+                                t("platform.discord.thread.auto_create_failed_generic"))
                         )
                     except Exception as notify_error:
                         logger.warning(
@@ -6298,10 +6360,26 @@ def _define_discord_view_classes() -> None:
             self._disable_all()
             await interaction.response.edit_message(embed=embed, view=self)
 
+        def _localize_buttons(self, **keys_by_attr: str) -> None:
+            """Relabel decorator-declared buttons from the catalog (decorators run at import, before
+            the language is known). Button labels cap at 80 UTF-16 units."""
+            for attr, key in keys_by_attr.items():
+                item = getattr(self, attr, None)
+                if not hasattr(item, "label"):
+                    # Not materialised as an item on the instance (stubbed discord in tests / other
+                    # discord.py builds): locate the child whose callback is the decorated method.
+                    item = next(
+                        (child for child in (getattr(self, "children", None) or [])
+                         if getattr(getattr(child, "callback", None), "__name__", None) == attr
+                         or getattr(getattr(getattr(child, "callback", None), "callback", None), "__name__", None) == attr),
+                        None)
+                if hasattr(item, "label"):
+                    item.label = _t_discord(key, _DISCORD_BUTTON_LABEL_LIMIT)
+
         async def on_timeout(self):
             self.resolved = True
             self._disable_all()
-            await self._expire_embed("⏱ Prompt expired — no action taken")
+            await self._expire_embed(t("platform.discord.prompt.expired_footer"))
 
     class ExecApprovalView(_HermesView):
         """Allow Once / Allow Session / Always Allow / Deny buttons for a dangerous command.
@@ -6316,6 +6394,9 @@ def _define_discord_view_classes() -> None:
             self.session_key = session_key
             self.require_admin = require_admin
             self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
+            self._localize_buttons(
+                allow_once="gateway.exec_approval.action_once", allow_session="gateway.exec_approval.action_session",
+                allow_always="gateway.exec_approval.action_always", deny="gateway.exec_approval.action_deny")
             if smart_denied or not allow_session:
                 self.remove_item(self.allow_session)
                 self.remove_item(self.allow_always)
@@ -6346,13 +6427,14 @@ def _define_discord_view_classes() -> None:
                 )
             return False
 
-        async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label: str):
+        async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
             """Resolve the approval via the gateway approval queue and update the embed."""
             if not await self._gate(
-                interaction, resolved_msg="This approval has already been resolved~",
-                unauth_msg=_UNAUTHORIZED,
+                interaction, resolved_msg=t("platform.discord.approval.already_resolved"),
+                unauth_msg=_unauthorized(),
             ):
                 return
+            label = t(label_key)
             self.resolved = True
             # Unblock the waiting agent thread FIRST. A click after the approval
             # wait timed out (count == 0) must not claim "Approved".
@@ -6368,25 +6450,27 @@ def _define_discord_view_classes() -> None:
                 count = 0
             if not count:
                 color = discord.Color.dark_grey()
-                label = "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)"
+                label = t("platform.discord.approval.expired")
             await self._finalize_embed(
-                interaction, color, f"{label} by {interaction.user.display_name}" if count else label)
+                interaction, color,
+                t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
 
+        # Decorator labels are placeholders; ``_localize_buttons`` in __init__ sets the real text.
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
         async def allow_once(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+            await self._resolve(interaction, "once", discord.Color.green(), "platform.discord.approval.resolved_once")
 
         @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
         async def allow_session(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "session", discord.Color.blue(), "Approved for session")
+            await self._resolve(interaction, "session", discord.Color.blue(), "platform.discord.approval.resolved_session")
 
         @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
         async def allow_always(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Approved permanently")
+            await self._resolve(interaction, "always", discord.Color.purple(), "platform.discord.approval.resolved_always")
 
         @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
         async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "deny", discord.Color.red(), "Denied")
+            await self._resolve(interaction, "deny", discord.Color.red(), "platform.discord.approval.resolved_deny")
 
     class SlashConfirmView(_HermesView):
         """Approve Once / Always Approve / Cancel for slash-command confirmations (``/reload-mcp``,
@@ -6396,14 +6480,20 @@ def _define_discord_view_classes() -> None:
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.confirm_id = confirm_id
+            self._localize_buttons(
+                approve_once="platform.discord.slash_confirm.approve_once",
+                approve_always="platform.discord.slash_confirm.always_approve",
+                cancel="platform.discord.slash_confirm.cancel")
 
-        async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label: str):
+        async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
             if not await self._gate(
-                interaction, resolved_msg="This prompt has already been resolved~",
-                unauth_msg=_UNAUTHORIZED,
+                interaction, resolved_msg=t("platform.discord.slash_confirm.already_resolved"),
+                unauth_msg=_unauthorized(),
             ):
                 return
-            await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
+            await self._finalize_embed(
+                interaction, color,
+                t("platform.discord.approval.by_user", label=t(label_key), user=interaction.user.display_name))
             # A returned follow-up message is posted in the same channel.
             try:
                 from tools import slash_confirm as _slash_confirm_mod
@@ -6420,15 +6510,15 @@ def _define_discord_view_classes() -> None:
 
         @discord.ui.button(label="Approve Once", style=discord.ButtonStyle.green)
         async def approve_once(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+            await self._resolve(interaction, "once", discord.Color.green(), "platform.discord.slash_confirm.resolved_once")
 
         @discord.ui.button(label="Always Approve", style=discord.ButtonStyle.blurple)
         async def approve_always(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Always approved")
+            await self._resolve(interaction, "always", discord.Color.purple(), "platform.discord.slash_confirm.resolved_always")
 
         @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
         async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
+            await self._resolve(interaction, "cancel", discord.Color.greyple(), "platform.discord.slash_confirm.resolved_cancel")
 
     class UpdatePromptView(_HermesView):
         """Yes/No buttons for ``hermes update`` prompts; the answer is written to
@@ -6437,11 +6527,14 @@ def _define_discord_view_classes() -> None:
         def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
+            self._localize_buttons(yes_btn="platform.discord.prompt.affirm", no_btn="platform.discord.prompt.negate")
 
-        async def _respond(self, interaction: discord.Interaction, answer: str, color: discord.Color, label: str):
-            if not await self._gate(interaction, resolved_msg="Already answered~", unauth_msg=_UNAUTHORIZED):
+        async def _respond(self, interaction: discord.Interaction, answer: str, color: discord.Color, label_key: str):
+            if not await self._gate(interaction, resolved_msg=t("platform.discord.prompt.already_answered"), unauth_msg=_unauthorized()):
                 return
-            await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
+            await self._finalize_embed(
+                interaction, color,
+                t("platform.discord.approval.by_user", label=t(label_key), user=interaction.user.display_name))
             try:
                 from hermes_constants import get_hermes_home
                 response_path = get_hermes_home() / ".update_response"
@@ -6454,11 +6547,11 @@ def _define_discord_view_classes() -> None:
 
         @discord.ui.button(label="Yes", style=discord.ButtonStyle.green, emoji="✓")
         async def yes_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._respond(interaction, "y", discord.Color.green(), "Yes")
+            await self._respond(interaction, "y", discord.Color.green(), "platform.discord.prompt.affirm")
 
         @discord.ui.button(label="No", style=discord.ButtonStyle.red, emoji="✗")
         async def no_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._respond(interaction, "n", discord.Color.red(), "No")
+            await self._respond(interaction, "n", discord.Color.red(), "platform.discord.prompt.negate")
 
     class ModelPickerView(_HermesView):
         """Two-step select-menu model picker: provider dropdown → model dropdown,
@@ -6501,16 +6594,17 @@ def _define_discord_view_classes() -> None:
             for p in self.providers:
                 count = p.get("total_models", len(p.get("models", [])))
                 options.append(discord.SelectOption(
-                    label=_truncate_discord_component_text(f"{p['name']} ({count} models)", _DISCORD_SELECT_FIELD_LIMIT),
-                    value=p["slug"], description="current" if p.get("is_current") else None,
+                    label=_t_discord("platform.discord.picker.provider_option", _DISCORD_SELECT_FIELD_LIMIT, provider=p["name"], count=str(count)),
+                    value=p["slug"],
+                    description=_t_discord("platform.discord.picker.current", _DISCORD_SELECT_FIELD_LIMIT) if p.get("is_current") else None,
                 ))
             if not options:
                 return
             self._add_select(
-                "Choose a provider...", options[:_DISCORD_SELECT_MAX_OPTIONS], "model_provider_select",
-                self._on_provider_selected,
+                _t_discord("platform.discord.picker.provider_placeholder", _DISCORD_SELECT_PLACEHOLDER_LIMIT),
+                options[:_DISCORD_SELECT_MAX_OPTIONS], "model_provider_select", self._on_provider_selected,
             )
-            self._add_button("Cancel", discord.ButtonStyle.red, "model_cancel", self._on_cancel)
+            self._add_button(_t_discord("platform.discord.picker.cancel", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.red, "model_cancel", self._on_cancel)
 
         def _build_model_select(self, provider_slug: str):
             """Model dropdown(s) for one provider.
@@ -6527,7 +6621,7 @@ def _define_discord_view_classes() -> None:
                 models[i : i + _DISCORD_SELECT_MAX_OPTIONS]
                 for i in range(0, len(models), _DISCORD_SELECT_MAX_OPTIONS)
             ][: _DISCORD_SELECT_MAX_ROWS - 2]
-            placeholder_base = f"Choose a model from {provider.get('name', provider_slug)}"
+            placeholder_base = t("platform.discord.picker.model_placeholder", provider=provider.get("name", provider_slug))
             for idx, chunk in enumerate(chunks):
                 options = [
                     discord.SelectOption(
@@ -6538,16 +6632,17 @@ def _define_discord_view_classes() -> None:
                 ]
                 suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
                 self._add_select(
-                    f"{placeholder_base}{suffix}...", options, f"model_model_select_{idx}", self._on_model_selected)
-            self._add_button("◀ Back", discord.ButtonStyle.grey, "model_back", self._on_back)
-            self._add_button("Cancel", discord.ButtonStyle.red, "model_cancel2", self._on_cancel)
+                    _truncate_discord_component_text(f"{placeholder_base}{suffix}...", _DISCORD_SELECT_PLACEHOLDER_LIMIT),
+                    options, f"model_model_select_{idx}", self._on_model_selected)
+            self._add_button(_t_discord("platform.discord.picker.back", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.grey, "model_back", self._on_back)
+            self._add_button(_t_discord("platform.discord.picker.cancel", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.red, "model_cancel2", self._on_cancel)
 
         def _build_expensive_confirm(self, model_id: str):
             """Build confirmation buttons for unusually expensive models."""
             self.clear_items()
             self._pending_expensive_model = model_id
-            self._add_button("Switch anyway", discord.ButtonStyle.red, "model_expensive_confirm", self._on_expensive_confirm)
-            self._add_button("Cancel", discord.ButtonStyle.grey, "model_expensive_cancel", self._on_cancel)
+            self._add_button(_t_discord("platform.discord.picker.switch_anyway", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.red, "model_expensive_confirm", self._on_expensive_confirm)
+            self._add_button(_t_discord("platform.discord.picker.cancel", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.grey, "model_expensive_cancel", self._on_cancel)
 
         async def _expensive_warning_for(self, model_id: str):
             try:
@@ -6557,11 +6652,14 @@ def _define_discord_view_classes() -> None:
             except Exception:
                 return None
 
-        def _config_embed(self, description: str, *, title: str = "⚙ Model Configuration", color=None):
-            return discord.Embed(title=title, description=description, color=discord.Color.blue() if color is None else color)
+        def _config_embed(self, description: str, *, title: Optional[str] = None, color=None):
+            title = title if title is not None else t("platform.discord.picker.title")
+            return discord.Embed(
+                title=_truncate_discord_component_text(title, _DISCORD_EMBED_TITLE_LIMIT), description=description,
+                color=discord.Color.blue() if color is None else color)
 
         async def _on_provider_selected(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
                 return
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
@@ -6571,26 +6669,28 @@ def _define_discord_view_classes() -> None:
             # `shown` counts models actually rendered across the partitioned selects (≤ 75).
             total = provider.get("total_models", 0) if provider else 0
             shown = min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY) if provider else 0
-            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
-            await self._edit(interaction, f"Provider: **{pname}**\nSelect a model:{extra}")
+            extra = f"\n*{t('platform.discord.picker.more_available', count=str(total - shown))}*" if total > shown else ""
+            await self._edit(interaction, t("platform.discord.picker.select_model", provider=pname, extra=extra))
 
         async def _switch_selected_model(self, interaction: discord.Interaction, model_id: str):
-            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg=t("platform.discord.picker.already_resolved"), unauth_msg=_unauthorized()):
                 return
             self.resolved = True
             self.clear_items()
-            await self._edit(interaction, f"Switching to `{model_id}`...", title="⚙ Switching Model", view=None)
+            await self._edit(
+                interaction, t("platform.discord.picker.switching", model=model_id),
+                title=t("platform.discord.picker.switching_title"), view=None)
             try:
                 result_text = await self.on_model_selected(str(interaction.channel_id), model_id, self._selected_provider)
             except Exception as exc:
-                result_text = f"Error switching model: {exc}"
+                result_text = t("platform.discord.picker.switch_error", error=str(exc))
             await interaction.edit_original_response(
-                embed=self._config_embed(result_text, title="⚙ Model Switched", color=discord.Color.green()),
+                embed=self._config_embed(result_text, title=t("platform.discord.picker.switched_title"), color=discord.Color.green()),
                 view=None,
             )
 
         async def _on_model_selected(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg=t("platform.discord.picker.already_resolved"), unauth_msg=_unauthorized()):
                 return
             model_id = interaction.data["values"][0]
             warning = await self._expensive_warning_for(model_id)
@@ -6601,15 +6701,15 @@ def _define_discord_view_classes() -> None:
             await self._switch_selected_model(interaction, model_id)
 
         async def _on_expensive_confirm(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
                 return
             if not self._pending_expensive_model:
-                await interaction.response.send_message("Model selection expired.", ephemeral=True)
+                await interaction.response.send_message(t("platform.discord.picker.expired_toast"), ephemeral=True)
                 return
             await self._switch_selected_model(interaction, self._pending_expensive_model)
 
         async def _on_back(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
                 return
             self._build_provider_select()
             try:
@@ -6619,13 +6719,16 @@ def _define_discord_view_classes() -> None:
                 provider_label = self.current_provider
             await self._edit(
                 interaction,
-                f"Current model: `{self.current_model or 'unknown'}`\nProvider: {provider_label}\n\nSelect a provider:",
+                t("platform.discord.picker.select_provider",
+                  model=self.current_model or t("platform.discord.picker.unknown_model"), provider=provider_label),
             )
 
         async def _on_cancel(self, interaction: discord.Interaction):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
+                return
             self.resolved = True
             self.clear_items()
-            await self._edit(interaction, "Model selection cancelled.", color=discord.Color.greyple())
+            await self._edit(interaction, t("platform.discord.picker.cancelled"), color=discord.Color.greyple())
 
         async def on_timeout(self):
             self.resolved = True
@@ -6633,7 +6736,7 @@ def _define_discord_view_classes() -> None:
             msg = self._message
             if msg:
                 try:
-                    embed = self._config_embed("⏱ Selection expired — no model change.", color=discord.Color.greyple())
+                    embed = self._config_embed(t("platform.discord.picker.expired"), color=discord.Color.greyple())
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass
@@ -6652,16 +6755,17 @@ def _define_discord_view_classes() -> None:
                     discord.SelectOption(
                         label=_truncate_discord_component_text(label, _DISCORD_SELECT_FIELD_LIMIT),
                         value=str(choice.get("value") or ""),
-                        description="current" if choice.get("is_current") else None,
+                        description=_t_discord("platform.discord.picker.current", _DISCORD_SELECT_FIELD_LIMIT) if choice.get("is_current") else None,
                     )
                 )
-            select = discord.ui.Select(placeholder="Choose an option...", options=options)
+            select = discord.ui.Select(
+                placeholder=_t_discord("platform.discord.picker.choice_placeholder", _DISCORD_SELECT_PLACEHOLDER_LIMIT), options=options)
             select.callback = self._on_select
             self.add_item(select)
 
         async def _on_select(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
-                await interaction.response.send_message(_UNAUTHORIZED, ephemeral=True)
+                await interaction.response.send_message(_unauthorized(), ephemeral=True)
                 return
             if self.resolved:
                 await interaction.response.defer()
@@ -6672,7 +6776,7 @@ def _define_discord_view_classes() -> None:
                 result_text = await self.on_choice_selected(str(interaction.channel_id), value)
             except Exception as exc:
                 logger.error("Choice picker selection failed: %s", exc)
-                result_text = f"Error applying selection: {exc}"
+                result_text = t("platform.discord.picker.choice_error", error=str(exc))
             embed = discord.Embed(description=result_text, color=discord.Color.green())
             self.clear_items()
             self.stop()
@@ -6684,7 +6788,7 @@ def _define_discord_view_classes() -> None:
             msg = self._message
             if msg is not None:
                 try:
-                    embed = discord.Embed(description="⏱ Selection expired — no change made.", color=discord.Color.greyple())
+                    embed = discord.Embed(description=t("platform.discord.picker.choice_expired"), color=discord.Color.greyple())
                     self.clear_items()
                     await msg.edit(embed=embed, view=self)
                 except Exception:
@@ -6707,7 +6811,7 @@ def _define_discord_view_classes() -> None:
                 button.callback = self._make_choice_callback(index, choice)
                 self.add_item(button)
             other_btn = discord.ui.Button(
-                label="✏️ Other (type answer)", style=discord.ButtonStyle.secondary,
+                label=_t_discord("platform.discord.prompt.other", _DISCORD_BUTTON_LABEL_LIMIT), style=discord.ButtonStyle.secondary,
                 custom_id=f"clarify:{clarify_id}:other",
             )
             other_btn.callback = self._on_other
@@ -6761,12 +6865,14 @@ def _define_discord_view_classes() -> None:
         async def _resolve_choice(self, interaction: "discord.Interaction", index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""
             if not await self._gate(
-                interaction, resolved_msg="This prompt has already been answered~",
-                unauth_msg=_UNAUTHORIZED,
+                interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
+                unauth_msg=_unauthorized(),
             ):
                 return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
-            await self._finish(interaction, discord.Color.green(), f"Answered by {display_name}: {choice}", log_edit_failure=True)
+            await self._finish(
+                interaction, discord.Color.green(),
+                t("platform.discord.prompt.answered_by", user=display_name, choice=choice), log_edit_failure=True)
             # Round-trip the canonical choice text from the entry, not the button label.
             resolved_text: Optional[str] = None
             try:
@@ -6792,8 +6898,8 @@ def _define_discord_view_classes() -> None:
         async def _on_other(self, interaction: "discord.Interaction") -> None:
             """Flip the clarify entry into text-capture mode."""
             if not await self._gate(
-                interaction, resolved_msg="This prompt has already been answered~",
-                unauth_msg=_UNAUTHORIZED,
+                interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
+                unauth_msg=_unauthorized(),
             ):
                 return
             # Don't pop: the gateway text-intercept needs the entry until the user types.
@@ -6803,7 +6909,9 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.warning("Discord clarify mark_awaiting_text failed (id=%s): %s", self.clarify_id, exc)
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
-            await self._finish(interaction, discord.Color.blue(), f"Awaiting typed response from {display_name}…", log_edit_failure=False)
+            await self._finish(
+                interaction, discord.Color.blue(),
+                t("platform.discord.prompt.awaiting_typed", user=display_name), log_edit_failure=False)
 
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()
@@ -6832,7 +6940,7 @@ def _derive_forum_thread_name(message: str) -> str:
     first_line = message.strip().split("\n", 1)[0].strip()
     first_line = first_line.lstrip("#").strip()
     if not first_line:
-        first_line = "New Post"
+        first_line = t("platform.discord.forum.default_title")
     return first_line[:100]
 
 
@@ -7361,25 +7469,3 @@ def register(ctx) -> None:
         emoji="🎮",
         allow_update_command=True,
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'env_int': ('utils', 'env_int'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

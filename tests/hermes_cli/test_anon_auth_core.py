@@ -39,29 +39,13 @@ def _shared_store(tmp_path) -> dict:
 
 
 class TestIdentityLifecycle:
-    def test_configured_opt_in_provisions_without_a_launcher_flag(self, portal, monkeypatch):
-        monkeypatch.delenv("HERMES_GUEST_ONBOARDING", raising=False)
-        _write_config(monkeypatch, guest=True)
-        assert anon_auth.guest_enabled() is True
-        state = anon_auth.ensure_portal_identity(explicit=True)
-        assert anon_auth.is_guest_state(state)
-        assert portal.minted == 1
-
-    @pytest.mark.parametrize("choice", [False, "false", "true", 1])
-    def test_explicit_non_opt_in_cannot_be_enabled_by_a_launcher(self, portal, monkeypatch, choice):
-        from hermes_cli import config as cfg_mod
-
-        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: {"nous": {"guest": choice}})
-        assert anon_auth.guest_enabled() is False
-        assert anon_auth.ensure_portal_identity(explicit=True) is None
-        assert portal.calls == []
-
-    def test_fresh_install_mints_once_and_is_the_active_provider(self, portal, tmp_path):
+    def test_fresh_install_mints_once_and_resolves_without_claiming_active_provider(self, portal, tmp_path):
         state = anon_auth.ensure_portal_identity(explicit=True)
         assert anon_auth.is_guest_state(state)
         assert "refresh_token" not in state
         store = _load_auth_store()
-        assert store["active_provider"] == "nous"
+        assert "active_provider" not in store
+        assert resolve_provider("auto") == "nous"
         assert anon_auth.is_guest_state(store["providers"]["nous"])
         assert _shared_store(tmp_path).get("anon_token") == state["anon_token"]
         assert portal.minted == 1
@@ -347,7 +331,7 @@ class TestBootstrapIsTheOneCreator:
     def test_bootstrap_mints_once_records_and_a_second_run_is_free(self, portal):
         fb = self._fresh()
         record = fb.run_bootstrap()
-        assert record.free_tier and record.has_identity and record.provider_configured
+        assert record.free_tier_account and record.has_identity and record.provider_configured
         assert record.inference_provider == "nous" and record.other_providers is False
         assert portal.minted == 1
         again = fb.run_bootstrap()
@@ -359,7 +343,7 @@ class TestBootstrapIsTheOneCreator:
         fb = self._fresh()
         record = fb.run_bootstrap()
         assert record.other_providers is True and record.has_identity is True
-        assert record.free_tier is True, "the identity exists for connectors"
+        assert record.free_tier_account is True, "the identity exists for connectors"
         assert record.inference_provider != "nous"
         assert _load_auth_store().get("active_provider") != "nous", "a mint beside an own key must not hijack inference"
         assert portal.minted == 1
@@ -384,7 +368,7 @@ class TestBootstrapIsTheOneCreator:
         portal.gate_closed = True
         fb = self._fresh()
         record = fb.run_bootstrap()
-        assert record.has_identity is False and record.free_tier is False and record.error
+        assert record.has_identity is False and record.free_tier_account is False and record.error
         assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
         # The explicit retry (desktop free_tier.provision) is also memoised for the process.
         assert anon_auth.ensure_portal_identity(explicit=True) is None

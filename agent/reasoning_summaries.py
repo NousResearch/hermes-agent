@@ -43,6 +43,14 @@ def _detail_blocks_compatible(previous: dict, current: dict) -> bool:
         if previous_value not in (None, "") and current_value not in (None, "") and previous_value != current_value:
             return False
     return True
+def streamed_reasoning_detail_text(detail: Any) -> str:
+    """Readable text from a detail delta; never expose opaque replay material."""
+    dtype = detail.get("type") if isinstance(detail, dict) else getattr(detail, "type", None)
+    key = _MERGEABLE_DETAIL_TEXT_KEYS.get(dtype) if isinstance(dtype, str) else None
+    if key is None:
+        return ""
+    text = detail.get(key) if isinstance(detail, dict) else getattr(detail, key, None)
+    return text if isinstance(text, str) else ""
 
 
 def append_streamed_reasoning_detail(details_acc: list, detail: Any) -> None:

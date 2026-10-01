@@ -26,6 +26,8 @@ import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
+import { waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke'
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { resolveElectronBinary } from './electron-binary'
@@ -174,7 +176,7 @@ function writeEmptyConfig(hermesHome: string): void {
  * Key env vars:
  *  - HERMES_HOME → sandbox hermes-home (isolated config/sessions)
  *  - HERMES_DESKTOP_USER_DATA_DIR → sandbox electron-user-data
- *  - HERMES_DESKTOP_IGNORE_EXISTING=1 → don't pick up `hermes` from PATH
+ *  - HERMES_DESKTOP_IGNORE_EXISTING=1 → skip the installed runtime
  *    (we want the dev checkout at REPO_ROOT)
  *  - HERMES_DESKTOP_HERMES_ROOT → REPO_ROOT (dev checkout resolution)
  *  - HERMES_DESKTOP_APP_NAME → unique-ish per test (avoids single-instance lock)
@@ -296,6 +298,10 @@ export interface MockBackendFixture {
 
 export interface MockBackendOptions {
   /**
+   * Script and stream behavior for the mock inference server.
+   */
+  mockServer?: MockServerOptions
+  /**
    * Optional YAML lines to inject under the `display:` section of the
    * generated config.yaml. Used by the interim-message e2e test to toggle
    * `display.interim_assistant_messages`.
@@ -316,6 +322,7 @@ export interface MockBackendOptions {
  *   3. Launch the desktop app
  *   4. Return handles for test interaction
  */
+
 export async function setupMockBackend(options: MockBackendOptions = {}): Promise<MockBackendFixture> {
   // 1. Start mock server
   const mock = await startMockServer(options.mockServer)
@@ -424,6 +431,11 @@ providers:
     'utf8'
   )
   writeEnvFile(sandbox.hermesHome)
+  // Same writer the install-e2e harness uses, pointed at a dead endpoint: one
+  // shape for "an external OpenAI-compatible provider", never a named 'mock'.
+  const deadUrl = 'http://127.0.0.1:1'
+  writeMockProviderConfig(sandbox.hermesHome, deadUrl)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', deadUrl)
 
   const env = buildAppEnv(
     sandbox,
@@ -572,6 +584,8 @@ export async function waitForAppReady(
   fixture: Pick<MockBackendFixture, 'app' | 'page'>,
   timeoutMs = 60_000
 ): Promise<void> {
+/** Composer readiness includes hit testing, so boot overlays cannot produce an early pass. */
+export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFixture | DeadBackendFixture, timeoutMs = 60_000): Promise<void> {
   const { page, app } = fixture
 
   // Wait for the composer to exist in the DOM (not necessarily interactive yet).
@@ -616,6 +630,7 @@ export async function waitForAppReady(
     undefined,
     { timeout: timeoutMs }
   )
+  await waitForChatReady(page, timeoutMs)
 
   // On Electron 40.x, ready-to-show may never fire (electron/electron#51972)
   // and the window stays hidden even though the DOM is rendered. The main

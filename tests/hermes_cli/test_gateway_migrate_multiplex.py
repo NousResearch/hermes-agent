@@ -18,6 +18,9 @@ import pytest
 import hermes_constants
 from hermes_cli import gateway_migrate as gm
 
+# Captured before any fixture fakes the seam: the one test that drives the real service leg.
+_REAL_SERVICE_OP = gm._service_op
+
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
@@ -41,6 +44,9 @@ def fleet(tmp_path, monkeypatch):
         pids={"coder": 4101, "ops": 4102},
         ops=[],
         refused_at_start={},
+        # (profile, kind, system) of units whose boot enablement survived; secondaries boot-start,
+        # the pre-existing default unit starts DISABLED unless a test/migration enables it.
+        enabled={("coder", "systemd", False), ("ops", "systemd", False)},
     )
 
     def _service_op(kind, system, verb, home, *, run_as_user=None):
@@ -57,8 +63,12 @@ def fleet(tmp_path, monkeypatch):
                 state.services[name] = remaining
             else:
                 state.services.pop(name, None)
+                state.enabled.discard((name, kind, system))
         elif verb == "install":
             state.services[name] = (kind, system)
+            state.enabled.add((name, kind, system))
+        elif verb == "enable":
+            state.enabled.add((name, kind, system))
         elif verb in ("start", "restart") and name == "default":
             (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
             runtime_path = root / "gateway_state.json"
@@ -135,7 +145,7 @@ _real_preflight = gm._preflight_apply
 
 
 def _config_flag(root: Path):
-    import yaml
+    import hermes_yaml as yaml
     raw = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8")) or {}
     return (raw.get("gateway") or {}).get("multiplex_profiles")
 
@@ -175,6 +185,33 @@ def test_parked_profile_remains_in_migration_inventory(fleet):
     (home / ".env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
     blocked = gm.build_migration_plan()
     assert any("'coder'" in reason and "credential" in reason for reason in blocked.blockers)
+
+
+def test_preflight_never_imports_a_parked_profiles_plugins(fleet):
+    """A parked profile stays in the inventory and the duplicate-credential guard (above), but
+    loading its gateway config must not run its plugins' ``register()`` in the host process (#123386)."""
+    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+
+    home = fleet.root / "profiles/coder"
+    (home / "gateway.parked").touch()
+    (home / "config.yaml").write_text("plugins:\n  enabled: [p1]\n", encoding="utf-8")
+    marker = fleet.root / "p1-registered"
+    plugin = home / "plugins/p1"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: p1\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text(
+        f"from pathlib import Path\n\ndef register(ctx):\n    Path({str(marker)!r}).write_text('imported')\n",
+        encoding="utf-8",
+    )
+    _reset_plugin_managers_for_tests()
+    try:
+        plan = gm.build_migration_plan()
+        assert "coder" in {p.name for p in plan.standalone_secondaries}
+        assert not marker.exists(), "migration preflight imported a parked profile's plugin"
+        gm.duplicate_credential_findings()  # doctor / gateway status read the same homes
+        assert not marker.exists()
+    finally:
+        _reset_plugin_managers_for_tests()
 
 
 def test_migration_removes_parked_footprint_without_waiting_for_it_to_serve(fleet, monkeypatch):
@@ -916,6 +953,50 @@ def test_half_migrated_host_converges_on_a_re_run(fleet, capsys):
     out = capsys.readouterr().out
     assert "Half-migrated host" in out and "serves 3 profiles" in out
     assert gm.build_migration_plan().already_multiplexed
+
+
+def test_migrate_enables_the_survivor_before_it_removes_anything(fleet, capsys):
+    """Systemctl recorder: a pre-existing, DISABLED survivor unit is enabled BEFORE the first
+    secondary uninstall (uninstall = stop + disable + wants-unlink), so an apply interrupted at any
+    later step still leaves a boot-startable gateway. Base restarted the survivor after the removals
+    and never enabled it: N boot-startable gateways became 0 while the migration reported ✓."""
+    fleet.services["default"] = ("systemd", False)  # unit exists; NOT in fleet.enabled
+    assert ("default", "systemd", False) not in fleet.enabled
+
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))
+    assert exc.value.code == 0
+
+    first_removal = min(i for i, op in enumerate(fleet.ops) if op[1] in ("stop", "uninstall"))
+    assert fleet.ops.index(("default", "enable")) < first_removal
+    # A reboot has exactly one gateway: the survivor, and none of the folded secondaries.
+    assert fleet.enabled == {("default", "systemd", False)}
+    assert fleet.ops[-1] == ("default", "restart") and "serves 3 profiles" in capsys.readouterr().out
+
+
+def test_migrate_refuses_when_the_survivor_cannot_be_enabled(fleet, monkeypatch, capsys):
+    """A failed `systemctl enable` is a preflight refusal, not a ⚠ line: continuing removed every
+    boot-startable secondary and reported ✓ Migrated over a host that comes back with no gateway."""
+    from hermes_cli import gateway as gw
+    fleet.services["default"] = ("systemd", False)
+    fake_op = gm._service_op
+    monkeypatch.setattr(gw, "_run_systemctl", lambda args, **kw: SimpleNamespace(returncode=1))
+
+    def _op(kind, system, verb, home, *, run_as_user=None):
+        if verb == "enable":  # the real leg, over a systemctl that fails
+            return _REAL_SERVICE_OP(kind, system, verb, home, run_as_user=run_as_user)
+        fake_op(kind, system, verb, home, run_as_user=run_as_user)
+
+    monkeypatch.setattr(gm, "_service_op", _op)
+
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))
+
+    assert exc.value.code == 1
+    assert not any(op[1] in ("stop", "uninstall") for op in fleet.ops), "refusal must precede every removal"
+    assert fleet.pids == {"coder": 4101, "ops": 4102} and _config_flag(fleet.root) is None
+    assert not gm._manifest_path(fleet.root).exists()
+    assert "refused before changing anything" in capsys.readouterr().out
 
 
 def test_plan_names_every_process_it_will_sigterm_before_it_signals_anything(fleet, capsys):

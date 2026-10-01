@@ -53,38 +53,38 @@ def fda_denied(tcc_dir, monkeypatch):
     return tcc_dir
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_doctor_and_setup_are_silent_off_macos(tcc_dir):
     assert _capture(doctor_platform.check_macos_full_disk_access) == ""
     assert _capture(_print_macos_fda_tip) == ""
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_doctor_reports_granted_without_guidance(tcc_dir):
     out = _capture(doctor_platform.check_macos_full_disk_access)
     assert "Full Disk Access granted" in out
     assert "Privacy_AllFiles" not in out
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_doctor_prints_one_switch_guidance_when_denied(fda_denied):
     out = _capture(doctor_platform.check_macos_full_disk_access)
     assert "Privacy_AllFiles" in out
     assert "granted" not in out
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_doctor_is_silent_when_probe_is_indeterminate(home):
     """Missing TCC dir (FileNotFoundError, not EPERM) must not nag."""
     assert _capture(doctor_platform.check_macos_full_disk_access) == ""
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_setup_tip_is_silent_when_already_granted(tcc_dir):
     assert _capture(_print_macos_fda_tip) == ""
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_setup_tip_printed_when_denied(fda_denied):
     out = _capture(_print_macos_fda_tip)
     assert "Privacy_AllFiles" in out

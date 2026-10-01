@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: rust-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: rust-tests-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   bootstrap-installer:
@@ -26,6 +26,7 @@ jobs:
         working-directory: apps/bootstrap-installer/src-tauri
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Install Tauri system dependencies
         working-directory: .
@@ -40,7 +41,7 @@ jobs:
             patchelf
 
       - name: Restore cargo cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry

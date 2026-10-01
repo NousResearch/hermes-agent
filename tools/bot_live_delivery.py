@@ -114,7 +114,7 @@ def _locked(home: Path | str):
 def _read(path: Path) -> dict[str, Any] | None:
     """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed)."""
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
     if not isinstance(record, dict):
@@ -183,7 +183,7 @@ def _next_sequence(root: Path) -> int:
     """
     counter = root / _SEQUENCE_FILE
     try:
-        persisted = int(counter.read_text(encoding="utf-8"))
+        persisted = int(counter.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         persisted = 0
     scanned = max((record.get("sequence", record["created_at"])
@@ -244,6 +244,12 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
         db.close()
 
 
+def owner_holds_delivery(profile_home: Path | str, record: dict) -> bool:
+    """Whether the canonical live owner is still one that could claim ``record``."""
+    owner = find_canonical_live_owner(profile_home)
+    return owner is not None and _matches(profile_home, record, owner)
+
+
 def claim_pending_delivery(
     profile_home: Path | str, owner: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -292,6 +298,25 @@ def complete_delivery(
         if record["status"] != "claimed":
             raise ValueError("delivery must be claimed before completion")
         record.update(outcome, completed_at=time.time_ns())
+        _write(path, record)
+        return record
+
+
+def cancel_queued_delivery(
+    profile_home: Path | str, delivery_id: str, *, error: str, reason: str,
+) -> dict[str, Any] | None:
+    """Cancel an ownerless queued receipt without racing a consumer's claim.
+
+    A claim or terminal result that won the mailbox lock is returned unchanged.
+    """
+    key = _delivery_id(delivery_id)
+    with _locked(profile_home) as root:
+        path = root / f"{key}.json"
+        record = _read(path)
+        if record is None or record["status"] != "queued":
+            return record
+        record.update(status="cancelled", reply="", error=error, reason=reason,
+                      completed_at=time.time_ns())
         _write(path, record)
         return record
 

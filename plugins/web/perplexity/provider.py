@@ -21,9 +21,10 @@ Env vars::
     PERPLEXITY_API_KEY=...       # required for direct search and extract
     PERPLEXITY_BASE_URL=...      # optional override of https://api.perplexity.ai
 
-No anonymous tier. The Nous Subscription selection serves search through
-``perplexity-gateway.<TOOL_GATEWAY_DOMAIN>`` using the Nous token; a direct
-key takes precedence. Managed extract stays on Firecrawl.
+No anonymous tier at Perplexity itself. The managed route serves search through
+``perplexity-gateway.<TOOL_GATEWAY_DOMAIN>`` as ``search_type: "fast"``, which the
+gateway serves to any Nous identity (paid or not); a direct key takes precedence.
+Managed extract stays on Firecrawl.
 
 Extract caveat: Perplexity's only supported page-content route returns the
 passages of a page relevant to a *query* (elisions marked ``…``), not the
@@ -41,7 +42,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.web_search_provider import WebSearchProvider
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ _KEY_URL = "https://www.perplexity.ai/account/api"
 _HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
     "X-Pplx-Integration": "hermes-agent",
 }
 
@@ -70,14 +71,20 @@ def _missing_key_error() -> str:
     return f"PERPLEXITY_API_KEY is not set. Get a key at {_KEY_URL}"
 
 
-def _managed_gateway(token_reader=None):
-    """Nous Tool Gateway config when web_search is on the managed route, else None."""
-    from tools import managed_tool_gateway as gw
-    from tools.web_tools import _managed_web_search
+def _managed_gateway(token_reader=None, managed=None):
+    """Nous Tool Gateway config when web_search is on the managed route, else None.
 
-    if not _managed_web_search():
+    ``managed`` lets a caller that already resolved the route reuse that answer instead of
+    walking the autodetect ladder again."""
+    from tools import managed_tool_gateway as gw
+
+    if managed is None:
+        from tools.web_tools import _managed_web_search
+
+        managed = _managed_web_search()
+    if not managed:
         return None
-    return gw.resolve_managed_tool_gateway("perplexity", token_reader=token_reader)
+    return gw.resolve_free_search_gateway(token_reader=token_reader)
 
 
 def _perplexity_request(endpoint: str, payload: Dict[str, Any], gateway=None) -> Dict[str, Any]:
@@ -212,11 +219,14 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             from tools.web_tools import _managed_web_search
 
             direct = bool(get_provider_env("PERPLEXITY_API_KEY"))
-            gateway = None if direct else _managed_gateway()
-            if gateway is None and not direct and _managed_web_search():
-                from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
-                raise ValueError(selection_error(
-                    "web", NOUS_MANAGED_PROVIDER, "the Nous Tool Gateway is not available (not entitled or unreachable)"))
+            managed = False if direct else _managed_web_search()
+            gateway = _managed_gateway(managed=managed) if managed else None
+            if gateway is None and managed:
+                from tools.tool_backend_helpers import (
+                    NOUS_MANAGED_PROVIDER, fast_search_unavailable_message, selection_error)
+
+                raise ValueError(selection_error("web", NOUS_MANAGED_PROVIDER,
+                                                 fast_search_unavailable_message()))
             logger.info("Perplexity search: '%s' (limit=%d%s)", query, limit, ", managed" if gateway else "")
             payload = {
                 "query": query,

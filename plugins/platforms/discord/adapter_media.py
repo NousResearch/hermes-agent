@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.i18n import t
 from gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
@@ -56,10 +57,9 @@ class DiscordMediaMixin:
         limit_mb = limit / (1024 * 1024)
         error = f"File too large for Discord upload: {filename} is {size_mb:.1f} MB (limit {limit_mb:.0f} MB)"
         logger.warning("[%s] %s", self.name, error)
-        notice = (
-            f"⚠️ Could not attach `{filename}` — {size_mb:.1f} MB exceeds Discord's "
-            f"{limit_mb:.0f} MB upload limit for this channel. Compress the file or share a link instead."
-        )
+        notice = t(
+            "platform.discord.media.upload_too_large",
+            filename=filename, size_mb=f"{size_mb:.1f}", limit_mb=f"{limit_mb:.0f}")
         try:
             shown = self.warning_notifications_enabled()
             if shown:
@@ -191,11 +191,11 @@ class DiscordMediaMixin:
                                 self.name, os.path.basename(local_path),
                                 _img_size / (1024 * 1024), _img_limit / (1024 * 1024),
                             )
-                            skip_notices.append(
-                                f"⚠️ Skipped `{os.path.basename(local_path)}` — "
-                                f"{_img_size / (1024 * 1024):.1f} MB exceeds Discord's "
-                                f"{_img_limit / (1024 * 1024):.0f} MB upload limit."
-                            )
+                            skip_notices.append(t(
+                                "platform.discord.media.image_skipped_too_large",
+                                filename=os.path.basename(local_path),
+                                size_mb=f"{_img_size / (1024 * 1024):.1f}",
+                                limit_mb=f"{_img_limit / (1024 * 1024):.0f}"))
                             continue
                         files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
                     else:

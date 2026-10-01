@@ -529,6 +529,10 @@ describe('useVirtualHistory offset cache reuse', () => {
 
     try {
       await vi.waitFor(() => expect(expose.current?.scroll).toBeTruthy())
+      // Generous settle windows: the unmount-measurement callback must fire
+      // before the assertion, and under CI load a 20-40ms sleep is not
+      // enough (flaked as "adjustScrollTop called 0 times").
+      await delay(50)
       const scroll = expose.current!.scroll!
       const stickyHistory = expose.current!.virtualHistory
 
@@ -537,6 +541,8 @@ describe('useVirtualHistory offset cache reuse', () => {
         expect(scroll.isSticky()).toBe(false)
         expect(expose.current!.virtualHistory).not.toBe(stickyHistory)
       })
+      await delay(50)
+      scroll.scrollTo(5)
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
       const staleHeights = new Map(initialHeights)
 
@@ -544,6 +550,7 @@ describe('useVirtualHistory offset cache reuse', () => {
       scroll.scrollTo(5)
       instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items }))
       await vi.waitFor(() => expect(adjustScrollTop).toHaveBeenCalledOnce())
+      await delay(400)
 
       expect(adjustScrollTop).toHaveBeenCalledOnce()
       expect(adjustScrollTop).toHaveBeenCalledWith(1)

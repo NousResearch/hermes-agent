@@ -11,9 +11,17 @@
     "fix": "npm run lint:fix"
   },
   "devDependencies": {
+    "@types/js-yaml": "4.0.9",
     "@types/plist": "3.0.5",
+    "get-windows": "9.3.0",
+    "jsdom": "29.1.1",
+    "node-pty": "1.1.0",
     "plist": "3.1.1",
     "typescript": "6.0.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.10"
+  },
+  "dependencies": {
+    "@playwright/test": "1.62.1",
+    "zod": "4.4.3"
   }
 }

@@ -16,7 +16,7 @@ outputs:
     description: Run Python tests / ruff / ty / windows-footguns.
     value: ${{ steps.classify.outputs.python }}
   python_prod:
-    description: Python changes outside tests/ — gates product jobs (Desktop E2E, Docker).
+    description: Python changes outside tests/.
     value: ${{ steps.classify.outputs.python_prod }}
   frontend:
     description: Run the TypeScript testing matrix + desktop build.
@@ -25,11 +25,23 @@ outputs:
     description: Docker setup and meta files have changed.
     value: ${{ steps.classify.outputs.docker_meta }}
   docker:
-    description: Files included in the docker image have changed.
+    description: Build and test the Docker image (docker meta, dependency manifests, PM, tests/docker).
     value: ${{ steps.classify.outputs.docker }}
   nix:
-    description: Run `nix flake check` (flake inputs, or any product Python change).
+    description: Run `nix flake check` (flake files and dependency manifests).
     value: ${{ steps.classify.outputs.nix }}
+  e2e:
+    description: Run the Python end-to-end suites (tests/e2e, except upgrade).
+    value: ${{ steps.classify.outputs.e2e }}
+  e2e_upgrade:
+    description: Run the N-1 to HEAD `hermes update` suites (tests/e2e/core/upgrade).
+    value: ${{ steps.classify.outputs.e2e_upgrade }}
+  e2e_desktop_core:
+    description: Run the Desktop core Electron suite (apps/desktop/e2e/core).
+    value: ${{ steps.classify.outputs.e2e_desktop_core }}
+  e2e_desktop_update:
+    description: Run the Desktop install/update Electron suite (apps/desktop/e2e/update).
+    value: ${{ steps.classify.outputs.e2e_desktop_update }}
   site:
     description: Build the Docusaurus docs site.
     value: ${{ steps.classify.outputs.site }}
@@ -40,14 +52,14 @@ outputs:
     description: Check pyproject.toml dependency upper bounds.
     value: ${{ steps.classify.outputs.deps }}
   uv_lock:
-    description: Run `uv lock --check` (pyproject.toml / uv.lock changes only).
+    description: Run the PM project-lock check (pyproject.toml / uv.lock changes only).
     value: ${{ steps.classify.outputs.uv_lock }}
   npm_lock:
     description: Post/update the semantic package-lock.json diff PR comment.
     value: ${{ steps.classify.outputs.npm_lock }}
-  installer:
-    description: Run the PowerShell installer tests on a Windows runner.
-    value: ${{ steps.classify.outputs.installer }}
+  bootstrap:
+    description: Run the bootstrap installer lane (install.sh sandbox + stamp verification).
+    value: ${{ steps.classify.outputs.bootstrap }}
   desktop_updater:
     description: Run the Windows desktop-update hand-off (windows.ps1) integration tests.
     value: ${{ steps.classify.outputs.desktop_updater }}

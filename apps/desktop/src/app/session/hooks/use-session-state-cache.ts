@@ -5,19 +5,20 @@ import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
+import { migrateInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $activeSessionId,
   $messages,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
-  setCurrentModel,
+  setCurrentModelTransient,
   setCurrentPersonality,
-  setCurrentProvider,
+  setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
+  setSessionStartedAt,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -27,6 +28,7 @@ import {
   $sessionTiles,
   isSessionInForeground,
   publishSessionState,
+  rekeySessionTile,
   releaseSessionTranscript
 } from '@/store/session-states'
 
@@ -59,8 +61,13 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
-  setCurrentModel(state.model ?? '')
-  setCurrentProvider(state.provider ?? '')
+  // Transient: this runs on every session-state sync, including the periodic
+  // session.info heartbeat, whose reported model/provider is the runtime's
+  // resolved identity (e.g. the generic `custom` billing class), not a user
+  // pick. The persisting setters would silently overwrite the composer's
+  // sticky localStorage selection with that runtime value (#102793).
+  setCurrentModelTransient(state.model ?? '')
+  setCurrentProviderTransient(state.provider ?? '')
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentReasoningEffortWire(state.reasoningEffortWire ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
@@ -186,6 +193,23 @@ export function useSessionStateCache({
           if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
             runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
 
+            // The journal under the pre-rotation id is keyed by a stored id
+            // nothing will name again (the reverse mapping above is gone and
+            // lineage resolution follows the tip), so a later permanent delete
+            // could not reach it. Re-key it to the new id — copy first, then
+            // delete — so recovery survives the rotation AND the delete
+            // gesture still reaches every copy (#77486).
+            migrateInFlightTurnJournal(existing.storedSessionId, storedSessionId)
+
+            // Re-home any open tile keyed on the pre-rotation id (#98622).
+            // Ungated on the active runtime: a background tile's conversation
+            // rotates here too, and its pane would otherwise keep the stale id
+            // (duplicate/differently-titled tabs). Mirrors handleTransition's
+            // rekey, which this path can skip when the state updater is a no-op.
+            if (storedSessionId) {
+              rekeySessionTile(existing.storedSessionId, storedSessionId, sessionId)
+            }
+
             // A rotation event needs a real next id — a null/cleared stored id
             // is a detach, not a rotation the route-follow effect should chase.
             if (
@@ -298,6 +322,9 @@ export function useSessionStateCache({
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
+    // Keep the foreground duration anchored to the runtime's first renderer
+    // attachment. Background state remains cached without stealing this view.
+    setSessionStartedAt(pending.state.runtimeStartedAt)
     // Mirror the focused session's per-session turn clock into the global
     // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
     // time intact on focus instead of zeroing it (the "timer restarts" bug).

@@ -269,6 +269,7 @@ def _cmd_list(db, args):
     limit = args.limit
     sessions = db.list_sessions_rich(
         source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+        order_by_last_active=True,
     )
     truncated = limit > 0 and len(sessions) > limit
     sessions = sessions[:limit] if truncated else sessions
@@ -841,7 +842,8 @@ def _cmd_retitle_skills(db, args):
 def _cmd_browse(db, args):
     limit = getattr(args, "limit", 500) or 500
     sessions = db.list_sessions_rich(
-        source=getattr(args, "source", None), exclude_sources=_default_exclude(args), limit=limit
+        source=getattr(args, "source", None), exclude_sources=_default_exclude(args), limit=limit,
+        order_by_last_active=True,
     )
     if not sessions:
         db.close()

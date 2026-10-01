@@ -14,8 +14,12 @@ from tools import matrix_tool_runtime
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stage", ["admission", "preflight", "dispatch", "confirmed", "recovery"])
-async def test_owner_loop_loss_preserves_outcomes_and_prevents_late_writes(monkeypatch, stage):
+@pytest.mark.parametrize(
+    "stage", ["admission", "preflight", "dispatch", "confirmed", "recovery"]
+)
+async def test_owner_loop_loss_preserves_outcomes_and_prevents_late_writes(
+    monkeypatch, stage
+):
     owner_loop = asyncio.new_event_loop()
     ready = threading.Event()
     stopped = threading.Event()
@@ -46,10 +50,15 @@ async def test_owner_loop_loss_preserves_outcomes_and_prevents_late_writes(monke
         owner_loop.close()
         finished.set()
 
-    adapter = MatrixAdapter(PlatformConfig(enabled=True, extra={"user_id": "@bot:server"}))
+    adapter = MatrixAdapter(
+        PlatformConfig(enabled=True, extra={"user_id": "@bot:server"})
+    )
     tokens = set_session_vars(
-        platform="matrix", chat_id="!room:server", user_id="@alice:server",
-        transport_adapter=adapter, transport_loop=owner_loop,
+        platform="matrix",
+        chat_id="!room:server",
+        user_id="@alice:server",
+        transport_adapter=adapter,
+        transport_loop=owner_loop,
     )
     thread = spawn_context_thread(owner, name="matrix-owner-lifecycle", daemon=True)
     thread.start()
@@ -74,12 +83,17 @@ async def test_owner_loop_loss_preserves_outcomes_and_prevents_late_writes(monke
                 return {"success": True, "event_id": "$late"}
             finally:
                 events.append("drained")
+
         return operation()
 
-    pending = asyncio.create_task(matrix_tool_runtime.run_matrix_mutation(
-        owner_loop, request, operation_label="Matrix lifecycle request",
-        next_step="Check the event before retrying",
-    ))
+    pending = asyncio.create_task(
+        matrix_tool_runtime.run_matrix_mutation(
+            owner_loop,
+            request,
+            operation_label="Matrix lifecycle request",
+            next_step="Check the event before retrying",
+        )
+    )
     forced_restart = False
     try:
         assert await asyncio.to_thread(stopped.wait, 3)
@@ -96,12 +110,16 @@ async def test_owner_loop_loss_preserves_outcomes_and_prevents_late_writes(monke
         if stage == "dispatch":
             expected = {
                 "error": "Matrix gateway loop is unavailable after the change was sent to the homeserver",
-                "outcome": "unknown", "next_step": "Check the event before retrying",
+                "outcome": "unknown",
+                "next_step": "Check the event before retrying",
             }
         if stage == "confirmed":
             expected = {"success": True, "event_id": "$confirmed"}
         assert (result, forced_restart, events.count("write"), "drained" in events) == (
-            expected, False, int(stage in {"dispatch", "confirmed"}), stage == "confirmed",
+            expected,
+            False,
+            int(stage in {"dispatch", "confirmed"}),
+            stage == "confirmed",
         )
     finally:
         restart.set()

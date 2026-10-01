@@ -4979,8 +4979,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         preflight estimate prices — never the canonical ``reasoning`` keys."""
         from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
 
-        if (self.api_mode or "") != "anthropic_messages" or not native_anthropic_preserves_prior_thinking(
-            self.base_url, self.model
+        if (getattr(self, "api_mode", "") or "") != "anthropic_messages" or not native_anthropic_preserves_prior_thinking(
+            getattr(self, "base_url", ""), getattr(self, "model", "")
         ):
             return None
         from agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking

@@ -854,7 +854,10 @@ def _cron_interval_minutes(expr: str) -> Optional[float]:
             second = it.get_next(datetime)
             gap = (second - first).total_seconds() / 60.0
             result = gap if gap > 0 else None
-    _cron_interval_cache[expr] = result
+    # Cache only a real cadence: a None from a transient croniter ImportError must not pin the
+    # floor allowance for this expr for the process lifetime once the import recovers.
+    if result is not None:
+        _cron_interval_cache[expr] = result
     return result
 
 

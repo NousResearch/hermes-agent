@@ -398,7 +398,17 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     let exitCode: null | number = null
 
     await withInkSuspended(async () => {
-      exitCode = spawnSync(cmd!, [...args, file], { stdio: 'inherit' }).status
+      const result = spawnSync(cmd!, [...args, file], {
+        // On Windows, shell:true lets spawnSync resolve .CMD/.BAT shims
+        // (e.g. VS Code's `code` is `code.CMD`). Without it, CreateProcess
+        // only appends .exe and returns ENOENT, so the editor never opens.
+        shell: process.platform === 'win32',
+        stdio: 'inherit'
+      })
+      exitCode = result.status
+      if (result.error && exitCode === null) {
+        throw result.error
+      }
     })
 
     try {

@@ -554,6 +554,12 @@ def _resolve_external_dirs() -> Tuple[List[Path], _ExternalFilters]:
             result.append(p)
             if include or exclude:
                 filters[p] = (include, exclude)
+            # A skill's path under its root never starts or ends with "/", so such a pattern can never
+            # match — and a dead exclude silently stops excluding: say so.
+            for pattern in include + exclude:
+                if pattern.startswith("/") or pattern.endswith("/"):
+                    logger.warning("skills.external_dirs pattern %r for %s never matches: a leading or "
+                                   "trailing '/' is not allowed (a category is 'name/*')", pattern, entry)
         elif any(ch in entry for ch in "*?["):
             # A glob here is silently dead (only literal directories are scanned) and the index just
             # stays over-broad: say so. A plain missing path stays quiet — optional shared dirs

@@ -90,7 +90,7 @@ def test_every_surface_agrees_on_disabled_skills(disabled, managed, locked, tmp_
         assert _surfaces(home, monkeypatch, flush=False)["index"] == set(BUNDLED.values())
 
 
-def test_allowlist_hides_skills_everywhere_including_ones_seeded_later(tmp_path, monkeypatch):
+def test_allowlist_hides_skills_everywhere_including_ones_seeded_later(tmp_path, monkeypatch, caplog):
     home, bundled, shared = tmp_path / "home", tmp_path / "bundled", tmp_path / "shared"
     for rel, name in BUNDLED.items():
         _write_skill(bundled, rel, name)
@@ -104,7 +104,9 @@ def test_allowlist_hides_skills_everywhere_including_ones_seeded_later(tmp_path,
         "skills:\n"
         "  enabled: ['github/*', notes, arxiv, 'devops/*']\n"
         "  platform_enabled:\n    telegram: [git]\n"
-        f"  external_dirs:\n    - path: {shared}\n      exclude: ['devops/legacy/*']\n", encoding="utf-8")
+        # 'research/' can never match (paths carry no trailing '/'): arxiv stays, and the load says so.
+        f"  external_dirs:\n    - path: {shared}\n      exclude: ['devops/legacy/*', 'research/']\n",
+        encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(bundled))
     from tools.skills_sync import sync_skills
@@ -115,6 +117,7 @@ def test_allowlist_hides_skills_everywhere_including_ones_seeded_later(tmp_path,
     assert surfaces.pop("menu") == {"hermes-agent", "git"}  # platform_enabled narrows Telegram only
     for surface, names in surfaces.items():
         assert names == offered, surface
+    assert "'research/'" in caplog.text and "never matches" in caplog.text
 
     # An update seeds a new bundled skill: the allowlist keeps it out with no config edit.
     _write_skill(bundled, "creative/new-bundled", "new-bundled")

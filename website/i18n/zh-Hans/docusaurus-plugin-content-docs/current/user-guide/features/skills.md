@@ -237,7 +237,7 @@ skills:
 ```
 
 - **不设置即关闭。** 没有 `enabled`（或 `enabled: null`）时行为不变。空列表只放行 `hermes-agent`。
-- **匹配规则。** 含 `/` 的条目匹配 skill 相对于其所在 skills 目录的路径（`github/*`、`mlops/training/*`）；`*` 也能跨越 `/`，所以分类模式会覆盖嵌套的 skills。不含 `/` 的条目匹配 skill 名称（frontmatter 中的 `name` 或文件夹名）。
+- **匹配规则。** 含 `/` 的条目匹配 skill 相对于其所在 skills 目录的路径（`github/*`、`mlops/training/*`）；`*` 也能跨越 `/`，所以分类模式会覆盖嵌套的 skills。不含 `/` 的条目匹配 skill 名称（frontmatter 中的 `name` 或文件夹名）。在所有操作系统上匹配都区分大小写。
 - **优先级。** `disabled` 和 `platform_disabled` 优先于允许列表。同时设置 `enabled` 和 `platform_enabled.<platform>` 时，skill 必须同时在两者之中。`hermes-agent`（Hermes 自己的手册）始终可用。
 - **所有入口保持一致。** 同一个检查决定系统提示词中的 skill 索引、`skills_list`、`skill_view`、`/skill` 命令和捆绑包、Telegram 与 Discord 命令菜单、`hermes skills` / `hermes skills list`、仪表盘和桌面端 profile 编辑器。不在允许列表中的 skill 不只是不被列出：`skill_view` 会拒绝加载它，错误信息会指出 `skills.enabled`。
 - **之后创建的 skills 也需要加入。** agent 用 `skill_manage` 写入的 skill 会被保存，但在其名称或分类加入 `enabled` 之前保持隐藏。
@@ -286,6 +286,7 @@ skills:
 ```
 
 - 匹配规则与 `skills.enabled`（见上文）相同：含 `/` 时匹配 skill 相对于该条目 `path` 的目录，不含 `/` 时匹配 skill 名称。
+- 路径模式以该条目的 `path` 为锚点，并按整个目录匹配：像 `github` 这样的裸分类名不匹配任何 skill（应写 `github/*`），`workflow/deep` 不覆盖 `workflow/deep/tool`，`vendor/*` 也不匹配 `workflow/vendor/tool`。以 `/` 开头或结尾的模式永远不会匹配，Hermes 会为此记录一条警告。
 - `exclude` 优先。没有 `include` 时，未被排除的内容全部保留。
 - 被过滤的 skill 在所有入口都被隐藏，如同它不在该目录中。其他目录中的同名 skill 不受影响。
 - 这些模式从不影响 profile 自己的 `skills/` 目录；那里请使用 `skills.enabled`。

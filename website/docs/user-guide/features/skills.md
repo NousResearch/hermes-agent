@@ -432,7 +432,7 @@ skills:
 ```
 
 - **Absent means off.** Without `enabled` (or with `enabled: null`) nothing changes. An empty list admits nothing but `hermes-agent`.
-- **Patterns.** An entry with `/` matches the skill's directory relative to the skills directory it lives in (`github/*`, `mlops/training/*`). `*` also crosses `/`, so a category pattern covers nested skills. An entry without `/` matches the skill's name (its frontmatter `name` or its folder name).
+- **Patterns.** An entry with `/` matches the skill's directory relative to the skills directory it lives in (`github/*`, `mlops/training/*`). `*` also crosses `/`, so a category pattern covers nested skills. An entry without `/` matches the skill's name (its frontmatter `name` or its folder name). Matching is case-sensitive on every OS.
 - **Precedence.** `disabled` and `platform_disabled` win over the allowlists. When `enabled` and `platform_enabled.<platform>` are both set, a skill must be in both. `hermes-agent`, Hermes's own manual, is always available.
 - **Every surface agrees.** One check decides for the system-prompt skill index, `skills_list`, `skill_view`, `/skill` commands and bundles, the Telegram and Discord command menus, `hermes skills` / `hermes skills list`, the dashboard and the desktop profile editor. A skill outside the allowlist is not just unlisted: `skill_view` refuses it, and its error names `skills.enabled`.
 - **Skills created later need adding too.** A skill the agent writes with `skill_manage` is saved, but stays hidden until its name or category is in `enabled`.
@@ -481,6 +481,7 @@ skills:
 ```
 
 - Patterns work like `skills.enabled` (above): with `/` they match the skill's directory relative to this entry's `path`, and without `/` they match the skill's name.
+- A path pattern is anchored at the entry's `path` and matches whole directories: a bare category name such as `github` matches no skill (write `github/*`), `workflow/deep` does not cover `workflow/deep/tool`, and `vendor/*` does not match `workflow/vendor/tool`. A pattern with a leading or trailing `/` never matches, and Hermes logs a warning for one.
 - `exclude` wins. Without `include`, everything not excluded stays.
 - A filtered skill is hidden everywhere, as if it were not in that directory. A same-named skill in another directory is unaffected.
 - These patterns never touch the profile's own `skills/` directory; use `skills.enabled` for that.

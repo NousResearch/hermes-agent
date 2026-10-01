@@ -159,6 +159,16 @@ def _thinking_blocks(wire):
     ]
 
 
+def _assistant_text_blocks(wire):
+    return [
+        block
+        for message in wire
+        if message["role"] == "assistant" and isinstance(message["content"], list)
+        for block in message["content"]
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+
+
 def _reject_signatures(agent, history):
     """Drive production signature-rejection recovery; the canonical history is never mutated."""
     from agent.error_classifier import FailoverReason
@@ -196,6 +206,8 @@ _ACCOUNTING_CASES = {
     "rejected_unpersisted": ("claude-opus-4-6", ANTHROPIC, 0),
     "reasoning_only": ("claude-opus-4-6", ANTHROPIC, 0),
     "invalid_ordered_then_details": ("claude-opus-4-6", ANTHROPIC, 1),
+    # Promoted final reply: canonical content stays empty, the api_content sidecar ships.
+    "assistant_api_content": ("claude-opus-4-6", ANTHROPIC, 1),
 }
 
 
@@ -232,6 +244,9 @@ def test_estimates_charge_exactly_the_thinking_the_wire_replays(tmp_path, monkey
             elif case == "invalid_ordered_then_details":
                 # Dataless redacted_thinking sanitizes away; the converter falls back to details.
                 body[1]["anthropic_content_blocks"] = [{"type": "redacted_thinking"}]
+            elif case == "assistant_api_content":
+                body = _signed_turn("Q1", "", "sig_1", thinking="t" * 4000)
+                body[1]["api_content"] = "x" * size
             body += _signed_turn("Q2", "A2", "sig_2")
         return body + [{"role": "user", "content": "continue"}]
 
@@ -242,8 +257,12 @@ def test_estimates_charge_exactly_the_thinking_the_wire_replays(tmp_path, monkey
         canonical = history(size)
         preflight = _preflight_request_tokens(agent, copy.deepcopy(canonical), "")
         assembled, wire = _assemble_and_wire(agent, canonical)  # assembly sets the anchor flag
+        replayed_text = (
+            b.get("thinking", "") if b.get("type") == "thinking" else b.get("text", "")
+            for b in _thinking_blocks(wire) + _assistant_text_blocks(wire)
+        )
         return {
-            "wire": sum(estimate_tokens_rough(b.get("thinking", "")) for b in _thinking_blocks(wire)),
+            "wire": sum(estimate_tokens_rough(text) for text in replayed_text),
             "preflight": preflight,
             "tail_walk": agent.context_compressor._walk_tail_budget(
                 canonical, 0, 10**9, 0, cut_at_break=False

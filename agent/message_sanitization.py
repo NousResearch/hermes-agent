@@ -667,6 +667,13 @@ def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[st
         for key in ("content", "tool_calls", "reasoning_content", "cache_control"):
             if key in message:
                 shadow[key] = message[key]
+        # Canonical input (preflight, tail walk) still holds the api_content sidecar that
+        # build_api_messages substitutes into content; post-build input already carries it in
+        # content. Charge it either way: an ordered turn, or a context-selection clone the
+        # converter reads raw, then overcounts, never undercounts.
+        sidecar = message.get("api_content")
+        if isinstance(sidecar, str) and sidecar:
+            shadow["content"] = sidecar
 
         _, carrier = assistant_replay_carrier(message)
         # The converter ignores reasoning_content for an ordered turn and only injects it when the

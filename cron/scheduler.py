@@ -3873,6 +3873,18 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                 return False
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
+            # This worker has already adopted the execution and deleted the
+            # one-shot payload: it owns the run and nothing can resume it.
+            # run_one_job imports run_agent, whose bootstrap may complete a
+            # pending self-managed source update by swapping this
+            # interpreter (hermes_cli/venv_sync.prepare_launch) before
+            # continuing. The swapped-in process carries the original
+            # --external-worker-file argv, pointing at the payload deleted
+            # above, so the adopted execution ends as a silent `unknown`
+            # run (#124827). Suppress the lazy launch path for the run; a
+            # pending update is finished by the next regular launch.
+            old_disable_lazy = os.environ.get("HERMES_DISABLE_LAZY_INSTALLS")
+            os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
             try:
                 completed = run_one_job(job, adapters=None, loop=None, verbose=False)
                 # Successful return: the worker recorded its outcome. If it raises,
@@ -3881,6 +3893,10 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     ack_path.with_suffix(".stderr").unlink(missing_ok=True)
                 return completed
             finally:
+                if old_disable_lazy is None:
+                    os.environ.pop("HERMES_DISABLE_LAZY_INSTALLS", None)
+                else:
+                    os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = old_disable_lazy
                 if old_external_execution is None:
                     os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)
                 else:

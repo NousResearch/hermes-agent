@@ -1195,3 +1195,78 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
     assert len(marks) == 1 and marks[0][0][1] is False
     assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
     assert execution_ledger.get_execution(record["id"])["status"] == "failed"
+
+
+def test_adopted_worker_holds_lazy_install_path_during_run(tmp_path, monkeypatch):
+    """Regression for #124827: run_one_job imports run_agent, whose bootstrap may
+    complete a pending self-managed source update by replacing the process image.
+    An adopted worker has already deleted its one-shot payload, so the replacement
+    process cannot resume the job and the acknowledged run strands as `unknown`.
+    The lazy-install path must be suppressed for the duration of the run."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+
+    observed = {}
+
+    def run(*_args, **_kwargs):
+        # The bootstrap consults this flag at import time mid-run, so it must be
+        # held WHILE the job runs, not merely restored after it.
+        observed["lazy_installs"] = os.environ.get("HERMES_DISABLE_LAZY_INSTALLS")
+        return True
+
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"},
+    )
+    monkeypatch.setattr(scheduler, "run_one_job", run)
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert observed["lazy_installs"] == "1"
+    # Restored after the run: the worker process is long-lived in the
+    # direct-subprocess topology and must not leak the suppression.
+    assert "HERMES_DISABLE_LAZY_INSTALLS" not in os.environ
+
+
+def test_adopted_worker_preserves_caller_lazy_install_setting(tmp_path, monkeypatch):
+    """A caller-supplied HERMES_DISABLE_LAZY_INSTALLS value survives the run:
+    held as \"1\" during it, restored verbatim afterward (#124827)."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+
+    observed = {}
+
+    def run(*_args, **_kwargs):
+        observed["lazy_installs"] = os.environ.get("HERMES_DISABLE_LAZY_INSTALLS")
+        return True
+
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"},
+    )
+    monkeypatch.setattr(scheduler, "run_one_job", run)
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "0")
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert observed["lazy_installs"] == "1"
+    assert os.environ["HERMES_DISABLE_LAZY_INSTALLS"] == "0"

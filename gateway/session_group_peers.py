@@ -45,7 +45,7 @@ def room_link(authority):
     if not catalog['endpoint'].get('available'):
         return {'enabled': False, 'reason': 'endpoint_required'}
     return {'enabled': True, 'profile': 'default', 'catalog': catalog, 'endpoint': catalog['endpoint'],
-            'authentication': 'proof-v1'}
+            'authentication': 'proof-v2'}
 
 
 def dispatch_target(authority, method, params):

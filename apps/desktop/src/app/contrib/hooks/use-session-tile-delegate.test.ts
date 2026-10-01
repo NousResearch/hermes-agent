@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reasoningEffortPending } from '@/app/chat/session-view'
 import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
-import { textPart } from '@/lib/chat-messages'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $notifications } from '@/store/notifications'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
@@ -802,8 +802,7 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
       1_800_000,
       undefined
     )
-    expect(seeds.at(-1)).toEqual(expect.objectContaining({ messages: expect.any(Array) }))
-    expect((seeds.at(-1) as { messages: unknown[] }).messages).toHaveLength(2)
+    expect((seeds.at(-1) as { messages: ChatMessage[] }).messages.map(message => message.rowId)).toEqual([1, 2])
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
   })
 

@@ -915,8 +915,9 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     assert response.id == "resp_post_terminal_1"
 
 
-def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
-    """A relay that keeps SSE open after completion cannot discard the billed response."""
+def test_run_codex_stream_skips_post_terminal_drain_without_socket(monkeypatch):
+    """Without an interruptible socket the finalizer drain is skipped, so a relay that keeps SSE
+    open after completion can neither hang the turn nor discard the billed response."""
     import threading
     import time
 
@@ -947,11 +948,7 @@ def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
             return self
 
         def __next__(self):
-            try:
-                return next(self._events)
-            except StopIteration:
-                closed.wait(3.0)
-                raise
+            return next(self._events)
 
         def close(self):
             closed.set()
@@ -989,7 +986,6 @@ def test_run_codex_stream_owner_close_does_not_retry_raw_when_managed_close_rais
         type="message", status="completed", content=[SimpleNamespace(type="output_text", text="All done.")],
     )
     usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
-    raw_closed = threading.Event()
     raw_close_threads = []
 
     class _HeldOpenRawStream:
@@ -1004,15 +1000,10 @@ def test_run_codex_stream_owner_close_does_not_retry_raw_when_managed_close_rais
             return self
 
         def __next__(self):
-            try:
-                return next(self._events)
-            except StopIteration:
-                raw_closed.wait(3.0)
-                raise
+            return next(self._events)
 
         def close(self):
             raw_close_threads.append(threading.current_thread().name)
-            raw_closed.set()
 
     class _ManagedWrapper:
         final_response = None
@@ -1040,7 +1031,6 @@ def test_run_codex_stream_owner_close_does_not_retry_raw_when_managed_close_rais
     response = agent._run_codex_stream(_codex_request_kwargs())
 
     assert response.id == "resp_managed"
-    assert raw_closed.wait(1.0)
     assert raw_close_threads == [threading.current_thread().name]
 
 

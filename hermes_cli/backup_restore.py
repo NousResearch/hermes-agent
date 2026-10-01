@@ -23,6 +23,8 @@ from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
 )
 
+from hermes_cli.termination_guard import unwind_on_termination
+
 logger = logging.getLogger(__name__)
 
 def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
@@ -177,22 +179,40 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
             # lock across the whole swap so no new connection can appear
             # mid-replace.
             with offline_file_access(dst, what="unlink+move restore of"):
+                # The fallback copy is itself a hidden staging file beside the live database
+                # (the sixth spelling, ``.{dst.name}.snap_restore``): sweep the directory first,
+                # so a copy stranded by an earlier abrupt death is collected, then keep this
+                # run's own copy from adding to the pile — the guard turns SIGTERM/SIGHUP into
+                # an unwind, so the ``finally`` below always runs.
+                from hermes_cli.backup import prune_stale_staging
+
+                prune_stale_staging(dst.parent)
                 tmp = dst.parent / f".{dst.name}.snap_restore"
-                shutil.copy2(src, tmp)
-                dst.unlink(missing_ok=True)
-                # Drop the destination's sidecars before installing the
-                # snapshot. The snapshot is a checkpointed ``sqlite3.backup()``
-                # image (see ``_safe_copy_db``) that owns no WAL, so any
-                # ``-wal``/``-shm`` still sitting here describes the database we
-                # just unlinked — an ungracefully killed gateway leaves them
-                # behind, which is exactly when a restore gets run. SQLite
-                # replays that foreign WAL over the restored file on the next
-                # open and the database comes up "malformed" (or silently
-                # resurrects post-snapshot rows). Same reasoning as
-                # ``_EXCLUDED_SUFFIXES``, applied to the restore destination.
-                for _sidecar_suffix in ("-wal", "-shm", "-journal"):
-                    dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
-                shutil.move(str(tmp), str(dst))
+                with unwind_on_termination():
+                    try:
+                        shutil.copy2(src, tmp)
+                        dst.unlink(missing_ok=True)
+                        # Drop the destination's sidecars before installing the
+                        # snapshot. The snapshot is a checkpointed ``sqlite3.backup()``
+                        # image (see ``_safe_copy_db``) that owns no WAL, so any
+                        # ``-wal``/``-shm`` still sitting here describes the database we
+                        # just unlinked — an ungracefully killed gateway leaves them
+                        # behind, which is exactly when a restore gets run. SQLite
+                        # replays that foreign WAL over the restored file on the next
+                        # open and the database comes up "malformed" (or silently
+                        # resurrects post-snapshot rows). Same reasoning as
+                        # ``_EXCLUDED_SUFFIXES``, applied to the restore destination.
+                        for _sidecar_suffix in ("-wal", "-shm", "-journal"):
+                            dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
+                        shutil.move(str(tmp), str(dst))
+                    finally:
+                        # A no-op once the move above succeeded; on any failure or signal it
+                        # removes the staged copy instead of leaving a second copy of the
+                        # database in the home.
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
             return True
         except LiveConnectionError as exc2:
             logger.error(
@@ -345,40 +365,49 @@ def _extract_member_atomically(
 
     # Truncate the stem: mkstemp adds ~16 characters, and a member already near
     # NAME_MAX would otherwise fail here on a write that used to succeed.
+    # Restore staging is the same artifact class as the backup partial: an interrupted import must
+    # not leave ``.<name>.XXXX.partial`` inside the user's Hermes home. The directory this staging
+    # file lands in (a restore target: any member's parent under the home, which no other call site
+    # of the sweep ever visits) is swept by the caller, once per directory — see
+    # ``hermes_cli.backup._sweep_restore_dir``.
     fd, tmp_name = tempfile.mkstemp(
         dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".partial"
     )
-    try:
-        with os.fdopen(fd, "wb") as dst:
-            if mode is not None:
-                # Apply the mode to the temp file BEFORE the replace so the
-                # target never transits through mkstemp's 0600, and so
-                # ``atomic_replace``'s EXDEV/EBUSY ``shutil.copystat`` fallback
-                # copies the intended bits rather than 0600.  fchmod is
-                # Unix-only; Windows takes the path-based chmod.
-                if hasattr(os, "fchmod"):
-                    os.fchmod(dst.fileno(), mode)
-                else:
-                    os.chmod(tmp_name, mode)
-            # Stream instead of ``src.read()``: a multi-gigabyte state.db member
-            # must not be held in memory in one piece.
-            with zf.open(member) as src:
-                shutil.copyfileobj(src, dst)
-            dst.flush()
-            os.fsync(dst.fileno())
-        real_path = Path(atomic_replace(tmp_name, target))
-        # Owner first, mode second — the ordering ``atomic_yaml_write`` uses,
-        # because chown drops setuid/setgid and a mode restore that ran first
-        # would be partly undone.  Here ``mode`` no longer carries those bits,
-        # so the two agree: neither step can re-elevate the restored file.
-        _restore_file_owner(real_path, owner)
-        _restore_file_mode(real_path, mode)
-    except BaseException:
+    # The guard turns SIGTERM/SIGHUP into an unwind so the ``except BaseException``
+    # below actually runs: the default disposition kills the interpreter before
+    # it can, stranding the staged member inside the user's home.
+    with unwind_on_termination():
         try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "wb") as dst:
+                if mode is not None:
+                    # Apply the mode to the temp file BEFORE the replace so the
+                    # target never transits through mkstemp's 0600, and so
+                    # ``atomic_replace``'s EXDEV/EBUSY ``shutil.copystat`` fallback
+                    # copies the intended bits rather than 0600.  fchmod is
+                    # Unix-only; Windows takes the path-based chmod.
+                    if hasattr(os, "fchmod"):
+                        os.fchmod(dst.fileno(), mode)
+                    else:
+                        os.chmod(tmp_name, mode)
+                # Stream instead of ``src.read()``: a multi-gigabyte state.db member
+                # must not be held in memory in one piece.
+                with zf.open(member) as src:
+                    shutil.copyfileobj(src, dst)
+                dst.flush()
+                os.fsync(dst.fileno())
+            real_path = Path(atomic_replace(tmp_name, target))
+            # Owner first, mode second — the ordering ``atomic_yaml_write`` uses,
+            # because chown drops setuid/setgid and a mode restore that ran first
+            # would be partly undone.  Here ``mode`` no longer carries those bits,
+            # so the two agree: neither step can re-elevate the restored file.
+            _restore_file_owner(real_path, owner)
+            _restore_file_mode(real_path, mode)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
 
 def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
@@ -452,36 +481,45 @@ def _import_db_member(
     mode = _preserve_file_mode(target)
     owner = _preserve_file_owner(target)
 
+    # The staging file lands next to the *live* database (the Hermes home), not in a backup output
+    # directory: that directory is swept by the caller, once per directory
+    # (``hermes_cli.backup._sweep_restore_dir``), because no other call site of the sweep ever
+    # visits it and a SIGKILLed import would strand a hidden copy of the database (~a state.db in
+    # size) where nothing looks again.
     fd, tmp_name = tempfile.mkstemp(
         dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".dbimport"
     )
-    try:
-        with os.fdopen(fd, "wb") as dst:
-            # Stream: a multi-gigabyte state.db member must not be held in
-            # memory in one piece.
-            with zf.open(member) as src:
-                shutil.copyfileobj(src, dst)
-            dst.flush()
-            os.fsync(dst.fileno())
-        if not _safe_restore_db(Path(tmp_name), target):
-            from hermes_cli.backup import verify_sqlite_integrity
-
-            # Re-check only on failure so the user gets the real cause; the
-            # detailed integrity message was already logged by _safe_restore_db.
-            if not verify_sqlite_integrity(Path(tmp_name))["valid"]:
-                raise OSError(
-                    "the archived database failed its integrity check; the existing "
-                    "database was left untouched."
-                )
-            raise OSError(
-                "live-safe restore refused or failed; the existing database was "
-                "left untouched. Stop the gateway/dashboard processes holding it "
-                "open and re-run the import."
-            )
-        _restore_file_owner(target, owner)
-        _restore_file_mode(target, mode)
-    finally:
+    # As in ``_extract_member_atomically``: SIGTERM/SIGHUP must unwind into the ``finally``
+    # below instead of killing the interpreter with a full copy of the database staged in the
+    # user's home.
+    with unwind_on_termination():
         try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
+            with os.fdopen(fd, "wb") as dst:
+                # Stream: a multi-gigabyte state.db member must not be held in
+                # memory in one piece.
+                with zf.open(member) as src:
+                    shutil.copyfileobj(src, dst)
+                dst.flush()
+                os.fsync(dst.fileno())
+            if not _safe_restore_db(Path(tmp_name), target):
+                from hermes_cli.backup import verify_sqlite_integrity
+
+                # Re-check only on failure so the user gets the real cause; the
+                # detailed integrity message was already logged by _safe_restore_db.
+                if not verify_sqlite_integrity(Path(tmp_name))["valid"]:
+                    raise OSError(
+                        "the archived database failed its integrity check; the existing "
+                        "database was left untouched."
+                    )
+                raise OSError(
+                    "live-safe restore refused or failed; the existing database was "
+                    "left untouched. Stop the gateway/dashboard processes holding it "
+                    "open and re-run the import."
+                )
+            _restore_file_owner(target, owner)
+            _restore_file_mode(target, mode)
+        finally:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass

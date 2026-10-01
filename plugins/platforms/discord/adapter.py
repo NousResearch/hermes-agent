@@ -5937,7 +5937,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     # types rely on ``gateway/run.py`` emitting a (sandbox-translated) path note.
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
                     _is_text = ext in _TEXT_INJECT_EXTENSIONS or (content_type or "").startswith("text/")
-                    if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    from gateway.config import _coerce_bool
+                    inline_text = _coerce_bool(self.config.extra.get("inline_text_attachments"), default=True)
+                    if inline_text and _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
                             display_name = att.filename or f"document{ext or '.txt'}"
@@ -7401,6 +7403,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("ignored_channels", "DISCORD_IGNORED_CHANNELS", from_platform_extra=False)
     _gate("allowed_channels", "DISCORD_ALLOWED_CHANNELS", from_platform_extra=False)
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)
+    for key in ("inline_text_attachments", "max_attachment_bytes"):
+        if key in discord_cfg:
+            seeded_extra[key] = discord_cfg[key]
     # history_backfill: recover mention-gated channel messages between bot turns.
     if "history_backfill" in discord_cfg:
         seeded_extra["history_backfill"] = discord_cfg["history_backfill"]

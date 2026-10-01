@@ -1556,6 +1556,8 @@ DEFAULT_CONFIG = {
         # require_mention); limit = max messages scanned.
         "history_backfill": True,
         "history_backfill_limit": 50,
+        "inline_text_attachments": True,  # false caches text attachments without adding their contents to the prompt
+        "max_attachment_bytes": 32 * 1024 * 1024,  # per-document download cap; 0 disables the cap
         # Replay messages missed while offline, after reconnect/startup.
         "missed_message_backfill": {
             "enabled": False,

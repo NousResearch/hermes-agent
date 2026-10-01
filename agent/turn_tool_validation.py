@@ -85,6 +85,17 @@ def validate_tool_calls(
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolValidationVerdict:
         return ToolValidationVerdict(action=action, result=result, mixed_invalid_batch=_mixed_invalid_batch)
 
+    # Materialize fallback ids on the response objects before either the
+    # assistant message or its error result is appended. The storage builder
+    # uses the same fallback, but leaving the provider object blank here makes
+    # the paired tool result use a different (empty) id and get orphaned.
+    for index, tc in enumerate(tool_calls):
+        if not coalesce_tool_call_id(tc):
+            function = tc.function
+            tc.id = agent._deterministic_call_id(
+                getattr(function, "name", ""), getattr(function, "arguments", "{}"), index
+            )
+
     # Uniquify duplicate tool-call ids BEFORE any downstream consumer: the
     # pre-API sanitizer keeps only the first call/result per id.
     agent._uniquify_tool_call_ids(tool_calls)

@@ -1,10 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { HermesReadDirResult } from '@/global'
 import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
+import type { HermesReadDirResult } from '@/global'
 import { $connection, $selectedStoredSessionId, $sessions, $workspaceCwdOwner, setCurrentCwd } from '@/store/session'
-import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import { $sessionTiles } from '@/store/session-states'
 
 import { resetProjectTreeState } from './files/use-project-tree'
 

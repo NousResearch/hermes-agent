@@ -1605,7 +1605,9 @@ class SessionDB(
     #: Reactions live inside ``display_metadata`` so they survive row rewrites.
     REACTIONS_METADATA_KEY = "reactions"
     # Columns every conversation projection decodes; ``active`` rides along so a display read
-    # can split compaction-archived rows without a second query.
+    # can split compaction-archived rows without a second query. Contract: must include every
+    # ``agent.transcript_repair._OWNED_COLUMNS`` column, because replay stamps
+    # ``transcript_row_snapshot(row)`` from these rows (token_count is hashed there, not decoded).
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "

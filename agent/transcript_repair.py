@@ -171,8 +171,8 @@ def resolve_and_repair_transcript_batch(
                 (encode_content_fn(msg.get("content")), target_id, session_id, target_row["content"]),
             ).rowcount > 0
         else:
-            # Legacy dict (no digest: a resumed or cloned dict) over a non-blank assistant row: another writer
-            # already filled it. Adopt its content only, never the whole row: the live tool_calls /
+            # Legacy dict (no digest: a row-addressed resume, a clone, or a repair_alternation=False
+            # projection) over a non-blank assistant row: another writer already filled it. Adopt its content only, never the whole row: the live tool_calls /
             # reasoning* / codex_* fields may be sanitizer-fixed while the durable JSON still holds the raw
             # escaped surrogate, and live-only fields must survive.
             if role == "assistant":

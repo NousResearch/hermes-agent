@@ -55,8 +55,8 @@ async def test_quarantined_room_refuses_an_admitted_member_turn_before_it_runs(t
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
-    from gateway.session_hosted_attachments import committed_submission_payload
     from gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_state_runtime import admit_session_input
     from tui_gateway.hosted_room_driver import HostedRoomBinding
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -89,10 +89,13 @@ async def test_quarantined_room_refuses_an_admitted_member_turn_before_it_runs(t
         attempt = tasks.start_task(db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
         task, = tasks.list_tasks(db.db_path, room_id='room')
         rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1), task)
-        admission = {
-            'request_id': 'hosted:' + json.dumps(
+        db.create_session(rpc.ref.session_id, source='cli')
+        admission = admit_session_input(
+            db, epoch=authority.epoch, principal_id=rpc.principal.subject,
+            session_id=rpc.ref.session_id,
+            request_id='hosted:' + json.dumps(
                 [asdict(identity), attempt.execution_generation], sort_keys=True, separators=(',', ':')),
-            'principal_id': rpc.principal.subject, 'payload': committed_submission_payload(rpc, 'frozen')}
+            payload={'text': 'frozen'})
         if not quarantine:
             claimed = await asyncio.to_thread(service.check_admission, rpc.ref, admission)
             assert claimed['identity'] == identity
@@ -143,8 +146,12 @@ def test_hosted_dequeue_checks_exact_task_member_and_frozen_input(tmp_path, monk
         tasks.start_task(db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
         task, = tasks.list_tasks(db.db_path, room_id='room')
         rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1), task)
-        row = {'principal_id': 'alice', 'request_id': 'hosted:' + json.dumps([asdict(identity), task['execution_generation']]),
-               'payload': {'text': 'frozen'}}
+        # The claim path checks the durable admission row: its identity binds the input.
+        from hermes_state_runtime import admit_session_input
+        db.create_session(rpc.ref.session_id, source='cli')
+        row = admit_session_input(db, epoch=authority.epoch, principal_id='alice', session_id=rpc.ref.session_id,
+            request_id='hosted:' + json.dumps([asdict(identity), task['execution_generation']]),
+            payload={'text': 'frozen'})
         assert service.check_admission(rpc.ref, row) == task
         for bad in ({**row, 'principal_id': 'bob'}, {**row, 'payload': {'text': 'changed'}},
                     {**row, 'request_id': 'hosted:' + json.dumps([asdict(identity), 999])}):

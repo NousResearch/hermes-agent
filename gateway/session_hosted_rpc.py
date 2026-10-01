@@ -138,12 +138,16 @@ class HostedRoomAuthorityRPC:
         rows = self._rows()
         if any(row['status'] == 'unknown' for row, _, _ in rows):
             raise RuntimeStoreError('unknown_execution')
-        from gateway.session_hosted_attachments import submission_payload
-        payload = await asyncio.to_thread(
-            submission_payload, self, params['prompt'], params.get('attachments'))
+        from gateway.hosted_room_input_preparation import prepare_hosted_input
+        prepared = await asyncio.to_thread(prepare_hosted_input, self, request_id=request_id,
+            prompt=params['prompt'], attachments=params.get('attachments'))
         authorize_write = self.authorize_write
+        # Transports without a writer guard still recheck after background preparation.
+        # Same-home admission checks the newer snapshot inside the accepting write.
+        if authorize_write is None and self.authorizer('submit', task, generation) is not True:
+            raise RuntimeStoreError('permission_denied')
         receipt = await self.authority.submit(self.principal, Submission(
-            request_id, self.ref, payload, 'queue'),
+            request_id, self.ref, prepared.payload, 'queue'), _input_custody=prepared.handle,
             _authorize_write=(lambda conn: authorize_write(conn, task, generation))
             if authorize_write is not None else None)
         self.callbacks[receipt.admission_id] = params['on_terminal']

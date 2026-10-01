@@ -1,5 +1,6 @@
 """Room worker threads use the real authority ledger, never TUI dispatch."""
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import threading
 from types import SimpleNamespace
 
@@ -15,7 +16,7 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, m
     from pathlib import Path
     import time
 
-    from gateway import hosted_room_driver as tasks, session_hosted_attachments
+    from gateway import hosted_room_driver as tasks, hosted_room_input_preparation
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions
@@ -46,14 +47,14 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, m
     coords = {'profile': 'default', 'source': 'bot_room'}
     sid = rpc.create(**coords, title='Group: room')['session_id']
     preparing, release = threading.Event(), threading.Event()
-    original = session_hosted_attachments.submission_payload
+    original = hosted_room_input_preparation.prepare_hosted_input
 
     def paused_preparation(*args, **kwargs):
         preparing.set()
         assert release.wait(10), 'test did not release preparation'
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(session_hosted_attachments, 'submission_payload', paused_preparation)
+    monkeypatch.setattr(hosted_room_input_preparation, 'prepare_hosted_input', paused_preparation)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         submitted = executor.submit(rpc.submit, **coords, session_id=sid, prompt='frozen',
             task=identity, execution_generation=task['execution_generation'],
@@ -175,6 +176,44 @@ def test_room_binding_exact_retry_terminal_history_and_unknown(owner):
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
             operation()
     assert seen and all(t != threading.get_ident() for t in seen)
+
+
+def test_local_submit_rechecks_owner_after_real_preparation(owner, monkeypatch):
+    """A revoked producer cannot cross the preparation-to-admission boundary."""
+    from gateway import hosted_room_input_preparation as preparation
+    from gateway.hosted_room_driver import TaskIdentity
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+    authority, loop, principal, _ = owner
+    admitted = [True]
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member',
+        profile='default', principal=principal,
+        authorize=lambda operation, task, generation: admitted[0])
+    coords = dict(profile='default', source='bot_room')
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    entered, release = threading.Event(), threading.Event()
+    real_prepare = preparation.prepare_hosted_input
+    def paused(*args, **kwargs):
+        result = real_prepare(*args, **kwargs)
+        entered.set()
+        assert release.wait(8)
+        return result
+    monkeypatch.setattr(preparation, 'prepare_hosted_input', paused)
+    args = dict(**coords, session_id=sid, prompt='input',
+        task=TaskIdentity('room', 'task', 'thread', 'turn'), execution_generation=1,
+        on_terminal=lambda receipt: None)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(rpc.submit, **args)
+        try:
+            assert entered.wait(8)
+            admitted[0] = False
+        finally:
+            release.set()
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            future.result(timeout=8)
+    assert list_session_admissions(authority.db, session_id=sid, pending_only=False) == []
+    assert rpc.callbacks == {}
 
 
 def test_controls_are_exact_current_admission_and_loop_safe(owner):

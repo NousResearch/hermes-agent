@@ -6,7 +6,8 @@ import pytest
 
 
 def test_authorized_upload_send_download_and_task_consumption(tmp_path):
-    from gateway.session_hosted_attachments import upload, download, submission_payload
+    from gateway.hosted_room_input_preparation import resolve_inputs
+    from gateway.session_hosted_attachments import upload, download
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from gateway import hosted_rooms
     hosted_rooms.create_room(tmp_path / "state.db", room_id="room", name="Room", members=[], authority_gateway_id="gateway")
@@ -27,25 +28,33 @@ def test_authorized_upload_send_download_and_task_consumption(tmp_path):
     append_user_event(service, room_id='room', event_id='event', payload={'text':'read', 'attachments':manifest}, gateway_id='gateway', epoch=1)
     bound = [{**manifest[0], 'event_id': 'event'}]
     rpc = SimpleNamespace(authority=SimpleNamespace(db=SimpleNamespace(db_path=service.db_path)), room_id='room', member_id='member')
-    payload = submission_payload(rpc, 'read it', bound)
-    path = Path(payload['text'].split('file: ')[1].split('\n')[0])
-    assert path.read_bytes() == b'committed bytes'
-    assert submission_payload(rpc, 'read it', bound) == payload
-    assert base64.b64decode(download(service, actor, dict(room_id='room', event_id='event', attachment_id=metadata['attachment_id']))['data_base64']) == path.read_bytes()
+    (item, data), = resolve_inputs(rpc, bound)
+    assert item == bound[0] and data == b'committed bytes'
+    assert base64.b64decode(download(service, actor, dict(room_id='room', event_id='event', attachment_id=metadata['attachment_id']))['data_base64']) == data
     with pytest.raises(Exception):
-        submission_payload(rpc, 'read it', [{**bound[0], 'event_id': 'wrong'}])
+        resolve_inputs(rpc, [{**bound[0], 'event_id': 'wrong'}])
     allowed[0] = False
     for call in (lambda: upload(service, actor, params), lambda: download(service, actor, dict(room_id='room', attachment_id=metadata['attachment_id'], event_id='event'))):
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
             call()
 
 
-def test_rpc_accepts_only_bound_manifest_after_producer_authorization(owner):
+@pytest.fixture
+def owned_owner(owner):
+    """Gateway authorities run in the process that owns their profile home."""
+    from gateway.runtime_ownership import process_ownership
+    home = Path(owner[0].db.db_path).resolve().parent
+    process_ownership.reserve([home])
+    yield owner
+    process_ownership.release(home)
+
+
+def test_rpc_accepts_only_bound_manifest_after_producer_authorization(owned_owner):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from hermes_state_runtime import list_session_admissions
-    authority, loop, principal, _ = owner
+    authority, loop, principal, _ = owned_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')
     sid = rpc.create(**coords, title='Group: room')['session_id']

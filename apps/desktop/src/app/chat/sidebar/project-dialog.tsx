@@ -155,9 +155,7 @@ export function ProjectDialog() {
       return
     }
 
-    // A project owns sessions by folder (cwd-prefix), so creation requires at
-    // least one — a folder-less project couldn't hold a session anyway.
-    if (mode === 'create' && trimmed && folders.length) {
+    if (mode === 'create' && trimmed) {
       // The arm is consumed exactly on SUCCESS (before the close): a failed
       // create leaves the dialog open for a retry that still lands where it
       // was dropped; the open-state effect discards it on cancel/teardown.
@@ -340,7 +338,7 @@ export function ProjectDialog() {
               {t.common.cancel}
             </Button>
             <Button
-              disabled={submitting || !name.trim() || (mode === 'create' && folders.length === 0)}
+              disabled={submitting || !name.trim()}
               onClick={() => void submit()}
               type="button"
             >

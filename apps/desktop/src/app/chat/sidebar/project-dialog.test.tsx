@@ -97,6 +97,20 @@ async function fillCreateForm() {
 }
 
 describe('ProjectDialog', () => {
+  it('creates a named project without choosing a folder', async () => {
+    render(<ProjectDialog />)
+
+    fireEvent.change(screen.getByPlaceholderText('Project name'), { target: { value: 'Skunkworks' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => {
+      expect(createProject).toHaveBeenCalledWith(
+        expect.objectContaining({ folders: [], name: 'Skunkworks' })
+      )
+      expect(enterProject).toHaveBeenCalledWith('p_created')
+    })
+  })
+
   it('creates from the folder basename and enters the created project when the name is empty', async () => {
     render(<ProjectDialog />)
 

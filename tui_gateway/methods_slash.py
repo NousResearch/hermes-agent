@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import contextlib
 
+from tui_gateway import git_probe
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -383,12 +385,54 @@ def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tup
     return "ok", str(ack.get("output") or "")
 
 
-def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
+
+def _parse_worktree_ready_path(output: str) -> str | None:
+    """Extract the path from a ``/worktree new`` success line.
+
+    The slash worker prints ``Worktree ready: <path>`` after creating the
+    tree. Desktop tools follow ``session['cwd']``, not the worker's
+    ``os.chdir``, so the gateway has to adopt that path.
+    """
+    marker = "Worktree ready:"
+    for line in (output or "").splitlines():
+        stripped = line.strip()
+        if marker in stripped:
+            path = stripped.split(marker, 1)[1].strip()
+            return path or None
+    return None
+
+
+def _mirror_worktree_session_cwd(sid: str, session: dict, arg: str, output: str) -> str:
+    """Retarget the live session after a successful ``/worktree new``."""
+    sub = arg.split(None, 1)[0].lower() if arg else ""
+    if sub not in {"new", "add", "create"}:
+        return ""
+    path = _parse_worktree_ready_path(output)
+    if not path:
+        return ""
+    try:
+        cwd = _set_session_cwd(session, path)
+    except ValueError as e:
+        return f"worktree created but session cwd was not updated: {e}"
+    agent = session.get("agent")
+    if agent is not None:
+        info = _session_info(agent, session)
+    else:
+        # Same lazy contract as _fallback_session_info: `branch` always emitted ("" outside
+        # git) so a client clears a stale label instead of retaining it.
+        info = {"cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True}
+    _emit("session.info", sid, info)
+    return ""
+
+
+def _mirror_slash_side_effects(sid: str, session: dict, command: str, output: str = "") -> str:
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)
     if not parts:
         return ""
     name, arg, agent = parts[0], (parts[1].strip() if len(parts) > 1 else ""), session.get("agent")
+    if name == "worktree":
+        return _mirror_worktree_session_cwd(sid, session, arg, output)
     if name == "compact":  # /compact aliases /compress; the compute-host control forwards the raw alias
         name = "compress"
     if name in _MUTATES_WHILE_RUNNING:

@@ -1044,6 +1044,13 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
+    wanted_cwd = _slash_worker_cwd(_session_cwd(session))
+    # A later session.cwd.set (folder tag, workspace.move) does not restart
+    # the persistent worker. Reusing the spawn cwd would create /worktree
+    # in the previous project (#102268 follow-up).
+    if worker is not None and getattr(worker, "cwd", None) != wanted_cwd:
+        _restart_slash_worker(sid, session)
+        worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None
         # and each fork a full MCP-fleet worker (the loser leaks). Serialize first-use spawn.
@@ -1056,13 +1063,15 @@ def _(rid, params: dict) -> dict:
                     worker = _SlashWorker(
                         session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
                         profile_home=session.get("profile_home"),
-                        provider=getattr(session.get("agent"), "provider", None) or None)
+                        provider=getattr(session.get("agent"), "provider", None) or None,
+                        cwd=_session_cwd(session))
                     _attach_worker(sid, session, worker)
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
     try:
-        payload = {"output": worker.run(cmd) or "(no output)"}
-        if warning := _mirror_slash_side_effects(sid, session, cmd):
+        output = worker.run(cmd)
+        payload = {"output": output or "(no output)"}
+        if warning := _mirror_slash_side_effects(sid, session, cmd, output=output):
             payload["warning"] = warning
         if base in _SESSION_CONTROL_SLASHES:
             _publish_session_control_snapshot(sid, session)

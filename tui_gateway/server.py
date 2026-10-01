@@ -237,11 +237,27 @@ def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def _slash_worker_cwd(cwd: str | None) -> str:
+    """Directory the slash-command worker should inherit.
+
+    Desktop sessions keep their project on ``session['cwd']`` while the
+    gateway process often sits in a launch directory that is not a git
+    repo (or is a different one). ``/worktree`` runs ``git rev-parse`` in
+    the worker's process cwd, so spawning with the gateway's cwd creates
+    the tree in the wrong place — or refuses altogether.
+    """
+    if cwd:
+        resolved = os.path.abspath(os.path.expanduser(str(cwd)))
+        if os.path.isdir(resolved):
+            return resolved
+    return os.getcwd()
+
+
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
     def __init__(self, session_key: str, model: str, profile_home: str | None = None,
-                 provider: str | None = None):
+                 provider: str | None = None, cwd: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -283,8 +299,9 @@ class _SlashWorker:
         # a minimal PATH (e.g. by the Desktop/Dashboard app). See #83845.
         self.proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", bufsize=1, cwd=os.getcwd(), env=env,
+            encoding="utf-8", errors="replace", bufsize=1, cwd=_slash_worker_cwd(cwd), env=env,
             creationflags=windows_hide_flags(), start_new_session=True)
+        self.cwd = _slash_worker_cwd(cwd)
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
 
@@ -2130,7 +2147,8 @@ def _restart_slash_worker(sid: str, session: dict):
     try:
         new_worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
                                   profile_home=session.get("profile_home"),
-                                  provider=getattr(session.get("agent"), "provider", None) or None)
+                                  provider=getattr(session.get("agent"), "provider", None) or None,
+                                  cwd=_session_cwd(session))
     except Exception:
         session["slash_worker"] = None
         return

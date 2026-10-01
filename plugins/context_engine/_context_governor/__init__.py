@@ -275,6 +275,41 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
         # Override from config if available
         self._load_policy_from_config()
 
+    # -- Host-compat shims ----------------------------------------------------
+    # Upstream hermes-agent's ContextEngine ABC predates the Ares staged-receipt
+    # lifecycle (commit/discard/validate_pending_compression) and the advisory
+    # set_activation_status hook. When the host lacks them the adapter degrades:
+    # receipts still form locally (compact/pending) but staged activation falls
+    # back to the host's own direct-commit flow (discard_pending is the safe
+    # default because the adapter re-derives lineage from the receipt store).
+    # On Ares runtimes the ABC methods exist and take precedence via hasattr.
+
+    def set_activation_status(self, **_kwargs: Any) -> None:
+        """Advisory activation metadata (upstream hosts store none)."""
+        for key, value in _kwargs.items():
+            try:
+                setattr(self, f"_activation_{key}", value)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def commit_pending_compression(self, *args: Any, **kwargs: Any) -> bool:
+        """No staged-activation host boundary upstream: accept-as-was (host already
+        wrote the messages); keep receipt lineage consistent."""
+        logger.debug("commit_pending_compression: host has no staged boundary; no-op")
+        return True
+
+    def validate_pending_compression(self, *args: Any, **kwargs: Any) -> bool:
+        """No host projection to validate against upstream; accept."""
+        return True
+
+    def discard_pending_compression(self, *args: Any, **kwargs: Any) -> bool:
+        """No staged boundary upstream: reset in-process pending admission."""
+        try:
+            self._pending_admission = None
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
     @staticmethod
     def _default_binary() -> str:
         return shutil.which("context-governor") or "context-governor"

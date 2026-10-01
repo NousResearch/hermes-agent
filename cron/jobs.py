@@ -2412,9 +2412,12 @@ def _record_run_outcome(
         job["run_claim"] = None
 
 
-def _advance_after_run(job: Dict[str, Any], now: str, *, count_run: bool = True) -> None:
+def _advance_after_run(job: Dict[str, Any], now: str, *, ladder_rung: bool = False) -> None:
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
-    completion when the repeat limit is reached or a one-shot has no further run."""
+    completion when the repeat limit is reached or a one-shot has no further run.
+
+    ``ladder_rung``: this run re-ran an occurrence that already counted (an unreachable-model
+    re-run, ``cron.unreachable_retry.is_retry_run``), so ``repeat.completed`` is left as is."""
     # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
     # (recurring schedule couldn't compute — e.g. 'croniter' missing from the runtime env). Recurring jobs
     # must NEVER be silently disabled: that turns a missing runtime dep into "job completed" and the user's
@@ -2428,9 +2431,10 @@ def _advance_after_run(job: Dict[str, Any], now: str, *, count_run: bool = True)
         times = repeat.get("times")
         finite = times is not None and times > 0
         completed = repeat.get("completed", 0)
-        # Finite one-shots were pre-claimed by claim_dispatch() (completed already incremented) —
-        # do not double-count; recurring jobs and direct callers still get the increment.
-        if count_run and not (kind == "once" and finite and completed > 0):
+        # Count each occurrence once. A ladder re-run's occurrence already counted, and finite
+        # one-shots were pre-claimed by claim_dispatch() (completed already incremented); every
+        # other run, recurring or direct, gets the increment.
+        if not ladder_rung and not (kind == "once" and finite and completed > 0):
             completed += 1
             repeat["completed"] = completed
         if finite and completed >= times:
@@ -2503,7 +2507,7 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
-        _advance_after_run(job, now, count_run=not ladder_rung)
+        _advance_after_run(job, now, ladder_rung=ladder_rung)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 

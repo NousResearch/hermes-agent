@@ -16,6 +16,12 @@ LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
 DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
+# Fields that make an auxiliary task select its own model route rather than inheriting one.
+AUXILIARY_ROUTE_OVERRIDE_FIELDS = (
+    "provider", "model", "base_url", "api_key", "api", "key_env", "api_key_env",
+    "key_cmd", "api_mode", "reasoning_effort",
+)
+
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
     """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
@@ -765,6 +771,9 @@ DEFAULT_CONFIG = {
         # fails fast; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
         "compression": _aux(120, no_progress_timeout=None),
+        # Shallow-inherits auxiliary.compression top-level fields; set only dedicated
+        # micro-compaction overrides here. Empty by default so route defaults stay single-sourced.
+        "micro_compaction": {},
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like

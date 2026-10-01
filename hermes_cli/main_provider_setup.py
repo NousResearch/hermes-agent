@@ -7,6 +7,7 @@ Split out of ``hermes_cli/main.py``. Names that still live in main are imported 
 import contextlib
 
 from typing import Optional
+from hermes_cli.config_defaults import AUXILIARY_ROUTE_OVERRIDE_FIELDS
 from hermes_cli.model_setup_flows_common import _ask, _ensure_dict_section, _print_numbered, _radiolist, _say
 
 
@@ -53,6 +54,7 @@ def _clear_stale_openai_base_url():
 _AUX_TASKS: list[tuple[str, str, str]] = [
     ("vision", "Vision", "image/screenshot analysis"),
     ("compression", "Compression", "context summarization"),
+    ("micro_compaction", "Micro-compaction", "incremental context summarization"),
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
@@ -143,7 +145,8 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
                      api_key: str = "", reasoning_effort: Optional[str] = None) -> None:
     """Persist an aux task's four routing fields (timeout etc. untouched; main model config never
     modified). ``delegation`` writes the top-level section, with "auto" stored as an empty provider.
-    ``reasoning_effort``: a level word or "" (provider default) to write; None leaves the key alone."""
+    Micro-compaction auto removes route overrides so it inherits compression. ``reasoning_effort``:
+    a level word or "" (provider default) to write; None leaves the key alone."""
     from hermes_cli.config import load_config, save_config
     cfg = load_config()
     if task == _DELEGATION_TASK_KEY:
@@ -151,12 +154,16 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
         provider = "" if provider == "auto" else provider
     else:
         entry = _ensure_dict_section(_ensure_dict_section(cfg, "auxiliary"), task)
-    entry["provider"] = provider
-    entry["model"] = model or ""
-    entry["base_url"] = base_url or ""
-    entry["api_key"] = api_key or ""
-    if reasoning_effort is not None and _aux_task_takes_reasoning(task):
-        entry["reasoning_effort"] = reasoning_effort
+    if task == "micro_compaction" and provider == "auto":
+        for field in AUXILIARY_ROUTE_OVERRIDE_FIELDS:
+            entry.pop(field, None)
+    else:
+        entry["provider"] = provider
+        entry["model"] = model or ""
+        entry["base_url"] = base_url or ""
+        entry["api_key"] = api_key or ""
+        if reasoning_effort is not None and _aux_task_takes_reasoning(task):
+            entry["reasoning_effort"] = reasoning_effort
     save_config(cfg)
 
 
@@ -165,6 +172,8 @@ def _aux_task_takes_reasoning(task: str) -> bool:
     ``memory_query_rewrite`` omit the key by design (``config_defaults._aux``); ``review``
     routes through delegation which reads ``delegation.reasoning_effort``, not its own block."""
     if task == _DELEGATION_TASK_KEY:
+        return True
+    if task == "micro_compaction":
         return True
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     block = (DEFAULT_CONFIG.get("auxiliary") or {}).get(task)
@@ -202,7 +211,18 @@ def _reset_aux_to_auto() -> int:
 
     cfg = load_config()
     aux = _ensure_dict_section(cfg, "auxiliary")
-    count = sum(_clear(_ensure_dict_section(aux, task), "auto") for task, _name, _desc in _all_aux_tasks())
+    count = 0
+    for task, _name, _desc in _all_aux_tasks():
+        entry = _ensure_dict_section(aux, task)
+        if task == "micro_compaction":
+            changed = False
+            for field in AUXILIARY_ROUTE_OVERRIDE_FIELDS:
+                if field in entry:
+                    entry.pop(field)
+                    changed = True
+            count += changed
+        else:
+            count += _clear(entry, "auto")
     dele = cfg.get("delegation")
     if isinstance(dele, dict):
         count += _clear(dele, "")
@@ -266,7 +286,12 @@ def _aux_select_for_task(task: str) -> None:
 
     # (slug, label, models); "auto" always first
     auto_marker = "  ← current" if current_provider == "auto" and not current_base_url else ""
-    auto_label = "auto (inherit main agent)" if task == _DELEGATION_TASK_KEY else "auto (recommended)"
+    if task == _DELEGATION_TASK_KEY:
+        auto_label = "auto (inherit main agent)"
+    elif task == "micro_compaction":
+        auto_label = "auto (inherit compression)"
+    else:
+        auto_label = "auto (recommended)"
     entries: list[tuple[str, str, list[str]]] = [("__auto__", f"{auto_label}{auto_marker}", [])]
     entries.extend(format_aux_picker_entries(providers, current_provider=current_provider,
                                              current_base_url=current_base_url))

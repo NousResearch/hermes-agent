@@ -14,6 +14,7 @@ from hermes_cli.config import (
     find_provider_entry,
     read_raw_config,
 )
+from hermes_cli.config_defaults import AUXILIARY_ROUTE_OVERRIDE_FIELDS
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.wake_word import _PROVIDER_PREFERENCE
 
@@ -549,7 +550,7 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
 # Canonical auxiliary task slots. Keep in sync with DEFAULT_CONFIG["auxiliary"]
 # in hermes_cli/config.py — listed here for deterministic ordering in the UI.
 _AUX_TASK_SLOTS: Tuple[str, ...] = (
-    "vision", "compression", "skills_hub", "approval", "mcp", "title_generation", "review",
+    "vision", "compression", "micro_compaction", "skills_hub", "approval", "mcp", "title_generation", "review",
     "triage_specifier", "kanban_decomposer", "profile_describer", "curator",
 )
 
@@ -761,6 +762,11 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
         # Reset every slot to provider="auto", model="", no effort override — keeps other fields intact.
         for slot in _AUX_TASK_SLOTS:
             slot_cfg = _slot(slot)
+            if slot == "micro_compaction":
+                for field in AUXILIARY_ROUTE_OVERRIDE_FIELDS:
+                    slot_cfg.pop(field, None)
+                aux[slot] = slot_cfg
+                continue
             slot_cfg["provider"] = "auto"
             slot_cfg["model"] = ""
             slot_cfg.pop("reasoning_effort", None)
@@ -780,6 +786,11 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
         if slot not in _AUX_TASK_SLOTS:
             raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
         slot_cfg = _slot(slot)
+        if slot == "micro_compaction" and new_provider == "auto":
+            for field in AUXILIARY_ROUTE_OVERRIDE_FIELDS:
+                slot_cfg.pop(field, None)
+            aux[slot] = slot_cfg
+            continue
         prev_provider = str(slot_cfg.get("provider") or "").strip().lower()
         slot_cfg["provider"] = provider
         slot_cfg["model"] = model

@@ -1493,6 +1493,70 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert data["model"] == "moonshotai/kimi-k2.6"
 
 
+    def test_model_set_micro_compaction_auto_inherits_compression(self):
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.config_defaults import AUXILIARY_ROUTE_OVERRIDE_FIELDS
+
+        cfg = load_config()
+        cfg["auxiliary"]["micro_compaction"] = {
+            "provider": "custom",
+            "model": "micro-model",
+            "base_url": "https://micro.example/v1",
+            "api_key": "micro-key",
+            "api_mode": "chat_completions",
+            "reasoning_effort": "high",
+            "timeout": 17,
+            "extra_body": {"max_completion_tokens": 900},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary", "task": "micro_compaction",
+                "provider": "auto", "model": "",
+            },
+        )
+
+        assert resp.status_code == 200
+        micro = load_config()["auxiliary"]["micro_compaction"]
+        assert not (set(AUXILIARY_ROUTE_OVERRIDE_FIELDS) & micro.keys())
+        assert micro["timeout"] == 17
+        assert micro["extra_body"] == {"max_completion_tokens": 900}
+
+
+    def test_model_set_auxiliary_reset_removes_micro_compaction_route_only(self):
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.config_defaults import AUXILIARY_ROUTE_OVERRIDE_FIELDS
+
+        cfg = load_config()
+        cfg["auxiliary"]["micro_compaction"] = {
+            "provider": "openrouter",
+            "model": "micro-model",
+            "base_url": "https://micro.example/v1",
+            "key_env": "MICRO_API_KEY",
+            "reasoning_effort": "low",
+            "timeout": 23,
+        }
+        cfg["auxiliary"]["vision"].update({
+            "provider": "openrouter", "model": "vision-model", "timeout": 41,
+        })
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "auxiliary", "task": "__reset__", "provider": "", "model": ""},
+        )
+
+        assert resp.status_code == 200
+        aux = load_config()["auxiliary"]
+        assert not (set(AUXILIARY_ROUTE_OVERRIDE_FIELDS) & aux["micro_compaction"].keys())
+        assert aux["micro_compaction"]["timeout"] == 23
+        assert aux["vision"]["provider"] == "auto"
+        assert aux["vision"]["model"] == ""
+        assert aux["vision"]["timeout"] == 41
+
+
     def test_model_set_flips_a_stale_setup_record(self, monkeypatch):
         """POST /api/model/set landed a provider on disk; the serve process's boot record
         (``provider_configured: false`` since a failed boot-time mint) must follow at once, with

@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -36,6 +37,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _get_auxiliary_task_config,
 )
 
 
@@ -239,6 +241,257 @@ class TestResolveTaskProviderModel:
 
         assert resolved_provider == "anthropic"
         assert model is None
+
+
+class TestAuxiliaryTaskConfigInheritance:
+    @staticmethod
+    def _write_real_config(tmp_path, monkeypatch, child_present, child):
+        import hermes_yaml as yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        auxiliary = {
+            "compression": {
+                "provider": "custom",
+                "model": "batch-summary-model",
+                "base_url": "https://summary.example/v1",
+                "api_key": "summary-key",
+                "key_env": "SUMMARY_KEY_ENV",
+                "api_key_env": "SUMMARY_API_KEY_ENV",
+                "key_cmd": "summary-key-command",
+                "api_mode": "anthropic_messages",
+                "timeout": 240,
+                "extra_body": {"parent": True, "nested": {"parent": True}},
+            },
+        }
+        if child_present:
+            auxiliary["micro_compaction"] = child
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"auxiliary": auxiliary}), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def test_micro_compaction_inherits_compression_when_child_absent(self):
+        compression = {
+            "provider": "custom",
+            "model": "batch-summary-model",
+            "base_url": "https://summary.example/v1",
+            "api_key": "summary-key",
+            "timeout": 240,
+        }
+        config = {"auxiliary": {"compression": compression}}
+
+        with patch("hermes_cli.config.load_config_readonly", return_value=config):
+            inherited = _get_auxiliary_task_config("micro_compaction")
+            unchanged_parent = _get_auxiliary_task_config("compression")
+
+        assert inherited == compression
+        assert unchanged_parent == compression
+
+    def test_micro_compaction_overrides_parent_fields_and_inherits_omissions(self):
+        config = {
+            "auxiliary": {
+                "compression": {
+                    "provider": "custom",
+                    "model": "batch-summary-model",
+                    "base_url": "https://summary.example/v1",
+                    "timeout": 240,
+                    "reasoning_effort": "none",
+                    "extra_body": {"seed": 7},
+                },
+                "micro_compaction": {
+                    "model": "fast-micro-model",
+                    "timeout": 20,
+                },
+            },
+        }
+
+        with patch("hermes_cli.config.load_config_readonly", return_value=config):
+            resolved = _get_auxiliary_task_config("micro_compaction")
+
+        assert resolved == {
+            "provider": "custom",
+            "model": "fast-micro-model",
+            "base_url": "https://summary.example/v1",
+            "timeout": 20,
+            "reasoning_effort": "none",
+            "extra_body": {"seed": 7},
+        }
+
+    @pytest.mark.parametrize(
+        ("child_present", "child"),
+        [(False, None), (True, {}), (True, "not-a-mapping")],
+        ids=("absent", "empty", "malformed"),
+    )
+    def test_real_config_absent_empty_or_malformed_child_inherits_parent(
+        self, tmp_path, monkeypatch, child_present, child,
+    ):
+        self._write_real_config(tmp_path, monkeypatch, child_present, child)
+
+        assert _get_auxiliary_task_config("micro_compaction") == _get_auxiliary_task_config("compression")
+
+    def test_real_config_partial_child_shallowly_replaces_top_level_field(self, tmp_path, monkeypatch):
+        self._write_real_config(
+            tmp_path,
+            monkeypatch,
+            True,
+            {"model": "fast-micro-model", "extra_body": {"nested": {"child": True}}},
+        )
+
+        resolved = _get_auxiliary_task_config("micro_compaction")
+
+        assert resolved["provider"] == "custom"
+        assert resolved["model"] == "fast-micro-model"
+        assert resolved["base_url"] == "https://summary.example/v1"
+        assert resolved["api_key"] == "summary-key"
+        assert resolved["extra_body"] == {"nested": {"child": True}}
+
+    @pytest.mark.parametrize(
+        ("child_route", "expected_route"),
+        [
+            ({"provider": "openrouter"}, ("openrouter", None)),
+            ({"base_url": "https://micro.example/v1"}, ("custom", "https://micro.example/v1")),
+        ],
+        ids=("provider-only", "base-url-only"),
+    )
+    def test_changed_child_route_does_not_inherit_parent_route_or_credentials(
+        self, tmp_path, monkeypatch, child_route, expected_route,
+    ):
+        self._write_real_config(tmp_path, monkeypatch, True, child_route)
+        monkeypatch.setenv("SUMMARY_KEY_ENV", "summary-env-key")
+        monkeypatch.setenv("SUMMARY_API_KEY_ENV", "summary-api-env-key")
+
+        resolved = _get_auxiliary_task_config("micro_compaction")
+        route = _resolve_task_provider_model(task="micro_compaction")
+
+        other_route_field = "base_url" if "provider" in child_route else "provider"
+        assert other_route_field not in resolved
+        assert "api_mode" not in resolved
+        assert (route[0], route[2]) == expected_route
+        if "base_url" in child_route:
+            assert route[3] == "no-key-required"
+        else:
+            assert not (set(("api_key", "key_env", "api_key_env", "key_cmd")) & resolved.keys())
+            assert route[3] is None
+
+    @pytest.mark.parametrize(
+        ("credential", "expected_key"),
+        [
+            ({"api_key": "micro-key"}, "micro-key"),
+            ({"key_env": "MICRO_KEY_ENV"}, "micro-env-key"),
+            ({"api_key_env": "MICRO_API_KEY_ENV"}, "micro-api-env-key"),
+        ],
+        ids=("api-key", "key-env", "api-key-env"),
+    )
+    @pytest.mark.parametrize(
+        "child_route",
+        [
+            {"provider": "openrouter"},
+            {"base_url": "https://micro.example/v1"},
+        ],
+        ids=("provider-only", "base-url-only"),
+    )
+    def test_explicit_child_credentials_win_when_route_changes(
+        self, tmp_path, monkeypatch, credential, expected_key, child_route,
+    ):
+        self._write_real_config(
+            tmp_path,
+            monkeypatch,
+            True,
+            {**child_route, **credential},
+        )
+        monkeypatch.setenv("MICRO_KEY_ENV", "micro-env-key")
+        monkeypatch.setenv("MICRO_API_KEY_ENV", "micro-api-env-key")
+
+        resolved = _get_auxiliary_task_config("micro_compaction")
+
+        assert credential.items() <= resolved.items()
+        assert _resolve_task_provider_model(task="micro_compaction")[3] == expected_key
+
+    def test_changed_child_base_url_constructs_client_without_ambient_openai_key(
+        self, tmp_path, monkeypatch,
+    ):
+        import agent.auxiliary_client as ac
+
+        self._write_real_config(
+            tmp_path, monkeypatch, True, {"base_url": "https://micro.example/v1"}
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai-key")
+        captured = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(api_key=kwargs["api_key"], base_url=kwargs["base_url"])
+
+        route = _resolve_task_provider_model(task="micro_compaction")
+        with patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            resolve_provider_client(
+                route[0], model=route[1], explicit_base_url=route[2],
+                explicit_api_key=route[3], api_mode=route[4],
+            )
+
+        assert captured["api_key"] == "no-key-required"
+
+    @pytest.mark.parametrize("succeeds", [True, False], ids=("success", "failure"))
+    def test_changed_child_base_url_key_cmd_never_falls_through_to_ambient_key(
+        self, tmp_path, monkeypatch, succeeds,
+    ):
+        import agent.auxiliary_client as ac
+        from agent.command_token_source import CommandTokenError
+
+        command = (
+            f'"{sys.executable}" -c "print(\'child-command-key\')"'
+            if succeeds
+            else f'"{sys.executable}" -c "raise SystemExit(7)"'
+        )
+        self._write_real_config(
+            tmp_path,
+            monkeypatch,
+            True,
+            {
+                "base_url": "https://micro.example/v1",
+                "api_key": "child-static-key",
+                "key_cmd": command,
+            },
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai-key")
+        captured = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(api_key=kwargs["api_key"], base_url=kwargs["base_url"])
+
+        route = _resolve_task_provider_model(task="micro_compaction")
+        with patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            resolve_provider_client(
+                route[0], model=route[1], explicit_base_url=route[2],
+                explicit_api_key=route[3], api_mode=route[4],
+            )
+
+        credential = captured["api_key"]
+
+        assert callable(credential)
+        if succeeds:
+            assert credential() == "child-command-key"
+        else:
+            with pytest.raises(CommandTokenError):
+                credential()
+
+    @pytest.mark.parametrize(
+        ("child_route", "expected_mode"),
+        [
+            ({"provider": "openrouter"}, None),
+            ({"base_url": "https://micro.example/v1"}, None),
+            ({"provider": "openrouter", "api_mode": "responses"}, "codex_responses"),
+            ({"base_url": "https://micro.example/v1", "api_mode": "chat_completions"}, "chat_completions"),
+        ],
+        ids=("provider-drops", "base-url-drops", "provider-override", "base-url-override"),
+    )
+    def test_changed_child_route_drops_inherited_api_mode_unless_explicit(
+        self, tmp_path, monkeypatch, child_route, expected_mode,
+    ):
+        self._write_real_config(tmp_path, monkeypatch, True, child_route)
+
+        assert _resolve_task_provider_model(task="micro_compaction")[4] == expected_mode
 
 
 class TestMoaAggregatorSharedResolution:
@@ -2126,7 +2379,8 @@ class TestTransientTransportRetry:
         assert client.chat.completions.create.call_count == 1
 
 
-    def test_compression_skips_same_provider_retry_on_timeout(self):
+    @pytest.mark.parametrize("task", ["compression", "micro_compaction"])
+    def test_compression_family_skips_same_provider_retry_on_timeout(self, task):
         """A timeout on the critical compression path must NOT retry the same
         provider (that doubles the user-visible stall, issue #54465) — it
         falls straight through to the fallback chain instead.
@@ -2155,7 +2409,7 @@ class TestTransientTransportRetry:
                 return_value=(fb_client, "fb-model", "openai"),
             ),
         ):
-            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+            result = call_llm(task=task, messages=[{"role": "user", "content": "hi"}])
         assert result == {"fallback": True}
         # Primary tried ONCE only — no same-provider timeout retry — then fallback.
         assert primary.chat.completions.create.call_count == 1
@@ -4544,7 +4798,8 @@ class TestCompressionFallbackContextFilter:
 
     # ── L2: configured fallback chain ─────────────────────────────────
 
-    def test_configured_chain_skips_too_small_candidate_for_compression(self, monkeypatch):
+    @pytest.mark.parametrize("task", ["compression", "micro_compaction"])
+    def test_configured_chain_skips_too_small_candidate_for_compression_family(self, monkeypatch, task):
         """When entry[0] is reachable but too small and entry[1] is large enough,
         _try_configured_fallback_chain must return entry[1], not entry[0]."""
         from agent.auxiliary_client import (
@@ -4569,7 +4824,7 @@ class TestCompressionFallbackContextFilter:
 
         monkeypatch.setattr(
             "agent.auxiliary_client._get_auxiliary_task_config",
-            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+            lambda requested_task: {"fallback_chain": entries} if requested_task == task else {},
         )
 
         with patch("agent.auxiliary_client._resolve_fallback_entry",
@@ -4577,7 +4832,7 @@ class TestCompressionFallbackContextFilter:
              patch("agent.auxiliary_client.get_model_context_length",
                    side_effect=fake_ctx):
             client, model, label = _try_configured_fallback_chain(
-                task="compression", failed_provider="auto")
+                task=task, failed_provider="auto")
 
         assert client is large_client, (
             f"Expected large_client (1M context), got {client}. "
@@ -4643,6 +4898,7 @@ class TestCompressionFallbackContextFilter:
         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 
         assert _task_minimum_context_length("compression") == MINIMUM_CONTEXT_LENGTH
+        assert _task_minimum_context_length("micro_compaction") == MINIMUM_CONTEXT_LENGTH
         # Non-compression tasks have no minimum (None)
         assert _task_minimum_context_length("vision") is None
         assert _task_minimum_context_length("title_generation") is None

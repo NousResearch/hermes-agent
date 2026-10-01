@@ -1020,7 +1020,18 @@ auxiliary:
     model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3-flash-preview" for cheaper/faster compression.
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
+  micro_compaction:                                 # Optional separate route for compression.micro_compact
+    model: ""                                       # A model-only override inherits the compression provider and endpoint
 ```
+
+`auxiliary.micro_compaction` shallowly inherits omitted fields from
+`auxiliary.compression`. The route boundary is fail-safe: changing only its
+`provider` drops the inherited compression `base_url`, while changing only its
+`base_url` drops the inherited compression provider. Either change also drops
+inherited `api_key`, `key_env`, `api_key_env`, and `key_cmd` credential sources
+unless that field is explicitly supplied in `micro_compaction`. Model-only,
+timeout, reasoning, request-body, and fallback overrides keep normal shallow
+inheritance.
 
 :::info Legacy config migration
 Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17). No manual action needed.

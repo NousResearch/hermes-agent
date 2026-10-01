@@ -3520,6 +3520,11 @@ def _is_statusless_structured_provider_error(exc: Exception) -> bool:
     return isinstance(err, dict) and any(err.get(k) for k in ("type", "code", "message"))
 
 
+# Tasks that perform context compression share runtime safety policies while retaining distinct
+# config routes and usage identities.
+_COMPRESSION_TASKS = frozenset({"compression", "micro_compaction"})
+
+
 # Tasks on a user-visible critical path (compression blocks resuming an oversized session; vision
 # stalls the serialised turn queue). A same-provider retry after a full-budget timeout costs another
 # whole ``timeout`` window, so they skip straight to fallback; fast blips still retry.
@@ -3527,7 +3532,7 @@ def _is_statusless_structured_provider_error(exc: Exception) -> bool:
 # compression case. Title generation joins them because its retries multiplied the user's
 # ``auxiliary.title_generation.timeout`` (~4x: three full windows plus backoff) on a slow local
 # model, and the auto-title thread outlived the deadline the user thought they had set (#89445, #66251).
-_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation"})
+_TIMEOUT_NO_RETRY_TASKS = _COMPRESSION_TASKS | frozenset({"vision", "title_generation"})
 
 
 def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:
@@ -4049,7 +4054,7 @@ def _plan_fallback_candidate(
         )
         effective_timeout = fb_timeout
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
-    task_config = _get_auxiliary_task_config(task) if task == "compression" else {}
+    task_config = _get_auxiliary_task_config(task) if task in _COMPRESSION_TASKS else {}
     fallback_entry = _fallback_chain_entry(task, fb_label) or {}
     common = dict(
         task=task, effective_timeout=effective_timeout, fallback_entry=fallback_entry,
@@ -4337,8 +4342,8 @@ def _try_main_agent_model_fallback(
 # it). This preserves the existing fallback surface for unrecognised/custom models while closing the gap on
 # the well-known ones.
 def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
-    """Minimum context length for an auxiliary task; None = no floor (only ``compression`` has one)."""
-    return MINIMUM_CONTEXT_LENGTH if task == "compression" else None
+    """Minimum context length for an auxiliary task; None = no floor."""
+    return MINIMUM_CONTEXT_LENGTH if task in _COMPRESSION_TASKS else None
 
 
 def _candidate_context_window(provider: str, model: str, base_url: str = "", api_key: str = "") -> Optional[int]:
@@ -6076,8 +6081,10 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
 
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    api_key: Optional[Union[str, Callable[[], str]]] = None,
+) -> Tuple[
+    str, Optional[str], Optional[str], Optional[Union[str, Callable[[], str]]], Optional[str]
+]:
     """Determine (provider, model, base_url, api_key, api_mode) for a call.
 
     Priority: explicit args > config auxiliary.{task}.* > "auto". A bare base_url means custom,
@@ -6095,6 +6102,12 @@ def _resolve_task_provider_model(
             cfg_key_env = str(task_config.get("key_env") or task_config.get("api_key_env") or "").strip()
             if cfg_key_env:
                 cfg_api_key = _scoped_key_env(cfg_key_env) or None
+        cfg_key_cmd = str(task_config.get("key_cmd") or "").strip()
+        if cfg_key_cmd:
+            from agent.command_token_source import build_command_token_provider
+            cfg_api_key = build_command_token_provider(
+                cfg_key_cmd, cfg_provider or f"auxiliary.{task}"
+            ) or cfg_api_key
         # User-facing spellings (``responses``, ``anthropic``, …) canonicalize here so every
         # branch downstream compares against the transport names only (#39750).
         resolved_api_mode = _canonical_api_mode(str(task_config.get("api_mode") or "")).lower() or None
@@ -6146,6 +6159,8 @@ def _resolve_task_provider_model(
         # base_url without api_key: keep the provider so it can resolve credentials from env
         # vars instead of locking into "custom".
         return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
+    if cfg_base_url:
+        return "custom", resolved_model, cfg_base_url, None, resolved_api_mode
     if cfg_provider and cfg_provider != "auto":
         return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     return "auto", resolved_model, None, None, resolved_api_mode
@@ -6163,10 +6178,18 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 # config value is kept unchanged.
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
+# Child tasks inherit every omitted top-level auxiliary route field from their parent. Keep this
+# data-driven so new task families do not add provider-specific resolution branches.
+_AUXILIARY_TASK_PARENTS: Dict[str, str] = {
+    "micro_compaction": "compression",
+}
+_AUXILIARY_CREDENTIAL_FIELDS = ("api_key", "key_env", "api_key_env", "key_cmd")
+
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
-    declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG."""
+    declared defaults layered under user config (user wins); mapped child tasks inherit omitted
+    top-level fields from their parent; built-in defaults live in DEFAULT_CONFIG."""
     if not task:
         return {}
     try:
@@ -6178,6 +6201,37 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}
+    parent = _AUXILIARY_TASK_PARENTS.get(task)
+    parent_config = aux.get(parent, {}) if parent and isinstance(aux, dict) else {}
+    if isinstance(parent_config, dict):
+        child_config = task_config
+        task_config = {**parent_config, **child_config}
+        provider_changed = (
+            "provider" in child_config
+            and str(child_config.get("provider") or "").strip().lower()
+            != str(parent_config.get("provider") or "").strip().lower()
+        )
+        base_url_changed = (
+            "base_url" in child_config
+            and str(child_config.get("base_url") or "").strip()
+            != str(parent_config.get("base_url") or "").strip()
+        )
+        if provider_changed and "base_url" not in child_config:
+            task_config.pop("base_url", None)
+        if base_url_changed and "provider" not in child_config:
+            task_config.pop("provider", None)
+        if provider_changed or base_url_changed:
+            if "api_mode" not in child_config:
+                task_config.pop("api_mode", None)
+            for field in _AUXILIARY_CREDENTIAL_FIELDS:
+                if field not in child_config:
+                    task_config.pop(field, None)
+        if base_url_changed and not any(
+            str(child_config.get(field) or "").strip()
+            for field in _AUXILIARY_CREDENTIAL_FIELDS
+        ):
+            # A child-owned endpoint must not silently borrow OPENAI_API_KEY from the process.
+            task_config["api_key"] = "no-key-required"
     try:
         from hermes_cli.plugins import get_plugin_auxiliary_tasks
         for _entry in get_plugin_auxiliary_tasks():
@@ -6238,7 +6292,7 @@ def _compression_fast_lane_controls(
     leak_guard_config: Dict[str, Any], max_tokens: int | None, extra_body: Dict[str, Any],
 ) -> tuple[int | None, Dict[str, Any]]:
     """Apply the certified compression controls to one resolved route."""
-    if task != "compression" or max_tokens is not None:
+    if task not in _COMPRESSION_TASKS or max_tokens is not None:
         return max_tokens, extra_body
     body = dict(extra_body)
     lane = resolve_compression_fast_lane(
@@ -6288,12 +6342,12 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
 
 
 def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
-    """Explicit ``timeout`` wins, else config; compression gets a floor so a reasoning model
+    """Explicit ``timeout`` wins, else config; compression tasks get a floor so a reasoning model
     summarising a large context isn't cut off."""
     if timeout is not None:
         return timeout
     effective = _get_task_timeout(task)
-    return max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS) if task == "compression" else effective
+    return max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS) if task in _COMPRESSION_TASKS else effective
 
 
 def _with_custom_endpoint_extra_body(
@@ -7368,11 +7422,11 @@ def _prepare_aux_request(
     )
     request_provider = effective_provider or resolved_provider
     if not async_mode:
-        compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
+        task_config = _get_auxiliary_task_config(task) if task in _COMPRESSION_TASKS else {}
         _, effective_extra_body = _compression_fast_lane_controls(
             task, actual_provider=request_provider, actual_model=final_model,
-            requested_provider=provider, requested_model=model, route_config=compression_config,
-            leak_guard_config=compression_config, max_tokens=max_tokens,
+            requested_provider=provider, requested_model=model, route_config=task_config,
+            leak_guard_config=task_config, max_tokens=max_tokens,
             extra_body=effective_extra_body,
         )
     _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)

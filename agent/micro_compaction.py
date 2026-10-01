@@ -119,7 +119,7 @@ class MicroCompactionMixin:
         from agent.auxiliary_client import aux_interrupt_protection, call_llm
 
         call_kwargs = {
-            "task": "compression",
+            "task": "micro_compaction",
             "messages": self._build_micro_summary_prompt(self._micro_compact_rolling_summary, exchange_text),
             "max_tokens": min(1500, self.max_summary_tokens or 1500),
             "temperature": 0.1,

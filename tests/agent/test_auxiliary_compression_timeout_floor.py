@@ -9,8 +9,8 @@ deterministic context marker — silently losing the LLM summary.
 The fix layers a *bounded* timeout floor on top of the config-derived
 compression timeout, while honouring the four constraints from the issue:
 
-  * Only the ``compression`` task gets the floor (other auxiliary tasks keep
-    their own timeouts).
+  * Compression-family tasks get the floor (other auxiliary tasks keep their
+    own timeouts).
   * An explicit per-call ``timeout=`` override is **not** floored.
   * The floor is a minimum — a config value already above it is unchanged.
   * Both the sync (``call_llm``) and async (``async_call_llm``) paths are
@@ -74,14 +74,15 @@ def _patches(client, *, task_timeout):
 class TestCompressionTimeoutFloorSync:
     """Sync ``call_llm`` applies the floor to config-derived compression timeouts."""
 
-    def test_config_derived_compression_timeout_is_raised_to_floor(self):
+    @pytest.mark.parametrize("task", ["compression", "micro_compaction"])
+    def test_config_derived_compression_timeout_is_raised_to_floor(self, task):
         """Layer 1: compression with a 120 s config timeout must reach the
         client with at least the 300 s floor."""
         client = _client_sync()
         p1, p2, p3, p4 = _patches(client, task_timeout=COMPRESSION_CONFIG_TIMEOUT)
         with p1, p2, p3, p4:
             call_llm(
-                task="compression",
+                task=task,
                 messages=[{"role": "user", "content": "summarise this"}],
             )
         timeout = client.chat.completions.create.call_args.kwargs["timeout"]
@@ -116,12 +117,13 @@ class TestCompressionTimeoutFloorAsync:
     """Async ``async_call_llm`` mirrors the sync floor (Layer 2)."""
 
     @pytest.mark.asyncio
-    async def test_async_config_derived_compression_timeout_is_raised_to_floor(self):
+    @pytest.mark.parametrize("task", ["compression", "micro_compaction"])
+    async def test_async_config_derived_compression_timeout_is_raised_to_floor(self, task):
         client = _client_async()
         p1, p2, p3, p4 = _patches(client, task_timeout=COMPRESSION_CONFIG_TIMEOUT)
         with p1, p2, p3, p4:
             await async_call_llm(
-                task="compression",
+                task=task,
                 messages=[{"role": "user", "content": "summarise this"}],
             )
         timeout = client.chat.completions.create.call_args.kwargs["timeout"]

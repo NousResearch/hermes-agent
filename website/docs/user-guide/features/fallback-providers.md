@@ -220,6 +220,7 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 |------|-------------|-----------|
 | Vision | Image analysis, browser screenshots | `auxiliary.vision` |
 | Compression | Context compression summaries | `auxiliary.compression` |
+| Micro-compaction | Incremental end-of-turn context summaries | `auxiliary.micro_compaction` |
 | Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
 | Approval | Smart command-approval classification | `auxiliary.approval` |
@@ -400,6 +401,14 @@ auxiliary:
     provider: "auto"                              # auto | openrouter | nous | main
     model: "google/gemini-3-flash-preview"
 ```
+
+When `compression.micro_compact` is enabled, its frequent incremental calls use
+the separate `auxiliary.micro_compaction` task and fallback chain. That block
+shallowly inherits omitted fields from `auxiliary.compression`, but route
+changes are isolated: a provider-only override cannot inherit the compression
+endpoint, a base-URL-only override cannot inherit the compression provider, and
+neither inherits compression credential sources unless explicitly supplied.
+Model-only and non-route overrides continue to inherit the parent route.
 
 :::info Legacy migration
 Older configs with `compression.summary_model` / `compression.summary_provider` / `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17).

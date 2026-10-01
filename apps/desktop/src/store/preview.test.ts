@@ -14,6 +14,8 @@ import {
   closeRightRail,
   closeRightRailTab,
   commitBrowserTabLocation,
+  decodePreviewTabs,
+  markPreviewTabMissing,
   newBrowserTab,
   noteBrowserPage,
   openPreview,
@@ -347,5 +349,41 @@ describe('preview store', () => {
     // Nothing persistable, so the profile's bucket is empty and the key is
     // removed rather than stored as an empty list (matching the tiles store).
     expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
+  })
+
+  it('tombstones a confirmed-missing tab in place without closing it', () => {
+    openPreview(fileTarget('/work/demo.html'))
+    openPreview(fileTarget('/work/keep.html'))
+    const demoId = 'file:file:///work/demo.html'
+
+    markPreviewTabMissing(demoId)
+
+    const tabs = $previewTabs.get()
+
+    expect(tabs).toHaveLength(2)
+    expect(tabs.find(tab => tab.id === demoId)?.target.missing).toBe(true)
+    expect(tabs.find(tab => tab.id !== demoId)?.target.missing).toBeFalsy()
+
+    // Idempotent: a second tombstone must not rewrite the list.
+    const before = JSON.stringify($previewTabs.get())
+    markPreviewTabMissing(demoId)
+    expect(JSON.stringify($previewTabs.get())).toBe(before)
+  })
+
+  it('ignores a tombstone for a tab that is not open', () => {
+    markPreviewTabMissing('file:file:///nowhere.html')
+
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('drops tombstoned file tabs at restore so dead paths are not re-probed next boot', () => {
+    const raw = JSON.stringify([
+      { id: 'file:file:///work/gone.html', target: { ...fileTarget('/work/gone.html'), missing: true } },
+      { id: 'file:file:///work/alive.html', target: fileTarget('/work/alive.html') }
+    ])
+
+    const restored = decodePreviewTabs(raw)
+
+    expect(restored.map(tab => tab.target.path)).toEqual(['/work/alive.html'])
   })
 })

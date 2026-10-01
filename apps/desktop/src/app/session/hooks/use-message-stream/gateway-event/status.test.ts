@@ -81,8 +81,10 @@ describe('gateway `error` event → error card + toast', () => {
     // agent init with no usable provider: the gateway stamps code=provider_not_configured
     // (tui_gateway/server.py). The fix for this chat is setup, so the user must land there and
     // not on a toast — even after the sentence is reworded again.
-    const { ctx } = errorContext('Hermes could not start the assistant. Details: something new we never matched.',
-      'provider_not_configured')
+    const { ctx } = errorContext(
+      'Hermes could not start the assistant. Details: something new we never matched.',
+      'provider_not_configured'
+    )
 
     handleStatusEvent(ctx)
 

@@ -102,6 +102,12 @@ _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run un
 _cfg_cache: dict | None = None
 _cfg_sig: tuple | None = None
 _cfg_path = None
+
+# Idempotency registry for session.create: maps client-supplied key → sid so a
+# retried create (e.g. response lost in transit) returns the same session
+# instead of spawning a duplicate child. Entries expire with the session.
+_idempotency_keys: dict[str, tuple[str, float]] = {}
+_IDEMPOTENCY_KEY_TTL = 300.0  # 5 min: longer than any realistic retry window
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
 
@@ -300,6 +306,12 @@ class _SlashWorker:
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
     def run(self, command: str) -> str:
+        """Run one command; return its output text.
+
+        A command like /prompt may also have parked a next-turn prompt (a "seed")
+        on the worker CLI; it rides back on the reply's ``seed`` field and is
+        retrieved separately via ``pop_seed()``.
+        """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
         with self._lock:
@@ -318,9 +330,15 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
+                self._last_seed = str(msg.get("seed", "") or "")
                 return str(msg.get("output", "")).rstrip()
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
+
+    def pop_seed(self) -> str:
+        """Return and clear the seed from the last ``run()`` (empty when none)."""
+        seed, self._last_seed = getattr(self, "_last_seed", ""), ""
+        return seed
 
     def close(self):
         if getattr(self, "_closed", False):

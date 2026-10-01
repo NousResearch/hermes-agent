@@ -24,6 +24,7 @@ from hermes_constants import (
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_state_holders import read_only_db_uri
 
+from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
@@ -100,7 +101,8 @@ _EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
 # the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
 # subdirs) and the grounded-citations evidence ledger. Only these subdirs are archived.
-_KEPT_CACHE_SUBDIRS = {"images", "audio", "videos", "documents", "screenshots", "citations"}
+_KEPT_CACHE_SUBDIRS = {
+    "images", "audio", "videos", "documents", "screenshots", "citations", GENERATED_SUBDIR}
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:

@@ -25,6 +25,13 @@ from tests.pm._range_server import dl_server, url as _srv_url  # noqa: F401
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli import web_server
+    from hermes_cli.local_runtime import catalog
+    # "Network downloads are stubbed at the urllib boundary — never live" (module docstring):
+    # the catalog route spawns a background refresh whose fetched document REPLACES the packaged
+    # catalog in memory, and upstream main does not carry this branch's entries. An
+    # entry-specific assertion would then break depending on which test fired first and on the
+    # network — freeze it here, once, for every test using this client.
+    monkeypatch.setattr(catalog, "refresh_catalog_soon", lambda: None)
 
     test_client = TestClient(web_server.app)
     # Same auth pattern as the git-route tests: present the session token.

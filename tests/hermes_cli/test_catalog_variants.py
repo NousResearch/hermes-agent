@@ -47,6 +47,22 @@ def test_every_entry_ships_exactly_one_build():
             assert asset.size_bytes > 0, f"{entry.id}: no size on {asset.path}"
 
 
+def test_chat_template_kwargs_is_valid_json():
+    """The sampling chat-template-kwargs string rides the preset INI verbatim to llama-server — a
+    typo in the embedded JSON is a silent misconfiguration (the server falls back to template
+    defaults, no error anywhere). Validate it at catalog time, where every other entry invariant
+    already lives."""
+    import json
+
+    for entry in CATALOG:
+        raw = (entry.sampling or {}).get("chat-template-kwargs")
+        if raw is None:
+            continue
+        parsed = json.loads(raw)
+        assert isinstance(parsed, dict), (
+            f"{entry.id}: chat-template-kwargs must be a JSON object, got {type(parsed).__name__}")
+
+
 def test_split_variants_have_coherent_parts():
     """Multi-file variants: same model_id from every part, exact sizes,
     first file is the load target."""

@@ -203,7 +203,7 @@
       },
       "quality": 88,
       "decode_fraction": 1.0,
-      "blocked_reason": "Runs only on a ternary-capable llama.cpp build (PrismML-Eng/llama.cpp); the managed engine rejects its PTQ1_0 weights"
+      "blocked_reason": "No shipped llama.cpp build can load its PTQ1_0 weights yet — runs only on a ternary-capable build (PrismML-Eng/llama.cpp)"
     }
   ]
 }

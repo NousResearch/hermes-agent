@@ -1,4 +1,4 @@
-"""Run Matrix mutations on the owning gateway loop and wait for cancellation."""
+"""Run Matrix requests on their owning loop and bound unavailable-loop waits."""
 
 from __future__ import annotations
 
@@ -78,6 +78,9 @@ async def run_matrix_mutation(
     if interrupted():
         return json.dumps({"error": f"{operation_label} interrupted"})
 
+    if not owner_loop.is_running():
+        return json.dumps({"error": "Matrix gateway loop is unavailable"})
+
     owner = MatrixOwner.capture()
     change = operation_factory(interrupted, write_started.set)
     owner_task: asyncio.Task[dict[str, Any]] | None = None
@@ -85,6 +88,9 @@ async def run_matrix_mutation(
     async def run_change() -> dict[str, Any]:
         nonlocal owner_task
         owner_task = asyncio.current_task()
+        if cancelled.is_set():
+            change.close()
+            return {"error": f"{operation_label} interrupted"}
         secrets = None
         if owner.identity is not None:
             from gateway.run import _load_profile_secret_scope
@@ -127,8 +133,19 @@ async def run_matrix_mutation(
 
     deadline = _monotonic() + 30.0
     failure: str | None = None
+    result: dict[str, Any] | None = None
     try:
         while not pending.done():
+            if not owner_loop.is_running():
+                if (
+                    owner_task is not None
+                    and owner_task.done()
+                    and not owner_task.cancelled()
+                ):
+                    result = owner_task.result()
+                    break
+                failure = "Matrix gateway loop is unavailable"
+                break
             if interrupted():
                 failure = f"{operation_label} interrupted"
                 break
@@ -137,7 +154,7 @@ async def run_matrix_mutation(
                 failure = f"{operation_label} timed out"
                 break
             await asyncio.wait({pending}, timeout=min(0.1, remaining))
-        if failure is None:
+        if failure is None and result is None:
             result = await pending
     except asyncio.CancelledError:
         cancelled.set()
@@ -145,13 +162,21 @@ async def run_matrix_mutation(
     finally:
         if not pending.done():
             cancelled.set()
-            owner_loop.call_soon_threadsafe(cancel_change)
+            try:
+                owner_loop.call_soon_threadsafe(cancel_change)
+            except RuntimeError:
+                if owner_task is None:
+                    operation.close()
+                    change.close()
             # Cancelling the result future would finish before the owning task stops.
             completion = asyncio.gather(pending, return_exceptions=True)
             cancellation: asyncio.CancelledError | None = None
             while not completion.done():
+                if not owner_loop.is_running():
+                    pending.cancel()
+                    break
                 try:
-                    await asyncio.shield(completion)
+                    await asyncio.wait({completion}, timeout=0.1)
                 except asyncio.CancelledError as exc:
                     cancellation = exc
             if cancellation is not None:

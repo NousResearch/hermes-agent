@@ -153,6 +153,9 @@ def _admit_prompt_turn(
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
+        if session.get("_closing") and session.get("active_session_lease") is not held_lease:
+            # Close can finalize while admission claims a lease. Only that newly acquired lease is ours to release.
+            _release_active_session_slot(session)
         if _cancel_pending_prompt_turn(sid, session, turn_claim) or not _holds_turn_claim(session, turn_claim):
             return None
         if session.get("_closing") or (
@@ -160,11 +163,6 @@ def _admit_prompt_turn(
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
             session["running"] = False
             session.pop("_submit_user_row", None)
-            if session.get("_closing") and session.get("active_session_lease") is not held_lease:
-                # Close stops waiting for this thread after a grace and then finalizes. A lease this
-                # admission claimed after that finalize has no other code path that releases it; one
-                # the session already held stays for close's own handoff (_settle_isolated_turn_before_close).
-                _release_active_session_slot(session)
             return None
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
         if image_paths is None:

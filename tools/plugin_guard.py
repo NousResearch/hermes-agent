@@ -4,13 +4,15 @@
 Plugins run in-process but are *expected* to read their own env keys, call provider APIs
 and spawn subprocesses, so: full pattern set on docs/config files (where prompt-injection
 lives); the "reads own secret"/"HTTP call with key" family exempt on *code* files;
-plugin-sized structural limits; VCS/venv noise skipped. ``safe`` installs, ``caution``
-needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
+plugin-sized structural limits; VCS internals and untracked venv/cache noise skipped.
+``safe`` installs, ``caution`` needs confirmation, ``dangerous`` is blocked and ``--force``
+does NOT override.
 """
 
 from __future__ import annotations
 
 import ast
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -23,9 +25,12 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v8"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v9"
 
-# Never scanned: VCS internals, caches, vendored envs.
+# Skipped when their contents are untracked install/build output (``npm ci``, a local venv,
+# tool caches). A file git TRACKS under one is scanned like any other: the author committed it,
+# and ``plugins_loader`` makes ``from .venv import x`` / ``from .node_modules import x`` work
+# exactly like ``from .lib import x``, so the directory name must not decide the verdict.
 EXCLUDED_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox"}
@@ -104,15 +109,38 @@ MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
 MAX_PLUGIN_SINGLE_FILE_KB = 1024       # 1MB single file
 
 
+def _git_tracked_paths(plugin_dir: Path) -> frozenset[str]:
+    """Paths ("a/b/c", relative to plugin_dir) git tracks there; empty when git cannot tell."""
+    from hermes_cli.plugins_cmd import _resolve_git_executable, _run_plugin_git
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        return frozenset()
+    try:
+        listing = _run_plugin_git(git_exe, plugin_dir, "ls-files", "-z", "--", ".", timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    if listing.returncode != 0:
+        return frozenset()
+    return frozenset(path for path in listing.stdout.split("\0") if path)
+
+
 def _walk(plugin_dir: Path) -> Iterator[Tuple[Path, str]]:
-    """Yield (path, "a/b/c" relative path) for every non-excluded entry under plugin_dir."""
+    """Yield (path, "a/b/c" relative path) for every entry under plugin_dir, skipping
+    ``EXCLUDED_DIRS`` content unless git tracks it (``.git`` itself is never yielded)."""
+    tracked: Optional[frozenset[str]] = None
     for f in plugin_dir.rglob("*"):
         try:
             rel_parts = f.relative_to(plugin_dir).parts
         except ValueError:
             continue
+        rel = "/".join(rel_parts)
         if not any(part in EXCLUDED_DIRS for part in rel_parts):
-            yield f, "/".join(rel_parts)
+            yield f, rel
+        elif ".git" not in rel_parts:
+            if tracked is None:
+                tracked = _git_tracked_paths(plugin_dir)
+            if rel in tracked:
+                yield f, rel
 
 
 def _finding(pattern_id: str, severity: str, category: str, file: str, match: str, description: str) -> Finding:

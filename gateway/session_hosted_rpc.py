@@ -211,10 +211,29 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
-            await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
-        else:
-            await self.authority.interrupt(self.principal, self.ref, row['generation'])
-        return {'interrupted': True, 'status': 'interrupted'}
+            try:
+                await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
+            except RuntimeStoreError as exc:
+                if exc.reason != 'stale_generation':
+                    raise
+                # The claim won the queued CAS: interrupt only this exact, now started row.
+                matches = [fresh for fresh, task, _ in self._rows()
+                           if fresh['admission_id'] == row['admission_id'] and task == current[1]]
+                if len(matches) != 1 or any(matches[0][key] != row[key] for key in (
+                        'request_id', 'principal_id', 'target_session_id', 'owner_epoch', 'payload', 'intent')):
+                    raise RuntimeStoreError('stale_generation') from None
+                fresh = matches[0]
+                if fresh['status'] == 'unknown':
+                    raise RuntimeStoreError('unknown_execution') from None
+                if fresh['status'] != 'started' or type(fresh['generation']) is not int or fresh['generation'] < 1:
+                    raise RuntimeStoreError('stale_generation') from None
+                await self.authority.interrupt(self.principal, self.ref, fresh['generation'])
+                return {'interrupted': False, 'status': 'running'}
+            # A queued row never ran: its cancellation is the exact terminal.
+            return {'interrupted': True, 'status': 'interrupted'}
+        await self.authority.interrupt(self.principal, self.ref, row['generation'])
+        # A request is not the producer's terminal: Stop completes once the turn has ended.
+        return {'interrupted': False, 'status': 'running'}
 
     async def _discard(self, params):
         generation = params['execution_generation']

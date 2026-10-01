@@ -41,6 +41,9 @@ def create_schema(conn):
         '''CREATE TABLE IF NOT EXISTS input_custody_items(
             preparation_id TEXT NOT NULL, ordinal INTEGER NOT NULL, copy_id TEXT NOT NULL,
             generation INTEGER NOT NULL, PRIMARY KEY(preparation_id,ordinal))''',
+        '''CREATE TABLE IF NOT EXISTS input_custody_native_items(
+            preparation_id TEXT NOT NULL, copy_id TEXT NOT NULL, generation INTEGER NOT NULL,
+            PRIMARY KEY(preparation_id,copy_id,generation))''',
         '''CREATE TABLE IF NOT EXISTS input_custody_refs(
             admission_id TEXT NOT NULL, ordinal INTEGER NOT NULL, copy_id TEXT NOT NULL,
             generation INTEGER NOT NULL, principal_id TEXT NOT NULL, target_session_id TEXT NOT NULL,
@@ -203,9 +206,34 @@ def copy_is_held(conn, copy, now):
     if any(not conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + row[0],)).fetchone()
            or conn.execute('SELECT 1 FROM sessions WHERE id=?', (row[0],)).fetchone() for row in branches):
         return True
-    return conn.execute('''SELECT 1 FROM input_custody_items i JOIN input_custody_preparations p USING(preparation_id)
+    if conn.execute('''SELECT 1 FROM input_custody_items i JOIN input_custody_preparations p USING(preparation_id)
             WHERE i.copy_id=? AND i.generation=? AND p.state IN ('preparing','ready')
-            AND p.expires_at>? LIMIT 1''', (copy['copy_id'], copy['generation'], now)).fetchone() is not None
+            AND p.expires_at>? LIMIT 1''', (copy['copy_id'], copy['generation'], now)).fetchone():
+        return True
+    return native_preparation_holds(conn, copy, now)
+
+
+def native_preparation_holds(conn, copy, now):
+    preparations = conn.execute('''SELECT p.* FROM input_custody_native_items i
+        JOIN input_custody_preparations p USING(preparation_id)
+        WHERE i.copy_id=? AND i.generation=?
+        AND p.state IN ('preparing','ready','consumed')''', (copy['copy_id'], copy['generation'])).fetchall()
+    for row in preparations:
+        if row['state'] != 'consumed':
+            if row['expires_at'] > now:
+                return True
+            continue
+        admission = conn.execute('SELECT * FROM session_admissions WHERE admission_id=?',
+                                 (row['admission_id'],)).fetchone()
+        if admission is None:
+            if not positively_retired(conn, row):
+                return True
+        elif (not _same_identity(row, admission) or admission['status'] != 'terminal'
+              or admission['outcome'] == 'interrupted'):
+            # Interrupted original inputs outlive execution until exact raw
+            # retirement. Ordinary successful native release remains unchanged.
+            return True
+    return False
 
 
 def copy_branch_input_refs(conn, source_session, child_session, *, physical_session=None):
@@ -213,6 +241,10 @@ def copy_branch_input_refs(conn, source_session, child_session, *, physical_sess
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_refs'").fetchone():
         return
     for source in {source_session, physical_session or source_session}:
+        conn.execute('''INSERT OR IGNORE INTO input_custody_branch_refs
+            SELECT ?,i.copy_id,i.generation FROM input_custody_native_items i
+            JOIN input_custody_preparations p USING(preparation_id)
+            WHERE p.target_session_id=? AND p.state='consumed' ''', (child_session, source))
         conn.execute('''INSERT OR IGNORE INTO input_custody_branch_refs
             SELECT ?,copy_id,generation FROM input_custody_refs WHERE target_session_id=?''',
             (child_session, source))

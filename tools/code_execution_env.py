@@ -208,7 +208,7 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
     try:
         from agent.delegation_context import delegated_child_subprocess_env
         return subprocess.run(
-            [python_path, "-c", code], timeout=5, capture_output=True, text=text,
+            [python_path, "-c", code], timeout=5, capture_output=True, text=text, encoding="utf-8", errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL, env=delegated_child_subprocess_env(),
         )

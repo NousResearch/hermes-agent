@@ -172,7 +172,7 @@ def _evaluate_in_runtime(marker: str, environment: dict[str, str]) -> bool:
         command = runtime_command(Path(__file__).with_name("_marker_eval.py"),
                                   [marker, json.dumps(environment)])
         result = subprocess.run(command, env=runtime_environment(), capture_output=True,
-                                text=True, timeout=60)
+                                text=True, encoding="utf-8", errors="replace", timeout=60)
     except Exception:
         return True  # same fallback as a malformed marker: the resolver decides
     if result.returncode != 0:

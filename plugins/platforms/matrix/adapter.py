@@ -86,7 +86,7 @@ _MATRIX_VOICE_WAVEFORM_BINS = 30
 
 def _run_media_tool(cmd: list, *, timeout: int, text: bool = False):
     """Run ffmpeg/ffprobe with captured output and no stdin."""
-    return subprocess.run(cmd, capture_output=True, text=text, timeout=timeout, stdin=subprocess.DEVNULL)
+    return subprocess.run(cmd, capture_output=True, text=text, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
 
 
 def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:

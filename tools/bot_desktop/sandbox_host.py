@@ -91,7 +91,7 @@ def marker_sandbox_alive(marker: Dict[str, Any]) -> bool:
         return cached[1]
     try:
         proc = subprocess.run([marker.get("docker") or "docker", "inspect", "-f", "{{.State.Running}}", container],
-                              capture_output=True, text=True, timeout=15, check=False, stdin=subprocess.DEVNULL)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False, stdin=subprocess.DEVNULL)
         alive = proc.returncode == 0 and proc.stdout.strip() == "true"
     except (OSError, subprocess.TimeoutExpired):
         alive = False

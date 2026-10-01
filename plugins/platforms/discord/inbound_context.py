@@ -10,12 +10,15 @@ if TYPE_CHECKING:
 
 from gateway.platforms.event import MessageEvent, MessageType
 
+if TYPE_CHECKING:
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 
 
 class DiscordInboundContextMixin:
     async def _handle_message(
-        self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
+        self: DiscordAdapter, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
         from plugins.platforms.discord.adapter import (

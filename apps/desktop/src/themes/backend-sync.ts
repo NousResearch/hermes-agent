@@ -110,9 +110,10 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
       name === 'default' && typeof (skin as HermesSkin).description === 'string'
         ? String((skin as HermesSkin).description).trim() || theme.description
         : theme.description
-
-    const label = name === 'default' ? 'Classic Hermes' : theme.label
-
+    const label =
+      name === 'default'
+        ? 'Classic Hermes'
+        : theme.label
     const registered = { ...theme, description, label }
 
     const current = $backendThemes.get()

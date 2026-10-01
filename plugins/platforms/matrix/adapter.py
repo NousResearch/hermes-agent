@@ -826,6 +826,10 @@ class MatrixAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
+    # A send with no thread_id is a plain room event (flat outbound needs no gate), and replies
+    # land in the whole-room bucket ``(matrix, room_id, None)`` when ``session_scope: room`` pins
+    # it (or ``auto_thread: false``) — the pairing _warn_if_inchannel_without_room_bucket checks.
+    supports_inchannel_continuable = True
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
@@ -925,6 +929,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
                 logger.warning("Matrix: ignoring invalid MATRIX_IGNORE_USER_PATTERNS entry %r: %s", pattern, exc)
+        self._warn_if_inchannel_without_room_bucket()
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -967,6 +972,31 @@ class MatrixAdapter(BasePlatformAdapter):
         """MATRIX_THREAD_REQUIRE_MENTION (scoped) → ``thread_require_mention`` in config.extra → false."""
         configured = _extra_or_secret(config.extra, "thread_require_mention", "MATRIX_THREAD_REQUIRE_MENTION", False)
         return configured if isinstance(configured, bool) else str(configured).lower() not in {"false", "0", "no", "off"}
+
+    def _cron_continuable_surface(self) -> str:
+        """Continuable-cron surface: ``"thread"`` (default; dedicated thread per brief) or
+        ``"in_channel"`` (flat room post; shared session ``(matrix, room_id, None)``), from
+        ``extra.cron_continuable_surface``. Unrecognised → ``"thread"`` (fail safe)."""
+        raw = self.config.extra.get("cron_continuable_surface")
+        return "in_channel" if str(raw).strip().lower() == "in_channel" else "thread"
+
+    def _warn_if_inchannel_without_room_bucket(self) -> None:
+        """Warn when ``in_channel`` is set but room messages still open per-message threads: both
+        must hold for a flat cron brief to continue on a plain room reply. Warn only — the
+        misconfig fails safe to a threaded continuation, never an orphaned session."""
+        try:
+            room_bucket = self._matrix_session_scope == "room" or (
+                self._matrix_session_scope != "thread" and not self._auto_thread)
+            if self._cron_continuable_surface() == "in_channel" and not room_bucket:
+                logger.warning(
+                    "[Matrix] cron_continuable_surface=in_channel is set, but room messages "
+                    "still open per-message threads (session_scope=%r, auto_thread=%r). A "
+                    "continuable in-channel cron brief will post flat in the room, but a plain "
+                    "room reply continues in its own thread instead of the shared room session. "
+                    "Set platforms.matrix.extra.session_scope: room (or auto_thread: false) to "
+                    "pair them.", self._matrix_session_scope, self._auto_thread)
+        except Exception:
+            pass
 
     @staticmethod
     def _extract_server_ed25519(device_keys_obj: Any) -> Optional[str]:

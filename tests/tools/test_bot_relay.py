@@ -706,3 +706,46 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     assert "HERMES_SESSION_ID" not in env
     assert "HERMES_SESSION_PROFILE" not in env
     assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"
+
+
+def test_delivery_env_under_multiplex_names_the_pinned_launch_home(tmp_path, monkeypatch):
+    """A relayed DM into the launch profile spawns with the launch home and its secrets, even after a
+    host mirrors another home into HERMES_HOME; a bound scope or home override still wins."""
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    launch, mirrored = tmp_path / "launch", tmp_path / "mirrored"
+    launch.mkdir()
+    mirrored.mkdir()
+    (launch / ".env").write_text("OPENROUTER_API_KEY=sk-launch\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    set_multiplex_active(True)  # pins the launch home
+    monkeypatch.setenv("HERMES_HOME", str(mirrored))
+
+    env = bot_relay.delivery_env(None, None)
+    assert env["HERMES_HOME"] == str(launch)
+    assert env["OPENROUTER_API_KEY"] == "sk-launch"
+
+    token = set_secret_scope({"OPENROUTER_API_KEY": "sk-bound"})
+    try:
+        assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "sk-bound"
+    finally:
+        reset_secret_scope(token)
+
+    (mirrored / ".env").write_text("OPENROUTER_API_KEY=sk-override\n", encoding="utf-8")
+    home_token = set_hermes_home_override(str(mirrored))
+    try:
+        env = bot_relay.delivery_env(None, None)
+        assert (env["HERMES_HOME"], env["OPENROUTER_API_KEY"]) == (str(mirrored), "sk-override")
+    finally:
+        reset_hermes_home_override(home_token)
+
+
+def test_delivery_env_single_profile_host_passes_the_process_env_through(tmp_path, monkeypatch):
+    """Without multiplex nothing is pinned or overlaid: the child sees the process env as before."""
+    (tmp_path / ".env").write_text("OPENROUTER_API_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "from-shell")
+
+    assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "from-shell"

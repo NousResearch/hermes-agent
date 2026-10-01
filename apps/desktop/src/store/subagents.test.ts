@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $subagentsBySession,
   activeSubagentCount,
-  allSubagents,
   buildSubagentTree,
   clearSessionSubagents,
   failedSubagentCount,
+  isTerminalSubagentCompletion,
   pruneDelegateFallbackSubagents,
   pruneFinishedSessionSubagents,
   reconcileSubagentSnapshot,
+  subagentsForPanel,
   upsertSubagent
 } from './subagents'
 
@@ -26,6 +27,29 @@ describe('subagent store', () => {
     const item = listFor('s1')[0]
     expect(item?.status).toBe('completed')
     expect(item?.summary).toBe('done')
+  })
+
+  it('accepts a terminal subagent.complete for an interrupted session, and still drops live progress', () => {
+    upsertSubagent('stopped', { goal: 'finishing', status: 'running', subagent_id: 'sa-1', task_index: 0 })
+
+    // Stop interrupts the turn, not the children: the completion must land.
+    expect(isTerminalSubagentCompletion('subagent.complete', { status: 'completed' })).toBe(true)
+    expect(isTerminalSubagentCompletion('subagent.complete', { status: 'timeout' })).toBe(true)
+    expect(isTerminalSubagentCompletion('subagent.complete', { status: 'cancelled' })).toBe(true)
+    upsertSubagent(
+      'stopped',
+      { status: 'completed', subagent_id: 'sa-1', task_index: 0, summary: 'done after Stop' },
+      false,
+      'subagent.complete'
+    )
+    expect(listFor('stopped')[0]?.status).toBe('completed')
+    expect(listFor('stopped')[0]?.summary).toBe('done after Stop')
+
+    // Non-terminal completions and live progress keep the interrupted guard.
+    expect(isTerminalSubagentCompletion('subagent.complete', { status: 'running' })).toBe(false)
+    expect(isTerminalSubagentCompletion('subagent.complete', {})).toBe(false)
+    expect(isTerminalSubagentCompletion('subagent.progress', { status: 'running' })).toBe(false)
+    expect(isTerminalSubagentCompletion('subagent.start', { status: 'completed' })).toBe(false)
   })
 
   it('keeps completed children retired across turn pruning, late frames, and roster refreshes', () => {
@@ -176,24 +200,35 @@ describe('subagent store', () => {
   })
 
   // Contract: the status-bar "Agents" indicator and the Spawn-tree panel read
-  // the same scope — every session's subagents — so a count can never point at
-  // an empty tree (the desync behind "Agents (N)" vs "No live subagents").
-  it('counts running/failed across every session, matching the aggregated tree', () => {
+  // the same scope — every session's LIVE subagents plus terminal rows only
+  // from the session the user is in — so a count can never point at an empty
+  // tree, and finished history from inactive sessions stops accumulating (#75505).
+  it('keeps live rows from every session, terminal rows only for the session in view', () => {
     upsertSubagent('s1', { goal: 'a', status: 'running', subagent_id: 'a', task_index: 0 })
     upsertSubagent('s1', { goal: 'b', status: 'failed', subagent_id: 'b', task_index: 1 })
     upsertSubagent('s2', { goal: 'c', status: 'running', subagent_id: 'c', task_index: 0 })
     upsertSubagent('s2', { goal: 'd', status: 'failed', subagent_id: 'd', task_index: 1 })
 
-    const flat = allSubagents($subagentsBySession.get())
+    const active = 's1'
+    const panel = subagentsForPanel($subagentsBySession.get(), active)
     const indicatorRunning = Object.values($subagentsBySession.get()).reduce((n, l) => n + activeSubagentCount(l), 0)
-    const indicatorFailed = Object.values($subagentsBySession.get()).reduce((n, l) => n + failedSubagentCount(l), 0)
-    const tree = buildSubagentTree(flat)
 
-    // The active-session-only filter would have reported 1/1 here, not 2/2.
+    const indicatorFailed = Object.entries($subagentsBySession.get())
+      .filter(([sid]) => sid === active)
+      .reduce((n, [, l]) => n + failedSubagentCount(l), 0)
+
+    // The active-session-only filter would have reported 1/1 here, not 2/1.
     expect(indicatorRunning).toBe(2)
-    expect(indicatorFailed).toBe(2)
-    expect(tree).toHaveLength(4)
-    expect(indicatorRunning + indicatorFailed).toBe(tree.length)
+    expect(indicatorFailed).toBe(1)
+    expect(panel.map(item => item.id)).toEqual(['a', 'b', 'c'])
+    expect(indicatorRunning + indicatorFailed).toBe(panel.length)
+  })
+
+  it('an inactive session keeps only its live rows in the panel scope', () => {
+    upsertSubagent('past', { goal: 'history', status: 'completed', subagent_id: 'h', task_index: 0 })
+    upsertSubagent('past', { goal: 'still running', status: 'running', subagent_id: 'live', task_index: 1 })
+
+    expect(subagentsForPanel($subagentsBySession.get(), 'other').map(item => item.id)).toEqual(['live'])
   })
 
   it('clears one session without touching another', () => {

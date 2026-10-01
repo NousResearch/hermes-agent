@@ -171,10 +171,26 @@ function findToolPartIndex(
   const overlaps = (index: number) => hasToolMatchOverlap(matchValues, toolPartMatchValues(parts[index]))
 
   if (stableId) {
-    const stableIndex = parts.findIndex(part => part.type === 'tool-call' && part.toolCallId === stableId)
+    const stableIndex = parts.findIndex(
+      part => part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result')
+    )
 
     if (stableIndex >= 0) {
       return stableIndex
+    }
+
+    const repeatedIndex =
+      phase === 'complete'
+        ? parts.findLastIndex(
+            part =>
+              part.type === 'tool-call' &&
+              part.toolCallId === stableId &&
+              (payload?.result === undefined || JSON.stringify(payload.result) === JSON.stringify(part.result))
+          )
+        : -1
+
+    if (repeatedIndex >= 0) {
+      return repeatedIndex
     }
 
     // Some live streams start without an id, then complete with one. Fall
@@ -611,24 +627,28 @@ export function restorePendingBlockingToolCall(
   if (location) {
     const message = messages[location.messageIndex]
     const part = message.parts[location.partIndex]
-    // A correlated row that settle sealed (stop, lost completion) is live
-    // again: drop the seal so the card renders as pending, not as history.
-    const sealed = part.type === 'tool-call' && part.completedAt !== undefined && part.result === undefined
 
-    if (message.pending && !sealed) {
+    if (part.type !== 'tool-call') {
       return { messages, streamId: message.id }
     }
 
-    const next = [...messages]
+    // A correlated row that settle sealed (stop, lost completion) is live
+    // again: drop the seal so the card renders as pending, not as history.
+    // A sparse hydrated projection may already be marked pending while still
+    // lacking the authoritative clarify.request args, so re-arm in place and
+    // merge the live payload into that provider-authored part, preserving its
+    // tool-call id and transcript position.
+    const { completedAt: _completedAt, ...unsealed } = part
+    const args = toolArgs(clarifyPayload, part.args)
+    const parts = [...message.parts]
+    parts[location.partIndex] = {
+      ...unsealed,
+      args: args as never,
+      argsText: JSON.stringify(args)
+    } as ChatMessagePart
 
-    if (sealed) {
-      const { completedAt: _completedAt, ...unsealed } = part
-      const parts = [...message.parts]
-      parts[location.partIndex] = unsealed as ChatMessagePart
-      next[location.messageIndex] = { ...message, parts, pending: true }
-    } else {
-      next[location.messageIndex] = { ...message, pending: true }
-    }
+    const next = [...messages]
+    next[location.messageIndex] = { ...message, parts, pending: true }
 
     return { messages: next, streamId: message.id }
   }
@@ -891,9 +911,8 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
 }
 
 export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
-  const seen = new Set<string>()
-
   return messages.map(message => {
+    const seen = new Set<string>()
     let changed = false
 
     const parts = message.parts.map((part, index) => {

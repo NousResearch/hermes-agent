@@ -1271,7 +1271,14 @@ def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), b
             kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
         )
     except Exception:
-        default_assignee = max_in_progress_per_profile = max_in_progress = None
+        # Config unreadable: this endpoint is a server-side spawn nudge, so it
+        # follows the gateway tick's conservative fallback (memory-derived
+        # default) rather than the CLI's uncapped one — a broken config must
+        # not uncap the board (review feedback on #127463). Per-profile cap and
+        # assignee degrade to unset like the CLI path; the global cap above
+        # still bounds the tick.
+        default_assignee = max_in_progress_per_profile = None
+        max_in_progress = kbd.resolve_max_in_progress(None)
     with _board_conn(board) as (board, conn):
         result = kbd.dispatch_once(
             conn, dry_run=dry_run, max_spawn=max_n, board=board,

@@ -83,17 +83,26 @@ def test_dashboard_dispatch_keeps_query_and_board_defaults(monkeypatch):
 
 
 def test_dashboard_dispatch_survives_config_read_failure(monkeypatch):
-    """A broken config must degrade exactly like the CLI path (uncapped), not
-    take the endpoint down — the nudge is a manual recovery affordance."""
+    """A broken config must not take the endpoint down (the nudge is a manual
+    recovery affordance) and must not uncap the board either: like the gateway
+    60 s tick, the fallback resolves the memory-derived default instead of
+    inheriting the CLI's uncapped fail-open (review feedback on #127463)."""
+
     def _boom():
         raise RuntimeError("config unreadable")
 
     captured = {}
     from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch as kbd
 
     api = _dashboard_plugin_api()
     monkeypatch.setattr("hermes_cli.config.load_config", _boom)
     monkeypatch.setattr(api, "_board_conn", _fake_board_conn)
+    # 2 GiB total: (2 * 1024 // 512) = 4 derived workers — comfortably between
+    # DERIVED_MAX_IN_PROGRESS_FLOOR (2) and _CEILING (8).
+    monkeypatch.setattr(
+        kbd, "_system_memory_sample", lambda: {"mem_total_kib": 2 * 1024 * 1024}
+    )
 
     def fake_dispatch_once(conn, **kwargs):
         captured.update(kwargs)
@@ -102,7 +111,10 @@ def test_dashboard_dispatch_survives_config_read_failure(monkeypatch):
     with patch("hermes_cli.kanban_db_dispatch.dispatch_once", fake_dispatch_once):
         api.dispatch(dry_run=False, max_n=8, board="proj")
 
-    assert captured.get("max_in_progress") is None
+    assert captured.get("max_in_progress") == 4, (
+        f"config read failure must fail closed to the memory-derived cap, got "
+        f"{captured.get('max_in_progress')!r}"
+    )
     assert captured.get("default_assignee") is None
     assert captured.get("max_in_progress_per_profile") is None
     assert captured.get("board") == "proj"

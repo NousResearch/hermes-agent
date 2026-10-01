@@ -238,21 +238,29 @@ class SessionPersistenceMixin:
     def _chat_labels_meta_key(platform, scope_id, chat_id) -> str:
         return f"gateway_chat_labels:{getattr(platform, 'value', platform)}:{scope_id or ''}:{chat_id}"
 
-    def record_chat_labels(self, source: SessionSource) -> None:
+    def record_chat_labels(self, source: SessionSource) -> bool:
         """Persist *source*'s ``chat_name`` / ``chat_topic`` as the chat's current labels, at the
-        moment they are observed. A session origin cannot answer "what is this chat called now": it
-        is written when its session is created, which can be after a newer observation (a delayed
-        first turn), and a reset inherits it under a fresh ``created_at``."""
+        moment they are observed; True once written. A session origin cannot answer "what is this
+        chat called now": it is written when its session is created, which can be after a newer
+        observation (a delayed first turn), and a reset inherits it under a fresh ``created_at``.
+
+        False when there is no database handle right now (open failed, backoff, JSONL fallback):
+        nothing was written, so the caller must not treat these labels as recorded."""
         setter = self._routing_db_method("set_meta")
-        if setter is not None:
-            setter(self._chat_labels_meta_key(source.platform, source.scope_id, source.chat_id),
-                   json.dumps([source.chat_name, source.chat_topic]))
+        if setter is None:
+            return False
+        setter(self._chat_labels_meta_key(source.platform, source.scope_id, source.chat_id),
+               json.dumps([source.chat_name, source.chat_topic]))
+        return True
 
     def chat_labels(self, platform, scope_id, chat_id) -> Optional[tuple]:
         """The ``(chat_name, chat_topic)`` last recorded for a chat, or None when none was. Raises
-        when the store cannot be read: "unreadable now" is not "never labelled"."""
+        when the store cannot be read, including when there is no database handle right now:
+        "unreadable now" is not "never labelled"."""
         getter = self._routing_db_method("get_meta")
-        raw = getter(self._chat_labels_meta_key(platform, scope_id, chat_id)) if getter is not None else None
+        if getter is None:
+            raise LookupError("session database unavailable")
+        raw = getter(self._chat_labels_meta_key(platform, scope_id, chat_id))
         if not raw:
             return None
         chat_name, chat_topic = json.loads(raw)

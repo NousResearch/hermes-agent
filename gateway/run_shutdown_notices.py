@@ -5,16 +5,33 @@ from __future__ import annotations
 import logging
 from contextlib import nullcontext, suppress
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol
 
 from agent.i18n import t
 from gateway.config import Platform
+
+if TYPE_CHECKING:
+    from cron.scheduler_preflight import SharedRouteAdapters
+    from gateway.platforms.base import BasePlatformAdapter
+
+
+class _ThreadMetadataForTarget(Protocol):
+    def __call__(
+        self, platform: Optional[Platform], chat_id: Optional[str], thread_id: Optional[str], *,
+        chat_type: Optional[str] = None, reply_to_message_id: Optional[str] = None,
+        adapter: Optional[Any] = None,
+    ) -> Optional[dict[str, Any]]: ...
+
 
 logger = logging.getLogger("gateway.run")
 
 
 class GatewayShutdownNoticesMixin:
     _restart_requested: bool
+    _cron_delivery_adapters: Callable[
+        [Optional[str]], dict[Platform, BasePlatformAdapter] | SharedRouteAdapters
+    ]
+    _thread_metadata_for_target: _ThreadMetadataForTarget
 
     def _restart_notification_allowed(self, platform: Platform) -> bool:
         """False when the platform config sets ``gateway_restart_notification=false``."""

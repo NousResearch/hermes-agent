@@ -1,12 +1,14 @@
 """Slack slash-command turns carry the same channel prompt, skill binding and source names as messages.
 
 A ``/hermes <question>`` turn is a human turn, so the gateway re-pins ``channel_pin`` and the
-session-context key from it. Built without ``channel_prompt``, ``chat_name`` and ``user_name``,
-it ran without the configured channel prompt and flipped both pins, and the next ordinary
-message flipped them back: two agent rebuilds and two prompt-cache misses per slash turn. Without
-``auto_skill``, a session opened by ``/hermes <question>`` never loaded the channel's bound skill.
+session-context key from it. Built without ``channel_prompt``, ``chat_name`` and ``user_name``, it
+ran without the configured channel prompt, and where it shared a session with messages it flipped
+both pins until the next message flipped them back. Without ``auto_skill``, a session opened by
+``/hermes <question>`` never loaded the channel's bound skill. These tests check what the adapter
+hands the gateway (event fields, handoff order, lookups), not the agent or provider cache behind it.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -36,43 +38,73 @@ def _adapter(channel_id: str) -> SlackAdapter:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("channel_id, channel_type, chat_name, text", [
-    ("C_OPS", "channel", "ops", "what broke?"), ("D_ALICE", "im", "Alice", "what broke?"),
-    ("C_OPS", "channel", "ops", "queue what broke?")], ids=["channel", "dm", "queue-command"])
-async def test_slash_turn_matches_message_turn_prompt_and_names(channel_id, channel_type, chat_name, text):
-    """``queue-command``: a registered command that starts a turn (``/queue <prompt>``) is a human
-    turn like the free-form question, so it carries the same inputs."""
+@pytest.mark.parametrize("channel_id, channel_type, chat_name, texts, cancel_first", [
+    ("C_OPS", "channel", "ops", ("what broke?", "and why?"), False),
+    ("D_ALICE", "im", "Alice", ("what broke?", "and why?"), False),
+    ("C_OPS", "channel", "ops", ("queue what broke?", "queue and why?"), False),
+    ("C_OPS", "channel", "ops", ("queue what broke?", "queue and why?"), True),
+], ids=["channel", "dm", "queue-command", "queue-first-cancelled"])
+async def test_slash_turns_reach_the_gateway_in_order_with_message_inputs(
+        channel_id, channel_type, chat_name, texts, cancel_first):
+    """Two slash turns of one session, the first held on a cold ``users.info``: both are handed
+    over in arrival order (the gateway's /queue FIFO keeps the order it is given), each with the
+    inputs a message turn carries. ``queue-command``: a registered command that starts a turn is a
+    human turn like the free-form question. ``queue-first-cancelled``: a slash cancelled during its
+    lookup does not strand the one behind it."""
     adapter = _adapter(channel_id)
-    await adapter._handle_slash_command(
-        {"command": "/hermes", "text": text, "user_id": "U_ALICE",
-         "channel_id": channel_id, "team_id": "T1"})
+    held, release = asyncio.Event(), asyncio.Event()
+
+    async def users_info(**_kwargs):
+        if not held.is_set():
+            held.set()
+            await release.wait()
+        return {"user": {"profile": {"display_name": "Alice"}, "real_name": "Alice"}}
+
+    adapter._app.client.users_info = AsyncMock(side_effect=users_info)
+
+    def slash(text):
+        return adapter._handle_slash_command(
+            {"command": "/hermes", "text": text, "user_id": "U_ALICE",
+             "channel_id": channel_id, "team_id": "T1"})
+
+    first = asyncio.create_task(slash(texts[0]))
+    await asyncio.wait_for(held.wait(), 5)
+    second = asyncio.create_task(slash(texts[1]))
+    for _ in range(5):  # the second slash's own lookups are warm or immediate
+        await asyncio.sleep(0)
+    if cancel_first:
+        first.cancel()
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 5)
     await adapter._handle_slack_message(
         {"text": "<@U_BOT> what broke?", "user": "U_ALICE", "channel": channel_id,
          "channel_type": channel_type, "ts": "1700.000100"},
         {"team_id": "T1"})
-    assert adapter.handle_message.await_count == 2
-    slash, message = (c.args[0] for c in adapter.handle_message.await_args_list)
+    *slashes, message = (c.args[0] for c in adapter.handle_message.await_args_list)
+    handed = texts[1:] if cancel_first else texts
+    assert [s.text for s in slashes] == ["/" + t if t.startswith("queue ") else t for t in handed]
     assert message.channel_prompt and "Answer in haiku." in message.channel_prompt
-    assert slash.channel_prompt == message.channel_prompt
-    assert slash.auto_skill == message.auto_skill == ["triage"]
     assert (message.source.chat_name, message.source.user_name) == (chat_name, "Alice")
-    assert (slash.source.chat_name, slash.source.user_name) == (
-        message.source.chat_name, message.source.user_name)
+    for turn in slashes:
+        assert turn.channel_prompt == message.channel_prompt
+        assert turn.auto_skill == message.auto_skill == ["triage"]
+        assert (turn.source.chat_name, turn.source.user_name) == (
+            message.source.chat_name, message.source.user_name)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel_id, authorized, command, reaches_runner", [
     ("C_OPS", False, "/hermes", 0), ("D_ALICE", False, "/hermes", 1),
-    ("C_OPS", True, "/stop", 1), ("C_OPS", True, "/approve", 1),
-], ids=["rejected-channel", "rejected-dm", "stop", "approve"])
+    ("C_OPS", True, "/stop", 1), ("C_OPS", True, "/approve", 1), ("C_OPS", True, "/pause", 1),
+], ids=["rejected-channel", "rejected-dm", "stop", "approve", "pause"])
 async def test_slash_that_starts_no_turn_costs_no_slack_lookup(channel_id, authorized, command, reaches_runner):
     """The message path rejects an unauthorized sender before any Slack lookup, and the names the
     slash path now resolves must not cost one either. In a DM the runner still gets the event,
     without names: it answers an unauthorized DM per ``unauthorized_dm_behavior`` (pairing code
     or decline), and a slash command there is how an unpaired user gets that answer.
-    ``stop`` / ``approve``: a command that interrupts or unblocks the running turn is handed over
-    before any lookup. A cold ``users.info`` for a second operator must not hold ``/stop`` back
-    while the worker keeps running."""
+    ``stop`` / ``approve`` / ``pause``: a command that interrupts, unblocks or pauses work is
+    handed over before any lookup. A cold ``users.info`` for a second operator must not hold
+    ``/stop`` or the emergency ``/pause`` back while the worker keeps running."""
     adapter = _adapter(channel_id)
     adapter.set_authorization_check(lambda *_args, **_kwargs: authorized)
     await adapter._handle_slash_command(

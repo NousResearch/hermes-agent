@@ -1119,6 +1119,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Slash-command contexts so send() can route the first reply ephemerally. Keyed
         # (team_id, channel_id, user_id), two-part when no team id → {"response_url", "ts"}.
         self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+        # Session key → future of the newest slash still on its way to handle_message.
+        self._slash_handoff_tails: Dict[str, "asyncio.Future[None]"] = {}
         # Native streaming state per _stream_key: {"ts", "draft_id", "sent", "started", "base"}.
         # ``sent`` is the raw pre-mrkdwn text of the whole segment; the API is append-only so
         # deltas diff against it. ``base`` is where this Slack message starts inside ``sent``
@@ -6077,27 +6079,52 @@ class SlackAdapter(BasePlatformAdapter):
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None))
         # A slash turn is a human turn: it re-pins the channel prompt and session context, so it
         # must carry the same names as a message here or the next message flips them. A command
-        # that interrupts or unblocks the running turn starts none of its own, and a slow
-        # users.info must not hold /stop back while the worker keeps running.
+        # that stops, unblocks or pauses work starts no turn of its own, and a slow users.info
+        # must not hold /stop or /pause back while the worker keeps running.
         from hermes_cli.commands import resolve_command
         cmd = resolve_command(event.get_command() or "")
-        controls_running_turn = cmd is not None and (
-            cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny"))
-        if not rejected and not controls_running_turn:
-            source.chat_name = await self._resolve_channel_name(channel_id, team_id=team_id)
-            source.user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
-        # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
-        # events only: free-form "/hermes <question>" replies must stay public.
-        response_url = command.get("response_url", "")
-        if response_url and user_id and channel_id and text.startswith("/"):
-            self._stash_slash_context(team_id, channel_id, user_id, response_url)
-        # ContextVar lets send() match the right response_url under
-        # concurrent slashes from multiple users.
-        _slash_user_id_token = _slash_user_id.set(user_id or None)
+        controls_work = cmd is not None and (
+            cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny", "pause"))
+        lane = ahead = handed_off = None
+        if not rejected and not controls_work:
+            # Callbacks run concurrently and a cold lookup can finish after a later one's, so a
+            # later slash of the same session waits for the earlier one's handoff (else two /queue
+            # land in the FIFO swapped).
+            lane = self._event_session_key(event)
+            ahead = self._slash_handoff_tails.get(lane)
+            handed_off = asyncio.get_running_loop().create_future()
+            self._slash_handoff_tails[lane] = handed_off
+        slash_user_token = None
         try:
+            if lane is not None:
+                source.chat_name = await self._resolve_channel_name(channel_id, team_id=team_id)
+                source.user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
+                if ahead is not None:
+                    await asyncio.wait((ahead,))
+            # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
+            # events only: free-form "/hermes <question>" replies must stay public.
+            response_url = command.get("response_url", "")
+            if response_url and user_id and channel_id and text.startswith("/"):
+                self._stash_slash_context(team_id, channel_id, user_id, response_url)
+            # ContextVar lets send() match the right response_url under
+            # concurrent slashes from multiple users.
+            slash_user_token = _slash_user_id.set(user_id or None)
+            # Released before the call, not after: the next slash needs this one handed over
+            # first, not answered (an inline command's reply is another Slack round trip).
+            self._release_slash_handoff(lane, handed_off)
             await self.handle_message(event)
         finally:
-            _slash_user_id.reset(_slash_user_id_token)
+            if slash_user_token is not None:
+                _slash_user_id.reset(slash_user_token)
+            # A slash cancelled before its handoff must not strand the ones behind it.
+            self._release_slash_handoff(lane, handed_off)
+
+    def _release_slash_handoff(self, lane: Optional[str], handed_off: Optional[asyncio.Future]) -> None:
+        if handed_off is None or handed_off.done():
+            return
+        handed_off.set_result(None)
+        if self._slash_handoff_tails.get(lane) is handed_off:
+            del self._slash_handoff_tails[lane]
 
     @staticmethod
     def _slash_command_text(command: dict) -> str:

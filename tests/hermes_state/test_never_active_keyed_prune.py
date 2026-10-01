@@ -10,6 +10,7 @@ These tests pin the narrow selector that reaches them, and — more importantly
 """
 
 import json
+import os
 import time
 
 import pytest
@@ -148,50 +149,6 @@ class TestPrune:
         assert db.prune_never_active_keyed_sessions(older_than_days=30) == (0, 0)
         assert db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
-    def test_mid_loop_abort_does_not_strand_surviving_rows(self, db):
-        """Row-then-entry per row: a non-guard error on row N propagates out of
-        ``_execute_write`` and aborts the sweep. Dropping every entry up front (base
-        order) would strand the still-live rows with no route back; per-row ordering
-        only drops entries of rows actually deleted. Candidate order is a set, so the
-        invariant is asserted, not a fixed membership."""
-        import sqlite3
-
-        for sid in ("junk-a", "junk-b", "junk-c"):
-            _insert(db, sid, age_days=45)
-            db.save_gateway_routing_entry(
-                f"agent:main:telegram:dm:{sid}",
-                json.dumps({"session_id": sid}),
-                scope="/tmp/pytest-abort",
-            )
-
-        original = db.delete_session
-
-        def _boom(sid, **kwargs):
-            if sid == "junk-b":
-                raise sqlite3.OperationalError(
-                    "database is locked (another Hermes process held the state.db write lock)"
-                )
-            return original(sid, **kwargs)
-
-        db.delete_session = _boom
-        with pytest.raises(sqlite3.OperationalError):
-            db.prune_never_active_keyed_sessions(older_than_days=30)
-
-        survivors = {
-            r[0] for r in db._conn.execute("SELECT id FROM sessions").fetchall()
-        }
-        entries = dict(
-            (r[0], json.loads(r[1]))
-            for r in db._conn.execute(
-                "SELECT session_key, entry_json FROM gateway_routing"
-            ).fetchall()
-        )
-        # Every remaining entry must point at a live row: whether junk-b was hit
-        # before or after the abort, its entry (and junk-c's) may only die with it.
-        assert entries
-        for key, entry in entries.items():
-            assert entry["session_id"] in survivors, (key, entry, survivors)
-
 
 class TestPruneSkipsLiveTurns:
     """#123583 on the never-active selector: the predicate reads committed state, so a
@@ -200,8 +157,6 @@ class TestPruneSkipsLiveTurns:
     mid-turn."""
 
     def test_guarded_row_survives_and_keeps_its_routing_entry(self, db):
-        import os
-
         _insert(db, "live-junk", age_days=45)
         _insert(db, "dead-junk", age_days=45)
         db.save_gateway_routing_entry(
@@ -212,9 +167,8 @@ class TestPruneSkipsLiveTurns:
         holder = f"pid={os.getpid()}:turn=1"
         assert db.try_acquire_session_turn_lease("live-junk", holder, ttl_seconds=300.0) is True
 
-        deleted, routing_deleted = db.prune_never_active_keyed_sessions(older_than_days=30)
-
-        assert deleted == 1  # only dead-junk; the guarded row is skipped, not fatal
+        # only dead-junk (no routing entry); the guarded row is skipped, not fatal
+        assert db.prune_never_active_keyed_sessions(older_than_days=30) == (1, 0)
         assert db.get_session("live-junk") is not None
         remaining = {
             r[0]
@@ -223,6 +177,5 @@ class TestPruneSkipsLiveTurns:
         assert remaining == {"agent:main:telegram:dm:live-junk"}
 
         db.release_session_turn_lease("live-junk", holder)
-        deleted, routing_deleted = db.prune_never_active_keyed_sessions(older_than_days=30)
-        assert (deleted, routing_deleted) == (1, 1)
+        assert db.prune_never_active_keyed_sessions(older_than_days=30) == (1, 1)
         assert db.get_session("live-junk") is None

@@ -646,6 +646,8 @@ def _prune_never_active_keyed(db, args):
         older_than_days=days, sessions_dir=_sessions_dir()
     )
     print(f"Deleted {deleted} never-active session(s) and {routing_deleted} stale routing entr(ies).")
+    if deleted < len(candidates):
+        print(f"Skipped {len(candidates) - deleted} session(s): mid-turn, or already gone.")
 
 
 def _note_pinned_skipped(db, filters, action):

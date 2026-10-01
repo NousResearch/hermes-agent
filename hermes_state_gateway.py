@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
-from hermes_state_errors import SessionActiveWriteGuardError
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -401,28 +400,22 @@ class SessionGatewayMixin:
         self, *, older_than_days: float, sessions_dir: Optional[Path] = None) -> Tuple[int, int]:
         """Delete never-active keyed rows and the routing entries naming them; returns
         ``(sessions_deleted, routing_entries_deleted)``. Deletion goes through
-        :meth:`delete_session` (delegate cascade, FTS, transcripts).
+        :meth:`delete_sessions` (one transaction; delegate cascade, FTS, transcripts).
         Rows under a live turn lease or compression lock are skipped (#123583): the
         never-active predicate reads committed state, so a keyed row whose first turn lease
         is already held — its messages not yet flushed — would otherwise be deleted
-        mid-turn. Each deleted row's routing entry is dropped per row, row-then-entry in
-        the same failure domain: a stale entry outliving its target would have the gateway
-        resume a nonexistent id, and an entry deleted ahead of a bulk sweep that later
-        aborts mid-loop (any non-guard write error propagates out of ``_execute_write``)
-        would strand its still-live row with no route back."""
+        mid-turn. Routing entries are dropped only after the rows commit, for every
+        candidate except the guarded ones: rows that vanished concurrently are gone too,
+        and a stale entry outliving its target would have the gateway resume a
+        nonexistent id. A failed sweep rolls back whole, so no entry is stranded."""
         candidates = self.list_never_active_keyed_sessions(older_than_days=older_than_days)
         if not candidates:
             return (0, 0)
         ids = {str(row["id"]) for row in candidates}
-        deleted = routing_deleted = 0
-        for sid in ids:
-            try:
-                if not self.delete_session(sid, sessions_dir=sessions_dir, exclude_active_write_guards=True):
-                    continue
-                deleted += 1
-                routing_deleted += self._delete_routing_entries_for_sessions({sid})
-            except SessionActiveWriteGuardError:
-                pass  # the row's first turn is live; its routing entry stays valid
+        skipped: List[str] = []
+        deleted = self.delete_sessions(
+            list(ids), sessions_dir=sessions_dir, exclude_active_write_guards=True, skipped_ids=skipped)
+        routing_deleted = self._delete_routing_entries_for_sessions(ids - set(skipped))
         return (deleted, routing_deleted)
 
     def list_gateway_sessions(

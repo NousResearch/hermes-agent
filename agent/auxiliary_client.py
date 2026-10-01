@@ -1160,6 +1160,18 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
     return text_parts, tool_calls_raw, usage
 
 
+def _attempt_stream_socket(stream: Any) -> Any:
+    """The raw socket under an SDK event stream (``stream.response`` is the ``httpx.Response``;
+    httpcore publishes its connection as the ``network_stream`` extension), or None."""
+    try:
+        extensions = getattr(getattr(stream, "response", None), "extensions", None)
+        network_stream = extensions.get("network_stream") if isinstance(extensions, dict) else None
+        get_extra_info = getattr(network_stream, "get_extra_info", None)
+        return get_extra_info("socket") if callable(get_extra_info) else None
+    except Exception:
+        return None
+
+
 def _close_quietly(target: Any, failure_note: Optional[str]) -> None:
     """Call ``target.close()`` if present; a failure is debug-logged under ``failure_note`` (silent when None)."""
     close = getattr(target, "close", None)
@@ -1257,9 +1269,32 @@ class _CodexStreamGuard:
             self._attempt_stream = None
 
     def close_attempt_stream(self, failure_note: str) -> None:
-        """Closes only this attempt's stream — never the process-shared client."""
+        """Wakes only this attempt's stream — never the process-shared client.
+
+        On the owning thread this is a real ``close()``. From any other thread (the watchdog
+        Timer) it only shuts the stream's own socket down: ``Stream.close()`` on an unfinished
+        response ends in ``sock.close()`` (httpx ``Response.close`` → httpcore
+        ``HTTP11Connection.close`` → ``SyncStream.close``), i.e. exactly the stranger-thread FD
+        release ``_close_client_on_timeout`` forbids — the owner is still inside ``SSL_read`` on
+        that descriptor, the kernel hands the number to the next ``open()``, and OpenSSL writes
+        a TLS alert into that file (#70773, #130115). ``shutdown()`` wakes the reader and keeps
+        the FD; the owner does the real close in its ``finally`` (``release_stream``). A stream
+        with no reachable socket (a test double, a non-httpx transport) has no FD this thread
+        could strand, so it is closed as before.
+        """
         with self._attempt_stream_lock:
             stream = self._attempt_stream
+        if stream is None:
+            return
+        if threading.get_ident() != self._owner_tid:
+            sock = _attempt_stream_socket(stream)
+            if sock is not None:
+                try:
+                    from agent.agent_runtime_helpers import _shutdown_socket
+                    _shutdown_socket(sock)
+                except Exception:
+                    logger.debug("Codex auxiliary: %s", failure_note, exc_info=True)
+                return
         _close_quietly(stream, failure_note)
 
     def record_progress(self) -> None:
@@ -1315,8 +1350,9 @@ class _CodexStreamGuard:
             except Exception:
                 logger.debug("Codex auxiliary: client abort during timeout failed", exc_info=True)
             # Socket shutdown only wakes a reader on a REAL transport; the owner may be blocked
-            # inside the SDK's event stream (or a socketless test double). Closing the
-            # attempt-owned stream releases it without touching shared FDs.
+            # inside the SDK's event stream (or a socketless test double). Wake the
+            # attempt-owned stream too — from this thread that is a shutdown of its socket,
+            # never a close (see close_attempt_stream).
             self.close_attempt_stream("attempt stream close during stranger-thread timeout failed")
         # The aux client cache wraps this same client; drop the entry so the next aux call
         # doesn't reuse the dead transport and fail fast.

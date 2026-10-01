@@ -61,7 +61,38 @@ For each main model call when provider `moa` is selected, Hermes:
 4. calls the configured aggregator with the normal Hermes tool schema;
 5. treats the aggregator response as the real model response;
 6. if the aggregator calls tools, Hermes executes those tools normally;
-7. on the next model iteration, the same MoA process runs again over the updated conversation, including tool results.
+7. on the next model iteration, the aggregator receives the updated conversation, including tool results; reference calls follow the preset's `fanout` cadence (once per user turn by default).
+
+### Native provider adapters
+
+Provider selection retains each slot's native protocol, such as Codex Responses.
+Auxiliary clients expose a chat-completions surface, however, so Relay decodes the
+chat-shaped request and usage at that boundary rather than the provider's native
+wire format. No provider or model assignment changes during this adaptation.
+
+Native async aggregator results are adapted before a synchronous Relay or MoA
+consumer iterates them. `agent/async_stream.py` owns one worker event loop for
+opening, reading and closing a stream; the consumer must close it on early exit.
+This preserves loop-bound resources, per-operation context, and a single provider
+dispatch. `agent/auxiliary_client.py` handles the inner Relay boundary, while
+`agent/moa_loop.py` preserves the facade's synchronous streaming contract.
+
+```mermaid
+graph TD
+    Loop[Normal agent tool loop] --> Facade[MoA facade]
+    Facade --> Advisors[Reference slots]
+    Advisors --> Chat[Chat-shaped auxiliary surface]
+    Chat --> Relay[Relay chat codec]
+    Relay --> Native[Native provider protocol]
+    Facade --> Actor[Acting aggregator]
+    Actor --> Worker[Async stream owning loop]
+    Worker --> Stream[Synchronous closeable stream]
+    Stream --> Loop
+```
+
+A successful final answer is not sufficient to prove that the ensemble ran:
+inspect advisor outcomes and the acting provider, since the normal agent loop can
+recover from a MoA failure by selecting a standalone fallback model.
 
 Because MoA is selected through the normal model system, it composes automatically with `/goal`, gateway sessions, TUI sessions, and Desktop chat.
 

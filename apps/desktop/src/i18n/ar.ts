@@ -2,6 +2,8 @@ import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
   lens: {
+    earlierCaptures: 'اللقطات السابقة غير مرتبطة باتصال موثّق. صدّرها لمراجعتها؛ لن تُضاف إلى مساحة العمل هذه.',
+    exportEarlier: 'تصدير اللقطات السابقة',
     title: 'Hermes Lens',
     subtitle: 'مصادر الويب معًا. محفوظة على هذا الجهاز لمساحة العمل هذه.',
     pinSelection: 'تثبيت الكتلة المحددة',

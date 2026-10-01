@@ -26,8 +26,33 @@ export function findLensGuest(card: LensCard): LensGuest | undefined {
 }
 
 const PREFIX = 'hermes.desktop.lens.card.v1.'
-export const $lensScope = atom('default')
+export const $lensScope = atom('conn:local::default')
 export const $lensCards = atom<LensCard[]>([])
+export const $unassignedLensCount = atom(0)
+
+// A persisted epoch also invalidates work in other Desktop windows. Checking
+// only the current name would miss delete/recreate and A → B → A races.
+const epochKey = (scope: string) => 'hermes.desktop.lens.epoch.v1.' + encodeURIComponent(scope)
+let activation = 0
+
+export function lensOperationIsCurrent(scope: string, guest: LensGuest): () => boolean {
+  const started = activation
+  const epoch = readKey(epochKey(scope))
+
+  return () =>
+    started === activation &&
+    $lensScope.get() === scope &&
+    guests.get(guest) === scope &&
+    readKey(epochKey(scope)) === epoch
+}
+
+function invalidateScope(scope: string) {
+  writeKey(epochKey(scope), crypto.randomUUID())
+
+  if ($lensScope.get() === scope) {
+    activation += 1
+  }
+}
 
 function loadCards(): LensCard[] {
   const cards: LensCard[] = []
@@ -58,11 +83,24 @@ function loadCards(): LensCard[] {
   return cards.sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))
 }
 
+/** Pre-release builds saved profile-only owners. Preserve those records for
+ * explicit export; guessing a connection would expose one backend's evidence
+ * in another backend with the same profile name. */
+export function unassignedLensCards() {
+  return loadCards().filter(card => !card.scope.startsWith('conn:'))
+}
+
 export function syncLensCards() {
-  $lensCards.set(loadCards().filter(card => card.scope === $lensScope.get()))
+  const cards = loadCards()
+  $lensCards.set(cards.filter(card => card.scope === $lensScope.get()))
+  $unassignedLensCount.set(cards.filter(card => !card.scope.startsWith('conn:')).length)
 }
 
 export function setLensScope(scope: string) {
+  if ($lensScope.get() !== scope) {
+    activation += 1
+  }
+
   $lensScope.set(scope)
   syncLensCards()
 }
@@ -131,8 +169,12 @@ export function removeLensCard(id: string) {
 }
 
 export function dropLensScope(scope: string) {
+  invalidateScope(scope)
+
   for (const [guest, owner] of guests) {
-    if (owner === scope) {guests.delete(guest)}
+    if (owner === scope) {
+      guests.delete(guest)
+    }
   }
 
   for (const card of loadCards().filter(card => card.scope === scope)) {
@@ -141,8 +183,17 @@ export function dropLensScope(scope: string) {
 }
 
 export function migrateLensScope(from: string, to: string) {
+  if (from === to) {
+    return
+  }
+
+  invalidateScope(from)
+  invalidateScope(to)
+
   for (const [guest, owner] of guests) {
-    if (owner === from) {guests.set(guest, to)}
+    if (owner === from) {
+      guests.set(guest, to)
+    }
   }
 
   for (const card of loadCards().filter(card => card.scope === from)) {

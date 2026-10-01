@@ -67,6 +67,8 @@ interface AuxTaskCopy {
 
 export interface Translations {
   lens: {
+    earlierCaptures: string
+    exportEarlier: string
     title: string
     subtitle: string
     pinSelection: string

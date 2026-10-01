@@ -6,6 +6,9 @@ on:
     paths:
       - 'apps/desktop/src/features/lens/**'
       - 'apps/desktop/e2e/lens/**'
+      - 'apps/desktop/src/store/preview.ts'
+      - 'apps/desktop/src/store/session-states.ts'
+      - 'apps/desktop/src/app/chat/right-rail/preview-*.tsx'
       - '.github/workflows/hermes-lens.yml'
 permissions:
   contents: read
@@ -29,7 +32,7 @@ jobs:
         run: node -e "require(require.resolve('electron/install.js'))"
       - name: Board and browser contracts
         working-directory: apps/desktop
-        run: npm run test:ui -- src/features/lens src/store/preview-tabs-scope.test.ts src/app/chat/right-rail/preview-browser-bar.test.tsx
+        run: npm run test:ui -- src/features/lens src/store/preview-tabs-scope.test.ts src/store/session-states-profile-rename.test.ts src/app/chat/right-rail/preview-browser-bar.test.tsx
       - name: Native browser integration
         working-directory: apps/desktop
         run: npx playwright test --config e2e/lens/playwright.config.ts

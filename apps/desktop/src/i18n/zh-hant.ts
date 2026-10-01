@@ -5,6 +5,8 @@ import { introZhHant } from './intro-zh-hant'
 
 export const zhHant = defineLocale({
   lens: {
+    earlierCaptures: '早期擷取內容未關聯已驗證的連線。請匯出後檢視；它們不會分配到此工作區。',
+    exportEarlier: '匯出早期擷取內容',
     title: 'Hermes Lens',
     subtitle: '彙整網頁資料。為此工作區儲存在本裝置上。',
     pinSelection: '釘選所選文字區塊',

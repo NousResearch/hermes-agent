@@ -4,6 +4,9 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   lens: {
+    earlierCaptures:
+      'Earlier captures have no verified connection. Export them to review; they are not assigned to this workspace.',
+    exportEarlier: 'Export earlier captures',
     title: 'Hermes Lens',
     subtitle: 'Web evidence, kept together. Saved on this device for this workspace.',
     pinSelection: 'Pin selected block',

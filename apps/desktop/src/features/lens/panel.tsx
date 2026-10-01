@@ -6,10 +6,17 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
-import { openPreview } from '@/store/preview'
+import { $previewComposerTarget, openPreview } from '@/store/preview'
 
 import { LENS_CARD_LIMIT, type LensCard, lensPrompt } from './model'
-import { $lensCards, $lensScope, noteLensCard, removeLensCard } from './store'
+import {
+  $lensCards,
+  $lensScope,
+  $unassignedLensCount,
+  noteLensCard,
+  removeLensCard,
+  unassignedLensCards
+} from './store'
 
 interface LensPanelProps {
   busy: boolean
@@ -30,6 +37,7 @@ function ScopedLensPanel({ busy, error, onClose, onPin, onRefresh, onError }: Le
   const { t } = useI18n()
   const copy = t.lens
   const cards = useStore($lensCards)
+  const unassignedCount = useStore($unassignedLensCount)
   const [selected, setSelected] = useState<string[]>([])
   const [question, setQuestion] = useState('')
   const [added, setAdded] = useState(false)
@@ -45,7 +53,7 @@ function ScopedLensPanel({ busy, error, onClose, onPin, onRefresh, onError }: Le
 
   const ask = async () => {
     const ok = await requestComposerInsertAcked(lensPrompt(chosen, question || copy.comparePrompt), {
-      target: 'active'
+      target: $previewComposerTarget.get()
     })
 
     if (ok) {
@@ -82,6 +90,30 @@ function ScopedLensPanel({ busy, error, onClose, onPin, onRefresh, onError }: Le
           </span>
         )}
       </div>
+      {unassignedCount > 0 && (
+        <div className="text-xs text-muted-foreground">
+          <p>{copy.earlierCaptures}</p>
+          <Button
+            onClick={() =>
+              run(() => {
+                const url = URL.createObjectURL(
+                  new Blob([JSON.stringify(unassignedLensCards(), null, 2)], { type: 'application/json' })
+                )
+
+                const link = document.createElement('a')
+                link.href = url
+                link.download = 'hermes-lens-earlier-captures.json'
+                link.click()
+                URL.revokeObjectURL(url)
+              })
+            }
+            size="xs"
+            variant="ghost"
+          >
+            {copy.exportEarlier}
+          </Button>
+        </div>
+      )}
       {error && (
         <p className="text-sm text-destructive" role="alert">
           {error}

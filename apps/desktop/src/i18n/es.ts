@@ -5,6 +5,9 @@ import { introEs } from './intro-es'
 
 export const esOverrides = {
   lens: {
+    earlierCaptures:
+      'Las capturas anteriores no tienen una conexión verificada. Expórtalas para revisarlas; no se asignan a este espacio de trabajo.',
+    exportEarlier: 'Exportar capturas anteriores',
     title: 'Hermes Lens',
     subtitle: 'Tus fuentes web juntas. Guardadas en este dispositivo para este espacio.',
     pinSelection: 'Fijar bloque seleccionado',

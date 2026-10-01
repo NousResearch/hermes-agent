@@ -5,7 +5,7 @@ description: Collect web evidence in a visual board and compare selected sources
 
 # Hermes Lens
 
-Hermes Lens opens a research popup from the Desktop browser toolbar. Pin readable blocks
+Hermes Lens is built into Hermes Desktop; no plugin is required. It opens a research popup from the Desktop browser toolbar. Pin readable blocks
 from different websites, add notes, revisit sources, and give Hermes a selected
 set of evidence to investigate.
 
@@ -21,7 +21,8 @@ set of evidence to investigate.
 3. Repeat on other websites. Cards keep the source URL, title, capture time,
    last-check time, and an optional note.
 4. Select up to eight cards, enter a question, and click **Ask Hermes**.
-   The selected evidence is appended to the active chat draft. Review and send
+   The selected evidence is appended to the browser workspace's chat draft,
+   including its originating chat tile when working in a split view. Review and send
    it through the normal composer. Nothing is sent to a model merely by pinning.
 
 The popup is available from any Desktop browser tab. It stays anchored to the
@@ -51,9 +52,16 @@ tool. The same code path also runs on Linux.
 
 Cards are saved in Desktop's local browser storage, scoped to the connection
 and profile of the current workspace using the browser rail's existing scope.
-Profile rename and deletion migrate or remove the associated board. Another
+Profile rename and deletion migrate or remove the associated board. Pending
+captures are discarded after a workspace switch, rename, deletion, or pane closure. Another
 window on the same installation sees card updates through storage events.
 Cards are not synchronized to another computer or to the agent backend.
+
+Earlier prerelease builds saved captures without a verified connection identity.
+Those records are retained, but are not automatically assigned to any workspace.
+If present, **Export earlier captures** downloads them as JSON for review; repin
+sources in their intended workspace. This prevents evidence from being assigned
+to an unrelated connection with the same profile name.
 
 Each workspace holds up to 60 cards; a capture stores at most 6,000 characters
 and explicitly shows truncation. A comparison includes up to eight cards.

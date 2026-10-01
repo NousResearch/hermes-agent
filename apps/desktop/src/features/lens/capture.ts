@@ -114,7 +114,11 @@ export async function readLensGuest(
     throw new Error(reason)
   }
 
-  if ((expectedUrl && capture.url !== expectedUrl) || (source && capture.url !== source.url)) {
+  if (
+    guest.getURL?.() !== expectedUrl ||
+    (expectedUrl && capture.url !== expectedUrl) ||
+    (source && capture.url !== source.url)
+  ) {
     throw new Error('sourceChanged')
   }
 

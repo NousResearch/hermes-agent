@@ -6,11 +6,19 @@ import { createRoot } from 'react-dom/client'
 
 import { ackComposerInsert, onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { PreviewPane } from '@/app/chat/right-rail/preview-pane'
-import { setLensScope } from '@/features/lens/store'
 import { I18nProvider } from '@/i18n/context'
+import { $activeSessionId, $selectedStoredSessionId, setSessionOwnerHint } from '@/store/session'
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-setLensScope('lens-integration')
+
+function selectConnection(connectionId: string) {
+  const id = 'lens-' + connectionId
+  setSessionOwnerHint(id, { connectionId, profile: 'research' })
+  $selectedStoredSessionId.set(id)
+  $activeSessionId.set(id)
+}
+
+selectConnection('fixture-a')
 
 function Fixture() {
   const [draft, setDraft] = useState('')
@@ -27,7 +35,11 @@ function Fixture() {
     <QueryClientProvider client={queryClient}>
       <I18nProvider configClient={null} initialLocale="en">
         <div style={{ height: '100vh', display: 'grid', gridTemplateColumns: '320px 1fr' }}>
-          <textarea aria-label="Chat draft" readOnly value={draft} />
+          <div className="flex flex-col gap-2">
+            <button onClick={() => selectConnection('fixture-a')}>Connection A</button>
+            <button onClick={() => selectConnection('fixture-b')}>Connection B</button>
+            <textarea aria-label="Chat draft" className="flex-1" readOnly value={draft} />
+          </div>
           <PreviewPane
             embedded
             tabId="lens-test"

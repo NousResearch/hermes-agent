@@ -3,6 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 
 import { ackComposerInsert, onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { I18nProvider } from '@/i18n/context'
+import { $previewComposerTarget } from '@/store/preview'
 
 import { LensPanel } from './panel'
 import { pinLensCapture, setLensScope } from './store'
@@ -10,12 +11,14 @@ import { pinLensCapture, setLensScope } from './store'
 beforeEach(() => {
   localStorage.clear()
   setLensScope('research')
+  $previewComposerTarget.set('tile:research-chat')
 })
 
 it('hands only selected evidence to a reviewable chat draft and removes a card', async () => {
   const insert = vi.fn()
 
   const unsubscribe = onComposerInsertRequest(detail => {
+    expect(detail.target).toBe('tile:research-chat')
     insert(detail.text)
     ackComposerInsert(detail.token, true)
   })

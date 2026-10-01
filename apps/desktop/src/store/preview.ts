@@ -1,7 +1,9 @@
+import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import type { ComposerTarget } from '@/app/chat/composer/focus'
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
-import { dropLensScope, migrateLensScope, setLensScope } from '@/features/lens/store'
+import { $lensScope, dropLensScope, migrateLensScope, setLensScope } from '@/features/lens/store'
 import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
@@ -213,7 +215,12 @@ function persistTabs() {
 // would resurrect the bucket the rename just deleted.
 let viewKey = 'default'
 
+const lensScopeForRail = (scope: string) =>
+  scope.startsWith('conn:') ? scope : registryBackendScopeKey(LOCAL_CONNECTION_ID, scope)
+
 export const $previewTabs = atom<PreviewTab[]>([])
+/** The chat this browser workspace belongs to; never the last arbitrary composer. */
+export const $previewComposerTarget = atom<ComposerTarget>('main')
 
 // Adoption phase: emissions that carry storage THIS MODULE JUST READ, not a
 // change. nanostores' subscribe fires immediately, and writing what was just
@@ -245,11 +252,17 @@ adoptingStoredTabs = false
 /** Re-home the rail onto the profile that owns the chat on screen. Called by
  *  `session-states.ts` whenever the focused session (or its resolved owner)
  *  changes; the previous agent's tabs must not leak into the next one. */
-export function setPreviewScope(scope: string) {
+export function setPreviewScope(scope: string, composerTarget: ComposerTarget = 'main') {
+  $previewComposerTarget.set(composerTarget)
   const next = normalizeProfileKey(scope) || 'default'
-  setLensScope(next)
 
   if (next === viewKey) {
+    // Session-list updates can re-publish the same owner frequently. Avoid
+    // rescanning all persisted captures unless ownership actually changes.
+    const lensScope = lensScopeForRail(next)
+
+    if ($lensScope.get() !== lensScope) { setLensScope(lensScope) }
+
     return
   }
 
@@ -262,7 +275,7 @@ export function setPreviewScope(scope: string) {
  *  would skip exactly that case (a fresh pop-out renderer starts on 'default'
  *  while the popped tab belongs to another profile). */
 function applyPreviewScope(next: string) {
-  setLensScope(next)
+  setLensScope(lensScopeForRail(next))
 
   if (pendingLegacyTabs) {
     tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
@@ -279,7 +292,7 @@ function applyPreviewScope(next: string) {
 export function dropPreviewTabsForProfile(profile: string) {
   const key = normalizeProfileKey(profile)
 
-  dropLensScope(key)
+  dropLensScope(lensScopeForRail(key))
   delete tabsByProfile[key]
   persistTabs()
 
@@ -299,7 +312,7 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
     return
   }
 
-  migrateLensScope(from, to)
+  migrateLensScope(lensScopeForRail(from), lensScopeForRail(to))
   const moved = tabsByProfile[from]
 
   if (moved) {

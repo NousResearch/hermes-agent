@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from cron import scheduler_interrupt as interruption
+
 import asyncio
 import json
 import os
@@ -1047,7 +1049,7 @@ def test_shutdown_does_not_interrupt_restart_safe_waiter():
     scheduler._running_job_ids.add(scheduler._inflight_key(job_id))
     scheduler._restart_safe_waiter_job_ids.add(scheduler._inflight_key(job_id))
     try:
-        assert scheduler.mark_running_jobs_interrupted("gateway restart") == []
+        assert interruption.mark_running_jobs_interrupted("gateway restart") == []
         assert scheduler._inflight_key(job_id) not in scheduler._interrupted_job_ids
     finally:
         scheduler._restart_safe_waiter_job_ids.discard(scheduler._inflight_key(job_id))

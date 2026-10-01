@@ -193,10 +193,15 @@ $GAPI gmail get MESSAGE_ID
 $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
 $GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
 $GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
+$GAPI gmail send --to user@example.com --subject "Hello" --body "..." --dry-run  # build + print headers, sends nothing
 
 # Reply (automatically threads and sets In-Reply-To)
+# Targets Reply-To, then From; replying to your OWN sent message targets its
+# original recipients instead of yourself. Non-ASCII display names are encoded
+# correctly (name only, never across the address).
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
 $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
+$GAPI gmail reply MESSAGE_ID --body "..." --dry-run  # resolve recipient + print headers, sends nothing
 
 # Labels
 $GAPI gmail labels
@@ -300,7 +305,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 - **Gmail search**: `[{id, threadId, from, to, subject, date, snippet, labels}]`
 - **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
-- **Gmail send/reply**: `{status: "sent", id, threadId}`
+- **Gmail send/reply**: `{status: "sent", id, threadId}` (with `--dry-run`: `{status: "dry-run", threadId, headers}`)
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`

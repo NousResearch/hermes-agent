@@ -47,7 +47,6 @@ import {
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { prunePreviewTabsForSession } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -3297,14 +3296,6 @@ export function useSessionActions({
         // the delete holds: the stored tip, the row id, the lineage root, and
         // the closing runtime id — the journal keys on the stored id.
         purgeInFlightTurnJournals([...removedIds, closingRuntimeId])
-
-        // Preview tabs are session-owned: drop them with the session (pinned
-        // tabs survive — they belong to the workspace, not the session).
-        for (const id of removedIds) {
-          if (id) {
-            prunePreviewTabsForSession(id)
-          }
-        }
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)

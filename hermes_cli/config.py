@@ -2769,16 +2769,24 @@ def _managed_source(filename: str):
     return (managed_dir / filename) if managed_dir else "the managed scope"
 
 
-def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env (also matching ``export KEY=`` lines, so a save
-    never appends a second line that a later delete would resurrect)."""
+def save_env_value(key: str, value: str, *, home: Optional[Path] = None):
+    """Save or update a value in a Hermes ``.env`` file.
+
+    With no explicit ``home``, preserve legacy active-home and process-env
+    behavior. An explicit home is for profile-scoped writers; it writes only
+    that home's file and never mutates process-global environment state.
+    """
     if _env_write_blocked(key, "set"):
         return
     validate_env_var_name_for_write(key)
     value = value.replace("\n", "").replace("\r", "")
     value = _check_non_ascii_credential(key, value)
-    ensure_hermes_home()
-    env_path = get_env_path()
+    if home is None:
+        ensure_hermes_home()
+        env_path = get_env_path()
+    else:
+        env_path = Path(home) / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
 
     lines = _read_env_lines(env_path) if env_path.exists() else []
     serialized_value = _quote_env_value(value)
@@ -2792,7 +2800,8 @@ def save_env_value(key: str, value: str):
         lines.append(f"{key}={serialized_value}\n")
 
     _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
-    _publish_env_value(key, value)
+    if home is None:
+        _publish_env_value(key, value)
     invalidate_env_cache()
 
 
@@ -2805,15 +2814,19 @@ def custom_endpoint_key_env(identity: str) -> str:
     return f"HERMES_CUSTOM_{slug}_API_KEY" if slug else "HERMES_CUSTOM_API_KEY"
 
 
-def remove_env_value(key: str) -> bool:
-    """Remove a key from ~/.hermes/.env and os.environ; True if it was found and removed."""
+def remove_env_value(key: str, *, home: Optional[Path] = None) -> bool:
+    """Remove a key from a Hermes ``.env`` file; return whether it was found.
+
+    An explicit profile home never mutates process-global environment state.
+    """
     if _env_write_blocked(key, "remove"):
         return False
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
-    env_path = get_env_path()
+    env_path = get_env_path() if home is None else Path(home) / ".env"
     if not env_path.exists():
-        _publish_env_value(key, None)
+        if home is None:
+            _publish_env_value(key, None)
         return False
 
     lines = _read_env_lines(env_path)
@@ -2821,7 +2834,8 @@ def remove_env_value(key: str) -> bool:
     found = len(new_lines) < len(lines)
     if found:
         _write_env_lines(env_path, new_lines, preserve_mode=True)
-    _publish_env_value(key, None)
+    if home is None:
+        _publish_env_value(key, None)
     invalidate_env_cache()
     return found
 

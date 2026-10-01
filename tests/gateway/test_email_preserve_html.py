@@ -1,6 +1,7 @@
 """Inbound formatting opt-in and plaintext compatibility (regression for #23695)."""
 
 from email.mime.multipart import MIMEMultipart
+from email.mime.message import MIMEMessage
 from email.mime.text import MIMEText
 from unittest.mock import AsyncMock
 
@@ -23,6 +24,11 @@ def _message(kind):
         msg = MIMEMultipart('mixed')
         attachment = MIMEText('<b>Not the body</b>', 'html', 'utf-8')
         attachment.add_header('Content-Disposition', 'attachment', filename='report.html')
+        if kind == 'mixed_disposition':
+            attachment.replace_header('Content-Disposition', 'Attachment; filename=report.html')
+        elif kind == 'nested_attachment':
+            attachment = MIMEMessage(MIMEText('<b>Not the body</b>', 'html', 'utf-8'))
+            attachment.add_header('Content-Disposition', 'attachment', filename='forwarded.eml')
         msg.attach(attachment)
         alternatives = MIMEMultipart('alternative')
         alternatives.attach(MIMEText(PLAIN, 'plain', 'utf-8'))
@@ -37,7 +43,8 @@ def _message(kind):
 
 
 @pytest.mark.parametrize('flag', [None, False, 'false', True, 'true'])
-@pytest.mark.parametrize('kind', ['single', 'multipart', 'plain', 'empty', 'empty_html', 'unknown_charset'])
+@pytest.mark.parametrize('kind', ['single', 'multipart', 'plain', 'empty', 'empty_html', 'unknown_charset',
+                                 'mixed_disposition', 'nested_attachment'])
 def test_received_body_preserves_formatting_only_when_enabled(flag, kind):
     from gateway.config import PlatformConfig
     from plugins.platforms.email.adapter import EmailAdapter

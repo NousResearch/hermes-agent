@@ -229,10 +229,15 @@ def _decode_header_value(raw: str) -> str:
 
 def _first_body_part(msg: email_lib.message.Message, content_type: str) -> str:
     """Decoded text of the first non-attachment part of *content_type*, or ''."""
-    for part in msg.walk():
-        if "attachment" in str(part.get("Content-Disposition", "")) or part.get_content_type() != content_type:
+    pending = [msg]
+    while pending:
+        part = pending.pop()
+        # Do not descend into attached messages: their children have no disposition.
+        if part.get_content_disposition() == "attachment":
             continue
-        if payload := part.get_payload(decode=True):
+        if part.is_multipart():
+            pending.extend(reversed(part.get_payload()))
+        elif part.get_content_type() == content_type and (payload := part.get_payload(decode=True)):
             return _safe_decode(payload, part.get_content_charset())
     return ""
 

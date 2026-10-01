@@ -207,9 +207,12 @@ def _fenced_text(text: str, *, language: str = "text") -> str:
 # --- Current-session save helper (shared by CLI /save and gateway /save) ---
 
 SAVE_FORMATS = ("json", "md", "html")
-# Transcripts show what the user sees, compaction-archived turns included. JSON stays the live rows that
-# import_sessions restores: it would replay archived turns as live context.
 SAVE_TRANSCRIPT_FORMATS = frozenset({"md", "html"})
+
+def export_projection(transcript: bool) -> dict:
+    """Return db kwargs for export/save: transcripts show what the user saw (compacted),
+    backups/JSON preserve every stored row with active flags (inactive)."""
+    return {"include_compacted": True} if transcript else {"include_inactive": True}
 
 SAVE_USAGE = """/save — export the current session to a file
 Usage: /save <format> [filename] [redact]

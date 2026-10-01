@@ -737,7 +737,8 @@ class GatewaySessionCommandsMixin:
         # Never trust path separators from chat input; the filename is only echoed to the platform.
         filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
         filename = os.path.basename(filename) or default_save_filename(session_id, fmt)
-        export_data = await self._session_db.export_session(session_id, include_compacted=fmt in SAVE_TRANSCRIPT_FORMATS)
+        from hermes_cli.session_export import export_projection
+        export_data = await self._session_db.export_session(session_id, **export_projection(fmt in SAVE_TRANSCRIPT_FORMATS))
         if not export_data:
             return t("gateway.save.no_messages", session_id=session_id)
         if redact:

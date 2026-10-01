@@ -337,29 +337,56 @@ def _cmd_export(db, args):
         from hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
-    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS
+    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS, export_projection
     # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
     shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
 
     def _collect_sessions():
         """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
-        def _one(session_id):
-            return _redact(db.export_session(session_id, include_compacted=shown))
+        from hermes_state import SessionExportTooLargeError, resolved_max_export_messages
+        limit = resolved_max_export_messages() if not shown else 0
+        
+        # 1. Resolve candidates
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
-            data = _one(resolved) if resolved else None
-            if not data:
+            if not resolved:
                 _not_found(args.session_id)
                 return None
-            return [data]
-        if filters:
+            candidates = [{"id": resolved}]
+        elif filters:
             candidates = db.list_prune_candidates(**filters)
-            if args.dry_run:
-                return _print_dry_run_preview(candidates, filters)
-            return [s for s in (_one(row["id"]) for row in candidates) if s]
+        else:
+            candidates = db.search_sessions(source=None, limit=100000)
+
+        # 2. Guard
+        if limit > 0:
+            try:
+                for row in candidates:
+                    db.assert_export_safe(row["id"], max_messages=limit)
+            except SessionExportTooLargeError as exc:
+                print(f"Session '{exc.session_id}' has more than {limit:,} "
+                      "exportable messages; in-memory export is capped per session. "
+                      "Use the dashboard's streaming export, or set "
+                      "sessions.max_export_messages: 0 in config.yaml to disable "
+                      "the guard.")
+                return None
+
+        # 3. Dry-run preview
         if args.dry_run:
+            if filters:
+                return _print_dry_run_preview(candidates, filters)
             return print("--dry-run requires at least one filter.")
-        return [_redact(s) for s in db.export_all(source=None, include_compacted=shown)]
+
+        # 4. Export
+        def _redact_opt(data):
+            return _redact(data) if data else None
+
+        if args.session_id or filters:
+            # Filtered or single
+            return [s for s in (_redact_opt(db.export_session(row["id"], **export_projection(shown))) for row in candidates) if s]
+        
+        # Bare export (optimized bulk read)
+        return [s for s in (_redact_opt(row) for row in db.export_all(source=None, **export_projection(shown))) if s]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)
     if args.format == "trace":

@@ -656,7 +656,8 @@ class CLISessionMixin:
         _sid = getattr(self, "session_id", None)
         if _db and _sid:
             try:
-                session_data = _db.export_session(_sid, include_compacted=fmt in SAVE_TRANSCRIPT_FORMATS)
+                from hermes_cli.session_export import export_projection
+                session_data = _db.export_session(_sid, **export_projection(fmt in SAVE_TRANSCRIPT_FORMATS))
             except Exception:
                 session_data = None
         if not session_data:

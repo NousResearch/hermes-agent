@@ -43,6 +43,9 @@ from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_be
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
 croniter = None
 HAS_CRONITER: Optional[bool] = None
+# Monotonic deadline before the next croniter import probe after an ImportError (not latched).
+_CRONITER_RETRY_SECONDS = 60.0
+_croniter_retry_at: float = 0.0
 
 
 def _ensure_croniter() -> bool:
@@ -51,16 +54,17 @@ def _ensure_croniter() -> bool:
     An ImportError is NOT latched: caching False would pin a single transient failure
     (wrong interpreter, shadowed path) for the whole process lifetime, leaving every
     recurring job's next_run_at None until a gateway restart (#127182). Stay None and
-    re-probe on the next call — the finder fails fast when the package is genuinely
-    absent, and due-scan recovery re-arms the schedules as soon as the import succeeds."""
-    global croniter, HAS_CRONITER
-    if HAS_CRONITER is None:
+    re-probe once ``_CRONITER_RETRY_SECONDS`` have passed (so a genuinely absent package does
+    not cost a finder walk per call on every due-scan tick), and due-scan recovery re-arms the
+    schedules as soon as the import succeeds. An explicit True/False override always wins."""
+    global croniter, HAS_CRONITER, _croniter_retry_at
+    if HAS_CRONITER is None and time.monotonic() >= _croniter_retry_at:
         try:
             from croniter import croniter as _croniter
             croniter = _croniter
             HAS_CRONITER = True
         except ImportError:
-            pass
+            _croniter_retry_at = time.monotonic() + _CRONITER_RETRY_SECONDS
     return bool(HAS_CRONITER)
 
 
@@ -2964,12 +2968,11 @@ def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[s
             recovery_kind = kind
     if not recovered_next:
         return None
-    job["next_run_at"] = recovered_next
     logger.info(
         "Job '%s' had no next_run_at; recovering %s run at %s",
         job.get("name", job.get("id", "?")), recovery_kind, recovered_next)
     fields: Dict[str, Any] = {"next_run_at": recovered_next}
-    if recovery_kind in {"cron", "interval"} and job.get("state") == "error":
+    if recovery_kind in {"cron", "interval"} and _is_recoverable_error_job(job):
         fields["state"] = "scheduled"
     job.update(fields)
     scan.persist(job["id"], **fields)

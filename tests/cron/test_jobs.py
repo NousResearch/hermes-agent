@@ -893,7 +893,7 @@ class TestMarkJobRun:
         job = create_job(prompt="Recurring", schedule="0 7,15,23 * * *")
         assert job["schedule"]["kind"] == "cron"
 
-        # Simulate the transient failure window: the probe import raises once.
+        # Simulate the transient failure window: the croniter import raises while patched in.
         real_import = builtins.__import__
 
         def failing_import(name, *args, **kwargs):
@@ -904,6 +904,7 @@ class TestMarkJobRun:
         monkeypatch.setattr(builtins, "__import__", failing_import)
         monkeypatch.setattr(jobs_mod, "croniter", None)
         monkeypatch.setattr(jobs_mod, "HAS_CRONITER", None)
+        monkeypatch.setattr(jobs_mod, "_croniter_retry_at", 0.0)
         assert jobs_mod._ensure_croniter() is False
         assert jobs_mod.compute_next_run(job["schedule"]) is None
         mark_job_run(job["id"], success=True)  # leaves state=error, next_run_at=None
@@ -911,6 +912,10 @@ class TestMarkJobRun:
         # Window over (import works again): WITHOUT resetting HAS_CRONITER — the probe's
         # cached outcome must be re-evaluated, not latched.
         monkeypatch.setattr(builtins, "__import__", real_import)
+        # Inside the retry backoff the failed probe is not re-run on every call...
+        assert jobs_mod._ensure_croniter() is False
+        # ...but once the backoff elapses it is re-evaluated, not latched.
+        monkeypatch.setattr(jobs_mod, "_croniter_retry_at", 0.0)
         assert jobs_mod._ensure_croniter() is True, (
             "a transient ImportError was latched: every recurring job would stay "
             "next_run_at=None until a gateway restart"

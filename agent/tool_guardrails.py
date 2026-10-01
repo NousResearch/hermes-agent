@@ -707,10 +707,15 @@ def _terminal_is_clear_file_discovery(command: Any) -> bool:
         code = tokens[code_index]
     except (ValueError, IndexError):
         return False
-    # Keep Python classification deliberately tiny; multi-statement/effectful one-liners stay unmetered.
-    if any(ch in code for ch in ";\n\r"):
+    # Keep Python classification deliberately tiny. Permit the common safe pathlib import prefix,
+    # but otherwise leave multi-statement/effectful one-liners unmetered.
+    normalized = code.strip()
+    pathlib_prefix = "from pathlib import Path;"
+    if normalized.startswith(pathlib_prefix):
+        normalized = normalized[len(pathlib_prefix):].strip()
+    if any(ch in normalized for ch in ";\n\r"):
         return False
-    return bool(_PYTHON_FILE_READ_RE.search(code))
+    return bool(_PYTHON_FILE_READ_RE.search(normalized))
 
 
 def _is_file_discovery_call(tool_name: str, args: Mapping[str, Any]) -> bool:

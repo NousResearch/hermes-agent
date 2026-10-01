@@ -62,7 +62,8 @@ class ComputeHost:
     _FRAME_HANDLERS: dict[str, str] = {
         "turn.start": "_handle_turn_start", "interrupt": "_handle_interrupt",
         "respond": "_handle_respond", "reload_mcp": "_handle_reload_mcp",
-        "control": "_handle_control", "shutdown": "_handle_shutdown"}
+        "control": "_handle_control", "shutdown": "_handle_shutdown",
+        "workers": "_handle_workers"}
 
     def __init__(
         self, *, stdout: Any = None, max_workers: int | None = None,
@@ -154,6 +155,12 @@ class ComputeHost:
                 "message": f"unknown frame type: {kind}"})
         else:
             getattr(self, handler)(frame)
+
+    def _handle_workers(self, frame: dict[str, Any]) -> None:
+        from tools.worker_roster import OWNER_ID, local_observations
+        observations = local_observations(frame["profile_home"], frame["session_keys"])
+        self.emit({"type": "workers.ack", "request_id": frame["request_id"],
+                   "owner_id": OWNER_ID, "observations": observations})
 
     def _handle_shutdown(self, frame: dict[str, Any]) -> None:
         self.emit({"type": "shutdown.ack", "request_id": frame.get("request_id")})

@@ -1826,6 +1826,7 @@ export interface PingResult {
 }
 export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
+  worker_snapshot_v1?: boolean
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
@@ -2255,6 +2256,28 @@ export interface FailedDelegation {
   error?: string | null
   dispatched_at?: number | null
   completed_at?: number | null
+}
+export interface WorkerSnapshotResult {
+  schema_version: 1
+  snapshot_epoch: string
+  snapshot_seq: number
+  session_key: string
+  scope: 'native_delegate_task'
+  coverage: 'admitted_since_upgrade'
+  owner_available: boolean
+  workers: WorkerObservation[]
+}
+export interface WorkerObservation {
+  run_id: string
+  owner_id: string
+  subagent_id: string
+  status: 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'ended' | 'unknown'
+  version: number
+  goal?: string | null
+  parent_id?: string | null
+  delegation_id?: string | null
+  started_at?: number | null
+  parent_run_id?: string | null
 }
 export interface SubagentIdParams {
   session_id: string
@@ -5311,6 +5334,8 @@ export interface RpcMethods {
   'subagent.interrupt': { params: SubagentIdParams; result: SubagentInterruptResult }
   /** Live children owned by this session (other sessions' children never leak). */
   'subagent.list': { params: SessionParams; result: SubagentListResult }
+  /** Profile and compression-lineage scoped durable delegate observations. Partial coverage never proves zero workers. */
+  'subagent.snapshot': { params: SessionParams; result: WorkerSnapshotResult }
   /** Queue steering text into a live delegated child owned by this session. */
   'subagent.steer': { params: SubagentSteerParams; result: SubagentSteerResult }
   /** Last 16KB of an owned child's live transcript. */
@@ -5596,6 +5621,7 @@ export const RPC_METHODS = [
   'spawn_tree.save',
   'subagent.interrupt',
   'subagent.list',
+  'subagent.snapshot',
   'subagent.steer',
   'subagent.tail',
   'subscription.change',

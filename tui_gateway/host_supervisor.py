@@ -266,6 +266,12 @@ class HostSupervisor:
             with self._lock:
                 self._pending_controls.pop(request_id, None)
 
+    def worker_observations(self, profile_home: str, session_keys: list[str], *, timeout: float = 5.0) -> dict:
+        """Read the existing owning process; never spawn a replacement to answer a roster."""
+        request_id = uuid.uuid4().hex
+        return self._await_reply({"type": "workers", "request_id": request_id,
+                                  "profile_home": profile_home, "session_keys": session_keys}, request_id, timeout)
+
     def respond(self, sid: str, params: dict[str, Any], *, timeout: float = 15.0) -> dict:
         """Deliver an interactive prompt response to the host that owns it."""
         self.start()
@@ -407,7 +413,7 @@ class HostSupervisor:
     def _handle_host_frame(self, frame: dict[str, Any]) -> None:
         ftype = str(frame.get("type") or "")
         request_id = str(frame.get("request_id") or "")
-        if ftype in _CONTROL_REPLY_TYPES or (ftype == "error" and request_id):
+        if ftype in _CONTROL_REPLY_TYPES or ftype == "workers.ack" or (ftype == "error" and request_id):
             self._deliver_control_frame(request_id, frame)
         elif ftype == "hello":
             self._hello = dict(frame)

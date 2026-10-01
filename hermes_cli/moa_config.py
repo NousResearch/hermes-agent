@@ -29,19 +29,19 @@ def _coerce_number(value: Any, cast, default=None, *, positive: bool = False):
     """Coerce ``value`` with ``cast`` (float/int); ``default`` when unset/blank/invalid.
 
     ``int`` also accepts float-looking strings ("3.0"). With ``positive`` the result must be > 0
-    (and finite for floats) or ``default`` is returned."""
+    or ``default`` is returned. Non-finite floats always fall back to ``default``."""
     if value is None or value == "":
         return default
     try:
         number = cast(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         if cast is not int:
             return default
         try:
             number = int(float(value))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return default
-    if positive and (number <= 0 or (cast is float and not math.isfinite(number))):
+    if (cast is float and not math.isfinite(number)) or (positive and number <= 0):
         return default
     return number
 
@@ -322,37 +322,3 @@ def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
 
 def moa_usage() -> str:
     return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) -> str:
-    """Encode a /moa one-shot turn for frontends that can only send text."""
-    payload = {
-        "prompt": str(prompt or ""),
-        "config": resolve_moa_preset(config or {}, preset),
-    }
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    ).decode("ascii")
-    return f"{MOA_MARKER_PREFIX}{encoded}"
-
-def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | None = None) -> str:
-    """Build the hidden one-shot payload used by TUI/gateway routing."""
-    return encode_moa_turn(user_prompt, config, preset=preset)
-
-def list_moa_presets(config: Any) -> list[str]:
-    cfg = normalize_moa_config(config)
-    return list(cfg["presets"].keys())
-
-def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
-    cfg = normalize_moa_config(config)
-    clean = str(name or "").strip()
-    if clean and clean not in cfg["presets"]:
-        raise KeyError(clean)
-    cfg["active_preset"] = clean
-    return cfg
-# ---- END PLUGIN-COMPAT ----

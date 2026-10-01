@@ -19,7 +19,14 @@ from tools import browser_tool_cdp as _cdp
 
 
 def _memo(_bt, resolved_attr: str, cache_attr: str, compute: Callable[[], object]):
-    """Process-lifetime cache on ``_bt``: the resolved flag is set BEFORE computing, then the final value is stored."""
+    """Process-lifetime cache on ``_bt``: the resolved flag is set BEFORE computing, then the final value is stored.
+
+    Under a routed profile (HERMES_HOME override, multiplexed gateway) the slot is NOT consulted: every
+    ``_memo`` here caches a ``browser.*`` config read, and one process-wide slot would hand the launch
+    profile's engine/headed/private-URL policy to every other profile (same rule as ``_allow_private_urls``).
+    """
+    if get_hermes_home_override() is not None:
+        return compute()
     if not getattr(_bt, resolved_attr):
         setattr(_bt, resolved_attr, True)
         setattr(_bt, cache_attr, compute())
@@ -174,6 +181,20 @@ def _is_local_backend() -> bool:
     # treat as non-local. See #68559.
     from tools.terminal_scope import terminal_env
     return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+
+
+def browser_backend_name() -> str:
+    """Shared-metrics label for the backend legacy browser calls use in the active profile, in session-creation
+    precedence (CDP override > Camofox > cloud provider > local engine). Config reads only, no network I/O."""
+    _bt = _origin()
+    if _cdp._get_cdp_override_raw():
+        return "cdp"
+    if _bt._is_camofox_mode():
+        return "camofox"
+    provider = _get_cloud_provider()
+    if provider is not None:
+        return str(getattr(provider, "name", "") or "other")
+    return "lightpanda" if _get_browser_engine() == "lightpanda" else "local"
 
 
 def _get_browser_engine() -> str:

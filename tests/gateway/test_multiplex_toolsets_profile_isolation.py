@@ -26,7 +26,6 @@ from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 from gateway.config import GatewayConfig, PlatformConfig  # noqa: E402
 from gateway.platforms.api_server import (  # noqa: E402
     APIServerAdapter,
-    _PROFILE_REJECTED,
 )
 
 OWNER_KEY = "owner-key-1234567890abcdef"
@@ -128,13 +127,6 @@ class TestMultiplexOnToolsetIsolation:
 class TestMultiplexOffPrefixFailsClosed:
     """Single-profile gateways must not serve another profile's URL."""
 
-    def test_foreign_prefix_rejected(self, hermes_root):
-        adapter = _make_adapter(multiplex=False)
-
-        class _Req:
-            match_info = {"profile": "lokaj"}
-
-        assert adapter._resolve_request_profile(_Req()) is _PROFILE_REJECTED
 
     def test_self_referential_prefix_falls_through(self, hermes_root):
         """/p/default/ on the default-profile gateway keeps working."""

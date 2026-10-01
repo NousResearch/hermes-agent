@@ -5,6 +5,7 @@ against a temp path so nothing touches the real HERMES_HOME store.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -187,6 +188,32 @@ def test_list_sessions(tmp_path):
 def test_list_sessions_missing_roots(tmp_path):
     assert _list_sessions("claude", tmp_path / "nope") == []
     assert _list_sessions("codex", tmp_path / "nope") == []
+
+
+def test_env_overrides_relocate_default_roots(tmp_path, monkeypatch):
+    """CLAUDE_CONFIG_DIR / CODEX_HOME relocate discovery (ported from cline/cline#13827)."""
+    claude_cfg = tmp_path / "relocated-claude"
+    codex_home = tmp_path / "relocated-codex"
+    _write_claude_fixture(tmp_path)  # writes under tmp_path/.claude — becomes the store root below
+    (tmp_path / ".claude").rename(claude_cfg)
+    _write_codex_fixture(tmp_path)
+    (tmp_path / ".codex").rename(codex_home)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)  # default roots are empty
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_cfg))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    both = gather_foreign_sessions()
+    assert {s.source for s in both} == {"claude", "codex"}
+
+
+def test_blank_env_overrides_fall_back_to_home(tmp_path, monkeypatch):
+    """A blank/whitespace override is unset, not a CWD-relative path (cline/cline#13827)."""
+    _write_claude_fixture(tmp_path)
+    _write_codex_fixture(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+    monkeypatch.setenv("CODEX_HOME", "   ")
+    both = gather_foreign_sessions()
+    assert {s.source for s in both} == {"claude", "codex"}
 
 
 # ── import into SessionDB ────────────────────────────────────────────────

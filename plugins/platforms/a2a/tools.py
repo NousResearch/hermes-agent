@@ -7,13 +7,12 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
-from gateway.platforms._shared import coerce_port as _coerce_int
+from gateway.platforms._shared import coerce_port as _coerce_int, get_scoped_secret as _get_scoped_secret
 
 from . import protocol, security
 
@@ -24,11 +23,9 @@ _ORCHESTRATE_MAX_WORKERS = 6  # max parallel peers for fan-out
 
 
 def _load_config() -> dict:
-    try:
-        from hermes_cli.config import load_config
-        return load_config() or {}
-    except Exception:
-        return {}
+    """Read-only view of config.yaml; peers are only read, never mutated (cache-safe)."""
+    from hermes_cli.config import load_config_readonly
+    return load_config_readonly() or {}
 
 
 def _configured_peers() -> dict:
@@ -344,7 +341,8 @@ def _a2a_tools_available() -> bool:
         if cfg.get("a2a_agents"):
             return True
     try:
-        if os.getenv("A2A_PORT"):
+        # Scoped like the platform gate: os.environ is the launch profile's under multiplexing (#122126).
+        if _get_scoped_secret("A2A_PORT"):
             return True
         a2a_cfg = (cfg.get("platforms") or {}).get("a2a") or {}
         return bool(isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"))
@@ -361,11 +359,3 @@ def register_tools(ctx) -> None:
         ctx.register_tool(name=name, toolset="a2a", handler=handler, description=description,
                           schema={"name": name, "description": description, "parameters": parameters},
                           emoji="\U0001f9e9", check_fn=_a2a_tools_available)  # puzzle piece
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import TypedDict  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

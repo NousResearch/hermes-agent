@@ -763,6 +763,38 @@ def is_job_running(job_id: str, home: Optional[Union[Path, str]] = None) -> bool
         return key in _running_job_ids or key in _running_fire_owners
 
 
+_job_lifecycle_callbacks: List[Callable[[], None]] = []
+_job_lifecycle_callbacks_lock = threading.Lock()
+
+
+def register_job_lifecycle_callback(cb: Callable[[], None]) -> None:
+    """Observers notified whenever the in-flight job count changes (register success,
+    release). The gateway registers a persist hook so ``gateway_state.json``'s
+    ``active_agents`` tracks cron work at every count change, not only at inbound-turn
+    boundaries (#122813). Observer failures never affect job dispatch."""
+    with _job_lifecycle_callbacks_lock:
+        if cb not in _job_lifecycle_callbacks:
+            _job_lifecycle_callbacks.append(cb)
+
+
+def unregister_job_lifecycle_callback(cb: Callable[[], None]) -> None:
+    with _job_lifecycle_callbacks_lock:
+        try:
+            _job_lifecycle_callbacks.remove(cb)
+        except ValueError:
+            pass
+
+
+def _notify_job_lifecycle() -> None:
+    with _job_lifecycle_callbacks_lock:
+        observers = tuple(_job_lifecycle_callbacks)
+    for cb in observers:
+        try:
+            cb()
+        except Exception:
+            logger.debug("job lifecycle observer failed", exc_info=True)
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
@@ -779,6 +811,7 @@ def try_register_running_job(job_id: str) -> bool:
     from hermes_cli.backend_retirement import retirement
 
     key = _inflight_key(job_id, _remember_inflight_home(_get_hermes_home()))
+    registered = False
     with retirement.work() as admitted, _running_lock:
         if not admitted or key in _running_job_ids:
             return False
@@ -787,7 +820,12 @@ def try_register_running_job(job_id: str) -> bool:
         # can bound. Sentinel is replaced by the real future once ``pool.submit`` returns.
         _running_since[key] = time.time()
         _running_futures[key] = _FUTURE_PENDING
-        return True
+        registered = True
+    if registered:
+        # Outside the lock: observers may do real work (the gateway persists
+        # gateway_state.json); they must never extend the dispatch critical section.
+        _notify_job_lifecycle()
+    return registered
 
 
 def release_running_job(job_id: str, home: Optional[Union[Path, str]] = None) -> None:
@@ -805,6 +843,7 @@ def release_running_job(job_id: str, home: Optional[Union[Path, str]] = None) ->
         _running_allowance_s.pop(key, None)
         _running_futures.pop(key, None)
         _running_worker_pids.pop(key, None)
+    _notify_job_lifecycle()
 
 
 def _inflight_min_allowance_minutes() -> float:
@@ -1047,6 +1086,14 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             _running_futures.pop(key, None)
             _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))
+
+    if stale:
+        # Forced releases move the in-flight count without passing through
+        # release_running_job; notify lifecycle observers (the gateway's
+        # active_agents persist) so the count never goes stale here — the
+        # sweep is the recovery path for wedged claims, exactly where the
+        # file must not keep reading busy (#122813).
+        _notify_job_lifecycle()
 
     for job_id, age, allowance, fut, _reason in stale:
         _record_stale_release(by_id.get(job_id) or {}, job_id, age, allowance, fut, _reason)
@@ -2784,6 +2831,11 @@ def run_one_job(
     with _running_lock:
         _running_fire_owners.setdefault(_fire_key, {})[execution_token] = (
             fire_owner or None, profile_home)
+    # Split-fire path: registrations here never pass through
+    # try_register_running_job, so the count moves without notify. Fire here
+    # so every scheduler mode (in-process, multiplex, external providers) —
+    # all of which funnel through run_one_job — persists the count change.
+    _notify_job_lifecycle()
     try:
         with self_removal_delivery_scope(job["id"]):
             return _run_with_fire_claim_heartbeat(
@@ -2804,6 +2856,7 @@ def run_one_job(
                 executions.pop(execution_token, None)
                 if not executions:
                     _running_fire_owners.pop(_fire_key, None)
+        _notify_job_lifecycle()
 
 
 _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."

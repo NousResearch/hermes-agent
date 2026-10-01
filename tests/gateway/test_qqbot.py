@@ -1009,8 +1009,8 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
@@ -1022,13 +1022,13 @@ class TestProfileNamespaceApprovalAuthz:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:c2c:u-42:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:c2c:u-42:allow-once:req-profile"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:coder:qqbot:c2c:u-42", "once", False)]
+        assert resolve_calls == [("agent:coder:qqbot:c2c:u-42", "once", False, "req-profile")]
 
     @pytest.mark.asyncio
     async def test_group_click_on_named_profile_key_authorizes_session_owner(self):
@@ -1037,8 +1037,8 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
@@ -1050,13 +1050,13 @@ class TestProfileNamespaceApprovalAuthz:
                 "id": "i", "chat_type": 1,
                 "group_openid": "g-1",
                 "group_member_openid": "owner",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-profile"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:coder:qqbot:group:g-1:owner", "once", False)]
+        assert resolve_calls == [("agent:coder:qqbot:group:g-1:owner", "once", False, "req-profile")]
 
     @pytest.mark.asyncio
     async def test_named_profile_key_still_rejects_wrong_operator(self):
@@ -1065,8 +1065,8 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
@@ -1078,7 +1078,7 @@ class TestProfileNamespaceApprovalAuthz:
                 "id": "i", "chat_type": 1,
                 "group_openid": "g-1",
                 "group_member_openid": "attacker",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-profile"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:

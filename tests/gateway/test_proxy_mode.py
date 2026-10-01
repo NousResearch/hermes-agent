@@ -134,6 +134,37 @@ async def test_proxy_path_expands_deferred_context_reference_before_forwarding()
         "--- Attached Context ---\nLOCAL-FILE-MARKER"
     )
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caption", ["Caption", ""])
+async def test_proxy_path_consumes_deferred_photo_before_forwarding(caption):
+    """Proxy turns bypass TurnRunner, so buffered photos must become text descriptions here."""
+    runner = _make_runner()
+    runner._get_proxy_url = lambda: "http://proxy.local:8642"  # type: ignore[method-assign]
+    runner._decide_image_input_mode = lambda **kwargs: "text"  # type: ignore[method-assign]
+    runner._resolve_session_agent_runtime = lambda **kwargs: (  # type: ignore[method-assign]
+        "review-model", {"provider": "custom"},
+    )
+    runner._enrich_message_with_vision = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda message, paths: f"IMAGE-DESCRIPTION\n\n{message}".rstrip(),
+    )
+    runner._run_agent_via_proxy = AsyncMock(return_value={"final_response": "ok"})  # type: ignore[method-assign]
+    source = _make_source()
+
+    message = await runner._enrich_inbound_images(
+        source, "durable", caption, ["inert-photo.png"], defer_image_routing=True,
+    )
+    await runner._run_agent_inner(
+        message=message, context_prompt="", history=[], source=source,
+        session_id="session", session_key="durable",
+    )
+
+    forwarded = runner._run_agent_via_proxy.await_args.kwargs["message"]
+    assert forwarded.startswith("IMAGE-DESCRIPTION")
+    assert forwarded.endswith(caption)
+    runner._enrich_message_with_vision.assert_awaited_once_with(caption, ["inert-photo.png"])
+    assert runner._consume_pending_native_image_paths("durable") == []
+
+
 class _SelectiveScope(dict):
     """Bound scope that resolves GATEWAY_PROXY_URL but fails on the KEY read."""
     def get(self, name, default=None):

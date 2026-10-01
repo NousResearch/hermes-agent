@@ -4251,6 +4251,22 @@ class GatewayTurnMixin(GatewayTurnRoutingMixin):
                             "Could not splice deferred context expansion into proxy message; "
                             "forwarding the raw reference"
                         )
+            # Ingress deferred image handling to the local TurnRunner, which a proxy turn never
+            # reaches. The proxy protocol is text-only, so consume the buffered photos and fall
+            # back to auxiliary text descriptions before forwarding.
+            proxy_image_paths = self._consume_pending_native_image_paths(session_key)
+            if proxy_image_paths:
+                from agent.auxiliary_client import scoped_runtime_main
+                vision_runtime = None
+                try:
+                    turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        source=source, session_key=session_key,
+                    )
+                    vision_runtime = {**(runtime_kwargs or {}), "model": turn_model}
+                except Exception:
+                    logger.debug("proxy vision enrichment: session runtime resolution failed", exc_info=True)
+                with scoped_runtime_main(vision_runtime):
+                    proxy_message = await self._enrich_message_with_vision(proxy_message, proxy_image_paths)
             return await self._run_agent_via_proxy(
                 message=proxy_message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,

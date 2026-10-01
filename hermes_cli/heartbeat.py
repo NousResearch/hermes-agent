@@ -346,8 +346,7 @@ class HeartbeatManager:
             # The profile was re-set: follow the new instruction instead of firing stale text, and re-anchor
             # onto its clock so the change takes effect on the next tick rather than replaying this one.
             s.prompt, s.interval_seconds = current.prompt, current.interval_seconds
-            s.created_at = current.last_fired_at or current.created_at
-            s.last_fired_at = 0.0
+            s.last_fired_at = current.last_fired_at or current.created_at
             _write_scope(self._key, s)
         if not current.is_due(now):
             return _PROFILE_TICK_LOST  # another session already fired this tick

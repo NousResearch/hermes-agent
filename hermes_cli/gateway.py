@@ -5510,12 +5510,8 @@ def _service_unit_owning_gateway(pid: int | None) -> str | None:
     """
     if not pid or pid <= 1:
         return None
-    try:
-        from hermes_cli import main_dashboard as _dash
-        return _dash._get_systemd_service_for_pid(pid)
-    except Exception:
-        logger.debug("service-owner probe failed", exc_info=True)
-        return None
+    from hermes_cli import main_dashboard as _dash
+    return _dash._get_systemd_service_for_pid(pid)
 
 
 def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
@@ -5528,11 +5524,8 @@ def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
     unit = _service_unit_owning_gateway(pid)
     if unit is None:
         return
-    try:
-        from hermes_cli import main_dashboard as _dash
-        scope = _dash._extract_scope_from_cgroup(_dash._get_pid_cgroup_path(pid) or "")
-    except Exception:
-        scope = None
+    from hermes_cli import main_dashboard as _dash
+    scope = _dash._extract_scope_from_cgroup(_dash._get_pid_cgroup_path(pid) or "")
     cmd = f"systemctl --user restart {unit}" if scope == "user" else f"sudo systemctl restart {unit}"
     _print_lines(
         "",

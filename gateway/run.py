@@ -4715,31 +4715,6 @@ def _housekeeping_checkpoint_prune() -> None:
     auto_prune_from_config()
 
 
-def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
-    """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
-    profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
-    from cron import scheduler as cron_scheduler
-    from cron import scheduler_preflight as sched_preflight
-
-    if runner is None:
-        if adapters is not None:
-            cron_scheduler.drain_delivery_queue(adapters, loop)
-        return
-    for profile_name, profile_home in _handoff_watch_scopes(runner):
-        if profile_name is None:
-            profile_adapters = adapters
-        else:
-            profile_adapters = getattr(runner, "_profile_adapters", {}).get(profile_name)
-        if profile_adapters is None:
-            continue
-        with _profile_runtime_scope(profile_home or get_hermes_home()):
-            if profile_name is not None and not profile_adapters and adapters:
-                routes = sched_preflight._primary_profile_routes_for_current_home()
-                if routes:
-                    profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)
-            cron_scheduler.drain_delivery_queue(profile_adapters, loop)
-
-
 def _start_gateway_housekeeping(
     stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, cron_provider=None, runner=None,
     cron_thread=None,
@@ -4747,7 +4722,9 @@ def _start_gateway_housekeeping(
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
-    from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
+    from gateway.run_delivery_queue_watch import (
+        DRAIN_LABEL, DeliveryQueueWatch, _drain_restart_safe_cron_deliveries, wait_for_next_tick,
+    )
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.

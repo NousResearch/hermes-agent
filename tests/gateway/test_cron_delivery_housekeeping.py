@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from cron import scheduler
 from cron import scheduler_preflight as sched_preflight
 import gateway.run as gateway_run
+from gateway.run_delivery_queue_watch import _drain_restart_safe_cron_deliveries
 
 
 class _OneTickStopEvent:
@@ -150,7 +151,7 @@ def test_multiplex_housekeeping_uses_primary_routes_for_credentialless_satellite
         lambda adapters, _loop: calls.append(("drain", adapters)),
     )
 
-    gateway_run._drain_restart_safe_cron_deliveries(
+    _drain_restart_safe_cron_deliveries(
         root_adapters, object(), runner
     )
 
@@ -218,7 +219,7 @@ def test_primary_drain_delivers_credentialless_satellite_queue_row_through_prima
     try:
         with patch("tools.send_message_tool._send_to_platform", _standalone), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
-            gateway_run._drain_restart_safe_cron_deliveries({Platform.DISCORD: PrimaryDiscord()}, loop, runner)
+            _drain_restart_safe_cron_deliveries({Platform.DISCORD: PrimaryDiscord()}, loop, runner)
     finally:
         loop.call_soon_threadsafe(loop.stop)
 

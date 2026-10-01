@@ -209,3 +209,5 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 assert on hardcoded platform lists or command counts (root: no change-detectors). Session-key and
 guard behaviour are invariants worth a test; platform API quirks belong in connector comments +
 tests, not in prose.
+
+Restart-safe cron delivery draining is defined in `run_delivery_queue_watch.py`.

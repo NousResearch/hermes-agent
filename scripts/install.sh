@@ -455,6 +455,7 @@ stage_repository() {
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then
         log "Updating $INSTALL_DIR ($BRANCH)"
+        local migrated_treeless=false
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if [ -n "${HERMES_REPO_URL:-}" ]; then
@@ -477,9 +478,16 @@ stage_repository() {
                 git -C "$INSTALL_DIR" config remote.origin.partialclonefilter blob:none \
                     || fail "cannot migrate the partial-clone filter in $INSTALL_DIR"
                 log "Migrated existing treeless checkout to a blobless partial clone"
+                migrated_treeless=true
             fi
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+        local fetch_args=(origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH")
+        if [ "$migrated_treeless" = true ]; then
+            # Re-fetch objects under the new filter so old commits have their
+            # trees locally; changing the config alone leaves tree:0 gaps.
+            fetch_args=(--refetch "${fetch_args[@]}")
+        fi
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch "${fetch_args[@]}" \
             || fail "git fetch failed"
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"

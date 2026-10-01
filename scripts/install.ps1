@@ -780,13 +780,19 @@ function Stage-Repository {
                 }
             }
         }
+        $migratedTreeless = $false
         $partialFilter = Invoke-Native { git -C $InstallDir config --get remote.origin.partialclonefilter }
         if ("$partialFilter".Trim() -eq 'tree:0') {
             Invoke-Native { git -C $InstallDir config remote.origin.partialclonefilter blob:none }
             if ($LASTEXITCODE) { Fail "cannot migrate the partial-clone filter in $InstallDir" }
             Log "Migrated existing treeless checkout to a blobless partial clone"
+            $migratedTreeless = $true
         }
-        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+        if ($migratedTreeless) {
+            Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch --refetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+        } else {
+            Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+        }
         if ($LASTEXITCODE) { Fail "git fetch failed" }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty

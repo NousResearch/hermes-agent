@@ -225,6 +225,24 @@ def test_discord_component_interaction_decodes_prompt_token():
     }
     assert event.text == "/deny"
     assert event.message_type == MessageType.COMMAND
+    assert event.message_id == "pm55"
+    assert event.source.message_id == "pm55"
+    assert event.metadata["interaction_id"] == "i1"
+
+
+def test_discord_application_command_does_not_invent_message_id():
+    adapter, _stub = _adapter()
+
+    class Forward:
+        body = (
+            b'{"type": 2, "id": "i2", "channel_id": "ch1", "guild_id": "g1",'
+            b' "member": {"user": {"id": "u1"}}, "data": {"name": "status"}}'
+        )
+
+    event = adapter._discord_interaction_to_event(Forward())
+    assert event.message_id is None
+    assert event.source.message_id is None
+    assert event.metadata["interaction_id"] == "i2"
 
 
 # ── react ack lifecycle ──────────────────────────────────────────────────

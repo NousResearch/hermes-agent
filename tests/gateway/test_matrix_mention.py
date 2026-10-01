@@ -336,6 +336,55 @@ async def test_reply_to_another_user_ignores_bare_name():
     adapter.handle_message.assert_not_awaited()
 
 
+@pytest.mark.parametrize("mention_user_ids", [None, [], ["@bob:example.org"]])
+@pytest.mark.parametrize(("body", "formatted_body"), [
+    ("> <@bob:example.org> @hermes can you check this?\n\nI agree with Bob", None),
+    ("> <@bob:example.org> ask @hermes:example.org later\n\nsounds good", None),
+    ("> <@bob:example.org> first line\n> then @hermes please\n\nnice", None),
+    ("> <@bob:example.org> hermes, please help\n\nI agree", None),
+    ("I agree", '<mx-reply><blockquote>\n'
+     '<a href="https://matrix.to/#/@hermes:example.org">Hermes</a> please help'
+     '</blockquote></mx-reply>I agree'),
+])
+@pytest.mark.asyncio
+async def test_mentions_quoted_in_reply_fallback_do_not_dispatch(
+        body, formatted_body, mention_user_ids):
+    adapter = _make_adapter()
+
+    await adapter._on_room_message(_make_reply_to_bob(body, mention_user_ids, formatted_body))
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("body", "mention_user_ids", "formatted_body", "expected_text"), [
+    ("> <@bob:example.org> @hermes old text\n\n@hermes what now?",
+     ["@bob:example.org"], None, "what now?"),
+    ("> <@hermes:example.org> old reply\n\nthanks", None, None, "thanks"),
+    ("> <@hermes:example.org> old reply\n\nthanks", [], None, "thanks"),
+    ("please reply", None,
+     '<mx-reply><blockquote>old text</blockquote></mx-reply>'
+     '<a href="https://matrix.to/#/@hermes:example.org">Hermes</a> please reply',
+     "please reply"),
+    ("please reply", [],
+     '<a href="https://matrix.to/#/@hermes:example.org">Hermes</a> please reply',
+     "please reply"),
+    ("please reply", ["@bob:example.org"],
+     '<a href="https://matrix.to/#/@hermes:example.org">Hermes</a> please reply', None),
+])
+@pytest.mark.asyncio
+async def test_reply_mentions_use_the_author_pill_and_unquoted_text(
+        body, mention_user_ids, formatted_body, expected_text):
+    adapter = _make_adapter()
+
+    await adapter._on_room_message(_make_reply_to_bob(body, mention_user_ids, formatted_body))
+
+    if expected_text is None:
+        adapter.handle_message.assert_not_awaited()
+        return
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].text == expected_text
+
+
 @pytest.mark.parametrize("mentions", [
     None,
     "@hermes:example.org",

@@ -2915,18 +2915,22 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _is_bot_mentioned(
         self, body: str, formatted_body: Optional[str] = None, mention_user_ids: Optional[list] = None) -> bool:
-        """True if the bot's user ID is in ``m.mentions.user_ids`` (MSC3952), or the body
-        contains the bot's user ID or ``@localpart`` as a complete token. The bare localpart and
-        a ``matrix.to`` permalink in formatted_body count only when ``user_ids`` is empty or
-        absent, because a bare name next to another user's pill is usually addressed to that
-        user. The explicit body forms still count against a non-empty list because Element adds
-        the replied-to sender to ``user_ids`` on every reply."""
+        """Match the bot's user ID in ``m.mentions.user_ids`` or an explicit body mention.
+
+        A bare localpart counts only with no mentioned users, since a bare display name next
+        to another user's pill may address that user. HTML pills use the same gate because
+        clients with ``m.mentions`` list their pill targets there. Explicit body forms still
+        count against a non-empty list because Element also lists the replied-to sender.
+        HTML reply quotes never count; callers supply the unquoted plain-text body.
+        """
         if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
             return True
         if self._body_mentions_bot(body, bare_localpart=not mention_user_ids):
             return True
         if mention_user_ids or not formatted_body or not self._user_id:
             return False
+        formatted_body = re.sub(
+            r"<mx-reply\b[^>]*>.*?</mx-reply\s*>", "", formatted_body, flags=re.DOTALL | re.IGNORECASE)
         pill = re.escape(f"matrix.to/#/{self._user_id}") + _MATRIX_MENTION_FULL_ID_END
         return bool(re.search(pill, formatted_body))
 
@@ -2966,6 +2970,11 @@ class MatrixAdapter(BasePlatformAdapter):
             mention_user_ids = mentions.get("user_ids", []) if isinstance(mentions, dict) else None
             if not isinstance(mention_user_ids, list):
                 return False
+        if (content.get("m.relates_to") or {}).get("m.in_reply_to"):
+            _, author_id = _extract_reply_fallback(body)
+            if self._user_id and author_id == self._user_id:
+                return True
+            _, body = _split_reply_fallback(body)
         return self._is_bot_mentioned(
             body, content.get("formatted_body"), mention_user_ids)
 

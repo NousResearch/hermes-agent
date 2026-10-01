@@ -154,12 +154,18 @@ class HostedRoomService:
     def _room(self, room_id: str) -> dict[str, Any]:
         return hosted_rooms.room_state(self.db_path, room_id=room_id)
 
-    def _owned_authority(self, room_id: str) -> tuple[str, int]:
-        """(gateway_id, epoch) of a room this gateway owns; conflict error otherwise."""
-        gateway_id, epoch = _authority(self._room(room_id))
+    def _owned_room(self, room_id: str) -> tuple[dict[str, Any], str, int]:
+        """A room this gateway owns, with its (gateway_id, epoch); conflict error otherwise."""
+        room = self._room(room_id)
+        gateway_id, epoch = _authority(room)
         if gateway_id != hosted_rooms.local_authority_gateway_id():
             raise hosted_rooms.AuthorityConflictError(
                 "This Group Chat is managed by another gateway.")
+        return room, gateway_id, epoch
+
+    def _owned_authority(self, room_id: str) -> tuple[str, int]:
+        """(gateway_id, epoch) of a room this gateway owns; conflict error otherwise."""
+        _room, gateway_id, epoch = self._owned_room(room_id)
         return gateway_id, epoch
 
     def _turn_lock(self, profile: str) -> contextlib.AbstractContextManager[Path]:
@@ -494,8 +500,12 @@ class HostedRoomService:
         return room
 
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
-        normalized = discussion.validate_user_payload(payload)
-        gateway_id, epoch = self._owned_authority(room_id)
+        room, gateway_id, epoch = self._owned_room(room_id)
+        # A message without a thread starts its own, as Desktop's client already does.
+        if isinstance(payload, Mapping) and "thread_id" not in payload:
+            payload = {**payload, "thread_id": event_id}
+        normalized = discussion.validate_user_payload(
+            payload, member_ids=[member["member_id"] for member in room["members"]])
         from gateway.session_hosted_attachments import append_user_event
         event = append_user_event(
             self, room_id=room_id, event_id=event_id, payload=normalized,

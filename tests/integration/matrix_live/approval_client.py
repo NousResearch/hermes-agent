@@ -93,7 +93,7 @@ async def exercise(room_id: str, bot_device: str, bot_user: str, other_login: di
             assert "<pre>" in content["formatted_body"]
             assert content["m.relates_to"] == {
                 "rel_type": "m.thread", "event_id": anchors[marker]["root"],
-                "is_falling_back": True, "m.in_reply_to": {"event_id": anchors[marker]["root"]},
+                "is_falling_back": True, "m.in_reply_to": {"event_id": anchors[marker]["opening"]},
             }
             assert "will NOT run" in card.body
 

@@ -119,6 +119,8 @@ export function ImageLightbox({
   useEffect(() => {
     if (open) {
       reset()
+    } else {
+      setWarmView(false)
     }
   }, [open, reset])
 

@@ -2555,6 +2555,27 @@ class TestSystemdCgroupIsolation:
 
         assert f"MemoryMax={123 * 1024 * 1024}" in argv
 
+    def test_worker_memory_limit_uses_half_physical_memory_without_arbitrary_cap(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        monkeypatch.delenv("TERMINAL_LOCAL_MEMORY_MAX_MB", raising=False)
+        monkeypatch.setattr(
+            pr.Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+        )
+        page_size = 4096
+        physical_pages = (16 * 1024**3) // page_size
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda name: page_size if name == "SC_PAGE_SIZE" else physical_pages,
+        )
+
+        assert pr._worker_memory_max_bytes() == 8 * 1024**3
+
     def test_worker_memory_limit_caps_oversized_local_guard_override(
         self, monkeypatch
     ):

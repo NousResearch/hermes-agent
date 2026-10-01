@@ -496,8 +496,9 @@ def _recover_format_errors(
     # repair: drop reasoning_details only.
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:
         _retry.thinking_sig_retry_attempted = True
-        if getattr(agent, "api_mode", None) == "anthropic_messages":
-            from agent.anthropic_thinking_replay import remember_rejected_thinking
+        from agent.anthropic_thinking_replay import remember_rejected_thinking, tracks_rejected_thinking
+
+        if tracks_rejected_thinking(agent):
             removed = remember_rejected_thinking(agent, api_messages)
             detail = "suppressed rejected Anthropic replay blocks"
         else:

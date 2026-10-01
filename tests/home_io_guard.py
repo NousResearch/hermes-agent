@@ -169,6 +169,15 @@ class HomeIOGuard:
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(module, name, guarded)
+            if module is os:
+                # shutil.copystat / copytree pick the stat/chmod/utime variant by identity (``fn in
+                # os.supports_follow_symlinks``); a wrapper absent from those sets degrades copystat to
+                # a no-op returning None and every ``copy2(follow_symlinks=False)`` dies on ``.st_mode``.
+                for attr in ("supports_dir_fd", "supports_effective_ids", "supports_fd",
+                             "supports_follow_symlinks"):
+                    capable = getattr(os, attr, None)
+                    if isinstance(capable, set) and original in capable:
+                        monkeypatch.setattr(os, attr, capable | {guarded})
 
         def open_writes(args, kwargs):
             mode = args[1] if len(args) > 1 else kwargs.get("mode", "r")

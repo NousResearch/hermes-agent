@@ -508,11 +508,61 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
         return True
 
 
+# The one status probe every worktree reclaimer runs. -z: plain porcelain C-quotes names with spaces
+# or non-ASCII and the quoted form names no file on disk. --untracked-files=all: a user's
+# status.showUntrackedFiles=no must not hide work. --ignored=matching: plain porcelain never lists
+# git-ignored paths, so a tree whose only content was an ignored ``.env`` read as clean and was
+# force-removed with it.
+WORKTREE_CONTENT_STATUS_ARGS = ("status", "--porcelain", "-z", "--untracked-files=all", "--ignored=matching")
+
+# Ignored paths a reclaimer may destroy without archiving: regenerable dependency / build / cache
+# output. Every other ignored path (.env, local notes, *.log) is user content and is preserved like
+# an untracked file. Matched against EVERY path component: git reports a nested ``agent/__pycache__/``
+# as its own record, and hermes' own scratch trees carry a ``.venv`` symlink to the main venv.
+DISPOSABLE_IGNORED_NAMES = frozenset({
+    "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
+    ".tox", ".nox", ".eggs", "dist", "build", "target", "coverage", "htmlcov", ".coverage", ".cache",
+    ".next", ".nuxt", ".turbo", ".DS_Store",
+})
+_DISPOSABLE_IGNORED_SUFFIXES = (".egg-info",)
+
+
+def _is_disposable_ignored(rel: str) -> bool:
+    return any(part in DISPOSABLE_IGNORED_NAMES or part.endswith(_DISPOSABLE_IGNORED_SUFFIXES)
+               for part in rel.rstrip("/").split("/"))
+
+
+def split_worktree_content(status_stdout: str) -> tuple[bool, list[str]]:
+    """Parse ``WORKTREE_CONTENT_STATUS_ARGS`` output -> ``(has_tracked_modifications, preservable)``.
+
+    *preservable* is every untracked (``??``) path plus every git-ignored (``!!``) path that is not
+    disposable output; a reclaimer archives those before removing the tree. Any other record is a
+    tracked modification (a rename's source path arrives as its own NUL field and only reinforces
+    that verdict), which means real work: the tree is kept.
+    """
+    tracked_dirty = False
+    preservable: list[str] = []
+    for record in status_stdout.split("\0"):
+        if not record:
+            continue
+        if record.startswith("?? "):
+            preservable.append(record[3:])
+        elif record.startswith("!! "):
+            if not _is_disposable_ignored(record[3:]):
+                preservable.append(record[3:])
+        else:
+            tracked_dirty = True
+    return tracked_dirty, preservable
+
+
 def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
-    """Whether a worktree has staged/unstaged/untracked changes. Fails SAFE toward True."""
+    """Whether a worktree holds anything a reclaimer must not destroy. Fails SAFE toward True."""
     try:
-        status = _git_out(["status", "--porcelain"], worktree_path, timeout=timeout)
-        return status is None or bool(status)
+        result = _git(list(WORKTREE_CONTENT_STATUS_ARGS), worktree_path, timeout=timeout)
+        if result.returncode != 0:
+            return True
+        tracked_dirty, preservable = split_worktree_content(result.stdout)
+        return tracked_dirty or bool(preservable)
     except Exception:
         return True
 

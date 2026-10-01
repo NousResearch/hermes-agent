@@ -2,7 +2,8 @@
 
 The startup pruner (``cli._prune_stale_worktrees``) is conservative and silent — clean, fully
 merged scratch past an age tier only. This module also reclaims trees whose only "dirt" is
-untracked scratch (archived first) and branches whose content is on upstream.
+untracked or git-ignored scratch such as ``.env`` (archived first) and branches whose content is on
+upstream.
 """
 
 from __future__ import annotations
@@ -88,33 +89,34 @@ def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
 
 
 def _dirty_split(path: str) -> tuple[bool, List[str]]:
-    """(has_tracked_modifications, untracked_paths) — tracked = real work, untracked = archivable."""
+    """(has_tracked_modifications, preservable_paths) — tracked = real work; untracked and
+    non-disposable ignored paths (``.env``) = archivable. See ``worktree_ops.split_worktree_content``."""
+    from hermes_cli.worktree_ops import WORKTREE_CONTENT_STATUS_ARGS, split_worktree_content
     try:
-        result = _git(["status", "--porcelain"], cwd=path, timeout=10)
+        result = _git(list(WORKTREE_CONTENT_STATUS_ARGS), cwd=path, timeout=10)
         if result.returncode != 0:
             return True, []  # fail safe: treat as real work
-        lines = [line for line in result.stdout.splitlines() if line.strip()]
-        untracked = [line[3:].strip() for line in lines if line.startswith("??")]
-        return len(untracked) != len(lines), untracked
+        return split_worktree_content(result.stdout)
     except Exception:
         return True, []
 
 
 def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
-    """Copy untracked files out of a doomed tree; None on any failure (caller must then keep)."""
+    """Copy untracked and preserved ignored files out of a doomed tree; None on any failure (caller
+    must then keep)."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     from hermes_constants import get_hermes_home
     dest = get_hermes_home() / "archive" / "worktree-prune" / f"{tree.name}-{stamp}"
     try:
+        # No path may be skipped: the caller force-removes the tree once this returns a dest, so a
+        # listed path that cannot be copied (copy2 raises when it is missing) must fail the archive.
         for rel in untracked:
             src = tree / rel
-            if not src.exists() or src.is_symlink():
-                continue
             (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-            if src.is_dir():
-                shutil.copytree(src, dest / rel, dirs_exist_ok=True)
+            if src.is_dir() and not src.is_symlink():
+                shutil.copytree(src, dest / rel, symlinks=True, dirs_exist_ok=True)
             else:
-                shutil.copy2(src, dest / rel)
+                shutil.copy2(src, dest / rel, follow_symlinks=False)
         return dest if dest.exists() else None
     except Exception as exc:
         logger.warning("Could not archive untracked files from %s: %s", tree, exc)
@@ -131,7 +133,7 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     tracked_dirty, untracked = _dirty_split(path)
     if tracked_dirty:
         return "keep", "uncommitted tracked changes (real work)", []
-    archive_note = f"{len(untracked)} untracked file(s) will be archived"
+    archive_note = f"{len(untracked)} untracked/ignored file(s) will be archived"
     if _ops._worktree_has_unpushed_commits(path, timeout=5) and not _ops._worktree_commits_all_merged_upstream(
         path, timeout=30, cache=merge_cache, max_ahead=_MAX_CHERRY_AHEAD):
         # Pushed-branch tier: single-branch fetch refspecs (managed-install default) leave pushed
@@ -292,9 +294,9 @@ def reclaim_worktrees(
         if record.untracked:
             archive = _archive_untracked(entry, record.untracked)
             if archive is None:
-                actions.append(f"kept {record.name} (archive of untracked files failed)")
+                actions.append(f"kept {record.name} (archive of untracked/ignored files failed)")
                 continue
-            actions.append(f"archived {len(record.untracked)} untracked file(s) → {archive}")
+            actions.append(f"archived {len(record.untracked)} untracked/ignored file(s) → {archive}")
 
         # Dead-pid locks must be unlocked or `remove --force` refuses.
         with contextlib.suppress(Exception):

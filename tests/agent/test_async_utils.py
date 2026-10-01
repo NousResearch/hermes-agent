@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import gc
 import warnings
+
+import pytest
 from concurrent.futures import Future
 from unittest.mock import patch
 
@@ -97,3 +99,33 @@ class TestSafeScheduleThreadsafe:
             loop.close()
 
 
+
+
+@pytest.mark.parametrize("withdrawal", ["withdraw", "cancel"])
+def test_withdrawable_dispatch_closes_unstarted_coroutine(withdrawal, monkeypatch):
+    from agent.async_utils import WithdrawableDispatch
+
+    async def send():
+        raise AssertionError("an unstarted send must not execute")
+
+    inner = send()
+    wrappers = []
+    future = Future()
+
+    def schedule(wrapper, loop, **kwargs):
+        wrappers.append(wrapper)
+        return future
+
+    monkeypatch.setattr("agent.async_utils.safe_schedule_threadsafe", schedule)
+    try:
+        dispatch = WithdrawableDispatch.schedule(inner, None)
+        assert dispatch is not None
+        if withdrawal == "withdraw":
+            assert dispatch.withdraw()
+        else:
+            assert future.cancel()
+        assert inner.cr_frame is None
+    finally:
+        inner.close()
+        for wrapper in wrappers:
+            wrapper.close()

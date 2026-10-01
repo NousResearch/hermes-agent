@@ -78,10 +78,7 @@ def _stop_timers(*adapters):
             state.cancel_timer()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("store", ["text_batch", "busy_debounce", "pending_text", "photo_burst"])
-@pytest.mark.parametrize("withdrawn", [["$b"], ["$a"], ["$a", "$c"], ["$a", "$b", "$c"]])
-async def test_withdrawn_message_leaves_the_turn_the_others_would_have_made(store, withdrawn):
+async def _assert_remaining_turn(store, withdrawn):
     """Withdrawing messages from a merged pending turn replays the merges of the remaining
     messages in their original order, and leaves nothing when none remain. For a burst of one
     kind, as here, that is the turn that the remaining messages would have produced alone."""
@@ -97,6 +94,7 @@ async def test_withdrawn_message_leaves_the_turn_the_others_would_have_made(stor
     assert (found, pending()) == ([True] * len(withdrawn), expected)
 
 
+
 def _runner():
     from gateway.run import GatewayRunner
 
@@ -105,13 +103,7 @@ def _runner():
     return runner
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("platform, chat_id, sender_id", [
-    (Platform.MATRIX, ROOM, "@mallory:example.org"),
-    (Platform.MATRIX, "!elsewhere:example.org", ALICE),
-    (Platform.DISCORD, ROOM, ALICE),
-])
-async def test_withdrawal_matches_only_the_same_platform_chat_and_author(platform, chat_id, sender_id):
+async def _assert_withdrawal_scope(platform, chat_id, sender_id):
     """The runner's FIFO overflow contains every adapter's follow-ups, so a withdrawal must
     leave a message with the same IDs from another sender, chat or platform queued."""
     runner, adapter = _runner(), _Adapter()
@@ -126,13 +118,8 @@ async def test_withdrawal_matches_only_the_same_platform_chat_and_author(platfor
     assert (found, overflow) == (False, [queued])
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("withdrawn, late, expected_turns", [
-    (["$a"], True, ["$b", "$c", "$d"]),
-    (["$b"], True, ["$a", "$c", "$d"]),
-    (["$a", "$b", "$c"], False, []),
-])
-async def test_withdrawn_follow_up_never_becomes_a_later_turn(withdrawn, late, expected_turns):
+
+async def _assert_followup_order(withdrawn, late, expected_turns):
     """Busy follow-ups queue behind a running turn (slot plus FIFO overflow), and each one
     interrupts it. After withdrawals, the drain runs the remaining follow-ups in arrival order,
     including one that arrives later (``late``), and never falls back to the withdrawn text
@@ -159,3 +146,24 @@ async def test_withdrawn_follow_up_never_becomes_a_later_turn(withdrawn, late, e
         result = {"final_response": "done"}
 
     assert turns == expected_turns
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("check, args", [
+    *[(_assert_remaining_turn, (store, removed))
+      for store in ("text_batch", "busy_debounce", "pending_text", "photo_burst")
+      for removed in (["$b"], ["$a"], ["$a", "$c"], ["$a", "$b", "$c"])],
+    *[(_assert_withdrawal_scope, (platform, room, sender))
+      for platform, room, sender in (
+          (Platform.MATRIX, ROOM, "@mallory:example.org"),
+          (Platform.MATRIX, "!elsewhere:example.org", ALICE),
+          (Platform.DISCORD, ROOM, ALICE),
+      )],
+    *[(_assert_followup_order, args) for args in (
+        (["$a"], True, ["$b", "$c", "$d"]),
+        (["$b"], True, ["$a", "$c", "$d"]),
+        (["$a", "$b", "$c"], False, []),
+    )],
+])
+async def test_withdrawal_preserves_the_other_queued_input(check, args):
+    await check(*args)

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 
 _RECENT_EVENTS_PER_THREAD = 32
 
@@ -31,6 +32,9 @@ class ThreadFallbackTracker:
     def remember_sent(
         self, room_id: str, content: dict[str, Any], event_id: str
     ) -> None:
+        if content.get(NON_CONVERSATIONAL_KEY) is True:
+            return
+
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root:
             self._update(

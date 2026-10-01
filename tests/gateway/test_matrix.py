@@ -6599,3 +6599,31 @@ async def test_room_identity_propagates_cancelled_reads(
 
     with pytest.raises(asyncio.CancelledError):
         await adapter._resolve_room_identity("!cancelled:example.org")
+
+
+@pytest.mark.parametrize("send_kind", ["text", "media"])
+@pytest.mark.asyncio
+async def test_status_notice_does_not_change_thread_reply_fallback(send_kind):
+    from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
+
+    adapter = _catch_up_adapter([], thread=True)
+    adapter._client.send_message_event = AsyncMock(return_value="$status")
+    adapter._thread_fallbacks.remember(_CATCH_UP_ROOM, "$root", "$incoming")
+    if send_kind == "text":
+        await adapter.send(_CATCH_UP_ROOM, "Still working", metadata={
+            "thread_id": "$root", "non_conversational": True,
+        })
+    else:
+        content = {
+            "msgtype": "m.file", "body": "Progress file", NON_CONVERSATIONAL_KEY: True,
+        }
+        adapter._apply_relation_metadata(_CATCH_UP_ROOM, content, metadata={"thread_id": "$root"})
+        await adapter._send_content_event(_CATCH_UP_ROOM, content)
+    await adapter.send(_CATCH_UP_ROOM, "Answer", metadata={"thread_id": "$root"})
+    sent = adapter._client.send_message_event.await_args
+    assert sent is not None
+    relation = sent.args[2]["m.relates_to"]
+    assert relation == {
+        "rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+        "m.in_reply_to": {"event_id": "$incoming"},
+    }

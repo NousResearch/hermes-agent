@@ -278,8 +278,11 @@ async def test_button_adapters_receive_identity_but_not_the_process_deadline(mon
     sent = []
 
     class Adapter:
-        async def send_exec_approval(self, **kwargs):
-            sent.append(kwargs["metadata"])
+        async def send_exec_approval(
+            self, chat_id, command, session_key, description, metadata,
+            allow_permanent, allow_session, smart_denied,
+        ):
+            sent.append(metadata)
             return SendResult(success=True, message_id="$card")
 
         def pause_typing_for_chat(self, chat_id):

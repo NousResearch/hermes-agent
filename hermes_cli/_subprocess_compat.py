@@ -513,7 +513,7 @@ def noninteractive_repo_git_env(
     seen: set[str] = set()
     # Dedup on the exact name ``--name-only`` prints: git lowercases section and variable but keeps
     # the subsection's case, and ``[filter "Evil"]`` is a different driver from ``[filter "evil"]``.
-    for raw in (proc.stdout or "").split("\0"):
+    for raw in proc.stdout.split("\0"):
         key = raw.strip()
         if _INCLUDE_IF_KEY.fullmatch(key):
             return None
@@ -528,7 +528,7 @@ def noninteractive_repo_git_env(
             seen.add(required_key)
             required.append(required_key)
 
-    start = int(env.get("GIT_CONFIG_COUNT", "0") or 0)
+    start = int(env["GIT_CONFIG_COUNT"])  # always set by noninteractive_git_env
     overrides = [(key, "") for key in keys] + [(key, "false") for key in required]
     for offset, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{start + offset}"] = key

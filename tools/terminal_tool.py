@@ -1088,6 +1088,13 @@ def _plan_execution(
             f"Invalid command: expected string, got {type(command).__name__}", status="error",
         ))
 
+    if "\x00" in command:
+        raise _Rejected(_error_json(
+            "Invalid command: embedded NUL bytes cannot be executed. "
+            "Use an escaped shell sequence or write binary data through a file instead.",
+            status="error",
+        ))
+
     config = _get_env_config()
     env_type = "local" if _host_local else config["env_type"]
 

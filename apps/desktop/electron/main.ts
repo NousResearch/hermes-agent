@@ -310,6 +310,7 @@ import {
 import { assertNoSecondLocalBackend, assertNotPassiveSpawn } from './host-backend-singleton'
 import { lookupPublishedSessionToken } from './host-published-token'
 import { claimHostSpawnGate } from './host-spawn-gate'
+import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -613,7 +614,6 @@ import {
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
 import { createWindowOpenHandler } from './window-open-policy'
-import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { wireWindowReveal } from './window-reveal'
 import {
@@ -7095,6 +7095,7 @@ function installMediaPermissions() {
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     if ((permission as string) === 'clipboard-sanitized-write') {
       callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
+
       return
     }
 

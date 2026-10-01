@@ -227,7 +227,6 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
             }}
           >
             <iframe
-              ref={frameRef}
               // The hub page needs three capabilities beyond the bare sandbox
               // posture (#91612): same-origin so its own routing and storage
               // work, popups so its external links (docs, GitHub, Discord)
@@ -238,6 +237,7 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
               // will-frame-navigate guard in main keeps this frame pinned to
               // the picker URL.
               allow="clipboard-write"
+              ref={frameRef}
               sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
               src={hubPickerUrl}
               style={{

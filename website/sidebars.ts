@@ -472,6 +472,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/health/health-fitness-nutrition',
+                    'user-guide/skills/optional/health/health-hermes-companion',
                     'user-guide/skills/optional/health/health-neuroskill-bci',
                   ],
                 },

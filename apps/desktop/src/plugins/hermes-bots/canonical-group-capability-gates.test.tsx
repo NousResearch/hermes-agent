@@ -110,7 +110,7 @@ async function submitDialog(members = roster) {
   render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={members} />)
 
   for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup })) })
 
   return { onCreated, onClose }
 }
@@ -139,11 +139,11 @@ it.each(refused)('classifies %j as unavailable on both surfaces: no legacy rende
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
   expect(screen.getByText(unavailable)).toBeTruthy()
   expect(screen.queryByRole('textbox')).toBeNull()
-  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) as HTMLButtonElement).disabled).toBe(true)
   cleanup()
 
   const { onCreated, onClose } = await submitDialog()
-  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
+  expect(screen.getByRole('alert').textContent).toContain(unavailable)
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
   expect(updateGroupChat).not.toHaveBeenCalled()
@@ -211,7 +211,7 @@ it('keeps a mixed-connection classic composer on a canonical surface without off
   const composer = screen.getByRole('textbox')
   fireEvent.change(composer, { target: { value: 'Keep working across machines' } })
   expect((composer as HTMLTextAreaElement).value).toBe('Keep working across machines')
-  expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
+  expect(screen.queryByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })).toBeNull()
   expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities'])
 })
 
@@ -226,8 +226,8 @@ it.each([false, true])('selects the canonical or classic creation path for a mix
   expect(Object.values($canonicalGroupBindings.get())).toHaveLength(mixed ? 0 : 1)
 
   if (mixed) {
-    expect(screen.getByRole('status').textContent).toContain('another connection')
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'info', message: expect.stringContaining('another connection') }))
+    expect(screen.getByText(CANONICAL_GROUP_LOCALES.en.classicConnection)).toBeTruthy()
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'info', message: CANONICAL_GROUP_LOCALES.en.classicConnection }))
     expect(Object.values($groupChats.get())[0].members?.map(member => member.connectionId)).toEqual(['local', 'remote'])
   }
 })
@@ -238,7 +238,8 @@ it('explains a hosted-profile create refusal in the dialog and room gate without
     throw Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })
   })
   const { onCreated, onClose } = await submitDialog()
-  expect(screen.getByRole('alert').textContent).toContain('hosted_rooms.profiles')
+  expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.createRefused)
+  fireEvent.click(screen.getByText(CANONICAL_GROUP_LOCALES.en.setupDetails))
   expect(screen.getByRole('link').getAttribute('href')).toBe('https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners')
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
@@ -247,8 +248,8 @@ it('explains a hosted-profile create refusal in the dialog and room gate without
   expect($canonicalGroupBindings.get()).toEqual({})
   cleanup()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
-  expect(screen.getByRole('alert').textContent).toContain('hosted_rooms.profiles')
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })) })
+  expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.createRefused)
   expect(screen.getByRole('link').getAttribute('href')).toBe('https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners')
   expect(screen.queryByRole('textbox')).toBeNull()
   expect(updateGroupChat).not.toHaveBeenCalled()
@@ -281,11 +282,47 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('dialog: a cre
 it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: a capability read before the %s moved neither creates nor opens a room', async kind => {
   const pending = pendingCreation()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  const button = screen.getByRole('button', { name: 'Start gateway group' })
+  const button = screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })
   expect((button as HTMLButtonElement).disabled).toBe(false)
   // Click after the source moved but before React re-renders: the stale capability must not create.
   await act(async () => { moveSource(kind); fireEvent.click(button) })
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
   expect(pending.serverRooms.size).toBe(0)
   expect(openWorkspace).not.toHaveBeenCalled()
+})
+
+
+it('keeps friendly Bot identities on the created group and never navigates after closing a pending creation', async () => {
+  const pending = pendingCreation()
+  const onCreated = vi.fn()
+  const onClose = vi.fn()
+  render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={[
+    { ...roster[0], display_name: 'Mira Bot' }, { ...roster[1], display_name: 'Atlas Bot' }
+  ]} />)
+
+  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
+  fireEvent.change(screen.getByRole('textbox', { name: CANONICAL_GROUP_LOCALES.en.nameOptional }), { target: { value: 'Autumn launch' } })
+  await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
+  expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.creatingGroup }) as HTMLButtonElement).disabled).toBe(true)
+  const createCall = request.mock.calls.find(call => call[1] === 'groups.create')
+  expect(createCall?.[2].members.map((member: { display_name: string }) => member.display_name)).toEqual(['Mira Bot', 'Atlas Bot'])
+  fireEvent.click(screen.getAllByRole('button', { name: CANONICAL_GROUP_LOCALES.en.close })[0])
+  await act(async () => {pending.finish()})
+  expect(pending.serverRooms.size).toBe(1)
+  expect(onClose).toHaveBeenCalledOnce()
+  expect(onCreated).not.toHaveBeenCalled()
+  expect(Object.values($canonicalGroupBindings.get())).toHaveLength(0)
+})
+
+it('releases creation when its connection disappears immediately before the click', async () => {
+  answer(CANONICAL_GROUP_CAPABILITIES)
+  const onCreated = vi.fn()
+  render(<CreateGroupChatDialog onClose={vi.fn()} onCreated={onCreated} open roster={roster} />)
+
+  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
+  const create = screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup })
+  await act(async () => {state.connectionId.set(null); fireEvent.click(create)})
+  expect(request.mock.calls.some(call => call[1] === 'groups.create')).toBe(false)
+  expect(screen.queryByRole('button', { name: CANONICAL_GROUP_LOCALES.en.creatingGroup })).toBeNull()
+  expect(onCreated).not.toHaveBeenCalled()
 })

@@ -1,4 +1,4 @@
-import { atom, Button, gatewayActivationEpoch, host, useValue } from '@hermes/plugin-sdk'
+import { atom, Button, Codicon, gatewayActivationEpoch, host, RowButton, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { groupCreationSource } from './canonical-group-capabilities'
@@ -94,8 +94,13 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
   }, [connectionId, profile, gateway, socketGeneration, refresh])
 
   return <div className="grid gap-1 px-2">
-    <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
-    {error && <p role="alert">{error}</p>}
-    {rooms.filter(room => bindings[room.key]).map(room => <Button key={room.key} onClick={() => onOpen(room.key)} variant="ghost">{room.name}</Button>)}
+    <div className="flex items-center justify-between gap-2 px-2">
+      <span className="text-xs font-medium text-(--ui-text-secondary)">{labels.groupChats}</span>
+      <Button aria-label={labels.refreshGroups} onClick={() => setRefresh(value => value + 1)} size="icon" title={labels.refreshGroups} variant="ghost"><Codicon name="refresh" /></Button>
+    </div>
+    {error && <p className="px-2 text-xs text-(--ui-text-secondary)" role="alert">{labels.driverUnavailable}</p>}
+    {rooms.filter(room => bindings[room.key]).map(room => <RowButton className="flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-(--ui-text-primary) hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring" key={room.key} onClick={() => onOpen(room.key)}>
+      <Codicon className="shrink-0 text-(--ui-text-secondary)" name="comment-discussion" /><span className="truncate">{room.name}</span>
+    </RowButton>)}
   </div>
 }

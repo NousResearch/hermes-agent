@@ -334,9 +334,27 @@ def _owned(runner, subject):
 
 
 def _list(runner, params, subject, loop):
-    return {'chats': [{'grant': grant['grant_id'][:8], 'created_at': grant['created_at'],
-                       **_view(grant, authority.profile_id)}
-                      for authority, grant in _owned(runner, subject)]}
+    from gateway.group_chat_rules import applies, grant_rules
+    from gateway.hosted_rooms import room_state
+    chats = []
+    for authority, grant in _owned(runner, subject):
+        with authority.db._read_ctx() as conn:
+            rules = grant_rules(conn, grant['grant_id'])
+        remembered = []
+        for rule in rules:
+            try:
+                room = room_state(authority.db.db_path, room_id=rule['room_id'])
+            except Exception:
+                continue  # the room is gone; the rule can never apply again
+            if not applies(rule, room):
+                continue
+            member = next((m for m in room['members'] if m.get('member_id') == rule['member_id']), {})
+            remembered.append({'group': room['name'], 'command': rule['command'], 'context': rule['context'],
+                               'bot': member.get('display_name') or member.get('handle') or rule['member_id'],
+                               'uses': rule['uses']})
+        chats.append({'grant': grant['grant_id'][:8], 'created_at': grant['created_at'],
+                      'remembered': remembered, **_view(grant, authority.profile_id)})
+    return {'chats': chats}
 
 
 def _revoke(runner, params, subject, loop):
@@ -354,5 +372,7 @@ def _revoke(runner, params, subject, loop):
         if current is None or current['owner'] != subject:
             raise RuntimeStoreError('unknown_grant')
         conn.execute('DELETE FROM state_meta WHERE key=?', (GRANT_PREFIX + grant['grant_id'],))
+        from gateway.group_chat_rules import forget_grant
+        forget_grant(conn, grant['grant_id'])  # its "always allow" approvals end with it
     authority.db._execute_write(write)
     return {'revoked': grant['grant_id'][:8], **_view(grant, authority.profile_id)}

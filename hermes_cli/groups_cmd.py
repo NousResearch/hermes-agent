@@ -99,6 +99,8 @@ def _chats(args) -> int:
         where = (f'private chat with {chat["user"]}' if chat["kind"] == "private"
                  else f'shared chat "{chat["chat"]}"')
         print(f'{chat["grant"]}  {chat["platform"]} {where}, profile "{chat["profile"]}", since {since}')
+        for rule in chat.get("remembered", []):
+            print(f'    always allowed in "{rule["group"]}" for {rule["bot"]}: {rule["command"]} ({rule["context"]})')
     return 0
 
 
@@ -106,7 +108,8 @@ def _revoke(args) -> int:
     result = _ask({"action": "revoke", "grant": args.chat}, retry_on="unknown_grant")
     if result is None or "error" in result:
         return _fail(result)
-    print(f'Revoked {result["revoked"]}: that chat can no longer control your Group Chats.')
+    print(f'Revoked {result["revoked"]}: that chat can no longer control your Group Chats, '
+          "and the commands it always allowed will ask again.")
     return 0
 
 

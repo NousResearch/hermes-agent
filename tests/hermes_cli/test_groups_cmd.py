@@ -59,9 +59,12 @@ def test_allow_failures_are_explained(gateway, capsys, answer, text):
 
 
 def test_chats_lists_every_reachable_gateway_and_revoke_reports(gateway, capsys):
-    gateway.answers['list'] = {'chats': [{**SHARED, 'grant': 'abcd1234', 'created_at': 0}]}
+    remembered = [{'group': 'Research', 'bot': 'Ada', 'command': 'npm test', 'context': 'Local, folder /w', 'uses': 2}]
+    gateway.answers['list'] = {'chats': [{**SHARED, 'grant': 'abcd1234', 'created_at': 0, 'remembered': remembered}]}
     assert run('chats') == 0
-    assert 'abcd1234  telegram shared chat "Team", profile "default"' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert 'abcd1234  telegram shared chat "Team", profile "default"' in out
+    assert 'always allowed in "Research" for Ada: npm test (Local, folder /w)' in out
     gateway.answers['list'] = {'chats': []}
     assert run('chats') == 0
     assert 'No chats can control' in capsys.readouterr().out

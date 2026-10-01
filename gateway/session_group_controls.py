@@ -41,11 +41,15 @@ _FIELDS = {
 }
 
 
-async def dispatch_group_control(connection, method, params, *, author=None):
-    """``author`` (internal callers only) records who typed a ``groups.send``; RPC clients are Desktop."""
+async def dispatch_group_control(connection, method, params, *, author=None, remember=None):
+    """Internal callers only (RPC clients are Desktop): ``author`` records who typed a
+    ``groups.send``; ``remember`` names the chat whose ``groups.approve`` choice ``always``
+    remembers the exact operation (``gateway.group_chat_rules``)."""
     authority, actor = connection.authority, connection.actor
     if author is not None and (method != 'groups.send' or type(author) is not dict
                                or author.get('kind') != 'user' or author.get('id') == 'desktop'):
+        raise RuntimeStoreError('invalid_params')
+    if remember is not None and (method != 'groups.approve' or type(remember) is not dict):
         raise RuntimeStoreError('invalid_params')
     capability = GROUP_METHODS.get(method, 'session:read')
     if capability not in actor.capabilities:
@@ -72,7 +76,7 @@ async def dispatch_group_control(connection, method, params, *, author=None):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
-                return _group(authority, actor, home, method, supplied, author=author)
+                return _group(authority, actor, home, method, supplied, author=author, remember=remember)
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
@@ -82,7 +86,7 @@ async def dispatch_group_control(connection, method, params, *, author=None):
     return await asyncio.to_thread(invoke)
 
 
-def _group(authority, actor, home, method, params, *, author=None):
+def _group(authority, actor, home, method, params, *, author=None, remember=None):
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
@@ -111,7 +115,7 @@ def _group(authority, actor, home, method, params, *, author=None):
             raise RuntimeStoreError('runtime_coordination_required')
         if not params.get('room_id'):
             raise RuntimeStoreError('invalid_params')
-        return _execution_control(service, method, params, author=author)
+        return _execution_control(service, method, params, author=author, remember=remember)
 
     def capabilities():
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
@@ -190,7 +194,7 @@ def _group(authority, actor, home, method, params, *, author=None):
     return handlers[method]()
 
 
-def _execution_control(service, method, params, *, author=None):
+def _execution_control(service, method, params, *, author=None, remember=None):
     def send():
         from gateway.hosted_rooms import user_event_id
         event = service.send(room_id=params.get('room_id'),
@@ -216,10 +220,11 @@ def _execution_control(service, method, params, *, author=None):
     def approve():
         if (type(params.get('execution_generation')) is not int
                 or params['execution_generation'] < 1
-                or params.get('choice') not in {'once', 'deny'}
+                or params.get('choice') not in ({'always'} if remember is not None else {'once', 'deny'})
                 or not isinstance(params.get('request_id'), str) or not params['request_id']):
             raise RuntimeStoreError('invalid_params')
-        return {'approved': True, 'result': service.approve_room_task(**params)}
+        return {'approved': True, 'result': service.approve_room_task(
+            **params, **({'remember': remember} if remember is not None else {}))}
 
     handlers = {
         'groups.send': send,

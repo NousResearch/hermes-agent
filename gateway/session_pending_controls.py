@@ -32,6 +32,11 @@ class PendingControls:
             if 'edit' in data:
                 prompt['edit'] = deepcopy(data['edit'])
                 prompt['choices'] = ['once', 'deny']
+            from tools.approval_operation import valid_operation_context, valid_operation_key
+            if ('always' in prompt['choices'] and valid_operation_key(data.get('remember_key'))
+                    and valid_operation_context(data.get('remember_context'))):
+                # The exact operation a Group Chat may remember for one Bot ("Always allow in this chat").
+                prompt.update(remember_key=data['remember_key'], remember_context=data['remember_context'])
             self.pending[prompt_id] = (route, prompt)
             self.events.publish(session_id, prompt, event_type='approval.request')
 

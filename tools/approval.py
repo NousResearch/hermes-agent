@@ -868,6 +868,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "allow_permanent": permanent_capable and not smart_denied,
                 "allow_session": not smart_denied,
             }
+            if data["allow_permanent"]:
+                # An exact, repeatable operation identity (never a permission by itself): a Group
+                # Chat can remember it for one Bot in one room instead of a profile-wide "always".
+                from tools.approval_operation import approval_operation_description, approval_operation_key
+                if operation_key := approval_operation_key(command, pattern_keys):
+                    data["remember_key"] = operation_key
+                    data["remember_context"] = redact_sensitive_text(approval_operation_description(), force=True)
             if smart_denied:
                 data["smart_denied"] = True
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")

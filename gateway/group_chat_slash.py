@@ -22,6 +22,7 @@ from gateway.group_chat_access import (
     UNAVAILABLE, GroupChatDenied, assign_refs, current_grant, display_code, request_code, resolve_chat,
     room_for_ref,
 )
+from gateway.group_chat_rules import forget_rule, rememberable, rules_for
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -100,8 +101,11 @@ def parse(args: str) -> Command:
         return Command('send', ref, text=text.strip())
     if verb == 'stop' and len(words) == 2:
         return Command('stop', ref)
-    if verb == 'approve' and len(words) == 4 and words[3].casefold() in {'once', 'deny'}:
-        return Command('approve', ref, code=words[2].casefold(), choice=words[3].casefold())
+    choice = ' '.join(words[3:]).casefold()
+    if verb == 'approve' and len(words) in {4, 5} and choice in {'once', 'deny', 'always', 'always confirm'}:
+        return Command('approve', ref, code=words[2].casefold(), choice=choice)
+    if verb == 'forget' and len(words) == 3:
+        return Command('forget', ref, code=words[2].casefold())
     raise ValueError(args)
 
 
@@ -117,7 +121,8 @@ def help_text(prefix: str) -> str:
                       f'{g} N — status, approvals and recent messages',
                       f'{g} N send <message> — post a message as you',
                       f'{g} N stop — stop the work in progress',
-                      f'{g} N approve <code> once|deny — answer an approval', f'{g} help'])
+                      f'{g} N approve <code> once|always|deny — answer an approval',
+                      f'{g} N forget <code> — forget an approval this chat always allows', f'{g} help'])
 
 
 def _connect_text(chat, code: str, ttl: int, prefix: str) -> str:
@@ -301,6 +306,7 @@ class _GroupCommand:
         lines.append('Bots: ' + ', '.join(roster) + (f' and {extra} more' if extra > 0 else ''))
         for action in _approvals(status)[:MAX_APPROVALS]:
             lines.extend(['', *self._approval_lines(ref, action, labels)])
+        lines.extend(self._remembered_lines(ref, room, labels))
         previews = [p for p in (self._preview(e, labels) for e in events) if p][-RECENT_MESSAGES:]
         lines.extend(['', 'Recent messages', *(previews or ['No messages yet.'])])
         lines.extend(['', *self._commands(ref)])
@@ -328,7 +334,22 @@ class _GroupCommand:
                  code(approval.get('command') or approval.get('description') or 'an action', block=True)]
         if description and description != approval.get('command'):
             lines.append(description)
-        lines.append(f'Answer: {self.prefix}group {ref} approve {approval_code(action)} once|deny')
+        if rememberable(approval):
+            lines.append('in ' + code(approval['remember_context']))
+        choices = 'once|always|deny' if rememberable(approval) else 'once|deny'
+        lines.append(f'Answer: {self.prefix}group {ref} approve {approval_code(action)} {choices}')
+        return lines
+
+    def _remembered_lines(self, ref, room, labels):
+        rules = rules_for(self.authority, self.grant['grant_id'], room)
+        if not rules:
+            return []
+        lines = ['', 'Always allowed in this chat']
+        for rule in rules:
+            used = f' · used {rule["uses"]} time{"" if rule["uses"] == 1 else "s"}' if rule['uses'] else ''
+            lines.extend([f'{rule["rule_id"][:6]} · {labels.get(rule["member_id"], "A Bot")}{used}',
+                          code(rule['command'], block=True), 'in ' + code(rule['context'])])
+        lines.append(f'Forget one: {self.prefix}group {ref} forget <code>')
         return lines
 
     def _commands(self, ref):
@@ -371,10 +392,46 @@ class _GroupCommand:
 
     async def _approve(self, command):
         room_id, action, bot = await self._pending(command)
-        params = {'room_id': room_id, 'choice': command.choice,
+        params = {'room_id': room_id, 'choice': command.choice.split()[0],
                   **{key: action[key] for key in ('member_id', 'task_id', 'execution_generation', 'request_id')}}
-        await self._change(command.ref, 'groups.approve', params)
-        return f'Allowed once for {bot}.' if command.choice == 'once' else f'Denied for {bot}.'
+        if command.choice == 'always':
+            return self._always_warning(command, action, bot)
+        if params['choice'] != 'always':
+            await self._change(command.ref, 'groups.approve', params)
+            return f'Allowed once for {bot}.' if params['choice'] == 'once' else f'Denied for {bot}.'
+        if not rememberable(action.get('approval')):
+            raise Refused('This request can only be allowed once or denied.')
+        result = (await self._change(command.ref, 'groups.approve', params, remember={
+            'grant_id': self.grant['grant_id'], 'by': self.chat.author()['display_name']}))['result']
+        if result.get('remembered'):
+            return (f'Allowed. {bot} may run this exact command again in Group {command.ref} without asking, '
+                    f'while this chat stays connected. Forget it with: {self.prefix}group {command.ref} forget '
+                    f'{result["remembered"]}')
+        if result.get('status') == 'resolved':
+            return f'Allowed once for {bot}, but Hermes couldn’t remember it. It will ask again next time.'
+        return self._gone(command.ref)
+
+    def _always_warning(self, command, action, bot):
+        approval = action['approval'] if rememberable(action.get('approval')) else None
+        if approval is None:
+            raise Refused('This request can only be allowed once or denied.')
+        g = f'{self.prefix}group {command.ref}'
+        return '\n'.join([
+            'Always allow this in this chat?',
+            f'{bot} could then run this exact command again in Group {command.ref} without asking, '
+            'for as long as this chat stays connected:',
+            code(approval.get('command'), block=True), 'in ' + code(approval['remember_context']),
+            'It can change files and data. You can forget it later.',
+            f'Confirm: {g} approve {command.code} always confirm'])
+
+    async def _forget(self, command):
+        room_id = self._room_id(command.ref)
+        await self._recheck()
+        forgotten = await asyncio.to_thread(forget_rule, self.authority, self.grant['grant_id'], room_id, command.code)
+        if forgotten is None:
+            raise Refused(f'No approval this chat always allows in Group {command.ref} has that code. '
+                          f'Send {self.prefix}group {command.ref} to see them.')
+        return f'Forgotten. That command will ask for approval again in Group {command.ref}.'
 
     @staticmethod
     def _preview(event, labels):

@@ -231,11 +231,12 @@ def test_stop_fences_the_room_and_reports_the_tasks(setup):
     assert run(setup, '/group 1 stop', message_id='s2') == 'Nothing was running in Group 1.'
 
 
-def pending(setup, request='req-1', command='rm -rf ./build'):
-    action = {'kind': 'approval', 'task_id': 'task-1', 'execution_generation': 1, 'run_id': None,
+def pending(setup, request='req-1', command='rm -rf ./build', *, key=None, task='task-1'):
+    action = {'kind': 'approval', 'task_id': task, 'execution_generation': 1, 'run_id': None,
               'session_id': 'session-1', 'request_id': request,
               'approval': {'kind': 'approval', 'prompt_id': request, 'command': command,
-                           'description': 'delete build output', 'choices': ['once', 'deny']}}
+                           'description': 'delete build output', 'choices': ['once', 'deny'],
+                           **({'remember_key': key, 'remember_context': 'Local, folder /work'} if key else {})}}
     setup.service._set_pending_action('mine', 'ada', action)
     return slash.approval_code({**action, 'member_id': 'ada'})
 
@@ -287,6 +288,44 @@ def test_send_has_its_own_tighter_limit(setup, monkeypatch):
         assert 'Sent' in run(setup, f'/group 1 send {index}', message_id=f'm{index}')
     assert run(setup, '/group 1 send more', message_id='mx') == slash.TOO_FAST
     assert 'Group 1 · Research' in run(setup, '/group 1')
+
+
+def test_always_warns_then_remembers_for_this_chat_until_forgotten(setup):
+    connected(setup)
+    code = pending(setup, key='a' * 64)
+    detail = run(setup, '/group 1')
+    assert f'approve {code} once|always|deny' in detail
+    warning = run(setup, f'/group 1 approve {code} always')
+    assert warning.startswith('Always allow this in this chat?')
+    assert '```\nrm -rf ./build\n```\nin `Local, folder /work`' in warning
+    assert warning.endswith(f'Confirm: /group 1 approve {code} always confirm')
+    assert setup.service.approvals == []
+    allowed = run(setup, f'/group 1 approve {code} always confirm')
+    assert allowed.startswith('Allowed. Ada may run this exact command again in Group 1 without asking')
+    rule_code = allowed.rsplit(' ', 1)[-1]
+    assert setup.service.approvals == [{'session_id': 'session-1', 'request_id': 'req-1', 'choice': 'once'}]
+    pending(setup, 'req-2', key='a' * 64, task='task-2')
+    assert setup.service.approvals[-1]['request_id'] == 'req-2'
+    detail = run(setup, '/group 1')
+    assert 'Always allowed in this chat' in detail
+    assert f'{rule_code} · Ada · used 1 time\n```\nrm -rf ./build\n```\nin `Local, folder /work`' in detail
+    # Another chat sees neither the rule nor a way to forget it.
+    connected(setup, chat='other-chat')
+    assert 'Always allowed' not in run(setup, '/group 1', chat='other-chat')
+    assert 'No approval this chat always allows' in run(setup, f'/group 1 forget {rule_code}', chat='other-chat')
+    assert run(setup, f'/group 1 forget {rule_code}') == ('Forgotten. That command will ask for approval '
+                                                         'again in Group 1.')
+    pending(setup, 'req-3', key='a' * 64, task='task-3')
+    assert len(setup.service.approvals) == 2
+
+
+def test_always_is_refused_for_a_request_that_cannot_be_remembered(setup):
+    connected(setup)
+    code = pending(setup)
+    assert f'approve {code} once|deny' in run(setup, '/group 1')
+    assert 'only be allowed once or denied' in run(setup, f'/group 1 approve {code} always')
+    assert 'only be allowed once or denied' in run(setup, f'/group 1 approve {code} always confirm')
+    assert setup.service.approvals == []
 
 
 def test_commands_are_shown_exactly_but_never_as_markup():

@@ -17,6 +17,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
         super().__init__(None, db_path=authority.db.db_path)
+        self._remembered_attempts = {}  # tries per request a chat's remembered approval may answer
 
     def _make_rpc(self, server):
         # Member-specific canonical transports retain exact durable history. They
@@ -201,6 +202,27 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             return task
         except (ValueError, TypeError, KeyError, StopIteration) as exc:
             raise RuntimeStoreError('permission_denied') from exc
+
+    def approve_room_task(self, room_id, *, member_id, task_id, execution_generation, choice,
+                          request_id=None, remember=None):
+        """``always`` approves once and remembers the exact operation for the chat in ``remember``."""
+        if choice == 'always':
+            from gateway.group_chat_rules import remember_approval
+            return remember_approval(self, room_id, member_id=member_id, task_id=task_id,
+                                     execution_generation=execution_generation, request_id=request_id,
+                                     remember=remember)
+        if remember is not None:
+            raise RuntimeStoreError('invalid_params')
+        return super().approve_room_task(room_id, member_id=member_id, task_id=task_id,
+                                         execution_generation=execution_generation, choice=choice,
+                                         request_id=request_id)
+
+    def _set_pending_action(self, room_id, member_id, action):
+        super()._set_pending_action(room_id, member_id, action)
+        if action is not None:
+            # A chat's "Always allow in this chat" answers a matching request as soon as it is seen.
+            from gateway.group_chat_rules import apply_remembered
+            apply_remembered(self, room_id, member_id, action)
 
     def approve(self, *, session_id, request_id, choice):
         rpc = next((r for r in self.member_rpcs.values() if r.ref.session_id == session_id), None)

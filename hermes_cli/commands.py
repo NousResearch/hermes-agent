@@ -100,7 +100,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch",
                desktop="messaging"),
     CommandDef("group", "Read and control your Group Chats from a chat the owner allowed", "Session",
-               gateway_only=True, args_hint="[list [page] | N [send <text> | stop | approve <code> once|deny]]",
+               gateway_only=True, args_hint="[list [page] | N [send <text> | stop | approve <code> once|always|deny]]",
                subcommands=("list", "help"), busy_policy="dispatch", desktop="messaging"),
     CommandDef("bg", "Run a prompt in a separate background session", "Session",
                args_hint="<prompt>", busy_policy="dispatch"),

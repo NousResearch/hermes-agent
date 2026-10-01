@@ -118,7 +118,7 @@ class _PendingDispatchReservation:
         if self.includes(event):
             return
         event._merged_parts = self.event._merged_parts
-        for attr in ("_pending_snapshot_uid", "_gateway_pending_stt_text", "_gateway_pending_stt_transcripts",
+        for attr in ("_pending_snapshot_uid", "_gateway_input_owner", "_gateway_pending_stt_text", "_gateway_pending_stt_transcripts",
                      "_gateway_pending_stt_clips", "_gateway_pending_stt_input", "_gateway_pending_stt_echoed_paths"):
             if hasattr(self.event, attr):
                 setattr(event, attr, getattr(self.event, attr))
@@ -376,9 +376,9 @@ def withdraw_from_event(
     if not remaining:
         return True, None
     rebuilt = pending_part(remaining[0][0])
-    uid = getattr(event, "_pending_snapshot_uid", None)
-    if uid is not None:
-        setattr(rebuilt, "_pending_snapshot_uid", uid)
+    for attr in ("_pending_snapshot_uid", "_gateway_input_owner"):
+        if hasattr(event, attr):
+            setattr(rebuilt, attr, getattr(event, attr))
     for part, merge in remaining[1:]:
         merge_recorded(rebuilt, part, merge)
     echoed: set[str] = set(getattr(event, "_gateway_pending_stt_echoed_paths", ()))

@@ -8,9 +8,33 @@ Usage:
     hermes <cmd> --help        # Per-command help
 """
 
-# hermes_bootstrap must be the very first import — it sets up UTF-8 stdio on
-# Windows (no-op on POSIX). Guarded: after a ``git pull`` / interrupted
-# ``hermes update`` the editable install's ``.pth`` may not list it yet; crashing
+# ``os``/``sys`` and the checkout's own package must be importable BEFORE ``hermes_bootstrap``:
+# the bootstrap activates the PM client, whose ``runtime_environment()`` calls
+# ``get_hermes_home()`` at import time. With HERMES_HOME unset that prints the
+# ``[HERMES_HOME fallback]`` warning and resolves the DEFAULT profile, so a profile-scoped
+# process (kanban worker, cron ticker, desktop backend, interactive shell) wrote its state into
+# the wrong home (issue #18594). Resolve the sticky profile home first — nothing heavy is imported.
+import os
+import sys
+
+# Inline path math so ``python hermes_cli/main.py`` (script mode: sys.path[0] is hermes_cli/,
+# not the repo root) can import hermes_cli._startup_fast.
+_bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _bootstrap_root not in sys.path:
+    sys.path.insert(0, _bootstrap_root)
+
+try:
+    from hermes_cli import _startup_fast as _startup_fast_early
+
+    _early_home = _startup_fast_early.sticky_profile_home(sys.argv[1:])
+    if _early_home:
+        os.environ["HERMES_HOME"] = _early_home
+except Exception:
+    pass  # never block startup; _apply_profile_override() resolves it again after the import wall
+
+# hermes_bootstrap must run before the heavy import wall — it sets up UTF-8 stdio on Windows
+# (no-op on POSIX) and activates the selected dependency generation. Guarded: after a ``git pull``
+# / interrupted ``hermes update`` the editable install's ``.pth`` may not list it yet; crashing
 # here would block ``hermes update``.
 try:
     import hermes_bootstrap  # noqa: F401

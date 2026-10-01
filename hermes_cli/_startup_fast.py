@@ -29,6 +29,7 @@ import sys
 
 __all__ = [
     "project_root_str", "normalize_hermes_home_env",
+    "sticky_profile_home",
     "ensure_project_root_on_path",
     "is_global_fast_version_argv",
     "is_container_startup_environment",
@@ -73,6 +74,75 @@ def normalize_hermes_home_env() -> None:
     expanded = os.path.expanduser(os.path.expandvars(raw.strip()))
     if expanded != raw:
         os.environ["HERMES_HOME"] = expanded
+
+
+# Supervisor-owned slots have a fixed profile identity: named slots pass ``-p <name>`` or pin
+# HERMES_HOME to the profile dir; a bare invocation means "the root HERMES_HOME profile". They
+# must NOT follow the sticky active_profile — switching the active profile would silently
+# redirect the default gateway into that profile and double-poll its credentials (#74872).
+_SUPERVISOR_ENV_MARKERS = (
+    "HERMES_SUPERVISED_CHILD",
+    "HERMES_S6_SUPERVISED_CHILD",
+    "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
+)
+
+
+def _is_supervisor_child(argv: list[str]) -> bool:
+    if any(os.environ.get(marker) for marker in _SUPERVISOR_ENV_MARKERS):
+        return True
+    # INVOCATION_ID is inherited by every descendant of a systemd-launched process, so it is
+    # consulted ONLY for a gateway command (mirrors ``main._under_gateway_supervisor``).
+    first_word = next((arg for arg in argv if not arg.startswith("-")), None)
+    return first_word == "gateway" and bool(os.environ.get("INVOCATION_ID"))
+
+
+def _scan_profile_flag_fast(argv: list[str]) -> str | None:
+    """``-p``/``--profile``/``--profile=`` value from argv — stdlib-only, no argparse/_parser."""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            break
+        if arg in ("--profile", "-p") and i + 1 < len(argv):
+            return argv[i + 1].strip().casefold()
+        if arg.startswith("--profile="):
+            return arg.split("=", 1)[1].strip().casefold()
+        i += 1
+    return None
+
+
+def sticky_profile_home(argv: list[str] | None = None) -> str:
+    """Profile-scoped HERMES_HOME resolved BEFORE ``hermes_bootstrap`` is imported (#18594).
+
+    The bootstrap pulls in the PM client, whose ``runtime_environment()`` calls
+    ``get_hermes_home()`` at import time. With HERMES_HOME unset that prints the
+    ``[HERMES_HOME fallback]`` warning and resolves the DEFAULT profile, so every profile-scoped
+    child (kanban worker, cron ticker, desktop backend, ``hermes`` shell) wrote state into the
+    wrong home. Resolution order: an explicit HERMES_HOME wins, then an explicit ``-p``/
+    ``--profile`` (when the profile dir exists), then a non-default sticky ``active_profile``,
+    else the install root. A supervisor-launched child always stays at the root.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    explicit = os.environ.get("HERMES_HOME", "").strip()
+    if explicit:
+        return explicit
+    root = _default_home()
+    if _is_supervisor_child(list(argv)):
+        return root
+    name = _scan_profile_flag_fast(list(argv))
+    if name:
+        if name == "default":
+            return root
+        candidate = os.path.join(root, "profiles", name)
+        if os.path.isdir(candidate):
+            return candidate
+    active = (_read_text(os.path.join(root, "active_profile")) or "").strip()
+    if active and active != "default":
+        candidate = os.path.join(root, "profiles", active)
+        if os.path.isdir(candidate):
+            return candidate
+    return root
 
 
 def _realpath_or_self(path: str) -> str:

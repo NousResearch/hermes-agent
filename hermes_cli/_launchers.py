@@ -36,8 +36,14 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     python = python or resolve_store_python(root) or Path(sys.executable)
     entry = f"exec({code!r})" if code is not None else (
         f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)")
-    default_home = (f"{str(home)!r}" if home is not None else
-                    "str(__import__('hermes_constants').get_default_hermes_root())")
+    default_home = (
+        f"{str(home)!r}" if home is not None else
+        # Resolve the profile-scoped home BEFORE hermes_bootstrap imports the PM client, which
+        # would otherwise call get_hermes_home() with HERMES_HOME unset, warn, and resolve the
+        # DEFAULT profile (issue #18594). __import__('hermes_cli._startup_fast') returns the
+        # top-level package, so go through importlib (see skill pitfalls).
+        "__import__('importlib').import_module('hermes_cli._startup_fast')"
+        ".sticky_profile_home(sys.argv[1:])")
     bootstrap = (
         "import os, sys, runpy; "
         "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
@@ -276,8 +282,8 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "os.environ.pop('PYTHONPATH', None)\n"
         f"sys.path.insert(0, {str(repo_root.resolve())!r})\n"
         "if sys.argv[1:2] == ['--print-runtime-command']: sys.dont_write_bytecode = True\n"
-        "from hermes_constants import get_default_hermes_root\n"
-        "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(get_default_hermes_root())\n"
+        "from hermes_cli import _startup_fast\n"
+        "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or _startup_fast.sticky_profile_home(sys.argv[1:])\n"
         "if sys.argv[1:2] == ['--print-runtime-command']:\n"
         "    from pathlib import Path\n"
         "    from hermes_cli._launchers import print_runtime_command\n"

@@ -12,7 +12,7 @@ Hermes can receive and reply to emails using standard IMAP and SMTP protocols. S
 This page covers the Email gateway adapter, which uses Python's built-in `imaplib`, `smtplib`, and `email` modules. No additional packages or external services are required for this gateway path.
 :::
 
-This is separate from the bundled [Himalaya email skill](/docs/user-guide/skills/bundled/email/email-himalaya), which lets the agent manage email through terminal commands and requires the external `himalaya` CLI plus a Himalaya config file.
+This is separate from the bundled [Himalaya email skill](../skills/bundled/email/email-himalaya.md), which lets the agent manage email through terminal commands and requires the external `himalaya` CLI plus a Himalaya config file.
 
 | Use case | What to configure | External dependency |
 |---|---|---|
@@ -47,6 +47,31 @@ Most email providers support IMAP/SMTP. Check your provider's documentation for:
 - IMAP host and port (usually port 993 with SSL)
 - SMTP host and port (usually port 587 with STARTTLS)
 - Whether app passwords are required
+
+### Proton Mail Bridge / local relays
+
+Proton Mail Bridge (and similar local relays such as a self-hosted MTA) listen on
+loopback with **STARTTLS** and a self-signed certificate, so the defaults
+(implicit TLS on IMAP 993, verified certificates) won't connect. Override the
+transport in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  email:
+    enabled: true
+    extra:
+      imap_host: 127.0.0.1
+      imap_security: starttls     # tls (default) | starttls | plain
+      imap_tls_verify: false      # Bridge uses a self-signed cert
+      smtp_host: 127.0.0.1
+      smtp_security: starttls     # default: tls on port 465, starttls otherwise
+      smtp_tls_verify: false
+```
+
+and set `EMAIL_IMAP_PORT=1143` / `EMAIL_SMTP_PORT=1025` alongside your Bridge
+credentials in `~/.hermes/.env`. Unknown `*_security` values log a warning and
+fall back to the secure default. Only disable `*_tls_verify` for loopback hosts —
+Hermes logs a warning when verification is off for any other host.
 
 ---
 
@@ -144,10 +169,15 @@ When enabled, attachment and inline parts are skipped before payload decoding. T
 
 Email access is stricter by default than chat-style platforms:
 
-1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses are processed
+1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses (and from `GATEWAY_ALLOWED_USERS` or an approved pairing) are processed
 2. **No allowlist set** → unknown senders are ignored silently
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → any sender is accepted (use with caution)
 4. **`platforms.email.unauthorized_dm_behavior: pair`** → unknown senders receive a pairing code
+5. **`platforms.email.unauthorized_dm_behavior: decline`** → an unknown sender receives one polite refusal, then nothing more for 24 hours
+
+Allowlist entries match whole addresses. A bare entry such as `alice` (a chat username in `GATEWAY_ALLOWED_USERS`, say) never admits `alice@` at any domain, and mail from such an address is dropped rather than paired or declined.
+
+Unless open access is on, Hermes acts on a message only when the `Authentication-Results` header stamped by your receiving server authenticates its `From:` domain (DMARC, or aligned SPF/DKIM). `GATEWAY_ALLOW_ALL_USERS` counts as open access only while no allowlist is set, as it does for the gateway itself. Pairing codes and declines need an authenticated `From:` even with open access on, so neither is mailed to a forged address. If your mail server does not stamp that header, set `platforms.email.require_authenticated_sender: false` to accept the risk.
 
 :::warning
 **Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.

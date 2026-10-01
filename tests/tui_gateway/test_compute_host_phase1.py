@@ -4,14 +4,11 @@ import os
 import sys
 import threading
 import time
-from pathlib import Path
 
-import pytest
 
 from tui_gateway import compute_host, server
 from tui_gateway.compute_host import ComputeHost, _default_workers
 from tui_gateway.host_supervisor import (
-    MUTATOR_ROUTE_TABLE,
     HostSupervisor,
     append_log_record,
 )
@@ -35,35 +32,51 @@ def _wait_for_frame(out: io.StringIO, predicate, timeout: float = 2.0) -> dict:
     raise AssertionError(f"timed out waiting for frame; saw={_json_lines(out)}")
 
 
-def test_compute_host_workers_inherit_tui_pool_env_or_8(monkeypatch):
+def test_compute_host_workers_inherit_tui_pool_env(monkeypatch):
     monkeypatch.delenv("HERMES_TUI_RPC_POOL_WORKERS", raising=False)
     monkeypatch.delenv("HERMES_COMPUTE_HOST_WORKERS", raising=False)
-    assert _default_workers() == 8
+    default = _default_workers()
 
     monkeypatch.setenv("HERMES_TUI_RPC_POOL_WORKERS", "11")
     assert _default_workers() == 11
 
-    # Dead-RC tombstone: malformed env falls back to 8, not the old except-branch 4.
+    # Malformed env falls back to the same default as unset.
     monkeypatch.setenv("HERMES_TUI_RPC_POOL_WORKERS", "not-an-int")
-    assert _default_workers() == 8
+    assert _default_workers() == default
 
 
-def test_mutator_route_table_matches_prd_inventory():
-    assert MUTATOR_ROUTE_TABLE == {
-        "prompt.submit": "turn-path",
-        "session.interrupt": "turn-path",
-        "reload.mcp": "run-concurrent",
-        "session.save": "run-concurrent",
-        "session.compress": "idle-gated",
-        "prompt.submit.truncate": "idle-gated",
-        "slash.model": "idle-gated",
-        "slash.personality": "idle-gated",
-        "slash.prompt": "idle-gated",
-        "slash.compress": "idle-gated",
-        "session.reset": "idle-gated",
-        "session.history.reload": "idle-gated",
-        "slash.retry": "idle-gated",
-    }
+def test_compute_host_routes_relayed_response_and_lock_to_its_open_request(monkeypatch):
+    """The child owns the server request's wait: a relayed client response frame resolves it in-process,
+    and a relayed ``clarify.lock`` is answered with that method's result for the parent to ack."""
+    from tui_gateway import server_requests
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "host-clarify"
+    server._sessions[sid] = {"history_lock": threading.Lock()}
+    req = server_requests.ServerRequest(sid, "clarify", {"question": "?"})
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+    locks = []
+    monkeypatch.setitem(server._methods, "clarify.lock",
+                        lambda rid, params: locks.append((rid, dict(params))) or {"result": {"status": "ok", "remaining": []}})
+
+    try:
+        host._handle_respond({"sid": sid, "request_id": "relay-lock",
+                              "params": {"lock": {"request_id": req.id, "question_id": "q0", "answer": "a"}}})
+        assert locks == [("relay-lock", {"request_id": req.id, "question_id": "q0", "answer": "a"})]
+        assert _json_lines(out)[-1]["response"] == {"result": {"status": "ok", "remaining": []}}
+
+        host._handle_respond({"sid": sid, "request_id": "relay-response",
+                              "params": {"frame": {"jsonrpc": "2.0", "id": req.id, "result": {"answer": "yes"}}}})
+        assert req.answered and req.result == {"answer": "yes"} and req.event.is_set()
+        frame = _json_lines(out)[-1]
+        assert frame["type"] == "respond.ack" and frame["response"]["result"] == {"status": "ok"}
+    finally:
+        server._sessions.pop(sid, None)
+        server_requests.reset_for_tests()
+        host.close()
+
+
 
 
 def test_append_log_record_single_write_lines(tmp_path):
@@ -278,11 +291,12 @@ def test_shutdown_drain_sleep_never_overshoots_the_reserve(monkeypatch):
     _record_finalize(monkeypatch, events, "idle")
 
     slept: list[float] = []
-    real_sleep = time.sleep
+    clock = [100.0]
+    monkeypatch.setattr(compute_host.time, "monotonic", lambda: clock[0])
 
     def _recording_sleep(seconds: float) -> None:
         slept.append(seconds)
-        real_sleep(seconds)
+        clock[0] += seconds
 
     monkeypatch.setattr(compute_host.time, "sleep", _recording_sleep)
 

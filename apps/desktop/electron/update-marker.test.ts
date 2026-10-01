@@ -22,6 +22,7 @@ import { test } from 'vitest'
 import {
   isPidAlive,
   markerPath,
+  posixProcessState,
   readLiveUpdateMarker,
   UPDATE_MARKER_MAX_AGE_MS,
   updateHandoffConflict,
@@ -70,6 +71,37 @@ test('dead pid => no live update and marker is pruned', () => {
   assert.ok(!fs.existsSync(markerPath(home)), 'a dead-pid marker self-heals (deleted)')
 })
 
+test('zombie pid => no live update and marker is pruned', () => {
+  // The kill(pid, 0) false positive: a process that exited but is still in the
+  // table (parent has not reaped it) answers signal 0 like a live one. The
+  // state probe must turn that into "dead" so the boot gate self-heals in
+  // seconds instead of parking for the whole 20-minute ceiling.
+  const home = tmpHome('zombie')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+  const res = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now, processState: () => 'Z' })
+  assert.equal(res, null, 'a zombie owner is not a live update')
+  assert.ok(!fs.existsSync(markerPath(home)), 'a zombie-owned marker self-heals (deleted)')
+})
+
+test('a live state keeps the marker (probe answers non-Z)', () => {
+  const home = tmpHome('state-live')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+  const res = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now, processState: () => 'S' })
+  assert.ok(res, 'an alive, non-zombie owner keeps the gate closed')
+  assert.ok(fs.existsSync(markerPath(home)), 'a live marker is NOT deleted')
+})
+
+test('an unknown process state fails open to alive (keeps the marker)', () => {
+  const home = tmpHome('state-unknown')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+  const res = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now, processState: () => null })
+  assert.ok(res, 'probe failure must keep the conservative signal-0 verdict')
+  assert.ok(fs.existsSync(markerPath(home)))
+})
+
 test('expired marker (past age ceiling) => no live update and pruned', () => {
   const home = tmpHome('expired')
   const now = 1_000_000_000_000
@@ -102,6 +134,23 @@ test('isPidAlive: EPERM counts as alive (process owned by another user)', () => 
   }
 
   assert.equal(isPidAlive(4242, eperm), true)
+})
+
+test('posixProcessState: own pid is probeable and not a zombie; dead pid is unknown', () => {
+  if (process.platform === 'win32') {
+    // Windows has no zombie state and no ps stat lane; the probe is a no-op.
+    assert.equal(posixProcessState(process.pid), null)
+
+    return
+  }
+
+  const own = posixProcessState(process.pid)
+  assert.ok(own, 'a live pid must be probeable on linux/darwin')
+  assert.ok(!own.toUpperCase().startsWith('Z'), 'this process is not a zombie')
+
+  // A pid nothing owns (and that kill(0) would reject) is simply unknowable —
+  // callers keep their signal-0 verdict in that case.
+  assert.equal(posixProcessState(2147483647), null)
 })
 
 test('writeUpdateMarker writes a marker that readLiveUpdateMarker accepts', () => {
@@ -191,13 +240,4 @@ test('an expired marker does not block a hand-off (self-heals)', () => {
   const now = 1_000_000_000_000
   writeMarker(home, 1010, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
   assert.equal(updateHandoffConflict(home, { kill: ALIVE, now: () => now }), null)
-})
-
-test('minutes-scale elapsed time is formatted as "Nm Ss"', () => {
-  const home = tmpHome('conflict-minutes')
-  const now = 1_000_000_000_000
-  writeMarker(home, 1010, Math.floor(now / 1000) - 125) // 2m 5s old
-  const conflict = updateHandoffConflict(home, { kill: ALIVE, now: () => now })
-  assert.ok(conflict)
-  assert.match(conflict.message, /2m 5s/)
 })

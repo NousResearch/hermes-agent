@@ -94,7 +94,7 @@ async def exercise(room_id: str, bot_device: str, bot_user: str, other_login: di
             assert content["m.relates_to"] == {
                 "rel_type": "m.thread", "event_id": anchors[marker]["root"],
                 "is_falling_back": True, "m.in_reply_to": {"event_id": anchors[marker]["opening"]},
-            }
+            }, {"actual": content["m.relates_to"], "anchors": anchors}
             assert "will NOT run" in card.body
 
         first = next(card for card in pending if "approval-first-ran" in card.body)
@@ -134,10 +134,10 @@ async def exercise(room_id: str, bot_device: str, bot_user: str, other_login: di
 
         await receive_until("all final gateway replies", lambda: len(replies()) == expected_cards)
         assert [event.source["content"]["m.relates_to"] for event in replies()] == [
-            {"rel_type": "m.thread", "event_id": anchor["root"], "is_falling_back": True,
+            {"rel_type": "m.thread", "event_id": anchor["root"], "is_falling_back": False,
              "m.in_reply_to": {"event_id": anchor["opening"]}}
             for anchor in (list(anchors.values())[::-1] if decision == "once" else anchors.values())
-        ]
+        ], {"actual": [event.source["content"]["m.relates_to"] for event in replies()], "anchors": anchors}
         if decision == "summarized":
             redacted = await owner.room_redact(room_id, choice_id)
             assert isinstance(redacted, RoomRedactResponse), redacted

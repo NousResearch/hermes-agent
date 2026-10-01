@@ -242,15 +242,10 @@ export function watchPreviewTiles(): void {
   }
 
   $rightRailActiveTabId.listen(reveal)
-  // One listener for the visible list: re-home the selection FIRST (a session
-  // switch or an unpin can leave the active tab outside the visible set, and
-  // a stale reveal of a just-hidden tab is a no-op — its pane left the tree),
-  // THEN reveal the tab the re-home left active. Registered after the mirror,
-  // so the pane set is already synced when this runs.
-  $visiblePreviewTabs.listen(() => {
-    rehome()
-    reveal()
-  })
+  // Visible-list changes: a re-open of the already-active tab refreshes the
+  // target through the visible list too, while tab mutations belonging to a
+  // BACKGROUND session must not try to reveal panes that are not mounted.
+  $visiblePreviewTabs.listen(reveal)
 
   // A session switch (or an unpin) can leave the active tab outside the
   // visible set — re-home the selection to the first visible tab so the strip
@@ -262,6 +257,8 @@ export function watchPreviewTiles(): void {
       selectRightRailTab(visible[0]?.id ?? null)
     }
   }
+
+  $visiblePreviewTabs.listen(rehome)
 
   // And the reverse: clicking a preview TAB activates its pane in the TREE
   // only, so the store's selection must follow or `$previewTarget` (⌘L quote

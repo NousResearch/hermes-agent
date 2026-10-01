@@ -3918,7 +3918,13 @@ class BasePlatformAdapter(ABC):
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
             if latest_message_id is not None:
+                state.event.merged_message_ids.extend(
+                    message_id for message_id in (state.event.message_id, *event.merged_message_ids)
+                    if message_id
+                )
                 state.event.message_id = str(latest_message_id)
+            else:
+                state.event.absorb_message_ids(event)
             state.last_ts = now
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)

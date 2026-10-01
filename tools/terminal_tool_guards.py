@@ -97,6 +97,47 @@ _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\bpython(?:3)?\s+-m\s+http\.server\b",
 ))
 
+# Package-manager subcommands that take package-name arguments.
+_PM_INSTALL_VERBS = re.compile(
+    r"\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|update|up(?:grade)?|remove|uninstall|rm)\b",
+    re.IGNORECASE,
+)
+
+# A package-name argument list ends at the first shell separator — tokens after
+# `npm install && vite` belong to a second command, not to the package list.
+_SHELL_SEPARATOR_TOKENS = {"&&", "||", ";", "|", "&", ">", ">>", "<"}
+
+
+def _is_pm_package_argument(command: str, keyword: str) -> bool:
+    """Return True when *keyword* appears as a package-name argument of a
+    package-manager install/update command.
+
+    ``npm update vite`` names a package to update; it does not start the vite
+    dev server, so long-lived-process guidance must not fire on it.
+    """
+    if not _PM_INSTALL_VERBS.search(command):
+        return False
+    after_pm = _PM_INSTALL_VERBS.split(command, maxsplit=1)
+    if len(after_pm) < 2:
+        return False
+    pkg_tokens = []
+    for token in after_pm[1].split():
+        if token in _SHELL_SEPARATOR_TOKENS:
+            break
+        if not token.startswith("-"):
+            pkg_tokens.append(token)
+    return keyword.lower() in {t.lower() for t in pkg_tokens}
+
+
+def _long_lived_foreground_hit(command: str) -> bool:
+    """True when a long-lived pattern matches outside a package-manager argument slot."""
+    for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:
+        m = pattern.search(command)
+        if m and not _is_pm_package_argument(command, m.group().strip().split()[0].lower()):
+            return True
+    return False
+
+
 # Ordered (predicate on the unquoted command, guidance) — first hit wins.
 _FOREGROUND_GUIDANCE = (
     (
@@ -113,7 +154,7 @@ _FOREGROUND_GUIDANCE = (
         "for bounded jobs — then run health checks and tests in follow-up terminal calls.",
     ),
     (
-        lambda s: any(p.search(s) for p in _LONG_LIVED_FOREGROUND_PATTERNS),
+        _long_lived_foreground_hit,
         "This foreground command appears to start a long-lived server/watch process. "
         "Run it with background=true, verify readiness (health endpoint/log signal), "
         "then execute tests in a separate command.",

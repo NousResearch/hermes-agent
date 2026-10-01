@@ -138,12 +138,13 @@ def _unreadable(session_id):
     pytest.param(_thread_source(), None, _unreadable, id="unreadable-row"),
 ])
 def test_discord_title_retry_never_borrows_markers_from_another_origin(entry_origin, row_origin, get_session):
+    _UNREADABLE_CALLS.clear()
     agent, scheduled = _attach_in_thread(
         _thread_source(message_id="follow-up"), entry_origin, row_origin, get_session,
     )
     assert not hasattr(agent, "_on_session_title")
     assert scheduled == []
-    if get_session is _unreadable:  # the failing row read ran and was contained
+    if get_session is _unreadable:  # the row read ran; attach's try/except drops the callback, as on main
         assert _UNREADABLE_CALLS == ["sess-1"]
 
 

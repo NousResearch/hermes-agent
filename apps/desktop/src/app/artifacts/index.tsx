@@ -284,7 +284,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         // Tilde/relative hrefs have no file URL form. Keep them gateway-owned:
         // expanding them on the client would target the wrong home or cwd.
         if (isRemoteGateway() && isArtifactFilePath(artifact.value)) {
-          await downloadGatewayMediaFile(artifact.value, { sessionId: artifact.sessionId, profile: artifact.profile })
+          await downloadGatewayMediaFile(artifact.value, {
+            sessionId: artifact.sessionId,
+            profile: artifact.profile
+          })
 
           return
         }
@@ -344,7 +347,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       searchValue={query}
       tabs={[
         { id: 'all', label: a.tabAll, meta: artifacts ? counts.all : null },
-        { id: 'image', label: a.tabImages, meta: artifacts ? counts.image : null },
+        {
+          id: 'image',
+          label: a.tabImages,
+          meta: artifacts ? counts.image : null
+        },
         { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
         { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
       ]}
@@ -476,11 +483,18 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
   const a = t.artifacts
   const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
   const [src, setSrc] = useState('')
+  const [previewValue, setPreviewValue] = useState<string | null>(null)
+  const remoteImage = /^https?:\/\//i.test(artifact.value.trim())
+  const previewAllowed = !remoteImage || previewValue === artifact.value
 
   useEffect(() => {
     let active = true
 
     setSrc('')
+    if (!previewAllowed) {
+      return
+    }
+
     void artifactImageSrc(artifact.value)
       .then(nextSrc => {
         if (active) {
@@ -496,7 +510,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     return () => {
       active = false
     }
-  }, [artifact.href, artifact.id, artifact.value, onImageError])
+  }, [artifact.href, artifact.id, artifact.value, onImageError, previewAllowed])
 
   return (
     <article
@@ -509,7 +523,12 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
           failedImage && 'cursor-default'
         )}
       >
-        {!failedImage && src && (
+        {!previewAllowed && (
+          <Button onClick={() => setPreviewValue(artifact.value)} size="xs" type="button" variant="textStrong">
+            {t.sidebar.filter.preview}
+          </Button>
+        )}
+        {previewAllowed && !failedImage && src && (
           <ZoomableImage
             alt={artifact.label}
             className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
@@ -569,6 +588,7 @@ function ArtifactCellAction({
       <ExternalLink
         className="flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary) no-underline underline-offset-4 decoration-current/20 transition-colors hover:text-foreground hover:underline"
         href={href}
+        onClick={onClick}
         showExternalIcon={false}
         title={title}
       >
@@ -589,15 +609,18 @@ function ArtifactCellAction({
 
 const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const isLink = artifact.kind === 'link'
+  const [openedHref, setOpenedHref] = useState<string | null>(null)
   const brand = isLink ? resolveBrandIcon(shortHostLabel(artifact.href)) : null
   const Icon = brand ?? (isLink ? Link2 : FileText)
-  const fetchedTitle = useLinkTitle(isLink ? artifact.href : null)
+  // History indexing is not consent to contact a URL from assistant text.
+  // Resolve its title only after the user opens this exact link.
+  const fetchedTitle = useLinkTitle(isLink && openedHref === artifact.href ? artifact.href : null)
   const label = isLink ? fetchedTitle || urlSlugTitleLabel(artifact.href) : artifact.label
 
   return (
     <ArtifactCellAction
       href={isLink ? artifact.href : undefined}
-      onClick={isLink ? undefined : () => void ctx.onOpen(artifact)}
+      onClick={isLink ? () => setOpenedHref(artifact.href) : () => void ctx.onOpen(artifact)}
       title={label}
     >
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">

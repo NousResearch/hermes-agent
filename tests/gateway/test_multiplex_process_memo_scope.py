@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,3 +122,29 @@ def test_media_policy_reads_routed_profile_config_not_env(two_homes, monkeypatch
 
     assert _under(b, media_policy.media_delivery_strict) is False
     assert _under(b, media_policy.media_delivery_allow_dirs) == "/srv/b"
+
+
+def test_routed_media_policy_bridge_never_writes_the_shared_env(two_homes, monkeypatch):
+    """A routed profile's cron delivery runs the bridge under its override; its policy must not
+    land in os.environ, where the launch profile's own deliveries and children read it."""
+    a, b = two_homes
+    from gateway import media_policy
+    from hermes_cli.config import load_config
+
+    (b / "config.yaml").write_text(yaml.safe_dump(
+        {"gateway": {"strict": False, "media_delivery_allow_dirs": ["/srv/b"]}}), encoding="utf-8")
+    for var in ("HERMES_MEDIA_DELIVERY_STRICT", "HERMES_MEDIA_ALLOW_DIRS", "HERMES_MEDIA_TRUST_RECENT_FILES"):
+        monkeypatch.delenv(var, raising=False)
+
+    _under(b, lambda: media_policy.apply_media_policy_env(load_config()))
+
+    assert not any(os.environ.get(v) for v in (
+        "HERMES_MEDIA_DELIVERY_STRICT", "HERMES_MEDIA_ALLOW_DIRS", "HERMES_MEDIA_TRUST_RECENT_FILES"))
+    assert _under(b, media_policy.media_delivery_allow_dirs) == "/srv/b"
+
+    # The launch profile's own bridge (no override) still runs once the host multiplexes.
+    (a / "config.yaml").write_text(yaml.safe_dump(
+        {"gateway": {"media_delivery_allow_dirs": ["/srv/a"]}}), encoding="utf-8")
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    media_policy.apply_media_policy_env(load_config())
+    assert media_policy.media_delivery_allow_dirs() == "/srv/a"

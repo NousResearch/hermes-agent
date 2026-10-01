@@ -192,6 +192,25 @@ export function useMessageStream({
           let nextMessages: ChatMessage[]
 
           if (!prev.some(m => m.id === streamId)) {
+            // Seeding a bubble needs a turn to belong to. With no live turn
+            // and an idle session, a stream frame is a straggler from an
+            // already-settled one — a delta reordered behind its own complete
+            // (or behind a running=false settle), a replayed frame, or a
+            // tool event whose call never streamed here (the owner lookup
+            // failed because the bubble that ran it is gone). Seeding paints
+            // a local-only bubble that hydration cannot retire: every fold
+            // (preserveLocalPendingTurnMessages, the overlay walk) skips
+            // `pending` rows, so the orphan sits beside the stored reply
+            // through every refresh. #119543 drops a straggler queue only
+            // when the NEXT turn finally starts — not when nothing follows.
+            // An empty transcript is exempt: with no rows on screen the
+            // frame can still be this session's first output.
+            const idleNoTurn = !state.turnLive && !state.busy && !state.awaitingResponse && !state.needsInput
+
+            if (idleNoTurn && prev.length > 0) {
+              return state
+            }
+
             nextMessages = [
               ...prev,
               {

@@ -492,20 +492,45 @@ class SessionSessionsMixin:
             return True
         # The newest row continues *session_id*'s conversation when a compression-parent chain
         # (each link's parent ended with end_reason='compression') leads back to it.
-        chain = self._read_all(
+        lineage = self._read_all(
             """
-            WITH RECURSIVE lineage(id, parent_id) AS (
-                SELECT id, parent_session_id FROM sessions WHERE id = ?
+            WITH RECURSIVE lineage(id, parent_id, depth) AS (
+                SELECT id, parent_session_id, 0 FROM sessions WHERE id = ?
                 UNION ALL
-                SELECT p.id, p.parent_session_id
+                SELECT p.id, p.parent_session_id, l.depth + 1
                 FROM sessions p JOIN lineage l ON p.id = l.parent_id
                 WHERE p.end_reason = 'compression'
             )
-            SELECT 1 FROM lineage WHERE id = ? LIMIT 1
+            SELECT id, depth FROM lineage
             """,
-            (newest, str(session_id)),
+            (newest,),
         )
-        return bool(chain)
+        depths = {str(r["id"]): int(r["depth"]) for r in lineage}
+        own_depth = depths.get(str(session_id))
+        if own_depth is None:
+            return False  # an unrelated session, not this conversation's continuation
+        # One conversation has ONE name: the NEWEST generation of the lineage is the naming
+        # authority. An older generation that still owns the lineage keeps its claim ONLY while
+        # no strictly newer generation has already applied a rename — otherwise a late delivery
+        # from a pre-fork generation reverses its own fork's name, and the winner would depend on
+        # callback completion order. The applied/not-applied evidence is the lane's own existing
+        # ``tg_title:{platform}:{chat_id}:{session_id}`` outcome record (no new schema).
+        return not any(
+            self._telegram_group_title_applied(platform, str(chat_id), gen_id)
+            for gen_id, depth in depths.items() if depth < own_depth
+        )
+
+    def _telegram_group_title_applied(self, platform: str, chat_id: str, session_id: str) -> bool:
+        """True when the Telegram group-title lane already recorded ``applied`` for *session_id* in
+        this chat. Reads only the lane's own outcome record; a rejected / skipped / still-retrying
+        outcome is not a name, so it leaves the older generation free to apply one."""
+        recorded = self.get_meta(f"tg_title:{platform}:{chat_id}:{session_id}")
+        if not recorded:
+            return False
+        # Value is "{unix_ts}:{outcome}" — compare the outcome exactly, never as a substring
+        # ("rejected:not_applied" contains "applied").
+        _, _, outcome = str(recorded).partition(":")
+        return outcome.strip() == "applied"
 
     # Orphaned gateway-session repair: widest plausible gap between a keyed predecessor going
     # quiet and its unkeyed successor (incident was ~60s; 15 min without spanning conversations).

@@ -4,6 +4,8 @@ import json
 import sys
 import types
 
+import pytest
+
 from plugins.memory.mem0._setup import (
     parse_flags,
     build_oss_config,
@@ -11,6 +13,8 @@ from plugins.memory.mem0._setup import (
     _prompt_api_key,
     post_setup,
     _check_qdrant_path,
+    _install_provider_deps,
+    _finish_oss,
 )
 
 
@@ -236,3 +240,49 @@ def test_discovery_loaded_setup_module_exposes_post_setup(monkeypatch):
             if k.startswith("plugins.memory.mem0"):
                 del sys.modules[k]
         sys.modules.update(saved)
+
+
+class TestInstallProviderDeps:
+    def _hide(self, monkeypatch, name):
+        import importlib.util
+        real_find_spec = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda mod: None if mod == name else real_find_spec(mod),
+        )
+
+    def test_missing_dep_reported_not_printed(self, monkeypatch):
+        """A missing provider SDK is returned, so setup can refuse success
+        instead of printing-and-continuing into a silently dead backend
+        (mem0 prompts via input() on import failure, #125234)."""
+        import importlib.util
+        real_find_spec = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda mod: None if mod == "ollama" else (object() if mod == "qdrant_client" else real_find_spec(mod)),
+        )
+        assert _install_provider_deps("openai", "ollama", "qdrant") == ["ollama"]
+
+    def test_no_missing_dep(self, monkeypatch):
+        import importlib.util
+        monkeypatch.setattr(importlib.util, "find_spec", lambda mod: object())
+        assert _install_provider_deps("openai", "ollama", "qdrant") == []
+
+    def test_finish_oss_refuses_missing_sdk(self, tmp_path, monkeypatch):
+        """Setup aborts before printing success when a provider SDK is
+        absent — the exact hole that left memory silently disabled."""
+        import plugins.memory.mem0._setup as setup_mod
+
+        monkeypatch.setattr(setup_mod, "_install_provider_deps", lambda *a: ["ollama"])
+        monkeypatch.setattr(setup_mod, "_activate_provider", lambda c: None)
+        monkeypatch.setattr(setup_mod, "_run_connectivity_checks", lambda c: None)
+        monkeypatch.setattr(setup_mod, "_print_oss_summary", lambda *a: None)
+        oss_config = {
+            "llm": {"provider": "openai", "config": {}},
+            "embedder": {"provider": "ollama", "config": {}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        with pytest.raises(SystemExit):
+            _finish_oss(str(tmp_path), {}, oss_config, {}, "u", "a")

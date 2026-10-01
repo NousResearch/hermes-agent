@@ -1512,6 +1512,7 @@ async def test_redaction_during_reply_image_resolution_returns_no_context(tmp_pa
     assert (await resolving, await cache.resolve(None, room_id, event_id)) == (None, None)
 
 
+@pytest.mark.usefixtures("empty_reaction_snapshots")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["reply-fetch", "cached-edit", "thread-fetch"])
 @pytest.mark.parametrize("fallback", ["user-quote", "legacy-pill", "formatted-reply"])

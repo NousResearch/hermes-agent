@@ -194,7 +194,7 @@ class GatewayConfigLoadersMixin:
             return
         # Per-session field write: a lazy ``_session_reasoning_overrides = {}`` init replaced the
         # WHOLE dict, racing concurrent sessions; a SessionState field reset cannot cross sessions.
-        self._session_state(session_key).conversation.reasoning_override = (
+        self._session_reasoning_overrides[session_key] = (
             None if reasoning_config is None else dict(reasoning_config)
         )
 
@@ -216,7 +216,7 @@ class GatewayConfigLoadersMixin:
             return
         # Presence-sensitive: "priority" or None (explicit normal) both count as an override; the
         # sentinel means "no override". Per-session field write: a lazy dict replace races sessions.
-        self._session_state(session_key).conversation.service_tier_override = (
+        self._session_service_tier_overrides[session_key] = (
             _SERVICE_TIER_UNSET if clear else service_tier
         )
 

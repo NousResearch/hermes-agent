@@ -73,6 +73,11 @@ _ALLOWED_LOCKED_READERS: dict[str, str] = {
     # transaction, and a pooled WAL reader sees only committed data — the
     # writer's own just-staged meta updates would be invisible to it.
     "get_meta": "read-your-writes: rebuild progress read before write txn",
+    # live_external_writer_lifetime holds the writer lock BY DESIGN across a
+    # second connection's transaction, so the owner can't write or close
+    # mid-commit. Its reads only bind the owner's file, application id and
+    # generation at the moment that fence starts.
+    "live_external_writer_lifetime": "fence: owner pinned across an external commit",
 }
 
 

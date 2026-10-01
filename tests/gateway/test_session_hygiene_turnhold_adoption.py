@@ -89,6 +89,9 @@ def _build_runner(gateway_run, adapter, fake_db):
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    # Like a real store with no persisted /model override; selection re-reads _entries.
+    runner.session_store.get_model_override.return_value = None
+    runner.session_store._entries = {}
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:dm:12345",
         session_id="sess-97963",

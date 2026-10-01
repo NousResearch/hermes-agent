@@ -122,6 +122,9 @@ class HostedRoomAuthorityRPC:
         receipt = {'status': status, 'text': value.get('final_response', ''),
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
                    'task_id': task.task_id, 'execution_generation': generation}
+        if status == 'settled':
+            from gateway.session_hosted_output import output_receipt_fields
+            receipt.update(output_receipt_fields(value))
         callback = self.callbacks.pop(row['admission_id'], None)
         if callback is not None:
             callback(receipt)
@@ -220,8 +223,19 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             await self.authority.resolve_unknown(
                 self.principal, self.ref, row['admission_id'], row['generation'])
+        # A discarded attempt never publishes, so files it shared are retired with it.
+        await asyncio.to_thread(self._discard_attempt_output, task.task_id, generation)
         return {'discarded': True, 'status': 'cancelled', 'task_id': task.task_id,
                 'execution_generation': generation}
+
+    def _discard_attempt_output(self, task_id, generation):
+        from gateway.hosted_room_artifacts import RoomArtifactOutbox, output_store_exists
+        with self.authority.db._read_ctx() as conn:
+            if not output_store_exists(conn):
+                return 0
+        return RoomArtifactOutbox(self.authority.db.db_path).discard_attempt(
+            room_id=self.room_id, task_id=task_id, execution_generation=generation,
+            member_id=self.member_id, target_profile=self.profile)
 
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:

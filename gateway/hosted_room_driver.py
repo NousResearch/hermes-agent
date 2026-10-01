@@ -20,7 +20,7 @@ from typing import Any, Callable, Literal, get_args
 
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
-    transaction)
+    table_exists, transaction)
 
 Clock = Callable[[], float]
 TaskStatus = Literal["queued", "running", "settled", "failed", "cancelled", "indeterminate", "deferred", "stopping"]
@@ -30,6 +30,10 @@ MAX_IDENTIFIER_CHARS = 128
 MAX_PROMPT_BYTES = 128 * 1024
 MAX_RESULT_JSON_BYTES = 256 * 1024
 TERMINAL_TASK_RETENTION_SECONDS = 30 * 24 * 60 * 60
+# Shared-file obligations (gateway.session_hosted_output_publication) pin their task row;
+# the source bytes expire after 30 days, so the pin ends after that horizon too.
+OUTPUT_OBLIGATIONS_TABLE = "hosted_room_output_obligations"
+OUTPUT_OBLIGATION_RETENTION_SECONDS = 60 * 24 * 60 * 60
 MAX_RETAINED_TERMINAL_TASKS = 2048
 MAX_TASK_PRUNE_BATCH = 1000
 TASK_STATUSES = frozenset(get_args(TaskStatus))
@@ -875,12 +879,20 @@ def prune_published_terminal_tasks(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_policy_publications'").fetchone()
         if publications is None:
             return 0
-        rows = conn.execute("""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
+        # A Bot's shared files still being published or retired keep their task row.
+        output_guard, output_params = "", ()
+        if table_exists(conn, OUTPUT_OBLIGATIONS_TABLE):
+            output_guard = f"""AND NOT EXISTS (SELECT 1 FROM {OUTPUT_OBLIGATIONS_TABLE} o
+                                WHERE o.room_id=t.room_id AND o.task_id=t.task_id
+                                  AND o.state IN ('pending', 'blocked') AND o.created_at>?)"""
+            output_params = (now - OUTPUT_OBLIGATION_RETENTION_SECONDS,)
+        rows = conn.execute(f"""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
                 WHERE t.room_id=? AND t.status IN ('settled', 'failed', 'cancelled')
                   AND EXISTS (SELECT 1 FROM hosted_room_policy_publications p
                               WHERE p.room_id=t.room_id AND p.task_id=t.task_id
                                 AND p.kind IN ('turn.settled', 'turn.failed', 'turn.cancelled'))
-                ORDER BY t.terminal_at DESC, t.task_id ASC""", (room_id,)).fetchall()
+                  {output_guard}
+                ORDER BY t.terminal_at DESC, t.task_id ASC""", (room_id, *output_params)).fetchall()
         cutoff = now - float(retention_seconds)
         candidates = [
             str(row["task_id"]) for index, row in enumerate(rows)

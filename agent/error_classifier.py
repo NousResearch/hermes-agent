@@ -270,9 +270,12 @@ _CONTEXT_OVERFLOW_PATTERNS = (
 # Codex ChatGPT-account entitlement 400 — the account can never use the named slug (#71970, #106475).
 CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER = "model is not supported when using codex with a chatgpt account"
 
+# The "supported API model names" wording: a deterministic 400 naming the ids the
+# provider will accept (retired/renamed model id) must fail over, not retry (#113272).
 _MODEL_NOT_FOUND_PATTERNS = (
     "is not a valid model", "invalid model", "model not found", "model_not_found", "does not exist",
     "no such model", "unknown model", "unsupported model", "no endpoints found that support tool use",
+    "supported api model names",
 )
 
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body

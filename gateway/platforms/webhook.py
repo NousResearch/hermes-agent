@@ -11,6 +11,7 @@ replay protection; body-only V1 is deprecated but accepted with a warning."""
 
 import asyncio
 import base64
+import copy
 import binascii
 import hashlib
 import hmac
@@ -22,6 +23,7 @@ import subprocess
 import time
 from collections import deque
 from contextlib import nullcontext, suppress
+from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -600,9 +602,12 @@ class WebhookAdapter(BasePlatformAdapter):
         # Script, prompt render and skill lookup read the profile's home (skills/, config); the runner
         # only enters the routed profile's scope later around handle_message, so enter it here.
         # See #67277.
+        raw_payload = None
         with self._profile_scope(profile):
             script = route_config.get("script")
             if script:
+                # The body as received, for the delivery lifecycle events (the script may rewrite it).
+                raw_payload = copy.deepcopy(payload)
                 # Shells out (up to its timeout) — worker thread so the loop isn't blocked; to_thread
                 # copies contextvars so the profile scope follows.
                 keep, transformed_payload = await asyncio.to_thread(
@@ -629,24 +634,26 @@ class WebhookAdapter(BasePlatformAdapter):
         coalesce = route_config.get("coalesce")
         if isinstance(coalesce, dict) and self._coalescer.enqueue(
                 route_name=route_name, coalesce=coalesce, payload=payload, event_type=event_type, prompt=prompt,
-                delivery_id=delivery_id, now=now, route_config=route_config, profile=profile):
+                delivery_id=delivery_id, now=now, route_config=route_config, profile=profile,
+                raw_payload=raw_payload):
             return web.json_response({"status": "coalesced", "route": route_name, "event": event_type,
                                       "delivery_id": delivery_id}, status=202)
         return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
-                                        delivery_id, now)
+                                        delivery_id, now, raw_payload=raw_payload)
 
     def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
-                            event_type: str, delivery_id: str, now: float) -> "web.Response":
+                            event_type: str, delivery_id: str, now: float,
+                            raw_payload: Any = None) -> "web.Response":
         """Spawn the agent run for one POST and return 202 immediately."""
         logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type, route_name,
                     len(prompt), delivery_id)
         self._spawn_agent_run(payload, prompt, delivery_id, now, route_config=route_config, route_name=route_name,
-                              profile=profile, event_type=event_type)
+                              profile=profile, event_type=event_type, raw_payload=raw_payload)
         return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
                                   "delivery_id": delivery_id}, status=202)
 
     def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
-                         route_name: str, profile, event_type: str) -> "asyncio.Task":
+                         route_name: str, profile, event_type: str, raw_payload: Any = None) -> "asyncio.Task":
         """Record delivery info and fire the agent run (shared by the immediate and coalesced paths)."""
         # delivery_id in the session key → concurrent webhooks on one route get independent runs.
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
@@ -666,9 +673,25 @@ class WebhookAdapter(BasePlatformAdapter):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id)
+        # Snapshot on the event, not in the TTL-pruned ``_delivery_info``: completion may come after a
+        # long run. Its bodies are independent copies, so both events report the delivery as it arrived
+        # even if the run mutates ``raw_message``. Route config (secrets included) is never part of it.
+        event.metadata["webhook_lifecycle"] = {
+            "version": 1, "route": route_name, "delivery_id": delivery_id, "webhook_event_type": event_type,
+            "chat_id": session_chat_id, "profile": profile if isinstance(profile, str) and profile else None,
+            "created_at": datetime.now(timezone.utc).isoformat(), "prompt": prompt,
+            "payload": copy.deepcopy(payload), "raw_payload": raw_payload,
+        }
+
+        async def _receive_and_handle() -> None:
+            # ``delivery_received`` precedes the run, so an observer can key state on ``chat_id``
+            # before any turn hook for that chat fires.
+            await self._emit_delivery_event("delivery_received", event)
+            await self.handle_message(event)
+
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
-        task = asyncio.create_task(self.handle_message(event))
+        task = asyncio.create_task(_receive_and_handle())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
@@ -676,8 +699,28 @@ class WebhookAdapter(BasePlatformAdapter):
     async def on_processing_complete(self, event: "MessageEvent", outcome: Any) -> None:
         """Close the one-shot per-delivery session: ``prune_sessions`` only reaps rows with ``ended_at`` set, so
         unclosed webhook sessions leak unbounded. Fires at the true end of the run; ``end_session()`` is
-        first-reason-wins."""
+        first-reason-wins. Then publish ``delivery_completed`` once per delivery."""
         await self._end_webhook_session(event, event.source.chat_id)
+        metadata = event.metadata if isinstance(event.metadata, dict) else {}
+        if metadata.get("webhook_lifecycle") is not None and not metadata.get("webhook_lifecycle_completed"):
+            metadata["webhook_lifecycle_completed"] = True
+            await self._emit_delivery_event("delivery_completed", event, outcome=str(getattr(outcome, "value", outcome)))
+
+    async def _emit_delivery_event(self, event_type: str, event: "MessageEvent", **extra: Any) -> None:
+        """Publish one delivery lifecycle event to ``gateway_platform_event`` observers. Best effort: an
+        observer exception never affects the run or its session cleanup (callbacks still run inline)."""
+        handler = getattr(self, "_platform_event_handler", None)
+        lifecycle = (event.metadata or {}).get("webhook_lifecycle")
+        if handler is None or lifecycle is None:
+            return
+        try:
+            # One copy per event, isolated from the run and from the stored snapshot. Callbacks of the
+            # hook share it (the dispatcher passes one payload to each), so observers treat it read-only.
+            payload = copy.deepcopy({**lifecycle, **extra})
+            await handler({"platform": "webhook", "event_type": event_type, "payload": payload}, event.source)
+        except Exception:
+            logger.debug("[webhook] %s observer dispatch failed for %s", event_type, lifecycle.get("chat_id"),
+                         exc_info=True)
 
     async def _end_webhook_session(self, event: "MessageEvent", session_chat_id: str) -> None:
         """Mark the per-delivery session ended via ``SessionDB.end_session`` (never a hand-written UPDATE),

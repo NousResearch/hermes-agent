@@ -7,9 +7,12 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from textwrap import dedent
 
 import aiohttp
 import pytest
+from testcontainers.core.container import DockerContainer
+from testcontainers.core.network import Network
 from nio import (
     AsyncClient,
     AsyncClientConfig,
@@ -23,7 +26,7 @@ from nio import (
 )
 
 from tests.fakes.fake_llm_provider import Text, ToolCall
-from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom, MatrixAccount
+from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom, MatrixAccount, _wait_for
 
 
 @dataclass(frozen=True)
@@ -73,8 +76,38 @@ async def _wait_for_directory_entry(
 _SETUP_SECONDS = 30
 
 
+def _directory_state(container: DockerContainer) -> dict[str, object]:
+    code = dedent("""\
+        import json
+        import sqlite3
+
+        with sqlite3.connect("file:/data/homeserver.db?mode=ro", uri=True) as db:
+            state = {
+                "position": db.execute("SELECT stream_id FROM user_directory_stream_pos").fetchall(),
+                "pending": db.execute(
+                    "SELECT update_name FROM background_updates "
+                    "WHERE update_name LIKE 'populate_user_directory_%'"
+                ).fetchall(),
+                "entries": db.execute("SELECT user_id,display_name FROM user_directory").fetchall(),
+            }
+        print(json.dumps(state))
+        """)
+    result = container.exec(["python", "-c", code])
+    assert result.exit_code == 0, result.output.decode(errors="replace")
+    return json.loads(result.output)
+
+
 @pytest.fixture
-def live_room(live_room: LiveRoom) -> DiscoveryRoom:
+def live_room(
+    live_room: LiveRoom, synapse: tuple[DockerContainer, str, Network],
+) -> DiscoveryRoom:
+    _wait_for(
+        lambda: not _directory_state(synapse[0])["pending"],
+        "Synapse user-directory bootstrap",
+        timeout=120,
+        details=lambda: str(_directory_state(synapse[0])),
+    )
+
     async def create_rooms(alice: AsyncClient, bot: AsyncClient) -> tuple[str, str, str, str]:
         public = await alice.room_create(
             name="Unjoined public child", visibility=RoomVisibility.public
@@ -125,11 +158,15 @@ def live_room(live_room: LiveRoom) -> DiscoveryRoom:
     return asyncio.run(asyncio.wait_for(prepare(), timeout=_SETUP_SECONDS))
 
 
+@pytest.mark.parametrize("gateway", ["discovery"], indirect=True)
 def test_model_discovers_joined_rooms_spaces_and_users_without_autojoin(
     gateway: LiveGateway,
     live_room: DiscoveryRoom,
+    synapse: tuple[DockerContainer, str, Network],
     record_property: Callable[[str, object], None],
 ) -> None:
+    before = _directory_state(synapse[0])
+    record_property("synapse_directory_before", before)
     async def exchange() -> None:
         alice = _client(live_room.observer, live_room.homeserver)
         bot = _client(live_room.bot, live_room.homeserver)
@@ -296,3 +333,9 @@ def test_model_discovers_joined_rooms_spaces_and_users_without_autojoin(
         asyncio.run(asyncio.wait_for(exchange(), timeout=45))
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))
+        trace = gateway.home / "discovery-trace.jsonl"
+        if trace.exists():
+            record_property("discovery_trace", trace.read_text(encoding="utf-8"))
+        after = _directory_state(synapse[0])
+        record_property("synapse_directory_after", after)
+        print("Synapse directory bootstrap:", before, after)

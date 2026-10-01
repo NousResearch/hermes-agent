@@ -1771,80 +1771,76 @@ class TestParallelTick:
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
 
 class TestDeliverResultTimeoutCancelsFuture:
-    """When future.result(timeout=60) raises TimeoutError in the live adapter
-    delivery path, the outcome depends on whether the coroutine was already
-    running.  future.cancel() returning False means it is in flight on the wire
-    (cannot be un-sent) → treat as DELIVERED and skip the standalone fallback to
-    avoid a duplicate (#38922).  future.cancel() returning True means it never
-    started (wedged loop) → nothing was sent, so fall through to standalone or
-    the message is silently dropped.  Regression for #38922.
+    """When the live adapter's confirmation outlasts the wait, the outcome depends on whether the
+    send had STARTED on the gateway loop. Started: it is in flight (a paced multi-chunk send can
+    legitimately outlast the wait) — leave it running and skip the standalone fallback, which would
+    duplicate it (#38922). Never started (wedged loop): nothing was sent, so fall through to
+    standalone or the message is silently dropped. ``future.cancel()`` cannot tell the two apart:
+    a run_coroutine_threadsafe future stays PENDING until done, so cancel() returns True mid-send
+    and kills it — these tests drive a real loop for that reason.
     """
 
-    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
-        """End-to-end: live adapter confirmation times out past the 60s budget.
-        The fix (#38922) treats the send as already-dispatched/delivered and
-        does NOT run the standalone fallback — otherwise the message is sent
-        twice."""
+    def _deliver(self, monkeypatch, adapter, loop):
+        from cron import scheduler_delivery
         from gateway.config import Platform
-        from concurrent.futures import Future
-
-        # Live adapter whose send() coroutine never resolves within the budget
-        adapter = AsyncMock()
-        adapter.send.return_value = MagicMock(success=True)
 
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-
-        loop = MagicMock()
-        loop.is_running.return_value = True
-
-        # A real concurrent.futures.Future, but we override .result() to raise
-        # TimeoutError exactly like the 60s wait firing in production.  We make
-        # .cancel() return False to simulate the coroutine being ALREADY RUNNING
-        # on the gateway loop (in flight on the wire) — the case where the send
-        # cannot be un-sent and a standalone resend would be a duplicate.
-        captured_future = Future()
-        cancel_calls = []
-
-        def in_flight_cancel():
-            cancel_calls.append(True)
-            return False  # already running — cannot be cancelled
-
-        captured_future.cancel = in_flight_cancel
-        captured_future.result = MagicMock(side_effect=TimeoutError("timed out"))
-
-        def fake_run_coro(coro, _loop):
-            coro.close()
-            return captured_future
-
-        job = {
-            "id": "timeout-job",
-            "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
-        }
-
+        monkeypatch.setattr(scheduler_delivery, "_LIVE_SEND_CONFIRM_TIMEOUT_SECS", 0.3)
+        job = {"id": "timeout-job", "deliver": "origin", "origin": {"platform": "telegram", "chat_id": "123"}}
         standalone_send = AsyncMock(return_value={"success": True})
-
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
              patch("tools.send_message_tool._send_to_platform", new=standalone_send):
-            result = _deliver_result(
-                job,
-                "Hello world",
-                adapters={Platform.TELEGRAM: adapter},
-                loop=loop,
-            )
+            result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
+        return result, standalone_send
 
-        # 1. cancel() was attempted (returned False = in flight).
-        assert cancel_calls == [True], "future.cancel() should be attempted on TimeoutError"
-        # 2. Delivery is reported successful (no error string returned).
-        assert result is None, f"expected successful delivery, got error: {result!r}"
-        # 3. The standalone fallback must NOT run — that is the #38922 fix:
-        #    an in-flight confirmation timeout is assume-delivered, not a resend.
+    def test_in_flight_send_outlasting_the_wait_keeps_running_and_is_not_duplicated(self, monkeypatch):
+        import asyncio
+        import threading
+        import time
+
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        events = []
+
+        async def slow_send(chat_id, content, **_kw):
+            events.append("started")
+            await asyncio.sleep(0.6)  # outlasts the 0.3s confirmation wait
+            events.append("finished")
+            return MagicMock(success=True, message_id="m1", raw_response=None)
+
+        adapter = MagicMock()
+        adapter.send = slow_send
+        try:
+            result, standalone_send = self._deliver(monkeypatch, adapter, loop)
+            time.sleep(0.6)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+        assert result is None, f"expected the in-flight send to count as delivered, got {result!r}"
         standalone_send.assert_not_awaited()
+        assert events == ["started", "finished"], "the in-flight send must not be cancelled mid-way"
+
+    def test_send_that_never_started_falls_back_to_standalone(self, monkeypatch):
+        import asyncio
+        import threading
+        import time
+
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        loop.call_soon_threadsafe(time.sleep, 0.8)  # wedge the running loop past the 0.3s wait
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True))
+        try:
+            result, standalone_send = self._deliver(monkeypatch, adapter, loop)
+            time.sleep(0.8)  # the loop un-wedges: the abandoned send must still never go out
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+        assert result is None, f"standalone should have delivered, got {result!r}"
+        standalone_send.assert_awaited_once()
+        adapter.send.assert_not_awaited()
 
 class TestDeliverResultLiveAdapterUnconfirmed:
     """Regression for #47056.

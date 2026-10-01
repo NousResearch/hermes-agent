@@ -137,7 +137,11 @@ async def run_matrix_mutation(
     try:
         while not pending.done():
             if not owner_loop.is_running():
-                if owner_task is not None and owner_task.done() and not owner_task.cancelled():
+                if (
+                    owner_task is not None
+                    and owner_task.done()
+                    and not owner_task.cancelled()
+                ):
                     result = owner_task.result()
                     break
                 failure = "Matrix gateway loop is unavailable"

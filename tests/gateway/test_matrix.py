@@ -1715,28 +1715,56 @@ async def test_thread_backfill_uses_root_and_prior_relations_with_author_trust()
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("batch", ["ingress", "busy-debounce"])
-async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(tmp_path, batch):
+@pytest.mark.parametrize("root_in_batch", [False, True])
+async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(
+    tmp_path, batch, root_in_batch
+):
     adapter = _make_room_adapter()
+    adapter._matrix_session_scope = "thread"
+    first_id = "$root" if root_in_batch else "$first"
     adapter._text_batch_delay_seconds = 60 if batch == "ingress" else 0
     adapter._busy_text_debounce_seconds = 60
-    adapter._client.api.request = AsyncMock(return_value={"chunk": [
-        {"event_id": event_id, "sender": "@alice:example.org",
-         "content": {"msgtype": "m.text", "body": body}}
-        for event_id, body in (("$second", "second"), ("$first", "first"), ("$older", "older"))
-    ]})
-    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
-        sender="@alice:example.org", content={"msgtype": "m.text", "body": "root"},
-    ))
+    adapter._client.api.request = AsyncMock(
+        return_value={
+            "chunk": [
+                {
+                    "event_id": event_id,
+                    "sender": "@alice:example.org",
+                    "content": {"msgtype": "m.text", "body": body},
+                }
+                for event_id, body in (
+                    ("$second", "second"),
+                    (first_id, "first"),
+                    ("$older", "older"),
+                )
+            ]
+        }
+    )
+    adapter._client.get_event = AsyncMock(
+        return_value=types.SimpleNamespace(
+            sender="@alice:example.org",
+            content={"msgtype": "m.text", "body": "first" if root_in_batch else "root"},
+        )
+    )
     dispatched = []
     adapter.handle_message = AsyncMock(side_effect=dispatched.append)
-    thread = {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
-              "m.in_reply_to": {"event_id": "$older"}}
+    thread = {
+        "rel_type": "m.thread",
+        "event_id": "$root",
+        "is_falling_back": True,
+        "m.in_reply_to": {"event_id": "$older"},
+    }
 
     try:
-        for event_id, body in (("$first", "first"), ("$second", "second")):
+        for event_id, body in ((first_id, "first"), ("$second", "second")):
+            relation = {} if root_in_batch and event_id == first_id else thread
             await adapter._handle_text_message(
-                "!room:example.org", "@alice:example.org", event_id, 0,
-                {"msgtype": "m.text", "body": body}, thread,
+                "!room:example.org",
+                "@alice:example.org",
+                event_id,
+                0,
+                {"msgtype": "m.text", "body": body},
+                relation,
             )
         if batch == "ingress":
             (key,) = adapter._pending_text_batches
@@ -1757,11 +1785,19 @@ async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(tmp_path
     store, _ = _room_session(tmp_path)
     runner = _room_context_runner(store, adapter)
 
-    prepared = await runner._prepare_inbound_message_text(event=event, source=event.source, history=[])
-
-    assert prepared == (
-        "[Earlier messages in this thread]\n[alice] root\n[alice] older\n\n[New message]\n[alice] first\nsecond"
+    prepared = await runner._prepare_inbound_message_text(
+        event=event, source=event.source, history=[]
     )
+
+    current = "[alice] first\nsecond"
+    if root_in_batch and batch == "ingress":
+        expected = current
+    else:
+        earlier = "[alice] older" if root_in_batch else "[alice] root\n[alice] older"
+        expected = (
+            f"[Earlier messages in this thread]\n{earlier}\n\n[New message]\n{current}"
+        )
+    assert prepared == expected
 
 
 @pytest.mark.asyncio

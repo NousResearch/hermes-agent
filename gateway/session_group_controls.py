@@ -21,6 +21,10 @@ GROUP_METHODS = {
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
+    'groups.replica_state': 'session:operator',
+    'groups.replication.prepare': 'session:control',
+    'groups.replication.enroll': 'session:operator',
+    'groups.replication.revoke': 'session:operator',
     'groups.peer.register': 'session:control',
     'groups.peer.invite': 'session:operator',
     'groups.peer.revoke': 'session:operator',
@@ -44,8 +48,13 @@ _FIELDS = {
                        'choice', 'request_id'},
     'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
-                           'member_id', 'ttl_seconds', 'status_ttl_seconds'},
+                           'member_id', 'ttl_seconds', 'status_ttl_seconds', 'replication', 'work_records', 'passive_only'},
     'groups.peer.revoke': {'grant'},
+    'groups.replica_state': {'room_id'},
+    'groups.replication.prepare': {'room_id', 'target_install_id', 'endpoint', 'enrollment_id',
+                                   'replace_enrollment_id'},
+    'groups.replication.enroll': {'enrollment', 'expected_enrollment_id', 'expected_state'},
+    'groups.replication.revoke': {'room_id', 'enrollment_id'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -82,12 +91,15 @@ async def dispatch_group_control(connection, method, params, *, author=None, rem
         from gateway.run import _profile_runtime_scope
         from gateway.hosted_rooms import HostedRoomError
         from gateway import session_group_peers as peers
+        from gateway import session_group_replication as replication
         with _profile_runtime_scope(home):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
                 if method in peers.TARGET_METHODS:
                     return peers.dispatch_target(authority, method, supplied)
+                if method in replication.TARGET_METHODS:
+                    return replication.dispatch_target(authority, method, supplied)
                 return _group(authority, actor, home, method, supplied, author=author, remember=remember)
             except RuntimeStoreError:
                 raise
@@ -134,6 +146,11 @@ def _group(authority, actor, home, method, params, *, author=None, remember=None
             raise RuntimeStoreError('runtime_coordination_required')
         from gateway.session_group_peers import register
         return register(service, params)
+    if method == 'groups.replication.prepare':
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        from gateway.session_group_replication import prepare
+        return prepare(service, params)
 
     def capabilities():
         from gateway.session_group_peers import room_link

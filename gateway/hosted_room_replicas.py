@@ -17,7 +17,7 @@ import math
 import sqlite3
 from contextlib import contextmanager
 from functools import partial
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from gateway.hosted_rooms import (
     MAX_ACTOR_ID_CHARS, MAX_EVENT_ID_CHARS, MAX_GATEWAY_EVENT_BYTES, MAX_LOG_LIMIT, MAX_LOG_PAGE_BYTES,
@@ -39,7 +39,14 @@ _SELECT_REPLICA = "SELECT * FROM hosted_room_replicas WHERE room_id=?"
 
 class ReplicaError(HostedRoomError): """Base class for invalid or conflicting replica operations."""
 class ReplicaGapError(ReplicaError): """A page does not start at the replica's next expected sequence."""
+class ReplicaCapacityError(ReplicaError): """Copying may resume once space or a replica slot is free."""
 class ReplicaEpochRegressionError(ReplicaError): """A demotion carries an older authority epoch than stored."""
+
+
+class ReplicaNotFoundError(ReplicaError):
+    """No copy of this room is stored here."""
+
+    reason = "not_found"
 
 
 class ReplicaHistoryExpiredError(ReplicaError):
@@ -192,12 +199,18 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _replica_transaction(db_path: DbPath) -> Iterator[sqlite3.Connection]:
+def _replica_transaction(
+    db_path: DbPath, _authorize: Callable[[sqlite3.Connection], None] | None = None,
+) -> Iterator[sqlite3.Connection]:
     """IMMEDIATE transaction over a current replica schema whose stored copies were just re-audited.
 
     A still-running older process can write replica rows after migration, so the audit runs inside
-    the same write transaction before every read, extension or takeover."""
+    the same write transaction before every read, extension or takeover. ``_authorize`` admits the
+    request first, inside the writer and before any schema or audit work, so a caller whose access
+    was withdrawn while it waited for the lock never starts replica maintenance."""
     with _transaction(db_path, immediate=True) as conn:
+        if _authorize is not None:
+            _authorize(conn)
         _initialize_replica_schema(conn)
         _audit_existing_replicas_locked(conn)
         yield conn
@@ -287,12 +300,15 @@ def _event_row(room_id: str, event: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def ingest_page(
-    db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None
+    db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None,
+    _authorize: Callable[[sqlite3.Connection], None] | None = None,
 ) -> dict[str, Any]:
     """Persist one verbatim ``read_events()`` page idempotently.
 
     Refuses sequence gaps, overlap that differs from stored history, authority changes without a
-    verified lineage, and events after a terminal ``room.disbanded``.
+    verified lineage, and events after a terminal ``room.disbanded``. ``_authorize`` admits a
+    room-grant sender inside the writer (``hosted_room_replica_ingress``); such a sender may be
+    ahead of its page, so the stored name follows the page's own rename events.
     """
     room_id = _room_id(room_id)
     room_name = _validate_room_name(room_name)
@@ -301,7 +317,13 @@ def ingest_page(
     if any(event["room_id"] != room_id for event in events):
         raise ReplicaError("page contains an event for a different room")
     now = clock(now)
-    with _replica_transaction(db_path) as conn:
+    with _replica_transaction(db_path, _authorize=_authorize) as conn:
+        from gateway.hosted_room_replica_retirement import copy_retired_locked, copy_scope_matches_locked
+        if copy_retired_locked(conn, room_id):
+            raise ReplicaHistoryExpiredError("Group Chat copy has been retired")
+        if not copy_scope_matches_locked(conn, room_id=room_id, authority_gateway_id=authority["gateway_id"],
+                                         authority_epoch=authority["epoch"], members_json=members_json):
+            raise ReplicaError("copy scope differs from owner enrollment")
         _prune_disbanded_replicas_locked(conn, now=now)
         if conn.execute("SELECT 1 FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone():
             raise ReplicaError("room_id is already locally authoritative")
@@ -315,7 +337,7 @@ def ingest_page(
             if reservation is not None and reservation["owner_kind"] == "replica":
                 raise ReplicaHistoryExpiredError("replica history expired; room_id remains permanently retired")
             if int(conn.execute("SELECT COUNT(*) FROM hosted_room_replicas").fetchone()[0]) >= MAX_REPLICA_ROOMS:
-                raise ReplicaError("replica room capacity exhausted")
+                raise ReplicaCapacityError("replica room capacity exhausted")
             if authority["epoch"] != 1:
                 raise ReplicaLineageUnverifiedError(
                     "replica lineage is incomplete; the first authority epoch is required")
@@ -325,7 +347,7 @@ def ingest_page(
             disbanded_at = row["disbanded_at"]
             if row["quarantine_reason"] is not None:
                 raise ReplicaError("stored replica is quarantined: " + str(row["quarantine_reason"]))
-            if row["name"] != room_name or row["members_json"] != members_json:
+            if (row["name"] != room_name and _authorize is None) or row["members_json"] != members_json:
                 raise ReplicaError("replica metadata conflicts with stored state")
             if row["authority_gateway_id"] != authority["gateway_id"] or stored_epoch != authority["epoch"]:
                 raise ReplicaLineageUnverifiedError("replica authority changed without a verified takeover lineage")
@@ -352,6 +374,11 @@ def ingest_page(
             raise ReplicaError("room.disbanded must be the terminal event")
         if disband_indexes and new_events[-1]["seq"] != latest_seq:
             raise ReplicaError("room.disbanded must complete the source history")
+        name = row["name"] if row is not None and _authorize is not None else room_name
+        if _authorize is not None:
+            for event in new_events:
+                if event["kind"] == "room.renamed":
+                    name = _validate_room_name(json.loads(event["payload_json"]).get("name"))
         added_bytes = sum(
             utf8_len(event["event_id"], event["kind"], event["actor_json"], event["payload_json"])
             for event in new_events)
@@ -363,12 +390,12 @@ def ingest_page(
             conn.execute("""INSERT INTO hosted_room_replicas (room_id, name, members_json,
                     authority_gateway_id, authority_epoch, last_seq, latest_seq, event_bytes,
                     created_at, updated_at, disbanded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (room_id, room_name, members_json, authority["gateway_id"], authority["epoch"], new_last,
+                (room_id, name, members_json, authority["gateway_id"], authority["epoch"], new_last,
                  latest_seq, added_bytes, now, now, terminal_at))
         else:
             conn.execute("""UPDATE hosted_room_replicas SET last_seq=?, latest_seq=?, event_bytes=event_bytes+?,
-                    updated_at=?, disbanded_at=? WHERE room_id=?""",
-                (new_last, latest_seq, added_bytes, now, terminal_at, room_id))
+                    updated_at=?, disbanded_at=?, name=? WHERE room_id=?""",
+                (new_last, latest_seq, added_bytes, now, terminal_at, name, room_id))
     return {
         "room_id": room_id, "stored_seq": new_last, "ingested": len(new_events), "authority": authority,
         "caught_up": new_last >= latest_seq}
@@ -385,20 +412,53 @@ def _reserve_replica_bytes(conn: sqlite3.Connection, added_bytes: int) -> None:
         _prune_disbanded_replicas_locked(conn, now=None, max_replica_event_bytes=max(
             0, MAX_REPLICA_EVENT_BYTES - added_bytes - used("hosted_rooms")))
     if used("hosted_rooms") + used("hosted_room_replicas") + added_bytes > MAX_REPLICA_EVENT_BYTES:
-        raise ReplicaError("replica event storage exhausted")
+        raise ReplicaCapacityError("replica event storage exhausted")
+
+
+def _read_replica_locked(conn: sqlite3.Connection, room_id: str) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
+    row = conn.execute(_SELECT_REPLICA, (room_id,)).fetchone()
+    reservation = None if row is not None else conn.execute(
+        "SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id=?", (room_id,)).fetchone()
+    return row, reservation
 
 
 def replica_state(db_path: DbPath, *, room_id: Any) -> dict[str, Any]:
     """Return the stored replica's coverage, authority lineage and safety status."""
     room_id = _room_id(room_id)
     with _replica_transaction(db_path) as conn:
-        row = conn.execute(_SELECT_REPLICA, (room_id,)).fetchone()
-        reservation = None if row is not None else conn.execute(
-            "SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id=?", (room_id,)).fetchone()
+        row, reservation = _read_replica_locked(conn, room_id)
+    return _replica_result(row, reservation)
+
+
+def copy_state(db_path: DbPath, *, room_id: Any) -> dict[str, Any]:
+    """``replica_state`` plus what a participant keeps beside its copy: task evidence and retirement."""
+    from gateway import hosted_room_work_records as work_records
+    from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
+    from gateway.hosted_rooms_common import table_exists
+    room_id = _room_id(room_id)
+    with _replica_transaction(db_path) as conn:
+        row, reservation = _read_replica_locked(conn, room_id)
+        retired = conn.execute(f"SELECT retired_at FROM {RETIREMENT_TABLE} WHERE room_id=?", (room_id,)).fetchone() \
+            if table_exists(conn, RETIREMENT_TABLE) else None
+        extra = {}
+        if row is not None:
+            work_records.audit_replica_locked(conn, room_id)
+            extra["work_records"] = work_records.summary_locked(conn, room_id) if row["quarantine_reason"] is None \
+                else {"availability": "unavailable", "source_loss_safe": False}
+    # Raise only after the writer commits: the audit may just have quarantined this copy.
+    state = {**_replica_result(row, reservation), **extra}
+    if retired is not None:
+        state["copy_retired_at"] = float(retired[0])
+        if state["safety_status"] == "passive":
+            state["safety_status"] = "retired"
+    return state
+
+
+def _replica_result(row: sqlite3.Row | None, reservation: sqlite3.Row | None) -> dict[str, Any]:
     if row is None:
         if reservation is not None and reservation["owner_kind"] == "replica":
             raise ReplicaHistoryExpiredError("replica history expired; room_id remains permanently retired")
-        raise ReplicaError("replica not found")
+        raise ReplicaNotFoundError("replica not found")
     return {
         "room_id": row["room_id"], "name": row["name"], "members": json.loads(row["members_json"]),
         "authority": {"gateway_id": row["authority_gateway_id"], "epoch": int(row["authority_epoch"])},

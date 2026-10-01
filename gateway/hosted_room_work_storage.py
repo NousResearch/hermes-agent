@@ -29,7 +29,7 @@ def initialize(conn):
 
 def _initialize_locked(conn):
     from gateway import hosted_room_work_records as work
-    tables = (work.SOURCE_TABLE, work.PENDING_TABLE)
+    tables = (work.SOURCE_TABLE, work.TARGET_TABLE, work.PENDING_TABLE)
     # Orphans are opaque evidence, not snapshots. No FK or producer can honestly
     # be supplied for them. Preserve every original column and forbid mutation.
     conn.execute(f"""CREATE TABLE IF NOT EXISTS {INVALID_TABLE} (
@@ -88,6 +88,7 @@ def _initialize_locked(conn):
     # Ordinary initialization owns schema/guards only. Each consuming operation
     # validates its own row; authority/enrollment triggers freeze exact-room old
     # scopes. Legacy dispositions were resolved at insertion above.
+    work.initialize_target_guards(conn)
 
 
 def scope_disposition(conn, table, row):
@@ -96,8 +97,9 @@ def scope_disposition(conn, table, row):
     if row["disposition"] != "current":
         return row["disposition"]
     current = None
-    current = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?",
-                           (row["room_id"],)).fetchone()
+    if table != work.TARGET_TABLE:
+        current = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?",
+                               (row["room_id"],)).fetchone()
     if current is None or tuple(current) == (row["producer_gateway_id"], row["producer_epoch"]):
         return "current"
     return "superseded_authority" if table == work.PENDING_TABLE and row["status"] != "acked" else "historical"
@@ -129,10 +131,7 @@ def _guards(conn, work, tables):
                 OR (OLD.disposition!='current' AND (NEW.record_json!=OLD.record_json OR NEW.revision!=OLD.revision
                     OR NEW.digest!=OLD.digest OR NEW.disposition!=OLD.disposition))
             BEGIN SELECT RAISE(ABORT, 'historical work record is immutable'); END""")
-        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_delete_v2 BEFORE DELETE ON {table}
-            WHEN OLD.disposition!='current' AND EXISTS (SELECT 1 FROM hosted_rooms
-                WHERE room_id=OLD.room_id AND disbanded_at IS NULL)
-            BEGIN SELECT RAISE(ABORT, 'historical work record is immutable'); END""")
+        _historical_delete_guard(conn, table)
         # INSERT OR REPLACE performs a delete internally. Refuse it before the
         # uniqueness conflict can remove an immutable snapshot.
         extra = " AND p.target_install_id=NEW.target_install_id" if table == work.PENDING_TABLE else ""
@@ -154,6 +153,26 @@ def _guards(conn, work, tables):
             WHERE room_id=NEW.room_id AND disposition='current'
             AND (producer_gateway_id!=NEW.authority_gateway_id OR producer_epoch!=NEW.authority_epoch);
         END""")
+
+
+def _historical_delete_guard(conn, table):
+    """Superseded evidence stays while its room or copy is active; a participant's lives on its copy.
+
+    A retired copy's evidence is cleaned up with it, so the participant guard exists only once it
+    can recognise that cleanup: retirement installs it when it initializes, in either order.
+    """
+    from gateway import hosted_room_work_records as work
+    from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
+    parent, retired = "hosted_rooms", ""
+    if table == work.TARGET_TABLE:
+        if not table_exists(conn, RETIREMENT_TABLE):
+            return
+        parent = "hosted_room_replicas"
+        retired = f" AND NOT EXISTS (SELECT 1 FROM {RETIREMENT_TABLE} WHERE room_id=OLD.room_id)"
+    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_delete_v2 BEFORE DELETE ON {table}
+        WHEN OLD.disposition!='current' AND EXISTS (SELECT 1 FROM {parent} WHERE room_id=OLD.room_id
+            AND disbanded_at IS NULL){retired}
+        BEGIN SELECT RAISE(ABORT, 'historical work record is immutable'); END""")
 
 
 def retained_fields(table):
@@ -239,9 +258,40 @@ def save_locked(conn, table, record, *, target_install_id=None, route_generation
 
 
 def _invalid_guards(conn):
-    # There is no reviewed retirement grant in this runtime. Opaque evidence
-    # cannot acquire a first-writer owner or be reclaimed by an ordinary writer.
-    for operation in ("INSERT", "UPDATE", "DELETE"):
+    """Opaque evidence never gains an owner or changes; it goes only with its owner's own cleanup.
+
+    Its room's Disband or deletion, its copy's Disband or deletion, or the copy's owner-enrolled
+    retirement reclaims it. No ordinary writer can, and nothing is inserted after migration.
+    """
+    from gateway import hosted_room_work_records as work
+    from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
+    for operation in ("INSERT", "UPDATE"):
         conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_invalid_{operation.lower()}
             BEFORE {operation} ON {INVALID_TABLE}
             BEGIN SELECT RAISE(ABORT, 'invalid work evidence is immutable'); END""")
+    home = f"source_table IN ('{work.SOURCE_TABLE}','{work.PENDING_TABLE}')"
+    copy = f"source_table='{work.TARGET_TABLE}'"
+    retired = (f"OR (OLD.{copy} AND EXISTS (SELECT 1 FROM {RETIREMENT_TABLE} WHERE room_id=OLD.room_id))"
+               if table_exists(conn, RETIREMENT_TABLE) else "")
+    # The base runtime made every deletion fail. Rebuild the guard so it also admits these cleanups.
+    conn.execute("DROP TRIGGER IF EXISTS trg_work_invalid_delete")
+    conn.execute(f"""CREATE TRIGGER trg_work_invalid_delete BEFORE DELETE ON {INVALID_TABLE}
+        WHEN NOT ((OLD.{home} AND (
+                EXISTS (SELECT 1 FROM hosted_rooms WHERE room_id=OLD.room_id AND disbanded_at IS NOT NULL)
+                OR (EXISTS (SELECT 1 FROM hosted_room_id_reservations WHERE room_id=OLD.room_id AND owner_kind='authority')
+                    AND NOT EXISTS (SELECT 1 FROM hosted_rooms WHERE room_id=OLD.room_id))))
+            OR (OLD.{copy} AND (
+                EXISTS (SELECT 1 FROM hosted_room_replicas WHERE room_id=OLD.room_id AND disbanded_at IS NOT NULL)
+                OR (EXISTS (SELECT 1 FROM hosted_room_id_reservations WHERE room_id=OLD.room_id AND owner_kind='replica')
+                    AND NOT EXISTS (SELECT 1 FROM hosted_room_replicas WHERE room_id=OLD.room_id)))) {retired})
+        BEGIN SELECT RAISE(ABORT, 'invalid work evidence is immutable'); END""")
+    for parent, kind in (("hosted_rooms", home), ("hosted_room_replicas", copy)):
+        for operation, ref, condition in (("DELETE", "OLD", ""),
+                                          ("UPDATE OF disbanded_at", "NEW", " WHEN NEW.disbanded_at IS NOT NULL")):
+            name = "delete" if operation == "DELETE" else "disband"
+            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_invalid_{parent}_{name}
+                AFTER {operation} ON {parent}{condition} BEGIN
+                DELETE FROM {INVALID_TABLE} WHERE room_id={ref}.room_id AND {kind}; END""")
+    if table_exists(conn, RETIREMENT_TABLE):
+        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_invalid_retired AFTER INSERT ON {RETIREMENT_TABLE}
+            BEGIN DELETE FROM {INVALID_TABLE} WHERE room_id=NEW.room_id AND {copy}; END""")

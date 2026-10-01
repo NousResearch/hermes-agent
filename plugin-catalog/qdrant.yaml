@@ -1,8 +1,8 @@
 name: qdrant
 repo: https://github.com/kuehnberger/hermes-qdrant-memory
-sha: c0181644273b2a223f53a622d77e437345db2e39
-version: "0.1.2"
-image: https://raw.githubusercontent.com/kuehnberger/hermes-qdrant-memory/c0181644273b2a223f53a622d77e437345db2e39/docs/banner.jpg
+sha: d2ec4578387be26924b56656653c7e1cbdf3ee02
+version: "0.1.3"
+image: https://raw.githubusercontent.com/kuehnberger/hermes-qdrant-memory/d2ec4578387be26924b56656653c7e1cbdf3ee02/docs/banner.jpg
 description: >-
   Dense semantic memory for Hermes, stored in a Qdrant collection you host. Each turn
   becomes one point — user and assistant text verbatim, no LLM summarization step —
@@ -19,11 +19,13 @@ description: >-
   _backend.py but are not on the live path. Disclosure — all memory content lives in
   the Qdrant server at url (default http://localhost:6333) and is read back from
   there; QDRANT_API_KEY is needed only for Qdrant Cloud, is read through the Hermes
-  secret scope and is never written to config.yaml; config.json is created 0600 and
-  git-ignored. Disclosure — the sole outbound request is the embedding model's weights
-  from huggingface.co on first use; embedding then runs on-device and no memory content
-  is sent to any third party. Local embedded Qdrant mode is not supported: the provider
-  is REST-only and needs a reachable server.
+  secret scope and is never written to config.yaml. Disclosure — the sole outbound
+  request is the embedding model's weights from huggingface.co on first use; embedding
+  then runs on-device and no memory content is sent to any third party. Disclosure —
+  runtime config and status live in <HERMES_HOME>/qdrant.json (created 0600) rather than
+  inside the plugin directory, because the plugin directory is a PM build input and
+  state written there changes the dependency stamp on every launch. Local embedded
+  Qdrant mode is not supported: the provider is REST-only and needs a reachable server.
 maintainer: kuehnberger
 tier: community
 category: memory
@@ -32,6 +34,7 @@ docs_url: https://github.com/kuehnberger/hermes-qdrant-memory#readme
 known_issues:
   - "Windows on ARM is unsupported: grpcio, pulled in by qdrant-client, has no win_arm64 wheel. Linux and macOS on x86_64/arm64 and Windows x86_64 are supported."
   - "Local embedded Qdrant mode is not supported — the provider is REST-only and requires a reachable server."
+  - "Running the plugin's pytest suite inside an installed copy still changes the PM dependency stamp (the .pytest_cache directory is hashed as a build input); only an upstream core change can exclude gitignored state."
 capabilities:
   provides_tools:
     - qdrant_search

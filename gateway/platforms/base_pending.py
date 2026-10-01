@@ -22,7 +22,7 @@ import copy
 import logging
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Optional, Tuple
 
 from gateway.platforms.event import MessageEvent
@@ -88,6 +88,51 @@ class _PendingDispatchReservation:
     claimed: bool = False
     input_session_id: str | None = None
     input_owner: str | None = None
+    withdrawal_closed: bool = False
+    withdrawn: bool = False
+    revision: int = 0
+    accepted: bool = True
+    task: asyncio.Task | None = None
+    previous: _PendingDispatchReservation | None = None
+    aliases: list[MessageEvent] = field(default_factory=list)
+
+    def includes(self, event: MessageEvent) -> bool:
+        return self.event is event or any(alias is event for alias in self.aliases)
+
+    def bind(self, event: MessageEvent) -> None:
+        if self.includes(event):
+            return
+        event._merged_parts = self.event._merged_parts
+        for attr in ("_pending_snapshot_uid", "_gateway_pending_stt_text", "_gateway_pending_stt_transcripts",
+                     "_gateway_pending_stt_clips", "_gateway_pending_stt_echoed_paths"):
+            if hasattr(self.event, attr):
+                setattr(event, attr, getattr(self.event, attr))
+        self.aliases.append(event)
+
+    def withdraw(self, withdraw: Withdraw) -> bool:
+        if self.claimed or self.withdrawn or self.withdrawal_closed:
+            return False
+        matched, remaining = withdraw(self.event)
+        if not matched:
+            return False
+        self.revision += 1
+        if remaining is None:
+            self.withdrawn = True
+            return True
+        # Preparers share this event while awaiting provider work. Replacing its
+        # identity would leave those callers with the removed contribution.
+        echoed = set(getattr(remaining, "_gateway_pending_stt_echoed_paths", ()))
+        for event in (self.event, *self.aliases):
+            for item in fields(event):
+                if item.init:
+                    setattr(event, item.name, getattr(remaining, item.name))
+            event._merged_parts = remaining._merged_parts
+            event._prepared_inbound = None
+            for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts", "_gateway_pending_stt_clips"):
+                if hasattr(event, attr):
+                    delattr(event, attr)
+            setattr(event, "_gateway_pending_stt_echoed_paths", echoed.intersection(event.media_urls))
+        return True
 
 
 @dataclass(frozen=True)
@@ -104,14 +149,44 @@ _dispatch: ContextVar[_PendingDispatch | None] = ContextVar(
 )
 
 
-def reserve_pending_dispatch(
-    adapter: object, session_key: str, event: MessageEvent
-) -> None:
+def pending_dispatch_records(adapter: object, session_key: str) -> list[_PendingDispatchReservation]:
+    reservations = getattr(adapter, "_pending_dispatch_reservations", {})
+    record = reservations.get(session_key)
+    records = []
+    while record is not None:
+        records.append(record)
+        record = record.previous
+    return list(reversed(records))
+
+
+def pending_dispatch_record(adapter: object, session_key: str,
+                            event: MessageEvent) -> _PendingDispatchReservation | None:
+    for record in pending_dispatch_records(adapter, session_key):
+        if record.includes(event):
+            return record
+    dispatch = _dispatch.get()
+    if (dispatch is not None and dispatch.adapter is adapter
+            and dispatch.session_key == session_key and dispatch.task is asyncio.current_task()
+            and (dispatch.event is event or (
+                dispatch.event.source == event.source and dispatch.event.message_id == event.message_id
+                and (bool(event.message_id) or dispatch.event.timestamp == event.timestamp)))):
+        return dispatch.reservation
+    return None
+
+
+def reserve_pending_dispatch(adapter: object, session_key: str, event: MessageEvent, *,
+                             accepted: bool = True) -> _PendingDispatchReservation:
+    for record in pending_dispatch_records(adapter, session_key):
+        if record.includes(event):
+            record.accepted = record.accepted or accepted
+            return record
     reservations = getattr(adapter, "_pending_dispatch_reservations", None)
     if reservations is None:
         reservations = {}
         setattr(adapter, "_pending_dispatch_reservations", reservations)
-    reservations[session_key] = _PendingDispatchReservation(event)
+    record = _PendingDispatchReservation(event, accepted=accepted, previous=reservations.get(session_key))
+    reservations[session_key] = record
+    return record
 
 
 def release_pending_dispatch(
@@ -120,22 +195,50 @@ def release_pending_dispatch(
     reservations = getattr(adapter, "_pending_dispatch_reservations", None)
     if not isinstance(reservations, dict):
         return
-    reserved = reservations.get(session_key)
+    record = next((candidate for candidate in pending_dispatch_records(adapter, session_key)
+                   if candidate.includes(event)), None)
     dispatch = _dispatch.get()
-    owning_dispatch = (
-        dispatch is not None
-        and dispatch.adapter is adapter
-        and dispatch.session_key == session_key
-        and dispatch.task is asyncio.current_task()
-    )
-    record = reserved if reserved is not None and reserved.event is event else None
-    if record is None and owning_dispatch:
+    if (record is None and dispatch is not None and dispatch.adapter is adapter
+            and dispatch.session_key == session_key and dispatch.task is asyncio.current_task()):
         record = dispatch.reservation
     if record is None:
         return
+    release_pending_dispatch_record(adapter, session_key, record, claimed=claimed)
+
+
+def release_pending_dispatch_record(adapter: object, session_key: str,
+                                    record: _PendingDispatchReservation, *, claimed: bool = False) -> None:
     record.claimed = record.claimed or claimed
+    reservations = getattr(adapter, "_pending_dispatch_reservations", {})
+    reserved = reservations.get(session_key)
     if reserved is record:
-        reservations.pop(session_key, None)
+        if record.previous is None:
+            reservations.pop(session_key, None)
+        else:
+            reservations[session_key] = record.previous
+        return
+    for newer in pending_dispatch_records(adapter, session_key):
+        if newer.previous is record:
+            newer.previous = record.previous
+            return
+
+
+def pending_dispatch_withdrawn(adapter: object, session_key: str, event: MessageEvent) -> bool:
+    record = pending_dispatch_record(adapter, session_key, event)
+    return record is not None and record.withdrawn
+
+
+def pending_dispatch_revision(adapter: object, session_key: str, event: MessageEvent) -> int:
+    record = pending_dispatch_record(adapter, session_key, event)
+    return record.revision if record is not None else 0
+
+
+def close_pending_dispatch_withdrawal(
+    adapter: object, session_key: str, event: MessageEvent
+) -> None:
+    record = pending_dispatch_record(adapter, session_key, event)
+    if record is not None:
+        record.withdrawal_closed = True
 
 
 def bind_pending_dispatch_input(session_id: str, owner: str) -> None:
@@ -153,7 +256,7 @@ def pending_dispatch_needs_snapshot(
     adapter: object, reserved: _PendingDispatchReservation
 ) -> bool:
     """Whether this provisional input still needs shutdown preservation."""
-    if reserved.claimed:
+    if reserved.claimed or reserved.withdrawn:
         return False
     if not reserved.input_session_id or not reserved.input_owner:
         return True
@@ -176,20 +279,13 @@ def pending_dispatch_needs_snapshot(
 
 
 @contextmanager
-def pending_dispatch_scope(
-    adapter: object, session_key: str, event: MessageEvent
-) -> Iterator[None]:
-    reservations = getattr(adapter, "_pending_dispatch_reservations", {})
-    reservation = (
-        reservations.get(session_key) if isinstance(reservations, dict) else None
-    )
-    if reservation is not None and reservation.event is not event:
-        reservation = None
-    token = _dispatch.set(
-        _PendingDispatch(
-            adapter, session_key, event, asyncio.current_task(), reservation
-        )
-    )
+def pending_dispatch_scope(adapter: object, session_key: str,
+                           event: MessageEvent) -> Iterator[None]:
+    reservation = next((record for record in pending_dispatch_records(adapter, session_key)
+                        if record.includes(event)), None)
+    if reservation is not None and reservation.task is None:
+        reservation.task = asyncio.current_task()
+    token = _dispatch.set(_PendingDispatch(adapter, session_key, event, asyncio.current_task(), reservation))
     try:
         yield
     finally:
@@ -206,6 +302,8 @@ def is_pending_redispatch(
         or dispatch.session_key != session_key
         or dispatch.task is not asyncio.current_task()
     ):
+        return False
+    if dispatch.reservation is None or not dispatch.reservation.accepted:
         return False
     original = dispatch.event
     return (
@@ -307,10 +405,9 @@ class PendingWithdrawalMixin:
         only if it has the ID ``message_id``, is in ``chat_id`` and was sent by ``sender_id``.
         Returns whether the message was found.
 
-        A turn that has already started is not changed. A message that a task is moving between
-        buffers is not in any of them and is not withdrawn either: a flushed text batch while
-        the busy handler awaits authorization or steering, or a drained slot event while its
-        voice note is transcribed. Platform adapters call this when they observe the deletion.
+        A turn that has already started is not changed. Preparations remain searchable while
+        authorization, steering or transcription awaits. Platform adapters call this when they
+        observe the deletion.
         A deletion event does not identify a session, so every buffer is searched."""
 
         def matches(event: MessageEvent) -> bool:
@@ -327,6 +424,10 @@ class PendingWithdrawalMixin:
             return withdraw_from_event(event, matches)
 
         found = False
+        for key in list(getattr(self, "_pending_dispatch_reservations", {})):
+            for record in pending_dispatch_records(self, key):
+                if pending_dispatch_needs_snapshot(self, record):
+                    found = record.withdraw(withdraw) or found
         for key, event in list(self._pending_text_batches.items()):
             matched, rest = withdraw(event)
             if not matched:

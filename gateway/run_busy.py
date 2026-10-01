@@ -23,7 +23,7 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.base_pending import Withdraw
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch, release_pending_dispatch
+from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch, release_pending_dispatch, pending_dispatch_records, pending_dispatch_withdrawn
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -105,6 +105,9 @@ class GatewayBusySessionMixin:
         _defer_for_startup_restore: Callable[[MessageEvent], bool]
         _session_state: Callable[[str], SessionState]
         _sessions_map: Callable[[], Dict[str, SessionState]]
+        _delivery_adapter_for = GatewayRunner._delivery_adapter_for
+        _session_key_for_source = GatewayRunner._session_key_for_source
+
 
     async def _strict_session_current(
         self, event: MessageEvent, session_key: str, *, session_id: str | None = None,
@@ -189,15 +192,16 @@ class GatewayBusySessionMixin:
         buffers = getattr(adapter, "_text_debounce", None)
         if isinstance(buffers, dict) and (buffered := buffers.get(session_key)) is not None:
             depth += len(buffered.earlier_events) + 1
-        reservations = getattr(adapter, "_pending_dispatch_reservations", None)
-        reserved = reservations.get(session_key) if isinstance(reservations, dict) else None
-        if reserved is not None and pending_dispatch_needs_snapshot(adapter, reserved):
-            stored = [getattr(adapter, "_pending_messages", {}).get(session_key),
-                      *(self._overflow_queue(session_key) or ())]
-            if isinstance(buffers, dict) and (buffered := buffers.get(session_key)) is not None:
-                stored.extend([*buffered.earlier_events, buffered.event])
+        stored = [getattr(adapter, "_pending_messages", {}).get(session_key),
+                  *(self._overflow_queue(session_key) or ())]
+        if isinstance(buffers, dict) and (buffered := buffers.get(session_key)) is not None:
+            stored.extend([*buffered.earlier_events, buffered.event])
+        for reserved in pending_dispatch_records(adapter, session_key):
+            if not reserved.accepted or not pending_dispatch_needs_snapshot(adapter, reserved):
+                continue
             if not any(event is reserved.event for event in stored):
                 depth += 1
+                stored.append(reserved.event)
         return depth
 
     def _rescue_orphaned_overflow(self, session_key: str, adapter: Any) -> Optional[MessageEvent]:
@@ -461,6 +465,8 @@ class GatewayBusySessionMixin:
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False
+        if pending_dispatch_withdrawn(adapter, session_key, event):
+            return False
         pending_slot = getattr(adapter, "_pending_messages", None)
         if not isinstance(pending_slot, dict):
             return False
@@ -491,6 +497,8 @@ class GatewayBusySessionMixin:
         return self._enqueue_fifo(session_key, event, adapter)
 
     def _restore_pending_dispatch(self, session_key: str, event: MessageEvent, adapter) -> None:
+        if pending_dispatch_withdrawn(adapter, session_key, event):
+            return
         existing = adapter._pending_messages.get(session_key)
         if existing is not None and existing is not event:
             self._session_state(session_key).conversation.queued_events.insert(0, existing)
@@ -683,6 +691,7 @@ class GatewayBusySessionMixin:
         if demoted_for_compression:
             effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
         steered = redirected = False
+        adapter = self._delivery_adapter_for(event.source)
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
         plain_text = (
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
@@ -697,22 +706,29 @@ class GatewayBusySessionMixin:
             _steer_all_voice = bool(_steer_media_urls) and (
                 len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
             )
-            if steer_text and (plain_text or _steer_all_voice) and agent_live and hasattr(running_agent, "steer"):
+            adapter = self._delivery_adapter_for(event.source)
+            if (not pending_dispatch_withdrawn(adapter, session_key, event)
+                    and steer_text and (plain_text or _steer_all_voice) and agent_live
+                    and hasattr(running_agent, "steer")):
                 steered = self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
                 )
             if steered:
+                release_pending_dispatch(adapter, session_key, event, claimed=True)
                 self._fold_into_running_turn(running_agent, session_key, event)
             else:
                 effective_mode = "queue"
         elif (
             effective_mode == "interrupt" and plain_text and agent_live
+            and not pending_dispatch_withdrawn(adapter, session_key, event)
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
             and hasattr(running_agent, "redirect")
         ):
             redirected = self._redirect_active_turn(
                 running_agent, (event.text or "").strip(), session_key, event
             )
+            if redirected:
+                release_pending_dispatch(adapter, session_key, event, claimed=True)
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
@@ -784,6 +800,9 @@ class GatewayBusySessionMixin:
                 )
             elif not _interrupt_text and _media_urls:
                 _interrupt_text = _build_media_placeholder(event)
+            key = self._session_key_for_source(event.source)
+            if pending_dispatch_withdrawn(adapter, key, event):
+                return
             running_agent.interrupt(_interrupt_text)
         except Exception:
             pass  # don't let interrupt failure block the ack
@@ -960,6 +979,8 @@ class GatewayBusySessionMixin:
             return True
         _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)
         effective_mode, redirected = _steer.effective_mode, _steer.redirected
+        if pending_dispatch_withdrawn(adapter, session_key, event):
+            return True
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in
         # the run and must NOT replay). FIFO gives each text its own turn (raw merge would join them).
         if not _steer.steered and not redirected:

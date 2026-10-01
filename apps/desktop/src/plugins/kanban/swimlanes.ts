@@ -50,19 +50,24 @@ const DIMENSIONS: Record<LaneDimension, Dimension> = {
     key: task => task.project_id || NO_LANE,
     compare: byLabel,
     patch: null,
-    preset: key => (key ? { project_id: key } : {})
+    // '' is the backend's explicit "no project" (a project-scoped board would
+    // otherwise adopt its own project for the task).
+    preset: key => ({ project_id: key })
   },
   assignee: {
     key: task => task.assignee || NO_LANE,
     compare: byLabel,
     // '' unassigns (PATCH treats an empty assignee as clear).
     patch: key => ({ assignee: key }),
-    preset: key => (key ? { assignee: key } : {})
+    // '' = the unassigned lane: the dialog preselects "parked".
+    preset: key => ({ assignee: key })
   },
   tenant: {
     key: task => task.tenant || NO_LANE,
     compare: byLabel,
     patch: null,
+    // No "" tenant: an empty string would be stored as a tenant of its own. The
+    // no-tenant lane sends nothing, so a chosen parent's tenant still applies.
     preset: key => (key ? { tenant: key } : {})
   },
   // Every task has a priority (default 0), so there is no empty lane; higher
@@ -92,15 +97,27 @@ export interface Swimlane {
   count: number
 }
 
-/** Split the board's columns into lanes. Only lanes with at least one task
- *  exist; in-column task order is preserved; the no-value lane sorts last. */
+/** Split the board's columns into lanes. A lane exists when a task is in it
+ *  or its key is seeded (so an empty project still offers a lane to create
+ *  into); in-column task order is preserved; the no-value lane sorts last. */
 export function groupSwimlanes(
   columns: KanbanColumn[],
   by: LaneDimension,
-  label: (key: string) => string = key => key
+  label: (key: string) => string = key => key,
+  seed: readonly string[] = []
 ): Swimlane[] {
   const dim = DIMENSIONS[by]
   const lanes = new Map<string, Swimlane>()
+
+  const emptyLane = (key: string): Swimlane => ({
+    key,
+    columns: columns.map(col => ({ name: col.name, tasks: [] })),
+    count: 0
+  })
+
+  for (const key of seed) {
+    lanes.set(key, emptyLane(key))
+  }
 
   for (const [index, column] of columns.entries()) {
     for (const task of column.tasks) {
@@ -108,7 +125,7 @@ export function groupSwimlanes(
       let lane = lanes.get(key)
 
       if (!lane) {
-        lane = { key, columns: columns.map(col => ({ name: col.name, tasks: [] })), count: 0 }
+        lane = emptyLane(key)
         lanes.set(key, lane)
       }
 

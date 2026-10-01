@@ -55,6 +55,7 @@ type KanbanMessages = {
   noProjectLane: string
   noTenant: string
   priorityLane: (priority: number) => string
+  createdInOtherLane: (lane: string) => string
   nSelected: (n: number) => string
   moveToShort: string
   assign: string
@@ -292,6 +293,7 @@ export const en: KanbanMessages = {
   noProjectLane: 'No project',
   noTenant: 'No tenant',
   priorityLane: priority => (priority ? `Priority ${priority}` : 'No priority'),
+  createdInOtherLane: lane => `Created in the “${lane}” lane — the form or its parent task set that.`,
   nSelected: n => `${n} selected`,
   moveToShort: 'Move to',
   assign: 'Assign',
@@ -531,6 +533,7 @@ const ja: KanbanMessages = {
   noProjectLane: 'プロジェクトなし',
   noTenant: 'テナントなし',
   priorityLane: priority => (priority ? `優先度 ${priority}` : '優先度なし'),
+  createdInOtherLane: lane => `「${lane}」レーンに作成しました（フォームまたは親タスクの設定による）。`,
   nSelected: n => `${n} 件選択中`,
   moveToShort: '移動',
   assign: '割り当て',
@@ -768,6 +771,7 @@ const zh: KanbanMessages = {
   noProjectLane: '无项目',
   noTenant: '无租户',
   priorityLane: priority => (priority ? `优先级 ${priority}` : '无优先级'),
+  createdInOtherLane: lane => `已创建在“${lane}”泳道（由表单或父任务决定）。`,
   nSelected: n => `已选择 ${n} 个`,
   moveToShort: '移动到',
   assign: '分配',
@@ -1003,6 +1007,7 @@ const zhHant: KanbanMessages = {
   noProjectLane: '無專案',
   noTenant: '無租戶',
   priorityLane: priority => (priority ? `優先順序 ${priority}` : '無優先順序'),
+  createdInOtherLane: lane => `已建立在「${lane}」泳道（由表單或父任務決定）。`,
   nSelected: n => `已選取 ${n} 個`,
   moveToShort: '移至',
   assign: '指派',

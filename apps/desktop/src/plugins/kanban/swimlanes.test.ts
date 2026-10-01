@@ -66,6 +66,19 @@ describe('groupSwimlanes', () => {
     }
   })
 
+  it('seeded lanes exist with no cards, ordered with the occupied ones', () => {
+    const unlinked = board(TASKS.map(t => ({ ...t, project_id: null })))
+    const names: Record<string, string> = { p1: 'Zeta', p2: 'Alpha', p3: 'Mid' }
+    const lanes = groupSwimlanes(unlinked.columns, 'project', key => names[key] ?? key, ['p1', 'p2', 'p3'])
+
+    expect(lanes.map(l => [l.key, l.count])).toEqual([
+      ['p2', 0],
+      ['p3', 0],
+      ['p1', 0],
+      [NO_LANE, TASKS.length]
+    ])
+  })
+
   it('orders named lanes by display label and priority lanes high to low', () => {
     const { columns } = board(TASKS)
     const names: Record<string, string> = { p1: 'Zeta', p2: 'Alpha' }

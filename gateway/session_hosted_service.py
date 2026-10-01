@@ -153,8 +153,14 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 # Admission checks must share the FIFO writer's snapshot. Opening
                 # another transaction here would reintroduce the revocation race.
                 from gateway.hosted_rooms import _room_from_row
-                from gateway.hosted_room_driver import _task_from_row
+                from gateway.hosted_room_driver import (
+                    _task_from_row, _require_room_authority, RoomUnavailableError, StaleLeaseError)
                 _epoch(conn, self.authority.epoch)
+                if operation in {'submit', 'execute'}:
+                    try:
+                        _require_room_authority(conn, binding.room_id, binding.gateway_id, binding.authority_epoch)
+                    except (RoomUnavailableError, StaleLeaseError):
+                        return False
                 owned = conn.execute('SELECT value FROM state_meta WHERE key=?',
                                      (_OWNER + binding.room_id,)).fetchone()
                 if owned is None or owned[0] != owner:

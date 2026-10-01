@@ -267,10 +267,8 @@ class TestValidateSignature:
         )
         assert adapter._validate_signature(replayed, body, secret) is False
 
-    def test_v1_signature_accepted_with_explicit_allow_legacy_v1(self):
-        """A route that explicitly sets ``allow_legacy_v1: true`` opts in to
-        the legacy body-only HMAC during migration. The signature is still
-        validated, and the operator is warned once per route."""
+    def test_v1_signature_rejected_even_with_allow_legacy_v1(self):
+        """A legacy flag must not restore the replayable authentication path."""
         adapter = _make_adapter(
             routes={"legacy-route": {"prompt": "test", "allow_legacy_v1": True}},
             secret="generic-secret",
@@ -282,7 +280,7 @@ class TestValidateSignature:
             headers={"X-Webhook-Signature": sig},
             match_info={"route_name": "legacy-route"},
         )
-        assert adapter._validate_signature(req, body, secret) is True
+        assert adapter._validate_signature(req, body, secret) is False
 
     @pytest.mark.parametrize(
         "malformed_flag",
@@ -291,8 +289,7 @@ class TestValidateSignature:
     def test_v1_signature_rejected_for_non_boolean_allow_legacy_v1(
         self, malformed_flag
     ):
-        """Only the boolean True opts in. Truthy strings, numbers, and
-        objects must not re-enable replayable body-only HMAC."""
+        """Truthy strings, numbers, and objects cannot re-enable V1 either."""
         adapter = _make_adapter(
             routes={
                 "legacy-route": {
@@ -326,8 +323,7 @@ class TestValidateSignature:
         assert adapter._validate_signature(req, body, "generic-secret") is False
 
     def test_v2_signature_still_accepted(self):
-        """V2 signatures (with timestamp) are unaffected by the V1 default
-        rejection — they were never replayable."""
+        """Fresh timestamp-bound V2 signatures remain accepted."""
         adapter = _make_adapter()
         body = b'{"event": "push"}'
         secret = "generic-secret"
@@ -340,6 +336,19 @@ class TestValidateSignature:
             },
         )
         assert adapter._validate_signature(req, body, secret) is True
+
+    def test_v1_migration_warning_is_emitted_once_per_route(self, caplog):
+        adapter = _make_adapter()
+        body = b'{}'
+        for route in ("first", "first", "second"):
+            req = _mock_request(
+                headers={"X-Webhook-Signature": _generic_signature(body, "secret")},
+                match_info={"route_name": route},
+            )
+            assert adapter._validate_signature(req, body, "secret") is False
+        warnings = [record.message for record in caplog.records]
+        assert len(warnings) == 2
+        assert all("X-Webhook-Signature-V2" in warning for warning in warnings)
 
 
     def test_validate_svix_signature_raw_secret_valid(self):
@@ -577,6 +586,66 @@ class TestPayloadFilters:
 
 
 class TestHTTPHandling:
+
+    @pytest.mark.parametrize("host", ("127.0.0.1", "0.0.0.0"))
+    @pytest.mark.parametrize(
+        "mode", ({}, {"deliver_only": True, "deliver": "telegram"}, {"cron_job": "job"})
+    )
+    @pytest.mark.asyncio
+    async def test_v1_replay_rejected_after_ttl_and_concurrently(self, host, mode):
+        route = {"prompt": "test", "allow_legacy_v1": True, **mode}
+        adapter = _make_adapter(routes={"legacy": route}, secret="secret", host=host)
+        adapter.handle_message = AsyncMock()
+        adapter._direct_deliver = AsyncMock()
+        adapter._handle_cron_trigger = MagicMock()
+        body = b'{"event":"push"}'
+        headers = {
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": _generic_signature(body, "secret"),
+            "X-Request-ID": "captured-delivery",
+        }
+        with patch("gateway.platforms.webhook.time.time", return_value=1_700_000_000) as clock:
+            async with TestClient(TestServer(_create_app(adapter))) as cli:
+                first = await cli.post("/webhooks/legacy", data=body, headers=headers)
+                assert first.status == 401
+                clock.return_value += adapter._idempotency_ttl + 1
+                replay = await cli.post("/webhooks/legacy", data=body, headers=headers)
+                assert replay.status == 401
+                concurrent = await asyncio.gather(*(
+                    cli.post("/webhooks/legacy", data=body, headers=headers) for _ in range(2)
+                ))
+                assert [response.status for response in concurrent] == [401, 401]
+        adapter.handle_message.assert_not_called()
+        adapter._direct_deliver.assert_not_called()
+        adapter._handle_cron_trigger.assert_not_called()
+        assert adapter._seen_deliveries == {}
+        assert adapter._delivery_info == {}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_v2_duplicates_admit_one_agent_run(self):
+        adapter = _make_adapter(routes={"signed": {"prompt": "test"}}, secret="secret")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        body = b'{"event":"push"}'
+        timestamp = str(int(time.time()))
+        headers = {
+            "Content-Type": "application/json",
+            "X-Webhook-Signature-V2": _generic_v2_signature(body, "secret", timestamp),
+            "X-Webhook-Timestamp": timestamp,
+            "X-Request-ID": "signed-delivery",
+        }
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            responses = await asyncio.gather(*(
+                cli.post("/webhooks/signed", data=body, headers=headers) for _ in range(2)
+            ))
+            assert sorted(response.status for response in responses) == [200, 202]
+            await asyncio.gather(*tuple(adapter._background_tasks))
+        assert len(captured) == 1
+        assert captured[0].message_id == "signed-delivery"
 
     @pytest.mark.asyncio
     async def test_unknown_route_returns_404(self):

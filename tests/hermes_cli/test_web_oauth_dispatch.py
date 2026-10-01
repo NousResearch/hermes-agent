@@ -72,6 +72,47 @@ def _invoke_scope_refusal():
     return httpx.HTTPStatusError("invalid scope", request=request, response=response)
 
 
+def test_meta_oauth_is_offered_as_an_in_app_device_code_account():
+    """Meta Muse subscription must be selectable from Desktop Accounts, not terminal-only."""
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+
+    assert resp.status_code == 200, resp.text
+    meta = next((provider for provider in resp.json()["providers"] if provider["id"] == "meta-oauth"), None)
+    assert meta is not None
+    assert meta["flow"] == "device_code"
+    assert meta["cli_command"] == "hermes auth add meta-oauth"
+
+
+def test_meta_oauth_start_returns_a_device_code_session():
+    """Desktop Connect starts Meta's device code flow instead of sending users to a terminal."""
+    import threading
+
+    poller_started = threading.Event()
+    device = {
+        "device_code": "meta-device-code",
+        "user_code": "META-1234",
+        "verification_uri": "https://auth.meta.com/oauth/device/?code=META-1234",
+        "expires_in": 600,
+        "interval": 5,
+    }
+
+    def fake_poller(_session_id):
+        poller_started.set()
+
+    with patch("hermes_cli.auth_meta.start_device_authorization", return_value=device), patch(
+        "hermes_cli.web_server_oauth._meta_device_poller", fake_poller, create=True,
+    ):
+        resp = client.post("/api/providers/oauth/meta-oauth/start", headers=HEADERS)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["flow"] == "device_code"
+    assert body["user_code"] == "META-1234"
+    assert body["verification_url"] == device["verification_uri"]
+    assert poller_started.wait(timeout=5)
+    _web_server_oauth._oauth_sessions.pop(body["session_id"], None)
+
+
 def test_minimax_login_does_not_launch_anthropic_flow():
     """Click 'Login' on MiniMax → MUST NOT return claude.ai auth_url."""
     fake_user_code_resp = {
@@ -591,6 +632,31 @@ def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
 
     delete_resp = client.delete("/api/providers/oauth/anthropic", headers=HEADERS)
     assert delete_resp.status_code == 400, delete_resp.text
+
+
+def test_meta_dashboard_poller_saves_singleton_in_login_profile(tmp_path, monkeypatch):
+    """Meta dashboard login writes only the selected profile's singleton and pool seed."""
+    from hermes_cli import auth_meta
+
+    coder_home = _make_profile_home(tmp_path, monkeypatch, profile="coder")
+    (coder_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}), encoding="utf-8")
+    monkeypatch.setattr(auth_meta, "poll_for_identity_token", lambda *_a, **_k: "identity-token")
+    monkeypatch.setattr(
+        auth_meta, "mint_meta_api_key",
+        lambda *_a, **_k: {"access_token": "meta-dashboard-key", "refresh_token": "identity-token", "expires_at_ms": 9_999_999_999_999},
+    )
+
+    session_id, sess = _rt_oauth._new_oauth_session("meta-oauth", "device_code", profile="coder")
+    sess.update(device_code="dc", interval=1, expires_at=time.time() + 600)
+    try:
+        _web_server_oauth._meta_device_poller(session_id)
+        assert sess["status"] == "approved"
+    finally:
+        _web_server_oauth._oauth_sessions.pop(session_id, None)
+
+    stored = json.loads((coder_home / "auth.json").read_text(encoding="utf-8"))
+    assert stored["providers"]["meta-oauth"]["tokens"]["access_token"] == "meta-dashboard-key"
+    assert stored["active_provider"] == "meta-oauth"
 
 
 def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path, monkeypatch):

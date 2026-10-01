@@ -98,6 +98,7 @@ server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 url = f"http://127.0.0.1:{server.server_port}/v1"
 from run_agent import AIAgent
+from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
 from agent.error_classifier import classify_api_error
 from agent.agent_runtime_helpers import restore_primary_runtime
 
@@ -148,18 +149,21 @@ for label, model, chain in [
             break
         except Exception as exc:
             classified = classify_api_error(exc)
-            before = getattr(agent, "_rate_limited_until", 0)
-            before_count = getattr(agent, "_rate_limit_backoff_count", 0)
+            primary = agent._primary_runtime or {}
+            cooldown_key = build_cooldown_key(
+                primary.get("provider", ""), primary.get("api_key"), "rate_limit"
+            )
+            before = get_cooldown_manager().get_all_states().get(cooldown_key, {})
             switched = agent._try_activate_fallback(classified.reason)
-            after = getattr(agent, "_rate_limited_until", 0)
+            after = get_cooldown_manager().get_all_states().get(cooldown_key, {})
             transitions.append({
                 "reason": str(classified.reason),
                 "switched": switched,
-                "before_deadline": before,
-                "after_deadline": after,
-                "remaining_seconds": max(0, after - time.monotonic()),
-                "backoff_before": before_count,
-                "backoff_after": getattr(agent, "_rate_limit_backoff_count", 0),
+                "before_deadline": before.get("until", 0),
+                "after_deadline": after.get("until", 0),
+                "remaining_seconds": after.get("remaining_seconds", 0),
+                "backoff_before": before.get("count", 0),
+                "backoff_after": after.get("count", 0),
                 "notice": getattr(agent, "_pending_fallback_notice", [])[:],
                 "active_model": agent.model,
             })

@@ -11,7 +11,6 @@ full Feishu session path.
 
 from __future__ import annotations
 
-import time
 from types import SimpleNamespace
 
 
@@ -48,8 +47,11 @@ def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
     assert runner._fallback_model == updated
 
 
-def test_apply_fallback_chain_skips_while_cooldown_holds_fallback():
+def test_apply_fallback_chain_skips_while_persisted_cooldown_holds_fallback(tmp_path):
     """Do not clobber a live fallback activation during its cooldown window."""
+    from agent.cooldown_manager import (
+        CooldownManager, build_cooldown_key, get_cooldown_manager, set_cooldown_manager,
+    )
     from gateway.run import GatewayRunner
 
     live = [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
@@ -58,12 +60,20 @@ def test_apply_fallback_chain_skips_while_cooldown_holds_fallback():
         _fallback_model=live[0],
         _fallback_index=1,
         _fallback_activated=True,
-        _rate_limited_until=time.monotonic() + 30,
+        _primary_runtime={"provider": "custom", "api_key": "primary-key"},
     )
-    GatewayRunner._apply_fallback_chain_to_agent(
-        agent,
-        [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"}],
-    )
+    original = get_cooldown_manager()
+    key = build_cooldown_key("custom", "primary-key", "rate_limit")
+    try:
+        manager = CooldownManager(storage_path=tmp_path / "cooldowns.json")
+        manager.mark_failure(key, "rate_limit", cooldown_seconds=30)
+        set_cooldown_manager(CooldownManager(storage_path=tmp_path / "cooldowns.json"))
+        GatewayRunner._apply_fallback_chain_to_agent(
+            agent,
+            [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"}],
+        )
+    finally:
+        set_cooldown_manager(original)
 
     assert agent._fallback_chain == live
     assert agent._fallback_index == 1

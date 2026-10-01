@@ -1154,15 +1154,27 @@ class RelayAdapter(BasePlatformAdapter):
         data = payload.get("data") or {}
         message_type = MessageType.TEXT
         if itype == 2:
-            # Normalize to a leading-slash command string ("/name arg…"), the
-            # shape the dispatcher and the connector's Slack slash lane expect.
+            # Normalize both chat-input and context-menu commands. Context-menu
+            # interactions carry their target separately from the command name;
+            # include it so relaying does not silently turn a targeted command into
+            # a target-less one.
             text = ("/" + str(data.get("name") or "")).rstrip("/") or ""
             if text:
                 parts = [text] + self._render_interaction_options(data.get("options"))
+                target = self._render_context_target(data)
+                if target:
+                    parts.append(target)
                 text = " ".join(parts).strip()
                 message_type = MessageType.COMMAND
         elif itype == 3:
             text = str(data.get("custom_id") or "")
+            values = data.get("values")
+            if isinstance(values, list):
+                selected = [str(value).strip() for value in values if str(value).strip()]
+                if selected:
+                    text = " ".join(part for part in (text, *selected) if part)
+        elif itype == 5:
+            text = self._render_modal_components(data.get("components"))
         else:
             text = ""
         member = payload.get("member") or {}
@@ -1221,6 +1233,35 @@ class RelayAdapter(BasePlatformAdapter):
         if not _PROMPT_ID_RE.match(parts[1]) or not _PROMPT_ID_RE.match(parts[2]):
             return None
         return parts[1], parts[2]
+
+    @staticmethod
+    def _render_modal_components(components) -> str:
+        fields = []
+        for row in components if isinstance(components, list) else []:
+            for component in row.get("components", []) if isinstance(row, dict) else []:
+                if not isinstance(component, dict):
+                    continue
+                value = str(component.get("value") or "").strip()
+                if value:
+                    custom_id = str(component.get("custom_id") or "").strip()
+                    fields.append(f"{custom_id}={value}" if custom_id else value)
+        return " ".join(fields)
+
+    @staticmethod
+    def _render_context_target(data) -> str:
+        target_id = str(data.get("target_id") or "").strip()
+        if not target_id:
+            return ""
+        resolved = data.get("resolved") or {}
+        target = {}
+        for collection in ("messages", "users", "members"):
+            values = resolved.get(collection) if isinstance(resolved, dict) else None
+            if isinstance(values, dict) and isinstance(values.get(target_id), dict):
+                target = values[target_id]
+                break
+        if target.get("content"):
+            return f"target={target_id} content={target['content']}"
+        return f"target={target_id}"
 
     @staticmethod
     def _render_interaction_options(options) -> list:

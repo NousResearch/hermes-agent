@@ -291,7 +291,7 @@ async def test_retry_clears_only_the_failed_intake_owners_deduplication(
     accepted = asyncio.Event()
     intake_attempts, accepted_ids, plugin_attempts = [], [], []
 
-    async def intake(*args):
+    async def intake(*args, reply_parent=None):
         event_id = args[4] if kind == "reaction" else args[2]
         intake_attempts.append(event_id)
         if failed_owner == "hermes" and len(intake_attempts) == 1:
@@ -425,7 +425,7 @@ async def test_failed_dispatch_retries_without_acknowledging_or_repeating_siblin
     entered, release = asyncio.Event(), asyncio.Event()
     accepted = []
 
-    async def handle(_room, _sender, event_id, *_args):
+    async def handle(_room, _sender, event_id, *_args, reply_parent=None):
         if event_id == "$failure" and not release.is_set():
             entered.set()
             await release.wait()
@@ -774,7 +774,7 @@ async def test_completed_intake_survives_fresh_adapter_with_unfinished_sibling(
     accepted, blocked, release, stopped = (asyncio.Event() for _ in range(4))
     intakes = []
 
-    async def intake(_room, _sender, event_id, *_args):
+    async def intake(_room, _sender, event_id, *_args, reply_parent=None):
         intakes.append(event_id)
         accepted.set()
         return True
@@ -875,7 +875,7 @@ async def test_unadmitted_intake_is_retryable_after_incomplete_batch(
     assert await adapter.connect()
     attempts = []
 
-    async def refused_then_accepted(*_args):
+    async def refused_then_accepted(*_args, reply_parent=None):
         attempts.append("intake")
         return len(attempts) > 1
 
@@ -1252,7 +1252,7 @@ async def test_native_sync_checkpoints_only_completed_application_admission(
         chat_id="!room:example.org", user_id="@alice:example.org"
     )
     adapter._build_inbound_event = AsyncMock(
-        side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
+        side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None: MessageEvent(
             text=body, source=source, message_id=event_id
         )
     )
@@ -1330,7 +1330,7 @@ async def test_native_sync_checkpoints_only_completed_application_admission(
                 del adapter._handle_text_message
                 adapter._source_session_key = lambda _source: "session"
                 adapter._build_inbound_event = AsyncMock(
-                    side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
+                    side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None: MessageEvent(
                         text=body, source=source, message_id=event_id
                     )
                 )
@@ -1420,7 +1420,7 @@ async def test_startup_replay_executes_admitted_input_before_native_checkpoint(
         chat_id="!room:example.org", user_id="@alice:example.org"
     )
     adapter._build_inbound_event = AsyncMock(
-        side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
+        side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None: MessageEvent(
             text=body, source=source, message_id=event_id
         )
     )
@@ -1564,7 +1564,7 @@ async def test_restart_fixture_buffers_prime_before_initial_checkpoint_and_watch
             chat_id="!room:example.org", user_id="@alice:example.org"
         )
         adapter._build_inbound_event = AsyncMock(
-            side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
+            side_effect=lambda _room, _sender, event_id, body, *_args, reply_parent=None: MessageEvent(
                 text=body, source=source, message_id=event_id
             )
         )
@@ -1671,7 +1671,7 @@ def gateway_intake(adapter, texts):
         chat_id="!room:example.org", user_id="@alice:example.org"
     )
 
-    def build(_room, _sender, event_id, body, *_args):
+    def build(_room, _sender, event_id, body, *_args, reply_parent=None):
         text = texts.get(event_id, body)
         return MessageEvent(
             text=text,

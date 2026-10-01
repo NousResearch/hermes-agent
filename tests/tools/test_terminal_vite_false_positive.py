@@ -93,6 +93,20 @@ class TestCompoundCommandBoundary:
     def test_package_arg_before_separator_still_allowed(self):
         assert _foreground_background_guidance("npm update vite && npm test") is None
 
+    def test_chained_vite_server_after_install_still_blocked(self):
+        # The install argument is exempt, but the SECOND vite is a server run.
+        msg = _foreground_background_guidance("npm install vite && vite")
+        assert msg is not None
+        assert "long-lived" in msg.lower()
+
+    def test_semicolon_chained_vite_server_still_blocked(self):
+        msg = _foreground_background_guidance("npm install vite; vite")
+        assert msg is not None
+        assert "long-lived" in msg.lower()
+
+    def test_double_install_segments_both_exempt(self):
+        assert _foreground_background_guidance("npm install foo && npm install vite") is None
+
 
 def _make_env_config(**overrides):
     """Return a minimal _get_env_config()-shaped dict with optional overrides."""

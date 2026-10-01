@@ -103,38 +103,42 @@ _PM_INSTALL_VERBS = re.compile(
     re.IGNORECASE,
 )
 
-# A package-name argument list ends at the first shell separator — tokens after
-# `npm install && vite` belong to a second command, not to the package list.
-_SHELL_SEPARATOR_TOKENS = {"&&", "||", ";", "|", "&", ">", ">>", "<"}
+# A package-name argument list ends at the first shell separator (including
+# separators glued to a package token, e.g. ``npm install vite; vite``) —
+# everything after belongs to another command segment, never to the list.
+_SHELL_CUT_RE = re.compile(r"[;&|<>#]")
 
 
-def _is_pm_package_argument(command: str, keyword: str) -> bool:
-    """Return True when *keyword* appears as a package-name argument of a
-    package-manager install/update command.
+def _pm_package_arg_spans(command: str) -> set:
+    """Absolute (start, end) spans of package-name argument tokens of
+    package-manager install/update commands.
 
     ``npm update vite`` names a package to update; it does not start the vite
-    dev server, so long-lived-process guidance must not fire on it.
+    dev server. Flags (``-``-prefixed) and everything from the first shell
+    separator on belong to other command segments, never to the package list.
     """
-    if not _PM_INSTALL_VERBS.search(command):
-        return False
-    after_pm = _PM_INSTALL_VERBS.split(command, maxsplit=1)
-    if len(after_pm) < 2:
-        return False
-    pkg_tokens = []
-    for token in after_pm[1].split():
-        if token in _SHELL_SEPARATOR_TOKENS:
-            break
-        if not token.startswith("-"):
-            pkg_tokens.append(token)
-    return keyword.lower() in {t.lower() for t in pkg_tokens}
+    spans = set()
+    for verb_m in _PM_INSTALL_VERBS.finditer(command):
+        segment = command[verb_m.end():]
+        cut = _SHELL_CUT_RE.search(segment)
+        if cut:
+            segment = segment[:cut.start()]
+        base = verb_m.end()
+        for tok_m in re.finditer(r"\S+", segment):
+            if not tok_m.group().startswith("-"):
+                spans.add((base + tok_m.start(), base + tok_m.end()))
+    return spans
 
 
 def _long_lived_foreground_hit(command: str) -> bool:
     """True when a long-lived pattern matches outside a package-manager argument slot."""
+    exempt = _pm_package_arg_spans(command)
     for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:
-        m = pattern.search(command)
-        if m and not _is_pm_package_argument(command, m.group().strip().split()[0].lower()):
-            return True
+        for m in pattern.finditer(command):
+            token = m.group().strip()
+            lead = len(m.group()) - len(m.group().lstrip())
+            if (m.start() + lead, m.start() + lead + len(token)) not in exempt:
+                return True
     return False
 
 

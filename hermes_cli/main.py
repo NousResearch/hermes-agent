@@ -3391,16 +3391,41 @@ def _advertise_agent_env() -> None:
 
 
 def _attach_plugin_cli_command(subparsers, cmd_info) -> None:
-    """Register one plugin-provided top-level command from its descriptor."""
+    """Register one plugin-provided top-level command from its descriptor.
+
+    Never raises: a taken name or a failing ``setup_fn`` skips only this command, so one
+    plugin cannot crash ``hermes`` or hide another plugin's commands.
+    """
+    name = cmd_info["name"]
+    log = logging.getLogger(__name__)
+    if name in subparsers.choices:
+        # Built-ins win: a core release that adds a name a plugin already used must
+        # cost that plugin one command, not break the CLI.
+        log.warning(
+            "Plugin %r CLI command %r skipped: the name is already a hermes command",
+            cmd_info.get("plugin"), name,
+        )
+        return
     plugin_parser = subparsers.add_parser(
-        cmd_info["name"],
+        name,
         help=cmd_info["help"],
         description=cmd_info.get("description", ""),
         formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
     )
-    cmd_info["setup_fn"](plugin_parser)
-    if cmd_info.get("handler_fn") is not None:
-        plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+    try:
+        cmd_info["setup_fn"](plugin_parser)
+        if cmd_info.get("handler_fn") is not None:
+            plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+    except Exception as exc:
+        # A half-built parser would still parse and dispatch to nothing.
+        subparsers._name_parser_map.pop(name, None)
+        subparsers._choices_actions[:] = [
+            a for a in subparsers._choices_actions if a.dest != name
+        ]
+        log.warning(
+            "Plugin %r CLI command %r skipped: setup failed: %s",
+            cmd_info.get("plugin"), name, exc,
+        )
 
 
 def _register_plugin_cli_commands(subparsers) -> None:
@@ -3520,8 +3545,6 @@ def _build_cli_parser():
     build_bundles_parser(subparsers)
     build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
 
-    _register_plugin_cli_commands(subparsers)
-
     build_curator_parser(subparsers)
     build_pets_parser(subparsers)
     build_journey_parser(subparsers)
@@ -3550,6 +3573,8 @@ def _build_cli_parser():
     build_gui_parser(subparsers, cmd_gui=cmd_gui)
     build_logs_parser(subparsers, cmd_logs=cmd_logs)
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+    # Last: the name check in _attach_plugin_cli_command only sees built-ins added before it.
+    _register_plugin_cli_commands(subparsers)
     return parser, subparsers
 
 

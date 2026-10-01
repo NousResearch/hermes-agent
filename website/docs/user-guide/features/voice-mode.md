@@ -431,6 +431,7 @@ When the bot is in a voice channel:
 - Transcripts appear in the text channel: `[Voice] @user: what you said`
 - Agent responses are sent as text in the channel AND spoken in the VC
 - The text channel is the one where `/voice join` was issued
+- Running `/voice join` from another text channel moves the binding there; an utterance still being transcribed at that moment is dropped, not posted to the new channel
 
 ### Echo Prevention
 

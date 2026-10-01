@@ -126,6 +126,7 @@ import {
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { provisionCliLinks } from './cli-provision'
+import { readClipboardImagePng } from './clipboard-image'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverWithTeamFallback } from './cloud-discovery'
@@ -16510,8 +16511,10 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   return result.filePaths
 })
 
-ipcMain.handle('hermes:writeClipboard', (_event, text) => {
-  clipboard.writeText(String(text || ''))
+ipcMain.handle('hermes:writeClipboard', async (_event, text) => {
+  // Electron 44: clipboard.writeText is async (W3C clipboard API); the old
+  // call was fire-and-forget, and the renderer only needs the ack.
+  await clipboard.writeText(String(text || ''))
 
   return true
 })
@@ -16526,6 +16529,8 @@ registerSaveDialogIpc(ipcMain, {
 // navigator.clipboard.readText() throws "Document is not focused" whenever a
 // portaled overlay has focus, and there's no way to route a read through the
 // canvas. The main process has no such gate.
+// Electron 44: readText returns a Promise now (W3C clipboard API); the
+// renderer already awaited the invoke round-trip either way.
 ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
 
 ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
@@ -16613,10 +16618,12 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
+  // Electron 44 removed clipboard.readImage(); PNG bytes now arrive through
+  // clipboard.read() + ClipboardItem.getType('image/png') as a Blob.
+  const png = await readClipboardImagePng(clipboard)
 
-  if (image && !image.isEmpty()) {
-    return writeComposerImage(image.toPNG(), '.png')
+  if (png) {
+    return writeComposerImage(png, '.png')
   }
 
   // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the

@@ -13,6 +13,7 @@ import pytest
 from mautrix.errors.request import MForbidden, MLimitExceeded, MatrixStandardRequestError
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 
 
 def _make_adapter():
@@ -59,60 +60,86 @@ def backoff_delays(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_send_retries_rate_limit_and_succeeds(backoff_delays):
+@pytest.mark.parametrize("operation, failures, error, expected", [
+    ("send", 2, "limit", (True, "$sent", 3, 0, [1.5, 3.0])),
+    ("send", 99, "limit", (False, None, 4, 0, [1.5, 3.0, 6.0])),
+    ("send", 99, "forbidden", (False, None, 1, 0, [])),
+    ("send", 1, "plain429", (True, "$sent", 2, 0, [1.5])),
+    ("redact", 1, "limit", (True, None, 0, 2, [1.5])),
+    ("reaction", 1, "limit", (True, "$sent", 2, 0, [1.5])),
+])
+async def test_rate_limited_outbound_paths(operation, failures, error, expected, backoff_delays):
+    errors = {
+        "limit": _limit_exceeded,
+        "forbidden": lambda: MForbidden(http_status=403, message="not for you"),
+        "plain429": lambda: MatrixStandardRequestError(429, "Too Many Requests"),
+    }
     adapter = _make_adapter()
-    adapter._client = _FlakyClient(2, _limit_exceeded)
-    result = await adapter.send("!room:example.org", "hello")
-    assert result.success is True
-    assert result.message_id == "$sent"
-    assert adapter._client.send_calls == 3
-    assert backoff_delays == [1.5, 3.0]
+    adapter._client = _FlakyClient(failures, errors[error])
+    if operation == "send":
+        result = await adapter.send("!room:example.org", "hello")
+        expected_result = SendResult(
+            success=expected[0], message_id=expected[1],
+            error=str(errors[error]()) if not expected[0] else None,
+        )
+    elif operation == "redact":
+        result = await adapter.redact_message("!room:example.org", "$evt")
+        expected_result = expected[0]
+    else:
+        result = await adapter._send_reaction("!room:example.org", "$evt", "\u2705")
+        expected_result = expected[1]
+    assert (result, adapter._client.send_calls, adapter._client.redact_calls, backoff_delays) == (
+        expected_result, *expected[2:],
+    )
 
 
 @pytest.mark.asyncio
-async def test_send_gives_up_after_final_retry(backoff_delays):
+@pytest.mark.parametrize("msgtype", ["m.image", "m.file", "m.audio", "m.video"])
+@pytest.mark.parametrize("error, failures, attempts, delays, success", [
+    ("limit", 1, 2, [1.5], True),
+    ("plain429", 1, 2, [1.5], True),
+    ("limit", 99, 4, [1.5, 3.0, 6.0], False),
+    ("forbidden", 1, 1, [], False),
+    ("unknown", 1, 1, [], False),
+])
+async def test_media_upload_retries_only_rate_limited_content(msgtype, error, failures, attempts, delays, success, backoff_delays):
+    from copy import deepcopy
+    from unittest.mock import AsyncMock
+
+    errors = {
+        "limit": _limit_exceeded,
+        "plain429": lambda: MatrixStandardRequestError(429, "Too Many Requests"),
+        "forbidden": lambda: MForbidden(http_status=403, message="not for you"),
+        "unknown": lambda: RuntimeError("connection lost"),
+    }
     adapter = _make_adapter()
-    adapter._client = _FlakyClient(99, _limit_exceeded)
-    result = await adapter.send("!room:example.org", "hello")
-    assert result.success is False
-    assert "Too Many Requests" in result.error
-    assert adapter._client.send_calls == 4  # initial attempt + 3 retries
-    assert backoff_delays == [1.5, 3.0, 6.0]
+    adapter._client = _FlakyClient(failures, errors[error])
+    adapter._client.upload_media = AsyncMock(return_value="mxc://example.org/upload")
+    payloads = []
+    original_send = adapter._client.send_message_event
 
+    async def record_send(room_id, event_type, content):
+        payloads.append((str(room_id), str(event_type), deepcopy(content)))
+        return await original_send(room_id, event_type, content)
 
-@pytest.mark.asyncio
-async def test_send_does_not_retry_other_matrix_errors(backoff_delays):
-    adapter = _make_adapter()
-    adapter._client = _FlakyClient(99, lambda: MForbidden(http_status=403, message="not for you"))
-    result = await adapter.send("!room:example.org", "hello")
-    assert result.success is False
-    assert adapter._client.send_calls == 1
-    assert backoff_delays == []
-
-
-@pytest.mark.asyncio
-async def test_plain_429_status_without_errcode_is_retried(backoff_delays):
-    """Homeservers may answer 429 with an errcode mautrix does not map to MLimitExceeded."""
-    adapter = _make_adapter()
-    adapter._client = _FlakyClient(1, lambda: MatrixStandardRequestError(429, "Too Many Requests"))
-    result = await adapter.send("!room:example.org", "hello")
-    assert result.success is True
-    assert adapter._client.send_calls == 2
-
-
-@pytest.mark.asyncio
-async def test_redact_retries_rate_limit(backoff_delays):
-    adapter = _make_adapter()
-    adapter._client = _FlakyClient(1, _limit_exceeded)
-    assert await adapter.redact_message("!room:example.org", "$evt") is True
-    assert adapter._client.redact_calls == 2
-    assert backoff_delays == [1.5]
-
-
-@pytest.mark.asyncio
-async def test_reaction_send_retries_rate_limit(backoff_delays):
-    adapter = _make_adapter()
-    adapter._client = _FlakyClient(1, _limit_exceeded)
-    assert await adapter._send_reaction("!room:example.org", "$evt", "\u2705") == "$sent"
-    assert adapter._client.send_calls == 2
-    assert backoff_delays == [1.5]
+    adapter._client.send_message_event = record_send
+    result = await adapter._upload_and_send(
+        "!room:example.org", b"content", "original.dat", "application/octet-stream", msgtype,
+        caption="Caption", reply_to="$reply", metadata={"thread_id": "$thread"},
+    )
+    expected_payload = ("!room:example.org", "m.room.message", {
+        "msgtype": msgtype, "body": "Caption", "filename": "original.dat",
+        "info": {"mimetype": "application/octet-stream", "size": 7},
+        "url": "mxc://example.org/upload", "m.relates_to": {
+            "rel_type": "m.thread", "event_id": "$thread", "is_falling_back": False,
+            "m.in_reply_to": {"event_id": "$reply"},
+        },
+    })
+    assert (result, adapter._client.send_calls, backoff_delays, payloads) == (
+        SendResult(success=success, message_id="$sent" if success else None,
+                   error=str(errors[error]()) if not success else None),
+        attempts, delays, [expected_payload] * attempts,
+    )
+    adapter._client.upload_media.assert_awaited_once_with(
+        b"content", mime_type="application/octet-stream", filename="original.dat", size=7,
+    )

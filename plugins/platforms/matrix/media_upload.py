@@ -59,7 +59,10 @@ class MatrixMediaUploadMixin:
         from .adapter import RoomID, EventType
 
         try:
-            event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
+            event_id = await self._call_with_rate_limit_backoff(
+                lambda: self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content),
+                label="media send",
+            )
             self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
             self._remember_followup_delivery(room_id, str(event_id), msg_content, finalize=finalize)
             return SendResult(success=True, message_id=str(event_id))

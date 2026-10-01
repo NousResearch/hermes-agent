@@ -639,7 +639,9 @@ async def test_interrupt_after_the_write_was_sent_reports_an_unknown_outcome(act
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error", [TimeoutError(), ConnectionResetError()], ids=["timeout", "transport"])
+@pytest.mark.parametrize("error", [
+    TimeoutError(), ConnectionResetError(), json.JSONDecodeError("invalid response", "<html>", 0),
+], ids=["timeout", "transport", "json-response"])
 @pytest.mark.parametrize(("action", "next_step"), [
     ("create", "Ask the user whether the room was created before retrying, so that no duplicate room is created"),
     ("invite", "Ask the user whether the invite arrived before retrying"),

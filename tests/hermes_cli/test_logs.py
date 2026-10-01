@@ -38,6 +38,15 @@ class TestParseLineTimestamp:
         ts = _parse_line_timestamp("2026-04-11 10:23:45 INFO gateway.run: msg")
         assert ts == datetime(2026, 4, 11, 10, 23, 45)
 
+    def test_iso_t_separated_update_and_handoff_stamps(self):
+        # posix.sh: date +%Y-%m-%dT%H:%M:%S%z; windows.ps1: yyyy-MM-ddTHH:mm:ssK
+        assert _parse_line_timestamp("2026-09-29T21:36:18+08:00 update| step done") == datetime(
+            2026, 9, 29, 21, 36, 18
+        )
+        assert _parse_line_timestamp("2026-09-29T21:36:18Z step stalled") == datetime(
+            2026, 9, 29, 21, 36, 18
+        )
+
 class TestExtractLevel:
     def test_info(self):
         assert _extract_level("2026-01-01 00:00:00 INFO gateway.run: msg") == "INFO"
@@ -177,6 +186,24 @@ def _mcp_output_line() -> str:
     return log.getvalue()
 
 
+def _update_log_line() -> str:
+    """The update.log run banner hermes_cli.main_dashboard writes on every update."""
+    import datetime as dt
+
+    return f"\n=== hermes update started {dt.datetime.now().isoformat(timespec='seconds')} ===\n".lstrip()
+
+
+def _handoff_log_line() -> str:
+    """A desktop-update-handoff.log line from scripts/desktop-update/posix.sh's log()."""
+    import subprocess
+
+    line = subprocess.run(
+        ["bash", "-c", 'log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1"; }; log "update| → Checking if desktop app needs rebuilding..."'],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return line.rstrip("\n")
+
+
 def _log_file_samples() -> dict:
     """One line per LOG_FILES entry, produced by that file's real writer where Python can run it."""
     return {
@@ -187,6 +214,9 @@ def _log_file_samples() -> dict:
         # Written by TypeScript; apps/desktop/electron/desktop-log-line.test.ts pins the same shape.
         "desktop": "2026-09-28 13:18:46,062 [hermes] [boot] ready",
         "mcp": _mcp_output_line(),
+        # update.log mirrors raw update output; handoff lines carry the shim's ISO-8601 stamp.
+        "update": _update_log_line(),
+        "handoff": _handoff_log_line(),
     }
 
 

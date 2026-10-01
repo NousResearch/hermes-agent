@@ -20,8 +20,10 @@ from utils import base_url_host_matches
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.model_switch")
 
-# Aggregators whose full catalogs (70+ models) must stay visible: never capped by max_models.
-_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
+# Rows never capped by max_models: aggregators whose full catalogs (70+ models) must stay visible, and
+# rows that are already a curated list (Nous = curated + Portal picks, OpenRouter = curated ∩ live),
+# where the cap only cut the bottom "Free tier" block and the Portal's appended recommendations.
+_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "nous", "openrouter"})
 
 
 def _save_discovered_models_to_config(
@@ -504,8 +506,9 @@ def _free_tier_nous_row(row: dict) -> dict | None:
 
 
 def _cap_models(model_ids: list, max_models: int | None, slug: str = "") -> list:
-    """Apply ``max_models``; aggregators in ``_UNCAPPED_PICKER_PROVIDERS`` show everything."""
-    if slug in _UNCAPPED_PICKER_PROVIDERS or max_models is None:
+    """Apply ``max_models``; rows in ``_UNCAPPED_PICKER_PROVIDERS`` show everything (``0`` still
+    means slug-only: no models)."""
+    if max_models is None or (max_models and slug in _UNCAPPED_PICKER_PROVIDERS):
         return model_ids
     return model_ids[:max_models]
 
@@ -1349,7 +1352,7 @@ def list_picker_providers(
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)
-            p["models"] = live_ids[:max_models] if max_models is not None else live_ids
+            p["models"] = _cap_models(live_ids, max_models, "openrouter")
             p["total_models"] = len(live_ids)
 
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))

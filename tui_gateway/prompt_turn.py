@@ -127,8 +127,9 @@ def _admit_prompt_turn(
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
+    held_lease = session.get("active_session_lease")
     # When the session already holds its lease this is a cheap dict check. See #94778.
-    if (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
+    if not session.get("_closing") and (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
         logger.info(
             "Refusing turn for session %s at _run_prompt_submit: %s",
             session.get("session_key") or sid,
@@ -144,6 +145,11 @@ def _admit_prompt_turn(
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
             _release_prompt_claim_locked(session, queued_prompt_generation)
             session.pop("_submit_user_row", None)
+            if session.get("_closing") and session.get("active_session_lease") is not held_lease:
+                # Close stops waiting for this thread after a grace and then finalizes. A lease this
+                # admission claimed after that finalize has no other code path that releases it; one
+                # the session already held stays for close's own handoff (_settle_isolated_turn_before_close).
+                _release_active_session_slot(session)
             return None
         session["_running_prompt_generation"] = int(session.get("_queued_prompt_generation", 0))
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
@@ -205,6 +211,7 @@ class _TurnScopes:
     """Reset tokens for the thread/context scopes a turn binds (filled incrementally)."""
 
     approval: Any = None
+    prompts: Any = None  # approval/clarify prompts wait until answered (the user is at the app)
     session_tokens: list = dataclasses.field(default_factory=list)
     home: Any = None  # per-turn HERMES_HOME override for a resumed remote profile
     secret: Any = None
@@ -663,9 +670,10 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     fail-closed refusal scope).  The config-model sync is skipped under a /model --once
     override (not pinned as model_override, the sync would clobber it); a model picked
     mid-turn is applied first so the explicit pick wins over a config change."""
-    from tools.approval_context import set_current_session_key
+    from tools.approval_context import set_current_session_key, set_prompts_wait_for_answer
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])
+    scopes.prompts = set_prompts_wait_for_answer()
     scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
     # Profile turn: that profile's home + secrets + terminal policy. Launch-profile turn: unscoped in a
     # single-profile process; once multiplexing is active (#68559 / #107422 residual) its OWN scope,
@@ -1063,6 +1071,9 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
         if scopes.approval is not None:
             from tools.approval_context import reset_current_session_key
             reset_current_session_key(scopes.approval)
+    if scopes.prompts is not None:
+        from tools.approval_context import reset_prompts_wait_for_answer
+        reset_prompts_wait_for_answer(scopes.prompts)
     if scopes.home is not None:
         reset_hermes_home_override(scopes.home)
     if scopes.secret is not None:

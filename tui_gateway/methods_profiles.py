@@ -5,6 +5,7 @@ onto server.py, so they must not collide with its globals.
 """
 
 import contextlib
+import sqlite3
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -145,6 +146,17 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
         return False
 
 
+def _live_count_field(db, session_id) -> dict:
+    """``{"live_message_count": n}`` sized like a stored-transcript read, else ``{}`` (older stores).
+
+    The denormalized ``message_count`` also counts folded rows (orphaned compaction marks, full
+    rewinds, model-only rows), which once made the roster wait for history no reader serves."""
+    try:
+        return {"live_message_count": db.display_message_count(str(session_id))}
+    except sqlite3.Error:
+        return {}
+
+
 def _canonical_session_row(db, profile_path):
     """Summary of the profile's canonical "Bot Chat" row (identity is the NAME), or None.
     Lineages via ``get_compression_tip`` (NOT the resume walker's unmarked-child fallback);
@@ -177,7 +189,7 @@ def _canonical_session_row(db, profile_path):
             "title": tip_row.get("title") or "", "preview": _latest_message_preview(db, tip),
             "started_at": tip_row.get("started_at") or started,
             "last_active": tip_row.get("last_activity_at") or tip_row.get("started_at") or started,
-            "message_count": tip_row.get("message_count") or 0}
+            "message_count": tip_row.get("message_count") or 0, **_live_count_field(db, tip)}
     except Exception:
         return None
 
@@ -206,7 +218,8 @@ def _latest_profile_session_rows(db):
                 human = {"id": s["id"], "title": title,
                          "preview": _latest_message_preview(db, s["id"]) or s.get("preview") or "",
                          "started_at": s.get("started_at") or 0, "last_active": last_active,
-                         "message_count": s.get("message_count") or 0}
+                         "message_count": s.get("message_count") or 0,
+                         **_live_count_field(db, s["id"])}
             if human is not None and worker is not None:
                 break
         return human, worker

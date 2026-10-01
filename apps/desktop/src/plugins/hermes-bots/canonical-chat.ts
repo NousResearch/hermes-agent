@@ -10,6 +10,7 @@
 
 import * as sdk from '@hermes/plugin-sdk'
 import { host } from '@hermes/plugin-sdk'
+import type { SessionListRow } from '@hermes/plugin-sdk'
 
 import { $botMeta, botMetaKey, botOwner, persistBotMetaSnapshot } from './data'
 import { botsText } from './i18n'
@@ -54,7 +55,34 @@ export const CANONICAL_CHAT_TITLE = 'Bot Chat'
  *  read through an aliased guard, which TS only narrows for immutable
  *  properties. */
 interface CanonicalChatRow extends CanonicalSession {
-  readonly message_count?: number
+  readonly message_count?: SessionListRow['message_count']
+  /** Absent on older gateways, which only report the denormalized total. */
+  readonly live_message_count?: SessionListRow['live_message_count']
+}
+
+/** A Bot Chat tile left on an old compression segment: titled as the canonical
+ *  chat but keyed to none of the lineage ids the owner currently resolves to. */
+export const isStaleBotChatTile =
+  (canonicalIds: readonly string[]) => (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
+    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE && !canonicalIds.includes(String(tile.storedSessionId))
+
+/** Should the open wait for a painted transcript? The paintable row count
+ *  decides when the gateway reports it; the denormalized total is the only
+ *  fallback older gateways offer, and no count at all means the row is
+ *  guesswork anyway — wait, so an empty paint still surfaces as an error
+ *  instead of a silent blank chat. */
+export function resolveExpectHistory(
+  summary: null | undefined | Pick<SessionListRow, 'live_message_count' | 'message_count'>
+): boolean {
+  if (typeof summary?.live_message_count === 'number' && Number.isFinite(summary.live_message_count)) {
+    return summary.live_message_count > 0
+  }
+
+  if (typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)) {
+    return summary.message_count > 0
+  }
+
+  return true
 }
 
 /** Is the chat on screen the given bot's forever-chat?
@@ -99,8 +127,11 @@ async function openStoredBotChat(
 
   const { bot, name, route } = botOwner(owner)
   const ownerKey = botWorkspaceOwnerKey(bot)
-  const hasAuthoritativeCount = typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
-  const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
+  // Paintable rows decide the wait, not the denormalized total: a chat whose rows
+  // are all folded (orphaned compaction marks, a full rewind) paints nothing, and
+  // demanding its history wedges the open for the whole hydration budget before
+  // failing closed. Older gateways report only the total — keep trusting it there.
+  const expectHistory = resolveExpectHistory(summary)
 
   // Current SDKs export the Bot-specific budget. The fallback preserves
   // compatibility with older hosts and isolated plugin test harnesses.
@@ -122,6 +153,16 @@ async function openStoredBotChat(
   // previous time this bot was open — which left the pane showing old messages
   // until an app restart (hermes-agent#93604). A resume is cheap and
   // idempotent, so on this explicit user navigation we always request one.
+  //
+  // Compression rotates the tip while tiles stay keyed by segment, and hidden
+  // Bot Chats never reach the sidebar listing the lineage guard reads, so the
+  // old-segment tile is discarded here or it survives beside the tip
+  // (hermes-agent#120810). Same owner-scoped probe the roster click runs, but
+  // discard-only (`[]` fronts nothing): a background refresh must never take
+  // the tab strip (#121874), and the openSession below fronts explicit opens.
+  const canonicalIds = [...new Set([summary?.id, storedId].filter(Boolean).map(String))]
+  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), [])
+
   await host.openSession(storedId, {
     ...(route
       ? {

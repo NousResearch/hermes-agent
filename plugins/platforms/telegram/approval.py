@@ -100,4 +100,3 @@ class TelegramApprovalMixin(BasePlatformAdapter):
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))
-

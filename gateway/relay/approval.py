@@ -47,4 +47,3 @@ class RelayApprovalMixin(BasePlatformAdapter):
         self._send_lifecycle_ack(chat_id, label, ack_meta)
         if count:
             self.resume_typing_for_chat(chat_id)
-

@@ -235,18 +235,29 @@ class GatewayVoiceMixin:
         session), else a synthetic one."""
         # The speaker's display name, as their typed messages carry it: the pinned session-context
         # prompt renders it, so a bare id here re-rendered it on every spoken/typed switch.
-        guild = getattr(adapter, "_client", None) and adapter._client.get_guild(guild_id)
+        client = getattr(adapter, "_client", None)
+        guild = client.get_guild(guild_id) if client else None
         member = guild.get_member(int(user_id)) if guild else None
         display_name = getattr(member, "display_name", None)
-        user_name = display_name if isinstance(display_name, str) and display_name else str(user_id)
+        user_name = display_name if isinstance(display_name, str) and display_name else None
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
-            source.user_id, source.user_name = str(user_id), user_name
+            # get_member() is cache-only: on a miss the /voice join invoker keeps the name bound at
+            # join, never another participant's.
+            if user_name is None and source.user_id == str(user_id):
+                user_name = source.user_name
+            source.user_id, source.user_name = str(user_id), user_name or str(user_id)
         else:
             source = SessionSource(
                 platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
-                user_name=user_name, chat_type="channel",
+                user_name=user_name or str(user_id), chat_type="channel",
                 profile=getattr(adapter, "_owner_profile", None))
+        # The stored source is a join-time copy; a typed message reads the channel's current name and
+        # topic, so a rename or topic edit would otherwise flip the pinned prompt on every switch.
+        channel = client.get_channel(int(text_ch_id)) if client else None
+        if channel is not None and callable(labels := getattr(adapter, "_guild_channel_labels", None)):
+            if isinstance(current := labels(channel), tuple):
+                source.chat_name, source.chat_topic = current
         # Serialization drops transport provenance; auth must still follow the receiving bot.
         source._transport_adapter_ref = weakref.ref(adapter)
         return source
@@ -289,13 +300,15 @@ class GatewayVoiceMixin:
                 await channel.send(t("gateway.voice.transcript_echo", user=user_id, text=safe_text))
         # Bound text channel's channel_prompt and skills: voice input gets the same per-channel
         # context, and a first spoken turn opens the session, the only point skills load.
+        # A thread inherits its parent's bindings, as its typed messages do.
         channel_prompt = auto_skill = None
+        parent_id = source.parent_chat_id or None
         if callable(resolver := getattr(adapter, "_resolve_channel_prompt", None)):
             with suppress(Exception):
-                resolved = resolver(str(text_ch_id))
+                resolved = resolver(str(text_ch_id), parent_id)
                 channel_prompt = resolved if isinstance(resolved, str) else None
         if callable(skills := getattr(adapter, "_resolve_channel_skills", None)):
-            bound = skills(str(text_ch_id))
+            bound = skills(str(text_ch_id), parent_id)
             auto_skill = bound if isinstance(bound, list) else None
         # Synthetic MessageEvent for the normal pipeline; the SimpleNamespace raw_message lets
         # _get_guild_id() extract guild_id so _send_voice_reply() plays audio in the voice channel.

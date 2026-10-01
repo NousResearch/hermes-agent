@@ -592,7 +592,7 @@ class TestVoiceChannelCommands:
         mock_adapter._resolve_channel_prompt = MagicMock(return_value="Be terse in #dev.")
         runner.adapters[Platform.DISCORD] = mock_adapter
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
-        mock_adapter._resolve_channel_prompt.assert_called_once_with("123")
+        mock_adapter._resolve_channel_prompt.assert_called_once_with("123", None)
         event = mock_adapter.handle_message.call_args[0][0]
         assert event.channel_prompt == "Be terse in #dev."
 

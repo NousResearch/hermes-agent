@@ -103,8 +103,11 @@ def _is_non_interactive_platform(platform: str | None) -> bool:
 
 @dataclass(frozen=True)
 class LoopCapConfig:
-    """Per-turn hard ceilings on web_search calls / subagent spawns; count total calls (not
-    repeats), fire regardless of ``hard_stop_enabled``; ``0`` disables a cap."""
+    """Per-turn hard ceilings on web searches, subagent spawns, and optional file discovery.
+
+    Caps count total calls rather than repeats, fire regardless of ``hard_stop_enabled``,
+    and use ``0`` to disable a cap.
+    """
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
@@ -676,8 +679,15 @@ _PYTHON_FILE_READ_RE = re.compile(
 )
 
 
+def _strip_shell_quotes(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        return token[1:-1]
+    return token
+
+
 def _command_basename(token: str) -> str:
-    return token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    name = _strip_shell_quotes(token).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
 
 
 def _terminal_is_clear_file_discovery(command: Any) -> bool:
@@ -685,7 +695,9 @@ def _terminal_is_clear_file_discovery(command: Any) -> bool:
     if not isinstance(command, str) or not command.strip():
         return False
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>")
+        # Non-POSIX tokenization preserves Windows backslashes. Quotes remain on tokens
+        # and are stripped only where we inspect the executable / Python -c payload.
+        lexer = shlex.shlex(command, posix=False, punctuation_chars="|&;<>")
         lexer.whitespace_split = True
         lexer.commenters = ""
         tokens = list(lexer)
@@ -704,7 +716,7 @@ def _terminal_is_clear_file_discovery(command: Any) -> bool:
         return False
     try:
         code_index = tokens.index("-c") + 1
-        code = tokens[code_index]
+        code = _strip_shell_quotes(tokens[code_index])
     except (ValueError, IndexError):
         return False
     # Keep Python classification deliberately tiny. Permit the common safe pathlib import prefix,

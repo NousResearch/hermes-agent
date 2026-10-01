@@ -7,6 +7,7 @@ import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from gateway.input_owner import gateway_input_owner
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.platforms.base_pending import reserve_pending_dispatch, release_pending_dispatch_record
 from gateway.response_filters import display_kind_for_event, reply_expected_metadata
@@ -220,7 +221,9 @@ class GatewayQueuedFollowupMixin:
                     if reservation is None or (not reservation.withdrawn and reservation.revision == prepared_revision):
                         break
                 if reservation is not None and session_key:
-                    release_pending_dispatch_record(adapter, session_key, reservation, claimed=True)
+                    reservation.withdrawal_closed = True
+                    reservation.input_session_id = session_id
+                    reservation.input_owner = gateway_input_owner(pending_event, next_source)
 
                 from gateway.session_identity import replace_source
                 tool_context = SessionContext(
@@ -240,6 +243,7 @@ class GatewayQueuedFollowupMixin:
                         reply_expected=next_reply_expected,
                         input_snapshot=getattr(pending_event, "_prepared_inbound", None),
                         persist_user_display_metadata={
+                            "gateway_input_owner": gateway_input_owner(pending_event, next_source),
                             **channel_state_metadata(pending_event),
                             **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
                     )

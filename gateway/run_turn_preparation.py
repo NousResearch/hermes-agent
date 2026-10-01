@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Optional
 
 from agent.i18n import t
+from gateway.input_owner import gateway_input_owner
 from gateway.response_filters import display_kind_for_event
 from gateway.session import build_session_context
 from gateway.session_transcript import TranscriptReadError
@@ -118,13 +118,7 @@ class GatewayTurnPreparationMixin:
         # Bind this run generation to the adapter so deferred post-delivery callbacks are released
         # by the run that registered them.
         self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
-        # Delivery IDs are only unique in their transport namespace. Keyless turns
-        # need their own identity, even when another process writes to this session.
-        import uuid
-        namespace = [source.platform.value, source.profile, source.scope_id,
-                     source.chat_id, source.thread_id, str(event.message_id)]
-        owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
-                 if event.message_id else str(uuid.uuid4()))
+        owner = gateway_input_owner(event, source)
         from gateway.platforms.base_pending import bind_pending_dispatch_input
         bind_pending_dispatch_input(session_entry.session_id, owner)
         return self._PreparedTurn(

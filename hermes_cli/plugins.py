@@ -376,7 +376,7 @@ class PluginContext:
         handle = self._manager._track_scoped_registration(
             self.manifest, kind, registry_name, registry, provider, previous
         )
-        logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
+        logger.debug("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
         return handle
 
     @property
@@ -448,7 +448,7 @@ class PluginContext:
             name=clean, present=present_fn, plugin_id=self.plugin_id,
             profile_home=str(get_hermes_home().resolve()),
         )
-        logger.info("Plugin %s registered approval transport: %s", self.plugin_id, clean)
+        logger.debug("Plugin %s registered approval transport: %s", self.plugin_id, clean)
         # Duplicate names are rejected above, so there is never a displaced previous entry to restore;
         # tracking makes unload/force-reload remove this transport.
         self._track_mapping_entry("approval_transport", clean, transports, entry, None)
@@ -732,7 +732,7 @@ class PluginContext:
             current=engine, previous=previous,
             restore=lambda replacement: self._manager._restore_value("_context_engine", engine, replacement),
         )
-        logger.info("Plugin '%s' registered context engine: %s", self.manifest.name, engine.name)
+        logger.debug("Plugin '%s' registered context engine: %s", self.manifest.name, engine.name)
         return handle
 
     def register_context_reference(self, provider) -> None:
@@ -749,7 +749,7 @@ class PluginContext:
         except ValueError as exc:
             logger.warning("Plugin '%s' context reference registration failed: %s", self.manifest.name, exc)
             return
-        logger.info("Plugin '%s' registered context reference: @%s:", self.manifest.name, provider.prefix)
+        logger.debug("Plugin '%s' registered context reference: @%s:", self.manifest.name, provider.prefix)
 
     def register_memory_provider(self, provider) -> None:
         """Record a memory provider (inert). Activation is owned by ``plugins/memory`` via
@@ -800,7 +800,7 @@ class PluginContext:
             return
         handle = self._track("dashboard_auth_provider", registry_name,
                              lambda: unregister_global_provider(registry_name, provider), persistent=True)
-        logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
+        logger.debug("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
                     registry_name, provider.display_name)
         return handle
 
@@ -1536,7 +1536,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._approval_transports[clean] = RegisteredApprovalTransport(
             name=clean, present=present_fn, plugin_id=plugin_id, profile_home=str(get_hermes_home().resolve()),
         )
-        logger.info("Plugin %s registered approval transport: %s", plugin_id, clean)
+        logger.debug("Plugin %s registered approval transport: %s", plugin_id, clean)
 
     def get_approval_transport(self, name: str):
         """Return a transport only inside the profile that registered it."""

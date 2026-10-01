@@ -43,6 +43,7 @@ def clear_verify_env(monkeypatch):
         "HERMES_PLATFORM",
         "HERMES_SESSION_PLATFORM",
         "HERMES_SESSION_SOURCE",
+        "HERMES_SESSION_SOURCE_EXPLICIT",
     ):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
@@ -58,6 +59,14 @@ def test_verify_on_stop_auto_on_for_interactive_surfaces(clear_verify_env, sourc
     # Under "auto", CLI/TUI/desktop coding surfaces resolve ON.
     clear_verify_env.setenv("HERMES_SESSION_SOURCE", source)
     assert verify_on_stop_enabled({"agent": {"verify_on_stop": "auto"}}) is True
+
+def test_verify_on_stop_auto_on_for_explicit_cli_source_label(clear_verify_env):
+    # `hermes chat --source <tag>` labels an interactive CLI session for filtering;
+    # an arbitrary tag must not make it count as a messaging surface.
+    clear_verify_env.setenv("HERMES_SESSION_SOURCE", "my-orchestrator")
+    clear_verify_env.setenv("HERMES_SESSION_SOURCE_EXPLICIT", "1")
+    assert verify_on_stop_enabled({"agent": {"verify_on_stop": "auto"}}) is True
+
 
 def test_verify_on_stop_missing_value_defaults_off(clear_verify_env):
     # A missing/unrecognized config value falls back OFF on every surface,

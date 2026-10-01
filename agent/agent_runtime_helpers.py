@@ -1303,7 +1303,12 @@ def restore_primary_runtime(agent) -> bool:
     # skips this block entirely, stranding the index and silently blocking all future fallback attempts for
     # the session. Fixes #20465.
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
+        # A billing cooldown outlives the failure only until the account is funded again —
+        # probe the portal (throttled, fail-open) before giving up for this turn (#126818).
+        from agent.fallback_cooldown import _probe_primary_billing_recovery
+        _probe_primary_billing_recovery(agent)
+        if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+            return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
@@ -1327,6 +1332,12 @@ def restore_primary_runtime(agent) -> bool:
         key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
         loaded = load_pool(key) if key else None
         return loaded if loaded is not None and _matches_primary(loaded) else None
+    # A credit top-up can lift the primary's billing bench mid-session (#126818): probe the
+    # portal before the reset gate so a funded account unpinns the session next turn instead
+    # of after the full bench. Self-throttled to one portal probe a minute; no-op when the
+    # cooldown early-return above already probed this turn.
+    from agent.fallback_cooldown import _probe_primary_billing_recovery
+    _probe_primary_billing_recovery(agent)
     blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
         agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
     )

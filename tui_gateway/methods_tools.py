@@ -280,11 +280,11 @@ def _(rid, params: dict, session) -> dict:
 
 
 def _mcp_reload_confirm_required() -> bool:
-    """``approvals.mcp_reload_confirm`` from disk config; True (safe) on any failure."""
+    """Read the opt-in MCP reload confirmation; keep it enabled on load failure."""
     try:
         cfg = _tools_mod("hermes_cli.config").load_config()
-        approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
-        return bool(approvals.get("mcp_reload_confirm", True)) if isinstance(approvals, dict) else True
+        approvals = cfg.get("approvals", {}) if isinstance(cfg, dict) else None
+        return bool(approvals.get("mcp_reload_confirm", False)) if isinstance(approvals, dict) else True
     except Exception:
         return True
 

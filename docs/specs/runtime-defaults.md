@@ -38,6 +38,10 @@ proposal; those settings were not approved.
 - Main-agent reasoning effort: medium.
 - Compression threshold: 0.85; retain at least three tail user messages.
 - Execution approvals: agreed off (`approvals.mode: off`), matching the employee.
+  Session-command and MCP reload confirmations also default off
+  (`approvals.destructive_slash_confirm: false`, `approvals.mcp_reload_confirm: false`).
+  Previously these commands asked even with execution approvals off; they now run
+  immediately unless the operator explicitly enables their confirmation setting.
   Prompt-level action authorization and unconditional native command restrictions
   remain in effect.
 - Shared group/thread sessions. Observe unmentioned group messages as context

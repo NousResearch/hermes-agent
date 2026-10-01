@@ -1673,11 +1673,11 @@ DEFAULT_CONFIG = {
         "deny": [],
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
         # so the next message re-sends full input). "Always Approve" → false.
-        "mcp_reload_confirm": True,
+        "mcp_reload_confirm": False,
         # /clear, /new, /reset, /undo confirm before discarding state (Approve Once / Always Approve
         # / Cancel via tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
         # Approve" → false. HERMES_TUI_NO_CONFIRM=1 skips the TUI modal.
-        "destructive_slash_confirm": True,
+        "destructive_slash_confirm": False,
     },
     # Permanently allowed dangerous command patterns (added via "always" approval).
     "command_allowlist": [],

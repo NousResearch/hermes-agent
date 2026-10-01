@@ -520,7 +520,11 @@ def pricing_cache_scope(
 
 
 def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
-    """Process-resident pricing for *normalized* without any provider I/O."""
+    """Process-resident pricing for *normalized* without any provider I/O.
+
+    Reads through ``peek_cached_pricing``: an authenticated catalog is cached under
+    ``root + auth:<fingerprint>``, so a plain-root lookup misses every entry a credentialed
+    fetch just wrote — the prewarm would succeed and the next picker open still render blank."""
     from hermes_cli.models import _deepinfra_catalog_cache, _deepinfra_catalog_url, _pricing_profile_key
     if normalized == "deepinfra":
         cache_key, _url = _deepinfra_catalog_url()
@@ -528,7 +532,149 @@ def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
     cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized))
     if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks"):
         cache_key = _STATIC_PRICING_SCOPES[normalized]()
-    return (_cached_catalog(cache_key) or {}) if cache_key else {}
+    return (peek_cached_pricing(cache_key) or {}) if cache_key else {}
+
+
+def _strip_custom_prefix(slug: str) -> str:
+    """``custom:openrouter`` → ``openrouter``: a user override of a canonical provider
+    keeps the canonical pricing fetcher (the ``custom:`` slug is picker identity only)."""
+    text = (slug or "").strip()
+    return text[len("custom:"):] if text.lower().startswith("custom:") else text
+
+
+def _configured_endpoint_slug(slug: str) -> bool:
+    """True when *slug* is a user-defined endpoint row (``providers.<slug>.base_url``)."""
+    if not slug or slug.lower().startswith("custom:"):
+        return False
+    try:
+        from hermes_cli.config import load_config_readonly
+        providers = load_config_readonly().get("providers")
+        row = providers.get(slug) if isinstance(providers, dict) else None
+    except Exception:
+        return False
+    return isinstance(row, dict) and bool(str(row.get("base_url") or "").strip())
+
+
+def _models_dev_cost_index() -> dict[str, dict[str, str]]:
+    """models.dev cost rows for every catalog model, keyed by model id (``$ per token`` strings).
+    One scan per process — display-only data; a refresh lands on the next process. ``{}`` when the
+    registry is unavailable."""
+    global _models_dev_cost_index_cache
+    if _models_dev_cost_index_cache is None:
+        index: dict[str, dict[str, str]] = {}
+        paid: dict[str, bool] = {}
+        try:
+            from agent.models_dev import fetch_models_dev
+            for pdata in (fetch_models_dev(allow_network=False) or {}).values():
+                if not isinstance(pdata, dict):
+                    continue
+                for mid, entry in (pdata.get("models") or {}).items():
+                    cost = entry.get("cost") if isinstance(entry, dict) else None
+                    if not isinstance(cost, dict):
+                        continue
+                    inp, out = cost.get("input"), cost.get("output")
+                    if inp is None and out is None:
+                        continue
+                    row = {"prompt": _per_token(inp or 0), "completion": _per_token(out or 0)}
+                    if cost.get("cache_read") is not None:
+                        row["input_cache_read"] = _per_token(cost["cache_read"])
+                    key = str(mid)
+                    # Duplicate ids across providers: keep the paid list price — a free-tier
+                    # listing of the same id would render "free" and mislead.
+                    row_paid = (float(inp or 0) > 0) or (float(out or 0) > 0)
+                    if key not in index or (not paid.get(key) and row_paid):
+                        index[key] = row
+                        paid[key] = row_paid
+        except Exception:
+            index = {}
+        _models_dev_cost_index_cache = index
+    return _models_dev_cost_index_cache
+
+
+_models_dev_cost_index_cache: Optional[dict[str, dict[str, str]]] = None
+
+
+def _reference_endpoint_pricing(
+    slug: str, *, force_refresh: bool = False, cached_only: bool = False
+) -> dict[str, dict[str, str]]:
+    """Pricing for a custom endpoint whose own ``/v1/models`` carries no pricing block
+    (TokenRouter-style resellers reuse the OpenRouter model-id namespace): OpenRouter's live
+    catalog merged over the models.dev registry index, cached per slug so ``cached_only``
+    renders the same set the prewarm built. ``{}`` unless *slug* is a configured
+    ``providers.<slug>`` endpoint — never mislabels a first-party provider with reseller rates."""
+    from hermes_cli.models import normalize_provider
+    if normalize_provider(slug) in _PRICING_FETCHERS:
+        return {}
+    if not _configured_endpoint_slug(slug):
+        return {}
+    cache_key = "reference:" + slug
+    if cached_only:
+        return _cached_catalog(cache_key) or {}
+    if not force_refresh:
+        cached = _cached_catalog(cache_key)
+        if cached is not None:
+            return cached
+    openrouter = _fetch_openrouter_pricing(force_refresh=force_refresh)
+    merged = dict(_models_dev_cost_index())
+    merged.update(openrouter)  # live OpenRouter rates win over the static registry
+    # An OpenRouter outage must not pin a registry-only price list for the process's life.
+    ttl = None if openrouter else _FAILED_CATALOG_TTL_SECONDS
+    return _cache_catalog(cache_key, merged, ttl)
+
+
+def _models_dev_pricing(
+    slug: str, *, cached_only: bool = False, force_refresh: bool = False
+) -> dict[str, dict[str, str]]:
+    """Official models.dev list prices for a canonical provider with no live fetcher (nvidia,
+    copilot, …) — keyed by that provider's OWN catalog ids so a resold model is priced at what
+    this provider charges (NVIDIA NIM serves everything at $0). Provider-scoped, not the global
+    cost index: the index prefers paid duplicates across providers. Reads the registry cache
+    only (hot-path contract: no network); ``force_refresh`` opts into an explicit registry
+    refetch first."""
+    from agent.models_dev import _get_provider_models, fetch_models_dev
+    if force_refresh and not cached_only:
+        fetch_models_dev(force_refresh=True)
+    models = _get_provider_models(slug, allow_network=False)
+    if not models:
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for mid, entry in models.items():
+        cost = entry.get("cost") if isinstance(entry, dict) else None
+        if not isinstance(cost, dict):
+            continue
+        inp, out = cost.get("input"), cost.get("output")
+        if inp is None and out is None:
+            continue
+        row = {"prompt": _per_token(inp or 0), "completion": _per_token(out or 0)}
+        if cost.get("cache_read") is not None:
+            row["input_cache_read"] = _per_token(cost["cache_read"])
+        result[str(mid)] = row
+    return result
+
+
+def _models_dev_pricing_with_index(
+    slug: str, *, cached_only: bool = False, force_refresh: bool = False
+) -> dict[str, dict[str, str]]:
+    """Provider-scoped models.dev prices, gap-filled from the cross-provider cost index: a row
+    can serve ids models.dev files under another (or a retired) catalog entry. Empty when the
+    provider has no models.dev entry of its own — an unknown slug must stay unpriced, not get
+    every catalog model's price."""
+    own = _models_dev_pricing(slug, cached_only=cached_only, force_refresh=force_refresh)
+    if not own:
+        return {}
+    merged = dict(_models_dev_cost_index())
+    merged.update(own)
+    return merged
+
+
+def _cold_catalog_placeholder(raw: str, normalized: str) -> dict[str, dict[str, str]]:
+    """Last resort when every priced source is cold or empty (process just started, fetch
+    failed): models.dev list prices — but only for a provider Hermes actually knows (a fetcher
+    table entry or a configured endpoint). An unknown slug stays unpriced; known providers never
+    render a blank price column while the background prewarm re-fetches live rates."""
+    if normalized in _PRICING_FETCHERS or _configured_endpoint_slug(_strip_custom_prefix(raw)):
+        return _models_dev_cost_index()
+    return {}
 
 
 def get_pricing_for_provider(
@@ -537,12 +683,40 @@ def get_pricing_for_provider(
     """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita,
     deepinfra, fireworks); ``{}`` for everything else. ``cached_only`` never starts provider I/O:
     normal picker opens use it so cold endpoints cannot hold the response path, while a background
-    prewarm fills the same caches for later opens."""
-    normalized = resolve_pricing_provider(provider, base_url=base_url)
+    prewarm fills the same caches for later opens.
+
+    Fallbacks extend coverage beyond the fetcher table: a ``custom:<canonical>`` slug whose
+    concrete endpoint is the canonical upstream keeps the canonical fetcher (resolved by
+    ``resolve_pricing_provider``); a user-defined endpoint row with no fetcher of its own resolves
+    through the OpenRouter catalog (same model-id namespace); a canonical provider with neither
+    (nvidia, copilot, …) falls back to its official models.dev list prices, and any known
+    provider falls back to the registry index when every live source is cold."""
+    raw = str(provider or "").strip()
+    from hermes_cli.models import normalize_provider
+    normalized = resolve_pricing_provider(raw, base_url=base_url)
+    if not normalized:
+        # The trust boundary refused canonical pricing for a ``custom:`` slug (no endpoint, or one
+        # that is not a recognized upstream): fall back to the slug's own identity so a
+        # user-defined endpoint still resolves through the reference catalog below — but never
+        # re-admit the canonical fetcher name the boundary just rejected.
+        stripped = normalize_provider(_strip_custom_prefix(raw))
+        normalized = "" if stripped in _PRICING_FETCHERS else stripped
     if cached_only:
-        return _cached_only_pricing(normalized)
+        return (
+            _cached_only_pricing(normalized)
+            or _reference_endpoint_pricing(_strip_custom_prefix(raw), cached_only=True)
+            or _models_dev_pricing_with_index(normalized, cached_only=True)
+            or _cold_catalog_placeholder(raw, normalized)
+        )
     fetcher = _PRICING_FETCHERS.get(normalized)
-    return fetcher(force_refresh=force_refresh) if fetcher else {}
+    pricing = fetcher(force_refresh=force_refresh) if fetcher else {}
+    if pricing:
+        return pricing
+    return (
+        _reference_endpoint_pricing(_strip_custom_prefix(raw), force_refresh=force_refresh)
+        or _models_dev_pricing_with_index(normalized, force_refresh=force_refresh)
+        or _cold_catalog_placeholder(raw, normalized)
+    )
 
 
 def _fireworks_pricing_from_models_dev(*, force_refresh: bool = False) -> dict[str, dict[str, str]]:

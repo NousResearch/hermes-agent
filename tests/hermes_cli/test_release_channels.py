@@ -113,6 +113,18 @@ def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
     assert waits == [7.0]
 
 
+def test_read_bytes_normalizes_incomplete_http_response():
+    import http.client
+    from hermes_cli.release_channels import ChannelError, ChannelReader
+
+    def opener(_request, timeout):
+        assert timeout == 30
+        raise http.client.IncompleteRead(b"partial", 1)
+
+    with pytest.raises(ChannelError, match="unavailable"):
+        ChannelReader("https://releases.example", opener=opener).read_bytes("releases/fixture.json")
+
+
 def test_read_bytes_sends_representation_neutral_asset_headers_without_retrying(monkeypatch):
     from hermes_cli.release_channels import ChannelReader
 

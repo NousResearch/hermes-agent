@@ -154,7 +154,7 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
             if proof.returncode == 0:
                 return
             raise ValueError("Source retirement cannot verify that the installed source is equal to or an ancestor of the destination; select the destination channel explicitly")
-        if terminal["head"]["sequence"] > request["sequence"]:
+        if terminal["head"]["sequence"] >= request["sequence"]:
             # A missing qualified commit is expected in shallow checkouts, but
             # it is not evidence that the installed source is safe to retire.
             # Keep the decision conservative until ancestry can be verified.

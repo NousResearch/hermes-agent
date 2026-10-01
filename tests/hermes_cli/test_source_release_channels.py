@@ -142,12 +142,14 @@ def test_truncated_source_release_response_is_unavailable_on_public_path(monkeyp
     assert resolve_source_release("stable") == (None, None)
 
 
-@pytest.mark.parametrize("rev_list_returncode,rev_list_stdout,pattern", [
-    (0, "d" * 40 + "\n", "downgrade"),
-    (128, "", "cannot verify"),
+@pytest.mark.parametrize("rev_list_returncode,rev_list_stdout,terminal_sequence,pattern", [
+    (0, "d" * 40 + "\n", 2, "downgrade"),
+    (128, "", 1, "cannot verify"),
+    (128, "", 2, "cannot verify"),
 ])
 def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, tmp_path,
-                                                                    rev_list_returncode, rev_list_stdout, pattern):
+                                                                    rev_list_returncode, rev_list_stdout,
+                                                                    terminal_sequence, pattern):
     from hermes_cli.source_releases import _refuse_retirement_downgrade
 
     class Result:
@@ -160,7 +162,7 @@ def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, 
 
     monkeypatch.setattr("subprocess.run", run)
     request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
-    terminal = {"name": "stable", "head": {"sequence": 2}}
+    terminal = {"name": "stable", "head": {"sequence": terminal_sequence}}
     with pytest.raises(ValueError, match=pattern):
         _refuse_retirement_downgrade(request, terminal, ["git"], tmp_path)
 

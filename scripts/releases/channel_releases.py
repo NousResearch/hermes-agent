@@ -53,11 +53,13 @@ def product_identity(tag: str, run=subprocess.check_output) -> dict:
     return validate_identity(identity)
 
 
-def read_native_receipts(root: Path, tag: str, commit: str) -> dict:
+def read_native_receipts(root: Path, receipt_tag: str, commit: str, payload_tag: str | None = None) -> dict:
+    """Read receipt-bound files under ``receipt_tag`` with payload metadata identity."""
+    payload_tag = receipt_tag if payload_tag is None else payload_tag
     files = {}
     for name in NATIVE_LEGS:
         receipt = json.loads((root / handoff.receipt_name(name)).read_text(encoding="utf-8-sig"))
-        for row in handoff.validate_receipt(receipt, tag, commit, name):
+        for row in handoff.validate_receipt(receipt, receipt_tag, commit, name):
             if row["path"] in files and files[row["path"]] != row:
                 raise ChannelError("Native release receipts disagree")
             file = root / row["path"]
@@ -72,7 +74,7 @@ def read_native_receipts(root: Path, tag: str, commit: str) -> dict:
             if name not in files or not (root / name).is_file():
                 raise ChannelError(f"Missing receipt-bound native metadata: {name}")
             row = json.loads((root / name).read_text(encoding="utf-8-sig"))
-            if any(row.get(k) != v for k, v in {"platform": platform, "arch": arch, "tag": tag, "commit": commit}.items()):
+            if any(row.get(k) != v for k, v in {"platform": platform, "arch": arch, "tag": payload_tag, "commit": commit}.items()):
                 raise ChannelError("Native metadata release identity mismatch")
             rows.append(row)
     return {"packages": rows, "files": files}
@@ -358,7 +360,7 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     # (identical for canary, where tag == payload_tag).
     handoff.fetch(tag, commit, list(NATIVE_LEGS), root,
                   ["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"], public_base=publisher.public_base)
-    native = read_native_receipts(root, tag, commit)
+    native = read_native_receipts(root, tag, commit, payload_tag)
     windows = next(row for row in native["packages"] if row["platform"] == "windows")
     if policy == "canary-release":
         expected_windows = canary_windows_version(tag)
@@ -398,7 +400,7 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
     def qualified(pinned: dict, actual: dict) -> bool:
         # Rehash local receipt-bound bytes rather than trusting caller-supplied claims.
-        expected, _ = assemble(pinned, read_native_receipts(root, tag, commit), root,
+        expected, _ = assemble(pinned, read_native_receipts(root, tag, commit, payload_tag), root,
                                artifact_prefix=f"releases/tag/{tag}/")
         if accepted is not None:
             match_accepted_packages(expected, accepted)

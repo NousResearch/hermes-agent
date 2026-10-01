@@ -63,7 +63,8 @@ def desktop_application(manifest: ET.Element, channel_request: dict | None) -> E
 def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Path,
            *, channel_request: dict | None = None) -> None:
     """Read identities from the built packages, never from the workflow matrix."""
-    row: dict = {"platform": platform, "arch": arch, "tag": tag, "commit": commit}
+    row: dict = {"platform": platform, "arch": arch, "tag": tag,
+                 "baseVersion": tag.removeprefix("v"), "commit": commit}
     if platform == "windows":
         package = single(p for p in root.glob(f"*-win-{arch}.msix") if not p.name.startswith("Store-"))
         if channel_request is None and not package.name.endswith(f"-{tag[1:]}-win-{arch}.msix"):

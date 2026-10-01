@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
+import http.client
 import json
 import re
 from urllib.error import HTTPError, URLError
@@ -311,7 +312,7 @@ class ChannelReader:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
             raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
-        except (OSError, URLError) as exc:
+        except (OSError, URLError, http.client.HTTPException) as exc:
             raise ChannelError("Channel read unavailable") from exc
         if len(body) > MAX_METADATA:
             raise ChannelError("Channel metadata exceeds size limit")

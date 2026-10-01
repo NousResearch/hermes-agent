@@ -1,6 +1,6 @@
 # Employee deployment
 
-This directory prepares a deployment; it does not create a Railway project.
+This directory contains the runtime configuration for a Railway deployment.
 No server login is needed to develop or run the local protocol tests.
 The deployment runs Linux; local development supports macOS and Linux/WSL2.
 Native Windows is unsupported because the responsibility filesystem uses POSIX
@@ -12,8 +12,8 @@ Create three services in one Railway environment when ready:
 
 | Service | Build/config | Persistent storage | Public ports |
 | --- | --- | --- | --- |
-| `hermes` | Repository Dockerfile; `deploy/railway/hermes.toml` | `/opt/data` | Dashboard `9119`; webhook listener `8648` on a separate domain |
-| `hindsight` | `deploy/railway/hindsight/Dockerfile`; `deploy/railway/hindsight.toml` | Database below | None |
+| `hermes` | Repository `Dockerfile`; start command `sleep infinity` | `/opt/data` | Dashboard `9119`; webhook listener `8648` on a separate domain |
+| `hindsight` | `deploy/railway/hindsight/Dockerfile`; image's default start command | Database below | None |
 | `postgres` | PostgreSQL with pgvector installed | PostgreSQL data directory | None |
 
 Use one replica of each. The Hermes image uses native s6 supervision for its
@@ -22,7 +22,15 @@ port `8879`. Do not publish port `8879`. Hindsight listens privately on `8888`.
 The PostgreSQL image must support `CREATE EXTENSION vector`; an ordinary image
 without pgvector is insufficient. See [pgvector's Docker instructions](https://github.com/pgvector/pgvector#docker).
 
-Configure Railway's config-file path for each repository service as shown above.
+Set each service's Dockerfile path and start command in Railway's service settings
+as shown above. Railway rejects the old `railwayConfigFile` setting; no TOML
+deployment config is used. Keep one replica, disable service sleeping, and select
+the on-failure restart policy with 10 retries. Mount volumes explicitly before
+the first deployment; the Hermes Dockerfile does not create an anonymous volume.
+For Hermes, set `PORT=9119` and the healthcheck path to `/api/health` with a
+300-second timeout. For Hindsight, use `PORT=8888` and `/health` after Hermes is
+available. These probes check service startup, not model access. Enable daily
+and weekly Railway backups on both persistent volumes.
 Private DNS names assume the services are named `hermes` and `hindsight`.
 If renamed, change `hindsight.url` in Hermes config and `HINDSIGHT_CODEX_URL`
 on Hindsight. Both listeners bind IPv6 for Railway private networking.
@@ -90,7 +98,7 @@ Browser Use follows native session and account behavior. First boot provisions
 the CLI through native package management. Local Whisper includes the native
 multilingual base model in the image; first boot seeds its native cache.
 
-## Deployment acceptance (requires the future server)
+## Deployment acceptance
 
 1. Confirm dashboard password login, gateway startup and private service health.
 2. Sign into Codex; run one main-model request and one image generation.
@@ -106,8 +114,8 @@ multilingual base model in the image; first boot seeds its native cache.
    Restore both to an isolated environment before directing real traffic there.
 
 The pinned Hindsight image was built and started against a disposable local
-pgvector database; migrations and health checks passed. The account and Railway
-checks above have not been run: no Railway project exists yet. Local HTTP
+pgvector database; migrations and health checks passed. The account-dependent
+checks above must pass on the deployed profile. Local HTTP
 protocol tests validate the code paths, not subscription entitlement or hosted
 service availability.
 

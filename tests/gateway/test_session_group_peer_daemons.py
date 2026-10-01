@@ -209,6 +209,10 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
                                    grant=invitation['grant'], catalog=catalog)
             assert registered['result']['registered'], registered
             assert stored_route() == [(invitation['grant'], trace, cancel_scope)]
+            # The grant it replaced is retired at once, not when it expires.
+            status, body = await asyncio.to_thread(_grant_status, routes[0], grants[-2])
+            assert (status, body['error']['code']) == (403, 'room_reauthorization_required'), body
+            assert (await asyncio.to_thread(_grant_status, routes[0], grants[-1]))[0] == 200
 
             held, _ = target_model.gates['HOLD_RESTART']
             await _send(home_ws, 'restart', '@reviewer HOLD_RESTART')
@@ -222,8 +226,8 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
             replies = await _events(home_ws, 'message.member', count=2)
             assert [r['payload']['text'] for r in replies] == ['PEER_REPLY', 'PEER_REPLY'], replies
             assert sum('HOLD_RESTART' in _last_user_text(r) for r in target_model.requests) == 1
-            for grant in grants:
-                assert (await asyncio.to_thread(_grant_status, routes[0], grant))[0] == 200
+            # The current grant still works; the one it replaced stayed retired.
+            assert [(await asyncio.to_thread(_grant_status, routes[0], grant))[0] for grant in grants] == [403, 200]
 
             disbanded = await rpc(home_ws, 'groups.disband', room_id='linked')
             assert 'tombstone' in disbanded['result'], disbanded

@@ -75,7 +75,8 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/room-members/invitations", self._handle_room_member_invitation),
         ("GET", "/v1/room-members/capabilities", self._handle_room_member_capabilities),
         ("POST", "/v1/room-members/grants/refresh", self._handle_room_member_grant_refresh),
-        ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke)]
+        ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke),
+        ("POST", "/v1/room-members/grants/revoke-exact", self._handle_room_member_grant_revoke_exact)]
 
 
 def _room_grant_token(request: "web.Request") -> str:
@@ -100,8 +101,10 @@ def _decode_request_grant(self, request: "web.Request", *, permission: str) -> d
 def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
     claims = _decode_request_grant(self, request, permission=permission)
     from gateway import hosted_rooms
+    from gateway.hosted_room_peer import room_grant_token_digest
     db_path = hosted_rooms.default_db_path()
-    if hosted_rooms.room_grant_is_revoked(db_path, claims=claims):
+    if hosted_rooms.room_grant_is_revoked(
+            db_path, claims=claims, token_sha256=room_grant_token_digest(self._room_grant_token(request))):
         raise RoomGrantReauthorizationRequired("room grant is revoked")
     if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims):
         raise RoomGrantReauthorizationRequired("room grant is no longer current")
@@ -230,4 +233,39 @@ async def _handle_room_member_grant_revoke(
             hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
+    return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})
+
+
+async def _handle_room_member_grant_revoke_exact(
+    self, request: "web.Request", *, _openai_error, _api_request_profile) -> "web.Response":
+    """Revoke exactly the grant authenticating this request: the rest of its scope stays usable.
+
+    The home retires a grant it has replaced. Idempotent: a retry after a lost response, or a
+    grant already past its lifetime, still gets the acknowledgement.
+    """
+    body, error = await self._read_json_body(request)
+    if error:
+        return error
+    if body:
+        return _json_error(
+            _openai_error, "Grant revoke accepts no fields.", code="invalid_room_grant_revoke", status=400)
+    try:
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import decode_room_grant, room_grant_token_digest
+        token = self._room_grant_token(request)
+        if not token:
+            raise ValueError("room grant is missing")
+        claims = decode_room_grant(
+            self._room_grant_secret(), token, permission="status", allow_expired_for_revocation=True)
+        _local_target(claims, _api_request_profile)
+    except Exception as exc:
+        return _room_grant_error_response(exc, _openai_error=_openai_error)
+    try:
+        hosted_rooms.revoke_room_grant_token(
+            hosted_rooms.default_db_path(), claims=claims, token_sha256=room_grant_token_digest(token),
+            expires_at=_hard_expiry(claims))
+    except Exception:
+        return _json_error(
+            _openai_error, "Room grant revocation could not be saved; retry it.",
+            code="room_grant_revocation_unavailable", status=503)
     return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})

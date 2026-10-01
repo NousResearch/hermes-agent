@@ -4406,6 +4406,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _handle_room_member_capabilities = _room_grant_delegate("_handle_room_member_capabilities")
     _handle_room_member_grant_refresh = _room_grant_delegate("_handle_room_member_grant_refresh")
     _handle_room_member_grant_revoke = _room_grant_delegate("_handle_room_member_grant_revoke")
+    _handle_room_member_grant_revoke_exact = _room_grant_delegate("_handle_room_member_grant_revoke_exact")
 
     def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, Any] | None:
         return _api_runs._durable_run_status(self, request, run_id)

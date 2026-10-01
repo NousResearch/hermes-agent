@@ -1,0 +1,253 @@
+"""Canonical peer routes: one current grant per member, replaced grants retired at once.
+
+A route is persisted, then published. A registration that replaces a member's grant first
+revokes the old grant exactly on the member's gateway; if that cannot be confirmed, nothing
+changes and the operator can retry. A renewal retires the grant it replaced as soon as the
+renewed one is live; the replaced grant was about to expire anyway.
+
+During one attempt, ``CanonicalPeerClient`` keeps the attempt on that route:
+
+- new work (dispatch, recovery replay, probe) is sent only with the route's current grant, so
+  a transport resolved before a re-registration is refused before anything is sent;
+- reads, Stop and approvals of accepted work follow the current grant of the same route, since
+  the grant the attempt started with may have been retired meanwhile;
+- a health report applies only while the grant it was made with is still current.
+"""
+from contextlib import contextmanager
+from copy import copy
+from dataclasses import replace
+import logging
+
+from gateway import hosted_room_links as links
+from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
+
+_GRANT_ERRORS = frozenset({'invalid_room_grant', 'room_reauthorization_required'})
+_NEW_WORK = frozenset({'dispatch', 'recover_dispatch', 'probe'})
+_OBSERVATION = frozenset({'history', 'status', 'stop', 'stop_receipt'})
+
+
+def _retire(client, grant):
+    """Revoke one replaced grant exactly; an already unusable grant counts as retired."""
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    retire = getattr(client, 'revoke_grant_exact', None)
+    if not callable(retire):
+        raise RuntimeStoreError('peer_unreachable')
+    try:
+        retire(grant=grant)
+    except PeerRunsHTTPError as exc:
+        if exc.status_code not in {401, 403} or exc.error_code not in _GRANT_ERRORS:
+            raise RuntimeStoreError('peer_unreachable') from exc
+
+
+def publish_route(service, *, room_id, member_id, route, client, target_url, catalog,
+                  expected_grant=None, authorize=None):
+    """Persist, then publish, one route, retiring the grant it replaces (module docstring).
+
+    ``expected_grant`` makes it a renewal, conditional on the stored grant; ``authorize`` runs
+    inside the write transaction (a renewal's lease fence).
+    """
+    if target_url is None or catalog is None:
+        raise ValueError('a canonical peer route is always persisted')
+    if not route.execution_policy_digest:
+        route = replace(route, execution_policy_digest=catalog.execution_policy.policy_digest)
+    if (route.capability_digest != catalog.catalog_digest
+            or route.execution_policy_digest != catalog.execution_policy.policy_digest):
+        raise ValueError('peer route does not match its target catalog')
+    bind_store = getattr(client, 'bind_receipt_store', None)
+    if callable(bind_store):
+        bind_store(service.db_path)
+    renewal = expected_grant is not None
+    with service.peer_route_lock:
+        previous = links.load_room_link(service.db_path, room_id=room_id, member_id=member_id)
+        if renewal and (previous is None or previous.grant != expected_grant):
+            raise RuntimeStoreError('peer_target_mismatch')
+        replaced = previous.grant if previous is not None and previous.grant != route.grant else None
+        if replaced is not None and not renewal:
+            _retire(client, replaced)
+        service._save_link(
+            room_id=room_id, member_id=member_id, target_url=target_url, target_profile=route.target_profile,
+            grant=route.grant, catalog=catalog, cancellation_scope_id=route.cancellation_scope_id,
+            trace_id=route.trace_id, authorize=authorize)
+        service._publish_route((room_id, member_id), route, client)
+        if replaced is not None and renewal:
+            try:
+                _retire(client, replaced)
+            except Exception:
+                logger.warning('A renewed peer grant replaced one that could not be retired: room=%s member=%s',
+                               room_id, member_id)
+    service.runtime.wakeup()
+
+
+def set_route_status(service, key, status, grant):
+    """Record a route's health, only while ``grant`` is still its stored grant."""
+    with service._policy_lock:
+        if service._peer_route_status.get(key) == status:
+            return
+        if links.mark_room_link_status(service.db_path, room_id=key[0], member_id=key[1],
+                                       status=status, grant=grant):
+            service._peer_route_status[key] = status
+
+
+@contextmanager
+def before_sending(method):
+    """A failure here happened before the request left: never a non-admission.
+
+    For a dispatch it is phase evidence (``dispatch_not_attempted``), which the driver trusts
+    only for a generation it has just allocated; a recovery replay stays ambiguous.
+    """
+    try:
+        yield
+    except Exception as exc:
+        if method not in {'dispatch', 'recover_dispatch'}:
+            raise
+        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        dispatch = method == 'dispatch'
+        try:
+            failure = copy(exc)
+            if failure is exc:
+                raise TypeError('an exception that cannot carry phase evidence')
+            failure.not_admitted = False
+            failure.dispatch_not_attempted = dispatch
+            if not dispatch:
+                failure.ambiguous = True
+        except Exception:
+            failure = PeerRunsHTTPError(
+                'peer admission preflight failed', not_admitted=False,
+                ambiguous=not dispatch or bool(getattr(exc, 'ambiguous', False)),
+                retryable=bool(getattr(exc, 'retryable', False)),
+                status_code=getattr(exc, 'status_code', None), error_code=getattr(exc, 'error_code', None))
+            failure.dispatch_not_attempted = dispatch
+        raise failure from exc
+
+
+class CanonicalPeerClient:
+    """One attempt's client for its peer route (see the module docstring)."""
+
+    def __init__(self, service, binding, key, route, client):
+        self._service, self._binding, self._key = service, binding, key
+        self._route, self._client = route, client
+        self._members = service._room(binding.room_id)['members']
+        self._grant = route.grant  # this attempt's grant: its own renewal, or an adopted one
+
+    def __getattr__(self, name):
+        value = getattr(self._client, name)
+        if not callable(value):
+            return value
+        if name in _NEW_WORK:
+            return lambda **kwargs: self._new_work(name, value, kwargs)
+        if name in _OBSERVATION:
+            return lambda **kwargs: self._observe(name, value, kwargs)
+        return value  # revoke_grant_exact included: exact cleanup never swaps the bearer
+
+    def _status(self, status, grant):
+        set_route_status(self._service, self._key, status, grant)
+
+    def _report(self, call, kwargs):
+        grant = kwargs.get('grant')
+        try:
+            result = call(**kwargs)
+        except Exception as exc:
+            if getattr(exc, 'needs_reauthorization', False):
+                self._status('needs_reauthorization', grant)
+            elif getattr(exc, 'not_admitted', False):
+                self._status('unavailable', grant)
+            raise
+        self._status('ready', grant)
+        return result
+
+    def _same_route(self, current, client):
+        return (current is not None and replace(current, grant=self._route.grant) == self._route
+                and getattr(client, 'base_url', None) == getattr(self._client, 'base_url', None))
+
+    def _new_work(self, name, call, kwargs):
+        with before_sending(name):
+            grant = self._grant if kwargs.get('grant') == self._route.grant else kwargs.get('grant')
+            grant = self._refresh_if_due(name, grant, kwargs)
+            with self._service._policy_lock:
+                current = self._service.peer_routes.get(self._key)
+                if current is None or current.grant != grant or not self._same_route(
+                        current, self._service.peer_clients.get(self._key)):
+                    raise RuntimeError('peer room route changed before admission')
+        return self._report(call, {**kwargs, 'grant': grant})
+
+    def _observe(self, name, call, kwargs):
+        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        if kwargs.get('grant') in {self._route.grant, self._grant}:
+            kwargs = {**kwargs, 'grant': self._observer_grant()}
+        try:
+            return self._report(call, kwargs)
+        except PeerRunsHTTPError as exc:
+            if name not in {'history', 'status'} or not exc.needs_reauthorization:
+                raise
+            replacement = self._observer_grant()
+            if replacement == kwargs['grant']:
+                raise
+            # One read-only retry closes a grant replacement that raced this read.
+            return self._report(call, {**kwargs, 'grant': replacement})
+
+    def _observer_grant(self):
+        service, binding = self._service, self._binding
+        with service._policy_lock:
+            room = service._room(binding.room_id)
+            current = service.peer_routes.get(self._key)
+            if ((room['authority_gateway_id'], room['authority_epoch']) != (binding.gateway_id, binding.authority_epoch)
+                    or room['members'] != self._members
+                    or not self._same_route(current, service.peer_clients.get(self._key))):
+                raise RuntimeError('peer room observer authority or membership changed')
+            if current.grant != self._grant and service._peer_route_status.get(self._key) == 'needs_reauthorization':
+                raise RuntimeError('peer room observer replacement needs reauthorization')
+            self._grant = current.grant
+            return current.grant
+
+    def _refresh_if_due(self, name, grant, kwargs):
+        """Renew an expiring grant before a dispatch, as the base client does, then publish it."""
+        from gateway.hosted_room_peer import HostedMemberDispatch, room_grant_needs_dispatch_refresh
+        refresh = getattr(self._client, 'refresh_grant', None)
+        if (name not in {'dispatch', 'recover_dispatch'} or not callable(refresh)
+                or not room_grant_needs_dispatch_refresh(grant)):
+            return grant
+        checked = HostedMemberDispatch.from_mapping(kwargs['dispatch'])
+        try:
+            refreshed = refresh(grant=grant, capability_digest=checked.capability_digest,
+                                execution_policy_digest=checked.execution_policy_digest)
+        except Exception as exc:
+            if (getattr(exc, 'needs_reauthorization', False)
+                    or room_grant_needs_dispatch_refresh(grant, leeway_seconds=0)):
+                self._status('needs_reauthorization', grant)
+                raise
+            return grant  # still valid for now; a later attempt renews it
+        return self._publish_renewal(grant, refreshed)
+
+    def _publish_renewal(self, grant, refreshed, *, authorize=None):
+        """Make a renewal current, or retire it: a renewal is never left both live and unpublished."""
+        replacement = str(refreshed.get('grant') or '')
+        if not replacement:
+            raise RuntimeError('peer returned no refreshed room grant')
+        try:
+            if refreshed.get('catalog') is not None:
+                from gateway.hosted_room_peer import GatewayRoomCatalog
+                from tui_gateway.hosted_room_peer_http import digest_reauthorization_error
+                drift = digest_reauthorization_error(
+                    GatewayRoomCatalog.from_mapping(refreshed['catalog']),
+                    capability_digest=self._route.capability_digest,
+                    execution_policy_digest=self._route.execution_policy_digest)
+                if drift is not None:
+                    self._status('needs_reauthorization', grant)
+                    raise drift
+            stored = links.load_room_link(self._service.db_path, room_id=self._key[0], member_id=self._key[1])
+            if stored is None:
+                raise RuntimeStoreError('peer_target_mismatch')
+            publish_route(self._service, room_id=self._key[0], member_id=self._key[1],
+                          route=replace(self._route, grant=replacement), client=self._client,
+                          target_url=stored.target_url, catalog=stored.catalog,
+                          expected_grant=grant, authorize=authorize)
+        except Exception:
+            try:
+                _retire(self._client, replacement)
+            except Exception:
+                pass  # the refusal below still stands; the unpublished grant expires on its own
+            raise
+        self._grant = replacement
+        return replacement

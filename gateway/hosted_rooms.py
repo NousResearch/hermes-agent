@@ -14,7 +14,7 @@ import sqlite3
 from contextlib import closing
 from functools import partial
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from gateway import hosted_room_safety as room_safety
 from gateway.hosted_rooms_common import (
@@ -147,6 +147,13 @@ _SCHEMA_DDL = (
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL,
             PRIMARY KEY (room_id, member_id, target_profile)
+        )""",
+    # Appended last: the index-based _REMOTE_RUN_SCHEMA_COLUMNS lookup below depends on the order above.
+    """CREATE TABLE IF NOT EXISTS hosted_room_revoked_grant_tokens (
+            scope_key TEXT NOT NULL,
+            token_sha256 TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            PRIMARY KEY (scope_key, token_sha256)
         )""")
 # (table, required columns) parsed from the DDL, in the order _schema_is_current probes them.
 _REQUIRED_COLUMNS = tuple(
@@ -647,9 +654,13 @@ def list_room_link_records(db_path: DbPath) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def upsert_room_link_record(db_path: DbPath, *, record: Mapping[str, Any], max_links: int) -> None:
-    """Atomically insert or replace one private RoomLink record."""
+def upsert_room_link_record(
+    db_path: DbPath, *, record: Mapping[str, Any], max_links: int,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> None:
+    """Atomically insert or replace one private RoomLink record; ``authorize`` runs in its transaction."""
     with _transaction(db_path, immediate=True) as conn:
+        if authorize is not None:
+            authorize(conn)
         existing = conn.execute(
             "SELECT 1 FROM hosted_room_links WHERE room_id=? AND member_id=?", (record["room_id"], record["member_id"])
         ).fetchone()
@@ -674,12 +685,14 @@ def upsert_room_link_record(db_path: DbPath, *, record: Mapping[str, Any], max_l
 
 
 def update_room_link_status(
-    db_path: DbPath, *, room_id: str, member_id: str, status: str, now: float | None = None) -> bool:
-    """Persist a non-secret route health classification."""
+    db_path: DbPath, *, room_id: str, member_id: str, status: str, now: float | None = None,
+    grant: str | None = None) -> bool:
+    """Persist a non-secret route health classification; with ``grant``, only while it is current."""
     with _transaction(db_path, immediate=True) as conn:
         return conn.execute(
-            "UPDATE hosted_room_links SET status=?, updated_at=? WHERE room_id=? AND member_id=?",
-            (status, _now(now), room_id, member_id)).rowcount == 1
+            "UPDATE hosted_room_links SET status=?, updated_at=? WHERE room_id=? AND member_id=?"
+            + (" AND grant=?" if grant is not None else ""),
+            (status, _now(now), room_id, member_id, *((grant,) if grant is not None else ()))).rowcount == 1
 
 
 def delete_room_link_records(db_path: DbPath, *, room_id: str) -> int:
@@ -727,6 +740,26 @@ def revoke_room_grant_scope(
                 timestamp, timestamp,
                 *_claim_values(claims, ("room_id", "member_id", "target_profile", "authority_gateway_id")).values(),
                 int(claims.get("authority_epoch") or 0)))
+
+
+def revoke_room_grant_token(
+    db_path: DbPath, *, claims: Mapping[str, Any], token_sha256: str, expires_at: float,
+    now: float | None = None) -> None:
+    """Revoke exactly one signed grant, leaving the rest of its scope (its replacement) usable."""
+    if not isinstance(token_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", token_sha256):
+        raise HostedRoomError("exact revocation requires a signed grant digest")
+    scope_key = _room_grant_scope_key(claims)
+    timestamp = _now(now)
+    expiry = float(expires_at)
+    if expiry <= timestamp:
+        return  # already unusable
+    with _transaction(db_path, immediate=True) as conn:
+        conn.execute("DELETE FROM hosted_room_revoked_grant_tokens WHERE expires_at<=?", (timestamp,))
+        conn.execute("""INSERT INTO hosted_room_revoked_grant_tokens(scope_key, token_sha256, expires_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(scope_key, token_sha256) DO UPDATE SET
+                   expires_at=MAX(hosted_room_revoked_grant_tokens.expires_at, excluded.expires_at)""",
+            (scope_key, token_sha256, expiry))
 
 
 def _reservation_claims(claims: Mapping[str, Any]) -> tuple[str, str, str, str, int]:
@@ -803,10 +836,17 @@ def peer_room_grant_is_current(db_path: DbPath, *, claims: Mapping[str, Any], no
             AND expires_at>? AND revoked_at IS NULL LIMIT 1""", (*_reservation_claims(claims), timestamp)) is not None
 
 
-def room_grant_is_revoked(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
-    """Return whether a grant predates its exact scope's revocation fence."""
+def room_grant_is_revoked(
+    db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None,
+    token_sha256: str | None = None) -> bool:
+    """Return whether a grant predates its scope's revocation fence, or was itself revoked exactly."""
     timestamp = _now(now)
     scope_key = _room_grant_scope_key(claims)
+    if token_sha256 is not None and _read_one(
+            db_path, """SELECT 1 FROM hosted_room_revoked_grant_tokens
+                WHERE scope_key=? AND token_sha256=? AND expires_at>?""",
+            (scope_key, token_sha256, timestamp)) is not None:
+        return True
     issued_at = float(claims.get("issued_at") or 0)
     row = _read_one(
         db_path, """SELECT revoked_before FROM hosted_room_revoked_grants

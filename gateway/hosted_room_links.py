@@ -115,6 +115,12 @@ def load_room_links(db_path: DbPath) -> tuple[StoredRoomLink, ...]:
     return tuple(StoredRoomLink.from_record(row) for row in _link_rows(db_path))
 
 
+def load_room_link(db_path: DbPath, *, room_id: str, member_id: str) -> StoredRoomLink | None:
+    """The one stored route for a room member, or None."""
+    row = next((r for r in _link_rows(db_path) if (r["room_id"], r["member_id"]) == (room_id, member_id)), None)
+    return StoredRoomLink.from_record(row) if row is not None else None
+
+
 def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...], tuple[str, ...]]:
     """Load healthy routes while quarantining malformed rows by identity."""
     links, errors = [], []
@@ -126,19 +132,21 @@ def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...
     return tuple(links), tuple(errors)
 
 
-def save_room_link(db_path: DbPath, link: StoredRoomLink) -> None:
-    hosted_rooms.upsert_room_link_record(db_path, record=link.as_record(), max_links=MAX_LINKS)
+def save_room_link(db_path: DbPath, link: StoredRoomLink, *, authorize=None) -> None:
+    hosted_rooms.upsert_room_link_record(
+        db_path, record=link.as_record(), max_links=MAX_LINKS, authorize=authorize)
     if os.name == "posix":
         with contextlib.suppress(OSError):
             Path(db_path).chmod(0o600)
 
 
-def mark_room_link_status(db_path: DbPath, *, room_id: str, member_id: str, status: str) -> bool:
+def mark_room_link_status(
+    db_path: DbPath, *, room_id: str, member_id: str, status: str, grant: str | None = None) -> bool:
     if status not in _STATUSES:
         raise HostedRoomPeerError("stored room link status is invalid")
     return hosted_rooms.update_room_link_status(
         db_path, room_id=_short_string(room_id, "room_id"), member_id=_short_string(member_id, "member_id"),
-        status=status)
+        status=status, grant=grant)
 
 
 def make_stored_link(

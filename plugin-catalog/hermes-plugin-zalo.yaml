@@ -1,6 +1,6 @@
 name: hermes-plugin-zalo
 repo: https://github.com/moken627-hub/hermes-plugin-zalo
-sha: 4138ca8f9f619e8bc44b4449b51ec98b0672d40a
+sha: 318389d041ce59cb085b01bdebdcbd211a5e47cd
 description: >-
   Zalo Bot Platform gateway adapter for Hermes Agent — relays messages between Zalo DMs/groups
   and the agent over the official Bot API (bot.zaloplatforms.com), long-polling or webhook mode.

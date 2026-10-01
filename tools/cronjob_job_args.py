@@ -330,7 +330,6 @@ def _custom_stored_key_error(bu: str) -> Optional[str]:
     the host-gated env keys by HOSTNAME, so a base_url that would receive one must be an origin
     the operator or the provider registry names; pool and ``model.key_env`` keys already match
     their configured URL exactly."""
-    from agent.credential_pool import _iter_custom_providers
     from agent.secret_scope import get_secret_str
     from hermes_cli import runtime_provider as rp
     from hermes_cli.auth import PROVIDER_REGISTRY
@@ -344,17 +343,18 @@ def _custom_stored_key_error(bu: str) -> Optional[str]:
     try:  # a URL urlparse rejects (unclosed IPv6 bracket) would raise in the key lookup below
         base_url_origin(bu)
     except ValueError:
-        return _base_url_refused(bu, "custom", custom_why)
+        return _base_url_refused(bu, "custom", "It is not a valid URL.")
     if not any(rp.has_usable_secret(key) for key in rp._host_gated_env_key_candidates(bu, ollama=True)):
         return None
     # The RAW configured model.base_url: _get_model_config() may network-probe a local model.
-    model_cfg = rp.load_config().get("model")
+    cfg = rp.load_config()
+    model_cfg = cfg.get("model")
     configured = [
         model_cfg.get("base_url") if isinstance(model_cfg, dict) else None,
         get_secret_str("OPENAI_BASE_URL", ""), OPENROUTER_BASE_URL,
         # PROVIDER_REGISTRY already carries the direct OpenAI origin (openai-api).
         *(getattr(p, "inference_base_url", "") for p in PROVIDER_REGISTRY.values()),
-        *(entry.get("base_url") for _, entry in _iter_custom_providers()),
+        *(entry.get("base_url") for entry in rp.get_compatible_custom_providers(cfg)),
     ]
     if any(_same_origin(bu, str(url)) for url in configured if url):
         return None

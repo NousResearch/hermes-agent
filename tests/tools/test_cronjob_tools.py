@@ -710,7 +710,7 @@ class TestValidateCronBaseUrl:
             assert err and "not allowed" in err, bu
         # A URL urlparse rejects is refused, not raised out of create/update.
         err = self._v("custom", "http://[::1/v1")
-        assert err and "not allowed" in err
+        assert err and "not allowed" in err and "not a valid URL" in err
         assert self._v("custom", configured) is None
         keyless = "http://192.0.2.10:8080/v1"
         assert attached(keyless) != stored and self._v("custom", keyless) is None

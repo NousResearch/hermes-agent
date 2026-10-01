@@ -409,6 +409,18 @@ describe('glass is confined to chat windows', () => {
 
     expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(true)
   })
+
+  it('paints Clear when a chat window declares that native vibrancy is unavailable', () => {
+    setSearch('?win=secondary&vibrancy=0')
+    setTranslucency(60)
+    setTranslucencyMode('glass')
+
+    // Keep the user's cross-window setting intact; only this window falls back.
+    expect($translucency.get().mode).toBe('glass')
+    expect(glassAttr()).toBe(false)
+    expect(clearAttr()).toBe(true)
+    expect(keep()).toBe('')
+  })
 })
 
 // Glass rewrites page surfaces, which is only correct in a real chat window.

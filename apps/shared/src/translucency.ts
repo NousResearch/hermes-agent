@@ -272,6 +272,18 @@ export function normalizeState(payload: unknown, glassSupported: boolean): Trans
 }
 
 /**
+ * Resolve the user's shared setting for one native window surface.
+ *
+ * Glass is only meaningful when the window has a vibrancy material beneath
+ * the renderer. A window that deliberately omits that material must use the
+ * Clear mapping instead, while the persisted cross-window choice stays Glass
+ * for windows that can support it.
+ */
+export function effectiveTranslucencyState(state: TranslucencyState, supportsVibrancy: boolean): TranslucencyState {
+  return state.mode === 'glass' && !supportsVibrancy ? { ...state, mode: 'clear' } : state
+}
+
+/**
  * The resolved state a surface should assume before anyone has said otherwise.
  *
  * Main needs this at window CREATION on a first launch: the renderer has not

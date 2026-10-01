@@ -6,6 +6,7 @@
 import { pathToFileURL } from 'node:url'
 
 import type { DesktopWindowLaunch } from './desktop-profile'
+import { MACOS_TAHOE_DARWIN_MAJOR } from './titlebar-overlay-width'
 import { computeWindowOptions } from './window-state'
 
 // Secondary windows open at the minimum usable size — a compact side panel for
@@ -71,12 +72,13 @@ function chatWindowWebPreferences(preloadPath: string) {
 // HUD's buildHudWindowUrl): without it a pop-out/watch window adopts the
 // PRIMARY profile and resolves the session id against the wrong backend
 // (#82768, #61286). Absent → unchanged primary adoption.
+// `vibrancy=0` makes only that window paint the selected Glass state as Clear.
 function buildSessionWindowUrl(
   sessionId: string,
-  { connectionId, devServer, profile, rendererIndexPath, watch }: any = {}
+  { connectionId, devServer, profile, rendererIndexPath, supportsVibrancy = true, watch }: any = {}
 ) {
   const profileKey = typeof profile === 'string' ? profile.trim() : ''
-  const query = `?win=secondary${watch ? '&watch=1' : ''}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}${connectionId !== undefined ? `&connectionId=${encodeURIComponent(connectionId ?? '')}` : ''}`
+  const query = `?win=secondary${watch ? '&watch=1' : ''}${supportsVibrancy ? '' : '&vibrancy=0'}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}${connectionId !== undefined ? `&connectionId=${encodeURIComponent(connectionId ?? '')}` : ''}`
   const route = `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
@@ -93,9 +95,12 @@ function buildSessionWindowUrl(
 // separate marker lets the renderer distinguish a peer from the one primary
 // app window: app-launch source restoration belongs to the primary only, while
 // a peer keeps the already-running backend it joined during boot.
+// A Tahoe peer still needs to tell its renderer that Glass falls back to
+// Clear; `vibrancy=0` is appended only where no native material is available.
 interface InstanceWindowUrlOptions extends Partial<DesktopWindowLaunch> {
   devServer?: string
   rendererIndexPath?: string
+  supportsVibrancy?: boolean
 }
 
 function buildInstanceWindowUrl({
@@ -103,17 +108,15 @@ function buildInstanceWindowUrl({
   devServer,
   profile,
   profileWindow,
-  rendererIndexPath
+  rendererIndexPath,
+  supportsVibrancy = true
 }: InstanceWindowUrlOptions = {}) {
-  const query = `?peer=1${profile ? `&profile=${encodeURIComponent(profile)}&connectionId=${encodeURIComponent(connectionId ?? '')}${profileWindow ? '&profileWindow=1' : ''}` : ''}`
+  const peerQuery = `?peer=1${profile ? `&profile=${encodeURIComponent(profile)}&connectionId=${encodeURIComponent(connectionId ?? '')}${profileWindow ? '&profileWindow=1' : ''}` : ''}`
+  const url = devServer
+    ? `${devServer.endsWith('/') ? devServer.slice(0, -1) : devServer}/${peerQuery.slice(1) ? peerQuery : ''}`
+    : `${pathToFileURL(rendererIndexPath).toString()}${peerQuery}`
 
-  if (devServer) {
-    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
-
-    return `${base}/${query}`
-  }
-
-  return `${pathToFileURL(rendererIndexPath).toString()}${query}`
+  return supportsVibrancy ? url : `${url}${url.includes('?') ? '&' : '?'}vibrancy=0`
 }
 
 // Full "instance" windows (⌘⇧N / the "New Window" command) open a complete app
@@ -145,6 +148,14 @@ function instanceWindowBounds(
   }
 
   return { ...bounds, ...computeWindowOptions(bounds, displays) }
+}
+
+// Electron 40 can leave additional BrowserWindows presenting only the native
+// vibrancy material on Tahoe even though their renderers have painted. Keep the
+// working primary-window appearance unchanged, but omit vibrancy for compact
+// session and full peer windows on Darwin 25+.
+function secondaryWindowSupportsVibrancy({ isMac = false, darwinMajor = 0 } = {}): boolean {
+  return isMac && darwinMajor < MACOS_TAHOE_DARWIN_MAJOR
 }
 
 // A small registry keyed by sessionId that guarantees one window per chat:
@@ -213,6 +224,7 @@ export {
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   instanceWindowBounds,
+  secondaryWindowSupportsVibrancy,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 }

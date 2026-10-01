@@ -23,6 +23,7 @@ import {
   type Appearance,
   clampIntensity,
   defaultTranslucencyValues,
+  effectiveTranslucencyState,
   GLASS_MATERIALS,
   GLASS_SCOPES,
   type GlassMaterial,
@@ -158,6 +159,17 @@ export const isChatWindow = (search = typeof window === 'undefined' ? '' : windo
     return CHAT_WINDOW_KINDS.has(new URLSearchParams(search).get('win'))
   } catch {
     return false
+  }
+}
+
+/** Main marks chat windows whose native surface deliberately has no material. */
+export const windowSupportsVibrancy = (
+  search = typeof window === 'undefined' ? '' : window.location.search
+): boolean => {
+  try {
+    return new URLSearchParams(search).get('vibrancy') !== '0'
+  } catch {
+    return true
   }
 }
 
@@ -298,11 +310,12 @@ export function pulseTranslucencyPeek(ms = 900): void {
   window.setTimeout(endTranslucencyPeek, ms)
 }
 
-const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void => {
+const applyGlassSurfaces = (state: TranslucencyState): void => {
   if (typeof document === 'undefined') {
     return
   }
 
+  const { intensity, mode, scope } = effectiveTranslucencyState(state, windowSupportsVibrancy())
   const root = document.documentElement
   // Is the user's Glass setting live at all — the same answer in every window.
   const glassLive = mode === 'glass' && intensity > 0 && GLASS_SUPPORTED

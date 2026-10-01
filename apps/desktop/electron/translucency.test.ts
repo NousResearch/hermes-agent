@@ -17,6 +17,7 @@ import {
   DEFAULT_GLASS_SCOPE,
   defaultTranslucencyState,
   defaultTranslucencyValues,
+  effectiveTranslucencyState,
   GLASS_MATERIALS,
   GLASS_SCOPES,
   glassActive,
@@ -26,6 +27,7 @@ import {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  nativeTranslucencyChanges,
   normalizeBook,
   normalizeMaterial,
   normalizeMode,
@@ -513,6 +515,31 @@ describe('opacityNeedsSetting', () => {
   // returning it to opaque is free — and skipping it would strand the fade.
   it('makes the call to return an already-faded window to opaque', () => {
     expect(opacityNeedsSetting(1, 0.5)).toBe(true)
+  })
+})
+
+describe('a chat window without native vibrancy', () => {
+  it('falls a selected Glass state back to Clear without changing the saved choice', () => {
+    const selected = glass(60, 'header')
+    const effective = effectiveTranslucencyState(selected, false)
+
+    expect(selected.mode).toBe('glass')
+    expect(effective).toEqual({ ...selected, mode: 'clear' })
+    expect(windowBackingOptions(effective, '#111111')).toEqual({ backgroundColor: '#111111' })
+    expect(windowOpacityFor(effective)).toBeLessThan(1)
+  })
+
+  it('turns Glass slider ticks into native opacity updates only for the Clear fallback', () => {
+    expect(nativeTranslucencyChanges(glass(40), glass(41), true)).toEqual({
+      backing: false,
+      material: false,
+      opacity: false
+    })
+    expect(nativeTranslucencyChanges(glass(40), glass(41), false)).toEqual({
+      backing: false,
+      material: false,
+      opacity: true
+    })
   })
 })
 

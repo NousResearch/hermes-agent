@@ -7,6 +7,7 @@ from typing import Any
 
 from gateway.platforms.event import MessageEvent, QuotedMediaDependency, TurnContextUpdate
 from plugins.platforms.matrix.reply_context import MatrixEventContext
+from plugins.platforms.matrix.followup_context import REPLY_EXCERPT_CHARS, LogicalReplyContext, body_digest
 from plugins.platforms.matrix.room_context import MatrixHistoryContext
 
 _UNAVAILABLE = "[event content unavailable]"
@@ -64,6 +65,7 @@ class MatrixTurnContext:
     parent: MatrixEventContext | None
     attachments: tuple[MatrixQuotedAttachment, ...] = ()
     turn_context: TurnContextUpdate | None = None
+    logical_reply: LogicalReplyContext | None = None
 
     @classmethod
     def capture(
@@ -120,7 +122,10 @@ class MatrixTurnContext:
                 MatrixQuotedAttachment(dependency, retained, turn_path(dependency))
             )
         return cls(
-            adapter, room_id, replace(event), parent, attachments=tuple(attachments)
+            adapter, room_id, replace(event), parent, attachments=tuple(attachments),
+            logical_reply=next((snapshot.logical_reply for snapshot in dependencies
+                                if snapshot.room_id == room_id
+                                and snapshot.reply.reply_to_message_id == event.reply_to_message_id), None)
         )
 
     def use_turn_context(self, update: TurnContextUpdate | None) -> None:
@@ -132,6 +137,8 @@ class MatrixTurnContext:
             await update.history.refresh()
         for attachment in self.attachments:
             await attachment.refresh(self.adapter)
+        if self.logical_reply is not None:
+            await self.logical_reply.refresh(self.adapter, self.room_id)
         event_id = self.reply.reply_to_message_id
         if not event_id:
             return
@@ -178,7 +185,9 @@ class MatrixTurnContext:
         if not (parent.sender or parent.text or parent.redacted or parent.state_error):
             return replace(
                 event,
-                reply_to_text=self.reply.reply_to_text or _UNAVAILABLE,
+                reply_to_text=self.logical_reply.text(self.adapter, self.room_id)
+                if self.logical_reply is not None
+                else self.reply.reply_to_text or _UNAVAILABLE,
                 reply_to_author_id=self.reply.reply_to_author_id,
                 reply_to_author_name=self.reply.reply_to_author_name,
                 reply_to_is_own_message=self.reply.reply_to_is_own_message,
@@ -197,16 +206,24 @@ class MatrixTurnContext:
         )
         return replace(
             event,
-            reply_to_text="[redacted]"
-            if parent.redacted
-            else _UNAVAILABLE
-            if parent.state_error
-            else parent.text,
+            reply_to_text=self._reply_text(parent),
             reply_to_author_id=sender,
             reply_to_author_name=self.reply.reply_to_author_name,
             reply_to_is_own_message=own,
             reply_to_author_authorized=authorized,
         )
+
+    def _reply_text(self, parent: MatrixEventContext) -> str:
+        if parent.redacted:
+            return "[redacted]"
+        if parent.state_error:
+            return _UNAVAILABLE
+        logical = self.logical_reply
+        if logical is None:
+            return parent.text
+        if logical.delivery.target_digest and body_digest(parent.text) != logical.delivery.target_digest:
+            return parent.text[:REPLY_EXCERPT_CHARS]
+        return logical.text(self.adapter, self.room_id)
 
     def reply_image_paths(self) -> list[str]:
         return list(

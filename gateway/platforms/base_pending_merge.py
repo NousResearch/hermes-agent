@@ -18,28 +18,6 @@ def _append_text(existing: Optional[str], new: Optional[str]) -> Optional[str]:
     return f"{existing}\n{new}" if existing else new
 
 
-def _sender_identity(event: MessageEvent) -> tuple[str, ...] | None:
-    from gateway.platforms.base import _platform_name
-
-    source = getattr(event, "source", None)
-    if source is None:
-        return None
-    platform = _platform_name(getattr(source, "platform", None))
-    sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
-    if sender:
-        return (platform, str(sender))
-    if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(
-        source, "chat_id", None
-    ):
-        return (platform, "dm", str(source.chat_id))
-    return None
-
-
-def same_message_sender(first: MessageEvent, second: MessageEvent) -> bool:
-    """Whether two events come from one known sender: the same platform user, or the same DM chat
-    when the platform gives no user ID."""
-    sender = _sender_identity(first)
-    return sender is not None and sender == _sender_identity(second)
 
 
 def merge_pending_message_event(

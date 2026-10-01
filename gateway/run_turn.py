@@ -28,7 +28,9 @@ from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
-from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
+from gateway.warning_notifications import (
+    diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted, warning_notifications_enabled,
+)
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -1920,6 +1922,11 @@ class GatewayTurnMixin:
         Returns the text for the adapter to send, or ``None`` when already delivered."""
         if diagnostic_wake_muted(event):
             return None
+        # Failed-turn guidance is an automatic warning, not an answer to the user's request.
+        # Persisting the turn above remains unconditional so retries and transcript boundaries stay intact.
+        if agent_result.get("failed") or is_context_overflow_failure_result(agent_result, len(agent_result.get("messages", []) or [])):
+            if not warning_notifications_enabled(source.platform):
+                return None
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
@@ -1976,6 +1983,8 @@ class GatewayTurnMixin:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
             from gateway.run import _context_overflow_reply
+            if not warning_notifications_enabled(source.platform):
+                return None
             return _context_overflow_reply()
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
@@ -1992,6 +2001,8 @@ class GatewayTurnMixin:
         except Exception:
             logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
         # Never expose raw exception types/messages to end users (info-leakage risk).
+        if not warning_notifications_enabled(source.platform):
+            return None
         _hint_key = self._STATUS_HINTS.get(status_code)
         status_hint = t(_hint_key) if _hint_key and status_code != 401 else ""
         if status_code == 401:

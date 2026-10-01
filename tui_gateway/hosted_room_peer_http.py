@@ -341,12 +341,13 @@ class PeerRunsHTTPClient:
 
     def _request(
         self, path: str, *, method: str = "GET", body: Mapping[str, Any] | None = None,
-        headers: Mapping[str, str] | None = None, room_grant: str | None = None) -> dict[str, Any]:
+        headers: Mapping[str, str] | None = None, room_grant: str | None = None,
+        ensure_ascii: bool = True) -> dict[str, Any]:
         # A renewal never follows a redirect: it would restart the request outside its budget.
         reject_redirects = self.proof_install_id is not None or _ROOM_GRANT_REQUEST_BUDGET.get() is not None
         timeout = self.timeout_seconds
         deadline, ambiguous = time.monotonic() + timeout, method == "POST"
-        body_bytes = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
+        body_bytes = None if body is None else json.dumps(body, separators=(",", ":"), ensure_ascii=ensure_ascii).encode("utf-8")
         proof_state = None
         if self.proof_install_id is not None and room_grant:
             from gateway.hosted_room_proof import request_proof
@@ -776,6 +777,35 @@ class PeerRunsHTTPClient:
         """Verify gateway reachability and the live scoped capability catalog."""
         return self._request(
             "/v1/room-members/capabilities", room_grant=self._require_room_grant(grant))
+
+    def replicate_page(
+        self, *, grant: str, room_id: str, room_name: str, members: list[dict[str, Any]],
+        page: dict[str, Any]) -> Mapping[str, Any]:
+        """Send one history page with a ``replicate`` grant, never broad API auth.
+
+        Pages are bounded in UTF-8; escaping non-ASCII text would multiply their wire size.
+        """
+        return self._request(
+            "/v1/room-members/replica", method="POST", room_grant=self._require_room_grant(grant),
+            ensure_ascii=False,
+            body={"room_id": room_id, "room_name": room_name, "members": members, "page": page})
+
+    def replicate_work_records(self, *, grant: str, record: dict[str, Any]) -> Mapping[str, Any]:
+        """Send one whole task-evidence record with a ``work_records`` grant."""
+        return self._request(
+            "/v1/room-members/work-records", method="POST", room_grant=self._require_room_grant(grant),
+            ensure_ascii=False, body={"record": record})
+
+    def retire_replica(self, notice) -> Mapping[str, Any]:
+        """Deliver the exact signed enrollment retirement through pinned installation proof."""
+        if re.search(r"/p/[^/]+$", urllib.parse.urlsplit(self.base_url).path):
+            raise PeerRunsHTTPError("retirement requires the installation endpoint")
+        if self.proof_install_id != notice.target_install_id:
+            raise PeerRunsHTTPError('copy retirement requires pinned installation proof')
+        return self._request(
+            "/v1/group-replicas/retire", method="POST",
+            body={'notice': notice.payload(), 'signature': notice.value},
+            room_grant=self._require_room_grant(notice.proof_grant))
 
     def _scoped_post(self, path: str, grant: str, *, body: dict[str, Any]) -> dict[str, Any]:
         return self._request(

@@ -207,6 +207,32 @@ class TestWebSocketHostOriginGuard:
         ):
             pass
 
+    def test_authenticated_remote_websocket_rejects_testclient_renderer_origin(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        import hermes_cli.web_server as ws
+        import hermes_cli.web_server_chat as chat
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "100.64.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", True, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        monkeypatch.setattr(chat, "_ws_auth_reason", lambda websocket: (None, "test"))
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                url,
+                headers={
+                    "Host": "100.64.0.1:9119",
+                    "Origin": "http://testclient:47891",
+                },
+            ):
+                pass
+
+        assert exc.value.code == 4403
+
     def test_trusted_public_websocket_host_and_origin_are_accepted(self, monkeypatch):
         from fastapi.testclient import TestClient
 

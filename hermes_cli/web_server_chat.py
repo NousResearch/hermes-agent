@@ -132,8 +132,9 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
 
 
 # Starlette's TestClient reports the peer as "testclient"; treat it as
-# loopback so tests don't need to rewrite request scope.
+# loopback for peer checks so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+_RENDERER_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
@@ -188,7 +189,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
     if (
         getattr(app.state, "auth_required", False)
-        and parsed.hostname in _LOOPBACK_HOSTS
+        and parsed.hostname in _RENDERER_LOOPBACK_HOSTS
     ):
         return None
     if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):

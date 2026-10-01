@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registerPreviewScriptRunner } from '@/app/chat/right-rail/preview-script-runner'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $rightRailActiveTabId } from '@/store/layout'
+import { closeRightRail, openPreview } from '@/store/preview'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
@@ -85,6 +88,60 @@ describe('approval request routing', () => {
 })
 
 describe('preview action request routing', () => {
+  it.each([
+    { params: { full: true }, expected: true },
+    { params: { full: false }, expected: false },
+    { params: {}, expected: false },
+    { params: { full: 'true' }, expected: false },
+    { params: { full: 'false' }, expected: false },
+    { params: { full: 1 }, expected: false },
+    { params: { full: null }, expected: false }
+  ])('forwards full as $expected for $params without coercing non-booleans', async ({ params, expected }) => {
+    document.body.innerHTML = '<button>Save</button>'
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 40, 40))
+    openPreview({ kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' })
+
+    // Execute the real preview engine's injected script against an isolated DOM,
+    // not a live webview. A second look must be full only for literal true.
+    const unregister = registerPreviewScriptRunner($rightRailActiveTabId.get()!, async code =>
+      new Function('return ' + code)()
+    )
+
+    try {
+      const first = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-a')
+      await vi.waitFor(() => expect(first.respond).toHaveBeenCalledTimes(1))
+      const inventory = JSON.parse(first.respond.mock.calls[0][0].value)
+      expect(inventory).toMatchObject({ success: true, elements: [expect.objectContaining({ label: 'Save' })] })
+
+      const { handled, respond, fail } = deliver(
+        'preview.act',
+        { action: 'elements', max: 50, ...params, session_id: 'session-a' },
+        'session-a'
+      )
+
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+
+      expect(handled).toBe(true)
+      expect(fail).not.toHaveBeenCalled()
+      const result = JSON.parse(respond.mock.calls[0][0].value)
+      expect(result.success).toBe(true)
+
+      if (expected) {
+        expect(result.elements).toEqual(inventory.elements)
+        expect(result.delta).toBeUndefined()
+      } else {
+        expect(result.elements).toBeUndefined()
+        expect(result.delta).toBeDefined()
+      }
+    } finally {
+      unregister()
+      closeRightRail()
+      rect.mockRestore()
+      document.body.replaceChildren()
+      delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+    }
+  })
+
   it('retries a replayed scoped request only while no session is bound yet', () => {
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: null })).toBe('retry')
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: 'session-a' })).toBe('run')

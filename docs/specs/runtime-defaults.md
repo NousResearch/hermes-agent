@@ -51,6 +51,8 @@ proposal; those settings were not approved.
   mode for every group.
 - Quiet operational notices: reference disables gateway restart notifications
   and transcript echo. These are separate from assistant progress updates.
+- Do not prompt new chats to set a home channel. Schedules declare their own
+  report target; first-contact onboarding and explicit `/sethome` remain native.
 - Cron deliveries send the job's output without the native job-name header and
   stop/manage footer (`cron.wrap_response: false`).
 

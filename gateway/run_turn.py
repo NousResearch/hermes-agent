@@ -1417,10 +1417,10 @@ class GatewayTurnMixin:
         return bounded
 
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
-        """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
+        """First-ever-message onboarding note (only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
-        from gateway.run import _hermes_home, _home_target_env_var, _load_gateway_config
+        from gateway.run import _hermes_home, _load_gateway_config
         if history:
             return
         if not await self.async_session_store.has_any_sessions():
@@ -1433,39 +1433,6 @@ class GatewayTurnMixin:
             )
             if note:
                 turn_sidecar_notes.append(note)
-
-        # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
-        if not source.platform or source.platform in (Platform.LOCAL, Platform.WEBHOOK):
-            return
-        platform_name = source.platform.value
-        env_key = _home_target_env_var(platform_name)
-        # Multiplex: the home channel may live only in the profile secret scope, not os.environ.
-        home_env = ""
-        if env_key:
-            with suppress(Exception):
-                from agent.secret_scope import get_secret
-                home_env = (get_secret(env_key) or "").strip()
-            home_env = home_env or (os.getenv(env_key) or "").strip()
-        # Also honor in-memory / yaml home_channel on this platform.
-        with suppress(Exception):
-            if not home_env and self.config.get_home_channel(source.platform):
-                home_env = "set"
-        # Secondary-profile platforms may only exist under that profile's config — re-read in scope.
-        if not home_env:
-            with suppress(Exception):
-                from gateway.config import load_gateway_config as _lgc
-                prof = (getattr(source, "profile", None) or "").strip()
-                if prof and prof != "default" and _lgc().get_home_channel(source.platform):
-                    home_env = "set"
-        if not home_env:
-            # Slack routes every command through the parent `/hermes`; bare `/sethome` would fail.
-            sethome_cmd = "/hermes sethome" if source.platform == Platform.SLACK else "/sethome"
-            await self._deliver_platform_notice(
-                source, f"📬 No home channel is set for {platform_name.title()}. "
-                f"A home channel is where Hermes delivers cron job results and cross-platform "
-                f"messages.\n\nType {sethome_cmd} to make this chat your home channel, or ignore "
-                f"to skip.",
-            )
 
     def _hmwa_apply_message_timestamp(self, event, message_text):
         """Capture the platform event time as message metadata and keep the persisted transcript

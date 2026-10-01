@@ -1579,9 +1579,7 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     try:
         run_contained(build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
-            run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
-                           f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
-                          cwd=desktop_dir, env=build_env)
+            _run_packaging_leg(npm, staging_dir, desktop_dir, build_env)
         packaged_executable = (
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
         )
@@ -1592,6 +1590,35 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     finally:
         if staging_dir is not None:
             _discard_desktop_staging(staging_dir)
+
+
+_PACKAGING_RETRY_BACKOFF_SECONDS = (5.0, 20.0)
+
+
+def _run_packaging_leg(npm: str, staging_dir: Path, desktop_dir: Path, env: dict) -> None:
+    """Run the electron-builder packaging leg, retrying transient failures.
+
+    app-builder-lib's download retry list only matches errors carrying a
+    recognized `.code` (ENOTFOUND/ETIMEDOUT/ECONNRESET/EPIPE/ENOENT, plus 5xx).
+    undici surfaces a generic `TypeError: fetch failed` with no such code, so a
+    single transient network blip during the packaging fetch aborts the whole
+    update instead of being retried (#123387). The leg is idempotent — it
+    prepares and packs into a fresh staging dir — so retry with backoff.
+    """
+    from pm.progress import run_contained
+
+    attempts = len(_PACKAGING_RETRY_BACKOFF_SECONDS) + 1
+    for attempt in range(attempts):
+        try:
+            run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
+                           f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
+                          cwd=desktop_dir, env=env)
+            return
+        except subprocess.CalledProcessError:
+            if attempt == attempts - 1:
+                raise
+            _time_mod.sleep(_PACKAGING_RETRY_BACKOFF_SECONDS[attempt])
+            print(f"  ⚠ Packaging attempt {attempt + 1} failed (possibly a transient fetch error); retrying…")
 
 
 _WSL_DXG_DEVICE = Path("/dev/dxg")

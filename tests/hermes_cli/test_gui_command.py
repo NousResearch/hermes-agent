@@ -1766,6 +1766,7 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(main_desktop, "_PACKAGING_RETRY_BACKOFF_SECONDS", (0, 0))
     live_exe = _make_packaged_executable(root, monkeypatch)
     live_exe.write_text("good build", encoding="utf-8")
     monkeypatch.setenv("ELECTRON_MIRROR", "https://example.test/electron/")
@@ -1792,6 +1793,43 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
 
     assert exc.value.code == 1
     assert live_exe.read_text(encoding="utf-8") == "good build"
+    assert not list(desktop_dir.glob(".staging-*"))
+    assert not list((desktop_dir / "release").glob("*.previous"))
+
+
+def test_gui_transient_pack_failure_retries_then_promotes(tmp_path, monkeypatch, capsys):
+    """Two transient pack failures then success → the packaging leg is retried
+    with backoff and the new app is promoted (#123387: @electron/get surfaces
+    generic `TypeError: fetch failed` that app-builder-lib never retries)."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(main_desktop, "_PACKAGING_RETRY_BACKOFF_SECONDS", (0, 0))
+    live_exe = _make_packaged_executable(root, monkeypatch)
+    live_exe.write_text("old build", encoding="utf-8")
+
+    attempts = {"count": 0}
+    succeed = _pack_into_staging(root, content="new build")
+
+    def flaky_pack(cmd, **kwargs):
+        if cmd[1:3] == ["run", "builder"]:
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                raise subprocess.CalledProcessError(1, cmd)
+        return succeed(cmd, **kwargs)
+
+    patches = _gui_build_patches(root, flaky_pack)
+    for p in patches:
+        p.start()
+    try:
+        cli_main.cmd_gui(_ns(build_only=True))
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert attempts["count"] == 3
+    assert live_exe.read_text(encoding="utf-8") == "new build"
+    assert "retrying" in capsys.readouterr().out
     assert not list(desktop_dir.glob(".staging-*"))
     assert not list((desktop_dir / "release").glob("*.previous"))
 

@@ -477,6 +477,7 @@ import { rosterSourceStatus } from './roster-source-status'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
+  requireRoomSetupEncryption,
   SECRET_STORAGE_POLICY_FILE,
   type SecretStoragePolicy,
   writeSecretStoragePolicy
@@ -8371,7 +8372,7 @@ function rewriteAllStoredSecrets(shouldRewrite: (secret: any) => boolean, reenco
       if (shouldRewrite(secret)) {
         const original = decryptDesktopSecret(secret)
         if (!original) {throw new RoomSetupError('setup_journal_unreadable')}
-        const next = reencode(secret)
+        const next = secretStoragePolicy().on ? encryptRoomSetupSecret(original) : reencode(secret)
         if (next === secret) {throw new RoomSetupError('setup_journal_unreadable')}
         writeSecretFileAtomic(file, JSON.stringify(next), { encoding: 'utf8', durable: {
           verify: bytes => {
@@ -8515,6 +8516,17 @@ function encryptDesktopSecret(value, options = {}) {
   }
 
   return encryptDesktopSecretStrict(value, safeStorage, options)
+}
+
+// The same guard applies to a newly issued grant and a pending plaintext
+// obligation being rotated by Settings. Availability=true can still mean
+// basic_text on Linux, so generic token encryption is insufficient here.
+function encryptRoomSetupSecret(value: string) {
+  try {
+    requireRoomSetupEncryption(secretStoragePolicy(), () =>
+      process.platform === 'linux' ? safeStorage.getSelectedStorageBackend() : undefined)
+    return encryptDesktopSecret(value)
+  } catch {throw new RoomSetupError('secure_storage_required')}
 }
 
 function decryptDesktopSecret(secret) {
@@ -14443,13 +14455,7 @@ const nativeRoomSetup = roomSetupCoordinator({
     directory: path.join(app.getPath('userData'), 'room-setup'),
     // Follow the existing explicit native storage policy. OFF deliberately uses
     // private plain files with zero keychain calls; ON never downgrades on error.
-    encrypt: text => {
-      if (secretStoragePolicy().on && process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') {
-        throw new RoomSetupError('secure_storage_required')
-      }
-      try {return JSON.stringify(encryptDesktopSecret(text))}
-      catch {throw new RoomSetupError('secure_storage_required')}
-    },
+    encrypt: text => JSON.stringify(encryptRoomSetupSecret(text)),
     decrypt: text => {
       const sealed = JSON.parse(text)
       if (!['plain', 'safeStorage'].includes(sealed.encoding) || typeof sealed.value !== 'string') {

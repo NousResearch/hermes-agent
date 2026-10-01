@@ -100,3 +100,14 @@ export function classifyStoredSecret(
 
   return policy.migrated ? 'drop' : 'migrate'
 }
+
+/** Room grants cannot claim keychain encryption while Electron is using its
+ * plaintext Linux backend. OFF is an intentional native-file policy and must
+ * not probe the keychain at all. Fresh writes and rotation share this guard. */
+export function requireRoomSetupEncryption(
+  policy: SecretStoragePolicy, selectedBackend: () => string | undefined
+): void {
+  if (policy.on && selectedBackend() === 'basic_text') {
+    throw new Error('secure_storage_required')
+  }
+}

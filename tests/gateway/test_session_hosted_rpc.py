@@ -91,6 +91,50 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, m
     assert len(rows) == (1 if revocation is None else 0)
 
 
+def test_same_home_custody_guard_keeps_shared_room_refusal_and_exact_controls(owner, monkeypatch):
+    """New work honors the shared room fence on its writer; status and exact Stop remain readable."""
+    from pathlib import Path
+    import time
+    from gateway import hosted_room_driver as tasks, hosted_rooms
+    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_state_runtime import RuntimeStoreError
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+
+    authority, loop, _, _ = owner
+    service = CanonicalHostedRoomService(authority, loop)
+    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
+    service.authorize_room('alice', 'room', create=True)
+    gateway = hosted_rooms.local_authority_gateway_id()
+    hosted_rooms.create_room(authority.db.db_path, room_id='room', name='Room',
+        authority_gateway_id=gateway, members=[{'member_id': 'one', 'profile': 'default', 'handle': 'one'}])
+    identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
+    tasks.admit_task(authority.db.db_path, identity, payload={
+        'target_profile': 'default', 'target_member_id': 'one', 'source_event_seq': 1, 'prompt': 'frozen'}, clock=time.time)
+    lease = tasks.acquire_lease(authority.db.db_path, room_id='room', gateway_id=gateway,
+        authority_epoch=1, process_generation='test', ttl_seconds=120, clock=time.time)
+    started = tasks.start_task(authority.db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
+    task, = tasks.list_tasks(authority.db.db_path, room_id='room')
+    rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1), task)
+    seen = []
+
+    def refuse(conn, room_id, gateway_id, epoch):
+        assert (room_id, gateway_id, epoch) == ('room', gateway, 1)
+        seen.append(conn)
+        raise tasks.RoomUnavailableError('hosted room authority is quarantined')
+
+    monkeypatch.setattr(tasks, '_require_room_authority', refuse)
+    assert rpc.authorizer('execute', identity, started.execution_generation) is False
+
+    def check(conn):
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            rpc.authorize_write(conn, identity, started.execution_generation)
+        assert seen[-1] is conn and conn.in_transaction
+    authority.db._execute_write(check)
+    for operation in ('history', 'info', 'interrupt'):
+        assert rpc.authorizer(operation, None, None) is True
+    assert len(seen) == 2
+
+
 @pytest.fixture
 def owner(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig

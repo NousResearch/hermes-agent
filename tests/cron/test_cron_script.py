@@ -243,15 +243,19 @@ class TestRunJobScript:
 
         assert success is True
         assert output == "ok"
-        # Overlay mode bootstraps with site.addsitedir() so .pth files
-        # (editable installs) are processed — plain PYTHONPATH cannot do that.
+        # The bootstrap puts the venv site-packages on sys.path IN-PROCESS via
+        # site.addsitedir() (the only way .pth / editable installs are
+        # processed) and inserts the live checkout in-process too — never
+        # PYTHONPATH, which every child would inherit (#123440).
         assert captured["argv"][0] == str(base_python)
         assert captured["argv"][1] == "-c"
         assert "site.addsitedir" in captured["argv"][2]
         m = re.search(r"site\.addsitedir\('([^']*)'\)", captured["argv"][2])
         assert m is not None
         assert Path(m.group(1)) == site_packages
-        assert captured["argv"][3] == str(script.resolve())
+        live_repo = str(Path(sched_script.__file__).resolve().parents[1])
+        assert captured["argv"][3] == live_repo
+        assert captured["argv"][4] == str(script.resolve())
         # The script runner always adds CREATE_NEW_PROCESS_GROUP on win32 so a
         # cancel can taskkill the whole tree; on POSIX the getattr default is
         # 0 and the flag set is exactly windows_hide_flags().
@@ -261,12 +265,16 @@ class TestRunJobScript:
         assert captured["kwargs"]["creationflags"] == expected_flags
         env = captured["kwargs"]["env"]
         assert env["VIRTUAL_ENV"] == str(venv)
-        assert str(site_packages) in env["PYTHONPATH"]
+        # #123440 sibling: the venv tree must NOT ride along in the env — every
+        # child the script spawns would inherit it, and a foreign interpreter
+        # would load the venv's compiled extensions.
+        assert str(site_packages) not in env.get("PYTHONPATH", "")
+        assert live_repo not in env.get("PYTHONPATH", "")
 
     def test_bootstrap_argv_makes_pth_editable_installs_importable(self, cron_env, tmp_path):
-        """The bootstrap must process .pth files — the whole reason the
-        overlay mode exists is that PYTHONPATH alone cannot (editable
-        installs would raise ModuleNotFoundError in cron scripts)."""
+        """The bootstrap must process .pth files — site.addsitedir() is the only
+        mechanism that does (editable installs would raise ModuleNotFoundError
+        in cron scripts without it)."""
 
         from cron.scheduler_script import _windows_cron_bootstrap_argv
 
@@ -285,7 +293,7 @@ class TestRunJobScript:
         script.write_text("import mypkg; print(mypkg.VALUE)\n", encoding="utf-8")
 
         argv = _windows_cron_bootstrap_argv(
-            sys.executable, {"VIRTUAL_ENV": str(venv)}, str(script)
+            sys.executable, (str(tmp_path / "repo"), str(site_packages)), str(script)
         )
         # Run the bootstrap with the current interpreter (stands in for the
         # base python.exe on Windows; the semantics are interpreter-agnostic).
@@ -314,22 +322,51 @@ class TestRunJobScript:
         )
 
         argv = _windows_cron_bootstrap_argv(
-            sys.executable, {"VIRTUAL_ENV": str(venv)}, str(script)
+            sys.executable, (str(tmp_path / "repo"), str(site_packages)), str(script)
         )
         result = subprocess.run(argv, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "sibling ok"
 
+    def test_bootstrap_live_checkout_wins_over_a_tree_snapshot(self, cron_env, tmp_path):
+        """The live checkout is inserted in-process (never via PYTHONPATH) and
+        must win over anything the dependency tree carries — a snapshot module
+        must not shadow the running install (#123440 sibling)."""
+
+        from cron.scheduler_script import _windows_cron_bootstrap_argv
+
+        venv = tmp_path / "venv"
+        site_packages = venv / "Lib" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / "shadow_probe.py").write_text(
+            "CHECKOUT = 'tree'\n", encoding="utf-8"
+        )
+        repo = tmp_path / "live-repo"
+        repo.mkdir()
+        (repo / "shadow_probe.py").write_text("CHECKOUT = 'live'\n", encoding="utf-8")
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text(
+            "import shadow_probe; print(shadow_probe.CHECKOUT)\n", encoding="utf-8"
+        )
+
+        argv = _windows_cron_bootstrap_argv(
+            sys.executable, (str(repo), str(site_packages)), str(script)
+        )
+        result = subprocess.run(argv, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "live"
+
     def test_bootstrap_argv_falls_back_without_site_packages(self, cron_env, tmp_path):
         """Unresolvable venv layout must not break the run — fall back to a
-        plain invocation (pre-existing PYTHONPATH behaviour)."""
+        plain invocation (no in-process paths to add)."""
         from cron.scheduler_script import _windows_cron_bootstrap_argv
 
         script = cron_env / "scripts" / "probe.py"
         script.write_text('print("ok")\n', encoding="utf-8")
 
         argv = _windows_cron_bootstrap_argv(
-            sys.executable, {"VIRTUAL_ENV": str(tmp_path / "missing")}, str(script)
+            sys.executable, (str(tmp_path / "repo"), str(tmp_path / "missing")), str(script)
         )
         assert argv == [sys.executable, str(script)]
 
@@ -386,6 +423,51 @@ class TestRunJobScript:
         assert Path(path0).resolve() == script.parent.resolve()
         assert pythonpath == "PYTHONPATH="
         assert pickled == "pickled True"  # __main__ outlives the body, as in a plain run
+
+    @pytest.mark.platforms("windows")
+    def test_windows_managed_store_script_imports_and_leaks_no_pythonpath(
+        self, cron_env, tmp_path, monkeypatch
+    ):
+        """#123440 sibling: on a Windows managed-store install a cron ``.py`` script imports the
+        committed generation's packages with the live checkout ahead of its snapshot and keeps
+        ``python script.py`` path semantics — and leaves no ``PYTHONPATH`` for its own children
+        to inherit: the overlay goes into the process, not the env."""
+        from cron import scheduler_script
+
+        committed = tmp_path / "selected-venv"
+        deps = committed / "Lib" / "site-packages"
+        deps.mkdir(parents=True)
+        (committed / "Scripts").mkdir()
+        (deps / "probe_pkg.py").write_text("VALUE = 42\n", encoding="utf-8")
+        snapshot = tmp_path / "workspace-snapshot"
+        snapshot.mkdir()
+        (snapshot / "hermes_constants.py").write_text("STALE = True\n", encoding="utf-8")
+        (deps / "snapshot.pth").write_text(f"{snapshot}\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable)
+        )
+        monkeypatch.setattr("pm.environments.committed_venv", lambda repo: committed)
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text(
+            "import os, sys, probe_pkg, hermes_constants\n"
+            "print(probe_pkg.VALUE)\n"
+            "print(hermes_constants.__file__)\n"
+            "print(sys.path[0])\n"
+            "print('PYTHONPATH=' + (os.environ.get('PYTHONPATH') or ''))\n",
+            encoding="utf-8",
+        )
+
+        success, output = scheduler_script._run_job_script("probe.py")
+        assert success is True, output
+        value, constants_file, path0, pythonpath = output.splitlines()
+        assert value == "42"
+        repo = Path(scheduler_script.__file__).resolve().parents[1]
+        assert Path(constants_file).resolve() == repo / "hermes_constants.py"
+        assert Path(path0).resolve() == script.parent.resolve()
+        assert pythonpath == "PYTHONPATH="
 
     @pytest.mark.platforms("posix")
     @pytest.mark.parametrize("broken", ["selection_raises", "interpreter_missing"])

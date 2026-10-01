@@ -1306,6 +1306,8 @@ export interface Room {
   claim_event?: RoomEvent | null
   authority_claim?: RoomEvent | null
   event?: RoomEvent | null
+  safety_status?: string | null
+  safety_reason?: string | null
 }
 /** One roster row (``hosted_room_discussion.validate_roster``); legacy rooms may carry pre-normalisation rows, so the set stays open. */
 export interface RoomMember {
@@ -1418,6 +1420,7 @@ export interface GroupsDisbandParams {
   profile?: string | null
   room_id: string
   cancel_id?: string | null
+  confirm_quarantined?: boolean | null
 }
 export interface GroupsDisbandResult {
   tombstone: RoomTombstone
@@ -1498,6 +1501,9 @@ export interface GroupsReplicaStateResult {
   event_bytes: number
   created_at: number
   updated_at: number
+  disbanded_at?: number | null
+  safety_status?: string | null
+  safety_reason?: string | null
 }
 export interface GroupsPromoteParams {
   profile?: string | null
@@ -4818,9 +4824,9 @@ export interface RpcMethods {
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
-  /** Fence this gateway's stale room authority against a proven newer epoch. */
+  /** Fence this gateway's stale room authority against a proven newer epoch. Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists. */
   'groups.demote': { params: GroupsDemoteParams; result: GroupsDemoteResult }
-  /** Permanently tombstone a hosted room id after stopping its work and revoking peer routes. */
+  /** Permanently tombstone a hosted room id after stopping its work and revoking peer routes. A quarantined room needs confirm_quarantined=true and only ends on this gateway, history kept. */
   'groups.disband': { params: GroupsDisbandParams; result: GroupsDisbandResult }
   /** List rooms hosted by this gateway, most recently changed first. */
   'groups.list': { params: GroupsListParams; result: GroupsListResult }
@@ -4832,13 +4838,13 @@ export interface RpcMethods {
   'groups.peer.register': { params: GroupsPeerRegisterParams; result: GroupsPeerRegisterResult }
   /** Revoke one target-issued grant using its exact profile scope. */
   'groups.peer.revoke': { params: GroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
-  /** Continue a replicated room on this gateway at epoch + 1; requires confirm=true. */
+  /** Continue a replicated room on this gateway at epoch + 1; requires confirm=true. Refused (4118, reason authority_takeover_disabled) until exclusive-authority recovery exists. */
   'groups.promote': { params: GroupsPromoteParams; result: GroupsPromoteResult }
   /** Rename one hosted room atomically with its replay event. */
   'groups.rename': { params: GroupsRenameParams; result: GroupsRenameResult }
   /** The local replica's coverage and authority lineage for one room. */
   'groups.replica_state': { params: GroupsReplicaStateParams; result: GroupsReplicaStateResult }
-  /** Persist one authority-stamped replay page into the local replica store; idempotent. */
+  /** Persist one authority-stamped replay page into the local replica store; idempotent. Refused (4116, reason replica_provenance_required) until exclusive-authority recovery exists. */
   'groups.replicate': { params: GroupsReplicateParams; result: GroupsReplicateResult }
   /** Retry one indeterminate room task after explicit user confirmation. */
   'groups.retry': { params: GroupsRetryParams; result: GroupsRetryResult }

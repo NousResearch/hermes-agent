@@ -182,12 +182,13 @@ def _room_error_class(replica_only: bool) -> type:
 def _room_method(
     name: str, *, code: int, room_code: int | None = None, replica_only: bool = False,
     with_reason: bool = True, service_code: int | None = None,
-    service_message: str = _DRIVER_UNAVAILABLE, db: bool = False):
+    service_message: str = _DRIVER_UNAVAILABLE, db: bool = False, takeover: str | None = None):
     """Register ``fn`` under ``name`` with the shared hosted-room error envelope.
     ``service_code``: the live service is required (else that error) and passed as a third
     argument; ``db``: the default room db path follows. ``room_code`` maps ``HostedRoomError``
     (only ``ReplicaError`` when ``replica_only``) to a client error with ``{"reason"}`` data
-    when ``with_reason``; anything else maps to ``code``."""
+    when ``with_reason``; anything else maps to ``code``. ``takeover`` names the operation the
+    exclusive-authority gate (``hosted_room_replicas.require_takeover``) checks before ``fn``."""
     error_class = _room_error_class  # closure cell: handlers run under server.py globals
 
     def dec(fn):
@@ -202,6 +203,9 @@ def _room_method(
                 from gateway.hosted_rooms import default_db_path
                 args += (default_db_path(),)
             try:
+                if takeover is not None:
+                    from gateway.hosted_room_replicas import require_takeover
+                    require_takeover(takeover)
                 return fn(*args)
             except Exception as exc:
                 if room_code is not None and isinstance(exc, error_class(replica_only)):
@@ -216,6 +220,7 @@ def _room_method(
 @method("groups.capabilities")
 def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
     """Describe the hosted-room protocol implemented by this gateway."""
+    from gateway.hosted_room_replicas import TAKEOVER_FEATURES, takeover_enabled
     from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
     service = get_hosted_room_service()
     driver_ready = bool(service and service.runtime.status()["running"])
@@ -241,7 +246,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
         "features": [
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity",
-            "log_replication", "authority_takeover"],
+            *(TAKEOVER_FEATURES if takeover_enabled() else ())],
         "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
 
 
@@ -397,11 +402,16 @@ def _(rid, params: dict, service) -> dict:
     "groups.disband", code=5114, room_code=4113, service_code=4123,
     service_message=_WORKER_UNAVAILABLE)
 def _(rid, params: dict, service) -> dict:
-    """Permanently tombstone a hosted room id."""
+    """Permanently tombstone a hosted room id. A quarantined room needs ``confirm_quarantined: true``
+    and only ends on this gateway: no Stop, no route revocation, nothing appended to its history."""
     from gateway.hosted_rooms import (
-        AuthorityConflictError, RoomHistoryExpiredError, disband_room, local_authority_gateway_id,
-        room_state)
+        AuthorityConflictError, RoomHistoryExpiredError, disband_quarantined_room, disband_room,
+        local_authority_gateway_id, quarantine_reason, room_state)
     room_id = str(params.get("room_id") or "")
+    if quarantine_reason(service.db_path, room_id=params.get("room_id")) is not None:
+        return _ok(rid, {"tombstone": disband_quarantined_room(
+            service.db_path, room_id=params.get("room_id"),
+            confirmed=params.get("confirm_quarantined") is True)})
 
     def disband_with_state(state: dict | None = None) -> dict:
         local_gateway_id = local_authority_gateway_id()
@@ -464,12 +474,13 @@ def _(rid, params: dict, service) -> dict:
 
 def _passthrough(
     name: str, module: str, fn_name: str, doc: str, *, code: int, room_code: int,
-    params: tuple, replica_only: bool = False, wrap: str | None = None) -> None:
+    params: tuple, replica_only: bool = False, wrap: str | None = None,
+    takeover: str | None = None) -> None:
     """Register a method whose result is ``module.fn(db_path, **params)`` verbatim (or under key
     ``wrap``). ``params`` items are ``key`` (-> ``params.get(key)``) or ``(key, extractor)``."""
     @_room_method(
-        name, code=code, room_code=room_code, replica_only=replica_only,
-        with_reason=not replica_only, db=True)
+        name, code=code, room_code=room_code, replica_only=replica_only, db=True,
+        takeover=takeover)
     def handler(rid, params_in: dict, db_path, _import=importlib.import_module) -> dict:
         kwargs = {
             (spec if isinstance(spec, str) else spec[0]):
@@ -494,19 +505,21 @@ _passthrough(
 _passthrough(
     "groups.replicate", "gateway.hosted_room_replicas", "ingest_page",
     """Persist one authority-stamped replay page (a verbatim ``groups.log`` result) into
-    the local replica store; idempotent, refuses sequence gaps and epoch regressions.""",
+    the local replica store; idempotent, refuses sequence gaps and epoch regressions.
+    Refused by the exclusive-authority gate until exclusive-authority recovery exists.""",
     code=5116, room_code=4116, params=("room_id", "room_name", "members", "page"),
-    replica_only=True)
+    replica_only=True, takeover="replicate")
 _passthrough(
     "groups.replica_state", "gateway.hosted_room_replicas", "replica_state",
     """Report the local replica's coverage and authority lineage.""",
     code=5117, room_code=4117, params=("room_id",), replica_only=True)
 
 
-@_room_method("groups.promote", code=5118, room_code=4118, with_reason=False, db=True)
+@_room_method("groups.promote", code=5118, room_code=4118, db=True, takeover="promote")
 def _(rid, params: dict, db_path) -> dict:
     """Continue a replicated room on THIS gateway at ``epoch + 1``. Requires ``confirm:
-    true`` — the caller asserts the previous authority can no longer commit."""
+    true`` — the caller asserts the previous authority can no longer commit. Refused by the
+    exclusive-authority gate until exclusive-authority recovery exists."""
     from gateway.hosted_room_replicas import promote_replica
     if params.get("confirm") is not True:
         return _err(rid, 4118, "promotion requires confirm=true acknowledging the previous "
@@ -517,9 +530,10 @@ def _(rid, params: dict, db_path) -> dict:
 
 _passthrough(
     "groups.demote", "gateway.hosted_room_replicas", "demote_room",
-    """Fence this gateway's stale room authority against a proven newer epoch.""",
+    """Fence this gateway's stale room authority against a proven newer epoch. Refused by the
+    exclusive-authority gate until exclusive-authority recovery exists.""",
     code=5119, room_code=4119, params=("room_id", "observed_gateway_id", "observed_epoch"),
-    replica_only=True)
+    replica_only=True, takeover="demote")
 
 
 def register(server) -> None:

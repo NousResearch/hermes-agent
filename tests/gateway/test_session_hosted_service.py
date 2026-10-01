@@ -44,6 +44,69 @@ async def test_room_owner_survives_service_restart_and_foreign_actor_cannot_clai
         db.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('quarantine', [False, True])
+async def test_quarantined_room_refuses_an_admitted_member_turn_before_it_runs(tmp_path, monkeypatch, quarantine):
+    """Admission reauthorization does not read the quarantine; the claim-time check must."""
+    from dataclasses import asdict
+    import json
+    import time
+    from gateway import hosted_room_driver as tasks, hosted_rooms, run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_hosted_attachments import committed_submission_payload
+    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {
+        'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
+    monkeypatch.setattr(run, '_resolve_gateway_model', lambda cfg: 'fixture')
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+
+    def no_adapter(_source):
+        return None
+
+    runner = SimpleNamespace(session_store=store, adapters={}, _draining=False, _adapter_for_source=no_adapter,
+                             _intake_adapter_for=no_adapter, _delivery_adapter_for=no_adapter)
+    authority = SessionAuthority(runner, db=db, profile_id=str(tmp_path), instance_id='test',
+                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    try:
+        service = CanonicalHostedRoomService(authority, asyncio.get_running_loop())
+        service.authorize_room('alice', 'room', create=True)
+        gateway = hosted_rooms.local_authority_gateway_id()
+        hosted_rooms.create_room(db.db_path, room_id='room', name='Room', authority_gateway_id=gateway, members=[
+            {'member_id': 'one', 'profile': 'default', 'handle': 'one'},
+            {'member_id': 'two', 'profile': 'other', 'handle': 'two'}])
+        identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
+        tasks.admit_task(db.db_path, identity, payload={
+            'target_profile': 'default', 'target_member_id': 'one', 'source_event_seq': 1, 'prompt': 'frozen'},
+            clock=time.time)
+        lease = tasks.acquire_lease(db.db_path, room_id='room', gateway_id=gateway, authority_epoch=1,
+                                    process_generation='test', ttl_seconds=30, clock=time.time)
+        attempt = tasks.start_task(db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
+        task, = tasks.list_tasks(db.db_path, room_id='room')
+        rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1), task)
+        admission = {
+            'request_id': 'hosted:' + json.dumps(
+                [asdict(identity), attempt.execution_generation], sort_keys=True, separators=(',', ':')),
+            'principal_id': rpc.principal.subject, 'payload': committed_submission_payload(rpc, 'frozen')}
+        if not quarantine:
+            claimed = await asyncio.to_thread(service.check_admission, rpc.ref, admission)
+            assert claimed['identity'] == identity
+            return
+        db._execute_write(lambda conn: conn.execute(
+            'INSERT INTO hosted_room_quarantine(room_id, reason, detected_at) VALUES(?,?,?)',
+            ('room', 'unsafe_authority_demotion', time.time())))
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            await asyncio.to_thread(service.check_admission, rpc.ref, admission)
+        assert tasks.list_tasks(db.db_path, room_id='room') == [task]
+    finally:
+        db.close()
+
+
 def test_private_hosted_policy_restores_without_public_source_admission(tmp_path):
     from dataclasses import asdict, replace
     from gateway.session_policy import build_policy, restore_policy

@@ -1,14 +1,22 @@
-"""Tests for the ``groups.replicate`` / ``groups.promote`` / ``groups.demote``
-JSON-RPC surface — cross-gateway room durability."""
+"""``groups.replicate`` / ``groups.promote`` / ``groups.demote`` stay wired behind one gate.
+
+The exclusive-authority gate (``hosted_room_replicas.require_takeover``) refuses all three with a
+typed reason until exclusive-authority recovery exists; opening it is the only change needed to
+reach the implementations again."""
 
 from __future__ import annotations
 
 import pytest
 
 import tui_gateway.server as srv
+from gateway import hosted_room_replicas as replicas
 from tui_gateway import methods_groups
 
 MEMBERS = [{"kind": "bot", "id": "planner"}]
+LOCAL_MEMBERS = [
+    {"member_id": "default", "profile": "default", "handle": "hermes"},
+    {"member_id": "ops", "profile": "ops", "handle": "ops"},
+]
 
 
 @pytest.fixture
@@ -22,6 +30,12 @@ def home(tmp_path, monkeypatch):
     methods_groups.start_hosted_room_service()
     yield path
     methods_groups.stop_hosted_room_service(timeout=1.0)
+
+
+@pytest.fixture
+def gate_open(monkeypatch):
+    """Stand in for exclusive-authority recovery's verdict, to prove the methods stay wired."""
+    monkeypatch.setattr(replicas, "takeover_enabled", lambda: True)
 
 
 def _result(envelope):
@@ -61,47 +75,78 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
     return rooms.read_events(db, room_id="room-1", since_seq=0, limit=100)
 
 
+def _replicate_params(page):
+    return {"room_id": "room-1", "room_name": "Field Room", "members": MEMBERS, "page": page}
 
 
-def test_replicate_then_state_roundtrip(home, tmp_path):
+def test_capabilities_do_not_advertise_unverified_replication(home):
+    assert (home / "profiles" / "ops" / "config.yaml").read_text() == "{}\n"
+    capabilities = _result(srv._methods["groups.capabilities"](1, {}))
+    assert {"log_replication", "authority_takeover"}.isdisjoint(capabilities["features"])
+    # The methods stay registered so a caller gets the typed refusal, not "unknown method".
+    assert {"groups.replicate", "groups.promote", "groups.demote"} <= set(capabilities["methods"])
+
+
+def test_replicate_refuses_unverified_pages_without_storing_them(home, tmp_path):
+    from gateway.hosted_rooms import default_db_path
+
+    error = _error(srv._methods["groups.replicate"](1, _replicate_params(_authority_page(tmp_path))))
+    assert error["code"] == 4116
+    assert error["data"] == {"reason": "replica_provenance_required"}
+    assert "verify that a page came from the room's authority" in error["message"]
+    with pytest.raises(replicas.ReplicaError, match="not found"):
+        replicas.replica_state(default_db_path(), room_id="room-1")
+
+
+def test_promote_refuses_even_a_confirmed_complete_replica(home, tmp_path):
+    from gateway.hosted_rooms import default_db_path
+
     page = _authority_page(tmp_path)
-    result = _result(
-        srv._methods["groups.replicate"](
-            1,
-            {
-                "room_id": "room-1",
-                "room_name": "Field Room",
-                "members": MEMBERS,
-                "page": page,
-            },
-        )
-    )
+    replicas.ingest_page(default_db_path(), room_id="room-1", room_name="Field Room", members=MEMBERS, page=page)
+    error = _error(srv._methods["groups.promote"](
+        1, {"room_id": "room-1", "confirm": True, "reason": "planned-handover"}))
+    assert error["code"] == 4118
+    assert error["data"] == {"reason": "authority_takeover_disabled"}
+    assert "globally exclusive authority" in error["message"]
+    # Still a passive copy of the original authority; nothing was claimed locally.
+    assert replicas.replica_state(default_db_path(), room_id="room-1")["authority"] == page["authority"]
+    assert "error" in srv._methods["groups.log"](2, {"room_id": "room-1"})
+
+
+def test_demote_refuses_and_keeps_the_local_authority(home):
+    room = _result(srv._methods["groups.create"](
+        1, {"room_id": "room-1", "name": "Local room", "members": LOCAL_MEMBERS}))["room"]
+    error = _error(srv._methods["groups.demote"](2, {
+        "room_id": "room-1", "observed_gateway_id": "install:" + "b" * 32, "observed_epoch": 2}))
+    assert error["code"] == 4119
+    assert error["data"] == {"reason": "authority_takeover_disabled"}
+    state = _result(srv._methods["groups.state"](3, {"room_id": "room-1"}))["room"]
+    assert (state["authority_gateway_id"], state["authority_epoch"]) == (
+        room["authority_gateway_id"], room["authority_epoch"])
+
+
+def test_open_gate_advertises_the_takeover_features(home, gate_open):
+    capabilities = _result(srv._methods["groups.capabilities"](1, {}))
+    assert {"log_replication", "authority_takeover"} <= set(capabilities["features"])
+
+
+def test_open_gate_replicates_then_reports_state(home, tmp_path, gate_open):
+    page = _authority_page(tmp_path)
+    result = _result(srv._methods["groups.replicate"](1, _replicate_params(page)))
     assert result["ingested"] == 3
     state = _result(srv._methods["groups.replica_state"](2, {"room_id": "room-1"}))
     assert state["last_seq"] == 3
     assert state["authority"] == page["authority"]
 
 
-def test_promote_requires_confirm_and_takes_over(home, tmp_path):
+def test_open_gate_promote_requires_confirm_and_takes_over(home, tmp_path, gate_open):
     page = _authority_page(tmp_path)
-    _result(
-        srv._methods["groups.replicate"](
-            1,
-            {
-                "room_id": "room-1",
-                "room_name": "Field Room",
-                "members": MEMBERS,
-                "page": page,
-            },
-        )
-    )
+    _result(srv._methods["groups.replicate"](1, _replicate_params(page)))
 
     refused = _error(srv._methods["groups.promote"](2, {"room_id": "room-1"}))
     assert refused["code"] == 4118
 
-    promoted = _result(
-        srv._methods["groups.promote"](3, {"room_id": "room-1", "confirm": True})
-    )
+    promoted = _result(srv._methods["groups.promote"](3, {"room_id": "room-1", "confirm": True}))
     assert promoted["authority_epoch"] == 2
     assert promoted["previous_gateway_id"] == page["authority"]["gateway_id"]
 
@@ -112,67 +157,46 @@ def test_promote_requires_confirm_and_takes_over(home, tmp_path):
     assert log["authority"]["epoch"] == 2
 
 
-def test_demote_fences_local_room_against_newer_epoch(home):
+def test_open_gate_promotion_still_ends_quarantined(home, tmp_path, gate_open):
+    """Opening the gate alone does not make a takeover trusted.
+
+    The store still records the promotion as unproven and quarantines the room. This changes when
+    exclusive-authority recovery adds its verified-takeover mark and the triggers in
+    ``gateway/hosted_room_safety.py`` accept it: a verified promotion should then leave a writable
+    room, and this test should assert that instead.
+    """
+    _result(srv._methods["groups.replicate"](1, _replicate_params(_authority_page(tmp_path))))
+    assert _result(srv._methods["groups.promote"](2, {"room_id": "room-1", "confirm": True}))["authority_epoch"] == 2
+
+    room, = _result(srv._methods["groups.list"](3, {}))["rooms"]
+    assert (room["safety_status"], room["safety_reason"]) == ("authority_quarantined", "unsafe_replica_promotion")
+    refused = _error(srv._methods["groups.send"](4, {
+        "room_id": "room-1", "event_id": "after-promotion", "payload": {"text": "continue", "thread_id": "thread-1"}}))
+    assert refused["data"] == {"reason": "room_authority_quarantined"}
+
+
+def test_open_gate_demote_fences_local_room_against_newer_epoch(home, gate_open):
     from gateway.hosted_rooms import local_authority_gateway_id
 
-    _result(
-        srv._methods["groups.create"](
-            1,
-            {
-                "room_id": "room-1",
-                "name": "Local room",
-                "members": [
-                    {
-                        "member_id": "default",
-                        "profile": "default",
-                        "handle": "hermes",
-                    },
-                    {"member_id": "ops", "profile": "ops", "handle": "ops"},
-                ],
-            },
-        )
-    )
+    _result(srv._methods["groups.create"](
+        1, {"room_id": "room-1", "name": "Local room", "members": LOCAL_MEMBERS}))
     observed_gateway = "install:" + "b" * 32
-    result = _result(
-        srv._methods["groups.demote"](
-            2,
-            {
-                "room_id": "room-1",
-                "observed_gateway_id": observed_gateway,
-                "observed_epoch": 2,
-            },
-        )
-    )
+    result = _result(srv._methods["groups.demote"](2, {
+        "room_id": "room-1", "observed_gateway_id": observed_gateway, "observed_epoch": 2}))
     assert result["idempotent"] is False
     assert result["authority_gateway_id"] == observed_gateway
 
     # Local sends at the stale authority now fail.
-    envelope = srv._methods["groups.send"](
-        3,
-        {
-            "room_id": "room-1",
-            "event_id": "stale-send",
-            "actor": {"kind": "user", "id": "tek"},
-            "payload": {"text": "should fence"},
-        },
-    )
+    envelope = srv._methods["groups.send"](3, {
+        "room_id": "room-1", "event_id": "stale-send", "actor": {"kind": "user", "id": "tek"},
+        "payload": {"text": "should fence"}})
     assert "error" in envelope
     assert local_authority_gateway_id() != observed_gateway
 
 
-def test_replicate_rejects_gapped_page(home, tmp_path):
+def test_open_gate_replicate_rejects_gapped_page(home, tmp_path, gate_open):
     from gateway import hosted_rooms as rooms
 
     _authority_page(tmp_path, n=5)
-    db = tmp_path / "remote-authority.db"
-    gapped = rooms.read_events(db, room_id="room-1", since_seq=2, limit=100)
-    envelope = srv._methods["groups.replicate"](
-        1,
-        {
-            "room_id": "room-1",
-            "room_name": "Field Room",
-            "members": MEMBERS,
-            "page": gapped,
-        },
-    )
-    assert _error(envelope)["code"] == 4116
+    gapped = rooms.read_events(tmp_path / "remote-authority.db", room_id="room-1", since_seq=2, limit=100)
+    assert _error(srv._methods["groups.replicate"](1, _replicate_params(gapped)))["code"] == 4116

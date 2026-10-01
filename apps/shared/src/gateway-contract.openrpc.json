@@ -1106,7 +1106,7 @@
     },
     {
       "name": "groups.demote",
-      "summary": "Fence this gateway's stale room authority against a proven newer epoch.",
+      "summary": "Fence this gateway's stale room authority against a proven newer epoch. Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists.",
       "params": [
         {
           "name": "params",
@@ -1124,7 +1124,7 @@
     },
     {
       "name": "groups.disband",
-      "summary": "Permanently tombstone a hosted room id after stopping its work and revoking peer routes.",
+      "summary": "Permanently tombstone a hosted room id after stopping its work and revoking peer routes. A quarantined room needs confirm_quarantined=true and only ends on this gateway, history kept.",
       "params": [
         {
           "name": "params",
@@ -1232,7 +1232,7 @@
     },
     {
       "name": "groups.promote",
-      "summary": "Continue a replicated room on this gateway at epoch + 1; requires confirm=true.",
+      "summary": "Continue a replicated room on this gateway at epoch + 1; requires confirm=true. Refused (4118, reason authority_takeover_disabled) until exclusive-authority recovery exists.",
       "params": [
         {
           "name": "params",
@@ -1286,7 +1286,7 @@
     },
     {
       "name": "groups.replicate",
-      "summary": "Persist one authority-stamped replay page into the local replica store; idempotent.",
+      "summary": "Persist one authority-stamped replay page into the local replica store; idempotent. Refused (4116, reason replica_provenance_required) until exclusive-authority recovery exists.",
       "params": [
         {
           "name": "params",
@@ -14010,6 +14010,18 @@
             ],
             "default": null,
             "title": "Cancel Id"
+          },
+          "confirm_quarantined": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Quarantined"
           }
         },
         "required": [
@@ -14701,6 +14713,42 @@
           "updated_at": {
             "title": "Updated At",
             "type": "number"
+          },
+          "disbanded_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disbanded At"
+          },
+          "safety_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Safety Status"
+          },
+          "safety_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Safety Reason"
           }
         },
         "required": [
@@ -26704,6 +26752,30 @@
               }
             ],
             "default": null
+          },
+          "safety_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Safety Status"
+          },
+          "safety_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Safety Reason"
           }
         },
         "required": [

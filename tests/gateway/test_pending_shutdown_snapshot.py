@@ -429,3 +429,67 @@ async def test_shutdown_preserves_dispatch_waiting_for_the_turn_lease(tmp_path, 
         [_wire_event(first), _wire_event(later)]
     ]
     runner._run_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("durable", [False, True])
+async def test_cancel_timeout_recovers_only_non_durable_completed_input(tmp_path, monkeypatch, durable):
+    from gateway.platforms.base_pending import bind_pending_dispatch_input, ingress_order
+    from gateway.session import SessionStore
+    from hermes_state import SessionDB
+    from gateway.platforms import base as processing
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = _make_initialized_adapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=False)
+    runner.adapters = {adapter.platform: adapter}
+    runner.session_store = SessionStore(tmp_path / "sessions", GatewayConfig(multiplex_profiles=False))
+    adapter.gateway_runner = runner
+    original, later = _make_event("original"), _make_event("later")
+    key = adapter._event_session_key(original)
+    ingress_order(original)
+    runner._enqueue_fifo(key, later, adapter)
+    db = SessionDB()
+    db.create_session("straggler", "gateway")
+    entered, cancelled, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    wait_for = asyncio.wait_for
+
+    async def bounded_wait(awaitable, timeout):
+        return await wait_for(awaitable, 2 if timeout == 5.0 else timeout)
+
+    async def handler(event):
+        bind_pending_dispatch_input("straggler", "straggler-owner")
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await finish.wait()
+
+    monkeypatch.setattr(processing.asyncio, "wait_for", bounded_wait)
+    adapter.set_message_handler(handler)
+    adapter._start_session_processing(original, key)
+    task = adapter._session_tasks[key]
+    try:
+        await wait_for(entered.wait(), 2)
+        await adapter.cancel_session_processing(key, discard_pending=False)
+        assert (cancelled.is_set(), task.done(), adapter._pending_messages[key].text) == (True, False, "later")
+        if durable:
+            db.append_message("straggler", "user", original.text,
+                              display_metadata={"gateway_input_owner": "straggler-owner"})
+        assert runner.session_store.has_input_owner("straggler", "straggler-owner") is durable
+        finish.set()
+        await wait_for(task, 2)
+        await asyncio.sleep(0)
+        pending = [adapter._pending_messages[key], *(runner._overflow_queue(key) or [])]
+        assert ([event.text for event in pending], adapter._pending_dispatch_reservations, task.done()) == (
+            ["later"] if durable else ["original", "later"], {}, True)
+    finally:
+        finish.set()
+        await wait_for(task, 2)
+        await adapter.cancel_background_tasks()
+        runner.session_store.close_all_db_handles()
+        db.close()

@@ -638,7 +638,7 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         _SECRET_SOURCE_WRITES_BY_HOME.pop(home_key, None)
 
 
-def _refuse_protected_env_from_sources(report, backend=None, environ_before=None) -> None:
+def _refuse_protected_env_from_sources(report, backend=None, environ_before=None, env=None) -> None:
     """D32: the config backend's own credential (which plane, which agent, which token) must never
     come from a secret source — a source that could change it could point config at another plane.
     Exits (the backend is unusable), even when the pre-existing value won.
@@ -646,7 +646,14 @@ def _refuse_protected_env_from_sources(report, backend=None, environ_before=None
     *backend* is the backend selected BEFORE the sources ran: judging by the backend selected after
     them would let a source that writes ``HERMES_CONFIG_BACKEND=file`` switch remote mode off and
     disarm this very check. The selector itself is never a source's to change, under any backend:
-    a source's write to it is reverted (to its *environ_before* value) before anything else."""
+    a source's write to it is reverted in *env* (the mapping the sources wrote into; default
+    ``os.environ``) to its *environ_before* value before anything else.
+
+    Startup runs the sources against a private staging copy of the environment and calls this
+    BEFORE publishing it (:func:`_publish_staged_env`), so a refused value is never visible to a
+    concurrent request — the poller reads the plane URL and credential live from ``os.environ``."""
+    if env is None:
+        env = os.environ
     from hermes_cli.config_backend import BACKEND_ENV, ConfigBackendUnavailable, get_config_backend
 
     if backend is None:
@@ -661,9 +668,9 @@ def _refuse_protected_env_from_sources(report, backend=None, environ_before=None
     if environ_before is not None:  # undo the source's writes to protected names before deciding
         for name in clash:
             if name in environ_before:
-                os.environ[name] = environ_before[name]
+                env[name] = environ_before[name]
             else:
-                os.environ.pop(name, None)
+                env.pop(name, None)
     if not backend.protected_env_names():
         # The file backend has no plane credential: only the selector clashed. Reverted, and dropped
         # from the report so no provenance/snapshot re-applies it later; keep going.
@@ -680,6 +687,15 @@ def _refuse_protected_env_from_sources(report, backend=None, environ_before=None
         f"A secrets: source supplies {', '.join(clash)}, which the {backend.name!r} config "
         "backend uses to reach its config plane. That credential must come from auth.json or .env, never "
         "from a secret source; remove the mapping. Hermes does not start with it.")
+
+
+def _publish_staged_env(staged: dict, environ_before: dict) -> None:
+    """Copy into ``os.environ`` exactly the names the sources set in *staged* (value differs from
+    *environ_before*). Sources only ever set names, so nothing is removed; a name nobody's source
+    touched is left alone even if another thread changed it meanwhile."""
+    for name, value in staged.items():
+        if environ_before.get(name) != value:
+            os.environ[name] = value
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
@@ -732,14 +748,19 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     backend_before = get_config_backend()
 
+    # The sources write into a private staging copy, published only after the D32 check: written
+    # straight into os.environ, a forbidden plane URL or credential would be live for any request
+    # (the config poller, another thread's write) until the check reverted it.
+    staged = dict(environ_before)
     try:
-        report = apply_all(cfg, home_path)
+        report = apply_all(cfg, home_path, environ=staged)
     except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
         return
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
         return
-    _refuse_protected_env_from_sources(report, backend_before, environ_before)
+    _refuse_protected_env_from_sources(report, backend_before, environ_before, env=staged)
+    _publish_staged_env(staged, environ_before)
 
     # A real fetch attempt happened (success OR error): mark the home so the 3-5 import-time calls per
     # startup don't re-fetch / re-print (error retries are opt-in via reset_secret_source_cache()).

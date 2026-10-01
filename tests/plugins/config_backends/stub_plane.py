@@ -43,6 +43,17 @@ def deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+MAX_VALUE_DEPTH = 32  # contract §11.1: nesting depth of values (objects + lists)
+
+
+def _depth(value: Any) -> int:
+    if isinstance(value, dict):
+        return 1 + max((_depth(v) for v in value.values()), default=0)
+    if isinstance(value, list):
+        return 1 + max((_depth(v) for v in value), default=0)
+    return 0
+
+
 class StubPlane:
     def __init__(self) -> None:
         self.upper: Dict[str, Any] = {}
@@ -160,6 +171,11 @@ class StubPlane:
                     path = encode(refused[0])
                     return self._send(403, {"error": "config_key_locked", "path": path, "lockedBy": refused[1],
                                             "message": f"{path} is locked by {refused[1]}"})
+                for p, v in sets.items():
+                    if _depth(v) > MAX_VALUE_DEPTH:  # contract §11.1
+                        path = encode(p)
+                        return self._send(400, {"error": "config_value_invalid", "path": path, "reason": "too_deep",
+                                                "message": f"{path}: value nesting exceeds {MAX_VALUE_DEPTH}"})
                 for p, v in sets.items():
                     if secret_literal_path(p, v) is not None:
                         return self._send(400, {"error": "config_secret_literal", "message": "secret literal"})

@@ -39,6 +39,12 @@ on Hindsight. Both listeners bind IPv6 for Railway private networking.
 See [private networking](https://docs.railway.com/networking/private-networking)
 and [persistent volumes](https://docs.railway.com/volumes).
 
+Connect Hermes and Hindsight to the fork's `main` branch for automatic deployments.
+Keep the Dockerfile paths and start commands above. Hindsight only needs to watch
+`/deploy/railway/hindsight/**`, `/docs/specs/reference/hindsight-config.json`, and
+`/.dockerignore`; Hermes uses the whole repository. PostgreSQL stays on its pinned
+image. Merges to `main` update the services while their volumes retain user state.
+
 ## Credentials and initial settings
 
 Railway variables own infrastructure credentials. An optional `OPENROUTER_API_KEY`
@@ -66,6 +72,10 @@ services together where applicable. At boot, Hermes copies its Railway-owned
 `HINDSIGHT_API_KEY` into the boot profile's native secret store so scoped turns
 can authenticate. Additional profiles must explicitly configure their own key;
 they never inherit the process credential.
+
+Saving a service key automatically restarts the gateway. After connecting Telegram,
+send a fresh direct message to the bot; its access request appears under **Access →
+People** for approval.
 
 On first boot only, `config.yaml` is seeded from `deploy/railway/config.yaml`.
 Subsequent boots retain administrator edits. Open the dashboard root or `/settings`

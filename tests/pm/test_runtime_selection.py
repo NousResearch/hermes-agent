@@ -5,6 +5,22 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("repo", [".", "hermes-agent"])
+def test_packaged_environment_and_store_follow_manifest(tmp_path, monkeypatch, repo):
+    from pm.environments import committed_venv, store_root
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    payload = tmp_path / "payload"
+    root = payload / repo
+    root.mkdir(parents=True)
+    (payload / "manifest.json").write_text(json.dumps({
+        "repo": repo, "venv": ".venv", "store": "tools",
+    }))
+    assert committed_venv(root) == payload / ".venv"
+    assert store_root(root) == payload / "tools"
+
+
 def test_install_runtime_selection_is_scoped_and_read_only(tmp_path, monkeypatch):
     from pm import environments as runtime_paths
 

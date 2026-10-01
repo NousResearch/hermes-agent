@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,7 @@ def _on_event_loop() -> bool:
 
 
 @pytest.fixture
-def parses(tmp_path, monkeypatch) -> list[tuple[str, bool]]:
+def parses(tmp_path, monkeypatch) -> Iterator[list[tuple[str, bool]]]:
     """Every locale file parsed, as ``(file name, parsed on the event loop)``.
 
     The bundled English and German catalogs are copied to a fresh directory so that no earlier parse

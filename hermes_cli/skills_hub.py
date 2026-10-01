@@ -746,6 +746,13 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         if not force:
             c.print("Use --force to reinstall.\n")
             return bundle, None
+    elif not force:
+        from tools.skills_hub_install import untracked_skill_at_install_dir
+        if (untracked := untracked_skill_at_install_dir(bundle.name, category)) is not None:
+            c.print(f"[yellow]Warning:[/] a skill you did not install from the hub already exists at "
+                    f"{untracked}. Installing '{bundle.name}' would delete it and its files.")
+            c.print("Move it elsewhere first, or use --force to replace it.\n")
+            return bundle, "failed"
     failed = None if existing else "failed"
 
     extra_metadata = {**(getattr(meta, "extra", {}) or {}), **bundle.metadata}

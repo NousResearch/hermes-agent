@@ -27,7 +27,8 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
     (bot.name || '').trim().toLowerCase() === 'default' &&
     bot.connectionLabel &&
     !alias &&
-    !meta?.title?.trim()
+    !meta?.title?.trim() &&
+    !(typeof bot.display_name === 'string' && bot.display_name.trim())
   ) {
     return bot.connectionLabel
   }

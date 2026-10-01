@@ -472,6 +472,7 @@ import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { roomSetupCoordinator } from './room-setup'
 import { RoomSetupError, roomSetupStore } from './room-setup-store'
+import { rosterProfileMetadata } from './roster-profile-metadata'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import { rosterSourceStatus } from './roster-source-status'
 import {
@@ -15110,7 +15111,8 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             // The native catalog and install identity came from the same pinned
             // descriptor. A raw SSH home probe is never a fallback for its failure.
             if (!inventory.isCurrent()) {throw new Error('SSH inventory source changed during enumeration')}
-            raw = { connection, profiles: inventory.profiles, installId: inventory.installId }
+            raw = { connection, profiles: inventory.profiles, installId: inventory.installId,
+              profileMetadata: inventory.profileMetadata }
           } else {
             // Confirmed classic runtimes keep their existing cold inventory.
             // Canonical undialed sources retain the connect-on-demand/default seed.
@@ -15162,39 +15164,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
             : []
 
-          const profileMetadata = Array.isArray(body?.profiles)
-            ? Object.fromEntries(
-                body.profiles
-                  .map(profile => {
-                    const name = String(profile?.name || '').trim()
-
-                    if (!name) {
-                      return null
-                    }
-
-                    const metadata: RosterProfileMetadata = {}
-
-                    if (typeof profile?.display_name === 'string' && profile.display_name.trim()) {
-                      metadata.display_name = profile.display_name.trim()
-                    }
-
-                    if (typeof profile?.title === 'string' && profile.title.trim()) {
-                      metadata.title = profile.title.trim()
-                    }
-
-                    if (profile?.ui_meta && typeof profile.ui_meta === 'object') {
-                      metadata.ui_meta = profile.ui_meta
-                    }
-
-                    if (typeof profile?.has_avatar === 'boolean') {
-                      metadata.has_avatar = profile.has_avatar
-                    }
-
-                    return [name, metadata] as const
-                  })
-                  .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
-              )
-            : undefined
+          const profileMetadata = rosterProfileMetadata(body?.profiles)
 
           // The root HERMES_HOME is an agent too; enumerations that omit it
           // (older backends list only named profiles) still get a default row.

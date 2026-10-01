@@ -64,6 +64,17 @@ beforeEach(() => {
   indexAliasRoutes([])
 })
 
+it('uses the attached peer’s profile display name without borrowing a foreground Bot title', () => {
+  // /api/profiles may return display_name without richer ui_meta/title fields.
+  const peer = { ...hostedRow, connectionId: 'peer', connectionLabel: 'Peer Gateway', display_name: 'Mira Bot',
+    route: { connectionId: 'peer', mode: 'remote', profile: 'default', targetProfile: 'default' } } as RosterRow
+
+  const meta = botRosterMeta(peer, { default: { title: 'Atlas Bot' } })
+  expect(displayName(peer, meta)).toBe('Mira Bot')
+  expect(displayName(peer, { title: 'Atlas Bot' })).toBe('Atlas Bot')
+  expect(displayName({ ...peer, display_name: '  ' }, null)).toBe('Peer Gateway')
+})
+
 describe('alias identity survives the hosted handoff (#89131)', () => {
   it('names the backend row after the alias, through every meta generation', () => {
     indexAliasRoutes([

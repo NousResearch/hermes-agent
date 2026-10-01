@@ -546,6 +546,7 @@ returns `pin_tab_unavailable` without starting a browser action. The native
 runtime is provisioned only through Hermes's package manager, with its existing
 lazy-install consent and checksum verification; there is no npx acquisition or
 release-age exception.
+:::
 
 :::tip
 To start a Chromium-family browser manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if the browser is already running with your normal profile:

@@ -4,9 +4,11 @@ import { type LensCapture, lensPrompt } from './model'
 import {
   $lensCards,
   dropLensScope,
+  findLensGuest,
   migrateLensScope,
   noteLensCard,
   pinLensCapture,
+  registerLensGuest,
   removeLensCard,
   setLensScope,
   syncLensCards,
@@ -30,6 +32,8 @@ beforeEach(() => {
 describe('Lens workspace lifecycle', () => {
   it('persists captures and notes across A → B → A, rename, reload, and deletion', () => {
     const card = pinLensCapture(source, 'device-a:research')
+    const guest = { getURL: () => source.url, addEventListener() {}, removeEventListener() {} }
+    const unregister = registerLensGuest(guest)
     noteLensCard(card.id, 'Check delivery')
     setLensScope('device-b:research')
     expect($lensCards.get()).toEqual([])
@@ -39,6 +43,8 @@ describe('Lens workspace lifecycle', () => {
     migrateLensScope('device-a:research', 'device-a:shopping')
     syncLensCards()
     expect($lensCards.get()[0].scope).toBe('device-a:shopping')
+    expect(findLensGuest($lensCards.get()[0])).toBe(guest)
+    unregister()
     dropLensScope('device-a:shopping')
     expect($lensCards.get()).toEqual([])
     setLensScope('device-b:research')

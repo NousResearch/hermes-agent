@@ -33,6 +33,7 @@ export function decodeCapture(value: unknown): LensCapture | null {
   if (!value || typeof value !== 'object') {
     return null
   }
+
   const v = value as Record<string, unknown>
 
   if (
@@ -64,6 +65,7 @@ export function decodeCard(value: unknown): LensCard | null {
   if (!capture) {
     return null
   }
+
   const v = value as Record<string, unknown>
 
   if (

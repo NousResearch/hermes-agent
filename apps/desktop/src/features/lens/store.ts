@@ -2,7 +2,28 @@ import { atom } from 'nanostores'
 
 import { readJson, readKey, writeKey } from '@/lib/storage'
 
+import type { LensGuest } from './capture'
 import { decodeCard, LENS_CARD_LIMIT, type LensCapture, type LensCard, refreshCard } from './model'
+
+const guests = new Map<LensGuest, string>()
+
+export function registerLensGuest(guest: LensGuest) {
+  guests.set(guest, $lensScope.get())
+
+  return () => {
+    guests.delete(guest)
+  }
+}
+
+export function findLensGuest(card: LensCard): LensGuest | undefined {
+  return [...guests].find(([guest, scope]) => {
+    try {
+      return scope === card.scope && guest.getURL?.() === card.url
+    } catch {
+      return false
+    }
+  })?.[0]
+}
 
 const PREFIX = 'hermes.desktop.lens.card.v1.'
 export const $lensScope = atom('default')
@@ -22,6 +43,7 @@ function loadCards(): LensCard[] {
       if (!key?.startsWith(PREFIX)) {
         continue
       }
+
       const card = decodeCard(readJson(key))
 
       if (card && key === PREFIX + card.id) {
@@ -53,6 +75,7 @@ function save(card: LensCard) {
   if (readKey(key) !== value) {
     throw new Error('saveFailed')
   }
+
   syncLensCards()
 }
 
@@ -70,6 +93,7 @@ export function pinLensCapture(capture: LensCapture, scope: string): LensCard {
   if (cards.length >= LENS_CARD_LIMIT) {
     throw new Error('boardFull')
   }
+
   const now = new Date().toISOString()
   const card = { ...capture, id: crypto.randomUUID(), scope, capturedAt: now, checkedAt: now, note: '' }
   save(card)
@@ -84,6 +108,7 @@ export function updateLensCapture(original: LensCard, capture: LensCapture) {
   if (!current || current.scope !== original.scope || current.checkedAt !== original.checkedAt) {
     return
   }
+
   save(refreshCard(current, capture, new Date().toISOString()))
 }
 
@@ -101,16 +126,25 @@ export function removeLensCard(id: string) {
   if (readKey(PREFIX + id) !== null) {
     throw new Error('saveFailed')
   }
+
   syncLensCards()
 }
 
 export function dropLensScope(scope: string) {
+  for (const [guest, owner] of guests) {
+    if (owner === scope) {guests.delete(guest)}
+  }
+
   for (const card of loadCards().filter(card => card.scope === scope)) {
     removeLensCard(card.id)
   }
 }
 
 export function migrateLensScope(from: string, to: string) {
+  for (const [guest, owner] of guests) {
+    if (owner === from) {guests.set(guest, to)}
+  }
+
   for (const card of loadCards().filter(card => card.scope === from)) {
     save({ ...card, scope: to })
   }

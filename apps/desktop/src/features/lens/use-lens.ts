@@ -5,18 +5,7 @@ import { useI18n } from '@/i18n'
 
 import { type LensGuest, readLensGuest, reloadLensGuest } from './capture'
 import type { LensCard } from './model'
-import { $lensScope, pinLensCapture, syncLensCards, updateLensCapture } from './store'
-
-/** Readers live with the mounted guests, including hidden browser tabs. */
-const guests = new Map<LensGuest, string>()
-
-export function registerLensGuest(guest: LensGuest) {
-  guests.set(guest, $lensScope.get())
-
-  return () => {
-    guests.delete(guest)
-  }
-}
+import { $lensScope, findLensGuest, pinLensCapture, syncLensCards, updateLensCapture } from './store'
 
 export function useLens(getGuest: () => LensGuest | null) {
   const { t } = useI18n()
@@ -36,6 +25,7 @@ export function useLens(getGuest: () => LensGuest | null) {
     if (busyRef.current) {
       return
     }
+
     busyRef.current = true
     setPendingScope(scope)
     setFailure({ scope, text: '' })
@@ -67,23 +57,19 @@ export function useLens(getGuest: () => LensGuest | null) {
         if (!guest) {
           throw new Error('unavailable')
         }
+
         const capture = await readLensGuest(guest, mode)
         pinLensCapture(capture, scope)
       })
     },
     onRefresh: (card: LensCard) => {
       void run(async () => {
-        const guest = [...guests].find(([candidate, owner]) => {
-          try {
-            return owner === card.scope && candidate.getURL?.() === card.url
-          } catch {
-            return false
-          }
-        })?.[0]
+        const guest = findLensGuest(card)
 
         if (!guest) {
           throw new Error('openFirst')
         }
+
         updateLensCapture(card, await reloadLensGuest(guest, card))
       })
     }

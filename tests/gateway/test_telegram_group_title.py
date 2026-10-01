@@ -409,6 +409,12 @@ async def test_filtered_titles_and_rejection_do_not_interrupt_replies(tmp_path, 
         assert len(bot.replies) == 2
         assert "Telegram group title rename rejected" in caplog.text
         assert "ValueError" in caplog.text
+        # Criterion 13: the operator-facing warning NAMES THE SESSION, so a bad rename in a busy
+        # group is traceable to one session rather than a lane-wide mystery.
+        rejection = [rec for rec in caplog.records
+                     if "Telegram group title rename rejected" in rec.getMessage()]
+        assert rejection, "terminal rejection warning was not logged"
+        assert any("group-session" in rec.getMessage() for rec in rejection)
         assert "sensitive transport details" not in caplog.text
         # The terminal failure is observable without credentials or message content. The lane
         # records through the ambient store (single profile: no stamp exists); poll because the
@@ -430,7 +436,9 @@ async def test_filtered_titles_and_rejection_do_not_interrupt_replies(tmp_path, 
 async def test_disable_group_auto_rename_knob(disabled):
     """extra.disable_group_auto_rename=true suppresses the whole lane; absent/false keeps it on.
     The knob is read from the live runner config at fire time, so flipping it takes effect on
-    the next rename without a gateway restart (spec criterion 11)."""
+    the next rename without a gateway restart (spec criterion 11). This is the SCHEDULE-time half
+    only; test_kill_switch_stops_parked_retry covers the in-coroutine half (a flip while the lane
+    is already parked in a retry wait)."""
     adapter = _adapter()
     runner = _wired_runner(adapter)
     extra = {"disable_group_auto_rename": disabled}
@@ -473,6 +481,42 @@ async def test_disable_group_auto_rename_knob(disabled):
             await asyncio.sleep(0.05)
             assert [text for _c, text, _h in adapter._bot.renames] == ["Knobbed conversation"]
     finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_kill_switch_stops_parked_retry():
+    """The in-coroutine half of spec criterion 11: the kill-switch is re-read before EVERY
+    attempt, so flipping disable_group_auto_rename while the lane is parked in a guided 429 retry
+    wait stops the retry dead. No second set_chat_title reaches the transport, the operator's
+    intent is recorded, and the conversation's reply is never blocked by the abort."""
+    bot = FloodBot([RetryAfter(2)])
+    adapter = _adapter()
+    adapter._bot = bot
+    runner = _flood_runner(adapter)
+    extra = {"disable_group_auto_rename": False}
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra=extra)})
+    gate = runner._retry_gate
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _store_session(db, "parked-session", started_at=time.time())
+        await asyncio.to_thread(_attach(runner, source, "parked-session"), "Parked conversation", "llm")
+        await asyncio.wait_for(bot.called.wait(), timeout=2)
+        assert len(bot.renames) == 1  # parked inside the retry wait, holding the chat lock
+        # Operator flips the knob on the LIVE config while the lane sleeps.
+        extra["disable_group_auto_rename"] = True
+        gate.set()  # release the parked retry
+        recorded = await asyncio.to_thread(
+            _await_meta, db, "tg_title:telegram:-101:parked-session", "skipped:disabled")
+        assert len(bot.renames) == 1  # the retry never reached the transport
+        assert bot.titles == {}  # Telegram's chat state was never mutated
+        assert "skipped:disabled" in recorded
+        # The abort is invisible to the conversation: the reply still goes out.
+        result = await asyncio.wait_for(adapter.send("-101", "Reply after kill-switch"), timeout=2)
+        assert result.success
+    finally:
+        gate.set()
         db.close()
 
 

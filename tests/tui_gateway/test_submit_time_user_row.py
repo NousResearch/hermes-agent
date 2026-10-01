@@ -224,6 +224,14 @@ def test_live_client_acks_replay_exactly_and_only_settled_ones_are_capped():
         # (test_retried_idle_client_message_id_returns_original_ack_from_live_and_durable_state).
         assert server._live_client_message_admission_locked(session, client_message_id) == (None, None)
 
+        # Settling a long-pending admission makes it the NEWEST settled ack: the next
+        # eviction takes an older one, not the ack a concurrent duplicate is about to read.
+        settled = {"status": "streaming", "client_message_id": "still-admitting", "user_row_id": 7}
+        server._remember_client_message_ack_locked(session, "still-admitting", settled)
+        remember(128 + cap + 8)
+        assert pending.ready.is_set()
+        assert server._live_client_message_admission_locked(session, "still-admitting") == (settled, None)
+
 
 def test_concurrent_idle_retries_share_one_admission_and_original_ack(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")

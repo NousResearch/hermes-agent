@@ -724,7 +724,10 @@ def _remember_client_message_ack_locked(session: dict, client_message_id: str | 
     if not client_message_id:
         return
     admissions = session.setdefault("_client_message_admissions", {})
-    admission = admissions.setdefault(client_message_id, _Admission())
+    # Re-insert so eviction order is settle order: a long-pending reservation would otherwise
+    # sit at its reservation slot and be the first ack evicted once settled.
+    admission = admissions.pop(client_message_id, None) or _Admission()
+    admissions[client_message_id] = admission
     admission.ack = dict(ack)
     admission.ready.set()
     if (excess := len(admissions) - _CLIENT_MESSAGE_ADMISSION_CAP) > 0:

@@ -1,4 +1,4 @@
-"""Inbound attachment re-homing for multiplexed gateways (moved out of ``gateway/run_inbound.py``)."""
+"""Transfer adapter-cached attachments into the routed profile."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pathlib import Path
 
 from gateway.platforms.event import MessageEvent
 
-# Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
 
@@ -54,5 +53,3 @@ def rehomed_media_path(raw: str) -> str:
         return str(active / "cache" / Path(raw).relative_to(launch / "cache"))
     except ValueError:
         return raw
-
-

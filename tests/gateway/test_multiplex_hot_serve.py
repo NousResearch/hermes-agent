@@ -270,6 +270,18 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
     runner, home = _runner(tmp_path, monkeypatch)
     alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
     gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+
+    def _holds_open_log_file(handler) -> bool:
+        # concurrent-log-handler (Windows) keeps the cross-process ``.__agent.lock``
+        # handle in ``stream_lock`` — what the deleter's rmtree actually trips over —
+        # and closes ``stream`` again after every write; stdlib (POSIX) keeps the log
+        # ``stream`` itself open between writes.
+        lock_stream = getattr(handler, "stream_lock", None)
+        if lock_stream is not None and not lock_stream.closed:
+            return True
+        stream = getattr(handler, "stream", None)
+        return stream is not None and not stream.closed
+
     shutdowns = []
     monkeypatch.setattr(
         "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
@@ -293,6 +305,11 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
         ]
         assert len(routers) == 2  # agent.log and errors.log, as in test_hermes_logging
         assert all(gamma_dir.resolve() in handler._profile_handlers for handler in routers)
+        gamma_handlers = [handler._profile_handlers[gamma_dir.resolve()] for handler in routers]
+        alpha_handlers = [handler._profile_handlers[alpha_dir.resolve()] for handler in routers]
+        # Before the reconcile the deleted profile's routed handlers each hold an open fd into
+        # its home — the ``.__agent.lock`` lock handle on Windows, the log stream on POSIX.
+        assert all(_holds_open_log_file(handler) for handler in gamma_handlers)
 
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
             await runner._start_secondary_profile_adapters()
@@ -308,6 +325,10 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
         assert all(gamma_dir.resolve() not in handler._profile_handlers for handler in routers)
         assert all(gamma_dir.resolve() not in handler._profile_homes for handler in routers)
         assert all(alpha_dir.resolve() in handler._profile_handlers for handler in routers)
+        # The popped handler's fd into the deleted home is actually closed — not just the
+        # routing entry removed — while a still-served sibling keeps its handles open.
+        assert not any(_holds_open_log_file(handler) for handler in gamma_handlers)
+        assert all(_holds_open_log_file(handler) for handler in alpha_handlers)
         assert "open routed handles for alpha" in (alpha_dir / "logs" / "agent.log").read_text()
     finally:
         hermes_logging._reset_queued_handlers()

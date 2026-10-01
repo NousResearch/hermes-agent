@@ -4,8 +4,8 @@ import { preprocessMarkdown } from './markdown-preprocess'
 
 // Verilog/SystemVerilog system functions are bare `$` + identifier. With
 // `singleDollarTextMath: true`, two of them on one prose line open an inline
-// math span and the intervening HDL is typeset through KaTeX — `<=`, the
-// non-blocking assignment operator, renders as `≤` and identifiers go
+// math span and the intervening HDL is typeset through KaTeX — the
+// non-blocking assignment operator `<=` renders as `≤` and identifiers go
 // math-italic, so the reader is shown wrong HDL (#129491).
 describe('HDL system-function dollars', () => {
   it('escapes both dollars of an HDL pair on one prose line', () => {

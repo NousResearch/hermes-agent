@@ -832,6 +832,24 @@ class HostedRoomAttachmentStore:
             )
             return int(changed.rowcount)
 
+    def abort_unpublished_event(self, *, room_id: Any, event_id: Any) -> int:
+        """Release every commitment staged for an event that never became durable."""
+
+        room_id = _identifier(room_id, label="room_id")
+        event_id = _identifier(event_id, label="event_id")
+        now = float(self.clock())
+        with self._transaction(immediate=True) as conn:
+            if _owner_event(conn, room_id, event_id) is not None:
+                return 0
+            changed = conn.execute(
+                """UPDATE hosted_room_attachments
+                      SET event_id=NULL, recipient_member_ids_json='[]', viewer_access=0,
+                          state='uploaded', updated_at=?, expires_at=?
+                    WHERE room_id=? AND event_id=? AND state='committed'""",
+                (now, now + UNCOMMITTED_TTL_SECONDS, room_id, event_id),
+            )
+            return int(changed.rowcount)
+
     def retain_event(self, *, room_id: Any, event_id: Any) -> int:
         """Retain committed blobs after their immutable room event is durable."""
 

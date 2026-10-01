@@ -86,6 +86,61 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_changed_reason_re_arms_loop_counter(kanban_home: Path) -> None:
+    """#130239: same kind, four genuinely new stall reasons -- no loop, no triage."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="awaiting api key", kind="needs_input")
+        for stall in ("schema mismatch", "flaky vendor", "missing review"):
+            kb.unblock_task(conn, tid)
+            _make_running_again(conn, tid)
+            kb.block_task(conn, tid, reason=stall, kind="needs_input")
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_recurrences == 1
+        loops = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"]
+        assert not loops, "changed reason text must never trip the breaker"
+
+
+def _poison_to_triage(conn, tid: str, reason: str = "same stall") -> None:
+    """Drive one same-cause block/unblock/re-block cycle past the limit."""
+    kb.block_task(conn, tid, reason=reason, kind="needs_input")
+    kb.unblock_task(conn, tid)
+    _make_running_again(conn, tid)
+    kb.block_task(conn, tid, reason=reason, kind="needs_input")
+    assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_poisoned_triage_card_reparks_idempotently(kanban_home: Path) -> None:
+    """#130239: a breaker-poisoned triage card re-asserts its park instead of
+    erroring forever; the re-park re-arms the counter at 1."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        _poison_to_triage(conn, tid)
+        # The failing receipt: the re-park used to return False forever.
+        assert kb.block_task(conn, tid, reason="same stall", kind="needs_input") is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        assert task.block_recurrences == 1
+        reparks = [e for e in kb.list_events(conn, tid)
+                   if e.kind == "blocked" and (e.payload or {}).get("reparked")]
+        assert reparks and reparks[-1].payload["reason"] == "same stall"
+        # The unlatched card closes the loop: unblock lands it back in the pool.
+        assert kb.unblock_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_triage_repark_refuses_ownership_asserting_caller(kanban_home: Path) -> None:
+    """A worker's run cannot own a poisoned card; only the supervisor re-asserts."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        _poison_to_triage(conn, tid)
+        assert kb.block_task(conn, tid, reason="probe", kind="needs_input",
+                             expected_run_id=1) is False
+        assert kb.get_task(conn, tid).status == "triage"
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------
@@ -144,7 +199,7 @@ def test_dependency_block_with_terminal_parents_parks_then_escalates(
         # A cron/human unblocks; the worker re-declares the same impossible wait.
         assert kb.unblock_task(conn, child)
         assert kb.claim_task(conn, child, claimer="worker") is not None
-        assert kb.block_task(conn, child, reason="still waiting", kind="dependency")
+        assert kb.block_task(conn, child, reason="waiting on upstream", kind="dependency")
         assert kb.get_task(conn, child).status == "triage"
         loop = [e for e in kb.list_events(conn, child) if e.kind == "block_loop_detected"][-1].payload
         assert loop["recurrences"] == kb.BLOCK_RECURRENCE_LIMIT

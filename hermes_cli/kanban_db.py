@@ -3230,6 +3230,14 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+
+    A ``triage`` card the loop breaker poisoned is re-parkable when *kind* is
+    supplied (#130239): the call used to miss the ``running``/``ready`` guard
+    and fail forever, leaving the park unlatchable. The re-park is the
+    supervisor's explicit intent, so the card returns to ``blocked`` with the
+    counter re-armed at 1 -- a fresh loop budget, mirroring how ``unblock``
+    treats ``consecutive_failures``. Ownership-asserting callers are refused
+    like on any parked card: the poisoned run is over.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
@@ -3261,6 +3269,23 @@ def block_task(
                 "kind": kind, "reason": reason, "classified_in_place": True,
             })
             return True
+        if cur_row["status"] == "triage":
+            # Same ownership rules as the classification lane above: only the
+            # supervisor re-asserts a park, and only with a policy attached.
+            if kind is None or expected_run_id is not None:
+                return False
+            reparked = conn.execute(
+                "UPDATE tasks SET status = 'blocked', block_kind = ?, "
+                "block_recurrences = 1, claim_lock = NULL, claim_expires = NULL, "
+                "worker_pid = NULL WHERE id = ? AND status = 'triage'",
+                (kind, task_id),
+            ).rowcount
+            if reparked != 1:
+                return False
+            _append_event(conn, task_id, "blocked", {
+                "kind": kind, "reason": reason, "reparked": True,
+            })
+            return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
         requested_kind = kind
         rekind_reason = None
@@ -3271,9 +3296,17 @@ def block_task(
         if kind == "dependency" and _parents_satisfied(conn, task_id):
             kind = "needs_input"
             rekind_reason = "no_open_parent"
+        # The loop counter is reason-blind no more (#130239): a same-kind block
+        # with a changed reason text is a new blocker and must not ride the
+        # previous count. Compare against the newest ``blocked`` event's reason.
+        prev_reason = None
+        if _row_get(cur_row, "block_kind") is not None:
+            prev_payload = _json_dict(_row_get(_latest_event(conn, task_id, "blocked"), "payload"))
+            prev_reason = prev_payload.get("reason")
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            prev_reason=prev_reason,
         )
         if rekind_reason:
             payload["requested_kind"] = requested_kind
@@ -3309,7 +3342,7 @@ def block_task(
 
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
-    prev_kind: Optional[str], prev_recurrences: int,
+    prev_kind: Optional[str], prev_recurrences: int, prev_reason: Optional[str] = None,
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
@@ -3321,13 +3354,19 @@ def _route_block(
     recurrences: block_task only fires from running/ready (AFTER an unblock
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause
-    (un-typed None compares equal to a prior un-typed block). At
-    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    (un-typed None compares equal to a prior un-typed block). Same kind with
+    a *changed* reason text is a new blocker, not a loop, and re-arms the
+    counter at 1 (#130239); an absent reason on either side stays
+    kind-keyed. At ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage``
+    for a human.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
-    recurrences = prev_recurrences + 1 if prev_kind == kind else 1
+    same_cause = prev_kind == kind and not (
+        reason and prev_reason and str(reason).strip() != str(prev_reason).strip()
+    )
+    recurrences = prev_recurrences + 1 if same_cause else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
     if recurrences >= BLOCK_RECURRENCE_LIMIT:

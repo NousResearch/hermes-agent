@@ -5,7 +5,8 @@ user docs `website/docs/user-guide/features/cron.md`, `kanban.md`.
 
 ## Cron
 
-`cron/jobs.py` (job store) + `cron/scheduler.py` (tick loop; `scheduler_*.py` siblings). Agents
+`cron/jobs.py` (job store) + `cron/scheduler.py` (tick loop; `scheduler_*.py` siblings).
+`cron/scheduler_interrupt.py` defines `mark_running_jobs_interrupted` and the execution interruption flags. Agents
 schedule via the `cronjob` tool; users via `hermes cron list|add|edit|pause|resume|run|remove` or
 `/cron`. Schedules: duration (`"30m"`, `"2h"`, `"1d"`), "every" phrase (`"every 2h"`, `"every monday
 9am"`), 5-field cron (`"0 9 * * *"`), ISO one-shot (`"2026-06-01T09:00:00Z"`). Per-job fields:

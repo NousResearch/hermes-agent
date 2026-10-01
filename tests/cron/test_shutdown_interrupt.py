@@ -11,6 +11,8 @@ Covers the cron/scheduler.py primitives directly:
     result AFTER its tool was already killed out from under it
 """
 
+from cron import scheduler_interrupt as interruption
+
 import threading
 from unittest.mock import patch
 
@@ -62,7 +64,7 @@ class TestMarkRunningJobsInterrupted:
         import cron.scheduler as sched
 
         with patch("cron.scheduler.mark_job_run") as mock_mark:
-            marked = sched.mark_running_jobs_interrupted("shutdown")
+            marked = interruption.mark_running_jobs_interrupted("shutdown")
 
         assert marked == []
         mock_mark.assert_not_called()
@@ -81,7 +83,7 @@ class TestMarkRunningJobsInterrupted:
         )
 
         with patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
-            marked = sched.mark_running_jobs_interrupted("gateway shutdown (final-cleanup)")
+            marked = interruption.mark_running_jobs_interrupted("gateway shutdown (final-cleanup)")
 
         assert sorted(marked) == ["job-1", "job-2"]
         assert mock_mark.call_count == 2
@@ -99,7 +101,7 @@ class TestMarkRunningJobsInterrupted:
         sched._running_job_ids.add(sched._inflight_key("job-1"))
 
         with patch("cron.scheduler.mark_job_run"):
-            sched.mark_running_jobs_interrupted("shutdown")
+            interruption.mark_running_jobs_interrupted("shutdown")
 
         assert sched._inflight_key("job-1") in sched._interrupted_job_ids
 
@@ -125,7 +127,7 @@ class TestMarkRunningJobsInterrupted:
             return True
 
         with patch("cron.scheduler.mark_job_run", side_effect=_side_effect):
-            marked = sched.mark_running_jobs_interrupted("shutdown")
+            marked = interruption.mark_running_jobs_interrupted("shutdown")
 
         assert marked == ["job-2"]
 
@@ -152,7 +154,7 @@ class TestMarkRunningJobsInterrupted:
             sched._running_fire_owners[sched._inflight_key(created["id"])] = {
                 object(): (stale_owner, profile_home)
             }
-            marked = sched.mark_running_jobs_interrupted("shutdown")
+            marked = interruption.mark_running_jobs_interrupted("shutdown")
             refreshed = jobs.get_job(created["id"])
 
         assert marked == []
@@ -211,7 +213,7 @@ class TestRunningFireOwnerRegistry:
         entered.wait(timeout=2)
 
         assert sched.get_running_job_ids() == frozenset({"same-job"})
-        assert sched.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
+        assert interruption.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
         assert set(marked_owners) == {"old-owner", "replacement-owner"}
 
         release.set()
@@ -245,7 +247,7 @@ class TestRunningFireOwnerRegistry:
 
         monkeypatch.setattr(sched, "mark_job_run", mark)
 
-        assert sched.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
+        assert interruption.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
         assert set(observed) == {
             ("same-job", False, "owner-a", profile_a / "cron" / "jobs.json"),
             ("same-job", False, "owner-b", profile_b / "cron" / "jobs.json"),
@@ -263,12 +265,12 @@ class TestIsInterrupted:
 
         sched._interrupted_job_ids.add(sched._inflight_key("job-1"))
 
-        sched._is_interrupted("job-1")
+        interruption._is_interrupted("job-1")
 
         # Still set -- the later, authoritative check before mark_job_run
         # must still see it.
         assert sched._inflight_key("job-1") in sched._interrupted_job_ids
-        assert sched._is_interrupted("job-1") is True
+        assert interruption._is_interrupted("job-1") is True
 
 
 class TestConsumeInterruptedFlag:
@@ -278,10 +280,10 @@ class TestConsumeInterruptedFlag:
 
         sched._interrupted_job_ids.add(sched._inflight_key("job-1"))
 
-        assert sched._consume_interrupted_flag("job-1") is True
+        assert interruption._consume_interrupted_flag("job-1") is True
         # Consumed -- a second check (e.g. a later, unrelated fire of the
         # same recurring job ID) must not still read as interrupted.
-        assert sched._consume_interrupted_flag("job-1") is False
+        assert interruption._consume_interrupted_flag("job-1") is False
 
 
 class TestExecutionScopedInterruption:
@@ -303,15 +305,15 @@ class TestExecutionScopedInterruption:
         }
 
         with patch("cron.scheduler.mark_job_run", return_value=True):
-            sched.mark_running_jobs_interrupted("shutdown")
+            interruption.mark_running_jobs_interrupted("shutdown")
 
-        assert sched._is_interrupted("job-1", old_token) is True
+        assert interruption._is_interrupted("job-1", old_token) is True
         new_token = object()
-        assert sched._is_interrupted("job-1", new_token) is False
+        assert interruption._is_interrupted("job-1", new_token) is False
         # A new execution must not steal (and thereby clear) the old flag.
-        assert sched._consume_interrupted_flag("job-1", new_token) is False
-        assert sched._consume_interrupted_flag("job-1", old_token) is True
-        assert sched._is_interrupted("job-1", old_token) is False
+        assert interruption._consume_interrupted_flag("job-1", new_token) is False
+        assert interruption._consume_interrupted_flag("job-1", old_token) is True
+        assert interruption._is_interrupted("job-1", old_token) is False
 
     def test_only_owners_marks_only_targeted_executions(self):
         import cron.scheduler as sched
@@ -322,7 +324,7 @@ class TestExecutionScopedInterruption:
         sched._running_fire_owners[sched._inflight_key("job-b")] = {token_b: ("owner-b", profile_home)}
 
         with patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
-            marked = sched.mark_running_jobs_interrupted(
+            marked = interruption.mark_running_jobs_interrupted(
                 "dashboard shutdown",
                 only_owners={("job-a", "owner-a")},
             )
@@ -330,8 +332,8 @@ class TestExecutionScopedInterruption:
         assert marked == ["job-a"]
         assert mock_mark.call_count == 1
         assert mock_mark.call_args.kwargs["expected_fire_owner"] == "owner-a"
-        assert sched._is_interrupted("job-a", token_a) is True
-        assert sched._is_interrupted("job-b", token_b) is False
+        assert interruption._is_interrupted("job-a", token_a) is True
+        assert interruption._is_interrupted("job-b", token_b) is False
 
     def test_replacement_execution_of_same_job_is_not_poisoned(self):
         """A replacement owner starting while the stale flag exists must
@@ -344,7 +346,7 @@ class TestExecutionScopedInterruption:
             stale_token: ("stale-owner", profile_home),
         }
         with patch("cron.scheduler.mark_job_run", return_value=True):
-            sched.mark_running_jobs_interrupted("shutdown")
+            interruption.mark_running_jobs_interrupted("shutdown")
         sched._running_fire_owners.clear()
 
         job = {

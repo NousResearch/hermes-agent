@@ -87,6 +87,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         "ON executions(status, claimed_at DESC, id DESC)"
     )
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
+    add_column_if_missing(conn, "executions", "output_path", "output_path TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
@@ -204,6 +205,11 @@ def create_execution(
         record = _fetch(conn, execution_id)
     _emit_execution_state(record)
     return record  # type: ignore[return-value]
+
+
+def set_execution_output_path(execution_id: str, output_path: Optional[str]) -> None:
+    with _transaction() as conn:
+        conn.execute("UPDATE executions SET output_path=? WHERE id=?", (str(output_path) if output_path is not None else None, execution_id))
 
 
 def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:

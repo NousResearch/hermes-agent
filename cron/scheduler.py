@@ -2983,7 +2983,7 @@ def _save_compose_deliver(
         # remove_job() already deleted this job's output dir; saving would re-create an orphan.
         output_file = (
             None if self_removal_delivery_allowed(job["id"])
-            else save_job_output(job["id"], output))
+            else save_job_output(job["id"], output, execution_token))
     if verbose and output_file is not None:
         logger.info("Output saved to: %s", output_file)
 

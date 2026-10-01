@@ -1528,8 +1528,9 @@ async def test_context_preserves_user_quotes_and_removes_reply_fallbacks(
         expected = "rest of the message"
     cache = MatrixEventContextCache()
     client = MagicMock()
-    client.get_event = AsyncMock(
-        return_value={"sender": "@alice:example.org", "content": content}
+    client.api.request = AsyncMock(
+        return_value={"event_id": "$parent", "room_id": "!room",
+                      "sender": "@alice:example.org", "content": content}
     )
     if path == "reply-fetch":
         entry = await cache.resolve(client, "!room", "$parent")
@@ -1545,7 +1546,7 @@ async def test_context_preserves_user_quotes_and_removes_reply_fallbacks(
                 "m.new_content": content,
             },
         )
-        entry = await cache.resolve(client, "!room", "$parent")
+        entry = cache.history_entry("!room", "$parent")
     else:
         client.get_event = AsyncMock(side_effect=RuntimeError("root unavailable"))
         content["m.relates_to"] = {"rel_type": "m.thread", "event_id": "$root"}
@@ -1559,7 +1560,7 @@ async def test_context_preserves_user_quotes_and_removes_reply_fallbacks(
             client, cache, "!room", "$root", limit=10, before_event_id="$trigger",
             exclude_event_ids=["$root"],
         )
-    assert entry == MatrixEventContext("@alice:example.org", expected)
+    assert entry == MatrixEventContext("@alice:example.org", expected, event_id="$parent")
 
 
 @pytest.mark.asyncio
@@ -2691,7 +2692,8 @@ async def test_mention_catch_up_excludes_events_in_the_current_batch(thread_id):
                          merged_message_ids=["$batched"], raw_message=current,
                          metadata={"matrix_requires_mention": True})
 
-    context = await adapter.fetch_mention_context(event)
+    history = await adapter.fetch_mention_history(event)
+    context = history.render() if history is not None else None
     heading = "Earlier messages in this thread" if thread_id else "Recent room messages"
     assert context == f"[{heading}]\n[Alice] earlier discussion"
 

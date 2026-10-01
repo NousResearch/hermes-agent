@@ -3023,6 +3023,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Full system prompts / model_config never cross the client API; only their presence.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
         payload["has_model_config"] = bool(session.get("model_config"))
+        raw_model_config = session.get("model_config")
+        try:
+            model_config = (
+                json.loads(raw_model_config)
+                if isinstance(raw_model_config, str)
+                else raw_model_config
+            )
+        except (TypeError, json.JSONDecodeError):
+            model_config = None
+        # Exact-id consumers may inspect/resume delegate children even though
+        # list endpoints intentionally omit them. Project only the provenance
+        # bit the client needs so it cannot accidentally promote such a row
+        # into an ordinary session list; never expose the model snapshot.
+        payload["is_internal_child"] = bool(
+            isinstance(model_config, dict)
+            and model_config.get("_delegate_from") is not None
+        )
         return payload
 
     @staticmethod
@@ -3297,10 +3314,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
+        include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
         # Compression lineage: return root→tip messages, matching the REST router (#51058).
         messages = await asyncio.to_thread(
             db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
-            include_ancestors=True)
+            include_compacted=include_compacted, include_ancestors=True)
         return web.json_response({
             "object": "list", "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],

@@ -82,9 +82,7 @@ it('soft-wraps fenced code in room message bodies instead of scrolling sideways'
 
   $groupChats.set({ Room: { log, watermarks: {}, sessions: {} } })
 
-  const { container } = render(
-    <GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />
-  )
+  const { container } = render(<GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />)
 
   const body = container.querySelector('[data-slot="group-chat-message-content"]')!
   expect(body).toBeTruthy()

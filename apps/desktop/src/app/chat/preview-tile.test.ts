@@ -186,14 +186,15 @@ describe('preview tiles mirror the visible session tabs', () => {
     return { model, preview, session, tree }
   }
 
-  const htmlTarget = (path: string) => ({
-    kind: 'file',
-    label: path.split('/').at(-1) ?? path,
-    path,
-    previewKind: 'html',
-    source: path,
-    url: `file://${path}`
-  }) as const
+  const htmlTarget = (path: string) =>
+    ({
+      kind: 'file',
+      label: path.split('/').at(-1) ?? path,
+      path,
+      previewKind: 'html',
+      source: path,
+      url: `file://${path}`
+    }) as const
 
   it('renders only the focused session previews, pinning spans sessions', async () => {
     const { preview, session, tree } = await setup()

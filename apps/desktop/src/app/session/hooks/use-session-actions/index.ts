@@ -2954,7 +2954,16 @@ export function useSessionActions({
           action: {
             label: t.common.retry,
             onClick: () => {
-              void forkBranch(branchMessages, sourceSessionId, parentStoredId, cwd, profile, branchCount, ownerRoute, key)
+              void forkBranch(
+                branchMessages,
+                sourceSessionId,
+                parentStoredId,
+                cwd,
+                profile,
+                branchCount,
+                ownerRoute,
+                key
+              )
             }
           }
         })

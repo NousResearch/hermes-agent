@@ -210,9 +210,11 @@ function computeWindowOptions(state: WindowOptions, displays, platform = process
   // layouts from tiling WMs or user placement on macOS/Linux. This early return
   // intentionally omits stale x/y so Electron centers the recovered window.
   const staleWorkArea = platform === 'win32' ? staleFullscreenWorkArea(state, displays) : null
+
   if (staleWorkArea) {
     opts.width = clamp(Math.round(staleWorkArea.width * RECOVERED_WINDOW_RATIO), MIN_WIDTH, staleWorkArea.width)
     opts.height = clamp(Math.round(staleWorkArea.height * RECOVERED_WINDOW_RATIO), MIN_HEIGHT, staleWorkArea.height)
+
     return opts
   }
 

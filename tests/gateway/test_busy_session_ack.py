@@ -80,6 +80,7 @@ def _make_runner():
 def _make_adapter(platform_val="telegram"):
     """Build a minimal adapter mock."""
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter._pending_messages = {}
     adapter._send_with_retry = AsyncMock()
     adapter.config = MagicMock()
@@ -491,6 +492,7 @@ class TestLongRunningNotificationOwnership:
         runner._running_agents = {}
         runner._draining = runner._restart_requested = False
         adapter = MagicMock()
+        adapter._pending_dispatch_reservations = {}
         first_send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb-1"))
         adapter.send = first_send
 

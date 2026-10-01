@@ -825,6 +825,8 @@ class GatewayAdapterLifecycleMixin:
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
         self._schedule_planned_restart_replay()
+        from gateway.session_native_reconnect import recover_adapter_native_inputs
+        await recover_adapter_native_inputs(self, platform, adapter)
         # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
         with _log_suppressed(
             logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",
@@ -1368,6 +1370,8 @@ class GatewayAdapterLifecycleMixin:
                             profile_map[platform] = adapter
                             self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
+                            from gateway.session_native_reconnect import recover_adapter_native_inputs
+                            await recover_adapter_native_inputs(self, platform, adapter, profile=profile_name)
                             await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name
                             )

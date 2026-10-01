@@ -62,6 +62,8 @@ class SessionAuthority:
         # Stops accepted for a running generation whose agent does not exist yet
         # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
         self.pending_stops = {}
+        # The generation whose Stop was last delivered to the session's cached agent.
+        self.delivered_stops = {}
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -282,9 +284,17 @@ class SessionAuthority:
                             raise RuntimeStoreError('invalid_params')
                         await check_native_route(self.runner, row['payload'], target, available_source, adapter)
                 self._require_admission_open()
-                self.sessions.setdefault(sid, LiveSession(source, route))
-                if any(row['status'] == 'unknown' for row in rows):
+                live = self.sessions.get(sid)
+                if live is None:
+                    live = self.sessions[sid] = LiveSession(source, route)
+                current = list_session_admissions(self.db, session_id=sid)
+                if any(row['status'] == 'unknown' for row in current):
                     raise RuntimeStoreError('unknown_execution')
+                if (any(row['status'] == 'started' for row in current)
+                        or live.task is not None and not live.task.done()):
+                    results[sid] = 'active'
+                    continue
+                live.source, live.route = source, route
                 self._schedule(SessionRef(self.profile_id, sid))
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:
@@ -381,6 +391,7 @@ class SessionAuthority:
             agent = self.agent(ref)
             if agent is not None:
                 agent.interrupt()
+                self.delivered_stops[ref.session_id] = generation
             else:
                 # Accepted for this exact claim; the turn must not construct its agent
                 # afterwards and run the work as if no Stop had arrived.
@@ -389,7 +400,11 @@ class SessionAuthority:
 
     def adopt_agent(self, session_id, generation, agent):
         """The turn installs its agent for the running claim; a Stop latched while there
-        was no agent to deliver it to fires now, never against a later generation."""
+        was no agent to deliver it to fires now, never against a later generation. A Stop
+        delivered to the cached agent for an earlier generation may have landed after that
+        turn's finalizer cleared it, so it is dropped rather than cancelling this turn."""
+        if self.delivered_stops.pop(session_id, generation) != generation:
+            agent.clear_interrupt()
         if self.pending_stops.get(session_id) == generation:
             del self.pending_stops[session_id]
             agent.interrupt()

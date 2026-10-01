@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { CreateGroupChatDialog } from './create-dialog'
 import * as data from './data'
 import { $groupChats } from './group-chat'
@@ -51,7 +52,7 @@ function openCreate() {
     mounted.rerender(<CreateGroupChatDialog {...props} open={false} />)
     mounted.rerender(<CreateGroupChatDialog {...props} open />)
     select()
-  }, submit: screen.getByRole('button', { name: 'Create Group (2)' }) }
+  }, submit: screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }) }
 }
 
 describe('classic group creation metadata', () => {
@@ -76,7 +77,7 @@ describe('classic group creation metadata', () => {
     vi.mocked(data.saveBotMeta).mockReturnValueOnce(old).mockReturnValueOnce(next)
     view.reopen()
     await act(async () => { fireEvent.click(view.submit) })
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.close }))
     view.reopen()
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'A newer draft' } })
     await act(async () => { fireEvent.click(view.submit) })

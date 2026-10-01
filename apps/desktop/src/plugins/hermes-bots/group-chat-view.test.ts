@@ -4,6 +4,7 @@ import { createElement, Fragment } from 'react'
 import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import type * as data from './data'
 import type * as groupChat from './group-chat'
 import type * as groupChatView from './group-chat-view'
@@ -205,7 +206,7 @@ describe('disband', () => {
     const onCreated = vi.fn()
     render(createElement(CreateGroupChatDialog, { onClose: vi.fn(), onCreated, open: true, roster }))
     screen.getAllByRole('checkbox').forEach(box => fireEvent.click(box))
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup })) })
     const group = Object.keys(room.chat.$groupChats.get())[0]
     await act(async () => { await room.view.disbandGroupChat(group, roster) })
     expect(room.chat.$groupChats.get()[group]).toBeUndefined()

@@ -1287,8 +1287,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       for (const meta of Object.values($botMeta.get() || {})) {
         for (const existing of botGroups(meta)) {taken.add(existing)}
       }
+
       const groupName = uniqueGroupChatName(base, taken)
       const roomId = mintGroupRoomId()
+
       const ownsRoom = () => {
         const room = $groupChats.get()[groupName]
 
@@ -1305,6 +1307,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
       for (const bot of selected) {
         if (!ownsRoom()) {return}
+
         try {
           const result = await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, $botMeta.get()), groupName, true))
 
@@ -1312,14 +1315,17 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         } catch {
           metadataSyncFailed = true
         }
+
         if (!ownsRoom()) {return}
       }
+
       if (!ownsInteraction()) {return}
       host.notify({
         kind: metadataSyncFailed ? 'warning' : 'info',
         message: (metadataSyncFailed ? b.canonical.createdGroupSyncFailed : b.canonical.createdGroup).replace('{name}', groupName)
       })
       onClose()
+
       if (ownsRoom() && ownsInteraction()) {onCreated?.(groupName)}
     } catch (error) {
       if (!ownsInteraction()) {return}

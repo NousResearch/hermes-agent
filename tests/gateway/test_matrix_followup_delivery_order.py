@@ -155,7 +155,7 @@ async def test_unproven_delivery_order_does_not_consume_watch(tmp_path, response
     await adapter._handle_followup_reaction(source.chat_id, "$reply", "👍", source.user_id, "$reaction")
     adapter.handle_message.assert_not_awaited()
     assert store.candidate(source.chat_id, "$reply") == before
-    assert store.claim("", source.chat_id, "$reply", source.user_id, "👍") is None
+    assert store.claim("", source.chat_id, "$reply", source.user_id, "👍", reaction_event_id="$reaction") is None
     adapter._client.api.request = AsyncMock(side_effect=[
         {"end": "after-final"}, {"chunk": [{"event_id": "$reaction"}]},
     ])

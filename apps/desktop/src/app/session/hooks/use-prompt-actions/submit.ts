@@ -994,11 +994,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           const params = submitParams(targetId)
 
           try {
-            return await requestGateway<PromptSubmitResult>(
-              'prompt.submit',
-              params,
-              PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-            )
+            return await requestGateway<PromptSubmitResult>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           } catch (error) {
             if (!promptEnvelopeFieldsUnsupported(error)) {
               throw error
@@ -1008,11 +1004,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // so this compatibility retry cannot duplicate an accepted turn.
             const { client_message_id: _clientMessageId, submitted_at: _submittedAt, ...legacyParams } = params
 
-            return requestGateway<PromptSubmitResult>(
-              'prompt.submit',
-              legacyParams,
-              PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-            )
+            return requestGateway<PromptSubmitResult>('prompt.submit', legacyParams, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           }
         }
 
@@ -1100,10 +1092,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 ...(validTimestamp ? { timestamp: userTimestamp } : {})
               }
 
-              if (
-                acknowledged.rowId === current.rowId &&
-                acknowledged.timestamp === current.timestamp
-              ) {
+              if (acknowledged.rowId === current.rowId && acknowledged.timestamp === current.timestamp) {
                 return state
               }
 

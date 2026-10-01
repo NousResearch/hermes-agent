@@ -349,9 +349,7 @@ function hydratedIdResolver(mergedNextMessages: ChatMessage[]): (message: ChatMe
       }
     }
 
-    const clientMatch = message.clientMessageId
-      ? hydratedByClientMessageId.get(message.clientMessageId)
-      : undefined
+    const clientMatch = message.clientMessageId ? hydratedByClientMessageId.get(message.clientMessageId) : undefined
 
     if (!clientMatch) {
       return undefined

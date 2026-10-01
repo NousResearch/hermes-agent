@@ -287,12 +287,15 @@ describe('useBackgroundQueueDrain', () => {
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
-      expect(submitText).toHaveBeenCalledWith('resume then send', expect.objectContaining({
-        attachments: [],
-        fromQueue: true,
-        sessionId: null,
-        storedSessionId: 'stored-session-a'
-      }))
+      expect(submitText).toHaveBeenCalledWith(
+        'resume then send',
+        expect.objectContaining({
+          attachments: [],
+          fromQueue: true,
+          sessionId: null,
+          storedSessionId: 'stored-session-a'
+        })
+      )
     })
   })
 
@@ -363,12 +366,15 @@ describe('useBackgroundQueueDrain', () => {
     setSessionsLoading(false)
 
     await waitFor(() => {
-      expect(submitText).toHaveBeenCalledWith('send after load', expect.objectContaining({
-        attachments: [],
-        fromQueue: true,
-        sessionId: 'rt-session-a',
-        storedSessionId: 'stored-session-a'
-      }))
+      expect(submitText).toHaveBeenCalledWith(
+        'send after load',
+        expect.objectContaining({
+          attachments: [],
+          fromQueue: true,
+          sessionId: 'rt-session-a',
+          storedSessionId: 'stored-session-a'
+        })
+      )
     })
 
     await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))

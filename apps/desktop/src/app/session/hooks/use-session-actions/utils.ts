@@ -453,8 +453,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
         ? clientIdentityCandidate
         : undefined
 
-    const previous =
-      rowIdentityMatch ?? clientIdentityMatch ?? previousByRoleOrdinal.get(`${message.role}:${ordinal}`)
+    const previous = rowIdentityMatch ?? clientIdentityMatch ?? previousByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
     if (!previous || conflictingTranscriptIdentity(previous, message)) {
       return message
@@ -1292,9 +1291,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
         ...message,
         id: `user-inflight-${sessionId}`,
         ...(inflightClientMessageId ? { clientMessageId: inflightClientMessageId } : {}),
-        ...(projection.inflight?.user_timestamp !== undefined
-          ? { timestamp: projection.inflight.user_timestamp }
-          : {})
+        ...(projection.inflight?.user_timestamp !== undefined ? { timestamp: projection.inflight.user_timestamp } : {})
       }))
     )
   }

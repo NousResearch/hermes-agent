@@ -2305,14 +2305,15 @@ describe('usePromptActions submit / queue drain semantics', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1_790_594_548_125)
     const seeds: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) =>
-      (method === 'prompt.submit'
-        ? {
-            client_message_id: params?.client_message_id,
-            user_row_id: 77,
-            user_timestamp: 1_790_594_550
-          }
-        : {}) as never
+    const requestGateway = vi.fn(
+      async (method: string, params?: Record<string, unknown>) =>
+        (method === 'prompt.submit'
+          ? {
+              client_message_id: params?.client_message_id,
+              user_row_id: 77,
+              user_timestamp: 1_790_594_550
+            }
+          : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -2348,10 +2349,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
   it('treats a null acknowledged client identity as legacy absence', async () => {
     const seeds: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string) =>
-      (method === 'prompt.submit'
-        ? { client_message_id: null, user_row_id: 78, user_timestamp: 1_790_594_551 }
-        : {}) as never
+    const requestGateway = vi.fn(
+      async (method: string) =>
+        (method === 'prompt.submit'
+          ? { client_message_id: null, user_row_id: 78, user_timestamp: 1_790_594_551 }
+          : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -4632,7 +4634,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      expectedPromptParams({ session_id: RECOVERED_SESSION_ID, text: 'follow-up while the profile route is rebinding' }),
+      expectedPromptParams({
+        session_id: RECOVERED_SESSION_ID,
+        text: 'follow-up while the profile route is rebinding'
+      }),
       1_800_000
     )
   })

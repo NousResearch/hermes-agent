@@ -36,14 +36,14 @@ except ImportError:
         GET = "GET"
 
 
-async def _decrypt_thread_event(client: Any, raw: dict) -> Any | None:
+async def _decrypt_thread_event(client: Any, raw: dict[str, Any]) -> Any | None:
     crypto = getattr(client, "crypto", None)
     if crypto is None:
         return None
     try:
-        from mautrix.types import Event
+        from mautrix.types import EncryptedEvent, JSON
 
-        event = Event.deserialize(raw)
+        event = EncryptedEvent.deserialize(JSON(raw))
         return await asyncio.wait_for(crypto.decrypt_megolm_event(event), timeout=10.0)
     except Exception as exc:
         logger.debug("Matrix: could not decrypt thread event %s: %s", raw.get("event_id"), exc)

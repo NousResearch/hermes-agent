@@ -378,7 +378,7 @@ async def test_card_notices_stay_in_the_card_thread(monkeypatch, notice):
     adapter._client = SimpleNamespace()
     sent = []
 
-    async def send_room_message(room_id, content):
+    async def send_room_message(room_id, content, *, finalize=True):
         sent.append(content)
         return f"$event-{len(sent)}"
 
@@ -402,7 +402,7 @@ async def test_card_notices_stay_in_the_card_thread(monkeypatch, notice):
         else:
             await adapter._finalize_matrix_approval_prompt("!room:example.org", "$event-1", prompt, choice="deny")
         assert [content["m.relates_to"] for content in sent[1:]] == [{
-            "rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+            "rel_type": "m.thread", "event_id": "$root", "is_falling_back": False,
             "m.in_reply_to": {"event_id": "$event-1"},
         }]
     finally:

@@ -266,6 +266,32 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path):
     assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
 
 
+@pytest.mark.parametrize("hostile", ["onbranch_include", "filter_flood"])
+def test_repo_filter_discovery_fails_closed(tmp_path, hostile):
+    """An ``includeIf "onbranch:"`` loads filters only once the new branch is checked out, and a
+    huge filter inventory would overflow the argv/env limit (E2BIG); both refuse the git call."""
+    from hermes_cli import kanban_db_workspace as kw
+    clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    repo, marker = tmp_path / "repo", tmp_path / "FILTER"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=clean)
+    (repo / "README").write_text("hi\n")
+    (repo / ".gitattributes").write_text("README filter=evil\n")
+    ident = ["-c", "user.email=a@b", "-c", "user.name=a"]
+    subprocess.run(["git", "-C", str(repo), *ident, "add", "."], check=True, env=clean)
+    subprocess.run(["git", "-C", str(repo), *ident, "commit", "-qm", "init"], check=True, env=clean)
+    evil = f'[filter "evil"]\n\tsmudge = touch \'{marker.as_posix()}\'; cat\n\trequired = true\n'
+    with open(repo / ".git" / "config", "a") as fh:
+        if hostile == "onbranch_include":
+            (repo / ".git" / "evil.inc").write_text(evil)
+            fh.write('[includeIf "onbranch:safe"]\n\tpath = evil.inc\n')
+        else:
+            fh.write("".join(f'[filter "f{i}"]\n\tclean = cat\n' for i in range(300)))
+
+    res = kw._git(repo, "worktree", "add", "-b", "safe", str(tmp_path / "wt"), "HEAD", timeout=30)
+    assert (res.returncode, res.stderr) == (1, "git filter discovery failed")
+    assert not marker.exists()
+
+
 def test_worktree_reclaim_transport_calls_ignore_repo_ssh_command(tmp_path, monkeypatch):
     """The reclaim sweep's ``ls-remote`` and the shallow-repo ``fetch --unshallow`` run unattended;
     a repository-level ``core.sshCommand`` must not run on either."""

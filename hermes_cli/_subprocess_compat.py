@@ -471,6 +471,9 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
 _FILTER_COMMAND_KEY = re.compile(r"^filter\..+\.(?:clean|smudge|process)$", re.IGNORECASE)
 # ``includeIf "onbranch:..."`` is evaluated against the CURRENT branch, so a ``worktree add`` of
 # another branch can load filters this discovery never saw; refuse rather than half-harden.
+# Each discovered key costs two env entries; a repo with tens of thousands of filters would make
+# every spawn fail with E2BIG ("Argument list too long"), so refuse past a generous cap.
+_MAX_FILTER_KEYS = 256
 _ONBRANCH_INCLUDE_KEY = re.compile(r"^includeif\.onbranch:.*\.path$", re.IGNORECASE)
 
 
@@ -514,6 +517,8 @@ def noninteractive_repo_git_env(
             continue
         seen.add(lowered)
         keys.append(key)
+        if len(keys) > _MAX_FILTER_KEYS:
+            return None
         required_key = key.rsplit(".", 1)[0] + ".required"
         if required_key.lower() not in seen:
             seen.add(required_key.lower())

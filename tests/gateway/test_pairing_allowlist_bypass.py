@@ -397,9 +397,7 @@ def test_whatsapp_live_allowlist_denies_when_env_key_removed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_restart(
-    store, monkeypatch,
-):
+async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_restart(store):
     """The runner's live pairing verdict must gate both Matrix messages and approvals."""
     from unittest.mock import AsyncMock, patch
 
@@ -460,9 +458,7 @@ async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_re
     assert before_prompt.resolved is True
     before_resolve.assert_called_once_with("session-$before", "once")
 
-    adapter_identity = id(adapter)
     assert store.revoke("matrix", user_id) is True
-    assert id(adapter) == adapter_identity
     assert store.is_approved("matrix", user_id) is False
     assert runner._is_user_authorized(source) is False
 
@@ -504,6 +500,7 @@ def test_matrix_pairing_revoke_purges_live_allowlist_snapshot(store, monkeypatch
         )
     )
     assert adapter._is_authorized_user(paired_id) is True
+    held = adapter._allowed_user_ids  # e.g. a Discord approval view's reference
 
     runner = SimpleNamespace(
         adapters={Platform.MATRIX: adapter},
@@ -514,4 +511,5 @@ def test_matrix_pairing_revoke_purges_live_allowlist_snapshot(store, monkeypatch
     assert store.revoke("matrix", paired_id) is True
     assert os.environ["MATRIX_ALLOWED_USERS"] == owner_id
     assert paired_id not in adapter._allowed_user_ids
+    assert paired_id not in held
     assert adapter._is_authorized_user(paired_id) is False

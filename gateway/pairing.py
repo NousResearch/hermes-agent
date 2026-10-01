@@ -216,11 +216,13 @@ def _sync_live_adapter_allowlist_remove(platform: str, user_id: str) -> None:
         for attr in ("_allow_from", "_allowed_user_ids"):
             if hasattr(adapter, attr):
                 with contextlib.suppress(Exception):
-                    setattr(
-                        adapter,
-                        attr,
-                        _purge_allowlist_entries(getattr(adapter, attr), platform_name, user_id),
-                    )
+                    current = getattr(adapter, attr)
+                    purged = _purge_allowlist_entries(current, platform_name, user_id)
+                    if isinstance(current, set):
+                        # In place: Discord approval views / VoiceReceiver hold this same set.
+                        current.intersection_update(purged)
+                    else:
+                        setattr(adapter, attr, purged)
         extra = getattr(getattr(adapter, "config", None), "extra", None)
         if isinstance(extra, dict):
             for key in ("allow_from", "allowed_users"):

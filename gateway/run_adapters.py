@@ -1062,34 +1062,37 @@ class GatewayAdapterLifecycleMixin:
                 publish_record(ROLE_GATEWAY, profiles=tuple(served), home=str(get_hermes_home()))
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: Path):
-        """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises
-        ``MultiplexConfigError`` (open dm/group policy). Port-binding platforms are NOT refused: the
-        default profile owns the single shared listener and a secondary's port-binders are built in
-        shared-listener mode (``/p/<profile>/...``) by ``_start_one_profile_adapters``."""
+        """Prepare the profile and return its gateway configuration.
+
+        Raise ``MultiplexConfigError`` for open policies without allow-all opt-in.
+        ``_start_one_profile_adapters`` configures secondary port-binding platforms
+        to use the primary profile's shared listener.
+        """
         from gateway.run import (
             MultiplexConfigError, _load_gateway_config,
             _own_policy_open_startup_violation, _profile_runtime_scope,
         )
         from gateway.config import load_gateway_config
         from hermes_cli.env_loader import hydrate_profile_secret_sources
-        from agent.i18n import warm_catalog
-        # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
-        await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
-        # A platform that left core for a catalog plugin is installed before discovery below.
         from gateway.run_startup import recover_left_core_in
-        await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
-        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            await asyncio.to_thread(warm_catalog)
-            profile_runtime_cfg = _load_gateway_config()
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            discover_plugins()
-            self._subscribe_plugin_rewire(get_plugin_manager(), profile_name, profile_home)
-            # This profile's `hooks:` block: start() registered before any profile scope existed.
-            self._register_config_hooks(
-                "shell-hook/webhook registration failed for profile '%s'", profile_name, level=logging.WARNING,
-            )
-            profile_cfg = load_gateway_config()
-            violation = _own_policy_open_startup_violation(profile_cfg)
+
+        def prepare():
+            hydrate_profile_secret_sources(profile_home)
+            recover_left_core_in(profile_home, hydrate_secrets=False)
+            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                profile_runtime_cfg = _load_gateway_config()
+                from hermes_cli.plugins import discover_plugins, get_plugin_manager
+                discover_plugins()
+                manager = get_plugin_manager()
+                self._register_config_hooks(
+                    "shell-hook/webhook registration failed for profile '%s'", profile_name, level=logging.WARNING,
+                )
+                profile_cfg = load_gateway_config()
+                violation = _own_policy_open_startup_violation(profile_cfg)
+            return profile_runtime_cfg, profile_cfg, manager, violation
+
+        profile_runtime_cfg, profile_cfg, manager, violation = await asyncio.to_thread(prepare)
+        self._subscribe_plugin_rewire(manager, profile_name, profile_home)
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
             raise MultiplexConfigError(

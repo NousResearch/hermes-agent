@@ -107,5 +107,5 @@ export const arDiagnostics = {
     boundaryDesc: 'يمكنك إعادة تحميل النافذة أو فتح السجلات لمعرفة التفاصيل.',
     reloadWindow: 'إعادة تحميل النافذة',
     openLogs: 'فتح السجلات'
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'sendDiagnostics' | 'notifications' | 'errors'>

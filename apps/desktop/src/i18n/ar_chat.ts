@@ -523,5 +523,5 @@ export const arChat = {
         text: 'الملفات والطرفية والمراجعة والمتصفح المدمج تتشارك اللوحة الجانبية.'
       }
     }
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'composer' | 'statusStack' | 'prompts' | 'desktop' | 'tips'>

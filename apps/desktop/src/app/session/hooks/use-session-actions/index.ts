@@ -920,6 +920,7 @@ export function useSessionActions({
           } catch {
             releaseCreatingSessionGuard()
           }
+
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.
           broadcastSessionsChanged()

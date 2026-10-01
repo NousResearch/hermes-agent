@@ -418,10 +418,35 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _venv_pyver(venv_dir: Path) -> tuple[int, int] | None:
+    """The ``(major, minor)`` a venv was built for, from its ``pyvenv.cfg``; ``None`` if unknown.
+
+    Reads ``version-info`` first (the 3.13+ key) and falls back to the legacy ``version``
+    key older interpreters wrote, so only a genuinely unversioned tree answers ``None``.
+    """
+    try:
+        text = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8-sig")
+    except OSError:
+        return None
+    for key in ("version-info", "version"):
+        for line in text.splitlines():
+            name, _, value = line.partition("=")
+            if name.strip().lower() != key:
+                continue
+            major, _, rest = value.strip().partition(".")
+            minor, _, _ = rest.partition(".")
+            if major.isdigit() and minor.isdigit():
+                return int(major), int(minor)
+    return None
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
-    Patched before MCP discovery so tool injection does not depend on launchers preserving PYTHONPATH."""
+    Patched before MCP discovery so tool injection does not depend on launchers preserving
+    PYTHONPATH. A candidate venv built for a different interpreter than the running one is
+    refused (#122556): a cp311 ``pydantic_core`` cannot load under a pm-managed 3.14 store
+    Python, and shadowing the boot environment's site-packages breaks every import chain."""
     if sys.platform != "win32":
         return
 
@@ -450,6 +475,18 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
+            continue
+
+        # With no committed generation hermes_bootstrap still ran on the boot environment;
+        # overlaying a leftover venv is only safe if it was built for THIS interpreter.
+        # An unknown version keeps today's behavior rather than guessing wrong (#122556).
+        running = (sys.version_info.major, sys.version_info.minor)
+        env_ver = _venv_pyver(resolved_venv)
+        if env_ver is not None and env_ver != running:
+            logger.warning(
+                "Refusing venv overlay %s: built for Python %d.%d, this gateway runs %d.%d "
+                "(#122556); imports stay on the boot environment.",
+                resolved_venv, env_ver[0], env_ver[1], running[0], running[1])
             continue
 
         project_entry = str(project_root)

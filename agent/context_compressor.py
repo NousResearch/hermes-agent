@@ -4983,10 +4983,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             self.base_url, self.model
         ):
             return None
-        from agent.anthropic_thinking_replay import rejected_thinking_fingerprints, strip_rejected_thinking
+        from agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking
         from agent.message_sanitization import native_anthropic_accounting_projection
 
-        rejected = rejected_thinking_fingerprints(getattr(self, "_session_db", None), getattr(self, "_session_id", ""))
+        rejected = session_rejected_thinking(self, getattr(self, "_session_db", None), getattr(self, "_session_id", ""))
 
         def budget(msg: Dict[str, Any]) -> int:
             request_copy = dict(msg)

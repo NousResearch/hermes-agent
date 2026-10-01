@@ -55,14 +55,29 @@ def rejected_thinking_fingerprints(session_db: Any, session_id: Any) -> set[str]
     return {value for value in raw if isinstance(value, str) and value} if isinstance(raw, list) else set()
 
 
+def session_rejected_thinking(holder: Any, session_db: Any, session_id: Any) -> set[str]:
+    """``holder``'s in-memory fingerprints for ``session_id``, else the persisted ones. The in-memory
+    set is authoritative: it outlives a failed or disabled persist."""
+    cached = getattr(holder, "_anthropic_rejected_thinking", None)
+    if isinstance(cached, tuple) and cached[0] == session_id:
+        return cached[1]
+    return rejected_thinking_fingerprints(session_db, session_id)
+
+
+def _bind(agent: Any, session_id: Any, rejected: set[str]) -> None:
+    # The compressor's tail walk must price the same replay as the agent's preflight, so it shares
+    # the agent's set object (later in-place updates reach both).
+    agent._anthropic_rejected_thinking = (session_id, rejected)
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None:
+        compressor._anthropic_rejected_thinking = agent._anthropic_rejected_thinking
+
+
 def _rejected(agent: Any) -> set[str]:
     # Keyed by session: /new, /resume, /branch and compression rotate ``session_id`` on a live agent.
     session_id = getattr(agent, "session_id", None)
-    cached = getattr(agent, "_anthropic_rejected_thinking", None)
-    if isinstance(cached, tuple) and cached[0] == session_id:
-        return cached[1]
-    rejected = rejected_thinking_fingerprints(getattr(agent, "_session_db", None), session_id)
-    agent._anthropic_rejected_thinking = (session_id, rejected)
+    rejected = session_rejected_thinking(agent, getattr(agent, "_session_db", None), session_id)
+    _bind(agent, session_id, rejected)
     return rejected
 
 
@@ -177,5 +192,5 @@ def carry_rejected_thinking_to_session(agent: Any, old_session_id: str) -> None:
     if not rejected:
         return
     rejected |= _rejected(agent)
-    agent._anthropic_rejected_thinking = (getattr(agent, "session_id", None), rejected)
+    _bind(agent, getattr(agent, "session_id", None), rejected)
     _persist(agent, rejected)

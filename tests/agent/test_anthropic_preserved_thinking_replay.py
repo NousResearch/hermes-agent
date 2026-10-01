@@ -690,7 +690,9 @@ def _readable_tokens(blocks):
     return sum(estimate_tokens_rough(block.get("thinking", "")) for block in blocks)
 
 
-@pytest.mark.parametrize("shape", ["rejected", "reasoning_only", "invalid_ordered_then_details"])
+@pytest.mark.parametrize(
+    "shape", ["rejected", "rejected_unpersisted", "reasoning_only", "invalid_ordered_then_details"]
+)
 def test_native_preflight_and_tail_walk_charge_exactly_the_replayed_thinking(tmp_path, shape):
     """Invariant: on a preserved-thinking native route, growing thinking text moves the
     preflight estimate and the compressor tail walk by exactly what reaches the wire: nothing for
@@ -706,6 +708,8 @@ def test_native_preflight_and_tail_walk_charge_exactly_the_replayed_thinking(tmp
         api_mode=agent.api_mode, quiet_mode=True, config_context_length=200_000,
     )
     compressor.bind_session_state(db, "s1")
+    agent.context_compressor = compressor
+    agent._persist_disabled = shape == "rejected_unpersisted"
 
     def history(size):
         thinking = "x" * size
@@ -725,7 +729,7 @@ def test_native_preflight_and_tail_walk_charge_exactly_the_replayed_thinking(tmp
             {"role": "user", "content": "continue"},
         ]
 
-    if shape == "rejected":
+    if shape.startswith("rejected"):
         _reject_signatures(agent, history(1))
 
     def measure(size):

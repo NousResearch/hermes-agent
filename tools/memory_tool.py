@@ -232,14 +232,15 @@ def _background_delete_gate(store, action, operations, target="memory", content=
                   if literal_auto_enabled else
                   "Automatic literal-preserving review is not enabled. ")
         saved_note = (f"{additions_saved} add operation(s) saved independently; "
-                      "approval will replay them idempotently. " if additions_saved else "")
+                      "approval will replay them idempotently; rejecting the proposal will not undo "
+                      "these saved additions. " if additions_saved else "")
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
             "additions_saved": additions_saved,
             "message": (saved_note + reason +
                         f"The proposed {'batch' if operations is not None else action} "
                         "was staged for your approval — review it with /memory pending "
-                        "(approve to apply, discard to drop)."),
+                        "(approve to apply, reject to drop only the pending proposal)."),
         }, ensure_ascii=False)
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)

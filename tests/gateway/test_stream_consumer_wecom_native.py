@@ -1028,9 +1028,18 @@ class TestClarifyEagerReseed:
         # 导致第二轮 eager seed 误判 —— 链路仍自洽。
         assert consumer._reopen_seeded_eagerly is True
 
-        # 第二轮 eager seed：即便标志有残留，仍能正确再次开流。
+        second_seed = asyncio.Event()
+        send_frame = adapter.send_stream_frame
+
+        async def acknowledge_seed(text, **kwargs):
+            result = await send_frame(text, **kwargs)
+            if text == "" and not kwargs.get("finalize", False):
+                second_seed.set()
+            return result
+
+        adapter.send_stream_frame = acknowledge_seed
         consumer.request_reopen_seed()
-        await self._drain(consumer, 0.05)
+        await asyncio.wait_for(second_seed.wait(), timeout=2.0)
 
         seeds_after = len(
             [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]

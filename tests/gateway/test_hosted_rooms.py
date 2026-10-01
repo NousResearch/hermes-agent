@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from contextlib import contextmanager
 
 import pytest
 
@@ -1439,3 +1440,39 @@ def test_unreadable_legacy_store_is_reported_once_per_process(tmp_path, caplog):
     with sqlite3.connect(store) as conn:
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_legacy_imports'").fetchone()
+
+
+@pytest.mark.parametrize("missing", [("cursor",), ("authority_claim",), ("cursor", "authority_claim")])
+def test_authority_claim_lookup_stays_bounded_after_index_repair(tmp_path, monkeypatch, missing):
+    db = tmp_path / "state.db"
+    rooms.create_room(db, room_id="busy", name="Busy", members=[], authority_gateway_id="home")
+    actor = json.dumps(USER, separators=(",", ":"))
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO hosted_room_events (room_id, seq, event_id, kind, actor_json, authority_epoch,"
+            " payload_json, created_at) VALUES ('busy', ?, ?, 'message.user', ?, 1, ?, ?)",
+            ((seq, f"event-{seq}", actor, json.dumps({"text": "hi", "thread_id": "t"}), float(seq))
+             for seq in range(1, 2001)))
+        conn.execute("UPDATE hosted_rooms SET next_seq=2001 WHERE room_id='busy'")
+        for suffix in missing:
+            conn.execute("DROP INDEX IF EXISTS idx_hosted_room_events_" + suffix)
+    assert rooms.room_state(db, room_id="busy")["latest_seq"] == 2000
+    with sqlite3.connect(db) as conn:
+        assert {"idx_hosted_room_events_cursor", "idx_hosted_room_events_authority_claim"} <= {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    original, steps = rooms._transaction, [0]
+
+    @contextmanager
+    def counted(*args, **kwargs):
+        with original(*args, **kwargs) as conn:
+            def progress():
+                steps[0] += 1
+                return 0
+
+            conn.set_progress_handler(progress, 1)
+            yield conn
+
+    monkeypatch.setattr(rooms, "_transaction", counted)
+    # Every room read looks up the current epoch's claim; without the index that scans the log.
+    assert rooms.room_state(db, room_id="busy")["latest_seq"] == 2000
+    assert 0 < steps[0] < 1000

@@ -151,5 +151,5 @@ export const arArtifacts = {
       openTarget: url => `فتح ${url}`,
       fallbackTitle: 'معاينة'
     }
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'artifacts' | 'artifactCard' | 'artifactPreview' | 'preview'>

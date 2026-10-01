@@ -56,5 +56,5 @@ export const ar = defineLocale({
   desktop: arChat.desktop,
   errors: arDiagnostics.errors,
   tips: arChat.tips,
-  ui: arCommon.ui,
+  ui: arCommon.ui
 })

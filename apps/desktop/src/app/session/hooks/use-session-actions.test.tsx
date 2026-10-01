@@ -224,7 +224,8 @@ function Harness({
     routedSessionId: null,
     runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefOverride ?? ref(new Map<string, string>()),
     selectedStoredSessionId,
-    selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride ?? ref(selectedStoredSessionId),    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride ?? ref(selectedStoredSessionId),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: updateSessionStateOverride ?? (() => ({}) as ClientSessionState)
   })
@@ -1325,7 +1326,8 @@ function ResumeHarness({
     requestGateway,
     resetViewSync: vi.fn(),
     routedSessionId: null,
-    runtimeIdByStoredSessionIdRef: runtimeMapRef,    selectedStoredSessionId,
+    runtimeIdByStoredSessionIdRef: runtimeMapRef,
+    selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: stateMapRef,
     holdSessionTranscriptView: runtimeId => {
@@ -6160,6 +6162,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
     selectedStoredSessionIdRef: MutableRefObject<null | string>
   }) {
     const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
     const actions = useSessionActions({
       activeSessionId: null,
       activeSessionIdRef: ref<string | null>(null),
@@ -6202,6 +6205,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
     }
 
     let create: (() => Promise<string | null>) | null = null
+
     const { rerender } = render(
       <GuardHarness
         creatingSessionRef={creatingSessionRef}
@@ -6212,6 +6216,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}
       />
     )
+
     await waitFor(() => expect(create).not.toBeNull())
 
     await act(async () => {
@@ -6253,6 +6258,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
   it('clears creatingSessionRef when navigate throws', async () => {
     const creatingSessionRef: MutableRefObject<boolean> = { current: false }
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
     const navigate = vi.fn(() => {
       throw new Error('navigate failed')
     })
@@ -6298,6 +6304,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
     }
 
     let create: (() => Promise<string | null>) | null = null
+
     const { rerender } = render(
       <GuardHarness
         creatingSessionRef={creatingSessionRef}
@@ -6308,6 +6315,7 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}
       />
     )
+
     await waitFor(() => expect(create).not.toBeNull())
 
     await act(async () => {

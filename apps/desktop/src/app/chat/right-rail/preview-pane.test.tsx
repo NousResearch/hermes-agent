@@ -294,7 +294,12 @@ describe('PreviewPane console state', () => {
       rendered = render(
         <PreviewPane
           tabId={tabId}
-          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174/one', url: 'http://localhost:5174/one' }}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174/one',
+            url: 'http://localhost:5174/one'
+          }}
         />
       )
     })
@@ -308,7 +313,12 @@ describe('PreviewPane console state', () => {
       rendered.rerender(
         <PreviewPane
           tabId={tabId}
-          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174/two', url: 'http://localhost:5174/two' }}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174/two',
+            url: 'http://localhost:5174/two'
+          }}
         />
       )
     })

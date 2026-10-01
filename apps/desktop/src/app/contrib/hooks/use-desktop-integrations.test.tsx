@@ -545,13 +545,15 @@ describe('useDesktopIntegrations', () => {
       document.body.append(scope)
       scope.tabIndex = -1
       ;(scope as HTMLElement).focus()
-      scopeCleanup.push(registerTerminalContextMenu(host, {
-        getSelection: () => '',
-        paste: () => undefined,
-        reload: () => {},
-        selectAll: () => undefined,
-        wordErase: () => true
-      }))
+      scopeCleanup.push(
+        registerTerminalContextMenu(host, {
+          getSelection: () => '',
+          paste: () => undefined,
+          reload: () => {},
+          selectAll: () => undefined,
+          wordErase: () => true
+        })
+      )
     }
 
     const scopeCleanup: Array<() => void> = []

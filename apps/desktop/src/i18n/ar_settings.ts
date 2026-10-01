@@ -924,5 +924,8 @@ export const arSettings = {
       label: 'متقدم',
       description: 'للمطورين. الطرفية والملفات والفروقات وشريط الحالة والتخطيطات، كما أعددتها.'
     }
-  },
-} satisfies Pick<TranslationOverrides, 'language' | 'settings' | 'modelAssignment' | 'modelPicker' | 'modelVisibility' | 'interfaceMode'>
+  }
+} satisfies Pick<
+  TranslationOverrides,
+  'language' | 'settings' | 'modelAssignment' | 'modelPicker' | 'modelVisibility' | 'interfaceMode'
+>

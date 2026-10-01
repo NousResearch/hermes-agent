@@ -220,7 +220,8 @@ const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 // CommonMark angle-bracket destinations (`[notes](<~/My Notes/todo.md>`) are
 // matched separately so paths with spaces route to the preview pipeline too
 // (#102782) — `routeFileLinksToPreview` strips the surrounding `<>`.
-const FILE_LINK_RE = /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*)\)/gi
+const FILE_LINK_RE =
+  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*)\)/gi
 
 // A transcript directive on its own line: `::name{...}`. Attribute values are
 // prose the model wrote (a task brief, a question) and read as markdown to the

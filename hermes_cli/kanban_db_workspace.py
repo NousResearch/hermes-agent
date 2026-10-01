@@ -691,10 +691,13 @@ def _worktree_base_ref(repo_root: Path, *, board: Optional[str] = None) -> str:
     1. the board's ``worktree_base`` metadata — an explicit pin for boards that
        deliberately build on a non-trunk line;
     2. the repo's trunk (``main``/``master``, else the branch of the main
-       worktree) when the primary checkout stands somewhere else;
-    3. ``HEAD`` — the pre-existing behaviour, kept when the checkout already
-       stands on the trunk and for a repo with no trunk at all (nothing to
-       prefer over what the checkout has out).
+       worktree) when the primary checkout has **fallen behind** it — every
+       trunk commit the checkout lacks would otherwise be missing from the new
+       branch;
+    3. ``HEAD`` — the pre-existing behaviour, kept for a checkout standing at or
+       ahead of the trunk (a live line: its worktrees continue it, which is how
+       the hermes-agent install itself is worked), for a repo with no trunk at
+       all, and when the trunk ref cannot be read.
     """
     pinned = ""
     try:
@@ -718,12 +721,20 @@ def _worktree_base_ref(repo_root: Path, *, board: Optional[str] = None) -> str:
         trunk = _worktree_local_trunk(str(repo_root))
     except Exception:
         trunk = None
-    if not trunk or _git_current_branch(repo_root) == trunk:
+    if not trunk:
         return "HEAD"
-    _kb._log.info(
-        "kanban: basing the new worktree on the repo trunk %r instead of the "
-        "primary checkout's %r (task worktrees must not inherit an incidental HEAD)",
-        trunk, _git_current_branch(repo_root) or "(detached)",
+    # Staleness, not branch identity, is the trigger: a checkout standing at or
+    # ahead of the trunk is an active line whose worktrees are meant to continue
+    # it, while a checkout that has fallen behind would stamp the missing trunk
+    # commits' absence onto the new branch.
+    behind = _kb._git_out(repo_root, "rev-list", "--count", f"HEAD..{trunk}")
+    if behind is None or not behind.isdigit() or int(behind) == 0:
+        return "HEAD"
+    _kb._log.warning(
+        "kanban: primary checkout at %s is %s commit(s) behind the trunk %r; "
+        "basing the new worktree on %r instead of its incidental HEAD",
+        _git_current_branch(repo_root) or "(detached)",
+        behind, trunk, trunk,
     )
     return trunk
 

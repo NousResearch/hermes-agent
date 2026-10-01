@@ -166,6 +166,34 @@ def test_worktree_is_cut_from_trunk_when_the_checkout_head_is_detached(
     assert _divergence(target, "main") == (0, 0)
 
 
+def test_checkout_ahead_of_the_trunk_keeps_building_on_its_own_line(tmp_path: Path) -> None:
+    """A checkout standing at or ahead of the trunk is a live line, not staleness.
+
+    ``hermes-agent`` itself is worked that way: the install's primary checkout is on
+    a local branch 0 behind / 5 ahead of ``main``, and its cards are cut from that
+    branch tip. Only a checkout that has *fallen behind* the trunk is overridden.
+    """
+    repo = tmp_path / "ahead"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", str(repo))
+    _git("-C", str(repo), "config", "user.email", "t@example.com")
+    _git("-C", str(repo), "config", "user.name", "t")
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    _git("-C", str(repo), "add", "README.md")
+    _git("-C", str(repo), "commit", "-qm", "init")
+    _git("-C", str(repo), "checkout", "-qb", "local-work")
+    (repo / "local.txt").write_text("local work\n", encoding="utf-8")
+    _git("-C", str(repo), "add", "local.txt")
+    _git("-C", str(repo), "commit", "-qm", "local work")
+    assert _divergence(repo, "main") == (0, 1)
+    target = repo / ".worktrees" / "t_aaaa0006"
+
+    kbw._ensure_git_worktree(repo, target, "wt/t_aaaa0006")
+
+    assert _rev(target) == _rev(repo, "local-work")
+    assert _divergence(target, "main") == (0, 1)
+
+
 def test_repo_without_a_trunk_keeps_branching_from_head(tmp_path: Path) -> None:
     """Fail-safe: no ``main``/``master`` anywhere means the old behaviour."""
     repo = tmp_path / "solo"

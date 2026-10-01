@@ -426,14 +426,20 @@ describe('the mention middleware', () => {
     const { handler } = await contributions({
       focused: 'ops',
       profiles: [
-        { connectionId: 'local', connectionLabel: 'This device', name: 'default', remoteSource: true },
+        {
+          connectionId: 'local',
+          connectionLabel: 'This device',
+          handle: 'default-local',
+          name: 'default',
+          remoteSource: true
+        },
         { connectionId: 'local', name: 'ops' }
       ]
     })
 
-    const result = await handler({ text: 'ask @hermes for the status' })
+    const result = await handler({ text: 'ask @default-local for the status' })
 
-    expect(result.text).toMatch(/@hermes = agent profile "default"/)
+    expect(result.text).toMatch(/@default-local = agent profile "default"/)
     expect(result.text).toMatch(/message_agent target: "hermes"/)
     expect(result.text).not.toMatch(/default@local/)
     expect(result.text).not.toMatch(/on This device/)

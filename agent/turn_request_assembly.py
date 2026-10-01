@@ -37,6 +37,43 @@ class AssembledRequest:
     total_chars: Any
 
 
+def _native_anthropic_accounting_projection(messages: Any) -> Any:
+    """Project selected Anthropic request messages into the rough estimator.
+
+    Native conversion replays readable thinking from one of two mutually exclusive
+    carriers: ordered anthropic_content_blocks (preferred by the converter), or
+    reasoning_details. The generic estimator intentionally ignores reasoning_details
+    and otherwise would count ordered blocks wholesale, including opaque signatures/data
+    and duplicate text/tool material. This projection charges only readable thinking once.
+    """
+    if not isinstance(messages, list):
+        return messages
+    projected = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            projected.append(message)
+            continue
+        shadow = dict(message)
+        ordered = shadow.pop("anthropic_content_blocks", None)
+        details = shadow.pop("reasoning_details", None)
+        shadow.pop("_anthropic_content_blocks", None)
+        carrier = ordered if isinstance(ordered, list) and ordered else details
+        readable = []
+        if isinstance(carrier, list):
+            for block in carrier:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "thinking"
+                    and isinstance(block.get("thinking"), str)
+                    and block.get("thinking")
+                ):
+                    readable.append(block["thinking"])
+        if readable:
+            shadow["_anthropic_readable_thinking_estimate"] = "\n".join(readable)
+        projected.append(shadow)
+    return projected
+
+
 def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original_user_message: Any) -> None:
     """Run the MoA reference models and append their aggregated context to the last user
     message (as a trailing text part on multimodal turns). Fail-open."""
@@ -143,6 +180,12 @@ def assemble_api_request(
         agent, api_messages, messages, _sel_incoming, logger=request_logger
     )
 
+    # Context selection may replace the request with a fresh clone of canonical history.
+    # Re-apply durable rejection suppression after that final replacement hook.
+    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+
+    apply_rejected_thinking_suppression(agent, api_messages)
+
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.
     api_messages = agent._sanitize_api_messages(api_messages)
@@ -235,7 +278,15 @@ def assemble_api_request(
     from agent.turn_context import _agent_stale_thinking_on_wire
 
     if _agent_stale_thinking_on_wire(agent):
-        approx_tokens = estimate_messages_tokens_rough(api_messages)
+        _estimate_messages = api_messages
+        if getattr(agent, "api_mode", "") == "anthropic_messages":
+            from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+            if native_anthropic_preserves_prior_thinking(
+                getattr(agent, "base_url", ""), getattr(agent, "model", "")
+            ):
+                _estimate_messages = _native_anthropic_accounting_projection(api_messages)
+        approx_tokens = estimate_messages_tokens_rough(_estimate_messages)
     else:
         approx_tokens = estimate_messages_tokens_rough(api_messages, charge_stale_thinking=False)
     # Route-aware: native Responses compaction prunes the wire payload, so the raw

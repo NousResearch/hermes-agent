@@ -90,7 +90,7 @@ from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
-    starts_with_mx_reply,
+    _MATRIX_REPLY_FALLBACK_PILL_RE, _has_reply_fallback, _split_reply_fallback,
 )
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
 from gateway.platforms.base import (
@@ -191,11 +191,6 @@ def _normalize_matrix_bang_command(text: str) -> str:
     return f"/{resolved}{match.group(2) or ''}"
 
 
-# Reply fallback prefix: "> <@alice:example.org> quoted\n> more\n\nactual reply". An emote
-# fallback starts with "> * <@alice:example.org>".
-_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^> (?:\* )?<(@[^>\s]+)>\s*(.*)")
-
-
 def _extract_reply_fallback(body: str) -> tuple[Optional[str], Optional[str]]:
     """Return (quoted_text, author_mxid) from the inline reply fallback; author from the first-line pill."""
     if not body or not body.startswith("> "):
@@ -261,45 +256,6 @@ def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
         return True
     status = getattr(exc, "http_status", None)
     return isinstance(status, int) and status in (401, 403)
-
-
-def _split_reply_fallback(body: str) -> tuple[str, str]:
-    """Split ``> quote\\n\\nreply`` into ``(quote_block, reply_text)``; ``("", body)`` when absent.
-
-    The two halves always concatenate back to *body* verbatim (``quote + reply == body``), so
-    callers can transform one half and rebuild the body without disturbing the other. The blank
-    separator line belongs to the quote block. Used to keep the ``> <@user:srv>`` reply pill —
-    the only mention text in a reply-to-the-bot — out of whole-body rewrites.
-    """
-    if not body or not body.startswith("> "):
-        return "", body
-    lines = body.split("\n")
-    idx = 0
-    while idx < len(lines) and (lines[idx].startswith("> ") or lines[idx] == ">"):
-        idx += 1
-    if idx < len(lines) and lines[idx] == "":
-        idx += 1  # the blank line separating the quote from the reply belongs to the quote
-    head = "\n".join(lines[:idx])
-    return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
-
-
-def _has_reply_fallback(body: str, content: dict) -> bool:
-    """Whether a reply's body starts with a legacy reply fallback instead of the user's own quote.
-
-    Matrix 1.13 (MSC2781) removed reply fallbacks, so a modern client sends the reply as typed
-    and a leading ``> `` block is the user's quotation. A legacy client marks its fallback with
-    an ``<mx-reply>`` element at the start of the HTML body. Its plain fallback starts with the
-    quoted sender's pill (``> <@user:srv>``, or ``> * <@user:srv>`` for an emote) and ends with
-    a blank line.
-    """
-    if not body.startswith("> "):
-        return False
-    if starts_with_mx_reply(content):
-        return True
-    if not _MATRIX_REPLY_FALLBACK_PILL_RE.match(body):
-        return False
-    quote_block, reply_text = _split_reply_fallback(body)
-    return quote_block.endswith("\n\n") or not reply_text
 
 
 class _MatrixHtmlSanitizer(HTMLParser):

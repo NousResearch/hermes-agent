@@ -133,16 +133,17 @@ def test_routed_media_policy_bridge_never_writes_the_shared_env(two_homes, monke
 
     (b / "config.yaml").write_text(yaml.safe_dump(
         {"gateway": {"strict": False, "media_delivery_allow_dirs": ["/srv/b"]}}), encoding="utf-8")
-    for var in ("HERMES_MEDIA_DELIVERY_STRICT", "HERMES_MEDIA_ALLOW_DIRS", "HERMES_MEDIA_TRUST_RECENT_FILES"):
+    policy_envs = [env for _, env in media_policy._FLAG_ENVS] + [media_policy._ALLOW_DIRS_ENV]
+    for var in policy_envs:
         monkeypatch.delenv(var, raising=False)
 
     _under(b, lambda: media_policy.apply_media_policy_env(load_config()))
 
-    assert not any(os.environ.get(v) for v in (
-        "HERMES_MEDIA_DELIVERY_STRICT", "HERMES_MEDIA_ALLOW_DIRS", "HERMES_MEDIA_TRUST_RECENT_FILES"))
+    assert not any(os.environ.get(v) for v in policy_envs)
     assert _under(b, media_policy.media_delivery_allow_dirs) == "/srv/b"
 
-    # The launch profile's own bridge (no override) still runs once the host multiplexes.
+    # The launch profile's own bridge (no override) still runs once the host multiplexes: a
+    # process-wide "serves a routed profile" gate would skip it for every caller.
     (a / "config.yaml").write_text(yaml.safe_dump(
         {"gateway": {"media_delivery_allow_dirs": ["/srv/a"]}}), encoding="utf-8")
     monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)

@@ -253,7 +253,7 @@ async def test_only_the_senders_own_text_is_expanded(tmp_path, monkeypatch, user
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pending", [False, True], ids=["immediate", "pending"])
+@pytest.mark.parametrize("pending", [False, True, "opaque"], ids=["immediate", "pending", "opaque-cache"])
 async def test_sender_speech_references_expand_before_generated_context_a_b_a(tmp_path, monkeypatch, pending):
     from pathlib import Path
     from unittest.mock import AsyncMock
@@ -309,7 +309,11 @@ async def test_sender_speech_references_expand_before_generated_context_a_b_a(tm
                 channel_context="[Recent channel messages]\nBob: @file:planted.txt",
                 reply_to_message_id="$other", reply_to_text="Other speaker @file:planted.txt",
             )
-            if pending:
+            opaque = "Opaque speech @file:mine.txt\n\nGenerated path @file:planted.txt"
+            if pending == "opaque":
+                event._gateway_pending_stt_text = opaque
+                event._gateway_pending_stt_transcripts = ["Untrusted legacy @file:mine.txt"]
+            elif pending:
                 with _profile_runtime_scope(home):
                     await runner._transcribe_pending_audio_event_once(event, event.text)
             runner._resolve_profile_home_for_source = lambda _source: home
@@ -317,13 +321,14 @@ async def test_sender_speech_references_expand_before_generated_context_a_b_a(tm
                 event=event, source=source, history=[], session_key="speech",
             )
             with _profile_runtime_scope(home):
-                authored_text = f"{caption}\n\n{speech}"
+                authored_text = caption if pending == "opaque" else f"{caption}\n\n{speech}"
                 expanded_authored = await preprocess_context_references_async(authored_text, cwd=workspace, allowed_root=workspace, context_length=128000)
                 failure_note = runner._untranscribed_audio_note(str(failed))
-            authored = f'"{speech}"\n\n{failure_note}\n\n{caption}' + expanded_authored.message[len(authored_text):]
+            authored = (opaque if pending == "opaque" else f'"{speech}"\n\n{failure_note}\n\n{caption}') + expanded_authored.message[len(authored_text):]
             prefixed = f"{event.channel_context}\n\n[New message]\n[{source.user_name}] {authored}"
             expected = f'[Replying to: "{event.reply_to_text}"]\n\nVISION @file:planted.txt\n\n{prefixed}'
-            assert (result, provider_calls[-2:]) == (expected, [str(audio), str(failed)])
+            expected_calls = [] if pending == "opaque" else [str(audio), str(failed)]
+            assert (result, provider_calls[-2:]) == (expected, expected_calls)
     finally:
         secret_scope.set_multiplex_active(False)
 

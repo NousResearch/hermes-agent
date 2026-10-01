@@ -3099,6 +3099,73 @@ async def test_catch_up_filters_by_original_relation_after_bundled_edits():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("thread_id", [None, "$root"])
+async def test_mention_catch_up_excludes_events_in_the_current_batch(thread_id):
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+
+    adapter = _make_adapter()
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._is_sender_authorized = MagicMock(return_value=True)
+    adapter._content_mentions_bot = MagicMock(
+        side_effect=lambda body, _content: body == "mention"
+    )
+    relation = (
+        {"m.relates_to": {"rel_type": "m.thread", "event_id": thread_id}}
+        if thread_id
+        else {}
+    )
+    current = {"msgtype": "m.text", "body": "mention", **relation}
+    chunk = [
+        {
+            "event_id": "$batched",
+            "sender": "@alice:example.org",
+            "content": {
+                "msgtype": "m.text",
+                "body": "already in new message",
+                **relation,
+            },
+        },
+        {
+            "event_id": "$earlier",
+            "sender": "@alice:example.org",
+            "content": {"msgtype": "m.text", "body": "earlier discussion", **relation},
+        },
+    ]
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "trigger-boundary"}
+        return {"start": "messages-boundary", "chunk": chunk}
+
+    adapter._client = MagicMock()
+    adapter._client.api.request = AsyncMock(side_effect=request)
+    adapter._client.get_event = AsyncMock(
+        return_value={"sender": "@alice:example.org", "content": {}}
+    )
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room:example.org",
+        user_id="@alice:example.org",
+        chat_type="thread" if thread_id else "group",
+        thread_id=thread_id,
+    )
+    event = MessageEvent(
+        text="already in new message\n\nmention",
+        source=source,
+        message_id="$current",
+        merged_message_ids=["$batched"],
+        raw_message=current,
+        metadata={"matrix_requires_mention": True},
+    )
+
+    context = await adapter.fetch_mention_context(event)
+    heading = "Earlier messages in this thread" if thread_id else "Recent room messages"
+    assert context == f"[{heading}]\n[Alice] earlier discussion"
+
+
+@pytest.mark.asyncio
 async def test_catch_up_limit_one_reads_one_earlier_room_event():
     from plugins.platforms.matrix.reply_context import (
         MatrixEventContext,

@@ -3192,10 +3192,16 @@ class MatrixAdapter(BasePlatformAdapter):
         event_id: str,
         *,
         is_previous_turn: PreviousTurnCheck | None = None,
+        exclude_event_ids: Collection[str] = (),
     ) -> str | None:
         entries = await fetch_room_entries(
-            self._client, self._event_context_cache, chat_id, event_id,
-            limit=self._room_backfill_limit, is_previous_turn=is_previous_turn,
+            self._client,
+            self._event_context_cache,
+            chat_id,
+            event_id,
+            limit=self._room_backfill_limit,
+            is_previous_turn=is_previous_turn,
+            exclude_event_ids=exclude_event_ids,
         )
         return await self._format_history_context(
             chat_id, entries, "Recent room messages"
@@ -3247,10 +3253,18 @@ class MatrixAdapter(BasePlatformAdapter):
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root:
             return await self.fetch_thread_context(
-                room_id, relation.thread_root, before_event_id=event.message_id,
+                room_id,
+                relation.thread_root,
+                before_event_id=event.message_id,
                 is_previous_turn=is_previous_turn,
+                exclude_event_ids=event.merged_message_ids,
             )
-        return await self.fetch_room_context(room_id, event.message_id, is_previous_turn=is_previous_turn)
+        return await self.fetch_room_context(
+            room_id,
+            event.message_id,
+            is_previous_turn=is_previous_turn,
+            exclude_event_ids=event.merged_message_ids,
+        )
 
     async def _format_history_context(
         self,

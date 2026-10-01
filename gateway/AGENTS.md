@@ -27,6 +27,10 @@ rendering and callbacks are in their platform plugin `approval.py` siblings.
 Discord's approval view is created there by `create_exec_approval_view`;
 its adapter keeps the existing public view registration and SDK patch seams.
 
+Matrix room-message sends, reactions and redactions are defined in
+`plugins/platforms/matrix/send_retry.py`. The adapter includes their mixin;
+SDK bindings are resolved through the adapter when each method runs.
+
 ## The gateway has TWO message guards — both must bypass approval/control commands
 
 While an agent is running, an inbound message passes two sequential guards: (1) the **base

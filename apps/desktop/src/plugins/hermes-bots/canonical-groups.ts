@@ -29,12 +29,24 @@ export interface CanonicalRoom {
   disbanded_at?: number | null
 }
 
+/** Public approval preview supplied by the room owner.
+ * Control replies still use the enclosing action's exact hosted attempt. */
+export interface CanonicalApprovalDetails {
+  request_id?: string
+  prompt_id?: string
+  command?: string
+  description?: string
+  choices?: string[]
+  edit?: unknown
+}
+
 export interface CanonicalPendingAction {
   kind: string
   member_id: string
   task_id: string
   execution_generation: number
   request_id?: string
+  approval?: CanonicalApprovalDetails
 }
 
 function requireRoute(route: CanonicalGroupRoute): void {

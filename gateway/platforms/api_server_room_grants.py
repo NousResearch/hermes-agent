@@ -171,7 +171,7 @@ async def _handle_room_member_invitation(
     return web.json_response({"object": "hermes.room_member.invitation", **invitation}, status=201)
 
 
-def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any]:
+def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) -> dict[str, Any]:
     """Mint and reserve one room grant for *profile*: the API-key route and ``groups.peer.invite``."""
     from gateway import hosted_rooms
     from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
@@ -192,7 +192,7 @@ def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any
         ttl_seconds=ttl, status_ttl_seconds=status_ttl)
     claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
     hosted_rooms.reserve_peer_room(
-        _grant_db(self), claims=claims, expires_at=_hard_expiry(claims))
+        _grant_db(self), claims=claims, expires_at=_hard_expiry(claims), conn=conn)
     return {"grant": token, "target_profile": profile, "catalog": catalog,
             "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"])}
 

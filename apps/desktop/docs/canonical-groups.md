@@ -24,3 +24,15 @@ The gateway owns the log and the work. Desktop reads `groups.state`, and reads `
 - **Rename** (`groups.rename`) keeps one event id per intended name across retries. **Disband** (`groups.disband`) asks for confirmation, and only a confirmed tombstone removes the room from Desktop and closes its tab. Both appear only when the gateway advertises them.
 
 Errors stay visible, and no failed gateway-room action falls back to Desktop-run execution. Membership editing is not offered. Room discovery is durable on the gateway rather than replicated through Desktop `ui_meta`.
+
+## Cross-gateway setup over native connections
+
+Select the always-on gateway as Desktop's current connection before creating the group. Select a local member and a Bot from another supported SSH gateway. Peer members currently use their gateway's default profile and receive text only. Each participating peer gateway must have its API server enabled and advertise a `gateway.room_link_url` that the room home can reach independently of Desktop; a Desktop-owned SSH tunnel is not a durable RoomLink endpoint. HTTPS is required outside loopback. URL/Cloud and Windows SSH do not gain canonical setup through this change.
+
+The native app verifies both installation identities, creates the pinned roster, obtains a room/member grant from the peer and registers it at the home. The gateway owns subsequent execution, approvals, Stop, renewal and Disband. Initial grants renew within a 30-day authorization horizon; renewing beyond that horizon requires fresh authorization.
+
+Setup credentials stay in Electron main and its private per-obligation files; renderer IPC carries intent, status and the public room only. Storage follows the existing Desktop setting: OFF deliberately uses owner-only plaintext native files without calling the OS keychain; ON uses safeStorage and an encryption failure never falls back to plaintext. Changing the setting also rewrites retained setup obligations. Unreadable records remain unknown recovery work.
+
+Interrupted setup is reconciled before another setup starts and when the creation dialog opens. **Retry now** retries cleanup against the original installations. The peer retains the exact invitation receipt by actor, request ID and frozen body, so a lost issuance reply can be replayed without minting a second grant. A replacement gateway never receives an old grant or cleanup mutation. A successful durable registration receipt allows local credential garbage collection; unsuccessful setup revokes its issued grants and disbands its incomplete room.
+
+Run `npm run test:native-gateways` from `apps/desktop` with the prepared `HERMES_PYTHON` test interpreter. This separate Desktop acceptance lane needs installed Node dependencies; ordinary Python CI does not. It exercises native macOS SSH plus two real isolated gateways, a fresh viewer, peer inference, Disband, lost issuance, and replacement refusal. Its injected AES codec verifies custody mechanics; it does not establish OS keychain acceptance.

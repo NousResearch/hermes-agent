@@ -13,7 +13,6 @@ configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
 
   return mintGatewayTicketWithPython(backend, resolveHermesCwd(), endpoint, purpose)
 })
-import { attachSshGateway } from './ssh-gateway'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -367,6 +366,7 @@ import {
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
+import { nativeRoomClient } from './native-room-client'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { planNoConsoleGitSpawn, setNoConsoleGitRoots, windowsGitHost } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
@@ -470,6 +470,8 @@ import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { roomSetupCoordinator } from './room-setup'
+import { RoomSetupError, roomSetupStore } from './room-setup-store'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import { rosterSourceStatus } from './roster-source-status'
 import {
@@ -496,6 +498,7 @@ import { resolveSourcePython } from './source-python'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
+import { attachSshGateway } from './ssh-gateway'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
@@ -8000,7 +8003,7 @@ async function freshGatewayWsUrl(profile, webContentsId) {
   if (connection.gatewayEndpoint) {
     return redialLocalGateway({
       ensure: () => ensureBackend(profile),
-      forget: () => forgetLocalGatewayDescriptor(profile),
+      forget: current => forgetLocalGatewayDescriptor(profile, current.gatewayEndpoint),
       use: async current => {
         // A shared-primary descriptor answers for a sibling profile too: the socket's
         // ticket must name THAT profile's home or its sessions are another owner's.
@@ -8349,6 +8352,24 @@ function rewriteAllStoredSecrets(shouldRewrite: (secret: any) => boolean, reenco
     }
   } catch {
     // Missing/corrupt native token store: nothing to rewrite.
+  }
+
+  // Setup obligations are per-record native secrets too. Corruption remains
+  // unknown and refuses a policy-change ACK; never drop the recovery journal.
+  const roomDirectory = path.join(app.getPath('userData'), 'room-setup')
+  if (fs.existsSync(roomDirectory)) {
+    for (const name of fs.readdirSync(roomDirectory).filter(name => /^[0-9a-f-]{36}\.json$/.test(name))) {
+      const file = path.join(roomDirectory, name)
+      const stat = fs.lstatSync(file)
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) {throw new RoomSetupError('setup_journal_unreadable')}
+      const secret = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (shouldRewrite(secret)) {
+        const next = reencode(secret)
+        if (next === secret) {throw new RoomSetupError('setup_journal_unreadable')}
+        writeSecretFileAtomic(file, JSON.stringify(next), { encoding: 'utf8' })
+        touched = true
+      }
+    }
   }
 
   return touched
@@ -10104,7 +10125,8 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
     result = platform.os === 'Windows' ? null : await attachSshGateway({
       ssh, profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
-      remoteHermesPath: sshConfig.remoteHermesPath || '', pickLocalPort: async () => Number(await pickLocalPort()), signal: lease.signal
+      remoteHermesPath: sshConfig.remoteHermesPath || '', pickLocalPort: async () => Number(await pickLocalPort()), signal: lease.signal,
+      profileAlias: metadata.requestedProfile || resolveRemoteSshDashboardProfile('', profile) || 'default'
     })
     if (result) {result.platform = platform}
     result ??= await lifecycle({
@@ -10175,6 +10197,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       sshConnections.set(scope, {
         ssh,
         canonical: result.canonical === true,
+        gatewayEndpoint: result.gatewayEndpoint,
         release: result.release,
         remoteHost: result.remoteHost,
         fingerprint,
@@ -10375,6 +10398,7 @@ async function resolveRemoteBackend(
       route.source,
       undefined,
       {
+        requestedProfile: profile || 'default',
         managedScope: options.primary ? 'primary' : options.poolKey ? 'pool' : 'transient',
         poolKey: options.poolKey || '',
         primaryRegistryScope: options.primary === true && Boolean(route.connectionId),
@@ -10832,12 +10856,16 @@ function profileRouteOptions(
 // so the next ensureBackend() re-runs `gateway ensure` (attach or start) instead
 // of minting tickets against a dead control socket. Nothing is killed: the
 // descriptor never owned the runtime.
-async function forgetLocalGatewayDescriptor(profile) {
+async function forgetLocalGatewayDescriptor(profile, expected?: GatewayEndpoint) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const route = resolveProfileBackendRoute(key, profileRouteOptions(key))
-  const remoteScope = route.backend === 'primary' ? sshScopeKey(null) : sshScopeKey(key)
+  const cached = await (route.backend === 'primary' ? backendConnectionState.getPromise() : backendPool.get(key)?.connectionPromise)?.catch(() => null)
 
-  if (sshConnections.get(remoteScope)?.canonical) {await teardownSshConnection(remoteScope)}
+  if (expected && cached?.gatewayEndpoint !== expected) {return}
+  const remoteScope = cached?.gatewayEndpoint?.ssh_transport_id
+    ? [...sshConnections.entries()].find(([, state]) => state.gatewayEndpoint === cached.gatewayEndpoint)?.[0] : undefined
+
+  if (remoteScope !== undefined) {await teardownSshConnection(remoteScope)}
 
   if (route.backend === 'primary') {
     const attempt = backendConnectionState.startAttempt()
@@ -10857,9 +10885,15 @@ async function forgetLocalGatewayDescriptor(profile) {
 // either delegates to the v1 profile route or pools a forced-local child under
 // its composite key, so the stale descriptor lives wherever ensureRegistryBackend
 // put it.
-async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
+async function forgetRegistryLocalGatewayDescriptor(connectionId, profile, expected?: GatewayEndpoint) {
   if (connectionId && connectionId !== 'local') {
+    const primary = await backendConnectionState.getPromise()?.catch(() => null)
+    if (primary?.gatewayEndpoint && primary.gatewayEndpoint === expected) {
+      return forgetLocalGatewayDescriptor(primaryProfileKey(), expected)
+    }
     const key = backendScopeKey(connectionId, profile)
+    const cached = await backendPool.get(key)?.connectionPromise?.catch(() => null)
+    if (expected && cached?.gatewayEndpoint !== expected) {return}
     backendPool.delete(key)
     await teardownSshConnection(key)
 
@@ -10873,7 +10907,7 @@ async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
   })
 
   if (localRoute.delegate) {
-    return forgetLocalGatewayDescriptor(profile)
+    return forgetLocalGatewayDescriptor(profile, expected)
   }
 
   if (backendPool.delete(localRoute.poolKey)) {
@@ -11185,6 +11219,7 @@ async function connectRegistryBackend(
       tokenPersistenceSource || `registry:${source.id}`,
       resolvedEffectiveFingerprint ? await resolvedEffectiveFingerprint : undefined,
       {
+        requestedProfile: profileKey,
         managedScope: 'pool',
         managedUpdateCorrelation,
         poolKey: key,
@@ -14389,6 +14424,58 @@ ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
 // shortcuts and the View menu. Reads and writes target the asking window.
 registerPreparedSubmissions()
 
+// Grants never cross this bridge. Both commands share one trusted document gate.
+const nativeRoomSetup = roomSetupCoordinator({
+  store: roomSetupStore({
+    directory: path.join(app.getPath('userData'), 'room-setup'),
+    // Follow the existing explicit native storage policy. OFF deliberately uses
+    // private plain files with zero keychain calls; ON never downgrades on error.
+    encrypt: text => {
+      if (secretStoragePolicy().on && process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') {
+        throw new RoomSetupError('secure_storage_required')
+      }
+      try {return JSON.stringify(encryptDesktopSecret(text))}
+      catch {throw new RoomSetupError('secure_storage_required')}
+    },
+    decrypt: text => {
+      const sealed = JSON.parse(text)
+      if (!['plain', 'safeStorage'].includes(sealed.encoding) || typeof sealed.value !== 'string') {
+        throw new RoomSetupError('setup_journal_unreadable')
+      }
+      const value = decryptDesktopSecret(sealed)
+      if (!value) {throw new RoomSetupError('setup_journal_unreadable')}
+      return value
+    }
+  }),
+  connect: async route => nativeRoomClient(await ensureRegistryBackend(route.connectionId, route.profile), route.profile)
+})
+for (const operation of ['create', 'recover'] as const) {
+  ipcMain.handle(`hermes:room-setup:${operation}`, async (event, input) => {
+    const frame = event.senderFrame
+    const expected = new URL(DEV_SERVER || pathToFileURL(resolveRendererIndex()).href)
+    const sender = new URL(frame?.url || 'about:blank')
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win.isDestroyed() || frame !== event.sender.mainFrame ||
+        sender.protocol !== expected.protocol || sender.host !== expected.host || sender.pathname !== expected.pathname) {
+      return { ok: false, reason: 'untrusted_setup_sender' }
+    }
+    let retired = false
+    const navigating = (_event, _url, sameDocument, mainFrame) => {if (mainFrame && !sameDocument) {retired = true}}
+    event.sender.on('did-start-navigation', navigating)
+    const assertCurrent = () => {
+      if (retired || event.sender.isDestroyed() || event.sender.mainFrame !== frame) {throw new RoomSetupError('setup_document_retired')}
+    }
+    try {
+      assertCurrent()
+      const result = operation === 'create' ? await nativeRoomSetup.create(input, assertCurrent) : await nativeRoomSetup.recover()
+      assertCurrent()
+      return { ok: true, ...result }
+    } catch (error) {
+      return { ok: false, reason: error instanceof RoomSetupError ? error.reason : 'setup_failed' }
+    } finally {event.sender.removeListener('did-start-navigation', navigating)}
+  })
+}
+
 ipcMain.handle('hermes:zoom:get', event => {
   const window = BrowserWindow.fromWebContents(event.sender)
 
@@ -14671,7 +14758,8 @@ ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testD
 // get returns the current policy without touching safeStorage; set flips it
 // and re-encodes every stored secret (see applySecretStorageEncryption).
 ipcMain.handle('hermes:secret-storage:get', async () => ({ on: secretStoragePolicy().on }))
-ipcMain.handle('hermes:secret-storage:set', async (_event: any, on: any) => applySecretStorageEncryption(on === true))
+ipcMain.handle('hermes:secret-storage:set', async (_event: any, on: any) =>
+  nativeRoomSetup.changeStoragePolicy(() => applySecretStorageEncryption(on === true)))
 
 // ── v2 connection registry IPC (multi-source) ───────────────────────────────
 // Storage-level CRUD for named agent sources. Routing/pooling consumption of
@@ -15145,7 +15233,7 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
     if (connection.gatewayEndpoint) {
       return redialLocalGateway({
         ensure: () => ensureRegistryBackend(payload?.connectionId, payload?.profile),
-        forget: () => forgetRegistryLocalGatewayDescriptor(payload?.connectionId, payload?.profile),
+        forget: current => forgetRegistryLocalGatewayDescriptor(payload?.connectionId, payload?.profile, current.gatewayEndpoint),
         use: async (current: typeof connection) => {
           const ticket = await mintLocalGatewayTicket(routedGatewayEndpoint(current.gatewayEndpoint, String(payload?.profile ?? ''), HERMES_HOME))
 
@@ -16162,7 +16250,7 @@ async function handleHermesApiRequest(request) {
     } else if (connection.gatewayEndpoint) {
       response = await redialLocalGateway({
         ensure: () => ensureBackend(routeProfile),
-        forget: () => forgetLocalGatewayDescriptor(routeProfile),
+        forget: current => forgetLocalGatewayDescriptor(routeProfile, current.gatewayEndpoint),
         use: current => fetchJson(`${current.baseUrl}${apiRoute.requestPath}`, current.token, {
           method: request?.method,
           body: request?.body,

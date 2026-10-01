@@ -1234,6 +1234,7 @@ export interface GroupsCapabilitiesParams {
   profile?: string | null
 }
 export interface GroupsCapabilitiesResult {
+  server_time?: number | null
   protocol_version: number
   driver: boolean
   persistent_process: boolean
@@ -1584,6 +1585,8 @@ export interface GroupsDemoteResult {
 }
 export interface GroupsPeerInviteParams {
   profile?: string | null
+  request_id?: string | null
+  requested_at?: number | null
   room_id?: string | null
   home_install_id?: string | null
   authority_gateway_id?: string | null
@@ -1594,6 +1597,8 @@ export interface GroupsPeerInviteParams {
   status_ttl_seconds?: number | null
 }
 export interface GroupsPeerInviteResult {
+  expires_at?: number | null
+  status_expires_at?: number | null
   grant: string
   target_profile: string
   catalog: RoomLinkCatalog

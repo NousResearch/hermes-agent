@@ -46,7 +46,7 @@ import { createCanonicalChat } from './canonical-chat'
 import { groupCreationSource } from './canonical-group-capabilities'
 import { HOSTED_PROFILE_OWNERS_URL } from './canonical-group-locales'
 import { registerCanonicalGroup } from './canonical-group-registry'
-import { canonicalGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, isCanonicalGroupCreateRefusal, readGroupExecutionMode } from './canonical-groups'
+import { canonicalGroupEligibility, canonicalPeerGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, createCanonicalPeerGroup, isCanonicalGroupCreateRefusal, readGroupExecutionMode } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -1151,6 +1151,24 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const [createRefused, setCreateRefused] = useState(false)
+  const [setupCleanup, setSetupCleanup] = useState(false)
+  const [setupStorageBlocked, setSetupStorageBlocked] = useState(false)
+  const [recoveringSetup, setRecoveringSetup] = useState(false)
+  const setupRecoveryEpoch = useRef(0)
+  const recoverSetup = async () => {
+    const native = window.hermesDesktop?.roomSetup
+    if (!native) {return}
+    const epoch = ++setupRecoveryEpoch.current
+    setRecoveringSetup(true)
+    try {
+      const result = await native.recover()
+      if (epoch === setupRecoveryEpoch.current) {
+        setSetupCleanup(!result.ok || Boolean(result.pending))
+        setSetupStorageBlocked(result.reason === 'setup_journal_unreadable')
+      }
+    } catch {if (epoch === setupRecoveryEpoch.current) {setSetupCleanup(true)}}
+    finally {if (epoch === setupRecoveryEpoch.current) {setRecoveringSetup(false)}}
+  }
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
@@ -1165,7 +1183,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setName('')
       setImage(null)
       setCreateRefused(false)
+      setSetupCleanup(false)
+      void recoverSetup()
     }
+    return () => {setupRecoveryEpoch.current++}
   }, [open])
 
   // An outage placeholder preserves one selected owner's identity in the
@@ -1173,6 +1194,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const selectableRoster = roster.filter(bot => !bot?.ghost)
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
   const eligibility = canonicalGroupEligibility({ connectionId: connectionId ?? '', profile }, durableGroupChatMembers(selected))
+  const peerEligible = Boolean(window.hermesDesktop?.roomSetup) && canonicalPeerGroupEligibility({ connectionId: connectionId ?? '', profile }, durableGroupChatMembers(selected))
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
 
@@ -1180,7 +1202,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : b.group.nameLabel
 
-  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
+  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) && !setupCleanup && !recoveringSetup
 
   const creating = useRef(false)
 
@@ -1207,8 +1229,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       throw new Error(b.canonical.driverUnavailable)
     }
 
-    if (mode === 'canonical' && rosterEligibility.eligible) {
-      const created = await createCanonicalGroup(route, base, roomMembers)
+    if (mode === 'canonical' && (rosterEligibility.eligible || (window.hermesDesktop?.roomSetup && canonicalPeerGroupEligibility(route, roomMembers)))) {
+      const created = rosterEligibility.eligible ? await createCanonicalGroup(route, base, roomMembers)
+        : await createCanonicalPeerGroup(route, base, roomMembers)
 
       // Creation already succeeded; leave it on its owner without adopting a stale result.
       if (!sourceCurrent()) {return}
@@ -1268,7 +1291,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     } catch (error) {
       const refused = isCanonicalGroupCreateRefusal(error)
       setCreateRefused(refused)
-      host.notify({ kind: 'error', message: refused ? b.canonical.createRefused : error instanceof Error ? error.message : String(error) })
+      const setupReason = (error as { roomSetupReason?: string })?.roomSetupReason
+      if (setupReason) {void recoverSetup()}
+      const setupMessage = setupReason === 'cleanup_pending' ? b.canonical.peerSetupCleanup
+        : setupReason && ['secure_storage_required', 'setup_journal_unreadable', 'setup_journal_write_failed'].includes(setupReason)
+          ? b.canonical.peerSetupStorage : setupReason ? b.canonical.peerSetupFailed : undefined
+      host.notify({ kind: 'error', message: setupMessage || (refused ? b.canonical.createRefused : error instanceof Error ? error.message : String(error)) })
     } finally { creating.current = false }
   }
 
@@ -1286,7 +1314,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogTitle>{b.group.newTitle}</DialogTitle>
           <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
-        {selected.length >= 2 && !eligibility.eligible && <p role="status">{b.canonical[eligibility.reason]}</p>}
+        {selected.length >= 2 && !eligibility.eligible && !peerEligible && <p role="status">{b.canonical[eligibility.reason]}</p>}
+        {peerEligible && <p role="status">{b.canonical.peerSetup}</p>}
+        {setupCleanup && <div role="alert">
+          <p>{setupStorageBlocked ? b.canonical.peerSetupStorage : b.canonical.peerSetupCleanup}</p>
+          <Button disabled={recoveringSetup} onClick={() => void recoverSetup()}>{b.roster.retryNow}</Button>
+        </div>}
         {createRefused && <p role="alert">{b.canonical.createRefused}{' '}
           <a href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>
         </p>}

@@ -785,7 +785,7 @@ def _reservation_superseded(row: sqlite3.Row, gateway_id: str, epoch: int) -> bo
 
 
 def reserve_peer_room(
-    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None) -> None:
+    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None, conn=None) -> None:
     """Fence direct Desktop prompts before the first peer run is admitted."""
     timestamp = _now(now)
     expiry = float(expires_at)
@@ -793,7 +793,8 @@ def reserve_peer_room(
         raise HostedRoomError("peer room reservation must expire in the future")
     values = _reservation_claims(claims)
     room_id, _, target_profile, gateway_id, epoch = values
-    with _transaction(db_path, immediate=True) as conn:
+    from contextlib import nullcontext
+    with (nullcontext(conn) if conn is not None else _transaction(db_path, immediate=True)) as conn:
         conn.execute("DELETE FROM hosted_room_peer_reservations WHERE expires_at<=?", (timestamp,))
         authority_rows = conn.execute(
             f"""SELECT authority_gateway_id, authority_epoch

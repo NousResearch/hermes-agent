@@ -104,6 +104,7 @@ class GatewayBusySessionMixin:
         _draining: bool
         _defer_for_startup_restore: Callable[[MessageEvent], bool]
         _session_state: Callable[[str], SessionState]
+        _sessions_map: Callable[[], Dict[str, SessionState]]
 
     async def _strict_session_current(
         self, event: MessageEvent, session_key: str, *, session_id: str | None = None,

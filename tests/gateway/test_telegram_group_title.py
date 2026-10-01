@@ -269,6 +269,47 @@ async def test_compression_lineage_and_manual_source_gating():
 
 
 @pytest.mark.asyncio
+async def test_compression_fork_late_title_does_not_flap_the_name():
+    """Criterion 10: the fork's name wins regardless of delivery order. gen1 is compressed into
+    gen2, gen2's title lands FIRST, and gen1's own late title arrives SECOND — the group keeps
+    gen2's name with exactly one rename, instead of flipping back to the pre-fork name."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        base = time.time() - 60
+        _store_session(db, "gen1", started_at=base)
+        _end_session(db, "gen1", "compression")
+        _store_session(db, "gen2", started_at=base + 30, parent="gen1")
+        await _fire(adapter, runner, source, "gen2", "Fork generation title")
+        assert adapter._bot.titles["-101"] == "Fork generation title"
+        # gen1's title generation finished after the fork; its delivery is superseded.
+        await _fire(adapter, runner, source, "gen1", "Pre-fork generation title")
+        assert [text for _chat, text, _home in adapter._bot.renames] == ["Fork generation title"]
+        assert adapter._bot.titles["-101"] == "Fork generation title"
+        assert "skipped:superseded" in db.get_meta("tg_title:telegram:-101:gen1")
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_compression_fork_late_title_without_its_row_keeps_the_claim():
+    """Fail-open under a late delivery: with no session rows in the chat at all (title generation
+    outran row creation) a late title is still applied — ownership never guesses against a claim."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        await _fire(adapter, runner, source, "rowless-session", "Title before any row")
+        assert [text for _chat, text, _home in adapter._bot.renames] == ["Title before any row"]
+        assert adapter._bot.titles["-101"] == "Title before any row"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_multiplex_profiles_recheck_own_stores(tmp_path):
     """Ownership rechecks read the OWNING profile's store: a stale title from profile B's session
     cannot leak into A's group even when both chats share chat_id, and vice versa."""

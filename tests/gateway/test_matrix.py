@@ -6272,7 +6272,7 @@ _TIMESTAMP_TEST_NOW = datetime(2026, 1, 15, 15, 0, tzinfo=timezone.utc)
 
 
 class TestMatrixInboundEventTimestamp:
-    """The server timestamp of a room message becomes the MessageEvent timestamp."""
+    """Usable server times propagate through every canonical intake path."""
 
     def setup_method(self):
         self.adapter = _make_adapter()
@@ -6292,25 +6292,49 @@ class TestMatrixInboundEventTimestamp:
         self.adapter._utc_now = lambda: _TIMESTAMP_TEST_NOW
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("msgtype, body", [("m.text", "hello"), ("m.image", "photo.png")])
+    @pytest.mark.parametrize("route, msgtype, body", [
+        ("text", "m.text", "hello"),
+        ("emote", "m.emote", "waves"),
+        ("cached", "m.file", "report.txt"),
+        ("failed", "m.image", "photo.png"),
+        ("oversized", "m.file", "large.txt"),
+        ("sticker", "m.sticker", "Sticker caption"),
+    ])
     @pytest.mark.parametrize("timestamp_ms, expected", [
         pytest.param(1768488600123, datetime(2026, 1, 15, 14, 50, 0, 123000, tzinfo=timezone.utc), id="server"),
         pytest.param(1768489230000, _TIMESTAMP_TEST_NOW, id="30-seconds-ahead"),
         pytest.param(0, _TIMESTAMP_TEST_NOW, id="missing"),
         pytest.param(1800025200000, _TIMESTAMP_TEST_NOW, id="a-year-ahead"),
         pytest.param(10**15, _TIMESTAMP_TEST_NOW, id="unrepresentable"),
+        pytest.param(float("nan"), _TIMESTAMP_TEST_NOW, id="nan"),
+        pytest.param(float("inf"), _TIMESTAMP_TEST_NOW, id="infinite"),
     ])
-    async def test_message_event_timestamp(self, msgtype, body, timestamp_ms, expected):
+    async def test_message_event_timestamp(self, route, msgtype, body, timestamp_ms, expected):
+        from mautrix.types import Event
+
         content = {"msgtype": msgtype, "body": body}
-        if msgtype == "m.image":
-            content["url"] = "mxc://example/photo"
-            content["info"] = {"mimetype": "image/png"}
-        event = types.SimpleNamespace(
-            room_id="!room:example.org", sender="@alice:example.org",
-            event_id="$timestamp", timestamp=timestamp_ms, content=content,
-        )
+        if route not in {"text", "emote"}:
+            content["url"] = "mxc://example.org/photo"
+            content["info"] = {"mimetype": "application/octet-stream", "size": 7}
+            FakeMediaDownload(b"content", fail=route == "failed").install(self.adapter._client)
+        if route == "oversized":
+            self.adapter._inbound_media_limit = lambda: 6
+        if route == "sticker":
+            content["info"]["mimetype"] = "image/png"
+            import io
+            from PIL import Image
+
+            png = io.BytesIO()
+            Image.new("RGB", (1, 1)).save(png, format="PNG")
+            content["info"]["size"] = len(png.getvalue())
+            FakeMediaDownload(png.getvalue()).install(self.adapter._client)
+        event = Event.deserialize({
+            "type": "m.sticker" if route == "sticker" else "m.room.message",
+            "room_id": "!room:example.org", "sender": "@alice:example.org",
+            "event_id": "$timestamp", "origin_server_ts": timestamp_ms, "content": content,
+        })
 
         await self.adapter._on_room_message(event)
 
         (message,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
-        assert message.timestamp == expected
+        assert (message.message_id, message.timestamp) == ("$timestamp", expected)

@@ -262,12 +262,7 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
 ])
 async def test_bare_mention_claims_parked_voice_only_in_same_room(
         monkeypatch, mention_room, mention_body, claims, same_sync_batch):
-    """An unmentioned MSC3245 voice (empty m.mentions) is answered by the sender's bare @mention
-    typed right after it in the SAME room; a bare mention in another room never pulls it across,
-    and a mention carrying text is answered as that text. mautrix runs one /sync batch's events as
-    concurrent tasks, so the claim must also win while the voice still awaits a room-identity fetch.
-    ``two_voices``: batch [voice (slow gate), mention, voice2 (fast)] then mention2 -- each mention
-    answers the voice sent before it, even though voice2 parks first, and nothing stays parked."""
+    """A bare mention claims only an earlier voice from the same sender in its room."""
     import asyncio
 
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
@@ -286,20 +281,42 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
 
     if same_sync_batch:
         resolve_identity = adapter._resolve_room_identity
-        delays = [0.1] if same_sync_batch == "two_voices" else []
+        first_waiting = asyncio.Event()
+        mention_arrived = asyncio.Event()
+        release_first = asyncio.Event()
+        first = True
 
-        async def slow_identity(room_id):  # stale 60s cache -> homeserver round-trip
-            await asyncio.sleep(delays.pop(0) if delays else 0.01)
+        async def gated_identity(room_id):
+            nonlocal first
+            if first:
+                first = False
+                first_waiting.set()
+                await release_first.wait()
             return await resolve_identity(room_id)
-        adapter._resolve_room_identity = slow_identity
-        batch = [voice, mention]
-        if same_sync_batch == "two_voices":
-            voice2 = _make_event("voice message", event_id="$voice2")
-            voice2.timestamp = voice.timestamp + 500
-            voice2.content.update({k: voice.content[k] for k in (
-                "msgtype", "url", "info", "org.matrix.msc3245.voice", "m.mentions")})
-            batch.append(voice2)
-        await asyncio.gather(*(adapter._on_room_message(e) for e in batch))
+
+        mark = adapter._parked_voices.mark
+
+        def mark_mention():
+            limit = mark()
+            mention_arrived.set()
+            return limit
+
+        adapter._resolve_room_identity = gated_identity
+        monkeypatch.setattr(adapter._parked_voices, "mark", mark_mention)
+        voice_task = asyncio.create_task(adapter._on_room_message(voice))
+        await first_waiting.wait()
+        mention_task = asyncio.create_task(adapter._on_room_message(mention))
+        try:
+            await mention_arrived.wait()
+            if same_sync_batch == "two_voices":
+                voice2 = _make_event("voice message", event_id="$voice2")
+                voice2.timestamp = voice.timestamp + 500
+                voice2.content.update({k: voice.content[k] for k in (
+                    "msgtype", "url", "info", "org.matrix.msc3245.voice", "m.mentions")})
+                await adapter._on_room_message(voice2)
+        finally:
+            release_first.set()
+            await asyncio.gather(voice_task, mention_task)
         if same_sync_batch == "two_voices":
             await adapter._on_room_message(_make_event(
                 "@hermes:example.org", event_id="$text2", mention_user_ids=["@hermes:example.org"]))

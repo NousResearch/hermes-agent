@@ -2215,27 +2215,29 @@ def _tick_spawn_budget(
 ) -> tuple[bool, Optional[int]]:
     """``(may_spawn, spawn_budget)`` for this tick; ``budget None`` = uncapped.
 
-    ``max_spawn`` is a live per-board concurrency cap (running + this tick's
-    spawns), not a per-tick budget — a per-tick reading would grow concurrency
-    by N every tick. ``max_in_progress`` is a HOST-level cap: running workers on
+    ``max_spawn`` is a per-tick budget on NEW workers — the meaning
+    ``hermes kanban dispatch --max`` ("Cap number of spawns this pass"),
+    ``hermes kanban daemon --max`` ("Cap number of spawns per tick") and
+    ``kanban.max_spawn`` (the "per-tick spawn limit", #28805) all document.
+    Reading it as a *concurrency* cap made ``--max 1`` a silent no-op on any
+    board that already had a worker ``running``: the tick returned before the
+    lane loops built a candidate list, so the pass spawned nothing AND recorded
+    nothing as skipped or guarded — ready cards piled up behind a tick that
+    looked healthy. Concurrency is the job of ``max_in_progress`` below, which
+    every entry point resolves (config, else the memory-derived default).
+    ``max_in_progress`` is a HOST-level cap: running workers on
     every other board count against the same budget, else N boards multiply the
     cap by N — exactly the fan-out the memory-derived default exists to prevent.
     """
-    # Count already-running tasks so max_spawn enforces concurrency, not a
-    # per-tick budget: "running" tasks stay running until the worker makes a terminal
-    # board call (kanban_complete/kanban_block/kanban_request_review) or the TTL reclaims them.
-    running_count = 0
     spawn_budget: Optional[int] = None
-    if max_spawn is not None or max_in_progress is not None:
-        running_count = count_running_tasks(conn)
-
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
-        if running_count >= max_spawn:
+        if max_spawn <= 0:
             return False, None
-        spawn_budget = max_spawn - running_count
+        spawn_budget = max_spawn
 
     if max_in_progress is not None:
+        running_count = count_running_tasks(conn)
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
             return False, None

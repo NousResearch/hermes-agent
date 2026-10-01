@@ -23,6 +23,7 @@ wrap per call site (grep `_interim_metadata(` in gateway/run.py).
 import pytest
 
 from gateway.run import _interim_metadata, _send_or_update_status_coro
+from gateway.run_turn_runner import TurnRunner
 from tests.gateway.relay.test_relay_live_cards import _connected_adapter
 
 
@@ -80,6 +81,34 @@ async def test_status_delivery_provenance_does_not_mutate_caller_metadata():
         adapter, "chat-1", "lifecycle", "working", metadata
     )
 
+    assert metadata == {"thread_id": "thread-1"}
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_interim_assistant_send_marks_its_surface():
+    adapter = RecordingStatusAdapter()
+    ctx = type(
+        "TurnContext",
+        (),
+        {"_status_adapter": adapter, "_status_chat_id": "chat-1"},
+    )()
+    turn_runner = TurnRunner(None, ctx)
+    scheduled = []
+    turn_runner._schedule = lambda coro, _message: scheduled.append(coro)
+    metadata = {"thread_id": "thread-1"}
+
+    turn_runner._send_status_text(
+        "interim reply",
+        metadata,
+        "test",
+        surface="interim_assistant",
+    )
+    await scheduled[0]
+
+    assert adapter.metadata == {
+        "thread_id": "thread-1",
+        "_gateway_delivery_surface": "interim_assistant",
+    }
     assert metadata == {"thread_id": "thread-1"}
 
 

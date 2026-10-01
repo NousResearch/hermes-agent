@@ -130,6 +130,59 @@ async def test_send_does_not_misclassify_unmarked_final_as_nonfinal(
     assert "Sent non-final Discord message" not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_failed_explicit_nonfinal_send_has_no_success_receipt(
+    caplog, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = _text_adapter(
+        SimpleNamespace(send=AsyncMock(side_effect=ConnectionError("closed")))
+    )
+
+    with caplog.at_level("INFO"):
+        result = await adapter.send(
+            "555",
+            "private status payload",
+            metadata={"_gateway_delivery_surface": "status"},
+        )
+
+    assert result.success is False
+    assert "Sent non-final Discord message" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_forum_send_records_explicit_nonfinal_provenance_without_content(
+    caplog, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    forum_channel = sys.modules["discord"].ForumChannel()
+    forum_channel.id = 555
+    forum_channel.create_thread = AsyncMock(
+        return_value=SimpleNamespace(
+            id=777,
+            message=SimpleNamespace(id=888),
+            thread=SimpleNamespace(id=777, send=AsyncMock()),
+        )
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=forum_channel),
+        fetch_channel=AsyncMock(),
+    )
+
+    with caplog.at_level("INFO"):
+        result = await adapter.send(
+            "555",
+            "private forum status payload",
+            metadata={"_gateway_delivery_surface": "status"},
+        )
+
+    assert result.success is True
+    assert "surface=status" in caplog.text
+    assert "message_ids=['888']" in caplog.text
+    assert "private forum status payload" not in caplog.text
+
+
 def _voice_adapter(reference_obj, *, native_result=None, native_error=None):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))

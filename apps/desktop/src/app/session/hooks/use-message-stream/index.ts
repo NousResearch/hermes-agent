@@ -36,7 +36,11 @@ import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 
 import type { ClientSessionState } from '../../../types'
 
-import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
+import {
+  collapseDuplicateFinalAfterToolInterim,
+  collapseLiveTwinOfPersistedFinal,
+  type DuplicateFinalCollapse
+} from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { extendInterruptedReply } from './interrupted-reply'
@@ -766,9 +770,14 @@ export function useMessageStream({
             : mergeCurrentResponseText(parts, visibleFinalText, occurredAt)
         }
 
+        const receiptFinalRowId = persistedTurn?.final_assistant_row_id
+
+        const finalRowId =
+          typeof receiptFinalRowId === 'number' && Number.isSafeInteger(receiptFinalRowId) && receiptFinalRowId > 0
+            ? receiptFinalRowId
+            : null
+
         const withPersistedIdentity = (message: ChatMessage): ChatMessage => {
-          const finalRowId = persistedTurn?.final_assistant_row_id
-          const hasFinalRow = typeof finalRowId === 'number' && Number.isSafeInteger(finalRowId) && finalRowId > 0
           const finalPartIndex = message.parts.findLastIndex(part => part.type === 'text')
 
           return {
@@ -777,7 +786,7 @@ export function useMessageStream({
             persistedTurn: persistedTurn ?? undefined,
             // A folded bubble can already address its first source row. Keep
             // that address and bind the final response's exact source as well.
-            ...(hasFinalRow
+            ...(finalRowId !== null
               ? {
                   rowId: message.rowId ?? finalRowId,
                   parts: message.parts.map((part, index) =>
@@ -857,12 +866,20 @@ export function useMessageStream({
         let collapsed: DuplicateFinalCollapse | null = null
 
         if (streamIndex >= 0) {
-          collapsed = collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
-            completeMessage,
-            finalText,
-            hasFailure: Boolean(failure) || Boolean(completionError),
-            interimBoundaryPending
-          })
+          const hasFailure = Boolean(failure) || Boolean(completionError)
+
+          collapsed =
+            collapseLiveTwinOfPersistedFinal(prev, streamIndex, {
+              completeMessage,
+              finalRowId: hasFailure ? null : finalRowId,
+              lastUserIndex
+            }) ??
+            collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
+              completeMessage,
+              finalText,
+              hasFailure,
+              interimBoundaryPending
+            })
           nextMessages = collapsed?.messages ?? settleAt(streamIndex)
         } else {
           const fallbackIndex = prev.findLastIndex(
@@ -913,14 +930,7 @@ export function useMessageStream({
             // interim instead of painting a second bubble for one row
             // (#124128). A frame with no receipt keeps the rules below, so a
             // genuinely distinct reply still appends its own bubble.
-            const finalRowId = persistedTurn?.final_assistant_row_id
-
-            const settlesPersistedRow =
-              existing.interim === true &&
-              existing.rowId === undefined &&
-              typeof finalRowId === 'number' &&
-              Number.isSafeInteger(finalRowId) &&
-              finalRowId > 0
+            const settlesPersistedRow = existing.interim === true && existing.rowId === undefined && finalRowId !== null
 
             if (
               existing.pending ||

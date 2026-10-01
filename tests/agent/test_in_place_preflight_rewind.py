@@ -104,3 +104,26 @@ def test_manual_compress_between_turns_rewinds_every_carried_original(session):
     assert carried
     display = [m["content"] for m in display_history if isinstance(m.get("content"), str)]
     assert [display.count(content) for content in carried] == [1] * len(carried)
+
+
+def test_gateway_compaction_displays_each_reply_once(session):
+    """A gateway turn replays the durable transcript; compaction writes the protected head back from those
+    replay dicts. Replay dropped assistant/tool timestamps, so each head copy got a fresh timestamp -> a new
+    display identity and slot, and the session's first replies rendered twice (#123985)."""
+    db, agent = session
+    cli = SimpleNamespace(conversation_history=[])
+    for n in range(1, 14):
+        _turn(db, agent, cli, "gateway", n, 5_000)
+    _turn(db, agent, cli, "gateway", 14, 200_000)
+    _turn(db, agent, cli, "gateway", 15, 20_000)
+    assert getattr(agent, "_last_compaction_in_place", None) is True
+
+    from agent.context_compressor import is_compaction_summary_message
+
+    def _reply_heads(messages):
+        return [m["content"].split(" ")[0] for m in messages if m.get("role") == "assistant"
+                and isinstance(m.get("content"), str) and not is_compaction_summary_message(m)]
+
+    for heads in (_reply_heads(db.get_messages("sid", include_compacted=True)),
+                  _reply_heads(db.get_resume_conversations("sid")[1])):
+        assert heads == [f"A{n}" for n in range(1, 16)]

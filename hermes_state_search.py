@@ -45,14 +45,10 @@ _QUOTED_PHRASE_RE = re.compile(r'"[^"]*"')
 # Column list shared by every search route (snippet + metadata, never content).
 _SEARCH_SELECT_TAIL = "m.timestamp, m.tool_name, s.source, s.model, s.started_at AS session_started"
 _LIKE_SNIPPET_SQL = "substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS snippet"
-_LIKE_ANY_COLUMN_SQL = (
-    "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
-)
-_LIKE_COALESCED_COLUMN_SQL = (
-    "(COALESCE(m.content, '') LIKE ? ESCAPE '\\' OR "
-    "COALESCE(m.tool_name, '') LIKE ? ESCAPE '\\' OR "
-    "COALESCE(m.tool_calls, '') LIKE ? ESCAPE '\\')"
-)
+# Content only. tool_name / tool_calls hold paths and call JSON; a short CJK
+# query OR-matched those columns and flooded discovery with unrelated rows.
+_LIKE_ANY_COLUMN_SQL = "(m.content LIKE ? ESCAPE '\\')"
+_LIKE_COALESCED_COLUMN_SQL = "(COALESCE(m.content, '') LIKE ? ESCAPE '\\')"
 # ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
 # Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
@@ -102,8 +98,8 @@ def _quote_fts_tokens(raw_query: str) -> str:
 
 
 def _like_params(term: str) -> List[str]:
-    """One ``%term%`` bind per column of ``_LIKE_ANY_COLUMN_SQL``."""
-    return [f"%{_escape_like(term)}%"] * 3
+    """One ``%term%`` bind for the content-only LIKE predicate."""
+    return [f"%{_escape_like(term)}%"]
 
 
 def _strip_cjk_wildcards(raw_query: str) -> str:
@@ -1124,7 +1120,7 @@ class SessionSearchMixin:
             bool(source_filter) and any(src in FTS_TRIGRAM_EXCLUDED_SOURCES for src in source_filter))
         is_cjk = self._contains_cjk(query)
         if is_cjk:
-            matches = self._search_cjk(query, wants_unindexed_rows, route)
+            matches = self._search_cjk(query, wants_unindexed_rows, route, sort)
         else:
             sql, params = self._fts_match_sql("messages_fts", query, **route)
             try:
@@ -1188,13 +1184,14 @@ class SessionSearchMixin:
                                            **route) or matches
         return self._finalize_search_matches(matches, result_fields=result_fields)
 
-    def _search_cjk(self, query: str, wants_unindexed_rows: bool, route: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _search_cjk(self, query: str, wants_unindexed_rows: bool, route: Dict[str, Any],
+                    sort: Optional[str] = None) -> List[Dict[str, Any]]:
         """CJK routing: the unicode61 table splits CJK into single characters (false positives,
         missed phrases). cjk-bigram serves every shape except queries wanting rows the
         substring indexes exclude (role='tool', cron/subagent sources) and LONE
         1-char CJK runs (bigrams only exist for runs >=2 — LIKE is broader); then trigram
-        (>=3 CJK chars per token); then a LIKE substring scan with one clause per
-        non-operator token so "广西 OR 桂林 OR 漓江" matches each term."""
+        (>=3 CJK chars per token); then the content-only LIKE fallback, which ANDs
+        bare terms, honours explicit OR/NOT, and applies ``sort``."""
         raw_query = _strip_cjk_wildcards(query).strip('"').strip()
         match_query = _quote_fts_tokens(raw_query)
         if self._fts_cjk_available and not wants_unindexed_rows and not self._has_lone_cjk_run(raw_query):
@@ -1207,15 +1204,10 @@ class SessionSearchMixin:
             matches = self._match_rows("messages_fts_trigram", match_query, fail_open="Trigram", **route)
             if matches is not None:
                 return matches
-        non_op_tokens = _non_operator_tokens(raw_query) or [raw_query]
-        like_params: list = [p for tok in non_op_tokens for p in _like_params(tok)]
-        like_where = [f"({' OR '.join([_LIKE_ANY_COLUMN_SQL] * len(non_op_tokens))})"]
         filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter",
                                          "after_ts", "before_ts")}
-        _search_filter_clauses(like_where, like_params, **filters)
-        # instr() for the snippet uses the first search token.
-        return self._like_rows(like_where, [non_op_tokens[0], *like_params, route["limit"], route["offset"]],
-                               order_by="ORDER BY m.timestamp DESC", limit_sql="LIMIT ? OFFSET ?")
+        return self._search_messages_like_fallback(
+            raw_query, limit=route["limit"], offset=route["offset"], sort=sort, **filters)
 
     def _search_unindexed_gap(self, fts_query: str, limit: int, **filters) -> List[Dict[str, Any]]:
         """LIKE-scan ids in (fts_rebuild_progress, fts_rebuild_high_water] — rows the deferred

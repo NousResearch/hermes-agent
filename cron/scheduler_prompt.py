@@ -50,6 +50,32 @@ def _job_skill_names(job: dict) -> list[str]:
     return [str(name).strip() for name in skills if str(name).strip()]
 
 
+def _cron_persist_stub(job: dict, prompt: str) -> str:
+    """Replacement text persisted as the cron user message instead of the full
+    assembled prompt. Cron sessions with ``skills=`` inline the ENTIRE skill
+    text into every run's user message (``_build_job_prompt``), so session_search
+    picks up a copy of the skill body each time the job fires — one daily job
+    out-vocabularies months of interactive history and drowns discovery. The
+    agent still receives the real ``prompt``; only the stored transcript row is
+    swapped for a pointer. Plain-prompt jobs (no skills) persist as-is."""
+    skills = _job_skill_names(job)
+    if not skills:
+        return prompt
+    import os
+    parts = [
+        f"[skill-ref: skills loaded for this run: {', '.join(skills)}; see skills directory]",
+        f"[job: {job.get('name')}]",
+        f"[job-id: {job.get('id')}]",
+    ]
+    skills_dir = os.environ.get("HERMES_SKILLS_DIR")
+    if skills_dir:
+        parts.append(f"[skills-directory: {skills_dir}]")
+    raw_prompt = str(job.get("prompt") or "").strip()
+    if raw_prompt:
+        parts.append(f"[instruction: {raw_prompt[:500]}]")
+    return "\n".join(parts)
+
+
 _MAX_CONTEXT_CHARS = 8000
 
 _SELF_CONTEXT_INTRO = (

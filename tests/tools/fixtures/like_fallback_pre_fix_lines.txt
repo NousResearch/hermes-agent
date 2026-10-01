@@ -1,0 +1,25 @@
+# Column list shared by every search route (snippet + metadata, never content).
+_SEARCH_SELECT_TAIL = "m.timestamp, m.tool_name, s.source, s.model, s.started_at AS session_started"
+_LIKE_SNIPPET_SQL = "substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS snippet"
+_LIKE_ANY_COLUMN_SQL = (
+    "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
+)
+_LIKE_COALESCED_COLUMN_SQL = (
+    "(COALESCE(m.content, '') LIKE ? ESCAPE '\\' OR "
+    "COALESCE(m.tool_name, '') LIKE ? ESCAPE '\\' OR "
+    "COALESCE(m.tool_calls, '') LIKE ? ESCAPE '\\')"
+)
+# ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
+_FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
+---
+            if matches is not None:
+                return matches
+        non_op_tokens = _non_operator_tokens(raw_query) or [raw_query]
+        like_params: list = [p for tok in non_op_tokens for p in _like_params(tok)]
+        like_where = [f"({' OR '.join([_LIKE_ANY_COLUMN_SQL] * len(non_op_tokens))})"]
+        filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter",
+                                         "after_ts", "before_ts")}
+        _search_filter_clauses(like_where, like_params, **filters)
+        # instr() for the snippet uses the first search token.
+        return self._like_rows(like_where, [non_op_tokens[0], *like_params, route["limit"], route["offset"]],
+                               order_by="ORDER BY m.timestamp DESC", limit_sql="LIMIT ? OFFSET ?")

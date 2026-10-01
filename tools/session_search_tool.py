@@ -21,15 +21,17 @@ from hermes_time import safe_strftime
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
 _HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
-# Searchable but DEMOTED below interactive sessions: cron vocabulary dominates bare
-# BM25 and starves out the user's own sessions ("recall blindness").
-# Automation sources that are kept searchable but DEMOTED below interactive sessions in discover ranking.
-# Cron jobs run on a schedule and accumulate large volumes of repetitive vocabulary (recurring project
+# Automation sources that are EXCLUDED from discover ranking by default (see
+# discover_query_and_excludes) and, when the user explicitly opts back in with the
+# `source:cron` token, DEMOTED below interactive sessions. Cron jobs run on a schedule
+# and accumulate large volumes of repetitive vocabulary (recurring project
 # names, dates, "session", summaries); under bare BM25 they dominate the top-N FTS rows and starve out the
 # user's own interactive sessions, producing "recall blindness" where only cron sessions surface (#19434).
-# Demoting — not excluding — keeps cron content reachable when it's the only match, while interactive
-# sessions always win when both match.
+# Demoting keeps interactive sessions winning whenever both match an explicit cron-inclusive query.
 _DEMOTED_SESSION_SOURCES = ("cron",)
+# Exact blank-separated token that surfaces cron sessions in discovery when present.
+# Case-sensitive (FTS5 defaults); `source:cronfoo` or embedded mentions are NOT tokens.
+_CRON_SOURCE_TOKEN = "source:cron"
 
 # Read-shape per-message content cap. #69334 capped discovery bookends (1200) and
 # scroll windows (4000) but left ``_read_session`` returning whole messages, so a
@@ -48,6 +50,31 @@ _RELATIVE_BOUND_RE = re.compile(r"^(\d+)\s*(h|d|w)$", re.IGNORECASE)
 _RELATIVE_UNIT_SECONDS = {"h": 3600, "d": 86400, "w": 604800}
 # Raw FTS rows are only a plan input; the response hydrates its own window/bookends.
 _DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started")
+
+
+def discover_query_and_excludes(query: str) -> tuple:
+    """Strip the exact blank-separated ``source:cron`` token from the search text.
+
+    Returns ``(query_for_index, exclude_sources, cron_named)``:
+
+    * default — ``query`` unchanged, exclude-sources = ``_HIDDEN_SESSION_SOURCES + ("cron",)``;
+      the model's recall path never sees scheduled bulk output;
+    * ``source:cron`` named with more text — query = text with the token removed,
+      exclude-sources = ``_HIDDEN_SESSION_SOURCES`` (cron IS searched);
+    * ``source:cron`` as the whole query — returns ``("", _HIDDEN_SESSION_SOURCES, True)``;
+      caller takes the cron-match-all path (listing, not FTS).
+    """
+    cron_named = False
+    if isinstance(query, str):
+        tokens = [tok for tok in query.strip().split() if tok]
+        kept = [tok for tok in tokens if tok != _CRON_SOURCE_TOKEN]
+        cron_named = len(kept) != len(tokens)
+        query = " ".join(kept).strip()
+    base_excludes = list(_HIDDEN_SESSION_SOURCES)
+    excludes = base_excludes if cron_named else base_excludes + ["cron"]
+    return query, excludes, cron_named
+
+
 # Compaction handoff summaries (agent/context_compressor.py); excluded from bookends.
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
 # /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
@@ -351,12 +378,47 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
         detail=result_detail)
 
 
+def _discover_cron_match_all(db, limit: int, current_session_id, link_profile,
+                             current_lineage_root, detail: str = "adaptive") -> str:
+    """``source:cron`` alone = list recent cron sessions (match-all). Cron runs are
+    excluded from the FTS discovery path by default, so this named-token-only path
+    is the way to enumerate them; each entry hydrates like a normal hit."""
+    rows = _quiet(lambda: db.list_sessions_rich(
+        sources=["cron"], limit=limit, order_by_last_active=False,
+        include_children=True), [], "list_sessions_rich failed for cron match-all") or []
+    results: List[Dict[str, Any]] = []
+    for row in rows[:limit]:
+        sid = row.get("id") or row.get("session_id")
+        if not sid or (current_lineage_root and sid == current_lineage_root):
+            continue
+        messages = _quiet(lambda: db.get_messages(sid), [], "get_messages failed for %s", sid)
+        anchor_id = messages[0].get("id") if messages else None
+        if anchor_id is None:
+            continue
+        entry = _hydrate_hit(db, sid, {
+            "session_id": sid, "id": anchor_id, "role": messages[0].get("role"),
+            "snippet": row.get("title") or "(cron session)",
+            "source": "cron", "model": row.get("model") or "unknown",
+            "session_started": row.get("started_at"),
+        }, "full" if detail == "full" or not results else "compact")
+        if entry is not None:
+            results.append(entry)
+    for entry in results:
+        entry["link"] = _session_link(entry["session_id"], link_profile)
+    return _discover_payload(db, _CRON_SOURCE_TOKEN, detail, results,
+                             sessions_searched=len(rows))
+
+
 def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str = None, link_profile: str = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
               exclude_session_ids: Optional[List[str]] = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
+    query, exclude_sources, cron_named = discover_query_and_excludes(query)
+    if cron_named and not query.strip():
+        return _discover_cron_match_all(
+            db, limit, current_session_id, link_profile, current_lineage_root, detail)
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
     title_result = _title_match_result(db, query, current_lineage_root)
     # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
@@ -368,13 +430,13 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             title_result = None
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
-        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
+        exclude_sources=exclude_sources, limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
         fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
-    # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
-    # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
-    # order within each class.
+    # When cron was explicitly opted in (`source:cron` + terms), demote cron rows below
+    # interactive ones BEFORE dedup so a high-volume cron corpus can't starve the user's
+    # own sessions out of the top `limit`; stable sort keeps BM25 order within each class.
     raw_results = sorted(raw_results, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
     # See #19434.
     if not raw_results and not title_result:
@@ -672,9 +734,11 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
-                    "sessions. Ignored when session_id + around_message_id are set "
-                    "(scroll shape)."
+                    "expressions to find in past sessions. Cron sessions are excluded "
+                    "by default; add the exact token `source:cron` to include them "
+                    "(`source:cron` alone lists recent cron sessions). Omit to browse "
+                    "recent sessions. Ignored when session_id + around_message_id are "
+                    "set (scroll shape)."
                 ),
             },
             "limit": {

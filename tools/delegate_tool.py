@@ -423,6 +423,9 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
     from agent.oneshot_footprint import is_single_query_session
     if not is_single_query_session():
         return None
+    from agent.delegation_context import owned_kanban_task
+    if owned_kanban_task():
+        return None
     cap = _get_oneshot_max_children()
     if cap <= 0:
         return None

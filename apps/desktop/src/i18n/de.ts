@@ -1516,7 +1516,7 @@ export const deOverrides = {
       fileReadMaxChars: 'Maximale Zeichenzahl, die Hermes aus einer Dateianfrage lesen kann.',
       approvals: {
         mode: 'Wie Hermes Befehle behandelt, die eine explizite Genehmigung benötigen.',
-        timeout: 'Wie lange Genehmigungsaufforderungen auf Messaging-Plattformen warten, bevor sie ablaufen. App und Terminal warten, bis du antwortest.'
+        timeout: 'Wie lange Genehmigungsaufforderungen warten, bevor sie ablaufen.'
       },
       security: {
         redactSecrets: 'Erkannte Geheimnisse nach Möglichkeit aus modellsichtbarem Inhalt ausblenden.'

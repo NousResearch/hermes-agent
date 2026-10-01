@@ -86,16 +86,9 @@ def test_exit_cleanup_preserves_dirty_worktree(git_repo, monkeypatch, capsys, re
     (git_repo / "node_modules" / "dep.js").write_text("x\n")
     (git_repo / ".worktreeinclude").write_text("node_modules\n")
     (git_repo / ".git" / "info" / "exclude").write_text("node_modules/\n.worktreeinclude\n.worktrees/\n")
-    worktree = git_repo / ".worktrees" / "session"
-    worktree.parent.mkdir()
-    subprocess.run(
-        ["git", "worktree", "add", str(worktree), "-b", "hermes/session", "HEAD"],
-        cwd=git_repo, check=True, capture_output=True,
-    )
+    worktree = TestWorktreeLockReaping._mk(cli, git_repo, "session", dirty=real_untracked)
     worktree_ops._copy_worktree_includes(str(git_repo), worktree)
     assert (worktree / "node_modules").is_symlink()
-    if real_untracked:
-        (worktree / "untracked.txt").write_text("recover me\n")
     monkeypatch.setattr(cli, "release_lsp_clients", lambda path: None)
     printed = []
     monkeypatch.setattr(cli, "_cprint", printed.append)
@@ -109,7 +102,7 @@ def test_exit_cleanup_preserves_dirty_worktree(git_repo, monkeypatch, capsys, re
     out = "".join(printed) + capsys.readouterr().out
     if real_untracked:
         assert worktree.exists()
-        assert (worktree / "untracked.txt").read_text() == "recover me\n"
+        assert (worktree / "dirty.txt").read_text() == "uncommitted"
         assert "uncommitted changes" in out
         assert "--force" not in out
     else:

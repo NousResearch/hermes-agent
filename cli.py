@@ -586,11 +586,11 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     wt_path, branch, repo_root = info["path"], info["branch"], info["repo_root"]
     if not Path(wt_path).exists():
         return
+    _active_worktree = None
 
     if _worktree_is_dirty(wt_path, timeout=10):
         # Uncommitted work: say so, and don't hint at `remove --force`, which would destroy it.
         _cprint(f"\n\033[33m{_t('cli.worktree.uncommitted_keeping', path=wt_path)}\033[0m")
-        _active_worktree = None
         return
 
     if _worktree_has_unpushed_commits(wt_path, timeout=10):
@@ -601,7 +601,6 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         else:
             _cprint(f"\n\033[33m{_t('cli.worktree.unpushed_keeping', path=wt_path)}\033[0m")
             print(f"  {_t('cli.worktree.clean_up_manually', path=wt_path)}")
-        _active_worktree = None
         return
 
     # Release the tree's language servers while the path still exists, then unlock so `remove`
@@ -610,8 +609,6 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     _git_quiet(["worktree", "unlock", wt_path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", wt_path, "--force"], repo_root, timeout=15, log="Failed to remove worktree")
     _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}")
-
-    _active_worktree = None
     _cprint(f"\033[32m{_t('cli.worktree.cleaned_up', path=wt_path)}\033[0m")
 
 

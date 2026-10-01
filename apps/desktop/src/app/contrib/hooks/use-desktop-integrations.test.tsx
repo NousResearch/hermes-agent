@@ -10,10 +10,11 @@ import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { $profiles } from '@/store/profile'
 import { _resetLegacyDiscardForTests } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
-import type { SessionInfo } from '@/types/hermes'
+import type { ProfileInfo, SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../../../test/session-info'
 import { sessionRoute } from '../../routes'
@@ -75,6 +76,7 @@ describe('useDesktopIntegrations', () => {
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
     vi.mocked(requestPluginCatalogInstallFromDeepLink).mockClear()
     vi.mocked(openPluginInstallRequest).mockClear()
+    $profiles.set([])
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
@@ -348,6 +350,67 @@ describe('useDesktopIntegrations', () => {
 
       expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('branch-child')
       expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/branch-child')
+    })
+  })
+
+  describe('ghost remembered session (restore 404 self-heal)', () => {
+    const profileInfo = (name: string): ProfileInfo =>
+      ({ has_env: false, is_default: name === 'default', model: null, name }) as ProfileInfo
+
+    const stubSession404 = () => {
+      vi.mocked(desktopWindow.hermesDesktop!.api as ReturnType<typeof vi.fn>).mockImplementation(
+        async (request: { path?: string }) => {
+          if (request.path?.startsWith('/api/sessions/')) {
+            throw new Error('404: Session not found')
+          }
+
+          throw new Error(`unexpected api call: ${request.path}`)
+        }
+      )
+    }
+
+    it('clears the remembered pointer when every probe rung answers a session 404', async () => {
+      // A remembered id that no longer exists anywhere (an uncommitted
+      // new-chat preview orphaned by a backend restart, or a session deleted
+      // elsewhere). The probe needs a known profile inventory to declare it
+      // gone, exactly as the cold-start restore flow has (#125678).
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'ghost-session')
+      $profiles.set([profileInfo('default')])
+      stubSession404()
+
+      const sessions = [session({ id: 'live-session', profile: 'default' })]
+
+      render({ profileReady: true, sessions })
+
+      await waitFor(() =>
+        expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
+      )
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('keeps the remembered pointer when the probe is inconclusive (5xx / network)', async () => {
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'ghost-session')
+      $profiles.set([profileInfo('default')])
+      vi.mocked(desktopWindow.hermesDesktop!.api as ReturnType<typeof vi.fn>).mockImplementation(
+        async (request: { path?: string }) => {
+          if (request.path?.startsWith('/api/sessions/')) {
+            throw new Error('ECONNREFUSED: backend still booting')
+          }
+
+          throw new Error(`unexpected api call: ${request.path}`)
+        }
+      )
+
+      const sessions = [session({ id: 'live-session', profile: 'default' })]
+
+      render({ profileReady: true, sessions })
+
+      // Give the probe a beat to fail, then confirm the value survived.
+      await waitFor(() =>
+        expect(vi.mocked(desktopWindow.hermesDesktop!.api as ReturnType<typeof vi.fn>)).toHaveBeenCalled()
+      )
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('ghost-session')
+      expect(navigate).not.toHaveBeenCalled()
     })
   })
 

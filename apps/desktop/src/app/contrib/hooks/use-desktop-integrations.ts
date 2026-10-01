@@ -8,7 +8,7 @@ import { openSession } from '@/app/open-session'
 import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
-import { getSession } from '@/hermes'
+import { probeStoredSession } from '@/app/session/hooks/use-session-actions/utils'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
@@ -45,7 +45,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
-import { resolveRememberedSessionId } from './remembered-session'
+import { repairRememberedSession } from './remembered-session'
 
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
 
@@ -217,12 +217,28 @@ export function useDesktopIntegrations({
           }
 
           // Unlisted (or a delegate row that reached a list slice): resolve
-          // the id directly — the by-id endpoint serves delegate children the
-          // list omits. A delegate child repairs to its parent, an orphan or
-          // foreign-profile id clears, and a fetch failure keeps the
-          // remembered value for the next launch instead of discarding it.
-          void resolveRememberedSessionId(last, getSession)
-            .then(remembered => {
+          // the id through the stored-session probe — the by-id endpoint
+          // serves delegate children the list omits. A delegate child
+          // repairs to its parent, an orphan or foreign-profile id clears,
+          // and an authoritative `gone` (every rung answered an explicit
+          // session 404) clears the stale pointer so the next cold start
+          // opens a fresh chat instead of re-404ing a ghost. An
+          // inconclusive probe (5xx, network failure, bare proxy 404)
+          // keeps the remembered value for the next launch.
+          void probeStoredSession(last)
+            .then(result => {
+              if (result.status === 'gone') {
+                setRememberedSessionId(null, activeProfile)
+
+                return
+              }
+
+              if (result.status !== 'found') {
+                return
+              }
+
+              const remembered = repairRememberedSession(result.session)
+
               if (!remembered || !sessionBelongsToProfile(sessions, remembered, activeProfile)) {
                 setRememberedSessionId(null, activeProfile)
 
@@ -233,7 +249,6 @@ export function useDesktopIntegrations({
               setRememberedSessionId(remembered, activeProfile)
               navigate(sessionRoute(remembered), { replace: true })
             })
-            .catch(() => undefined)
 
           return
         }

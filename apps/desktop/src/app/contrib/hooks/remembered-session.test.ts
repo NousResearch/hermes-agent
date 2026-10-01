@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { resolveRememberedSessionId } from './remembered-session'
+import { repairRememberedSession } from './remembered-session'
 
 const session = (overrides: Partial<SessionInfo>): SessionInfo =>
   ({
@@ -22,32 +22,24 @@ const session = (overrides: Partial<SessionInfo>): SessionInfo =>
     ...overrides
   }) as SessionInfo
 
-describe('resolveRememberedSessionId', () => {
-  it('repairs a remembered delegate child to its parent', async () => {
-    await expect(
-      resolveRememberedSessionId('child', async () =>
-        session({ id: 'child', parent_session_id: 'parent', source: 'subagent' })
-      )
-    ).resolves.toBe('parent')
+describe('repairRememberedSession', () => {
+  it('repairs a remembered delegate child to its parent', () => {
+    expect(
+      repairRememberedSession(session({ id: 'child', parent_session_id: 'parent', source: 'subagent' }))
+    ).toBe('parent')
   })
 
-  it('clears an orphaned delegate child instead of reopening it', async () => {
-    await expect(
-      resolveRememberedSessionId('child', async () => session({ id: 'child', source: 'subagent' }))
-    ).resolves.toBeNull()
+  it('clears an orphaned delegate child instead of reopening it', () => {
+    expect(repairRememberedSession(session({ id: 'child', source: 'subagent' }))).toBeNull()
   })
 
-  it('keeps normal sessions', async () => {
-    await expect(
-      resolveRememberedSessionId('normal', async () => session({ id: 'normal', source: 'tui' }))
-    ).resolves.toBe('normal')
+  it('keeps normal sessions', () => {
+    expect(repairRememberedSession(session({ id: 'normal', source: 'tui' }))).toBe('normal')
   })
 
-  it('keeps /branch children: parenthood is not the discriminator, source is', async () => {
-    await expect(
-      resolveRememberedSessionId('branch', async () =>
-        session({ id: 'branch', parent_session_id: 'parent', source: 'tui' })
-      )
-    ).resolves.toBe('branch')
+  it('keeps /branch children: parenthood is not the discriminator, source is', () => {
+    expect(
+      repairRememberedSession(session({ id: 'branch', parent_session_id: 'parent', source: 'tui' }))
+    ).toBe('branch')
   })
 })

@@ -102,7 +102,7 @@ def _apply_slot(values: dict, slot_root: Path) -> None:
     """A machine-host slot: its port is the turn port and its state stays inside its own home."""
     slot = values["LITCO_SLOT_ID"]
     if not _SLOT_ID.match(slot):
-        raise InitError("LITCO_SLOT_ID must be 1-24 lowercase letters and digits")
+        raise InitError("LITCO_SLOT_ID must be 1-30 lowercase letters and digits")
     port = values["LITCO_SLOT_PORT"]
     if not port:
         raise InitError("LITCO_SLOT_PORT is missing for slot " + slot)

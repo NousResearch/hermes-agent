@@ -1,0 +1,58 @@
+#cloud-config
+# litco-agent matter host: first-boot cloud-init (DigitalOcean user_data).
+#
+# Rendered per matter by deploy/host/render-user-data.py from a JSON spec the
+# LitKit control plane supplies, and passed as user_data when it creates a
+# droplet from a litco-agent-host-<version> snapshot. The snapshot is
+# secret-free; this is the only way secrets reach the host.
+#
+# Secrets land in exactly two files, both root-owned and 0600:
+#   /etc/litco-agent/env              read by systemd for the unit's
+#                                     EnvironmentFile= (the hermes user cannot read it)
+#   /etc/litco-agent/tailscale-authkey  consumed by `tailscale up`, then shredded
+# Everything else below is non-secret.
+#
+# Security model: like the LitKit worker fleet, secrets ride in user_data, which
+# the DigitalOcean metadata API serves to processes on this droplet for its
+# lifetime. The droplet is single-matter, and the agent on it already holds the
+# same secrets in its environment.
+#
+# Marker comment lines of the form NAME_BEGIN / NAME_END in double braces bound
+# optional blocks (TAILSCALE, EGRESS_ALLOWLIST). The
+# renderer drops a whole block (markers included) when it does not apply and
+# drops only the marker lines when it does.
+
+hostname: matter-fixturem
+preserve_hostname: false
+
+write_files:
+  - path: /etc/litco-agent/env
+    owner: root:root
+    permissions: "0600"
+    encoding: b64
+    content: IyBsaXRjby1hZ2VudCBob3N0IGVudmlyb25tZW50LiBXcml0dGVuIGJ5IGNsb3VkLWluaXQ7IHJvb3Q6cm9vdCAwNjAwLgojIFJlYWQgYnkgc3lzdGVtZCBmb3IgbGl0Y28tYWdlbnQuc2VydmljZSAoRW52aXJvbm1lbnRGaWxlPSkuIERvIG5vdCBzb3VyY2UgaXQgaW4gc2hlbGxzLgojIC0tIG5vbi1zZWNyZXQgLS0KTElUQ09fTUFUVEVSX0lEPSJmaXh0dXJlLW1hdHRlci0wMDAxIgpMSVRDT19JTlNUQU5DRV9VUkw9Imh0dHBzOi8vYWNtZS5saXRjby5haSIKTElUQ09fTUFUVEVSX0hPTUU9Ii9ob21lL2hlcm1lcy9tYXR0ZXIiCkxJVENPX1RVUk5fSE9TVD0iMC4wLjAuMCIKTElUQ09fVFVSTl9QT1JUPSI4NzY1IgpMSVRDT19NT0RFTF9QUk9WSURFUj0iY3VzdG9tIgpMSVRDT19NT0RFTD0iIgpMSVRDT19NT0RFTF9CQVNFX1VSTD0iaHR0cHM6Ly9wcm94eS5leGFtcGxlLnRlc3QvdjEiCkxJVENPX01PREVMX0tFWV9FTlY9IiIKTElUQ09fQVBQUk9WQUxTX01PREU9IiIKTElUQ09fRUdSRVNTX1BPTElDWT0ib3BlbiIKIyAtLSBzZWNyZXQgLS0KTElUQ09fSE9TVF9TRUNSRVQ9ImZpeHR1cmUtaG9zdC1zZWNyZXQtbm90LXJlYWwtMDEyMzQ1Njc4OSIKTElUQ09fQUdFTlRfVE9LRU49ImxrbV9maXh0dXJlX25vdF9yZWFsIgo=
+  - path: /etc/litco-agent/matter.json
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ewogICJhcHByb3ZhbHNNb2RlIjogIiIsCiAgImNoYW5uZWxzIjogW10sCiAgImVncmVzc1BvbGljeSI6ICJvcGVuIiwKICAiaG9zdG5hbWUiOiAibWF0dGVyLWZpeHR1cmVtIiwKICAiaW5zdGFuY2VVcmwiOiAiaHR0cHM6Ly9hY21lLmxpdGNvLmFpIiwKICAibWF0dGVySG9tZSI6ICIvaG9tZS9oZXJtZXMvbWF0dGVyIiwKICAibWF0dGVySWQiOiAiZml4dHVyZS1tYXR0ZXItMDAwMSIsCiAgIm1vZGVsIjogIiIsCiAgIm1vZGVsUHJvdmlkZXIiOiAiY3VzdG9tIiwKICAic2NoZW1hIjogMSwKICAidGFpbHNjYWxlIjogZmFsc2UsCiAgInR1cm5Qb3J0IjogODc2NQp9Cg==
+
+runcmd:
+  # 1. Hostname matter-<shortid>, so the tailnet name and the journal say which matter this is.
+  - hostnamectl set-hostname "matter-fixturem"
+  # 2. Re-assert the env file's ownership and mode.
+  - chown root:root /etc/litco-agent/env
+  - chmod 600 /etc/litco-agent/env
+  # 3. The matter home (LITCO_MATTER_HOME), owned by the service user.
+  - install -d -o hermes -g hermes -m 0750 "/home/hermes/matter"
+  # 5. Firewall: nothing inbound except over the tailnet; outbound open by default.
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow in on tailscale0
+  - ufw --force enable
+  # 6. Start the agent. RESTART, not start: the image bakes the unit enabled,
+  #    and the unit's ConditionPathExists only now holds.
+  - systemctl daemon-reload
+  - systemctl restart litco-agent.service
+  - systemctl status --no-pager litco-agent.service || true

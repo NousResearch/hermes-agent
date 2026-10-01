@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_yaml import safe_load
+from tests.deploy._supervisor_fake import sup
 from tests.host._load import HOST, REPO, load_script
 
 init = load_script("litco_agent_init_slot", "litco-agent-init")
@@ -74,7 +75,7 @@ def test_profile_names_the_resolved_release_not_the_current_symlink(tmp_path):
 
 @pytest.mark.parametrize("change", [
     {"LITCO_SLOT_ID": "AB/../x"},
-    {"LITCO_SLOT_ID": "a" * 25},
+    {"LITCO_SLOT_ID": "a" * 31},
     {"LITCO_SLOT_PORT": ""},
     {"LITCO_TURN_PORT": "8765"},                       # the platform would bind this one, not the slot's
     {"HERMES_HOME": "/srv/litco/m/other/.hermes"},     # outside this slot's home
@@ -86,6 +87,17 @@ def test_slot_settings_that_would_cross_slots_are_refused(tmp_path, change, caps
     assert init.main(slot_env(tmp_path, **change), slot_root=tmp_path) == 78
     assert "litco-agent-init:" in capsys.readouterr().err
     assert not list(tmp_path.rglob("config.yaml"))
+
+
+def test_slot_id_length_matches_the_supervisor_and_the_unit(tmp_path):
+    """One rule everywhere: 1-30 lowercase letters and digits (m_<id> fits a 32-character user name)."""
+    longest = "a" * 30
+    env = slot_env(tmp_path, LITCO_SLOT_ID=longest, HERMES_HOME=str(tmp_path / longest / ".hermes"),
+                   LITCO_MATTER_HOME=str(tmp_path / longest / "matter"))
+    assert init.read_settings(env, slot_root=tmp_path)["LITCO_TURN_PORT"] == "8803"
+    assert init._SLOT_ID.pattern == sup.SLOT_ID.pattern
+    with pytest.raises(init.InitError, match="LITCO_SLOT_ID must be 1-30 lowercase letters and digits"):
+        init.read_settings(dict(env, LITCO_SLOT_ID="a" * 31), slot_root=tmp_path)
 
 
 def test_slot_mode_reads_no_secret(tmp_path):

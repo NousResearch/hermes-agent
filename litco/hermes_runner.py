@@ -395,7 +395,7 @@ def turn_identity(ctx: TurnContext) -> TurnIdentity:
     grant = req.turn_grant if req.kind == "dm" and req.acting_user else None
     return TurnIdentity(turn_id=ctx.turn_id, matter_id=req.matter_id, acting_user=req.acting_user, cwd=ctx.cwd,
                         litkit_channel=(req.litkit_channel.slug or None) if req.litkit_channel is not None else None,
-                        turn_grant=grant)
+                        thread_id=req.session_id or None, turn_grant=grant)
 
 
 def _shared_scope_line(ctx: TurnContext) -> str:

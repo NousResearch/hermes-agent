@@ -1,6 +1,6 @@
 """A recorded stand-in for the commands litco-supervisor runs as root.
 
-It models just enough of useradd/getent/id, loginctl and systemctl for the
+It models just enough of useradd/userdel/getent/id, loginctl and systemctl for the
 supervisor's handler to be driven end to end without root or systemd: users
 exist once useradd ran, units are active once started, and every argv is kept
 in ``calls`` in order.
@@ -68,6 +68,10 @@ class FakeRunner:
         if cmd == "id":
             uid = self.users.get(argv[-1])
             return sup.CommandResult(0, f"{uid}\n") if uid is not None else sup.CommandResult(1, "", "no such user")
+        if cmd == "userdel":
+            with self._lock:
+                gone = self.users.pop(argv[-1], None) is None
+            return sup.CommandResult(6, "", "user does not exist") if gone else sup.CommandResult(0)
         if cmd in ("install", "loginctl"):
             return sup.CommandResult(0)
         if cmd == "systemctl":

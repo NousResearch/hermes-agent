@@ -1,0 +1,66 @@
+#cloud-config
+# litco-agent machine host: first-boot cloud-init (DigitalOcean user_data).
+#
+# Rendered by deploy/host/render-user-data.py from a spec with
+# "topology": "machine", and passed as user_data when the LitKit control plane
+# creates a droplet from a litco-agent-host-<version> snapshot built with
+# `install-host.sh --topology machine`. The machine serves every matter of one
+# deployment. Each matter runs as its own slot, litco-agent@<slot>.service,
+# which litco-supervisor starts on the app's request and hands that matter's
+# secrets. So this file carries machine secrets only: no matter id, agent
+# token, host secret or model key.
+#
+# Secrets land in exactly two files, both root-owned and 0600:
+#   /etc/litco-supervisor.env           the supervisor's bearer secret, read by
+#                                       litco-supervisor itself (--env-file)
+#   /etc/litco-agent/tailscale-authkey  consumed by `tailscale up`, then shredded
+# /etc/litco-agent/machine.json is non-secret.
+#
+# The firewall is the image's nftables rule set (/etc/nftables.conf: inbound
+# traffic only on tailscale0), which nftables.service loads at boot. There is
+# no ufw step.
+#
+# The DigitalOcean metadata API serves this user-data to processes on the
+# droplet for its lifetime. Every slot unit and the supervisor's own unit set
+# IPAddressDeny=169.254.169.254, so no matter process can fetch it.
+
+hostname: {{HOSTNAME}}
+preserve_hostname: false
+
+write_files:
+  - path: /etc/litco-supervisor.env
+    owner: root:root
+    permissions: "0600"
+    encoding: b64
+    content: {{SUPERVISOR_ENV_B64}}
+  - path: /etc/litco-agent/machine.json
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: {{MACHINE_JSON_B64}}
+  - path: /etc/litco-agent/tailscale-authkey
+    owner: root:root
+    permissions: "0600"
+    encoding: b64
+    content: {{TAILSCALE_AUTHKEY_B64}}
+
+runcmd:
+  # 1. Hostname litco-host-<id>: the tailnet name the control plane dials.
+  - hostnamectl set-hostname "{{HOSTNAME}}"
+  # 2. Re-assert the supervisor env file's owner and mode. The supervisor
+  #    refuses a file that group or others can read.
+  - chown root:root /etc/litco-supervisor.env
+  - chmod 600 /etc/litco-supervisor.env
+  # 3. Firewall: load the image's rule set if nftables.service has not, so the
+  #    machine never runs open, then print it to the cloud-init log.
+  - nft list table inet litco_host >/dev/null 2>&1 || nft -f /etc/nftables.conf
+  - nft list table inet litco_host
+  # 4. Join the tailnet with SSH, then destroy the one-time key file.
+  - tailscale up --ssh --hostname="{{HOSTNAME}}" --auth-key=file:/etc/litco-agent/tailscale-authkey
+  - shred -u /etc/litco-agent/tailscale-authkey
+  # 5. Start the supervisor. RESTART, not start: the image bakes the unit
+  #    enabled, and its ConditionPathExists only now holds. It binds tailscale0,
+  #    which step 4 brought up. No slot starts here; the app asks for each one.
+  - systemctl daemon-reload
+  - systemctl restart litco-supervisor.service
+  - systemctl status --no-pager litco-supervisor.service || true

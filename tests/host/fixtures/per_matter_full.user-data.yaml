@@ -1,0 +1,74 @@
+#cloud-config
+# litco-agent matter host: first-boot cloud-init (DigitalOcean user_data).
+#
+# Rendered per matter by deploy/host/render-user-data.py from a JSON spec the
+# LitKit control plane supplies, and passed as user_data when it creates a
+# droplet from a litco-agent-host-<version> snapshot. The snapshot is
+# secret-free; this is the only way secrets reach the host.
+#
+# Secrets land in exactly two files, both root-owned and 0600:
+#   /etc/litco-agent/env              read by systemd for the unit's
+#                                     EnvironmentFile= (the hermes user cannot read it)
+#   /etc/litco-agent/tailscale-authkey  consumed by `tailscale up`, then shredded
+# Everything else below is non-secret.
+#
+# Security model: like the LitKit worker fleet, secrets ride in user_data, which
+# the DigitalOcean metadata API serves to processes on this droplet for its
+# lifetime. The droplet is single-matter, and the agent on it already holds the
+# same secrets in its environment.
+#
+# Marker comment lines of the form NAME_BEGIN / NAME_END in double braces bound
+# optional blocks (TAILSCALE, EGRESS_ALLOWLIST). The
+# renderer drops a whole block (markers included) when it does not apply and
+# drops only the marker lines when it does.
+
+hostname: matter-4f1c9a2e
+preserve_hostname: false
+
+write_files:
+  - path: /etc/litco-agent/env
+    owner: root:root
+    permissions: "0600"
+    encoding: b64
+    content: IyBsaXRjby1hZ2VudCBob3N0IGVudmlyb25tZW50LiBXcml0dGVuIGJ5IGNsb3VkLWluaXQ7IHJvb3Q6cm9vdCAwNjAwLgojIFJlYWQgYnkgc3lzdGVtZCBmb3IgbGl0Y28tYWdlbnQuc2VydmljZSAoRW52aXJvbm1lbnRGaWxlPSkuIERvIG5vdCBzb3VyY2UgaXQgaW4gc2hlbGxzLgojIC0tIG5vbi1zZWNyZXQgLS0KTElUQ09fTUFUVEVSX0lEPSI0RjFDOUEyRS03N2FhLTRiMWItOWMzZC0wZTVmNmE3YjhjOWQiCkxJVENPX0lOU1RBTkNFX1VSTD0iaHR0cHM6Ly9hY21lLmxpdGNvLmFpIgpMSVRDT19NQVRURVJfSE9NRT0iL2hvbWUvaGVybWVzL21hdHRlciIKTElUQ09fVFVSTl9IT1NUPSIwLjAuMC4wIgpMSVRDT19UVVJOX1BPUlQ9Ijg3NjUiCkxJVENPX01PREVMX1BST1ZJREVSPSJhbnRocm9waWMiCkxJVENPX01PREVMPSJhbnRocm9waWMvY2xhdWRlLW9wdXMtNC42IgpMSVRDT19NT0RFTF9CQVNFX1VSTD0iIgpMSVRDT19NT0RFTF9LRVlfRU5WPSIiCkxJVENPX0FQUFJPVkFMU19NT0RFPSJtYW51YWwiCkxJVENPX0VHUkVTU19QT0xJQ1k9ImFsbG93bGlzdCIKIyAtLSBzZWNyZXQgLS0KTElUQ09fSE9TVF9TRUNSRVQ9ImZpeHR1cmUtaG9zdC1zZWNyZXQtbm90LXJlYWwtMDEyMzQ1Njc4OSIKTElUQ09fQUdFTlRfVE9LRU49ImxrbV9maXh0dXJlX25vdF9yZWFsIgpBTlRIUk9QSUNfQVBJX0tFWT0iZml4dHVyZS1tb2RlbC1rZXktbm90LXJlYWwiClRZUEVTQUZFX0FQSV9LRVk9ImZpeHR1cmUtdHlwZXNhZmUta2V5LW5vdC1yZWFsIgpTTEFDS19CT1RfVE9LRU49ImZpeHR1cmUtc2xhY2stbm90LXJlYWwiClNMQUNLX0FMTE9XRURfVVNFUlM9IlUxIgo=
+  - path: /etc/litco-agent/matter.json
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ewogICJhcHByb3ZhbHNNb2RlIjogIm1hbnVhbCIsCiAgImNoYW5uZWxzIjogWwogICAgInNsYWNrIgogIF0sCiAgImVncmVzc1BvbGljeSI6ICJhbGxvd2xpc3QiLAogICJob3N0bmFtZSI6ICJtYXR0ZXItNGYxYzlhMmUiLAogICJpbnN0YW5jZVVybCI6ICJodHRwczovL2FjbWUubGl0Y28uYWkiLAogICJtYXR0ZXJIb21lIjogIi9ob21lL2hlcm1lcy9tYXR0ZXIiLAogICJtYXR0ZXJJZCI6ICI0RjFDOUEyRS03N2FhLTRiMWItOWMzZC0wZTVmNmE3YjhjOWQiLAogICJtb2RlbCI6ICJhbnRocm9waWMvY2xhdWRlLW9wdXMtNC42IiwKICAibW9kZWxQcm92aWRlciI6ICJhbnRocm9waWMiLAogICJzY2hlbWEiOiAxLAogICJ0YWlsc2NhbGUiOiB0cnVlLAogICJ0dXJuUG9ydCI6IDg3NjUKfQo=
+  - path: /etc/litco-agent/tailscale-authkey
+    owner: root:root
+    permissions: "0600"
+    encoding: b64
+    content: Zml4dHVyZS10YWlsc2NhbGUta2V5LW5vdC1yZWFs
+
+runcmd:
+  # 1. Hostname matter-<shortid>, so the tailnet name and the journal say which matter this is.
+  - hostnamectl set-hostname "matter-4f1c9a2e"
+  # 2. Re-assert the env file's ownership and mode.
+  - chown root:root /etc/litco-agent/env
+  - chmod 600 /etc/litco-agent/env
+  # 3. The matter home (LITCO_MATTER_HOME), owned by the service user.
+  - install -d -o hermes -g hermes -m 0750 "/home/hermes/matter"
+  # 4. Join the tailnet with SSH, then destroy the one-time key file.
+  - tailscale up --ssh --hostname="matter-4f1c9a2e" --auth-key=file:/etc/litco-agent/tailscale-authkey
+  - shred -u /etc/litco-agent/tailscale-authkey
+  # 5. Firewall: nothing inbound except over the tailnet; outbound open by default.
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow in on tailscale0
+  # 5a. egressPolicy=allowlist: outbound limited to the tailnet, DNS, NTP,
+  #     Tailscale's direct UDP port, and the destinations in the spec.
+  - ufw allow out on tailscale0
+  - ufw allow out 53
+  - ufw allow out 123/udp
+  - ufw allow out 41641/udp
+  - ufw allow out to 203.0.113.0/24 port 443 proto tcp
+  - ufw default deny outgoing
+  - ufw --force enable
+  # 6. Start the agent. RESTART, not start: the image bakes the unit enabled,
+  #    and the unit's ConditionPathExists only now holds.
+  - systemctl daemon-reload
+  - systemctl restart litco-agent.service
+  - systemctl status --no-pager litco-agent.service || true

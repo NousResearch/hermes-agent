@@ -364,10 +364,184 @@ def test_non_json_and_oversized_bodies(harness):
     assert status == 413
 
 
+# ── DELETE /slots/{id} ──────────────────────────────────────────────────────
+
+UNIT_A = "litco-agent@a1b2c3d4.service"
+
+
+def _make_home(harness, slot_id="a1b2c3d4"):
+    home = harness.config.home_root / slot_id
+    (home / ".hermes").mkdir(parents=True)
+    (home / ".hermes" / "MEMORY.md").write_text("matter notes")
+    (home / "matter").mkdir()
+    return home
+
+
+def test_delete_drains_then_removes_env_linger_user_home_and_entry_in_order(harness):
+    harness.request("PUT", "/slots/a1b2c3d4", body())
+    home = _make_home(harness)
+    env = harness.env_path("a1b2c3d4")
+    seen = {}
+    harness.runner.on_stop = lambda unit: seen.setdefault("env_during_stop", env.exists())
+    before = len(harness.runner.calls)
+
+    status, doc = harness.request("DELETE", "/slots/a1b2c3d4")
+    assert status == 202
+    assert doc == {"slot": {"id": "a1b2c3d4", "matterId": MATTER_A, "port": 8800,
+                            "unixUser": "m_a1b2c3d4", "state": "stopping"}}
+    harness.supervisor.join_background(5)
+
+    removal = [c for c in harness.runner.calls[before:] if c[:2] != ["systemctl", "is-active"]]
+    assert removal == [
+        ["systemctl", "stop", UNIT_A],
+        ["systemctl", "reset-failed", UNIT_A],
+        ["getent", "passwd", "m_a1b2c3d4"],
+        ["loginctl", "disable-linger", "m_a1b2c3d4"],
+        ["loginctl", "terminate-user", "m_a1b2c3d4"],
+        ["userdel", "m_a1b2c3d4"],
+    ]
+    assert seen == {"env_during_stop": True}, "the drain runs with the slot's env file in place"
+    assert not env.exists() and not home.exists()
+    assert "m_a1b2c3d4" not in harness.runner.users
+    assert harness.request("GET", "/slots")[1] == {"slots": []}
+    assert json.loads(harness.state_text())["slots"] == {}
+    assert any("slot a1b2c3d4: removed" in line and "port 8800 freed" in line for line in harness.logs)
+
+
+def test_delete_unknown_slot_is_404_and_runs_nothing(harness):
+    status, doc = harness.request("DELETE", "/slots/nope1234")
+    assert status == 404 and doc["error"] == "no_such_slot"
+    assert harness.request("DELETE", "/slots/Bad-Id")[0] == 400
+    assert harness.runner.calls == []
+
+
+def test_put_during_removal_is_409_and_delete_is_idempotent(harness):
+    harness.request("PUT", "/slots/a1b2c3d4", body())
+    gate = threading.Event()
+    harness.runner.stop_gate = gate
+    assert harness.request("DELETE", "/slots/a1b2c3d4")[0] == 202
+    try:
+        status, doc = harness.request("PUT", "/slots/a1b2c3d4", body())
+        assert status == 409 and doc["error"] == "slot_stopping"
+        assert harness.request("GET", "/slots")[1]["slots"][0]["state"] == "stopping"
+        status, doc = harness.request("DELETE", "/slots/a1b2c3d4")
+        assert status == 202 and doc["slot"]["state"] == "stopping"
+        status, doc = harness.request("POST", "/slots/a1b2c3d4/stop")
+        assert status == 202 and doc["slot"]["state"] == "stopping"
+    finally:
+        gate.set()
+        harness.supervisor.join_background(5)
+    assert len([c for c in harness.runner.calls if c[:2] == ["systemctl", "stop"]]) == 1
+    assert len([c for c in harness.runner.calls if c[0] == "userdel"]) == 1
+    # Once removed, the id is free: a PUT makes a new slot with a new user.
+    status, doc = harness.request("PUT", "/slots/a1b2c3d4", body())
+    assert status == 200 and doc["created"] is True and doc["userCreated"] is True
+
+
+def test_delete_frees_the_port_for_the_next_new_slot(harness):
+    harness.request("PUT", "/slots/a1b2c3d4", body())
+    assert harness.request("PUT", "/slots/b9c8d7e6", body(MATTER_B))[1]["slot"]["port"] == 8801
+    harness.request("DELETE", "/slots/a1b2c3d4")
+    harness.supervisor.join_background(5)
+    status, doc = harness.request("PUT", "/slots/c0c0c0c0", body("c0c0c0c0-0000-4000-8000-000000000003"))
+    assert status == 200 and doc["slot"]["port"] == 8800
+    ports = {s["id"]: s["port"] for s in harness.request("GET", "/slots")[1]["slots"]}
+    assert ports == {"b9c8d7e6": 8801, "c0c0c0c0": 8800}
+
+
+def test_delete_of_a_stopped_slot_still_removes_user_and_home(harness):
+    harness.request("PUT", "/slots/a1b2c3d4", body())
+    harness.request("POST", "/slots/a1b2c3d4/stop")
+    harness.supervisor.join_background(5)
+    home = _make_home(harness)
+    assert harness.request("DELETE", "/slots/a1b2c3d4")[0] == 202
+    harness.supervisor.join_background(5)
+    assert not home.exists() and harness.request("GET", "/slots")[1] == {"slots": []}
+
+
+def test_a_failed_userdel_keeps_the_entry_marked_removing_until_a_retry(harness):
+    harness.request("PUT", "/slots/a1b2c3d4", body())
+    home = _make_home(harness)
+    harness.runner.fail = {"userdel": 8}
+    harness.request("DELETE", "/slots/a1b2c3d4")
+    harness.supervisor.join_background(5)
+    assert json.loads(harness.state_text())["slots"]["a1b2c3d4"]["desired"] == "removing"
+    assert home.exists() and not harness.env_path("a1b2c3d4").exists()
+    assert any("removal stopped" in line for line in harness.logs)
+    status, doc = harness.request("PUT", "/slots/a1b2c3d4", body())
+    assert status == 409 and doc["error"] == "slot_stopping"
+    # A supervisor restart keeps the mark.
+    harness.restart()
+    assert json.loads(harness.state_text())["slots"]["a1b2c3d4"]["desired"] == "removing"
+    # The retry finishes.
+    harness.runner.fail = {}
+    assert harness.request("DELETE", "/slots/a1b2c3d4")[0] == 202
+    harness.supervisor.join_background(5)
+    assert not home.exists() and harness.request("GET", "/slots")[1] == {"slots": []}
+
+
+def test_a_home_that_cannot_be_removed_keeps_the_entry_for_a_retry(harness, monkeypatch):
+    harness.request("PUT", "/slots/a1b2c3d4", body())
+    home = _make_home(harness)
+
+    def refuse(path, *args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    with monkeypatch.context() as m:
+        m.setattr(sup.shutil, "rmtree", refuse)
+        refuse.avoids_symlink_attacks = True
+        harness.request("DELETE", "/slots/a1b2c3d4")
+        harness.supervisor.join_background(5)
+    assert home.exists()
+    assert json.loads(harness.state_text())["slots"]["a1b2c3d4"]["desired"] == "removing"
+    assert harness.request("GET", "/slots")[1]["slots"][0]["port"] == 8800  # the port is still held
+    # The user was already deleted; the retry skips userdel and removes the home.
+    calls_before = len(harness.runner.calls)
+    harness.request("DELETE", "/slots/a1b2c3d4")
+    harness.supervisor.join_background(5)
+    assert not home.exists() and harness.request("GET", "/slots")[1] == {"slots": []}
+    assert not any(c[0] == "userdel" for c in harness.runner.calls[calls_before:])
+
+
+def test_delete_never_follows_a_symlink_out_of_the_home_root(harness, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("not the slot's")
+    harness.request("PUT", "/slots/a1b2c3d4", body())
+    home = _make_home(harness)
+    (home / "matter" / "escape").symlink_to(outside)
+    (home / "escape-file").symlink_to(outside / "keep.txt")
+    harness.request("PUT", "/slots/b9c8d7e6", body(MATTER_B))
+    harness.config.home_root.joinpath("b9c8d7e6").symlink_to(outside)   # the home itself is a link
+
+    for slot_id in ("a1b2c3d4", "b9c8d7e6"):
+        assert harness.request("DELETE", f"/slots/{slot_id}")[0] == 202
+        harness.supervisor.join_background(5)
+    assert not home.exists() and not harness.config.home_root.joinpath("b9c8d7e6").is_symlink()
+    assert (outside / "keep.txt").read_text() == "not the slot's"
+    assert harness.request("GET", "/slots")[1] == {"slots": []}
+
+
+def test_delete_puts_no_secret_in_any_response_log_or_command(harness):
+    harness.request("PUT", "/slots/a1b2c3d4", body())
+    _make_home(harness)
+    harness.request("DELETE", "/slots/a1b2c3d4")
+    harness.request("DELETE", "/slots/a1b2c3d4")
+    harness.supervisor.join_background(5)
+    harness.request("GET", "/slots")
+    for text in harness.responses:
+        assert_no_secret(text)
+    assert_no_secret(harness.state_text())
+    assert_no_secret("\n".join(harness.logs))
+    for argv in harness.runner.calls:
+        assert_no_secret(" ".join(argv))
+
+
 # ── auth and secrecy ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("method, path", [
     ("GET", "/slots"), ("PUT", "/slots/a1b2c3d4"), ("POST", "/slots/a1b2c3d4/stop"),
+    ("DELETE", "/slots/a1b2c3d4"),
 ])
 @pytest.mark.parametrize("token", [None, "", "wrong-secret", HOST_SECRET])
 def test_every_slot_route_requires_the_supervisor_secret(harness, method, path, token):
@@ -386,7 +560,8 @@ def test_health_needs_no_secret_and_reports_none(harness):
 
 def test_unknown_route_and_method(harness):
     assert harness.request("GET", "/nope")[0] == 404
-    assert harness.request("DELETE", "/slots/a1b2c3d4")[0] == 405
+    assert harness.request("POST", "/slots/a1b2c3d4")[0] == 405
+    assert harness.request("DELETE", "/slots/a1b2c3d4/stop")[0] == 405
     assert harness.request("POST", "/slots")[0] == 405
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render per-matter cloud-init user-data for a litco-agent matter host.
+"""Render cloud-init user-data for a litco-agent host: per-matter or machine.
 
 The LitKit control plane calls this with a JSON spec and passes the output as
 ``user_data`` when it creates a droplet from a ``litco-agent-host-<version>``
@@ -8,7 +8,12 @@ snapshot::
     render-user-data.py spec.json > user-data.yaml
     render-user-data.py - < spec.json      # spec on stdin
 
-Spec (camelCase, as the control plane sends it)::
+``"topology": "machine"`` in the spec selects the machine host
+(cloud-init.machine.yaml.tmpl, spec below). Without it, or with
+``"topology": "per_matter"``, the output is the per-matter droplet's
+(cloud-init.yaml.tmpl), byte for byte what it was before machine mode existed.
+
+Per-matter spec (camelCase, as the control plane sends it)::
 
     matterId          str   required  LitKit matter id
     instanceUrl       str   required  https://<firm>.litco.ai
@@ -29,8 +34,21 @@ Spec (camelCase, as the control plane sends it)::
     turnPort          int   optional  default 8765
     channelEnv        dict  optional  native Slack/Telegram settings, from CHANNEL_ENV_KEYS
 
-Secrets appear in the output only inside the base64 content of
-/etc/litco-agent/env (and the Tailscale key file). Standard library only.
+Machine spec (FIRM_HOST_WAVE2 section 4.6). Any other key is an error::
+
+    topology          str   required  "machine"
+    hostname          str   required  litco-host-<id>
+    instanceUrl       str   required  https://<firm>.litco.ai (non-secret)
+    supervisorSecret  str   required  secret; >= 32 chars; litco-supervisor's bearer
+    tailscaleAuthKey  str   required  secret; the supervisor listens on tailscale0 only
+    egressPolicy      str   required  "open" (allowlist is not supported on a machine)
+
+A machine's user-data carries machine secrets only: no matter id, agent
+token, host secret or model key. The supervisor receives those per slot.
+
+Secrets appear in the output only inside base64 content: per-matter, of
+/etc/litco-agent/env and the Tailscale key file; machine, of
+/etc/litco-supervisor.env and the Tailscale key file. Standard library only.
 """
 
 from __future__ import annotations
@@ -44,6 +62,7 @@ import sys
 from pathlib import Path
 
 TEMPLATE = Path(__file__).with_name("cloud-init.yaml.tmpl")
+MACHINE_TEMPLATE = Path(__file__).with_name("cloud-init.machine.yaml.tmpl")
 USER_DATA_LIMIT = 64 * 1024  # DigitalOcean's user_data cap
 
 DEFAULT_MATTER_HOME = "/home/hermes/matter"
@@ -79,8 +98,15 @@ CHANNEL_ENV_KEYS = (
     "TELEGRAM_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_CHATS",
 )
 
+TOPOLOGIES = ("per_matter", "machine")
+MACHINE_SPEC_KEYS = frozenset({
+    "topology", "hostname", "instanceUrl", "supervisorSecret", "tailscaleAuthKey", "egressPolicy",
+})
+
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _HOSTNAME = re.compile(r"^matter-[a-z0-9]([a-z0-9-]{0,54}[a-z0-9])?$")
+_MACHINE_HOSTNAME = re.compile(r"^litco-host-[a-z0-9]([a-z0-9-]{0,40}[a-z0-9])?$")
+_URL = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d+)?(/[A-Za-z0-9._/-]*)?$")
 _PROVIDER = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _PLAIN = re.compile(r"^[A-Za-z0-9._:/@+-]*$")
 _TOKEN = re.compile(r"\{\{(\w+)\}\}")
@@ -124,7 +150,7 @@ def validate(spec: dict) -> dict:
     if not _ID.match(matter_id):
         raise SpecError("matterId must be letters, digits, - or _")
     instance_url = _str(spec, "instanceUrl", required=True)
-    if not re.match(r"^https?://[A-Za-z0-9.-]+(:\d+)?(/[A-Za-z0-9._/-]*)?$", instance_url):
+    if not _URL.match(instance_url):
         raise SpecError("instanceUrl must be an http(s) URL")
     host_secret = _str(spec, "hostSecret", required=True)
     if len(host_secret) < 32:
@@ -269,23 +295,94 @@ def apply_blocks(template: str, enabled: dict) -> str:
     return "\n".join(out)
 
 
-def render(spec: dict, template: str | None = None) -> str:
+def topology(spec) -> str:
+    """``machine`` or ``per_matter``; an absent topology is per-matter, as every spec before machine mode."""
+    if not isinstance(spec, dict):
+        raise SpecError("spec must be a JSON object")
+    value = _str(spec, "topology") or "per_matter"
+    if value not in TOPOLOGIES:
+        raise SpecError("topology must be 'per_matter' or 'machine'")
+    return value
+
+
+def validate_machine(spec: dict) -> dict:
+    unknown = sorted(set(spec) - MACHINE_SPEC_KEYS)
+    if unknown:
+        raise SpecError(f"keys not allowed in a machine spec: {', '.join(unknown)}")
+    hostname = _str(spec, "hostname", required=True)
+    if not _MACHINE_HOSTNAME.match(hostname):
+        raise SpecError("hostname must look like litco-host-<id> (lowercase letters, digits, -)")
+    instance_url = _str(spec, "instanceUrl", required=True)
+    if not _URL.match(instance_url):
+        raise SpecError("instanceUrl must be an http(s) URL")
+    supervisor_secret = _str(spec, "supervisorSecret", required=True)
+    if len(supervisor_secret) < 32:
+        raise SpecError("supervisorSecret must be at least 32 characters")
+    tailscale_key = _str(spec, "tailscaleAuthKey", required=True)
+    egress = _str(spec, "egressPolicy", required=True)
+    if egress == "allowlist":
+        raise SpecError("egressPolicy allowlist is not supported on a machine host")
+    if egress != "open":
+        raise SpecError("egressPolicy must be 'open' on a machine host")
+    return {"hostname": hostname, "instance_url": instance_url, "supervisor_secret": supervisor_secret,
+            "tailscale_key": tailscale_key}
+
+
+def build_supervisor_env(v: dict) -> str:
+    """The /etc/litco-supervisor.env contents: the machine's one secret besides the Tailscale key."""
+    lines = [
+        "# litco-supervisor environment. Written by cloud-init; root:root 0600.",
+        "# Read by litco-supervisor itself (--env-file), not by systemd.",
+        env_line("LITCO_SUPERVISOR_SECRET", v["supervisor_secret"]),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def build_machine_json(v: dict) -> str:
+    """Non-secret description of this machine, for operators and the control plane."""
+    doc = {"schema": 1, "topology": "machine", "hostname": v["hostname"], "instanceUrl": v["instance_url"]}
+    return json.dumps(doc, indent=2, sort_keys=True) + "\n"
+
+
+def _substitute(text: str, subst: dict) -> str:
+    unknown = sorted({m for m in _TOKEN.findall(text) if m not in subst})
+    if unknown:
+        raise SpecError(f"template uses unknown placeholders: {', '.join(unknown)}")
+    return _TOKEN.sub(lambda m: subst[m.group(1)], text)
+
+
+def _render_per_matter(spec: dict, template: str | None) -> str:
     v = validate(spec)
     text = TEMPLATE.read_text(encoding="utf-8") if template is None else template
     text = apply_blocks(text, {"TAILSCALE": bool(v["tailscale_key"]), "EGRESS_ALLOWLIST": v["egress"] == "allowlist"})
     rules = "\n".join(f"  - ufw allow out to {cidr} port {port} proto {proto}" for cidr, port, proto in v["rules"])
-    subst = {
+    return _substitute(text, {
         "HOSTNAME": v["hostname"],
         "MATTER_HOME": v["matter_home"],
         "ENV_B64": _b64(build_env(v)),
         "MATTER_JSON_B64": _b64(build_matter_json(v)),
         "TAILSCALE_AUTHKEY_B64": _b64(v["tailscale_key"]) if v["tailscale_key"] else "",
         "EGRESS_ALLOWLIST_RULES": rules,
-    }
-    unknown = sorted({m for m in _TOKEN.findall(text) if m not in subst})
-    if unknown:
-        raise SpecError(f"template uses unknown placeholders: {', '.join(unknown)}")
-    text = _TOKEN.sub(lambda m: subst[m.group(1)], text)
+    })
+
+
+def _render_machine(spec: dict, template: str | None) -> str:
+    v = validate_machine(spec)
+    text = MACHINE_TEMPLATE.read_text(encoding="utf-8") if template is None else template
+    return _substitute(text, {
+        "HOSTNAME": v["hostname"],
+        "SUPERVISOR_ENV_B64": _b64(build_supervisor_env(v)),
+        "MACHINE_JSON_B64": _b64(build_machine_json(v)),
+        "TAILSCALE_AUTHKEY_B64": _b64(v["tailscale_key"]),
+    })
+
+
+def render(spec: dict, template: str | None = None) -> str:
+    """The user-data for ``spec``; ``template`` overrides the topology's own template file."""
+    if topology(spec) == "machine":
+        text = _render_machine(spec, template)
+    else:
+        text = _render_per_matter(spec, template)
     if not text.startswith("#cloud-config\n"):
         raise SpecError("rendered user-data must start with #cloud-config")
     if len(text.encode("utf-8")) > USER_DATA_LIMIT:
@@ -296,7 +393,7 @@ def render(spec: dict, template: str | None = None) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("spec", help="path to the JSON spec, or - for stdin")
-    parser.add_argument("--template", type=Path, default=None, help="override cloud-init template")
+    parser.add_argument("--template", type=Path, default=None, help="override the topology's cloud-init template")
     args = parser.parse_args(argv)
     try:
         raw = sys.stdin.read() if args.spec == "-" else Path(args.spec).read_text(encoding="utf-8")

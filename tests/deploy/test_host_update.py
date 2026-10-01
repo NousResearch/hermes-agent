@@ -53,7 +53,7 @@ def host(tmp_path) -> dict:
     (prefix / "TOPOLOGY").write_text("machine\n")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    dirs = {name: tmp_path / name for name in ("systemd", "bin_local", "sbin_local")}
+    dirs = {name: tmp_path / name for name in ("systemd", "sbin_local")}
     for d in dirs.values():
         d.mkdir()
     log = tmp_path / "calls.log"
@@ -61,7 +61,7 @@ def host(tmp_path) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith("LITCO_")}
     env.update(PATH=f"{bin_dir}:/usr/bin:/bin", LOG=str(log), SLOTS="", DOWN_PORT="none",
                LITCO_PREFIX=str(prefix), LITCO_RUN_DIR=str(run_dir), LITCO_SYSTEMD_DIR=str(dirs["systemd"]),
-               LITCO_BIN_DIR=str(dirs["bin_local"]), LITCO_SBIN_DIR=str(dirs["sbin_local"]),
+               LITCO_SBIN_DIR=str(dirs["sbin_local"]),
                LITCO_UPDATE_LOCK=str(tmp_path / "update.lock"), LITCO_HOST_UPDATE_AS_ROOT="false")
     return {"env": env, "prefix": prefix, "run": run_dir, "log": log, "tmp": tmp_path, **dirs}
 
@@ -70,7 +70,8 @@ def make_source(tmp_path: Path, name: str) -> Path:
     """A release tree carrying the files the update installs, each tagged with the release name."""
     src = tmp_path / f"src-{name}"
     (src / "deploy" / "host").mkdir(parents=True)
-    for f in ("litco-agent@.service", "litco-supervisor.service", "litco-supervisor", "litco-host-update"):
+    for f in ("litco-agent@.service", "litco-supervisor.service", "litco-supervisor", "litco-host-update",
+              "litco-slot-probe", "litco-slot-import"):
         (src / "deploy" / "host" / f).write_text(f"# {f} from {name}\n")
     return src
 
@@ -98,8 +99,11 @@ def test_update_builds_the_release_flips_current_and_restarts_slots_one_at_a_tim
     assert os.readlink(host["prefix"] / "current") == "releases/host-2"
     assert (rel / ".litco-release-ok").read_text().strip() == "host-2"
     assert (host["systemd"] / "litco-agent@.service").read_text() == "# litco-agent@.service from host-2\n"
-    assert (host["bin_local"] / "litco-supervisor").read_text() == "# litco-supervisor from host-2\n"
+    # Where litco-supervisor.service runs it from, not /usr/local/bin.
+    assert (host["sbin_local"] / "litco-supervisor").read_text() == "# litco-supervisor from host-2\n"
     assert (host["sbin_local"] / "litco-host-update").exists()
+    for tool in ("litco-slot-probe", "litco-slot-import"):
+        assert (host["sbin_local"] / tool).read_text() == f"# {tool} from host-2\n"
 
     log = calls(host)
     assert any(c.startswith("uv sync --frozen --no-dev --extra messaging") and c.endswith(f"(in {rel})") for c in log)
@@ -186,3 +190,13 @@ def test_bad_arguments(host, args, message):
     out = update(host, *args)
     assert out.returncode == 2 and message in out.stderr
     assert calls(host) == []
+
+
+def test_a_release_older_than_the_slot_tools_still_updates(host):
+    src = make_source(host["tmp"], "old")
+    for tool in ("litco-slot-probe", "litco-slot-import"):
+        (src / "deploy" / "host" / tool).unlink()
+    out = update(host, "--ref", "old", "--source", str(src))
+    assert out.returncode == 0, out.stderr
+    assert not (host["sbin_local"] / "litco-slot-probe").exists()
+    assert (host["sbin_local"] / "litco-supervisor").read_text() == "# litco-supervisor from old\n"

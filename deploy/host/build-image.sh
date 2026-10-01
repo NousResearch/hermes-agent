@@ -31,6 +31,10 @@
 #   --tag <name>         droplet tag for the builder, default litco-host-builder; the
 #                        cleanup trap finds a builder by this tag + name if the
 #                        create call dies before it returns the droplet id
+#   --topology <t>       per_matter (default) or machine; passed to install-host.sh.
+#                        per_matter bakes litco-agent.service for one matter per
+#                        droplet; machine bakes litco-supervisor and the slot
+#                        template unit (README, "Machine topology")
 #   --dry-run            print every command in order and exit 0; runs nothing
 #
 # The builder is deleted on any failure after it is created (trap), so a failed
@@ -47,9 +51,10 @@ SIZE="s-4vcpu-8gb"
 BASE_IMAGE="ubuntu-24-04-x64"
 SSH_KEY=""
 TAG="litco-host-builder"
+TOPOLOGY="per_matter"
 DRY_RUN=false
 
-usage() { sed -n '2,37p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,41p' "${BASH_SOURCE[0]}"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -61,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --base-image) BASE_IMAGE="$2"; shift 2 ;;
     --ssh-key) SSH_KEY="$2"; shift 2 ;;
     --tag) TAG="$2"; shift 2 ;;
+    --topology) TOPOLOGY="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "build-image: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -73,6 +79,10 @@ if [[ -z "$VERSION" ]]; then
 fi
 if [[ ! "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "build-image: version must match [A-Za-z0-9._-]+ (it becomes a snapshot name)" >&2
+  exit 2
+fi
+if [[ "$TOPOLOGY" != per_matter && "$TOPOLOGY" != machine ]]; then
+  echo "build-image: --topology must be per_matter or machine" >&2
   exit 2
 fi
 REF="${REF:-$VERSION}"
@@ -165,6 +175,7 @@ if [[ "$DRY_RUN" == true ]]; then
   echo "litco-agent host image build plan (dry run; nothing is created)"
   echo "  version=${VERSION} ref=${REF} snapshot=${SNAPSHOT} builder=${BUILDER}"
   echo "  region=${REGION} size=${SIZE} base=${BASE_IMAGE} repo=${REPO} tag=${TAG}"
+  echo "  topology=${TOPOLOGY}"
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -187,10 +198,15 @@ else
 fi
 plan "wait for the builder's own first boot (apt locks)" -- ssh "${SSH_OPTS[@]}" "root@${DROPLET_IP}" "cloud-init status --wait >/dev/null || true"
 plan "copy install script" -- scp "${SSH_OPTS[@]}" "${HERE}/install-host.sh" "root@${DROPLET_IP}:/root/install-host.sh"
-plan "install host (packages, Tailscale, Chromium, Python 3.14, hermes user, litco-agent@${REF}, venvs, Node)" -- \
-  ssh "${SSH_OPTS[@]}" "root@${DROPLET_IP}" bash /root/install-host.sh --ref "$REF" --repo "$REPO"
-plan "verify secret-free image" -- ssh "${SSH_OPTS[@]}" "root@${DROPLET_IP}" \
-  "test ! -e /etc/litco-agent/env && test ! -e /home/hermes/.hermes/.env"
+plan "install host, topology ${TOPOLOGY} (packages, Tailscale, Chromium, Python 3.14, hermes user, litco-agent@${REF}, venvs, Node)" -- \
+  ssh "${SSH_OPTS[@]}" "root@${DROPLET_IP}" bash /root/install-host.sh --ref "$REF" --repo "$REPO" --topology "$TOPOLOGY"
+if [[ "$TOPOLOGY" == machine ]]; then
+  plan "verify secret-free image and machine topology" -- ssh "${SSH_OPTS[@]}" "root@${DROPLET_IP}" \
+    "test ! -e /etc/litco-agent/env && test ! -e /home/hermes/.hermes/.env && test ! -e /etc/litco-supervisor.env && test \"\$(cat /opt/litco-agent/TOPOLOGY)\" = machine"
+else
+  plan "verify secret-free image" -- ssh "${SSH_OPTS[@]}" "root@${DROPLET_IP}" \
+    "test ! -e /etc/litco-agent/env && test ! -e /home/hermes/.hermes/.env"
+fi
 plan "remove builder key and clean cloud-init state (load-bearing)" -- ssh "${SSH_OPTS[@]}" "root@${DROPLET_IP}" \
   "rm -f /root/.ssh/authorized_keys /root/install-host.sh && cloud-init clean --logs --machine-id"
 plan "power off builder" -- doctl compute droplet-action shutdown "$DROPLET_ID" --wait
@@ -199,5 +215,5 @@ plan "delete builder" -- doctl compute droplet delete "$DROPLET_ID" --force
 
 if [[ "$DRY_RUN" == false ]]; then
   BUILDER_DELETED=true   # disarm the trap: a clean run neither re-lists nor re-deletes
-  echo "[build-image] DONE: ${SNAPSHOT} (litco-agent@${REF})"
+  echo "[build-image] DONE: ${SNAPSHOT} (litco-agent@${REF}, topology ${TOPOLOGY})"
 fi

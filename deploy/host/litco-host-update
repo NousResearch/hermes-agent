@@ -73,7 +73,6 @@ fi
 # Overridable so the tests can run the real sequence in a scratch tree.
 PREFIX="${LITCO_PREFIX:-/opt/litco-agent}"
 SYSTEMD_DIR="${LITCO_SYSTEMD_DIR:-/etc/systemd/system}"
-BIN_DIR="${LITCO_BIN_DIR:-/usr/local/bin}"
 SBIN_DIR="${LITCO_SBIN_DIR:-/usr/local/sbin}"
 RUN_DIR="${LITCO_RUN_DIR:-/run/litco-agent}"
 AS_ROOT="${LITCO_HOST_UPDATE_AS_ROOT:-true}"
@@ -191,16 +190,24 @@ step "install the release's units and tools; daemon-reload"
 if dry; then
   run install -m 0644 "$REL/deploy/host/litco-agent@.service" "$SYSTEMD_DIR/litco-agent@.service"
   run install -m 0644 "$REL/deploy/host/litco-supervisor.service" "$SYSTEMD_DIR/litco-supervisor.service"
-  run install -m 0755 "$REL/deploy/host/litco-supervisor" "$BIN_DIR/litco-supervisor"
+  run install -m 0755 "$REL/deploy/host/litco-supervisor" "$SBIN_DIR/litco-supervisor"
   run install -m 0755 "$REL/deploy/host/litco-host-update" "$SBIN_DIR/litco-host-update"
+  run install -m 0755 "$REL/deploy/host/litco-slot-probe" "$SBIN_DIR/litco-slot-probe" "(if the release has it)"
+  run install -m 0755 "$REL/deploy/host/litco-slot-import" "$SBIN_DIR/litco-slot-import" "(if the release has it)"
   run systemctl daemon-reload
   run systemctl try-restart litco-supervisor.service "(only if its code or unit changed)"
 else
   install_if_changed 0644 "$REL/deploy/host/litco-agent@.service" "$SYSTEMD_DIR/litco-agent@.service" >/dev/null
   supervisor_changed="$(install_if_changed 0644 "$REL/deploy/host/litco-supervisor.service" \
     "$SYSTEMD_DIR/litco-supervisor.service")$(install_if_changed 0755 "$REL/deploy/host/litco-supervisor" \
-    "$BIN_DIR/litco-supervisor")"
+    "$SBIN_DIR/litco-supervisor")"
   install_if_changed 0755 "$REL/deploy/host/litco-host-update" "$SBIN_DIR/litco-host-update" >/dev/null
+  # Absent from releases older than these tools; a rollback keeps the newer copies.
+  for tool in litco-slot-probe litco-slot-import; do
+    if [[ -f "$REL/deploy/host/$tool" ]]; then
+      install_if_changed 0755 "$REL/deploy/host/$tool" "$SBIN_DIR/$tool" >/dev/null
+    fi
+  done
   systemctl daemon-reload
   if [[ -n "$supervisor_changed" ]]; then
     systemctl try-restart litco-supervisor.service

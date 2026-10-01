@@ -398,6 +398,52 @@ async def test_health(home):
 
 
 @pytest.mark.asyncio
+async def test_health_counts_the_profiles_runnable_cron_jobs(home, tmp_path, monkeypatch):
+    """Through the cron package's own store, in whichever profile HERMES_HOME names (A, B, A)."""
+    from cron.jobs import create_job, pause_job
+
+    profile_a, profile_b = tmp_path / "hermes-a", tmp_path / "hermes-b"
+    monkeypatch.setenv("HERMES_HOME", str(profile_a))
+    create_job(prompt="weekly docket check", schedule="every 1h", name="docket")
+    paused = create_job(prompt="paused digest", schedule="every 1h", name="digest")
+    pause_job(paused["id"])
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+    for n in range(3):
+        create_job(prompt=f"b job {n}", schedule="every 2h", name=f"b{n}")
+
+    async def cron_jobs_in(profile):
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        async with TestClient(TestServer(_server(FakeRunner(), home).build_app())) as client:
+            return (await (await client.get("/health")).json()).get("cronJobs")
+
+    assert await cron_jobs_in(profile_a) == 1      # the paused job does not count
+    assert await cron_jobs_in(profile_b) == 3
+    assert await cron_jobs_in(profile_a) == 1
+    assert await cron_jobs_in(tmp_path / "hermes-empty") == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("counter", ["raises", "slow", "not_a_count"])
+async def test_health_omits_cron_jobs_when_the_count_is_unknown(home, monkeypatch, counter):
+    import litco.turn_server as ts
+
+    def raises():
+        raise RuntimeError("Cron database corrupted and unrepairable")
+
+    def slow():
+        time.sleep(0.5)
+        return 0
+
+    monkeypatch.setattr(ts, "CRON_COUNT_TIMEOUT_SECONDS", 0.05)
+    fn = {"raises": raises, "slow": slow, "not_a_count": lambda: None}[counter]
+    async with TestClient(TestServer(_server(FakeRunner(), home, cron_counter=fn).build_app())) as client:
+        resp = await client.get("/health")
+        body = await resp.json()
+    assert resp.status == 200 and body["ok"] is True
+    assert "cronJobs" not in body
+
+
+@pytest.mark.asyncio
 async def test_scratch_files_do_not_ship(home):
     runner = FakeRunner()
     runner.extra_files = {

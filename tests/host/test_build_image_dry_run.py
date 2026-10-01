@@ -50,7 +50,8 @@ def test_dry_run_prints_the_full_plan_in_order_and_runs_nothing(fake_path):
         "wait for SSH",
         "wait for the builder's own first boot (apt locks)",
         "copy install script",
-        "install host (packages, Tailscale, Chromium, Python 3.14, hermes user, litco-agent@v1.2.3, venvs, Node)",
+        "install host, topology per_matter (packages, Tailscale, Chromium, Python 3.14, hermes user, "
+        "litco-agent@v1.2.3, venvs, Node)",
         "verify secret-free image",
         "remove builder key and clean cloud-init state (load-bearing)",
         "power off builder",
@@ -61,7 +62,8 @@ def test_dry_run_prints_the_full_plan_in_order_and_runs_nothing(fake_path):
     assert "doctl compute droplet create litco-agent-builder-v1-2-3 --region sfo3 --size s-4vcpu-8gb " \
            "--image ubuntu-24-04-x64 --ssh-keys <ssh-key>" in cmds[1]
     assert "--enable-monitoring" in cmds[1]
-    assert cmds[5].endswith("bash /root/install-host.sh --ref v1.2.3 --repo https://github.com/yavarb/litco-agent.git")
+    assert cmds[5].endswith("bash /root/install-host.sh --ref v1.2.3 --repo https://github.com/yavarb/litco-agent.git "
+                            "--topology per_matter")
     assert "cloud-init clean --logs --machine-id" in cmds[7]
     assert "rm -f /root/.ssh/authorized_keys" in cmds[7]
     assert cmds[9] == "doctl compute droplet-action snapshot <droplet-id> --snapshot-name litco-agent-host-v1.2.3 --wait"
@@ -78,8 +80,31 @@ def test_ref_region_size_and_key_overrides(fake_path):
     assert not fake_path["marker"].exists()
 
 
+def test_machine_topology_reaches_install_host_and_the_plan(fake_path):
+    out = run(["--version", "v0", "--topology", "machine", "--dry-run"], fake_path["env"])
+    assert out.returncode == 0, out.stderr
+    assert not fake_path["marker"].exists()
+    assert "  topology=machine" in out.stdout.splitlines()
+    steps, cmds = plan_steps(out.stdout), plan_commands(out.stdout)
+    assert steps[5].startswith("install host, topology machine (")
+    assert cmds[5].endswith("--ref v0 --repo https://github.com/yavarb/litco-agent.git --topology machine")
+    # The machine image is checked for its own secret file and its topology record too.
+    assert steps[6] == "verify secret-free image and machine topology"
+    assert "test ! -e /etc/litco-supervisor.env" in cmds[6]
+    assert 'test "$(cat /opt/litco-agent/TOPOLOGY)" = machine' in cmds[6]
+    # Same snapshot naming and the same eleven steps as a per-matter build.
+    assert len(steps) == 11 and steps[9] == "snapshot as litco-agent-host-v0"
+
+
+def test_topology_defaults_to_per_matter(fake_path):
+    out = run(["--version", "v0", "--dry-run"], fake_path["env"])
+    assert "  topology=per_matter" in out.stdout.splitlines()
+    assert plan_commands(out.stdout)[5].endswith("--topology per_matter")
+
+
 @pytest.mark.parametrize("args, message", [
     ([], "--version"),
+    (["--version", "v1", "--topology", "firm", "--dry-run"], "--topology must be per_matter or machine"),
     (["--version", "bad/name", "--dry-run"], "version must match"),
     (["--version", "v1"], "--ssh-key is required"),
     (["--version", "v1", "--bogus"], "unknown argument"),

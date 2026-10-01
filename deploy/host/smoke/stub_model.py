@@ -4,17 +4,23 @@
 Answers every chat completion with a fixed sentence, streamed or not, so the
 real Hermes agent inside the smoke container can run one turn end to end with
 no provider key and no network. Listens on 127.0.0.1:18080 by default.
+
+A request whose messages contain SMOKE-SLOW-<n> waits n seconds (SMOKE-SLOW
+alone: 20) before it answers. The machine smoke uses it to hold a turn open
+while it drains the slot.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = "stub-model"
 ANSWER = "SMOKE-OK: the matter host answered through the stub model."
+SLOW = re.compile(r"SMOKE-SLOW(?:-(\d{1,3}))?")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -47,6 +53,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.rstrip("/").endswith("/chat/completions"):
             self._json(404, {"error": {"message": "not found"}})
             return
+        slow = SLOW.search(json.dumps(req.get("messages") or []))
+        if slow:
+            time.sleep(int(slow.group(1) or 20))
         usage = {"prompt_tokens": 42, "completion_tokens": 12, "total_tokens": 54}
         created = int(time.time())
         if not req.get("stream"):

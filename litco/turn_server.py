@@ -6,7 +6,7 @@ Contract (LitKit survey, Appendix D; execution ledger decision 5)::
     POST /interrupt/{turnId}   -> stop that turn
     POST /drain                -> refuse new turns (503 draining); running turns finish
     DELETE /drain              -> take new turns again
-    GET  /health               -> version, uptime, active turns, draining, matterId
+    GET  /health               -> version, uptime, active turns, draining, matterId, cronJobs
     GET  /deliverables/{id}    -> bytes of a file listed in final.deliverables
 
 Every event is one SSE frame, ``event: <type>`` plus a JSON ``data`` line carrying
@@ -26,6 +26,11 @@ until ``activeTurns`` is 0. From the moment the flag is set, ``/turn`` answers
 matter cannot hold a restart open. Turns already accepted, including those still queued behind
 their session's lock, run to their end, and ``/interrupt`` keeps working on them. The flag lives
 in memory: a restarted process takes turns again.
+
+Cron (FIRM_AGENT_HOST 3.4): ``/health`` carries ``cronJobs``, the number of enabled Hermes cron
+jobs in this profile that the scheduler may still fire. The app idle-stops a slot only when it is
+0. When the count cannot be read the field is left out, and the app reads a missing field as
+"unknown" and keeps the slot running.
 
 Where it listens (:func:`listen_address`): a slot on the firm host (FIRM_AGENT_HOST 3.3) binds
 ``LITCO_SLOT_PORT``, which the supervisor assigns, and must be given ``LITCO_MATTER_ID``; the
@@ -69,6 +74,7 @@ DEFAULT_TURN_PORT = 8765
 TURN_GRANT_MAX = 4096
 SHARED_MEMORY_MAX_ITEMS = 12  # per scope (FIRM_AGENT_HOST 4.3)
 SHARED_MEMORY_MAX_CHARS = 3000  # per scope
+CRON_COUNT_TIMEOUT_SECONDS = 2.0  # /health must answer promptly; past this cronJobs is left out
 CHANNELS = ("slack", "web", "telegram")
 KINDS = ("channel", "dm")
 KEEPALIVE_SECONDS = 15.0
@@ -267,7 +273,7 @@ class TurnServer:
 
     def __init__(self, runner: TurnRunner, *, host_secret: Optional[str] = None, matter_id: Optional[str] = None,
                  home: Optional[Path] = None, agent_token: Optional[str] = None,
-                 env: Optional[Dict[str, str]] = None):
+                 env: Optional[Dict[str, str]] = None, cron_counter: Optional[Callable[[], int]] = None):
         env = dict(os.environ) if env is None else env
         self.runner = runner
         self.host_secret = host_secret if host_secret is not None else env.get("LITCO_HOST_SECRET", "")
@@ -275,6 +281,7 @@ class TurnServer:
         self.home = Path(home).resolve() if home is not None else matter_home(env)
         self.agent_token = agent_token if agent_token is not None else env.get("LITCO_AGENT_TOKEN", "")
         self.started_at = time.time()
+        self.cron_counter = cron_counter or count_cron_jobs
         self._turns: Dict[str, _Turn] = {}
         self._finished: List[str] = []
         self._session_locks: Dict[str, asyncio.Lock] = {}
@@ -341,11 +348,24 @@ class TurnServer:
 
     # -- handlers ----------------------------------------------------------------
     async def handle_health(self, request: web.Request) -> web.Response:
-        return web.json_response({
+        body = {
             "ok": True, "version": __version__, "hermesVersion": _hermes_version(),
             "uptimeSeconds": round(time.time() - self.started_at, 3),
             "activeTurns": self.active_turn_count, "draining": self.draining,
-            "state": "draining" if self.draining else "ready", "matterId": self.matter_id or None})
+            "state": "draining" if self.draining else "ready", "matterId": self.matter_id or None}
+        cron_jobs = await self._cron_jobs()
+        if cron_jobs is not None:
+            body["cronJobs"] = cron_jobs
+        return web.json_response(body)
+
+    async def _cron_jobs(self) -> Optional[int]:
+        """The cron count, or None ("unknown") on any error or when the store is slow to answer."""
+        try:
+            count = await asyncio.wait_for(asyncio.to_thread(self.cron_counter), CRON_COUNT_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - /health must answer; the app treats a missing count as unknown
+            logger.debug("litco turn server: cron job count unavailable", exc_info=True)
+            return None
+        return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
 
     async def handle_drain(self, request: web.Request) -> web.Response:
         """``POST`` stops taking turns; ``DELETE`` takes them again. Idempotent either way."""
@@ -649,6 +669,17 @@ def _halt_text(reason: str) -> str:
         "budget_exhausted": "The turn ran out of its time budget.",
         "shutdown": "The matter host is shutting down.",
     }.get(reason, "The turn stopped early.")
+
+
+def count_cron_jobs() -> int:
+    """Enabled Hermes cron jobs in this profile (``HERMES_HOME``) that the scheduler may still fire.
+
+    Read through the cron package's own store API, which resolves the active profile's
+    ``cron/jobs.json``: a job counts when it is runnable (enabled and not paused) and not in a
+    terminal state (a finished one-shot). Raises when the store cannot be read.
+    """
+    from cron.jobs import is_job_runnable, is_terminal_job, load_jobs
+    return sum(1 for job in load_jobs() if is_job_runnable(job) and not is_terminal_job(job))
 
 
 def _hermes_version() -> Optional[str]:

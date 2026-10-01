@@ -1,0 +1,259 @@
+#!/usr/bin/python3
+"""litco-slot-import: restore a migrated matter into a machine host's slot.
+
+    litco-slot-import [--dry-run] <slot> <tarball>
+
+The tarball (plain, gzip, bzip2 or xz) holds two top-level directories:
+
+    matter/   the matter home      -> /srv/litco/m/<slot>/matter
+    hermes/   the Hermes home      -> /srv/litco/m/<slot>/.hermes
+
+as a per-matter droplet keeps them in /home/hermes/matter and
+/home/hermes/.hermes. It is the home half of the cutover in
+FIRM_HOST_WAVE2 section 9: the app's `prepare` creates the slot, starts it
+once so the supervisor makes its user and home, and stops it; this tool then
+fills the home; `activate` starts the slot.
+
+It refuses unless the slot is registered in
+/var/lib/litco-supervisor/slots.json, its unit is not running, and its home
+exists as a real directory. It refuses the whole tarball if any member has an
+absolute path, a ".." component, a name outside matter/ and hermes/, or is a
+device node or FIFO, or is a link (symbolic or hard) that is absolute or would
+point outside its own top-level directory. Nothing is written until every
+member has passed.
+
+It extracts into a fresh staging directory inside the home, then moves
+matter/ and hermes/ into place. An existing matter or .hermes directory is
+renamed to <name>.pre-import-<UTC time>, never merged into or deleted. It then
+gives the whole home to m_<slot> (without following links) and prints what it
+did. --dry-run checks everything and prints the plan without writing.
+
+litco-agent-init renders .hermes/config.yaml and SOUL.md again at the slot's
+next start, so the imported Hermes home's own copies, written for the old
+droplet's paths, are replaced then.
+
+LITCO_HOME_ROOT (default /srv/litco/m) and LITCO_STATE_DIR (default
+/var/lib/litco-supervisor) override the two roots, for tests. Root only, except
+under those overrides. Standard library only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import os
+import posixpath
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
+
+SLOT_ID = re.compile(r"^[a-z0-9]{1,30}$")
+UNIT_TEMPLATE = "litco-agent@{id}.service"
+USER_PREFIX = "m_"
+# Top-level directory in the tarball -> directory in the slot's home.
+TARGETS = {"matter": "matter", "hermes": ".hermes"}
+RUNNING_STATES = ("active", "activating", "deactivating", "reloading", "refreshing")
+COMMAND_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+class ImportError_(Exception):
+    """A refusal; the message names the problem and never a file's contents."""
+
+
+@dataclass
+class Counts:
+    files: int = 0
+    dirs: int = 0
+    links: int = 0
+    bytes: int = 0
+
+    def text(self) -> str:
+        return f"{self.files} files, {self.dirs} directories, {self.links} links, {self.bytes} bytes"
+
+
+@dataclass
+class Plan:
+    slot: str
+    home: Path
+    user: str
+    counts: dict = field(default_factory=lambda: {top: Counts() for top in TARGETS})
+    seen: set = field(default_factory=set)
+
+
+def unit_state(slot: str) -> str:
+    out = subprocess.run(["systemctl", "is-active", UNIT_TEMPLATE.format(id=slot)], capture_output=True,
+                         text=True, check=False, stdin=subprocess.DEVNULL,
+                         env={"PATH": COMMAND_PATH, "LANG": "C.UTF-8"})
+    return (out.stdout.strip().splitlines() or ["unknown"])[0]
+
+
+def lookup_user(name: str) -> tuple:
+    try:
+        entry = pwd.getpwnam(name)
+    except KeyError as exc:
+        raise ImportError_(f"no user {name}; start the slot once so the supervisor creates it") from exc
+    return entry.pw_uid, entry.pw_gid
+
+
+def check_member(member: tarfile.TarInfo, plan: Plan) -> None:
+    """Refuse a member that could land, or point, outside the slot's home."""
+    name = member.name
+    shown = name[:120]
+    if name.startswith("/"):
+        raise ImportError_(f"absolute path in the tarball: {shown}")
+    parts = [p for p in name.split("/") if p not in ("", ".")]
+    if ".." in parts:
+        raise ImportError_(f"'..' in a tarball path: {shown}")
+    if not parts or parts[0] not in TARGETS:
+        raise ImportError_(f"tarball member outside matter/ and hermes/: {shown}")
+    if member.isdev():
+        raise ImportError_(f"device node or FIFO in the tarball: {shown}")
+    if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+        raise ImportError_(f"unsupported member type in the tarball: {shown}")
+    top = parts[0]
+    if member.issym():
+        # Relative only, and resolved from the link's own directory it must stay
+        # inside its own top-level directory (matter/ or hermes/). A leading
+        # "x/" keeps normpath from clamping "../.." at the root.
+        target = member.linkname
+        resolved = posixpath.normpath(posixpath.join("x", *parts[:-1], target)).split("/")
+        if target.startswith("/") or resolved[0] != "x" or len(resolved) < 2 or resolved[1] != top:
+            raise ImportError_(f"symbolic link pointing outside its directory in the slot's home: {shown}")
+    if member.islnk():
+        target = [p for p in member.linkname.split("/") if p not in ("", ".")]
+        if member.linkname.startswith("/") or ".." in target or not target or target[0] != top:
+            raise ImportError_(f"hard link pointing outside its directory in the slot's home: {shown}")
+    plan.seen.add(top)
+    counts = plan.counts[top]
+    if member.isdir():
+        counts.dirs += 1
+    elif member.issym() or member.islnk():
+        counts.links += 1
+    else:
+        counts.files += 1
+        counts.bytes += member.size
+
+
+def _registered(state_dir: Path, slot: str) -> dict:
+    path = state_dir / "slots.json"
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ImportError_(f"no supervisor registry at {path}") from exc
+    except (OSError, ValueError) as exc:
+        raise ImportError_(f"cannot read {path}: {exc}") from exc
+    rec = (doc.get("slots") or {}).get(slot) if isinstance(doc, dict) else None
+    if not isinstance(rec, dict):
+        raise ImportError_(f"slot {slot} is not registered with the supervisor")
+    if rec.get("desired") == "removing":
+        raise ImportError_(f"slot {slot} is being removed")
+    return rec
+
+
+def run_import(slot: str, tarball: Path, *, home_root: Path, state_dir: Path, dry_run: bool,
+               state_of: Callable[[str], str] = unit_state, user_of: Callable[[str], tuple] = lookup_user,
+               out: Callable[[str], None] = print, now: Callable[[], _dt.datetime] | None = None) -> Plan:
+    if not SLOT_ID.match(slot):
+        raise ImportError_("slot id must be 1-30 lowercase letters and digits")
+    _registered(state_dir, slot)
+    state = state_of(slot)
+    if state in RUNNING_STATES or state not in ("inactive", "failed"):
+        raise ImportError_(f"slot {slot} is {state}; stop it (POST /slots/{slot}/stop) before importing")
+    home = home_root / slot
+    if home.is_symlink() or not home.is_dir():
+        raise ImportError_(f"{home} is not a directory; start the slot once so the supervisor creates it")
+    user = f"{USER_PREFIX}{slot}"
+    uid, gid = user_of(user)
+    plan = Plan(slot=slot, home=home, user=user)
+
+    try:
+        archive = tarfile.open(tarball, "r:*")
+    except (OSError, tarfile.TarError) as exc:
+        raise ImportError_(f"cannot open {tarball} as a tarball: {exc}") from exc
+    with archive:
+        members = archive.getmembers()
+        for member in members:
+            check_member(member, plan)
+        missing = [top for top in TARGETS if top not in plan.seen]
+        if missing:
+            raise ImportError_(f"the tarball has no {' or '.join(m + '/' for m in missing)}")
+
+        stamp = (now() if now else _dt.datetime.now(_dt.timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+        moves = [(home / TARGETS[top], home / f"{TARGETS[top]}.pre-import-{stamp}") for top in TARGETS]
+        for top in TARGETS:
+            out(f"{'would import' if dry_run else 'importing'} {top}/ -> {home / TARGETS[top]}: "
+                f"{plan.counts[top].text()}")
+        for current, aside in moves:
+            if current.exists() or current.is_symlink():
+                out(f"{'would move' if dry_run else 'moving'} the existing {current} aside to {aside.name}")
+        if dry_run:
+            out(f"would chown -R {user} {home}")
+            return plan
+
+        staging = home / f".litco-import.{os.getpid()}"
+        staging.mkdir(mode=0o700)
+        try:
+            # The "data" filter re-checks every member, drops ownership and
+            # set-id bits, and refuses links out of the staging directory.
+            archive.extractall(staging, members=members, filter="data")
+            for current, aside in moves:
+                if current.exists() or current.is_symlink():
+                    current.rename(aside)
+            for top in TARGETS:
+                source = staging / top
+                if not source.exists():
+                    source.mkdir(mode=0o700)
+                source.rename(home / TARGETS[top])
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    changed = _chown_tree(home, uid, gid)
+    out(f"chown -R {user}: {changed} entries in {home}")
+    out(f"litco-slot-import: slot {slot} imported; start it with PUT /slots/{slot}")
+    return plan
+
+
+def _chown_tree(root: Path, uid: int, gid: int) -> int:
+    """chown -R without following links (lchown on every entry)."""
+    count = 0
+    os.chown(root, uid, gid, follow_symlinks=False)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames + filenames:
+            os.chown(os.path.join(dirpath, name), uid, gid, follow_symlinks=False)
+            count += 1
+    return count + 1
+
+
+def main(argv=None, **overrides) -> int:
+    parser = argparse.ArgumentParser(prog="litco-slot-import", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--dry-run", action="store_true", help="check everything and print the plan; write nothing")
+    parser.add_argument("slot")
+    parser.add_argument("tarball", type=Path)
+    args = parser.parse_args(argv)
+    home_root = Path(os.environ.get("LITCO_HOME_ROOT") or "/srv/litco/m")
+    state_dir = Path(os.environ.get("LITCO_STATE_DIR") or "/var/lib/litco-supervisor")
+    scratch = "LITCO_HOME_ROOT" in os.environ or "LITCO_STATE_DIR" in os.environ
+    if os.geteuid() != 0 and not scratch and not args.dry_run:
+        print("litco-slot-import: run as root", file=sys.stderr)
+        return 1
+    try:
+        run_import(args.slot, args.tarball, home_root=home_root, state_dir=state_dir, dry_run=args.dry_run,
+                   **overrides)
+    except ImportError_ as exc:
+        print(f"litco-slot-import: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, tarfile.TarError) as exc:
+        print(f"litco-slot-import: import failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from litco.homes import register_deliverable, safe_segment
 from litco.litkit.client import (TURN_GRANT_HEADER, LitKitClient, LitKitConfig, LitKitError,
                                  LitKitPermissionError, default_client)
-from litco.litkit.context import current_acting_user, current_turn, current_turn_grant
+from litco.litkit.context import current_acting_user, current_thread_id, current_turn, current_turn_grant
 from litco.litkit.files import (TEXT_SEPARATOR, InputFileMissing, PathOutsideWorkDir, dumps, generate_preview,
                                 input_path, output_dir, output_path, relative, spill, work_dir)
 from litco.litkit import jev as _jev
@@ -888,6 +888,12 @@ def _review_create(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict
         body["quoteId"] = safe_segment(quote_id)
     if args.get("userConfirmed"):
         body["userConfirmed"] = True
+    # The thread this turn runs in, so LitKit posts the Launch card there (ana-review-contract).
+    # LitKit takes only a thread uuid; any other session id (none outside a turn) is left out,
+    # and the proposal then waits in the proposals queue.
+    thread_id = current_thread_id()
+    if thread_id and _UUID.match(thread_id):
+        body["threadId"] = thread_id
     result = client.post(f"/api/matters/{mid}/review-jobs/propose", body)
     result = result if isinstance(result, dict) else {"result": result}
     quote = result.get("quote") if isinstance(result.get("quote"), dict) else {}

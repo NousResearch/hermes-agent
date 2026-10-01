@@ -1,0 +1,205 @@
+#!/usr/bin/python3
+"""litco-slot-probe: prove that one matter slot cannot reach another's secrets.
+
+    litco-slot-probe <a> <b>
+
+Runs four fixed reads as slot <a>'s user, from inside slot <a>'s sandbox, aimed
+at slot <b> and at the droplet's metadata API (FIRM_AGENT_HOST section 3.2):
+
+    env       read /run/litco-agent/<b>.env          (b's secrets, root 0600)
+    proc      read /proc/<main pid of b>/environ      (b's secrets, in memory)
+    home      list /srv/litco/m/<b>                   (b's matter and Hermes home)
+    metadata  GET http://169.254.169.254/metadata/v1/user-data, 3 s timeout
+              (the machine's user-data, which carries the supervisor secret)
+
+It prints one JSON object, {"env": "denied" | "READ", "proc": ..., "home": ...,
+"metadata": ...}, with the reason for each verdict on stderr, and exits 0 only
+when all four are "denied". Exit 1: something was READ. Exit 2: bad arguments,
+or a slot is not running. Exit 3: the probe itself could not run.
+
+IPAddressDeny= drops the slot's packets to the metadata address silently, so a
+blocked request reports "timed out". An address that answers nobody would look
+the same. Read the metadata verdict beside a control from outside any slot:
+on a droplet `curl -m 3 http://169.254.169.254/metadata/v1/user-data` as root
+answers, and the machine smoke checks that the address answers in its
+container too.
+
+How the reads enter slot <a>'s sandbox. A plain `sudo -u m_<a>` would test
+only file permissions: it runs in root's mount namespace, where every slot's
+home and /run/litco-agent exist, with the host's /proc, in the caller's cgroup.
+None of the unit's hardening applies there, so a pass would prove nothing about
+the unit, and a metadata read would be stopped by nothing. Instead the probe:
+
+  1. moves its child into slot <a>'s cgroup (the unit's own, read from
+     /proc/<main pid of a>/cgroup), by writing to that cgroup's cgroup.procs
+     before exec. systemd attaches IPAddressDeny= as a BPF program to the
+     unit's cgroup, so the metadata request meets the same filter the slot's
+     processes meet;
+  2. runs `nsenter --target <main pid of a> --mount --pid --ipc`, which joins
+     the unit's mount namespace (TemporaryFileSystem=/srv/litco/m with only a's
+     home bound in, InaccessiblePaths= over /run/litco-agent, the
+     ProtectProc=invisible /proc, PrivateTmp=), its PID namespace, and its
+     IPC namespace (PrivateIPC=);
+  3. drops to m_<a> with `setpriv --reuid --regid --init-groups
+     --no-new-privs`, as the unit's User= and NoNewPrivileges= do.
+
+The command run inside is this file's fixed reader (READER below), never
+anything named on the command line: the only inputs are two slot ids, checked
+against ^[a-z0-9]{1,30}$, and the main PID systemd reports for <b>. So the
+probe is not a general way to run commands as a slot.
+
+Root only. Standard library only; runs under the system python3.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pwd
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+SLOT_ID = re.compile(r"^[a-z0-9]{1,30}$")
+UNIT_TEMPLATE = "litco-agent@{id}.service"
+USER_PREFIX = "m_"
+RUN_DIR = "/run/litco-agent"
+HOME_ROOT = "/srv/litco/m"
+METADATA_URL = "http://169.254.169.254/metadata/v1/user-data"
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+COMMAND_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+PROBES = ("env", "proc", "home", "metadata")
+
+# Runs as m_<a> inside a's sandbox. argv: env path, environ path, home path, metadata URL.
+# Prints {probe: [verdict, reason]}. Any successful read is READ; only an error is denied.
+READER = r"""
+import json, socket, sys, urllib.error, urllib.request
+env_path, environ_path, home_path, url = sys.argv[1:5]
+out = {}
+def attempt(name, fn):
+    try:
+        fn()
+    except OSError as exc:
+        out[name] = ["denied", f"{type(exc).__name__}: {exc.strerror or exc}"]
+    else:
+        out[name] = ["READ", "succeeded"]
+def read(path):
+    with open(path, "rb") as handle:
+        handle.read(1)
+attempt("env", lambda: read(env_path))
+attempt("proc", lambda: read(environ_path))
+attempt("home", lambda: __import__("os").listdir(home_path))
+try:
+    with urllib.request.urlopen(url, timeout=3) as resp:
+        out["metadata"] = ["READ", f"HTTP {resp.status}"]
+except urllib.error.HTTPError as exc:
+    out["metadata"] = ["READ", f"HTTP {exc.code}: the address answered"]
+except (urllib.error.URLError, OSError) as exc:
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, socket.timeout) or "timed out" in str(reason):
+        out["metadata"] = ["denied", "timed out"]
+    else:
+        detail = getattr(reason, "strerror", None) or str(reason)
+        out["metadata"] = ["denied", f"{type(reason).__name__}: {detail}"]
+print(json.dumps(out))
+"""
+
+
+class ProbeError(Exception):
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _run(argv: list) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
+                          env={"PATH": COMMAND_PATH, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})
+
+
+def main_pid(slot: str) -> int:
+    """The running slot's main PID, or ProbeError(2) when the slot is not running."""
+    out = _run(["systemctl", "show", "-p", "ActiveState", "-p", "MainPID", UNIT_TEMPLATE.format(id=slot)])
+    props = dict(line.partition("=")[::2] for line in out.stdout.splitlines())
+    pid = props.get("MainPID", "0")
+    if props.get("ActiveState") != "active" or not pid.isdigit() or int(pid) <= 0:
+        raise ProbeError(2, f"slot {slot} is not running ({props.get('ActiveState') or 'unknown'}); "
+                            "start both slots before probing")
+    return int(pid)
+
+
+def unit_cgroup(pid: int) -> Path:
+    """The cgroup v2 directory of a process, as seen from the host's cgroup namespace."""
+    try:
+        lines = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ProbeError(3, f"cannot read the cgroup of pid {pid}: {exc.strerror}") from exc
+    for line in lines:
+        hierarchy, _, path = line.partition("::")
+        if hierarchy == "0" and path.startswith("/"):
+            target = CGROUP_ROOT / path.lstrip("/")
+            if (target / "cgroup.procs").exists():
+                return target
+    raise ProbeError(3, f"pid {pid} has no cgroup v2 path under {CGROUP_ROOT}")
+
+
+def probe(a: str, b: str) -> dict:
+    for slot in (a, b):
+        if not SLOT_ID.match(slot):
+            raise ProbeError(2, "slot ids must be 1-30 lowercase letters and digits")
+    if a == b:
+        raise ProbeError(2, "probe two different slots")
+    pid_a, pid_b = main_pid(a), main_pid(b)
+    try:
+        user = pwd.getpwnam(f"{USER_PREFIX}{a}")
+    except KeyError as exc:
+        raise ProbeError(2, f"no user {USER_PREFIX}{a}") from exc
+    cgroup_procs = unit_cgroup(pid_a) / "cgroup.procs"
+
+    def join_cgroup():  # in the child, before exec: it and everything it starts sit in a's unit
+        with open(cgroup_procs, "w", encoding="ascii") as handle:
+            handle.write("0")
+
+    argv = [
+        "nsenter", f"--target={pid_a}", "--mount", "--pid", "--ipc", "--",
+        "setpriv", f"--reuid={user.pw_uid}", f"--regid={user.pw_gid}", "--init-groups", "--no-new-privs", "--",
+        "/usr/bin/python3", "-I", "-c", READER,
+        f"{RUN_DIR}/{b}.env", f"/proc/{pid_b}/environ", f"{HOME_ROOT}/{b}", METADATA_URL,
+    ]
+    env = {"PATH": COMMAND_PATH, "HOME": user.pw_dir, "LANG": "C.UTF-8"}
+    proc = subprocess.run(argv, capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
+                          env=env, preexec_fn=join_cgroup, timeout=30)
+    try:
+        found = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise ProbeError(3, f"the reader did not run (exit {proc.returncode}): {proc.stderr.strip()[-300:]}") from exc
+    if set(found) != set(PROBES):
+        raise ProbeError(3, "the reader returned an incomplete result")
+    return {name: tuple(found[name]) for name in PROBES}
+
+
+def main(argv=None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 2 or args[0].startswith("-"):
+        print(__doc__.split("\n\n")[1].strip(), file=sys.stderr)
+        return 2
+    if os.geteuid() != 0:
+        print("litco-slot-probe: must run as root", file=sys.stderr)
+        return 2
+    try:
+        results = probe(args[0], args[1])
+    except ProbeError as exc:
+        print(f"litco-slot-probe: {exc}", file=sys.stderr)
+        return exc.code
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"litco-slot-probe: the probe could not run: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+    for name in PROBES:
+        print(f"litco-slot-probe: {args[0]} -> {args[1]} {name}: {results[name][0]} ({results[name][1]})",
+              file=sys.stderr)
+    print(json.dumps({name: results[name][0] for name in PROBES}))
+    return 0 if all(results[name][0] == "denied" for name in PROBES) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -15,10 +15,14 @@
 #      the real gateway, litco_turn platform, HermesTurnRunner and AIAgent,
 #   4. stops the unit and checks the drain ran.
 #
+# --topology machine runs the machine host's smoke instead: smoke/Dockerfile.machine
+# (install-host.sh --container --topology machine) and two matter slots driven
+# through the real litco-supervisor API. smoke/machine.sh lists its steps.
+#
 # Needs a running Docker daemon (Docker Desktop, colima, ...). Runs nothing
 # against any cloud account.
 #
-# Usage: deploy/host/smoke.sh [--keep] [--no-build]
+# Usage: deploy/host/smoke.sh [--topology per_matter|machine] [--keep] [--no-build]
 
 set -euo pipefail
 
@@ -30,13 +34,22 @@ PORT="${LITCO_SMOKE_PORT:-18765}"
 SECRET="smoke-host-secret-not-real-0123456789abcdef"
 KEEP=false
 BUILD=true
-for arg in "$@"; do
-  case "$arg" in
-    --keep) KEEP=true ;;
-    --no-build) BUILD=false ;;
-    *) echo "smoke: unknown argument $arg" >&2; exit 2 ;;
+TOPOLOGY=per_matter
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --keep) KEEP=true; shift ;;
+    --no-build) BUILD=false; shift ;;
+    --topology) TOPOLOGY="${2:-}"; shift 2 ;;
+    *) echo "smoke: unknown argument $1" >&2; exit 2 ;;
   esac
 done
+DOCKERFILE=Dockerfile
+case "$TOPOLOGY" in
+  per_matter) ;;
+  machine) IMAGE="litco-agent-host-smoke-machine:local"; NAME="litco-agent-host-smoke-machine"
+           DOCKERFILE=Dockerfile.machine ;;
+  *) echo "smoke: --topology must be per_matter or machine" >&2; exit 2 ;;
+esac
 
 fail() { echo "SMOKE FAIL: $*" >&2; docker logs "$NAME" 2>&1 | tail -20 >&2 || true;
          docker exec "$NAME" journalctl -u litco-agent --no-pager -n 80 >&2 2>/dev/null || true; exit 1; }
@@ -57,9 +70,15 @@ if [[ "$BUILD" == true ]]; then
   (cd "$REPO" && git ls-files -co --exclude-standard -z \
     | python3 -c 'import os,sys; sys.stdout.buffer.write(b"".join(p+b"\0" for p in sys.stdin.buffer.read().split(b"\0") if p and os.path.lexists(p)))' \
     | tar --null -T - -cf - | tar -xf - -C "$CTX/src")
-  cp "$HERE/smoke/Dockerfile" "$CTX/Dockerfile"
+  cp "$HERE/smoke/$DOCKERFILE" "$CTX/Dockerfile"
   step "docker build $IMAGE (this runs install-host.sh; the first build takes several minutes)"
   docker build -t "$IMAGE" "$CTX"
+fi
+
+if [[ "$TOPOLOGY" == machine ]]; then
+  # shellcheck source=smoke/machine.sh
+  source "$HERE/smoke/machine.sh"
+  exit 0
 fi
 
 step "boot systemd in the container"

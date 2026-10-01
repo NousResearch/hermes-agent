@@ -556,6 +556,34 @@ def test_review_create_sends_optimizations_considered_only_when_given(fake, env)
     assert len(fake.requests) == n
 
 
+def test_review_create_sends_the_turns_thread_as_thread_id(fake, env):
+    """ana-review-contract: threadId is the turn's sessionId, so the Launch card posts in that thread."""
+    FakeReview(fake)
+    base = {"action": "create", "criteriaSetId": _id(1), "tags": ["P"], "scope": {"workSetId": _id(2)}}
+    thread = "7d0c6f2e-3a1b-4c5d-8e9f-0a1b2c3d4e5f"
+
+    def proposed_under(identity):
+        token = bind_turn(identity)
+        try:
+            call("litkit_review", **base)
+        finally:
+            reset_turn(token)
+        return fake.calls("POST", rf"/api/matters/{M}/review-jobs/propose")[-1].json()
+
+    turn = TurnIdentity(turn_id="turn_2", matter_id=M, acting_user=USER_ID, cwd=env["cwd"], thread_id=thread)
+    assert proposed_under(turn)["threadId"] == thread
+    # A session id LitKit could not resolve as a thread (it takes a uuid) is left out, not sent to fail.
+    slack = TurnIdentity(turn_id="turn_3", matter_id=M, acting_user=USER_ID, cwd=env["cwd"], thread_id="C0123:1712.5")
+    assert "threadId" not in proposed_under(slack)
+    # Outside a turn (cron, unattended work) there is no thread.
+    token = bind_turn(None)
+    try:
+        call("litkit_review", **base)
+    finally:
+        reset_turn(token)
+    assert "threadId" not in fake.calls("POST", rf"/api/matters/{M}/review-jobs/propose")[-1].json()
+
+
 def test_review_create_second_approver_is_explained(fake, env):
     fake.route("POST", rf"/api/matters/{M}/review-jobs/propose",
                {"proposed": False, "requiresApproval": True, "needsSecondApprover": True,

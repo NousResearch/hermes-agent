@@ -73,7 +73,8 @@ def test_per_matter_is_the_default_and_bakes_the_single_matter_unit(fake_path):
     assert "git -C /opt/litco-agent/app checkout --detach v1" in cmds
     assert written(out)["/opt/litco-agent/TOPOLOGY"] == "per_matter"
     joined = "\n".join(cmds)
-    for absent in ("litco-agent@.service", "litco-supervisor", "nftables", "/opt/litco-agent/current", "releases/"):
+    for absent in ("litco-agent@.service", "litco-supervisor", "litco-slot-", "nftables", "/opt/litco-agent/current",
+                   "releases/"):
         assert absent not in joined, absent
     assert "/etc/nftables.conf" not in written(out)
 
@@ -94,6 +95,8 @@ def test_machine_installs_the_template_unit_supervisor_and_update_from_the_relea
     assert f"install -m 0644 {rel}/deploy/host/litco-supervisor.service " \
            "/etc/systemd/system/litco-supervisor.service" in cmds
     assert f"install -m 0755 {rel}/deploy/host/litco-host-update /usr/local/sbin/litco-host-update" in cmds
+    for tool in ("litco-slot-probe", "litco-slot-import"):
+        assert f"install -m 0755 {rel}/deploy/host/{tool} /usr/local/sbin/{tool}" in cmds
     assert "systemctl enable litco-supervisor.service" in cmds
     assert files["/opt/litco-agent/TOPOLOGY"] == "machine"
     assert files[f"{rel}/.litco-release-ok"] == "host-2026.10.01"

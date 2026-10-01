@@ -46,7 +46,8 @@
 #   /opt/litco-agent/current -> releases/<ref>   flipped by litco-host-update
 #   /srv/litco/m/<slot>                    each slot's home (made by the supervisor)
 #   /etc/systemd/system/litco-agent@.service, litco-supervisor.service
-#   /usr/local/sbin/litco-supervisor, /usr/local/sbin/litco-host-update
+#   /usr/local/sbin/litco-supervisor, /usr/local/sbin/litco-host-update,
+#   /usr/local/sbin/litco-slot-probe, /usr/local/sbin/litco-slot-import
 #   /etc/nftables.conf                     inbound only on tailscale0
 
 set -euo pipefail
@@ -225,7 +226,7 @@ fi
 echo "$TOPOLOGY" | write_file "$PREFIX/TOPOLOGY" 0644
 if machine; then
   # Fail before the long venv and browser steps, not after them.
-  for f in litco-supervisor litco-supervisor.service; do
+  for f in litco-supervisor litco-supervisor.service litco-slot-probe litco-slot-import; do
     if ! dry && [[ ! -f "$APP/deploy/host/$f" ]]; then
       echo "install-host: $APP/deploy/host/$f is missing; this ref predates the supervisor" >&2
       exit 1
@@ -264,6 +265,9 @@ if machine; then
   run install -m 0755 "$APP/deploy/host/litco-supervisor" /usr/local/sbin/litco-supervisor
   run install -m 0644 "$APP/deploy/host/litco-supervisor.service" /etc/systemd/system/litco-supervisor.service
   run install -m 0755 "$APP/deploy/host/litco-host-update" /usr/local/sbin/litco-host-update
+  # Operator tools: the cross-slot isolation probe and the migration import.
+  run install -m 0755 "$APP/deploy/host/litco-slot-probe" /usr/local/sbin/litco-slot-probe
+  run install -m 0755 "$APP/deploy/host/litco-slot-import" /usr/local/sbin/litco-slot-import
   # Slot homes are created 0700 by the supervisor; the parent only lets owners in.
   run install -d -m 0711 -o root -g root /srv/litco /srv/litco/m
   run install -d -m 0700 -o root -g root /var/lib/litco-supervisor

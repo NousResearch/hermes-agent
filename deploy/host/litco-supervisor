@@ -12,6 +12,12 @@ API (every route but /health needs ``Authorization: Bearer <supervisor secret>``
                            (root 0600), start litco-agent@<id>
     POST /slots/{id}/stop  drain and stop the unit, then delete the env file (202;
                            runs in the background; GET /slots shows the progress)
+    DELETE /slots/{id}     remove the slot for good (202; in the background): drain
+                           and stop the unit, delete the env file, disable linger,
+                           delete the user m_<id>, remove the home, and drop the
+                           registry entry, which frees the port. A PUT meanwhile is
+                           409 slot_stopping. If a step fails the entry stays,
+                           marked "removing", and another DELETE finishes the job
     GET  /slots            ids, matters, ports and states; never a secret
     GET  /health           liveness; needs no secret and reports none
 
@@ -38,6 +44,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -360,6 +367,7 @@ class Supervisor:
         self._lock = threading.Lock()          # guards the registry and the lock table
         self._slot_locks: dict = {}
         self._stopping: set = set()
+        self._removing: set = set()
         self._threads: list = []
         self._started = time.monotonic()
         self._slots = self._load_registry()
@@ -419,7 +427,7 @@ class Supervisor:
         return (result.stdout.strip().splitlines() or ["unknown"])[0]
 
     def _state(self, slot_id: str) -> str:
-        if slot_id in self._stopping:
+        if slot_id in self._stopping or slot_id in self._removing:
             return "stopping"
         return _ACTIVE_STATE.get(self.unit_state(slot_id), "unknown")
 
@@ -463,6 +471,9 @@ class Supervisor:
                 if slot_id in self._stopping:
                     raise SupervisorError(409, "slot_stopping", "the slot is stopping; retry once it has stopped")
                 rec = self._slots.get(slot_id)
+                if slot_id in self._removing or (rec and rec.get("desired") == "removing"):
+                    raise SupervisorError(409, "slot_stopping",
+                                          "the slot is being removed; DELETE it again if removal stalled")
                 if rec and rec["matterId"] != v["matter_id"]:
                     raise SupervisorError(409, "slot_matter_mismatch", "this slot id belongs to another matter")
                 other = next((sid for sid, r in self._slots.items()
@@ -507,17 +518,19 @@ class Supervisor:
         with self._lock:
             if slot_id not in self._slots:
                 raise SupervisorError(404, "no_such_slot", "no slot with this id")
-            if slot_id in self._stopping:
+            if slot_id in self._stopping or slot_id in self._removing:
                 return 202, {"slot": self._public(slot_id, "stopping")}
         with self._slot_lock(slot_id):
+            # A slot whose removal stalled stays marked for removal.
+            desired = "removing" if self._slots[slot_id].get("desired") == "removing" else "stopped"
             state = self.unit_state(slot_id)
             if state in ("inactive", "failed"):
                 self._delete_env(slot_id)
-                self._update(slot_id, desired="stopped")
+                self._update(slot_id, desired=desired)
                 return 200, {"slot": self._public(slot_id)}
             with self._lock:
                 self._stopping.add(slot_id)
-            self._update(slot_id, desired="stopped")
+            self._update(slot_id, desired=desired)
         thread = threading.Thread(target=self._stop_worker, args=(slot_id,),
                                   name=f"stop-{slot_id}", daemon=True)
         with self._lock:
@@ -540,15 +553,97 @@ class Supervisor:
                     self._stopping.discard(slot_id)
             self.log(f"slot {slot_id}: stopped; env file deleted")
 
+    def delete_slot(self, slot_id: str) -> tuple:
+        """Remove a slot: the unit, the env file, linger, the user, the home and the registry entry."""
+        if not SLOT_ID.match(slot_id):
+            raise SupervisorError(400, "invalid_slot_id", "slot id must be 1-30 lowercase letters and digits")
+        with self._lock:
+            if slot_id not in self._slots:
+                raise SupervisorError(404, "no_such_slot", "no slot with this id")
+            if slot_id in self._removing:
+                return 202, {"slot": self._public(slot_id, "stopping")}
+        # Waits for a PUT in progress; from here on a PUT answers 409.
+        with self._slot_lock(slot_id):
+            with self._lock:
+                self._removing.add(slot_id)
+            self._update(slot_id, desired="removing")
+            reply = {"slot": self._public(slot_id, "stopping")}
+        thread = threading.Thread(target=self._remove_worker, args=(slot_id,),
+                                  name=f"remove-{slot_id}", daemon=True)
+        with self._lock:
+            self._threads = [t for t in self._threads if t.is_alive()] + [thread]
+        thread.start()
+        return 202, reply
+
+    def _remove_worker(self, slot_id: str) -> None:
+        rec = dict(self._slots[slot_id])
+        user, port = rec["unixUser"], rec["port"]
+        unit = UNIT_TEMPLATE.format(id=slot_id)
+        try:
+            # 1. The unit's ExecStop drains the turn server and waits for running turns.
+            result = self.runner(["systemctl", "stop", unit])
+            if result.returncode != 0 and self.unit_state(slot_id) not in ("inactive", "failed"):
+                raise SupervisorError(500, "stop_failed", f"systemctl stop exited {result.returncode}")
+            self.runner(["systemctl", "reset-failed", unit])
+            # 2. Its secrets.
+            self._delete_env(slot_id)
+            # 3. The user. Linger kept the user's manager (and Hermes cron) alive;
+            #    terminate-user ends it now rather than after logind's stop delay,
+            #    because userdel refuses a user that still has processes.
+            if self.runner(["getent", "passwd", user]).returncode == 0:
+                self._run(["loginctl", "disable-linger", user], "linger_failed")
+                self.runner(["loginctl", "terminate-user", user])
+                self._run(["userdel", user], "userdel_failed")
+            # 4. The home, without following any link out of the home root.
+            self._remove_home(slot_id, Path(rec["home"]))
+        except Exception as exc:  # any failure leaves the entry marked "removing" for a retry
+            if isinstance(exc, SupervisorError):
+                message = exc.message
+            elif isinstance(exc, OSError):
+                message = f"{type(exc).__name__}: {exc.strerror}"
+            else:
+                message = type(exc).__name__
+            self.log(f"slot {slot_id}: removal stopped: {message}; DELETE again to finish")
+            with self._lock:
+                self._removing.discard(slot_id)
+            return
+        # 5. The registry entry; the port is free for the next new slot.
+        with self._slot_lock(slot_id):
+            with self._lock:
+                self._slots.pop(slot_id, None)
+                self._save_registry()
+                self._removing.discard(slot_id)
+                self._stopping.discard(slot_id)
+        self.log(f"slot {slot_id}: removed (user {user}, home, port {port} freed)")
+
+    def _remove_home(self, slot_id: str, home: Path) -> None:
+        """Delete /srv/litco/m/<id>. A link is unlinked, never followed; rmtree works by fd."""
+        root = self.config.home_root
+        if home != root / slot_id:
+            raise SupervisorError(500, "home_unsafe", "the registered home is not <home root>/<slot id>")
+        try:
+            info = home.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            home.unlink()
+            return
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise SupervisorError(500, "home_unsafe", "this platform's rmtree can follow symlinks")
+        shutil.rmtree(home)
+
     def list_slots(self) -> dict:
         with self._lock:
             ids = sorted(self._slots)
         slots = []
         for slot_id in ids:
-            state = self._state(slot_id)
-            if state in ("stopped", "failed"):
-                self._sweep_env(slot_id)
-            slots.append(self._public(slot_id, state))
+            try:
+                state = self._state(slot_id)
+                if state in ("stopped", "failed"):
+                    self._sweep_env(slot_id)
+                slots.append(self._public(slot_id, state))
+            except KeyError:  # removed while this list was being built
+                continue
         return {"slots": slots}
 
     def _sweep_env(self, slot_id: str) -> None:
@@ -584,7 +679,7 @@ class Supervisor:
                 if self.env_path(slot_id).exists():
                     self._delete_env(slot_id)
                     self.log(f"slot {slot_id}: not running; stale env file deleted")
-                if self._slots[slot_id].get("desired") != "stopped":
+                if self._slots[slot_id].get("desired") not in ("stopped", "removing"):
                     self._slots[slot_id].update(desired="stopped", updatedAt=_now())
         if self._slots:
             self._save_registry()
@@ -677,8 +772,12 @@ def make_handler(supervisor: Supervisor):
                     return
                 match = _SLOT_PATH.match(path)
                 if match:
+                    if method == "DELETE":
+                        self._drain_body()
+                        self._send(*supervisor.delete_slot(match.group(1)))
+                        return
                     if method != "PUT":
-                        raise SupervisorError(405, "method_not_allowed", "use PUT")
+                        raise SupervisorError(405, "method_not_allowed", "use PUT or DELETE")
                     self._send(*supervisor.put_slot(match.group(1), self._read_json()))
                     return
                 raise SupervisorError(404, "not_found", "no such route")

@@ -1,4 +1,4 @@
-"""render-user-data.py: per-matter cloud-init user-data."""
+"""render-user-data.py: per-matter and machine cloud-init user-data."""
 
 from __future__ import annotations
 
@@ -225,3 +225,167 @@ def test_cli_reads_spec_file_and_stdin(tmp_path):
     bad = subprocess.run([sys.executable, script, "-"], input=json.dumps(spec(hostSecret="x")),
                          capture_output=True, text=True)
     assert bad.returncode == 2 and "hostSecret" in bad.stderr and HOST_SECRET not in bad.stderr
+
+
+# ── per-matter output is frozen ─────────────────────────────────────────────
+
+FIXTURES = HOST.parents[1] / "tests" / "host" / "fixtures"
+
+
+@pytest.mark.parametrize("name", ["per_matter_full", "per_matter_minimal"])
+def test_per_matter_render_is_byte_identical_to_before_machine_mode(name):
+    """The four live droplets, every restore and LitKit's TypeScript port depend on this output."""
+    fixture_spec = json.loads((FIXTURES / f"{name}.spec.json").read_text(encoding="utf-8"))
+    expected = (FIXTURES / f"{name}.user-data.yaml").read_text(encoding="utf-8")
+    assert rud.render(fixture_spec) == expected
+    assert rud.render({**fixture_spec, "topology": "per_matter"}) == expected
+
+
+# ── machine topology ────────────────────────────────────────────────────────
+
+SUPERVISOR_SECRET = "sv_" + "Q7r8S9t0" * 5
+MACHINE_SECRETS = (SUPERVISOR_SECRET, TS_KEY)
+
+
+def machine_spec(**overrides):
+    base = {
+        "topology": "machine",
+        "hostname": "litco-host-1a2b3c4d",
+        "instanceUrl": "https://acme.litco.ai",
+        "supervisorSecret": SUPERVISOR_SECRET,
+        "tailscaleAuthKey": TS_KEY,
+        "egressPolicy": "open",
+    }
+    base.update(overrides)
+    return {k: v for k, v in base.items() if v is not None}
+
+
+def test_machine_writes_supervisor_env_machine_json_and_tailscale_key():
+    doc = parse(rud.render(machine_spec()))
+    f = files(doc)
+    assert set(f) == {"/etc/litco-supervisor.env", "/etc/litco-agent/machine.json",
+                      "/etc/litco-agent/tailscale-authkey"}
+    assert (f["/etc/litco-supervisor.env"]["owner"], f["/etc/litco-supervisor.env"]["permissions"]) == ("root:root", "0600")
+    assert f["/etc/litco-agent/tailscale-authkey"]["permissions"] == "0600"
+    assert f["/etc/litco-agent/machine.json"]["permissions"] == "0644"
+
+    env = env_map(decoded(doc, "/etc/litco-supervisor.env"))
+    assert env == {"LITCO_SUPERVISOR_SECRET": SUPERVISOR_SECRET}
+    machine = json.loads(decoded(doc, "/etc/litco-agent/machine.json"))
+    assert machine == {"schema": 1, "topology": "machine", "hostname": "litco-host-1a2b3c4d",
+                       "instanceUrl": "https://acme.litco.ai"}
+    assert decoded(doc, "/etc/litco-agent/tailscale-authkey") == TS_KEY
+    assert doc["hostname"] == "litco-host-1a2b3c4d"
+
+
+def test_supervisor_env_parses_as_the_supervisor_reads_it():
+    from tests.deploy._supervisor_fake import sup
+    tricky = 'q"uo\\te$HOME' + "x" * 30
+    doc = parse(rud.render(machine_spec(supervisorSecret=tricky)))
+    assert sup.parse_env_file(decoded(doc, "/etc/litco-supervisor.env")) == {"LITCO_SUPERVISOR_SECRET": tricky}
+
+
+def test_machine_runcmd_order():
+    runcmd = parse(rud.render(machine_spec()))["runcmd"]
+    assert runcmd == [
+        'hostnamectl set-hostname "litco-host-1a2b3c4d"',
+        "chown root:root /etc/litco-supervisor.env",
+        "chmod 600 /etc/litco-supervisor.env",
+        "nft list table inet litco_host >/dev/null 2>&1 || nft -f /etc/nftables.conf",
+        "nft list table inet litco_host",
+        'tailscale up --ssh --hostname="litco-host-1a2b3c4d" --auth-key=file:/etc/litco-agent/tailscale-authkey',
+        "shred -u /etc/litco-agent/tailscale-authkey",
+        "systemctl daemon-reload",
+        "systemctl restart litco-supervisor.service",
+        "systemctl status --no-pager litco-supervisor.service || true",
+    ]
+    # No ufw (the image's nftables rule set is the firewall) and no per-matter unit.
+    assert not any("ufw" in c or "litco-agent.service" in c for c in runcmd)
+
+
+def test_machine_secrets_appear_only_inside_base64_blocks():
+    text = rud.render(machine_spec())
+    for secret in MACHINE_SECRETS:
+        assert secret not in text
+    doc = parse(text)
+    env_text = decoded(doc, "/etc/litco-supervisor.env")
+    machine_text = decoded(doc, "/etc/litco-agent/machine.json")
+    assert SUPERVISOR_SECRET in env_text and TS_KEY not in env_text
+    assert SUPERVISOR_SECRET not in machine_text and TS_KEY not in machine_text
+    # Outside the write_files contents, nothing decodes to a secret either.
+    contents = {entry["content"] for entry in doc["write_files"]}
+    for line in text.splitlines():
+        if any(c in line for c in contents):
+            continue
+        for secret in MACHINE_SECRETS:
+            assert base64.b64encode(secret.encode()).decode() not in line
+
+
+def test_machine_carries_no_matter_identity_or_matter_secret():
+    text = rud.render(machine_spec())
+    doc = parse(text)
+    blob = text + "".join(decoded(doc, p) for p in files(doc))
+    for marker in ("LITCO_MATTER_ID", "LITCO_HOST_SECRET", "LITCO_AGENT_TOKEN", "_API_KEY", "lkm_", "/etc/litco-agent/env"):
+        assert marker not in blob
+
+
+@pytest.mark.parametrize("overrides, message", [
+    ({"hostname": None}, "hostname is required"),
+    ({"hostname": "matter-1a2b3c4d"}, "hostname must look like litco-host-"),
+    ({"hostname": "litco-host-"}, "hostname"),
+    ({"hostname": "litco-host-UPPER"}, "hostname"),
+    ({"hostname": "litco-host-a-"}, "hostname"),
+    ({"hostname": "litco-host-" + "a" * 43}, "hostname"),
+    ({"hostname": 'litco-host-a";reboot'}, "hostname"),
+    ({"instanceUrl": None}, "instanceUrl is required"),
+    ({"instanceUrl": "ftp://acme.litco.ai"}, "instanceUrl"),
+    ({"supervisorSecret": None}, "supervisorSecret is required"),
+    ({"supervisorSecret": "short"}, "supervisorSecret must be at least 32"),
+    ({"supervisorSecret": SUPERVISOR_SECRET + "\nX=1"}, "control characters"),
+    ({"tailscaleAuthKey": None}, "tailscaleAuthKey is required"),
+    ({"tailscaleAuthKey": ""}, "tailscaleAuthKey is required"),
+    ({"egressPolicy": None}, "egressPolicy is required"),
+    ({"egressPolicy": "allowlist"}, "^egressPolicy allowlist is not supported on a machine host$"),
+    ({"egressPolicy": "closed"}, "egressPolicy must be 'open'"),
+    ({"matterId": "m-1"}, "keys not allowed in a machine spec: matterId"),
+    ({"hostSecret": HOST_SECRET}, "keys not allowed in a machine spec: hostSecret"),
+    ({"egressAllowlist": []}, "keys not allowed"),
+    ({"topology": "firm"}, "topology must be"),
+    ({"topology": 1}, "topology must be a string"),
+])
+def test_bad_machine_specs_are_refused(overrides, message):
+    with pytest.raises(rud.SpecError, match=message) as info:
+        rud.render(machine_spec(**overrides))
+    for secret in MACHINE_SECRETS:
+        assert secret not in str(info.value)
+
+
+def test_machine_hostname_accepts_the_apps_form_and_the_rule_bounds():
+    for good in ("litco-host-1a2b3c4d", "litco-host-a", "litco-host-a-b", "litco-host-" + "a" * 42):
+        assert parse(rud.render(machine_spec(hostname=good)))["hostname"] == good
+
+
+def test_user_data_cap_applies_to_both_topologies():
+    pad = "#" + "x" * (64 * 1024) + "\n"
+    machine_tmpl = rud.MACHINE_TEMPLATE.read_text(encoding="utf-8")
+    with pytest.raises(rud.SpecError, match="64 KiB"):
+        rud.render(machine_spec(), machine_tmpl + pad)
+    with pytest.raises(rud.SpecError, match="64 KiB"):
+        rud.render(spec(), rud.TEMPLATE.read_text(encoding="utf-8") + pad)
+    assert len(rud.render(machine_spec()).encode()) < 4 * 1024
+
+
+def test_machine_template_has_no_unknown_placeholders_or_blocks():
+    with pytest.raises(rud.SpecError, match="unknown placeholders: MATTER_HOME"):
+        rud.render(machine_spec(), "#cloud-config\n{{MATTER_HOME}}\n")
+
+
+def test_cli_renders_a_machine_spec(tmp_path):
+    script = str(HOST / "render-user-data.py")
+    out = subprocess.run([sys.executable, script, "-"], input=json.dumps(machine_spec()), capture_output=True,
+                         text=True, check=True)
+    assert out.stdout == rud.render(machine_spec())
+    bad = subprocess.run([sys.executable, script, "-"], input=json.dumps(machine_spec(egressPolicy="allowlist")),
+                         capture_output=True, text=True)
+    assert bad.returncode == 2 and "egressPolicy allowlist is not supported on a machine host" in bad.stderr
+    assert SUPERVISOR_SECRET not in bad.stderr and TS_KEY not in bad.stderr

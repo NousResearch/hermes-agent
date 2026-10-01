@@ -1,0 +1,9 @@
+{
+  "agentToken": "lkm_fixture_not_real",
+  "egressPolicy": "open",
+  "hostSecret": "fixture-host-secret-not-real-0123456789",
+  "instanceUrl": "https://acme.litco.ai",
+  "matterId": "fixture-matter-0001",
+  "modelBaseUrl": "https://proxy.example.test/v1",
+  "modelProvider": "custom"
+}

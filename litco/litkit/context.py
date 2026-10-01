@@ -28,6 +28,8 @@ class TurnIdentity:
     cwd: Optional[Path] = None
     # The slug of the LitKit matter channel the turn arrived in (``litkitChannel.slug``), if any.
     litkit_channel: Optional[str] = None
+    # The turn's ``sessionId``: the LitKit thread the turn runs in (a review proposal posts its card there).
+    thread_id: Optional[str] = None
     # The app's grant for cross-matter search; kept out of reprs and logs.
     turn_grant: Optional[str] = field(default=None, repr=False)
 
@@ -53,6 +55,11 @@ def current_turn() -> Optional[TurnIdentity]:
 def current_acting_user() -> Optional[str]:
     turn = _TURN.get()
     return turn.acting_user if turn is not None else None
+
+
+def current_thread_id() -> Optional[str]:
+    turn = _TURN.get()
+    return turn.thread_id if turn is not None else None
 
 
 def current_turn_grant() -> Optional[str]:

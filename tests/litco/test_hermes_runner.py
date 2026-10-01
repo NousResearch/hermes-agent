@@ -310,6 +310,12 @@ def test_turn_grant_reaches_the_tools_only_in_a_verified_private_thread(tmp_path
     assert ("litkit_cross_matter_search" in prompt) is kept
 
 
+def test_turn_identity_carries_the_sessions_thread(tmp_path):
+    """The LitKit tools see the turn's sessionId as its thread (litkit_review create sends it as threadId)."""
+    ctx, _ = _ctx(tmp_path, session_id="7d0c6f2e-3a1b-4c5d-8e9f-0a1b2c3d4e5f")
+    assert hermes_runner.turn_identity(ctx).thread_id == "7d0c6f2e-3a1b-4c5d-8e9f-0a1b2c3d4e5f"
+
+
 def test_shared_memory_goes_into_this_turns_prompt_not_the_message(tmp_path):
     memory = SharedMemory(firm=("Cite exhibits as Ex. N.",), person=("Short memos, bullets last.",))
     ctx, _ = _ctx(tmp_path, kind="dm", acting_user="u1", shared_memory=memory)

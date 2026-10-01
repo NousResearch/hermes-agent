@@ -458,6 +458,13 @@ class GatewayTopicThreadsMixin:
     # penalty on a background path froze inbound on every platform, #91969).
     _TELEGRAM_GROUP_TITLE_RETRY_CAP_S = 30.0
     _TELEGRAM_GROUP_TITLE_RETRY_MIN_S = 1.0
+    # Churn damping, not accounting (spec §3.5): at most this many APPLIED renames per session, so
+    # a repeatedly re-titled conversation stops moving the group name. In-memory on purpose — a
+    # gateway restart resetting it is accepted, and no table/column/state_meta key is spent on it.
+    _TELEGRAM_GROUP_TITLE_RENAME_BUDGET = 3
+    # Same lifetime and profile-scoping as ``_telegram_group_rename_locks``; keyed
+    # (profile_name, chat_id, session_id). Only an applied rename increments it.
+    _telegram_group_title_rename_counts: Optional[dict] = None
 
     def _telegram_group_rename_lock(self, source: SessionSource) -> asyncio.Lock:
         if self._telegram_group_rename_locks is None:
@@ -487,8 +494,18 @@ class GatewayTopicThreadsMixin:
         # id tiebreak) in the owning profile's store — never from callback completion time.
         async with self._telegram_group_rename_lock(source):
             for attempt in range(1, self._TELEGRAM_GROUP_TITLE_MAX_ATTEMPTS + 1):
-                # Revalidate before EVERY attempt, retries included: a delayed retry must never
-                # restore an older session's title after a newer session opens.
+                # The kill-switch is re-read per attempt, retries included: a lane parked in a
+                # guided retry wait (up to the cap) must not issue its next set_chat_title after
+                # the operator flipped disable_group_auto_rename. The entry check above only
+                # avoids scheduling the work at all.
+                if self._telegram_group_auto_rename_disabled(source):
+                    logger.info(
+                        "Telegram group title rename skipped (kill-switch flipped): session=%s", session_id)
+                    await asyncio.to_thread(
+                        self._record_telegram_group_title_outcome, source, session_id, "skipped:disabled")
+                    return
+                # Revalidate ownership before EVERY attempt, retries included: a delayed retry
+                # must never restore an older session's title after a newer session opens.
                 owned = await asyncio.to_thread(self._telegram_group_title_owned_by, source, session_id)
                 if not owned:
                     logger.debug(
@@ -497,15 +514,33 @@ class GatewayTopicThreadsMixin:
                         self._record_telegram_group_title_outcome, source, session_id, "skipped:superseded")
                     return
                 current_title = await self._telegram_group_current_title(bot, source)
-                if current_title == title:
+                # Compose from FRESH store state, not the title the callback carried: a late-context
+                # title upgrade or a post-/model change must reach the group name. The callback title
+                # is only the fallback subject for an unreadable/absent row.
+                composed = await self._compose_group_title_for_session(source, session_id, title)
+                if current_title == composed:
                     logger.debug(
                         "Telegram group title rename skipped (already applied): session=%s", session_id)
                     await asyncio.to_thread(
                         self._record_telegram_group_title_outcome, source, session_id, "applied")
                     return
+                # Budget AFTER the read-back dedupe (§3.4): a no-op never spends a rename.
+                if self._telegram_group_rename_over_budget(source, session_id):
+                    logger.info(
+                        "Telegram group title rename skipped (rename budget exhausted): session=%s", session_id)
+                    logger.warning(
+                        "Telegram group title stopped updating for session %s: the per-session rename "
+                        "budget of %d applied renames is exhausted, so the group name is frozen at %r",
+                        session_id, self._TELEGRAM_GROUP_TITLE_RENAME_BUDGET, composed)
+                    await asyncio.to_thread(
+                        self._record_telegram_group_title_outcome, source, session_id, "skipped:budget_exhausted")
+                    return
                 try:
-                    # Do not sanitize: rejection must not silently diverge from the stored title.
-                    applied = await rename(chat_id=int(source.chat_id), title=title)
+                    # Hand the composed string over verbatim: the composer already bounded and
+                    # stripped it, and sanitizing again here could silently diverge from it.
+                    applied = await rename(chat_id=int(source.chat_id), title=composed)
+                    if applied:
+                        self._count_telegram_group_rename(source, session_id)
                     logger.info("Telegram group title rename: session=%s applied=%s", session_id, bool(applied))
                     await asyncio.to_thread(
                         self._record_telegram_group_title_outcome, source, session_id,
@@ -537,6 +572,74 @@ class GatewayTopicThreadsMixin:
                     # a newer session's rename queues behind it and the wake-up recheck below
                     # decides ownership, so the delay can never reorder titles.
                     await self._telegram_group_title_retry_wait(delay)
+
+    async def _compose_group_title_for_session(
+        self, source: SessionSource, session_id: str, fallback_subject: str = "",
+    ) -> str:
+        """The group-title string for *session_id*, composed from state read NOW.
+
+        Every input is read per call, never cached on the runner: the subject and the session's
+        model come from the OWNING profile's store (off-loop, same home resolution as the
+        ownership recheck) so a late-context title upgrade or a post-``/model`` change is picked
+        up, and the reasoning tag is resolved on the loop for the same session. ``fallback_subject``
+        is the title the callback carried — used only when the store yields no title.
+
+        The string itself is built by :func:`gateway.title_compose.compose_group_title`; this lane
+        never assembles one. Never raises: an unreadable store degrades to the fallback subject.
+        """
+        from gateway.title_compose import compose_group_title
+
+        subject, model = await asyncio.to_thread(
+            self._telegram_group_title_session_facts, source, session_id)
+        reasoning = self._resolve_session_reasoning_config(source=source, model=model or "")
+        effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+        return compose_group_title(subject or fallback_subject or "", model or "", effort)
+
+    def _telegram_group_title_session_facts(
+        self, source: SessionSource, session_id: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """``(stored_title, model)`` for *session_id* from the OWNING profile's store.
+
+        Follows the source's admitting home exactly like the ownership recheck — never the launch
+        profile's. Fail-open to ``(None, None)`` so the caller falls back to the callback's title.
+        """
+        try:
+            from hermes_state_registry import acquire, release_or_close
+
+            home = self._authorization_home_for_source(source)
+            multiplex = bool(getattr(getattr(self, "config", None), "multiplex_profiles", False))
+            if home is None and multiplex:
+                # Unresolvable under multiplex: read nothing rather than borrow the launch
+                # profile's session.
+                return None, None
+            db_path = Path(home) / "state.db" if home is not None else None
+            db = acquire(db_path)
+            try:
+                row = db.get_session(str(session_id)) or {}
+                return db.get_session_title(str(session_id)), row.get("model")
+            finally:
+                release_or_close(db)
+        except Exception:
+            logger.debug("Telegram group title composition read failed; using callback title", exc_info=True)
+            return None, None
+
+    def _telegram_group_rename_budget_key(
+        self, source: SessionSource, session_id: str,
+    ) -> tuple[str, str, str]:
+        """Profile-scoped budget slot: two multiplex profiles sharing a chat_id never share a count."""
+        return (self._telegram_topic_profile_name(source), str(source.chat_id), str(session_id))
+
+    def _telegram_group_rename_over_budget(self, source: SessionSource, session_id: str) -> bool:
+        counts = self._telegram_group_title_rename_counts or {}
+        return counts.get(self._telegram_group_rename_budget_key(source, session_id), 0) >= \
+            self._TELEGRAM_GROUP_TITLE_RENAME_BUDGET
+
+    def _count_telegram_group_rename(self, source: SessionSource, session_id: str) -> None:
+        if self._telegram_group_title_rename_counts is None:
+            self._telegram_group_title_rename_counts = {}
+        key = self._telegram_group_rename_budget_key(source, session_id)
+        self._telegram_group_title_rename_counts[key] = \
+            self._telegram_group_title_rename_counts.get(key, 0) + 1
 
     def _telegram_group_title_owned_by(self, source: SessionSource, session_id: str) -> bool:
         """True when *session_id* still owns its chat origin for whole-chat naming, decided in the

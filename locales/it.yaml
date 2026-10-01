@@ -3446,7 +3446,7 @@ explainer:
     partial_stream_recovery: "lo streaming si è interrotto in anticipo ed è stata recuperata solo una risposta parziale. Invia `continue` per riprendere dal punto in cui si è fermato."
     fallback_prior_turn_content: "in questo turno non è stato prodotto nuovo contenuto; viene mostrato il contesto precedente recuperato. Invia `continue` per riprovare."
     redirect_restart_limit_exceeded: "la richiesta è stata annullata da una nuova correzione a ogni tentativo, quindi il turno si è fermato invece di riprovare all'infinito. La tua ultima correzione è in coda come prossimo messaggio."
-    rebuilt_restart_limit_exceeded: "ogni provider della catena di fallback ha continuato a cedere il passo al successivo, quindi il turno si è fermato invece di riprovare all'infinito. Invia `continue` oppure cambia provider."
+    rebuilt_restart_limit_exceeded: "il turno si è riavviato dopo ogni errore finché il suo budget di riavvii non è esaurito e un provider continuava a non rispondere, quindi si è fermato invece di riprovare all'infinito. Il log indica il provider attivo; controllalo, poi invia `continue`."
     budget_exhausted: "il budget di iterazioni/costo per turno si è esaurito prima di una risposta finale. Invia `continue` per proseguire."
     ollama_runtime_context_too_small: "la finestra di contesto del modello locale era troppo piccola per finire. Aumenta la dimensione del contesto o usa un modello più grande."
     pending_tool_result: "il turno si è fermato mentre il risultato di uno strumento era ancora in attesa e il modello non ha prodotto altro testo. Invia `continue` per farglielo riassumere."

@@ -3446,7 +3446,7 @@ explainer:
     partial_stream_recovery: "stop an sruthú go luath agus níor aisghabhadh ach freagra páirteach. Seol `continue` chun leanúint ar aghaidh ón áit ar stop sé."
     fallback_prior_turn_content: "níor táirgeadh aon inneachar nua sa seal seo; á thaispeáint comhthéacs roimhe seo a aisghabhadh. Seol `continue` chun triail eile a bhaint as."
     redirect_restart_limit_exceeded: "cealaíodh an t-iarratas le ceartúchán nua ar gach iarracht, mar sin stop an seal in ionad atriail a dhéanamh go deo. Tá do cheartúchán is déanaí i scuaine mar an chéad teachtaireacht eile."
-    rebuilt_restart_limit_exceeded: "lean gach soláthraí sa slabhra titime siar ag titim ar aghaidh chuig an gcéad cheann eile, mar sin stop an seal in ionad atriail a dhéanamh go deo. Seol `continue` nó athraigh an soláthraí."
+    rebuilt_restart_limit_exceeded: "d'atosaigh an seal é féin tar éis gach teip go dtí gur caitheadh a bhuiséad atosaithe agus níor tháirg soláthraí aon fhreagra fós, mar sin stop sé in ionad atriail a dhéanamh go deo. Luann an logáil an soláthraí a bhí gníomhach; féach air, ansin seol `continue`."
     budget_exhausted: "ídíodh buiséad atriallta/costais an tseala roimh fhreagra deiridh. Seol `continue` chun leanúint ar aghaidh."
     ollama_runtime_context_too_small: "bhí fuinneog chomhthéacs na samhla áitiúla róbheag le críochnú. Méadaigh méid an chomhthéacs nó úsáid samhail níos mó."
     pending_tool_result: "stop an seal fad a bhí toradh uirlise fós ar feitheamh agus níor thug an tsamhail aon téacs leantach. Seol `continue` chun ligean dó achoimre a dhéanamh."

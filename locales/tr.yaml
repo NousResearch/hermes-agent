@@ -3446,7 +3446,7 @@ explainer:
     partial_stream_recovery: "akış erken kesildi ve yalnızca kısmi bir yanıt kurtarılabildi. Kaldığı yerden devam etmesi için `continue` gönderin."
     fallback_prior_turn_content: "bu turda yeni içerik üretilmedi; kurtarılan önceki bağlam gösteriliyor. Yeniden denemek için `continue` gönderin."
     redirect_restart_limit_exceeded: "istek her denemede yeni bir düzeltmeyle iptal edildiği için tur, sonsuza dek yeniden denemek yerine durduruldu. Son düzeltmeniz bir sonraki mesaj olarak kuyruğa alındı."
-    rebuilt_restart_limit_exceeded: "yedek zincirindeki her sağlayıcı sürekli bir sonrakine devrettiği için tur, sonsuza dek yeniden denemek yerine durduruldu. `continue` gönderin veya sağlayıcı değiştirin."
+    rebuilt_restart_limit_exceeded: "tur her başarısızlıktan sonra kendini yeniden başlatarak yeniden başlatma bütçesini tüketti ve bir sağlayıcı yine de yanıt üretmedi, bu yüzden sonsuza dek yeniden denemek yerine durduruldu. Günlük, etkin olan sağlayıcıyı yazar; ona bakın, sonra `continue` gönderin."
     budget_exhausted: "tur başına yineleme/maliyet bütçesi nihai bir yanıt üretilmeden tükendi. Devam etmek için `continue` gönderin."
     ollama_runtime_context_too_small: "yerel modelin bağlam penceresi işi bitirmek için çok küçüktü. Bağlam boyutunu artırın veya daha büyük bir model kullanın."
     pending_tool_result: "tur, bir araç sonucu hâlâ beklenirken durdu ve model devam metni üretmedi. Özetlemesi için `continue` gönderin."

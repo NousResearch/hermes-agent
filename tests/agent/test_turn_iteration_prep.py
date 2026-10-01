@@ -7,6 +7,7 @@ iteration; nothing else in the turn loop counts them, so a flag that keeps re-ar
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -64,6 +65,63 @@ def test_restart_refunds_are_bounded_per_turn(flag):
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")
     # The correction that tripped the redirect cap is handed back as the next user turn.
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
+
+
+def _walking_agent(chain_length: int):
+    """An agent mid-fallback-walk: ``chain_length`` rungs, all already consumed."""
+    agent = _agent()
+    agent._fallback_chain = [
+        {"provider": f"p{i}", "model": f"m{i}"} for i in range(chain_length)
+    ]
+    agent._fallback_index = chain_length
+    agent.provider, agent.model = f"p{chain_length - 1}", f"m{chain_length - 1}"
+    return agent
+
+
+def _drive(agent, *, limit: int = 20):
+    restart_count, verdicts = 0, []
+    while len(verdicts) < limit and (not verdicts or verdicts[-1].action != "break"):
+        verdicts.append(_apply(agent, "restart_with_rebuilt_messages", restart_count))
+        restart_count = verdicts[-1].restart_count
+    return verdicts
+
+
+def test_rebuilt_restart_bound_clears_the_whole_fallback_chain():
+    """A rebuilt restart is the fallback walk in motion, so its bound must clear every rung.
+
+    Sized on ``max_retries`` alone, a chain longer than the API retry count trips the cap
+    mid-walk and reports ``rebuilt_restart_limit_exceeded`` for rungs that were never called —
+    the misattribution triage #668 chased for two days (39/39 turns, response_len=0, no
+    provider error ever logged for the local rung).
+    """
+    chain = MAX_RETRIES + 3  # 6 rungs vs a 3-retry budget
+    verdicts = _drive(_walking_agent(chain))
+    cap = chain + 1
+    assert [v.action for v in verdicts] == ["continue"] * cap + ["break"]
+    assert cap > MAX_RETRIES, "fixture must exercise a chain longer than the retry budget"
+
+
+def test_rebuilt_restart_bound_keeps_max_retries_as_the_floor():
+    """A short chain must not lower the bound below the historical ``max_retries``: the cap
+    exists to stop a runaway refund loop, and a 1-rung chain would otherwise trip it on the
+    first restart."""
+    verdicts = _drive(_walking_agent(1))
+    assert [v.action for v in verdicts] == ["continue"] * MAX_RETRIES + ["break"]
+
+
+def test_rebuilt_restart_limit_log_names_the_active_rung(caplog):
+    """When the cap does trip, the log must name the provider/model that was actually active,
+    so the next triage does not have to infer it from a buffered failover notice."""
+    agent = _walking_agent(2)
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+        _drive(agent)
+    record = next(
+        r for r in caplog.records if "Rebuilt-message restart limit" in r.getMessage()
+    )
+    message = record.getMessage()
+    assert "active_provider=p1" in message and "active_model=m1" in message
+    assert "fallback_index=2" in message
+    assert "fallback chain 2" in message
 
 
 def _interrupted_agent(tool_interrupt_reason):

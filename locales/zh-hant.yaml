@@ -3446,7 +3446,7 @@ explainer:
     partial_stream_recovery: "串流提前中止，只復原了部分回應。傳送 `continue` 可從中斷處繼續。"
     fallback_prior_turn_content: "這一輪沒有產生新內容；顯示的是復原的先前上下文。傳送 `continue` 重試。"
     redirect_restart_limit_exceeded: "每次嘗試都被新的修正訊息取消，因此這一輪已停止，不再無限重試。你最後一則修正已排入佇列，將作為下一則訊息。"
-    rebuilt_restart_limit_exceeded: "備援鏈中的每個提供方都持續故障轉移，因此這一輪已停止，不再無限重試。傳送 `continue` 或切換提供方。"
+    rebuilt_restart_limit_exceeded: "這一輪在每次失敗後不斷重新開始，直到重啟預算用盡，提供方仍未給出回覆，因此已停止，不再無限重試。日誌中記錄了當時生效的提供方；請查看日誌後傳送 `continue`。"
     budget_exhausted: "在得出最終答案前，本輪的迭代／費用預算已耗盡。傳送 `continue` 繼續。"
     ollama_runtime_context_too_small: "本機模型的上下文視窗太小，無法完成。請加大上下文大小或改用更大的模型。"
     pending_tool_result: "這一輪在工具結果仍待處理時停止，且模型沒有產生後續文字。傳送 `continue` 讓它做總結。"

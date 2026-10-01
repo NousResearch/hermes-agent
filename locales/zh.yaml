@@ -3446,7 +3446,7 @@ explainer:
     partial_stream_recovery: "流式输出提前中止，只恢复了部分回复。发送 `continue` 从中断处继续。"
     fallback_prior_turn_content: "本回合没有生成新内容；显示的是恢复出的先前上下文。发送 `continue` 重试。"
     redirect_restart_limit_exceeded: "每次尝试都被新的更正打断而取消，因此本回合已停止，不再无限重试。你最后一条更正已排为下一条消息。"
-    rebuilt_restart_limit_exceeded: "故障转移链中的每个提供方都持续失败并转移，因此本回合已停止，不再无限重试。发送 `continue` 或切换提供方。"
+    rebuilt_restart_limit_exceeded: "本回合在每次失败后不断重新开始，直到重启预算用尽，提供方仍未给出回复，因此已停止，不再无限重试。日志中记录了当时生效的提供方；请查看日志后发送 `continue`。"
     budget_exhausted: "在得出最终答案之前，本回合的迭代/成本预算已用尽。发送 `continue` 继续。"
     ollama_runtime_context_too_small: "本地模型的上下文窗口太小，无法完成。请增大上下文长度或使用更大的模型。"
     pending_tool_result: "本回合在工具结果仍待处理时停止，模型没有生成后续文本。发送 `continue` 让它进行总结。"

@@ -3446,7 +3446,7 @@ explainer:
     partial_stream_recovery: "die stroom het vroeg gestop en slegs 'n gedeeltelike antwoord is herwin. Stuur `continue` om voort te gaan waar dit gestop het."
     fallback_prior_turn_content: "geen nuwe inhoud is in hierdie beurt gelewer nie; herwinde vorige konteks word gewys. Stuur `continue` om weer te probeer."
     redirect_restart_limit_exceeded: "die versoek is by elke poging deur 'n nuwe korreksie gekanselleer, so die beurt het gestop in plaas van om eindeloos te herprobeer. Jou laaste korreksie is as die volgende boodskap in die tou geplaas."
-    rebuilt_restart_limit_exceeded: "elke verskaffer in die terugvalketting het bly oorskakel, so die beurt het gestop in plaas van om eindeloos te herprobeer. Stuur `continue` of verander verskaffer."
+    rebuilt_restart_limit_exceeded: "die beurt het homself ná elke mislukking herhaal totdat sy herbegin-begroting opgebruik was en 'n verskaffer steeds geen antwoord gelewer het nie, so dit het gestop in plaas van om eindeloos te herprobeer. Die log noem die verskaffer wat aktief was; kyk daar, stuur dan `continue`."
     budget_exhausted: "die iterasie-/kostebegroting per beurt is opgebruik voor 'n finale antwoord. Stuur `continue` om voort te gaan."
     ollama_runtime_context_too_small: "die plaaslike model se konteksvenster was te klein om klaar te maak. Vergroot die konteksgrootte of gebruik 'n groter model."
     pending_tool_result: "die beurt het gestop terwyl 'n gereedskapsresultaat nog hangende was en die model geen opvolgteks gelewer het nie. Stuur `continue` om dit te laat opsom."

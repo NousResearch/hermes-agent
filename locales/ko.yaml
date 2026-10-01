@@ -3446,7 +3446,7 @@ explainer:
     partial_stream_recovery: "스트리밍이 일찍 중단되어 일부 응답만 복구됐어요. `continue`를 보내면 멈춘 지점부터 이어서 진행해요."
     fallback_prior_turn_content: "이번 턴에 새로운 내용이 생성되지 않아 복구된 이전 컨텍스트를 보여 드려요. `continue`를 보내 다시 시도하세요."
     redirect_restart_limit_exceeded: "매번 시도할 때마다 새 수정 지시로 요청이 취소되어, 무한히 재시도하지 않고 턴을 멈췄어요. 마지막 수정 지시는 다음 메시지로 대기 중이에요."
-    rebuilt_restart_limit_exceeded: "폴백 체인의 모든 제공자가 계속 장애 조치를 반복해서, 무한히 재시도하지 않고 턴을 멈췄어요. `continue`를 보내거나 제공자를 바꿔 보세요."
+    rebuilt_restart_limit_exceeded: "턴이 실패할 때마다 스스로를 다시 시작해 재시작 예산을 모두 썼는데도 제공자가 응답을 내지 않아, 무한히 재시도하지 않고 멈췄어요. 로그에 당시 활성 제공자가 기록되어 있으니 확인한 뒤 `continue`를 보내세요."
     budget_exhausted: "최종 답변 전에 턴당 반복/비용 예산을 모두 사용했어요. `continue`를 보내면 계속 진행해요."
     ollama_runtime_context_too_small: "로컬 모델의 컨텍스트 창이 너무 작아 작업을 끝낼 수 없었어요. 컨텍스트 크기를 늘리거나 더 큰 모델을 사용하세요."
     pending_tool_result: "도구 결과가 아직 대기 중인 상태에서 턴이 멈췄고 모델이 후속 텍스트를 만들지 않았어요. `continue`를 보내면 요약해 드려요."

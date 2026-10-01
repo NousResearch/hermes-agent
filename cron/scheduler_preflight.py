@@ -233,12 +233,47 @@ class SharedRouteAdapters:
         return default
 
 
+def _bare_lane_target_reason(platform_name: str, home_env: str) -> str:
+    """Verdict for a bare ``deliver: <platform>`` lane that resolves to no target.
+
+    The remedy is the one that actually works, because a verdict that misdirects costs the operator
+    the same debugging session the verdict was supposed to save. Delivery resolves a bare lane from
+    the platform's home channel — env mirror first (``_get_home_target_chat_id``), then the
+    ``platforms.<p>.home_channel`` block — and ``hermes setup`` configures neither, so naming it
+    would repeat the credential-failure string's mistake in the sibling branch above.
+
+    A platform with no home-channel concept at all (``_resolve_home_env_var`` is empty: webhook,
+    homeassistant, wecom_callback, yuanbao) can NEVER satisfy a bare lane. There the remedy is the
+    target form, and naming a ``<PLATFORM>_HOME_CHANNEL`` var that no reader consults would send the
+    operator to write a value nothing reads.
+    """
+    if home_env:
+        return (
+            f"delivery platform '{platform_name}' has no resolvable home target, so this bare "
+            f"`deliver: {platform_name}` lane can never deliver. Set {home_env} (run /sethome on "
+            f"the destination chat, or `hermes config set {home_env} <chat_id>`), or address the "
+            f"chat directly as `deliver: {platform_name}:<chat_id>`."
+        )
+    return (
+        f"delivery platform '{platform_name}' has no home-channel concept, so this bare "
+        f"`deliver: {platform_name}` lane can never deliver. Address the destination directly as "
+        f"`deliver: {platform_name}:<chat_id>`."
+    )
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
     """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
     never checked (no gateway-config load). Unknown platform always blocks; known platform blocks
     only if the gateway config loads AND reports it unconnected; config load failures fail OPEN.
     ``failure_deliver`` gets the same rules — a typo'd failure platform would otherwise only
-    surface when a failure occurs (NS-788)."""
+    surface when a failure occurs (NS-788).
+
+    A BARE lane (no ``:chat_id``) is additionally checked for a resolvable home TARGET, not just
+    connectivity — the two are independent and only one was ever tested. A connected platform with
+    no home channel passes the credential check and then dies at delivery with ``no delivery target
+    resolved``, which is silent from the operator's side because the run itself succeeded. The
+    probe is ``_resolve_delivery_targets`` on the lane, so validation and delivery cannot drift:
+    anything delivery would fail to target is refused here instead."""
     deliver_value = _delivery._normalize_deliver_value(job.get("deliver", "local"))
     failure_deliver_value = _delivery._normalize_deliver_value(
         _delivery._delivery_lane_value(job, for_failure=True))
@@ -246,6 +281,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     if failure_deliver_value != deliver_value:
         lane_values.append(failure_deliver_value)
     platform_parts: list[str] = []
+    bare_parts: list[str] = []
     for lane_value in lane_values:
         for part in lane_value.split(","):
             part = part.strip()
@@ -255,6 +291,11 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             if _delivery.parse_bot_chat_deliver_token(part) is not None:
                 continue
             platform_parts.append(part.split(":", 1)[0].strip())
+            # Only a token with NO ':' resolves through a home channel. ``platform:chat_id``
+            # addresses a chat directly and needs no home; ``all``/``origin`` are expanded at fire
+            # time and are not platform tokens at all.
+            if ":" not in part:
+                bare_parts.append(part)
     if not platform_parts:
         return None
 
@@ -290,6 +331,32 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 "credentials configured (not connected). Configure it via "
                 "`hermes setup` or change the job's `deliver` target."
             )
+
+    for platform_name in bare_parts:
+        # The probe IS delivery's resolver, per lane, so this cannot drift from what fire time
+        # does. It resolves the platform's home channel (env mirror, then config.yaml) and returns
+        # [] when there is none — the exact condition that makes ``_deliver_result`` report
+        # ``no delivery target resolved`` AFTER the run has already been paid for.
+        #
+        # The lane is rebuilt with only this part so an unrelated token in the same comma-separated
+        # value cannot make the probe look resolvable: ``deliver: telegram,slack:D0ABC`` is fine,
+        # ``deliver: telegram,slack`` is not, and probing the whole string would pass the second.
+        try:
+            probe_job = {**job, "deliver": platform_name}
+            if _delivery._resolve_delivery_targets(probe_job):
+                continue
+        except Exception:
+            logger.debug(
+                "preflight: home-target probe failed for %r — failing open",
+                platform_name, exc_info=True)
+            continue
+        # A routed satellite resolves nothing locally by design (its home channel is not set
+        # because the primary gateway owns the adapters) — the same rescue the credential branch
+        # above applies. Without this, #97476's false block would simply move to the new arm.
+        if _delivery_platform_routed_from_primary_gateway(platform_name):
+            continue
+        return _bare_lane_target_reason(
+            platform_name, _delivery._resolve_home_env_var(platform_name))
     return None
 
 

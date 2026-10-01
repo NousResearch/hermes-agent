@@ -3763,7 +3763,7 @@ explainer:
     partial_stream_recovery: "la diffusion en continu s'est arrêtée prématurément et seule une réponse partielle a pu être récupérée. Envoyez `continue` pour reprendre là où elle s'est arrêtée."
     fallback_prior_turn_content: "aucun nouveau contenu n'a été produit ce tour ; affichage du contexte précédent récupéré. Envoyez `continue` pour réessayer."
     redirect_restart_limit_exceeded: "la requête a été annulée par une nouvelle correction à chaque tentative, le tour s'est donc arrêté au lieu de réessayer indéfiniment. Votre dernière correction est mise en file comme prochain message."
-    rebuilt_restart_limit_exceeded: "chaque fournisseur de la chaîne de repli a basculé en échec à son tour, le tour s'est donc arrêté au lieu de réessayer indéfiniment. Envoyez `continue` ou changez de fournisseur."
+    rebuilt_restart_limit_exceeded: "le tour s'est réexécuté après chaque échec jusqu'à épuiser son budget de redémarrages sans qu'un fournisseur produise une réponse, il s'est donc arrêté au lieu de réessayer indéfiniment. Le journal nomme le fournisseur actif ; consultez-le, puis envoyez `continue`."
     budget_exhausted: "le budget d'itérations/de coût par tour a été épuisé avant d'obtenir une réponse finale. Envoyez `continue` pour poursuivre."
     ollama_runtime_context_too_small: "la fenêtre de contexte du modèle local était trop petite pour terminer. Augmentez la taille du contexte ou utilisez un modèle plus grand."
     pending_tool_result: "le tour s'est arrêté alors qu'un résultat d'outil était encore en attente et le modèle n'a produit aucun texte de suite. Envoyez `continue` pour le laisser résumer."

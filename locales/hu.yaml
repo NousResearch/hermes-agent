@@ -3463,7 +3463,7 @@ explainer:
     partial_stream_recovery: "a streamelés korán megszakadt, és csak részleges válasz került helyreállításra. Küldj `continue` üzenetet, hogy onnan folytassa, ahol megállt."
     fallback_prior_turn_content: "ebben a körben nem született új tartalom; a helyreállított korábbi kontextus látható. Küldj `continue` üzenetet az újrapróbáláshoz."
     redirect_restart_limit_exceeded: "a kérést minden próbálkozásnál megszakította egy új korrekció, így a kör leállt, hogy ne próbálkozzon a végtelenségig. Az utolsó korrekciód a következő üzenetként vár a sorban."
-    rebuilt_restart_limit_exceeded: "a tartaléklánc minden szolgáltatója folyton átadta a stafétát, így a kör leállt, hogy ne próbálkozzon a végtelenségig. Küldj `continue` üzenetet, vagy válts szolgáltatót."
+    rebuilt_restart_limit_exceeded: "a kör minden hiba után újraindította önmagát, amíg az újraindítási kerete el nem fogyott, és egy szolgáltató továbbra sem adott választ, így leállt, hogy ne próbálkozzon a végtelenségig. A napló megnevezi az aktív szolgáltatót; nézze meg, majd küldjön `continue` üzenetet."
     budget_exhausted: "a körre jutó iterációs/költségkeret még a végső válasz előtt elfogyott. Küldj `continue` üzenetet a folytatáshoz."
     ollama_runtime_context_too_small: "a helyi modell kontextusablaka túl kicsi volt a befejezéshez. Növeld a kontextusméretet, vagy használj nagyobb modellt."
     pending_tool_result: "a kör úgy állt le, hogy egy eszköz eredménye még függőben volt, és a modell nem írt hozzá folytatást. Küldj `continue` üzenetet, hogy összefoglalja."

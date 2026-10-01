@@ -3446,7 +3446,7 @@ explainer:
     partial_stream_recovery: "das Streaming wurde vorzeitig beendet und nur eine Teilantwort konnte wiederhergestellt werden. Senden Sie `continue`, um an der Abbruchstelle fortzufahren."
     fallback_prior_turn_content: "in diesem Zug wurde kein neuer Inhalt erzeugt; angezeigt wird wiederhergestellter vorheriger Kontext. Senden Sie `continue`, um es erneut zu versuchen."
     redirect_restart_limit_exceeded: "die Anfrage wurde bei jedem Versuch durch eine neue Korrektur abgebrochen, daher wurde der Zug beendet, statt endlos zu wiederholen. Ihre letzte Korrektur ist als nächste Nachricht eingereiht."
-    rebuilt_restart_limit_exceeded: "jeder Anbieter in der Fallback-Kette ist immer wieder auf den nächsten umgeschwenkt, daher wurde der Zug beendet, statt endlos zu wiederholen. Senden Sie `continue` oder wechseln Sie den Anbieter."
+    rebuilt_restart_limit_exceeded: "der Zug hat sich nach jedem Fehlschlag selbst neu gestartet, bis sein Neustart-Budget aufgebraucht war und ein Anbieter weiterhin keine Antwort lieferte, daher wurde er beendet, statt endlos zu wiederholen. Das Log nennt den aktiven Anbieter; prüfen Sie es, und senden Sie dann `continue`."
     budget_exhausted: "das Iterations-/Kostenbudget pro Zug war vor einer endgültigen Antwort aufgebraucht. Senden Sie `continue`, um weiterzumachen."
     ollama_runtime_context_too_small: "das Kontextfenster des lokalen Modells war zu klein, um fertig zu werden. Erhöhen Sie die Kontextgröße oder verwenden Sie ein größeres Modell."
     pending_tool_result: "der Zug wurde beendet, während noch ein Tool-Ergebnis ausstand, und das Modell hat keinen Folgetext erzeugt. Senden Sie `continue`, damit es zusammenfasst."

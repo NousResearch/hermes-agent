@@ -3446,7 +3446,7 @@ explainer:
     partial_stream_recovery: "la transmisión se detuvo antes de tiempo y solo se recuperó una respuesta parcial. Envía `continue` para reanudar desde donde se detuvo."
     fallback_prior_turn_content: "no se produjo contenido nuevo en este turno; se muestra el contexto previo recuperado. Envía `continue` para reintentar."
     redirect_restart_limit_exceeded: "una nueva corrección canceló la solicitud en cada intento, así que el turno se detuvo en lugar de reintentar indefinidamente. Tu última corrección quedó en cola como el siguiente mensaje."
-    rebuilt_restart_limit_exceeded: "todos los proveedores de la cadena de respaldo siguieron fallando, así que el turno se detuvo en lugar de reintentar indefinidamente. Envía `continue` o cambia de proveedor."
+    rebuilt_restart_limit_exceeded: "el turno se reanudó tras cada fallo hasta agotar su presupuesto de reinicios y un proveedor seguía sin responder, así que se detuvo en lugar de reintentar indefinidamente. El registro nombra el proveedor activo; revísalo y luego envía `continue`."
     budget_exhausted: "el presupuesto de iteraciones/costo por turno se agotó antes de llegar a una respuesta final. Envía `continue` para seguir."
     ollama_runtime_context_too_small: "la ventana de contexto del modelo local era demasiado pequeña para terminar. Aumenta el tamaño del contexto o usa un modelo más grande."
     pending_tool_result: "el turno se detuvo con un resultado de herramienta aún pendiente y el modelo no produjo texto de seguimiento. Envía `continue` para que lo resuma."

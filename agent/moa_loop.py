@@ -148,6 +148,7 @@ _runtime_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 
 # Short TTL so rotated keys / base_url edits are picked up within 5 minutes.
 _RUNTIME_CACHE_TTL_SECONDS = 300.0
+_RUNTIME_CACHE_MAX_ENTRIES = 128
 
 # Cap on concurrent reference calls (guards pathologically large presets).
 _MAX_REFERENCE_WORKERS = 8
@@ -260,8 +261,14 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     cache_key = (hermes_home_key(), provider, model)
     now = time.monotonic()
     with _runtime_cache_lock:
+        expired = [
+            key for key, (stamp, _) in _runtime_cache.items()
+            if now - stamp >= _RUNTIME_CACHE_TTL_SECONDS
+        ]
+        for key in expired:
+            _runtime_cache.pop(key, None)
         entry = _runtime_cache.get(cache_key)
-    if entry is not None and now - entry[0] < _RUNTIME_CACHE_TTL_SECONDS:
+    if entry is not None:
         return entry[1]
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
@@ -277,6 +284,15 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
                        _slot_label(slot), provider, exc)
         return out
     with _runtime_cache_lock:
+        expired = [
+            key for key, (stamp, _) in _runtime_cache.items()
+            if now - stamp >= _RUNTIME_CACHE_TTL_SECONDS
+        ]
+        for key in expired:
+            _runtime_cache.pop(key, None)
+        if len(_runtime_cache) >= _RUNTIME_CACHE_MAX_ENTRIES:
+            oldest_key = min(_runtime_cache, key=lambda key: _runtime_cache[key][0])
+            _runtime_cache.pop(oldest_key, None)
         _runtime_cache[cache_key] = (now, out)
     return out
 

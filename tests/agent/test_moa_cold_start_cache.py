@@ -10,6 +10,7 @@ underlying ``resolve_runtime_provider`` (real provider-catalog I/O)
 runs once per distinct slot, not once per create() iteration.
 """
 
+import time
 import types  # noqa: F401  (used by _fake_response)
 
 import pytest
@@ -190,6 +191,28 @@ def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
     )
     assert moa._slot_runtime(slot)["api_key"] == "key-2"
     assert calls["n"] == 2
+
+
+def test_slot_runtime_cache_evicts_expired_entries(monkeypatch):
+    import agent.moa_loop as moa
+
+    moa._runtime_cache.clear()
+    old_key = ("old-home", "openai", "old-model")
+    moa._runtime_cache[old_key] = (
+        time.monotonic() - moa._RUNTIME_CACHE_TTL_SECONDS - 1,
+        {"provider": "openai", "model": "old-model", "api_key": "old-key"},
+    )
+
+    import hermes_cli.runtime_provider as rt_mod
+    monkeypatch.setattr(
+        rt_mod,
+        "resolve_runtime_provider",
+        lambda **kw: {"base_url": "http://x", "api_key": "new-key", "api_mode": None},
+    )
+    monkeypatch.setattr(moa, "hermes_home_key", lambda: "new-home", raising=False)
+
+    moa._slot_runtime({"provider": "openai", "model": "new-model"})
+    assert old_key not in moa._runtime_cache
 
 
 def test_slot_runtime_resolution_error_is_not_cached(monkeypatch):

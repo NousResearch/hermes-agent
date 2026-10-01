@@ -71,6 +71,7 @@ def test_nudge_when_no_terminal_tool(clear_kanban_env):
     assert "kanban_complete" in nudge
     assert "kanban_block" in nudge
     assert "t_46be8aa5" in nudge
+    assert "this session made no terminal board call" in nudge
 
 
 def test_no_nudge_after_kanban_complete(clear_kanban_env):

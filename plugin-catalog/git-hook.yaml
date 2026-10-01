@@ -1,6 +1,6 @@
 name: git-hook
 repo: https://github.com/aean0x/hermes-git-hook
-sha: 6d5607ced4f38660541281a43431954dfb2fdfb8
+sha: ec19003302b730a5727d08623776e1fa74ecaaa4
 description: "Auto fetch/pull before reads, and commit + push only the files each turn changed, for every git worktree Hermes touches."
 maintainer: aean0x
 tier: community

@@ -10,6 +10,11 @@ from tests.integration.matrix_live.conftest import ApprovalGateway, LinuxNioObse
 from plugins.platforms.matrix.approval_cards import force_redact_command
 
 
+@pytest.fixture
+def gateway(approval_gateway: ApprovalGateway) -> ApprovalGateway:
+    return approval_gateway
+
+
 @pytest.mark.parametrize("approval_gateway", [
     (encrypted, decision)
     for encrypted in (False, True)

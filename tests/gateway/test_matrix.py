@@ -4752,8 +4752,9 @@ class TestMatrixImageOnlyMediaNormalization:
         )
 
         (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        event = event.authored_media()
         assert (event.text, event.message_type, event.media_urls, event.media_types) == (
-            expected_text, MessageType.TEXT, None, None,
+            expected_text, MessageType.TEXT, [], [],
         )
         assert self.download.requested == []
 
@@ -4798,10 +4799,11 @@ class TestMatrixImageOnlyMediaNormalization:
             )
 
         (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        event = event.authored_media()
         assert (
             event.text, event.message_type, event.media_urls, event.media_types, decrypted,
             list(get_document_cache_dir().iterdir()),
-        ) == ("please see\n[matrix file attachment too large: a.txt]", MessageType.TEXT, None, None, [], [])
+        ) == ("please see\n[matrix file attachment too large: a.txt]", MessageType.TEXT, [], [], [], [])
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("send_content_length, chunks_read", [
@@ -4826,6 +4828,7 @@ class TestMatrixImageOnlyMediaNormalization:
         )
 
         (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        event = event.authored_media()
         assert (event.text, event.message_type, download.requested, download.chunks_read) == (
             "look\n[matrix image attachment too large]", MessageType.TEXT, ["mxc://example/huge"], chunks_read,
         )

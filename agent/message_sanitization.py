@@ -659,14 +659,17 @@ def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[st
             projected.append(message)
             continue
 
-        shadow = dict(message)
-        ordered = shadow.pop("anthropic_content_blocks", None)
-        details = shadow.pop("reasoning_details", None)
-        shadow.pop("_anthropic_content_blocks", None)
+        # Mirror _convert_assistant_message's actual inputs instead of starting
+        # from canonical storage. Context selection is allowed to return canonical
+        # rows, which can contain timestamp/finish_reason/api_content and other
+        # local metadata that native Anthropic never sees.
+        shadow = {"role": "assistant"}
+        for key in ("content", "tool_calls", "reasoning_content", "cache_control"):
+            if key in message:
+                shadow[key] = message[key]
 
-        # Native Anthropic conversion never consumes the canonical storage-only
-        # reasoning field directly.
-        shadow.pop("reasoning", None)
+        ordered = message.get("anthropic_content_blocks")
+        details = message.get("reasoning_details")
 
         ordered_authoritative = isinstance(ordered, list) and any(
             isinstance(block, dict) and block.get("type") in replayable_ordered_types

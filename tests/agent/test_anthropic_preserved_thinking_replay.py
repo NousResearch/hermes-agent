@@ -151,6 +151,17 @@ def _carrier_message():
     }
 
 
+def _non_tool_carrier_message():
+    message = _carrier_message()
+    message["anthropic_content_blocks"] = [
+        block
+        for block in message["anthropic_content_blocks"]
+        if block.get("type") != "tool_use"
+    ]
+    message.pop("tool_calls", None)
+    return message
+
+
 def test_rejected_signature_is_removed_from_every_carrier_and_persists_across_resume():
     from agent.anthropic_thinking_replay import (
         apply_rejected_thinking_suppression,
@@ -479,7 +490,14 @@ def test_native_accounting_projection_dedupes_ordered_carrier_and_opaque_bytes()
 
     projected_huge, readable = native_anthropic_accounting_projection([huge_opaque])
 
+    metadata_copy = copy.deepcopy(huge_opaque)
+    metadata_copy["timestamp"] = 1234567890.0
+    metadata_copy["finish_reason"] = "tool_calls"
+    metadata_copy["api_content"] = "storage-only replay sidecar"
+
     assert "_anthropic_readable_thinking_estimate" not in repr(projected_huge)
+    projected_metadata, _ = native_anthropic_accounting_projection([metadata_copy])
+    assert projected_metadata == projected_huge
     assert readable == ("x" * 8000,)
     assert estimate_native_anthropic_messages_tokens_rough(
         [huge_opaque]
@@ -524,12 +542,13 @@ def test_preflight_ignores_persisted_rejected_thinking(monkeypatch):
 
     db = _ConfigDB()
     first = _assembly_agent(db)
-    remember_rejected_thinking(first, [copy.deepcopy(_carrier_message())])
+    carrier = _non_tool_carrier_message()
+    remember_rejected_thinking(first, [copy.deepcopy(carrier)])
 
     resumed = _assembly_agent(db)
     history = [
         {"role": "user", "content": "Q"},
-        _carrier_message(),
+        copy.deepcopy(carrier),
         {"role": "user", "content": "continue"},
     ]
     preflight = _preflight_request_tokens(resumed, copy.deepcopy(history), "")

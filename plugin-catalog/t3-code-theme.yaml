@@ -1,18 +1,18 @@
 name: t3-code-theme
 title: T3 Code Theme
 repo: https://github.com/mariomondev/t3-code-theme
-sha: e98e91c38f2d3b2fcdc21ffcce18d0e8b7a44236
-description: Unofficial port of the standard T3 Code dark theme for Hermes Desktop, with a T3-style model picker (provider rail, favorites, keyboard shortcuts), T3 composer, sidebar thread cards and confirm dialogs. Scoped to its own theme; other themes are untouched.
+sha: c84ce92c9223de1a3395e384c6404bf0e07ee2ce
+description: Unofficial port of the standard T3 Code dark theme for Hermes Desktop. Palette, T3 composer, sidebar thread cards with project and branch, model labels and confirm dialogs. Scoped to its own theme; other themes are untouched.
 maintainer: mariomondev
 tier: community
 category: desktop
 docs_url: https://github.com/mariomondev/t3-code-theme#readme
-version: "0.4.1"
-image: https://raw.githubusercontent.com/mariomondev/t3-code-theme/e98e91c38f2d3b2fcdc21ffcce18d0e8b7a44236/docs/banner.jpg
+version: "0.5.0"
+image: https://raw.githubusercontent.com/mariomondev/t3-code-theme/c84ce92c9223de1a3395e384c6404bf0e07ee2ce/docs/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/mariomondev/t3-code-theme/e98e91c38f2d3b2fcdc21ffcce18d0e8b7a44236/docs/chat.png
-  - https://raw.githubusercontent.com/mariomondev/t3-code-theme/e98e91c38f2d3b2fcdc21ffcce18d0e8b7a44236/docs/model-picker.png
-  - https://raw.githubusercontent.com/mariomondev/t3-code-theme/e98e91c38f2d3b2fcdc21ffcce18d0e8b7a44236/docs/sidebar.png
+  - https://raw.githubusercontent.com/mariomondev/t3-code-theme/c84ce92c9223de1a3395e384c6404bf0e07ee2ce/docs/chat.png
+  - https://raw.githubusercontent.com/mariomondev/t3-code-theme/c84ce92c9223de1a3395e384c6404bf0e07ee2ce/docs/empty-chat.png
+  - https://raw.githubusercontent.com/mariomondev/t3-code-theme/c84ce92c9223de1a3395e384c6404bf0e07ee2ce/docs/sidebar.png
 platforms: []
 capabilities:
   provides_tools: []

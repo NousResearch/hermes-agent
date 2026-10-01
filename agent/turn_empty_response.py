@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.turn_failure_copy import interrupted_retry
+
 from agent import empty_response_guard as _empty_guard
 from agent.message_metadata import append_message
 from agent.turn_context_compaction import _refund_api_call
@@ -85,9 +87,7 @@ def _retry_empty(
         conversation_history=conversation_history,
         api_call_count=api_call_count,
         abort_message="Interrupt detected during empty-response retry wait, aborting.",
-        interrupt_text=(
-            f"Operation interrupted: retrying empty response from model (retry {n}/{budget})."
-        ),
+        interrupt_text=interrupted_retry("empty_response", f"{n}/{budget}"),
         activity_label=f"empty response retry backoff ({n}/{budget})",
     )
     if _interrupted is not None:

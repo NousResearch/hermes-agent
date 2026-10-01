@@ -11,7 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from agent.turn_failure_copy import interrupted_retry
 
 from agent.error_classifier import FailoverReason
 from agent.turn_api_call import stop_thinking_spinner
@@ -342,7 +344,7 @@ def retry_invalid_response(
         agent, wait_time, _retry, messages=messages, conversation_history=conversation_history,
         api_call_count=api_call_count,
         abort_message="Interrupt detected during retry wait, aborting.",
-        interrupt_text=f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
+        interrupt_text=interrupted_retry("api", f"{_failure_hint}, attempt {retry_count}/{max_retries}"),
         activity_label=f"retry backoff ({retry_count}/{max_retries})",
     )
     if _interrupted is not None:

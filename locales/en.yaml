@@ -3546,6 +3546,26 @@ display:
   notice:
     uncompressed_context_overflow: "⚠️ Session context (~{tokens} tokens) exceeds the model context window (~{context_length} tokens) with compression disabled (compression.enabled: false). Use /compact to compress history or enable compression in config.yaml."
 
+turn_failure:
+  notice: "Your request was not processed. Send it again if you still want me to carry it out."
+  partial_notice: "This turn did not complete. Some actions may already have run; verify their effects before resending."
+  interrupted_waiting: "Operation interrupted: waiting for model response ({elapsed}s elapsed)."
+  interrupted_retry_api: "Operation interrupted: retrying API call after error (retry {detail})."
+  interrupted_retry_empty: "Operation interrupted: retrying empty response from model (retry {detail})."
+  interrupted_fallback: "Operation interrupted."
+  exhausted_reset: "its usage limit resets in {window}. Send /retry after that, or switch models with /model."
+  exhausted_temporary: "it looks temporarily unavailable. Wait a minute and send /retry, or switch models with /model."
+  exhausted_backup: "To avoid this in future, add a backup provider with `hermes fallback add`."
+  provider_said: "Provider said: {summary}"
+  exhausted_lead:
+    rate_limit: "{label} rate-limited every one of {attempts} attempts"
+    upstream_rate_limit: "{label} rate-limited every one of {attempts} attempts"
+    overloaded: "{label} reported it was overloaded on all {attempts} attempts"
+    server_error: "{label} returned a server error on all {attempts} attempts"
+    timeout: "{label} didn't respond in time on any of {attempts} attempts"
+  site:
+    truncated: "The model's reply was cut off before it finished (it hit its output length limit), so Hermes didn't run the incomplete action. Nothing was changed. Send `continue`, ask for the work in smaller steps, or raise max_tokens for this model."
+
 explainer:
   # Turn-completion explanations and file-mutation footers (agent/turn_explainers.py). Appended to
   # the human-facing reply after the transcript row is written; the model never sees them.

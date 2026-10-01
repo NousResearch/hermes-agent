@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
+from agent.i18n import t
 from hermes_constants import display_hermes_home
 
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
@@ -48,12 +49,22 @@ PARTIAL_FAILED_TURN_NOTICE = (
 FAILED_TURN_DISPLAY_KIND = "failed_turn"
 
 
+def _localized_failed_turn_notice(partial: bool) -> str:
+    key = "turn_failure.partial_notice" if partial else "turn_failure.notice"
+    fallback = PARTIAL_FAILED_TURN_NOTICE if partial else FAILED_TURN_NOTICE
+    value = t(key)
+    return fallback if value == key else value
+
+
 def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
     (exact notice text, so a real reply quoting it stays a reply); read-side only."""
-    if role == "assistant" and isinstance(content, str) and content.strip() in (
-        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
-    ):
+    if role == "assistant" and isinstance(content, str) and content.strip() in {
+        FAILED_TURN_NOTICE,
+        PARTIAL_FAILED_TURN_NOTICE,
+        _localized_failed_turn_notice(False),
+        _localized_failed_turn_notice(True),
+    }:
         return FAILED_TURN_DISPLAY_KIND
     return None
 
@@ -64,8 +75,8 @@ def failed_turn_notice(turn_messages: Any) -> str:
         if isinstance(row, dict) and (
             row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
         ):
-            return PARTIAL_FAILED_TURN_NOTICE
-    return FAILED_TURN_NOTICE
+            return _localized_failed_turn_notice(True)
+    return _localized_failed_turn_notice(False)
 
 
 def provider_label_for(provider: Any) -> str:
@@ -357,23 +368,58 @@ _SITE_COPY: Dict[str, str] = {**_FAILURE_CODE_COPY, **_ONE_OFF_COPY}
 def site_copy(code: str, **fields: Any) -> str:
     """Chat copy for a failure code or one-off loop outcome; unknown fields default to empty strings."""
     fields.setdefault("home", display_hermes_home())
-    return _SITE_COPY[code].format_map(_Defaults(fields))
+    fallback = _SITE_COPY[code].format_map(_Defaults(fields))
+    value = t(f"turn_failure.site.{code}", **fields)
+    return fallback if value == f"turn_failure.site.{code}" else value
 
 
 def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
-    lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    lead_template = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD)
+    lead_key = f"turn_failure.exhausted_lead.{reason}"
+    translated_lead = t(lead_key, label=label, attempts=attempts)
+    lead = (lead_template.format(label=label, attempts=attempts)
+            if translated_lead == lead_key else translated_lead)
     if reset_seconds is not None and reset_seconds >= 120:
         from agent.retry_utils import format_reset_window
-        situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
-                     "Send /retry after that, or switch models with /model.")
+        situation = t(
+            "turn_failure.exhausted_reset",
+            window=format_reset_window(reset_seconds),
+        )
     else:
-        situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
-    return (
-        f"{lead} — {situation} To avoid this in future, "
-        f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
-    )
+        situation = t("turn_failure.exhausted_temporary")
+        if situation == "turn_failure.exhausted_temporary":
+            situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
+    backup = t("turn_failure.exhausted_backup")
+    if backup == "turn_failure.exhausted_backup":
+        backup = "To avoid this in future, add a backup provider with `hermes fallback add`."
+    provider_said = t("turn_failure.provider_said", summary=summary)
+    if provider_said == "turn_failure.provider_said":
+        provider_said = f"Provider said: {summary}"
+    return f"{lead} — {situation} {backup}\n\n{provider_said}"
+
+
+def interrupted_waiting_for_model(elapsed: float) -> str:
+    key = "turn_failure.interrupted_waiting"
+    value = t(key, elapsed=f"{elapsed:.1f}")
+    return value if value != key else f"Operation interrupted: waiting for model response ({elapsed:.1f}s elapsed)."
+
+
+def interrupted_retry(kind: str, detail: str) -> str:
+    key = "turn_failure.interrupted_retry_empty" if kind == "empty_response" else "turn_failure.interrupted_retry_api"
+    value = t(key, detail=detail)
+    if value != key:
+        return value
+    if kind == "empty_response":
+        return f"Operation interrupted: retrying empty response from model (retry {detail})."
+    return f"Operation interrupted: retrying API call after error (retry {detail})."
+
+
+def interrupted_fallback() -> str:
+    key = "turn_failure.interrupted_fallback"
+    value = t(key)
+    return value if value != key else "Operation interrupted."
 
 
 def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:

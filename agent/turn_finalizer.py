@@ -163,10 +163,10 @@ def _resolve_budget_fallback(
                 # The turn ends interrupted, so the pending interrupt message is returned
                 # for requeue instead of being cleared behind a fallback summary. A redirect
                 # also ends it: the budget is spent, so there is no loop to restart into.
-                from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+                from agent.turn_failure_copy import interrupted_waiting_for_model
                 interrupted = True
                 _turn_exit_reason = interrupted_during_api_call_reason(agent)
-                final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
+                final_response = interrupted_waiting_for_model(time.time() - _summary_start)
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete. Only the

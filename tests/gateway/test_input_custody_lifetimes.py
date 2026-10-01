@@ -17,7 +17,7 @@ from hermes_state_input_custody import PreparedInputHandle, copy_is_held
 from hermes_state_runtime import (
     RuntimeStoreError, claim_session_input, get_session_admission, settle_session_input,
 )
-from tests.gateway.input_reclamation_fixtures import owned, close, rpc_files, retire_metadata
+from tests.gateway.input_reclamation_fixtures import owned, close, rpc_files, retire_metadata, expire, v3_path
 
 
 def native_held(db):
@@ -116,6 +116,46 @@ async def test_refused_mixed_preparation_native_bytes_are_collectible(tmp_path, 
         collect_native_inputs(db, epoch=owner.epoch)
         assert image.exists() is held
     finally:
+        close(db, tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('runtime', ['starting', 'serving', 'unknown', 'unavailable'])
+async def test_owner_startup_reclaims_refused_images_only_before_ingress(tmp_path, monkeypatch, runtime):
+    from types import SimpleNamespace
+    from gateway import hosted_room_input_reclamation as reclamation
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_cron import unbind_owner
+
+    db, owner = owned(tmp_path, monkeypatch)
+    successor = None
+    try:
+        rpc, bound = rpc_files(tmp_path, owner, count=2, image=True)
+        prepared = prepare_hosted_input(rpc, request_id='refused', prompt='read',
+                                        attachments=[item for item, _ in bound])
+        image_digest = hashlib.sha256(bound[-1][1]).hexdigest()
+        image = _media_root() / image_digest / (image_digest + '.png')
+        assert image.exists()
+        expire(db, prepared.handle)  # Never admitted: no admission settlement can release it.
+        if runtime == 'unavailable':
+            def unavailable(*args, **kwargs):
+                raise RuntimeStoreError('storage_unavailable')
+            monkeypatch.setattr(reclamation, '_collect', unavailable)
+        state = dict(session_runtime_descriptor={'state': 'starting'},
+            _running=runtime == 'serving', _draining=False, adapters={}, _profile_adapters={},
+            session_api=None, session_control_server=None, session_store=SimpleNamespace())
+        if runtime == 'unknown':
+            del state['_running']  # A runner that cannot prove it is not serving yet.
+        runner = SimpleNamespace(**state)
+        successor = await initialize_session_authority(runner, profile_id=str(tmp_path.resolve()),
+            instance_id='next', db=db)
+        # Collection is never a startup precondition, and it never runs once input is live.
+        assert runner.session_authority is successor and successor.epoch == owner.epoch + 1
+        assert image.exists() is (runtime != 'starting')
+        assert v3_path(prepared).exists()  # Documents belong to the online housekeeping chore.
+    finally:
+        if successor is not None:
+            unbind_owner(successor)
         close(db, tmp_path)
 
 

@@ -547,6 +547,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     epoch = begin_runtime_epoch(db, instance_id=instance_id)
     recover_session_inputs(db, epoch=epoch)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
+    # Before any registration: nothing can submit to this owner while it collects.
+    from gateway.run_input_reclamation import collect_native_inputs_before_ingress
+    await asyncio.to_thread(collect_native_inputs_before_ingress, runner, authority)
     if register:
         runner.session_authority = authority
     from gateway.session_cron import bind_owner

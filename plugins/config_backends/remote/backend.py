@@ -87,6 +87,14 @@ class _ProfileState:
 
 _UNKNOWN = object()
 
+# Plane refusals caused by the submitted value (contract §2.5, §11.1): surfaced to the caller as
+# ConfigValueError with the plane's code. config_request_invalid is deliberately absent: a request
+# the plane cannot parse is this client's bug, not the user's value, so it stays opaque.
+_VALUE_REFUSALS = frozenset({
+    (400, "config_secret_literal"), (400, "config_value_invalid"), (400, "config_path_invalid"),
+    (400, "config_path_reserved"), (413, "config_level_too_large"), (413, "config_body_too_large"),
+})
+
 
 def _profile_writer(body: Dict[str, Any]) -> Any:
     """The profile level's stored ``writerConfigVersion`` (int or None), or ``_UNKNOWN``."""
@@ -247,20 +255,25 @@ class RemoteBackend:
             if st.postprocessed or st.in_postprocess:
                 return
             st.in_postprocess = True
-        seen = st.installed
+            # The doc's schema version and its generation are captured together: a poll may install
+            # a newer doc at any point after this, and migrating that doc from THIS version would
+            # run steps its data never needed (and, D12, drop settings it holds on purpose).
+            seen = st.installed
+            current = int(st.doc.get("_config_version") or 0)
+            keys = set(st.doc)
         try:
             try:
                 from hermes_cli.config import _known_top_level_keys
                 from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION, run_migrations
             except ImportError:
                 return  # still importing; the next read retries
-            for key in sorted(set(st.doc) - _known_top_level_keys() - {"_config_version"}):
+            for key in sorted(keys - _known_top_level_keys() - {"_config_version"}):
                 if key not in self._unknown_warned:
                     self._unknown_warned.add(key)
                     logger.warning("Remote Config: unknown config key %r is ignored by this Hermes version", key)
-            current, latest = int(st.doc.get("_config_version") or 0), _latest_config_version()
+            latest = _latest_config_version()
             if SUPPORT_FLOOR_VERSION <= current < latest:
-                self._migrate_in_memory(st, current, run_migrations)
+                self._migrate_in_memory(st, seen, current, run_migrations)
             elif current < SUPPORT_FLOOR_VERSION:
                 logger.warning("Remote Config: profile %r was written by config version %d, below the "
                                "migration floor %d; not migrated", st.profile, current, SUPPORT_FLOOR_VERSION)
@@ -268,12 +281,19 @@ class RemoteBackend:
         finally:
             st.in_postprocess = False
 
-    def _migrate_in_memory(self, st: _ProfileState, current: int, run_migrations) -> None:
-        """Migrate the installed doc in memory (D12). The migrated doc also becomes the base later
-        writes diff against: a reader was handed the migrated doc, so a write that leaves the
-        migration's changes in place must not send them (D12: never write the migration back)."""
+    def _migrate_in_memory(self, st: _ProfileState, started: int, current: int, run_migrations) -> None:
+        """Migrate doc generation *started* (whose schema version is *current*) in memory (D12).
+        The migrated doc also becomes the base later writes diff against: a reader was handed the
+        migrated doc, so a write that leaves the migration's changes in place must not send them
+        (D12: never write the migration back).
+
+        Generation-checked at start, at each step (:meth:`apply_in_memory`) and at commit: once a
+        poll or write has installed another doc, nothing of this migration lands on it."""
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        started = st.migrating = st.installed
+        with st.lock:
+            if st.installed != started:
+                return  # replaced before we began; the new doc gets its own pass
+            st.migrating = started
         token = set_hermes_home_override(st.home)
         try:
             run_migrations(current, {"env_added": [], "config_added": [], "warnings": []}, True)
@@ -411,8 +431,17 @@ class RemoteBackend:
         if resp.status == 403 and resp.error == "config_key_locked":
             return ConfigLockedError(str(resp.body.get("path") or ""), str(resp.body.get("lockedBy") or "upper"),
                                      f"Remote Config refused the write: {resp.message}")
-        if resp.status == 400 and resp.error == "config_secret_literal":
-            return ConfigValueError(f"Remote Config refused the write: {resp.message}", code=resp.error)
+        if (resp.status, resp.error) in _VALUE_REFUSALS:
+            # The submitted value is the problem (contract §2.5 table): the caller's to fix, so it
+            # keeps its code and the plane's refusal text, which names a path and a reason, never a
+            # value (config_secret_literal never echoes it).
+            detail = resp.message or resp.error
+            path, reason = resp.body.get("path"), resp.body.get("reason")
+            extras = [f"{k} {v}" for k, v in (("path", path), ("reason", reason))
+                      if isinstance(v, str) and v and v not in detail]
+            if extras:
+                detail = f"{detail} ({', '.join(extras)})"
+            return ConfigValueError(f"Remote Config refused the write: {detail}", code=resp.error)
         return ConfigWriteError(f"Remote Config refused the write ({resp.status} {resp.error}): {resp.message}",
                                 code=resp.error)
 

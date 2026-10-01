@@ -616,9 +616,10 @@ def test_bulk_save_after_migration_sends_only_the_edit(plane):
 
     save_config(doc)
 
-    for p in plane.patches():
-        assert "unset" not in p["body"]
-        assert "compression" not in json.dumps(p["body"])
+    (p,) = plane.patches()
+    assert p["body"]["set"] == {"display": {"personality": "pirate"}}
+    assert "unset" not in p["body"]
+    assert "compression" not in json.dumps(p["body"])
 
 
 def test_unrelated_write_keeps_an_old_profile_stamp_so_later_reads_still_migrate(plane):
@@ -708,6 +709,145 @@ def test_dashboard_unexpected_config_failure_stays_opaque(plane):
     plane.fail_status = 500  # the write reaches the plane, which fails: not an expected refusal
     status, detail = _dashboard_put({"display": {"personality": "new"}})
     assert (status, detail) == (500, "Internal server error")
+
+
+# --- review round 2 regressions -----------------------------------------------------------
+
+def test_refused_source_plane_url_is_never_visible_to_a_concurrent_request(plane, monkeypatch):
+    """D32 credential boundary: a real command source supplies HERMES_CONFIG_REMOTE_URL pointing
+    at another plane. A poll scheduled right after the sources ran (before the refusal) must still
+    go to the configured plane: the forbidden URL is never published, so the bearer and instance id
+    never reach the other server."""
+    import os
+    import threading
+
+    from agent.secret_sources import registry
+    from hermes_cli import env_loader
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    with StubPlane() as other:
+        plane.upper = {"secrets": {"command": {
+            "enabled": True, "override_existing": True,
+            "command": f"printf 'HERMES_CONFIG_REMOTE_URL={other.url}\\n'"}}}
+        backend = get_config_backend()
+        st = backend._state(plane.home)
+        real_apply_all = registry.apply_all
+        seen = {}
+
+        def apply_then_poll(*args, **kwargs):
+            report = real_apply_all(*args, **kwargs)
+            seen["url_after_sources"] = os.environ.get("HERMES_CONFIG_REMOTE_URL")
+            poll = threading.Thread(target=backend.poll_one, args=(st,))
+            poll.start()
+            poll.join(10)
+            assert not poll.is_alive()
+            return report
+
+        monkeypatch.setattr(registry, "apply_all", apply_then_poll)
+        gets_before = len(_gets(plane))
+        with pytest.raises(ConfigBackendUnavailable, match="HERMES_CONFIG_REMOTE_URL"):
+            env_loader.load_hermes_dotenv(hermes_home=plane.home)
+
+        assert "url_after_sources" in seen, "precondition: the source ran"
+        assert other.requests == []  # nothing — least of all the bearer — reached the other plane
+        assert seen["url_after_sources"] == plane.url
+        assert len(_gets(plane)) > gets_before  # the gap poll went to the configured plane
+        assert os.environ["HERMES_CONFIG_REMOTE_URL"] == plane.url
+
+
+def test_file_mode_publishes_permitted_source_values(monkeypatch, tmp_path):
+    """Staging must not lose ordinary secrets: permitted names are published after the check."""
+    import os
+
+    from hermes_cli import env_loader
+    monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
+    monkeypatch.setenv("CC_STAGED_SECRET", "x")
+    monkeypatch.delenv("CC_STAGED_SECRET")
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n  command:\n    enabled: true\n    command: \"printf 'CC_STAGED_SECRET=from-source\\\\n'\"\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    env_loader._apply_external_secret_sources(home)
+
+    assert os.environ.get("CC_STAGED_SECRET") == "from-source"
+
+
+def test_migration_of_a_replaced_doc_does_not_touch_the_replacement(plane, monkeypatch):
+    """A read starts migrating the stored-46 doc; before the migration begins, a poll installs the
+    current-version doc that keeps compression.threshold_tokens on purpose. The stale 46->47 step
+    must not run against it (the replacement stays intact, nothing is written back)."""
+    import threading
+
+    from hermes_cli.config import read_raw_config
+    latest = backend_mod._latest_config_version()
+    assert latest > 46
+    plane.profile("default").update(values={"compression": {"threshold_tokens": 256000}}, writer=46)
+    backend = get_config_backend()
+    st = backend._state(plane.home)
+    entered, resume = threading.Event(), threading.Event()
+    real_migrate = backend._migrate_in_memory
+
+    def paused(*args, **kwargs):
+        entered.set()
+        assert resume.wait(10)
+        return real_migrate(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_migrate_in_memory", paused)
+    failures = []
+
+    def read():
+        try:
+            read_raw_config()
+        except BaseException as exc:  # noqa: BLE001 — surfaced below
+            failures.append(exc)
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    assert entered.wait(10)
+    plane.profile("default").update(writer=latest, version=1)
+    assert backend.poll_one(st)
+    assert st.doc["compression"] == {"threshold_tokens": 256000}
+    resume.set()
+    reader.join(10)
+    assert not reader.is_alive() and not failures, failures
+
+    doc = read_raw_config()
+    assert doc["_config_version"] == latest
+    assert doc["compression"] == {"threshold_tokens": 256000}
+    assert plane.patches() == []
+
+
+def test_dashboard_save_refused_by_plane_value_check_is_a_400(plane):
+    """The plane's own value refusal (config_value_invalid too_deep, contract §11.1) reaches the
+    dashboard as a 400 with its reason, not an opaque 500."""
+    from hermes_cli.config import read_raw_config
+    read_raw_config()
+    value = "leaf"
+    for _ in range(33):
+        value = [value]
+
+    status, detail = _dashboard_put({"display": {"custom": value}})
+
+    assert len(plane.patches()) == 1  # client sent it; the server refused
+    assert status == 400
+    assert "too_deep" in detail and "display" in detail  # the plane's reason and path pass through
+
+
+@pytest.mark.parametrize("status,error,expected", [
+    (400, "config_value_invalid", 400), (400, "config_path_invalid", 400), (400, "config_path_reserved", 400),
+    (400, "config_secret_literal", 400), (413, "config_level_too_large", 413), (413, "config_body_too_large", 413),
+    (400, "config_request_invalid", None), (500, "internal", None)])
+def test_plane_refusals_map_to_http(status, error, expected):
+    from hermes_cli.web_routers._common import config_refusal_http
+    from plugins.config_backends.remote import client
+    exc = backend_mod.RemoteBackend._write_error(
+        client.Response(status=status, body={"error": error, "message": "refused", "path": "a.b"},
+                        etag=None, retry_after=None))
+    http = config_refusal_http(exc)
+    assert (http.status_code if http else None) == expected
+    assert exc.code == error
 
 
 def test_stub_plane_deep_merge_follows_contract_6_2():

@@ -26,11 +26,11 @@ from gateway.platforms.base_pending_merge import merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import (
     GatewayRunner,
-    _build_media_placeholder,
     _event_media_is_audio,
     _event_media_is_image,
     _event_media_is_video,
 )
+from gateway.run_inbound_media import _build_media_placeholder
 from gateway.session import SessionSource
 
 

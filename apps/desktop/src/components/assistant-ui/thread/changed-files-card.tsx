@@ -21,7 +21,9 @@ const MAX_ROWS_HEIGHT = '9.375rem'
 /**
  * Cursor-style "N files changed" summary closing out the newest assistant turn:
  * one row per file it edited with that file's +/-, and a Review action opening
- * the diff pane (⌘G). A row click opens that file's diff directly.
+ * the diff pane (⌘G). A row click opens that file's diff directly — the repo's
+ * diff when git tracks it, else the diffs this turn's tools reported, which is
+ * all a file outside the session's repo ever has.
  *
  * Wears the shared `WIDGET_SHELL_CLASS` so it reads as the same panel as the
  * transcript's other inline widgets rather than inventing its own chrome.
@@ -61,7 +63,14 @@ export const ChangedFilesCard: FC<{ parts: readonly unknown[] }> = ({ parts }) =
           <Tip key={file.path} label={displayPath(file.path)}>
             <button
               className="row-hover flex shrink-0 items-center gap-2 rounded-md px-1.5 py-1 text-left"
-              onClick={() => void openReviewForPath(file.path, scopeCwd, composerScope.target)}
+              onClick={() =>
+                void openReviewForPath(file.path, scopeCwd, composerScope.target, {
+                  added: file.added,
+                  diffs: file.diffs,
+                  path: file.path,
+                  removed: file.removed
+                })
+              }
               type="button"
             >
               <FileTypeIcon className="shrink-0 text-(--ui-text-tertiary)" path={file.path} size="0.875rem" />

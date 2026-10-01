@@ -27152,7 +27152,7 @@
           "authentication": {
             "anyOf": [
               {
-                "const": "proof-v1",
+                "const": "proof-v2",
                 "type": "string"
               },
               {

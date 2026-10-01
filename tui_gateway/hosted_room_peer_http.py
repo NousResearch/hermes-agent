@@ -350,9 +350,10 @@ class PeerRunsHTTPClient:
         proof_state = None
         if self.proof_install_id is not None and room_grant:
             from gateway.hosted_room_proof import request_proof
-            authorization, proof_key, proof_mac = request_proof(
+            authorization, proof_key, proof_mac, encrypted_body = request_proof(
                 room_grant, installation_id=self.proof_install_id, method=method, path=path, body=body_bytes or b'',
                 headers={"Content-Type": "application/json", **(headers or {})})
+            body_bytes = encrypted_body if body_bytes is not None else None
             proof_state = proof_key, proof_mac
             headers = {**(headers or {}), 'Authorization': authorization}
         request = urllib.request.Request(
@@ -370,9 +371,11 @@ class PeerRunsHTTPClient:
         try:
             with _open_roomlink_url(request, timeout=timeout, reject_redirects=reject_redirects) as response:
                 raw = _read_body(
-                    response, max_bytes=MAX_PEER_RESPONSE_BYTES, deadline=deadline, kind="",
+                    response, max_bytes=MAX_PEER_RESPONSE_BYTES + (16 if proof_state else 0), deadline=deadline, kind="",
                     ambiguous=ambiguous, as_bytes=proof_state is not None)
-                self._verify_proof_response(proof_state, response, raw, ambiguous=ambiguous)
+                raw = self._verify_proof_response(proof_state, response, raw, ambiguous=ambiguous)
+                if proof_state and len(raw) > MAX_PEER_RESPONSE_BYTES:
+                    raise PeerRunsHTTPError('peer response exceeded plaintext limit', ambiguous=ambiguous)
         except urllib.error.HTTPError as exc:
             try:
                 if reject_redirects and exc.code in {301, 302, 303, 307, 308}:
@@ -380,9 +383,11 @@ class PeerRunsHTTPClient:
                         "peer renewal request refused an HTTP redirect", status_code=exc.code) from exc
                 if proof_state is not None:
                     import io
-                    raw_error = _read_body(exc, max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES,
+                    raw_error = _read_body(exc, max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES + 16,
                                            deadline=deadline, kind=" error", ambiguous=ambiguous, as_bytes=True)
-                    self._verify_proof_response(proof_state, exc, raw_error, ambiguous=ambiguous)
+                    raw_error = self._verify_proof_response(proof_state, exc, raw_error, ambiguous=ambiguous)
+                    if len(raw_error) > MAX_PEER_ERROR_RESPONSE_BYTES:
+                        raise PeerRunsHTTPError('peer error exceeded plaintext limit', ambiguous=ambiguous)
                     exc = urllib.error.HTTPError(exc.url, exc.code, exc.msg, exc.headers,
                                                  io.BytesIO(raw_error))
                 self._raise_http_error(exc, method=method, path=path, deadline=deadline)
@@ -399,19 +404,30 @@ class PeerRunsHTTPClient:
         try:
             payload = json.loads(raw)
         except ValueError as exc:
-            raise PeerRunsHTTPError("peer returned non-JSON data") from exc
+            raise PeerRunsHTTPError(
+                "peer returned non-JSON data",
+                retryable=ambiguous,
+                ambiguous=ambiguous,
+            ) from exc
         if not isinstance(payload, dict):
-            raise PeerRunsHTTPError("peer returned a non-object response")
+            raise PeerRunsHTTPError(
+                "peer returned a non-object response",
+                retryable=ambiguous,
+                ambiguous=ambiguous,
+            )
         return payload
 
     @staticmethod
     def _verify_proof_response(state, response, body, *, ambiguous):
         if state is None:
-            return
-        from gateway.hosted_room_proof import verify_response, RESPONSE_HEADER
+            return body
+        from gateway.hosted_room_proof import verify_response, RESPONSE_HEADER, RESPONSE_NONCE_HEADER
         try:
-            verify_response(*state, response.status, body if isinstance(body, bytes) else body.encode('utf-8'),
-                            response.headers.get(RESPONSE_HEADER))
+            for header in (RESPONSE_HEADER, RESPONSE_NONCE_HEADER):
+                if hasattr(response.headers, 'get_all') and len(response.headers.get_all(header, [])) != 1:
+                    raise ValueError('duplicate or missing room response proof header')
+            return verify_response(*state, response.status, body if isinstance(body, bytes) else body.encode('utf-8'),
+                                   response.headers.get(RESPONSE_HEADER), response.headers.get(RESPONSE_NONCE_HEADER))
         except ValueError as exc:
             # An unverified endpoint's 4xx is no evidence that the intended target rejected admission.
             raise PeerRunsHTTPError('peer installation response proof failed', ambiguous=ambiguous) from exc
@@ -507,22 +523,38 @@ class PeerRunsHTTPClient:
         session_id = self._session_id(checked, grant=grant)
 
         def admit() -> dict[str, Any]:
-            return self._request(
+            result = self._request(
                 "/v1/runs", method="POST",
                 body={"input": checked.prompt, "hosted_room_dispatch": checked.as_mapping()},
                 headers={
                     "Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
                 room_grant=grant)
 
+            if not str(result.get("run_id") or ""):
+                raise PeerRunsHTTPError(
+                    "peer did not return a run id",
+                    retryable=True,
+                    ambiguous=True,
+                )
+            return result
+
         try:
             result = admit()
-        except PeerRunsHTTPError as exc:
-            if not exc.ambiguous:
+        except PeerRunsHTTPError as first_error:
+            if not first_error.ambiguous:
                 raise
-            result = admit()
+            try:
+                result = admit()
+            except PeerRunsHTTPError as replay_error:
+                raise PeerRunsHTTPError(
+                    str(replay_error),
+                    retryable=(first_error.retryable or replay_error.retryable),
+                    ambiguous=True,
+                    not_admitted=False,
+                    status_code=replay_error.status_code,
+                    error_code=replay_error.error_code,
+                ) from replay_error
         run_id = str(result.get("run_id") or "")
-        if not run_id:
-            raise PeerRunsHTTPError("peer did not return a run id")
         receipt = {
             "run_id": run_id, "session_id": session_id,
             **{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},

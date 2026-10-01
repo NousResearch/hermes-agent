@@ -1246,7 +1246,7 @@ export interface GroupsCapabilitiesResult {
 /** ``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``. */
 export interface RoomLinkStatus {
   enabled: boolean
-  authentication?: 'proof-v1' | null
+  authentication?: 'proof-v2' | null
   profile?: string | null
   catalog?: RoomLinkCatalog | null
   endpoint?: RoomLinkEndpoint | null

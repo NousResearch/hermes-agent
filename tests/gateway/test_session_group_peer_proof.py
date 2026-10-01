@@ -202,12 +202,12 @@ async def test_duplicate_effect_headers_cannot_change_a_signed_request(gateway, 
     await target.start_server()
     body = b'{"input":"once"}'
     bound = {'Content-Type': 'application/json', 'Idempotency-Key': 'correct'}
-    authorization, _, _ = proof.request_proof(grant, installation_id=catalog['installation_id'],
+    authorization, _, _, wire_body = proof.request_proof(grant, installation_id=catalog['installation_id'],
         method='POST', path='/v1/runs', body=body, headers=bound)
     headers = [('Authorization', authorization), *bound.items()]
     try:
         async with aiohttp.ClientSession() as http:
-            async with http.post(target.make_url('/v1/runs'), data=body, headers=headers) as response:
+            async with http.post(target.make_url('/v1/runs'), data=wire_body, headers=headers) as response:
                 assert response.status == 202
             # The prior bug authenticated the LAST duplicate while the handler read the FIRST.
             forged = [(duplicate, authorization if duplicate == 'Authorization' else 'other'), *headers]
@@ -215,7 +215,7 @@ async def test_duplicate_effect_headers_cannot_change_a_signed_request(gateway, 
             reader, writer = await asyncio.open_connection('127.0.0.1', target.port)
             request = ('POST /v1/runs HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n'
                        + ''.join(f'{key}: {value}\r\n' for key, value in forged)
-                       + f'Content-Length: {len(body)}\r\n\r\n').encode() + body
+                       + f'Content-Length: {len(wire_body)}\r\n\r\n').encode() + wire_body
             writer.write(request)
             await writer.drain()
             response = await reader.read()
@@ -296,11 +296,13 @@ async def test_invalid_utf8_cannot_normalize_into_an_authenticated_response(gate
     wire_body = b'{"value":"\xff"}'
     assert signed_body != wire_body and signed_body.decode() == wire_body.decode('utf-8', 'replace')
     async def tamper(request):
-        token, key, mac, _ = proof.verify_request(request.headers['Authorization'],
+        token, key, mac, _, _ = proof.verify_request(request.headers['Authorization'],
             secret=gateway.adapter._room_grant_secret(), installation_id=catalog['installation_id'],
             method=request.method, path=request.raw_path, body=await request.read(), headers=request.headers)
-        return web.Response(body=wire_body, status=200, headers={
-            proof.RESPONSE_HEADER: proof.response_proof(key, mac, 200, signed_body)})
+        encrypted, nonce, signature = proof.seal_response(key, mac, 200, signed_body)
+        damaged = bytes([encrypted[0] ^ 1]) + encrypted[1:]
+        return web.Response(body=damaged, status=200, headers={
+            proof.RESPONSE_HEADER: signature, proof.RESPONSE_NONCE_HEADER: nonce})
     app = web.Application()
     app.router.add_post('/v1/runs', tamper)
     target = TestServer(app)

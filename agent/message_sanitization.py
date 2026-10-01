@@ -650,10 +650,10 @@ def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[st
     if not isinstance(messages, list):
         return messages, ()
 
+    from agent.anthropic_message_convert import assistant_replay_carrier
+
     projected = []
     replayed_thinking: list[str] = []
-    replayable_ordered_types = {"thinking", "redacted_thinking", "text", "tool_use", "image"}
-    thinking_types = {"thinking", "redacted_thinking"}
     for message in messages:
         if not isinstance(message, dict) or message.get("role") != "assistant":
             projected.append(message)
@@ -668,39 +668,17 @@ def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[st
             if key in message:
                 shadow[key] = message[key]
 
-        ordered = message.get("anthropic_content_blocks")
-        details = message.get("reasoning_details")
-
-        ordered_authoritative = isinstance(ordered, list) and any(
-            isinstance(block, dict) and block.get("type") in replayable_ordered_types
-            for block in ordered
-        )
-        details_authoritative = (
-            not ordered_authoritative
-            and isinstance(details, list)
-            and any(
-                isinstance(block, dict) and block.get("type") in thinking_types
-                for block in details
-            )
-        )
-        carrier = ordered if ordered_authoritative else details if details_authoritative else None
-
-        # The converter returns/replays the authoritative carrier before considering
-        # reasoning_content, so it must not be charged in addition to that carrier.
-        if carrier is not None:
+        _, carrier = assistant_replay_carrier(message)
+        # The converter ignores reasoning_content for an ordered turn and only injects it when the
+        # details carrier holds no thinking, so it must not be charged in addition to the carrier.
+        if carrier:
             shadow.pop("reasoning_content", None)
 
-        readable = []
-        if isinstance(carrier, list):
-            for block in carrier:
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "thinking"
-                    and isinstance(block.get("thinking"), str)
-                    and block.get("thinking")
-                ):
-                    readable.append(block["thinking"])
-        replayed_thinking.extend(readable)
+        replayed_thinking.extend(
+            block["thinking"]
+            for block in carrier
+            if block.get("type") == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"]
+        )
         projected.append(shadow)
     return projected, tuple(replayed_thinking)
 

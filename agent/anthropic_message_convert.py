@@ -377,6 +377,18 @@ def _replay_ordered_blocks(m: Dict[str, Any], ordered_blocks: List[Any]) -> Opti
     return replayed
 
 
+def assistant_replay_carrier(m: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]]]:
+    """``(ordered, blocks)``: the sanitized ordered sidecar when any block survives it (the whole turn
+    then replays from it), else the ``reasoning_details`` thinking blocks. Single owner of carrier
+    precedence for conversion, accounting and rejected-signature mirrors."""
+    ordered_blocks = m.get("anthropic_content_blocks")
+    if isinstance(ordered_blocks, list) and ordered_blocks:
+        replayed = _replay_ordered_blocks(m, ordered_blocks)
+        if replayed:
+            return True, replayed
+    return False, _extract_preserved_thinking_blocks(m)
+
+
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Assistant message -> Anthropic content blocks (thinking, text, tool_use, Kimi/DeepSeek
     reasoning_content injection)."""
@@ -387,12 +399,9 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # than relocated. #56195 covered the complementary shape (blank content -> top-level marker); this is
     # the interleaved thinking + preamble-text + tool_use shape.
     content = m.get("content", "")
-    ordered_blocks = m.get("anthropic_content_blocks")
-    if isinstance(ordered_blocks, list) and ordered_blocks:
-        replayed = _replay_ordered_blocks(m, ordered_blocks)
-        if replayed:
-            return {"role": "assistant", "content": replayed}
-    blocks = _extract_preserved_thinking_blocks(m)
+    ordered, blocks = assistant_replay_carrier(m)
+    if ordered:
+        return {"role": "assistant", "content": blocks}
     # Blank text blocks are dropped; a cache marker riding on one is relocated onto the last
     # surviving cacheable block (prompt_caching sets cache_control on content[-1], which may be
     # exactly the blank block).

@@ -21,6 +21,7 @@ from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient, CodexAppServerError, CodexAppServerTransportError,
+    validate_codex_permission_profile,
 )
 from agent.transports.codex_event_projector import CodexEventProjector, ProjectionResult
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
@@ -29,14 +30,6 @@ logger = logging.getLogger(__name__)
 
 
 _STDERR_TAIL_LINES = 12  # stderr tail on generic errors: legible, yet enough for a config/auth diagnostic
-
-# Hermes' tools.terminal.security_mode -> Codex permissions profile id.
-# Missing config -> workspace-write (Codex's own default).
-_HERMES_TO_CODEX_PERMISSION_PROFILE = {
-    "auto": "workspace-write", "approval-required": "read-only-with-approval",
-    "unrestricted": "full-access", "yolo": "full-access",  # yolo: backstop alias used by some skills/tests
-}
-
 
 @dataclass
 class TurnResult:
@@ -237,9 +230,7 @@ class CodexAppServerSession:
         # Hermes' prior transcript, appended to developerInstructions ONLY when a thread is started from
         # scratch: a resumed thread already holds the conversation (agent/codex_runtime_history_seed.py).
         self._history_seed = history_seed
-        self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
-            os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
-        )
+        self._permission_profile = validate_codex_permission_profile(permission_profile)
         self._approval_callback = approval_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
@@ -262,13 +253,17 @@ class CodexAppServerSession:
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
-            self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
+            client_args = {"codex_bin": self._codex_bin, "codex_home": self._codex_home}
+            if self._permission_profile is not None:
+                client_args["permission_profile"] = self._permission_profile
+            self._client = self._client_factory(**client_args)
             self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
-        # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
-        # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
+        # Use standard sandbox fields, not experimental named permission profiles.
         # Hermes supplies the agent identity through its own system prompt; ``personality: "none"`` strips
         # codex's built-in "# Personality" section from the base instructions so it cannot compete (#72104).
         params: dict[str, Any] = {"cwd": self._cwd, "personality": "none"}
+        if self._permission_profile == "full-access":
+            params.update(approvalPolicy="never", sandbox="danger-full-access")
         if self._developer_instructions and self._developer_instructions.strip():
             params["developerInstructions"] = self._developer_instructions
         if self._model_provider:
@@ -463,9 +458,12 @@ class CodexAppServerSession:
                 result.interrupted = True
             else:
                 input_items, result.submitted_user_text = _build_turn_input(user_input)
+                params = {"threadId": self._thread_id, "input": input_items}
+                if self._permission_profile == "full-access":
+                    params.update(approvalPolicy="never", sandboxPolicy={"type": "dangerFullAccess"})
                 ts = self._request_for(
                     result, "turn/start",
-                    {"threadId": self._thread_id, "input": input_items},
+                    params,
                     "turn/start",
                 )
                 if ts is not None:

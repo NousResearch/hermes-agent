@@ -50,6 +50,12 @@ class CodexAppServerTransportError(CodexAppServerError):
 _TRANSPORT_LOST_CODE = -32000
 
 
+def validate_codex_permission_profile(value: Any) -> Optional[str]:
+    if value is not None and (not isinstance(value, str) or value != "full-access"):
+        raise ValueError("model.codex_permission_profile must be null or 'full-access'")
+    return value
+
+
 def _snapshot_descendants(pid: int) -> list[Any]:
     """psutil handles for ``pid``'s current descendants ([] when psutil is unavailable)."""
     try:
@@ -91,7 +97,9 @@ class CodexAppServerClient:
     def __init__(
         self, codex_bin: str = "codex", codex_home: Optional[str] = None,
         extra_args: Optional[list[str]] = None, env: Optional[dict[str, str]] = None,
+        permission_profile: Optional[str] = None,
     ) -> None:
+        permission_profile = validate_codex_permission_profile(permission_profile)
         self._codex_bin = codex_bin
         # codex needs LLM provider creds but must not receive Tier-1 Hermes secrets (gateway/GitHub/infra tokens).
         # codex app-server is a model-driving CLI executor: it runs a model-chosen agentic loop that
@@ -124,9 +132,11 @@ class CodexAppServerClient:
                     cmd += ["-c", f"mcp_servers.{HERMES_TOOLS_MCP_SERVER_NAME}.env.{key}={json.dumps(os.environ[key])}"]
             cmd += ["-c", f'mcp_servers.{HERMES_TOOLS_MCP_SERVER_NAME}.env.{DELEGATED_CHILD_ENV_MARKER}=""']
         spawn_env = delegated_child_subprocess_env(spawn_env)
-        # Kanban workers must write handoff/status to the board DB outside the
-        # workspace: keep the sandbox on, add the Kanban root as writable.
-        if owned_task:
+        # Explicit full permission replaces the ordinary owned-worker sandbox.
+        # Otherwise keep its Kanban root writable without enabling network access.
+        if permission_profile == "full-access":
+            cmd += ["-c", 'sandbox_mode="danger-full-access"']
+        elif owned_task:
             kanban_db = spawn_env.get("HERMES_KANBAN_DB")
             default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
             kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)

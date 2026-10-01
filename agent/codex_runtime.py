@@ -541,18 +541,26 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     Only the FIRST session of an AIAgent resumes the stored codex thread: a retired/recreated one keeps
     today's fresh-thread behaviour and overwrites the binding once its turn is committed. ``messages`` is the
     turn's transcript (current user row last); a thread started from scratch is seeded with the prior turns."""
+    from hermes_cli.config import load_config
+    from hermes_cli.codex_runtime_switch import get_configured_codex_binary
+    from agent.transports.codex_app_server import validate_codex_permission_profile
+    config = load_config()
+    model_config = config.get("model")
+    permission_profile = validate_codex_permission_profile(
+        model_config.get("codex_permission_profile") if isinstance(model_config, dict) else None)
+    codex_bin = get_configured_codex_binary(config)
     developer_instructions = _codex_developer_instructions(agent)
     if getattr(agent, "_codex_session", None) is not None:
-        # Only a session whose recorded composition differs is stale; one attached without a record is kept.
+        # Reuse only when prompt composition, permission and configured binary still match.
         recorded = getattr(agent, "_codex_session_prompt", None)
-        if recorded is None or recorded == developer_instructions:
+        if ((recorded is None or recorded == developer_instructions)
+                and getattr(agent._codex_session, "_permission_profile", None) == permission_profile
+                and getattr(agent._codex_session, "_codex_bin", codex_bin) == codex_bin):
             return
         _close_codex_session(agent)
     resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
-    from hermes_cli.codex_runtime_switch import get_configured_codex_binary
-    from hermes_cli.config import load_config
     # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
     approval_callback = None
     with suppress(Exception):
@@ -589,7 +597,7 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
         model_provider = codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
-        codex_bin=get_configured_codex_binary(load_config()),
+        codex_bin=codex_bin, permission_profile=permission_profile,
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,

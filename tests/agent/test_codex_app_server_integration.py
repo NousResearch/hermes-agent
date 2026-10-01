@@ -12,6 +12,7 @@ Verifies that:
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,149 @@ import pytest
 
 import run_agent
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
+
+
+@pytest.mark.parametrize("change,profile_b_selector", [
+    ("permission", "omitted"), ("permission", None),
+    ("permission-and-binary", None), ("binary", None),
+])
+@pytest.mark.parametrize("resume_behavior", ["resume", "missing", "policy-rejected"])
+def test_permission_config_tracks_profile_alternation_on_real_adapter(monkeypatch, tmp_path, change, profile_b_selector, resume_behavior):
+    from agent.codex_runtime import _ensure_codex_session, _start_codex_thread
+    from agent import secret_scope
+    from agent.delegation_context import KANBAN_ENV_KEYS, DELEGATED_CHILD_ENV_MARKER
+    from agent.transports import codex_app_server as transport
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli import config
+
+    homes = [tmp_path / "a", tmp_path / "b"]
+    selectors = [None if change == "binary" else "full-access", profile_b_selector]
+    binaries = [str(tmp_path / "codex")] * 2 if change == "permission" else [str(home / "codex") for home in homes]
+    for home, selector, binary in zip(homes, selectors, binaries):
+        home.mkdir()
+        model = {"codex_bin": binary}
+        if selector != "omitted":
+            model["codex_permission_profile"] = selector
+        config.atomic_config_write(home / "config.yaml", {"model": model})
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("HERMES_TERMINAL_SECURITY_MODE", "full-access")
+    for key in (*KANBAN_ENV_KEYS, DELEGATED_CHILD_ENV_MARKER, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
+        monkeypatch.delenv(key, raising=False)
+    spawns, requests, snapshots = [], [], []
+
+    def process(cmd, **kwargs):
+        spawns.append((list(cmd), kwargs["env"]))
+        return SimpleNamespace(stdin=None, stdout=None, stderr=None, pid=99999999, poll=lambda: None)
+
+    def request(client, method, params=None, **kwargs):
+        params = params or {}
+        requests.append((client, method, params))
+        if resume_behavior == "policy-rejected" and method in {"thread/resume", "thread/start"}:
+            raise transport.CodexAppServerError(-32600, "requested sandbox policy rejected")
+        if method == "thread/resume":
+            if resume_behavior == "missing":
+                raise transport.CodexAppServerError(-32600, "no rollout found for thread id")
+            return {"thread": {"id": params["threadId"]}}
+        if method == "thread/start":
+            return {"thread": {"id": f"thread-{len(spawns)}"}}
+        if method == "turn/start":
+            turn = {"id": f"turn-{len(requests)}", "status": "completed"}
+            client._notifications.put({"method": "turn/completed", "params": {"threadId": params["threadId"], "turn": turn}})
+            return {"turn": turn}
+        return {}
+
+    real_load = config.load_config
+    def snapshot():
+        result = real_load()
+        snapshots.append(result)
+        return result
+
+    monkeypatch.setattr(transport.subprocess, "Popen", process)
+    monkeypatch.setattr(transport.CodexAppServerClient, "request", request)
+    monkeypatch.setattr(transport.CodexAppServerClient, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(transport.CodexAppServerClient, "close", lambda client: setattr(client, "_closed", True))
+    monkeypatch.setattr(config, "load_config", snapshot)
+    binding_writes, diagnostics = [], []
+    agent = SimpleNamespace(_codex_session=None, session_cwd=str(tmp_path), provider="openai-codex", session_id="fixture",
+                            _session_db=SimpleNamespace(get_session_model_config_value=lambda *a: "stored-restricted",
+                                                       patch_session_model_config=lambda *args: binding_writes.append(args)),
+                            _emit_diagnostic_status=diagnostics.append)
+    previous = None
+    was_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        for index in (0, 1, 0):
+            home, full = homes[index], selectors[index] == "full-access"
+            home_token = set_hermes_home_override(home)
+            secret_token = secret_scope.set_secret_scope({}, profile_home=str(home))
+            try:
+                _ensure_codex_session(agent)
+                session = agent._codex_session
+                assert session is not previous
+                if previous is not None:
+                    assert previous._closed
+                if resume_behavior == "policy-rejected":
+                    with pytest.raises(transport.CodexAppServerError, match="requested sandbox policy rejected"):
+                        _start_codex_thread(agent)
+                else:
+                    _start_codex_thread(agent)
+                _ensure_codex_session(agent)
+                assert agent._codex_session is session
+                if resume_behavior != "policy-rejected":
+                    for text in ("first", "continuation"):
+                        assert session.run_turn(text, turn_timeout=2).error is None
+                cmd, env = spawns[-1]
+                assert cmd == [binaries[index], "app-server", *(["-c", 'sandbox_mode="danger-full-access"'] if full else [])]
+                assert env["HERMES_HOME"] == str(home)
+                calls = [(method, params) for client, method, params in requests if client is session._client and method != "initialize"]
+                for method, params in calls:
+                    if full:
+                        assert params["approvalPolicy"] == "never"
+                        key, value = ("sandboxPolicy", {"type": "dangerFullAccess"}) if method == "turn/start" else ("sandbox", "danger-full-access")
+                        assert params[key] == value
+                    else:
+                        assert not ({"approvalPolicy", "sandbox", "sandboxPolicy"} & params.keys())
+                expected_methods = ["thread/start"]
+                if previous is None:
+                    expected_methods = ["thread/resume"] + (["thread/start"] if resume_behavior != "resume" else [])
+                if resume_behavior != "policy-rejected":
+                    expected_methods += ["turn/start", "turn/start"]
+                    assert [p["input"] for m, p in calls if m == "turn/start"] == [[{"type": "text", "text": text}] for text in ("first", "continuation")]
+                assert [method for method, _ in calls] == expected_methods
+                previous = session
+            finally:
+                secret_scope.reset_secret_scope(secret_token)
+                reset_hermes_home_override(home_token)
+    finally:
+        secret_scope.set_multiplex_active(was_multiplex)
+        if previous is not None:
+            previous.close()
+    assert len(spawns) == 3 and len(snapshots) == 6
+    assert len(binding_writes) == len(diagnostics) == (0 if resume_behavior == "resume" else 1)
+
+
+@pytest.mark.parametrize("selector", ["", True, False, [], {}, "workspace-write", "unsupported", 1])
+@pytest.mark.parametrize("cached", [False, True])
+def test_malformed_permission_config_refuses_before_dispatch(monkeypatch, tmp_path, selector, cached):
+    from agent.codex_runtime import _ensure_codex_session
+    from agent.transports import codex_app_server as transport
+    from hermes_cli.config import atomic_config_write
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    atomic_config_write(tmp_path / "config.yaml", {"model": {"codex_permission_profile": selector}})
+    dispatch = MagicMock(side_effect=AssertionError("invalid selector reached dispatch"))
+    monkeypatch.setattr(transport.subprocess, "Popen", dispatch)
+    monkeypatch.setattr(transport.CodexAppServerClient, "request", dispatch)
+    existing = SimpleNamespace(_permission_profile="full-access", _codex_bin="codex") if cached else None
+    agent = SimpleNamespace(_codex_session=existing, session_cwd=str(tmp_path))
+    with pytest.raises(ValueError, match="codex_permission_profile"):
+        _ensure_codex_session(agent)
+        agent._codex_session.ensure_started()
+    dispatch.assert_not_called()
 
 
 @pytest.fixture

@@ -411,6 +411,9 @@ class GatewayModelCommandsMixin:
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
+        if not one_turn and not ctx.reasoning_effort:
+            # A deliberate switch supersedes reasoning pinned by the previous model or router.
+            self._set_session_reasoning_override(ctx.session_key, result.reasoning_config)
         if ctx.reasoning_effort and not one_turn:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.

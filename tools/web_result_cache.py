@@ -14,6 +14,7 @@ import re
 import threading
 import time
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
@@ -53,6 +54,11 @@ def ttl_seconds() -> float:
     return max(1.0, min(minutes, 1440.0)) * 60.0
 
 
+def utc_now_iso() -> str:
+    """UTC retrieval timestamps are distinct from the monotonic expiry clock."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 def bucket_limit(limit: int) -> int:
     """Round a requested result count up to the nearest bucket."""
     return next((b for b in _LIMIT_BUCKETS if limit <= b), _LIMIT_BUCKETS[-1])
@@ -83,7 +89,7 @@ class SearchMemo:
     wait for (and share) the winner's response."""
 
     def __init__(self) -> None:
-        self._store: Dict[tuple, Tuple[float, dict]] = {}  # key -> (expires_at, response)
+        self._store: Dict[tuple, Tuple[float, dict, str, float]] = {}  # key -> (expires_at, response, retrieved_at, stored_at)
         self._store_lock = threading.Lock()
         self._key_locks: Dict[tuple, threading.Lock] = {}
 
@@ -92,27 +98,34 @@ class SearchMemo:
         return (provider, normalize_query(query), bucket_limit(limit))
 
     def lookup(self, provider: str, query: str, limit: int) -> Optional[dict]:
+        hit = self.lookup_with_metadata(provider, query, limit)
+        return hit[0] if hit is not None else None
+
+    def lookup_with_metadata(self, provider: str, query: str, limit: int):
+        """Return a defensive response copy and its original retrieval facts."""
         if not cache_enabled():
             return None
         key = self._key(provider, query, limit)
         with self._store_lock:
             hit = self._store.get(key)
-            if hit is None or time.monotonic() >= hit[0]:
+            now = time.monotonic()
+            if hit is None or now >= hit[0]:
                 self._store.pop(key, None)
                 return None
         logger.info("web_search cache hit: %r via %s", query, provider)
-        return _deep_copy(hit[1])
+        age = max(0.0, now - hit[3])
+        return _deep_copy(hit[1]), hit[2], age, hit[0] - hit[3]
 
-    def store(self, provider: str, query: str, limit: int, response: dict) -> None:
+    def store(self, provider: str, query: str, limit: int, response: dict, *, retrieved_at: Optional[str] = None) -> None:
         """Cache a SUCCESSFUL response for the bucketed key."""
         if not cache_enabled() or not isinstance(response, dict) or not response.get("success"):
             return
         key = self._key(provider, query, limit)
         with self._store_lock:
             now = time.monotonic()  # opportunistic expiry sweep bounds memory
-            for k in [k for k, (exp, _) in self._store.items() if now >= exp]:
+            for k in [k for k, value in self._store.items() if now >= value[0]]:
                 del self._store[k]
-            self._store[key] = (now + ttl_seconds(), _deep_copy(response))
+            self._store[key] = (now + ttl_seconds(), _deep_copy(response), retrieved_at or utc_now_iso(), now)
 
     def flight_lock(self, provider: str, query: str, limit: int) -> threading.Lock:
         """Per-key lock held around lookup-miss → paid request → store."""

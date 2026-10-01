@@ -113,14 +113,14 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Snapshot from ``BasePlatformAdapter.prepare_turn_context``. The user transcript row saves it,
+    # and the saved snapshot is the baseline for the adapter's next comparison.
+    channel_state: Optional[Dict[str, Any]] = None
     # Whether the quoted author passed the adapter's authorisation check; None when the adapter
     # did not check. The reply pointer identifies the author only when this is set.
     reply_to_author_authorized: Optional[bool] = None
     # IDs of later events merged into this one; ``message_id`` remains the first event's ID.
     merged_message_ids: List[str] = field(default_factory=list)
-    # Snapshot from ``BasePlatformAdapter.prepare_turn_context``. The user transcript row saves it,
-    # and the saved snapshot is the baseline for the adapter's next comparison.
-    channel_state: Optional[Dict[str, Any]] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

@@ -109,11 +109,15 @@ def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
 
 
 @pytest.mark.require_symlinks
-def test_atomic_json_write_symlink_into_other_dir_renames_not_copies(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.platforms("posix")  # read-only dir via chmod
+@pytest.mark.parametrize("target_dir_writable", [True, False], ids=["rename", "readonly-dir-copy"])
+def test_mkstemp_beside_symlink_into_other_fs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_dir_writable: bool
 ) -> None:
-    """A link into another dir (treated as another filesystem) must still publish by rename:
-    staging the temp beside the link makes the rename EXDEV and the copy fallback tears."""
+    """mkstemp_beside contract (shared by every atomic writer): for a link into another dir
+    (treated as another filesystem) the temp is staged beside the real file so the publish is a
+    rename, never the tearable copy fallback; if that dir is read-only the save still succeeds
+    by staging beside the link and copying."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     real = elsewhere / "real.json"
@@ -121,22 +125,33 @@ def test_atomic_json_write_symlink_into_other_dir_renames_not_copies(
     link = tmp_path / "link.json"
     link.symlink_to(real)
     real_replace = os.replace
+    copies = []
 
     def replace_same_dir_only(src, dst):
         if os.path.dirname(os.path.realpath(src)) != os.path.dirname(os.path.realpath(dst)):
             raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
         return real_replace(src, dst)
 
-    def no_copy(*a, **k):
-        raise AssertionError("in-place copy fallback used")
+    def record_copy(src, dst):
+        copies.append(dst)
+        if target_dir_writable:
+            raise AssertionError("in-place copy fallback used")
+        return real_copy(src, dst)
 
+    import utils
+    real_copy = utils._copy_fallback
     monkeypatch.setattr("utils.os.replace", replace_same_dir_only)
-    monkeypatch.setattr("utils._copy_fallback", no_copy)
-
-    atomic_json_write(link, {"hello": "world"})
+    monkeypatch.setattr("utils._copy_fallback", record_copy)
+    if not target_dir_writable:
+        elsewhere.chmod(0o555)
+    try:
+        atomic_json_write(link, {"hello": "world"})
+    finally:
+        elsewhere.chmod(0o755)
 
     assert link.is_symlink()
     assert json.loads(real.read_text(encoding="utf-8")) == {"hello": "world"}
+    assert copies == ([] if target_dir_writable else [str(real)])
 
 
 @pytest.mark.require_symlinks

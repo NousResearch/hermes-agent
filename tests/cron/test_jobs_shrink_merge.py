@@ -11,7 +11,6 @@ from __future__ import annotations
 import errno
 import json
 import os
-import shutil
 
 import pytest
 
@@ -234,8 +233,8 @@ def test_symlinked_store_saves_by_rename_not_in_place_copy(hermes_env, tmp_path,
     def no_copy(*a, **k):
         raise AssertionError("in-place copy fallback used")
 
-    monkeypatch.setattr(os, "replace", replace_same_dir_only)
-    monkeypatch.setattr(shutil, "copyfile", no_copy)
+    monkeypatch.setattr("utils.os.replace", replace_same_dir_only)
+    monkeypatch.setattr("utils._copy_fallback", no_copy)
 
     save_jobs([{"id": "a", "prompt": "x"}], replace=True)
 

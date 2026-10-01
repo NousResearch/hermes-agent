@@ -69,6 +69,15 @@ test('sanitizeWindowState treats isMaximized strictly', () => {
   assert.equal(sanitizeWindowState({ width: 1400, height: 900, isMaximized: 'yes' }).isMaximized, false)
 })
 
+test('sanitizeWindowState treats boundsCapturedFullScreen strictly and stays optional', () => {
+  assert.equal(sanitizeWindowState({ width: 1400, height: 900, boundsCapturedFullScreen: true }).boundsCapturedFullScreen, true)
+  assert.equal(
+    sanitizeWindowState({ width: 1400, height: 900, boundsCapturedFullScreen: 'yes' }).boundsCapturedFullScreen,
+    undefined
+  )
+  assert.equal(sanitizeWindowState({ width: 1400, height: 900 }).boundsCapturedFullScreen, undefined)
+})
+
 // ─── matchingWorkArea ──────────────────────────────────────────────────────────────
 
 test('matchingWorkArea accepts a window on the primary or a secondary display', () => {
@@ -129,8 +138,43 @@ test('computeWindowOptions does not clamp when displays are unknown', () => {
 })
 
 test('computeWindowOptions recovers stale fullscreen normal bounds to a centered windowed size on Windows', () => {
+  const saved = sanitizeWindowState({
+    x: 0,
+    y: 0,
+    width: 1920,
+    height: 1040,
+    isMaximized: false,
+    boundsCapturedFullScreen: true
+  })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions recovers a legacy exact-work-area snapshot written before the provenance flag', () => {
+  // Pre-boundsCapturedFullScreen snapshot: fullscreen bounds persisted as
+  // normal, matching the work area to the pixel. Unambiguous, so recovered.
   const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1040, isMaximized: false })
   assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions recovers a legacy snapshot matching the full display bounds', () => {
+  // A fullscreen window over a hidden taskbar reports the display's full
+  // bounds, not the work area. Still an exact match, so still recovered.
+  const displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 }, bounds: { x: 0, y: 0, width: 1920, height: 1080 } }]
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1080, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, displays, 'win32'), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions preserves a deliberate near-fullscreen normal window near the origin on Windows', () => {
+  // The reviewer's case: a valid normal window the user sized on purpose,
+  // satisfying the old ≥90% + near-origin predicates. It must survive
+  // restore untouched (position clamped inside the work area).
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1824, height: 988, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), {
+    width: 1824,
+    height: 988,
+    x: 0,
+    y: 0
+  })
 })
 
 test('computeWindowOptions preserves deliberate near-fullscreen normal bounds outside Windows', () => {

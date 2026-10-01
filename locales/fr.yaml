@@ -3006,7 +3006,7 @@ cli:
       restored: "État restauré depuis : {snapshot_id}"
       restart_recommended: "Redémarrage recommandé pour que les processus gateway/dashboard prennent en compte les changements de state.db."
       not_found: "Instantané introuvable : {snapshot_id}"
-      restore_incomplete: "Instantané {snapshot_id} restauré partiellement : auth.json a été refusé (voir les journaux)"
+      restore_incomplete: "L'instantané {snapshot_id} n'a pas été entièrement restauré ; certains fichiers ont été refusés (voir les journaux)"
       usage_prune: "Usage : /snapshot prune [nombre-à-conserver]"
       pruned: "{deleted} ancien(s) instantané(s) supprimé(s) ({keep} conservé(s))."
     export:

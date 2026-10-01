@@ -2738,7 +2738,7 @@ cli:
       restored: "Állapot visszaállítva innen: {snapshot_id}"
       restart_recommended: "Az átjáró/dashboard folyamatok újraindítása ajánlott, hogy átvegyék a state.db változásait."
       not_found: "A pillanatkép nem található: {snapshot_id}"
-      restore_incomplete: "A(z) {snapshot_id} pillanatkép részben visszaállítva: az auth.json elutasítva (lásd a naplókat)"
+      restore_incomplete: "A(z) {snapshot_id} pillanatkép nem állt vissza teljesen; néhány fájl elutasítva (lásd a naplókat)"
       usage_prune: "Használat: /snapshot prune [megtartandó-darabszám]"
       pruned: "{deleted} régi pillanatkép törölve ({keep} megtartva)."
     export:

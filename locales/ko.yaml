@@ -2721,7 +2721,7 @@ cli:
       restored: "상태를 복원했어요: {snapshot_id}"
       restart_recommended: "게이트웨이/대시보드 프로세스가 state.db 변경을 반영하려면 재시작을 권장해요."
       not_found: "스냅샷을 찾을 수 없어요: {snapshot_id}"
-      restore_incomplete: "스냅샷 {snapshot_id}을(를) 일부만 복원했어요: auth.json이 거부되었어요 (로그 확인)"
+      restore_incomplete: "스냅샷 {snapshot_id}을(를) 완전히 복원하지 못했어요: 일부 파일이 거부되었어요 (로그 확인)"
       usage_prune: "사용법: /snapshot prune [keep-count]"
       pruned: "오래된 스냅샷 {deleted}개를 정리했어요 ({keep}개 유지)."
     export:

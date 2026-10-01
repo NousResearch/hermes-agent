@@ -2721,7 +2721,7 @@ cli:
       restored: "Stato ripristinato da: {snapshot_id}"
       restart_recommended: "Riavvio consigliato per i processi gateway/dashboard affinché rilevino le modifiche a state.db."
       not_found: "Snapshot non trovato: {snapshot_id}"
-      restore_incomplete: "Snapshot {snapshot_id} ripristinato parzialmente: auth.json è stato rifiutato (vedi i log)"
+      restore_incomplete: "Lo snapshot {snapshot_id} non è stato ripristinato completamente; alcuni file sono stati rifiutati (vedi i log)"
       usage_prune: "Uso: /snapshot prune [keep-count]"
       pruned: "Eliminati {deleted} snapshot vecchi (conservati: {keep})."
     export:

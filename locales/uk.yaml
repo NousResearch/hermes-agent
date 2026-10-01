@@ -2721,7 +2721,7 @@ cli:
       restored: "Стан відновлено з: {snapshot_id}"
       restart_recommended: "Рекомендовано перезапустити процеси шлюзу та панелі керування, щоб вони підхопили зміни state.db."
       not_found: "Знімок не знайдено: {snapshot_id}"
-      restore_incomplete: "Знімок {snapshot_id} відновлено частково: auth.json відхилено (див. журнали)"
+      restore_incomplete: "Знімок {snapshot_id} відновлено не повністю: деякі файли відхилено (див. журнали)"
       usage_prune: "Використання: /snapshot prune [keep-count]"
       pruned: "Видалено старих знімків: {deleted} (залишено {keep})."
     export:

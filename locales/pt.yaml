@@ -2721,7 +2721,7 @@ cli:
       restored: "Estado restaurado de: {snapshot_id}"
       restart_recommended: "Recomenda-se reiniciar os processos do gateway/painel para que carreguem as alterações do state.db."
       not_found: "Instantâneo não encontrado: {snapshot_id}"
-      restore_incomplete: "Instantâneo {snapshot_id} restaurado parcialmente: auth.json foi recusado (veja os logs)"
+      restore_incomplete: "O instantâneo {snapshot_id} não foi totalmente restaurado; alguns arquivos foram recusados (veja os logs)"
       usage_prune: "Uso: /snapshot prune [quantidade-a-manter]"
       pruned: "{deleted} instantâneo(s) antigo(s) removido(s) (mantendo {keep})."
     export:

@@ -1586,7 +1586,7 @@ def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
 def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
     re-inserts history) must be decoded back to structured content, not glued onto an adjacent
-    text turn as a giant base64 blob (#125299)."""
+    text turn as a giant base64 blob; an undecodable one is left unmerged (#125299)."""
     from hermes_state import SessionDB
     from agent.agent_runtime_helpers import repair_message_sequence
 
@@ -1609,19 +1609,13 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     assert messages[1]["content"] == "any follow-up thoughts?"
     assert "base64" not in messages[1]["content"]
 
-
-def test_repair_leaves_corrupted_sentinel_content_untouched():
-    """A sentinel body that no longer parses (already merged / truncated) is left as-is rather
-    than crashing the pre-call repair (#125299)."""
-    from hermes_state import SessionDB
-    from agent.agent_runtime_helpers import repair_message_sequence
-
+    # A body that no longer parses stays encoded and is never welded onto the next text turn.
     corrupt = SessionDB._CONTENT_JSON_PREFIX + '[{"type": "text"} EXTRA garbage'
-    messages = [{"role": "user", "content": corrupt}]
+    messages = [{"role": "user", "content": corrupt}, {"role": "user", "content": "still there?"}]
 
     repair_message_sequence(_bare_agent(), messages)
 
-    assert messages[0]["content"] == corrupt
+    assert [m["content"] for m in messages] == [corrupt, "still there?"]
 
 
 def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):

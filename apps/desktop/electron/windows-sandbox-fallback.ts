@@ -360,7 +360,7 @@ export function grantAllApplicationPackagesAcl(
  */
 export function shouldRelaunchForGpuSandboxCrash(options: {
   platform?: NodeJS.Platform | string
-  details?: { type?: string; exitCode?: number | string } | null
+  details?: { type?: string; exitCode?: number | string; signalName?: string } | null
   alreadyNoSandbox?: boolean
   relaunchAttempted?: boolean
 }): boolean {

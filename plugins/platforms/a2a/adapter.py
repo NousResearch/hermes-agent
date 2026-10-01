@@ -225,7 +225,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         except Exception:
             return self._error(400, None, protocol.ERR_PARSE, "parse error")
         if not isinstance(req, dict):
-            return self._error(400, None, protocol.ERR_INVALID_PARAMS, "JSON-RPC request must be an object")
+            return self._error(400, None, protocol.ERR_INVALID_REQUEST, "JSON-RPC request must be an object")
         req_id, method = req.get("id"), str(req.get("method", ""))
         params = req["params"] if req.get("params") is not None else {}
         version = (self.headers.get("A2A-Version") or "").strip()
@@ -235,7 +235,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         # (the rate limiter must not be consulted for requests rejected before it).
         checks = (
             (lambda: not isinstance(params, dict), 200, protocol.ERR_INVALID_PARAMS, "params must be an object"),
-            (lambda: version and version not in {"1.0", "1.0.0"}, 200, protocol.ERR_INVALID_PARAMS, f"unsupported A2A-Version: {version}"),
+            (lambda: version and version not in {"1.0", "1.0.0"}, 200, protocol.ERR_VERSION_NOT_SUPPORTED, f"unsupported A2A-Version: {version}"),
             (lambda: route.get("error"), 400, protocol.ERR_INVALID_PARAMS, route.get("error")),
             (lambda: not adapter._rate_limiter.allow(identity), 429, protocol.ERR_RATE_LIMITED, "rate limit exceeded"),
             (lambda: not adapter._security_context.is_trusted_peer(identity), 403, protocol.ERR_UNTRUSTED_PEER, f"peer '{identity}' not trusted"),

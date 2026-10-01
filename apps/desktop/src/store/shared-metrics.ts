@@ -19,6 +19,13 @@ export const SHARED_METRICS_CHOICES: Record<SharedMetricsChoice, { enabled: bool
 
 export type SharedMetricsRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
+export function sharedMetricsProfileRequester(
+  request: SharedMetricsRequester,
+  profile: string
+): SharedMetricsRequester {
+  return (method, params = {}) => request(method, { ...params, profile })
+}
+
 function isConsent(value: unknown): value is SharedMetricsConsent {
   return typeof value === 'object' && value !== null && typeof (value as SharedMetricsConsent).decided === 'boolean'
 }

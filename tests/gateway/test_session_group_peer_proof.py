@@ -287,3 +287,30 @@ async def test_old_revoke_racing_issuance_cleanup_is_fenced_in_accepting_write(g
         assert await asyncio.to_thread(capabilities, url, successor) == (200, None)
     finally:
         await server.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_utf8_cannot_normalize_into_an_authenticated_response(gateway, monkeypatch):
+    server, url, room, catalog, grant = await joined(gateway, monkeypatch)
+    signed_body = '{"value":"\ufffd"}'.encode()
+    wire_body = b'{"value":"\xff"}'
+    assert signed_body != wire_body and signed_body.decode() == wire_body.decode('utf-8', 'replace')
+    async def tamper(request):
+        token, key, mac, _ = proof.verify_request(request.headers['Authorization'],
+            secret=gateway.adapter._room_grant_secret(), installation_id=catalog['installation_id'],
+            method=request.method, path=request.raw_path, body=await request.read(), headers=request.headers)
+        return web.Response(body=wire_body, status=200, headers={
+            proof.RESPONSE_HEADER: proof.response_proof(key, mac, 200, signed_body)})
+    app = web.Application()
+    app.router.add_post('/v1/runs', tamper)
+    target = TestServer(app)
+    await target.start_server()
+    try:
+        client = PeerRunsHTTPClient(base_url=str(target.make_url('')).rstrip('/'), api_key='',
+                                   proof_install_id=catalog['installation_id'])
+        with pytest.raises(PeerRunsHTTPError) as error:
+            await asyncio.to_thread(client._request, '/v1/runs', method='POST', body={}, room_grant=grant)
+        assert error.value.ambiguous and not error.value.not_admitted
+    finally:
+        await target.close()
+        await server.close()

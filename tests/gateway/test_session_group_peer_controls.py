@@ -703,3 +703,73 @@ def test_discard_never_stops_or_erases_an_accepted_unknown_turn(case, outcome):
     assert 'error' in rpc(c, 'groups.discard', selector(c))
     assert current(c) == before and c.peer.stops == []
     assert not any(e['kind'] == 'turn.cancelled' for e in c.service._events('room'))
+
+
+@pytest.mark.parametrize('stage', ['before_control', 'before_dispatch'])
+@pytest.mark.parametrize('restart', [False, True])
+def test_verified_renewal_preserves_deferred_retry_evidence_across_control_and_restart(case, monkeypatch, stage, restart):
+    from gateway.session_group_peer_routes import CanonicalPeerClient
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+    c = case
+    tick(c, 4)
+    original = current(c)
+    proof = original['result']
+    exact = selector(c)
+    assert tasks.is_proven_nonadmission(original)
+    c.peer.mode = 'repaired'
+    if stage == 'before_dispatch':
+        assert rpc(c, 'groups.retry', exact)['result']['retried']
+    claims = decode_room_grant(c.peer.secret, c.route.grant, permission='status')
+    now = time.time()
+    renewed = issue_room_grant(c.peer.secret, grant_id='routine-renewal', **c.peer.scope,
+        target_install_id=c.route.target_install_id, execution_policy_digest=c.route.execution_policy_digest,
+        permissions=claims['permissions'], issued_at=now, ttl_seconds=claims['status_expires_at'] - now,
+        status_expires_at=claims['status_expires_at'])
+    binding = HostedRoomBinding('room', c.route.home_install_id, 1)
+    tracked = CanonicalPeerClient(c.service, binding, ('room', 'peer'), c.route, c.peer)
+    from gateway import hosted_room_peer
+    def refresh(**kwargs):
+        kwargs['on_issued'](renewed)
+        return {'grant': renewed, 'catalog': c.peer.catalog.as_mapping()}
+    monkeypatch.setattr(c.peer, 'refresh_grant', refresh, raising=False)
+    monkeypatch.setattr(hosted_room_peer, 'room_grant_needs_dispatch_refresh',
+                        lambda token, **kwargs: token == c.route.grant and kwargs.get('leeway_seconds') != 0)
+    tracked.probe(grant=c.route.grant)  # the same automatic renewal path as the supervisor
+    if stage == 'before_control':
+        assert current(c)['result'] == proof  # the original evidence was not rewritten
+    if restart:
+        old = c.service
+        c.now[0] += old.runtime.lease_ttl_seconds + 1
+        old.runtime._thread = None
+        c.service = CanonicalHostedRoomService(c.authority, None)
+        c.authority.hosted_room_service = c.service
+        c.service.runtime.clock = lambda: c.now[0]
+        c.service.runtime._thread = SimpleNamespace(is_alive=lambda: True)
+        c.service.peer_clients[('room', 'peer')] = c.peer
+        c.service.member_rpcs = old.member_rpcs
+        tick(c)  # the restarted supervisor reacquires the room lease before offering controls
+    if stage == 'before_control':
+        assert any(a['kind'] == 'retry' for a in actions(c))
+        assert rpc(c, 'groups.retry', exact)['result']['retried']
+    c.now[0] += c.service.runtime.unavailable_retry_max_seconds + 1
+    tick(c, 3)
+    assert current(c)['status'] == 'settled'
+    assert len(healthy(c)) == 1
+    assert c.peer.dispatches[-1]['task_id'] == exact['task_id']
+    assert c.peer.dispatches[-1]['execution_generation'] == exact['execution_generation'] + 1
+    c.service.runtime._thread = None
+
+
+def test_manual_grant_replacement_requires_new_send_but_can_discard_proven_unaccepted_work(case):
+    c = case
+    tick(c, 4)
+    exact = selector(c)
+    replacement = issue_room_grant(c.peer.secret, grant_id='manual-reinvite', **c.peer.scope,
+        target_install_id=c.route.target_install_id, execution_policy_digest=c.route.execution_policy_digest,
+        ttl_seconds=3600)
+    c.service.register_peer_route(room_id='room', member_id='peer', route=replace(c.route, grant=replacement),
+                                  client=c.peer, target_url=c.peer.base_url, catalog=c.peer.catalog)
+    assert 'error' in rpc(c, 'groups.retry', exact)
+    assert any(a['kind'] == 'discard' for a in actions(c))
+    assert rpc(c, 'groups.discard', exact)['result']['task']['status'] == 'cancelled'
+    assert c.peer.stops == []

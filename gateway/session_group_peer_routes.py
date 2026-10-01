@@ -55,7 +55,7 @@ def _retire(client, grant):
 
 
 def publish_route(service, *, room_id, member_id, route, client, target_url, catalog,
-                  expected_grant=None, authorize=None, issuance_id=None):
+                  expected_grant=None, authorize=None, issuance_id=None, renewal_horizon=None):
     """Persist, then publish, one route, retiring the grant it replaces (module docstring).
 
     ``expected_grant`` makes it a renewal, conditional on the stored grant; ``authorize`` runs
@@ -87,6 +87,11 @@ def publish_route(service, *, room_id, member_id, route, client, target_url, cat
                 authorize(conn)
             if replaced is not None:
                 cleanup.retain(service.db_path, previous, conn=conn)
+            if renewal_horizon is not None:
+                renewed = links.make_stored_link(room_id=room_id, member_id=member_id,
+                    target_url=target_url, target_profile=route.target_profile, grant=route.grant, catalog=catalog,
+                    cancellation_scope_id=route.cancellation_scope_id, trace_id=route.trace_id)
+                links.remember_verified_renewal(conn, previous, renewed, horizon=renewal_horizon)
             cleanup.release(conn, route.grant)
             if expected_grant is not None and issuance_id is not None:
                 cleanup.release_issuance(conn, expected_grant, issuance_id)
@@ -302,7 +307,7 @@ class CanonicalPeerClient:
                 raise RuntimeStoreError('peer_target_mismatch')
             # The route may have been deleted during refresh; its captured target still owns cleanup.
             cleanup.retain(self._service.db_path, replace(stored, grant=replacement))
-            self._verify_renewal(grant, replacement)
+            horizon = self._verify_renewal(grant, replacement)
             if refreshed.get('catalog') is not None:
                 from gateway.hosted_room_peer import GatewayRoomCatalog
                 from tui_gateway.hosted_room_peer_http import digest_reauthorization_error
@@ -316,7 +321,8 @@ class CanonicalPeerClient:
             publish_route(self._service, room_id=self._key[0], member_id=self._key[1],
                           route=replace(self._route, grant=replacement), client=self._client,
                           target_url=stored.target_url, catalog=stored.catalog,
-                          expected_grant=grant, authorize=self._lease_fence(), issuance_id=self._issuance_id)
+                          expected_grant=grant, authorize=self._lease_fence(), issuance_id=self._issuance_id,
+                          renewal_horizon=horizon)
         except Exception:
             try:
                 _retire(self._client, replacement)
@@ -342,6 +348,7 @@ class CanonicalPeerClient:
             self._status('needs_reauthorization', grant)
             raise PeerRunsHTTPError('peer room renewal changed the grant', status_code=403,
                                     error_code='room_capability_catalog_changed', not_admitted=True)
+        return old['status_expires_at']
 
     def _lease_fence(self):
         if self._renewal_lease is None:

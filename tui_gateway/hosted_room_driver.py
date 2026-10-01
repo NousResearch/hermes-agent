@@ -376,7 +376,7 @@ class HostedRoomRuntime:
         if not _info_active(info):
             # History was checked just before this probe: an inactive exact session cannot
             # keep executing, and after a restart its process-local task marker is absent.
-            return transport is self.rpc or (
+            return not getattr(transport, 'requires_terminal_stop_evidence', False) or (
                 info.get("status") in _STOP_ACK_STATUSES
                 and info.get("task_id") == task["identity"].task_id
                 and info.get("execution_generation") == task["execution_generation"])

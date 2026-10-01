@@ -16,6 +16,7 @@ GROUP_METHODS = {
     'groups.send': 'session:submit',
     'groups.attachment.upload': 'session:submit',
     'groups.attachment.download': 'session:read',
+    'groups.attachment.list': 'session:read',
     'groups.stop': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
@@ -35,6 +36,7 @@ _FIELDS = {
     'groups.send': {'room_id', 'event_id', 'payload'},
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
     'groups.attachment.download': {'room_id', 'event_id', 'attachment_id'},
+    'groups.attachment.list': {'room_id', 'cursor', 'limit', 'query', 'producer_member_id'},
     'groups.stop': {'room_id', 'cancel_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
@@ -106,11 +108,12 @@ def _group(authority, actor, home, method, params):
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
         room_authorizer(actor.subject, params['room_id'], create=method == 'groups.create')
-    if method in {'groups.attachment.upload', 'groups.attachment.download'}:
+    if method in {'groups.attachment.upload', 'groups.attachment.download', 'groups.attachment.list'}:
         if service is None:
             raise RuntimeStoreError('runtime_coordination_required')
-        from gateway.session_hosted_attachments import upload, download
-        handler = upload if method == 'groups.attachment.upload' else download
+        from gateway.session_hosted_attachments import upload, download, list_files
+        handler = {'groups.attachment.upload': upload, 'groups.attachment.download': download,
+                   'groups.attachment.list': list_files}[method]
         return handler(service, actor, params)
     if method in execution_methods:
         if service is None:

@@ -2525,6 +2525,8 @@ cli:
   approval:
     bell_context: "approbation"
     label: "Approbation"
+    timeout_denying: "⏱ Délai dépassé — commande refusée"
+    timed_out_no_response: "délai dépassé (aucune réponse)"
     outcome_once: "autorisé une fois"
     outcome_session: "autorisé pour la session"
     outcome_always: "ajouté à la liste d'autorisation"

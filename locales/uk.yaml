@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "схвалення"
     label: "Схвалення"
+    timeout_denying: "⏱ Час вийшов — команду відхилено"
+    timed_out_no_response: "час вийшов (без відповіді)"
     outcome_once: "дозволено один раз"
     outcome_session: "дозволено для сеансу"
     outcome_always: "додано до списку дозволених"

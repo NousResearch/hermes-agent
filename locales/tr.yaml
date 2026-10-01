@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "onay"
     label: "Onay"
+    timeout_denying: "⏱ Zaman aşımı — komut reddediliyor"
+    timed_out_no_response: "zaman aşımı (yanıt yok)"
     outcome_once: "bir kez izin verildi"
     outcome_session: "oturum için izin verildi"
     outcome_always: "izin listesine eklendi"

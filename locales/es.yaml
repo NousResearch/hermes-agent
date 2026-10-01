@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "aprobación"
     label: "Aprobación"
+    timeout_denying: "⏱ Tiempo agotado — denegando el comando"
+    timed_out_no_response: "tiempo agotado (sin respuesta)"
     outcome_once: "permitido una vez"
     outcome_session: "permitido para la sesión"
     outcome_always: "añadido a la lista de permitidos"

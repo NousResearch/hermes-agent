@@ -91,6 +91,18 @@ class TestCliApprovalUi:
             thread.join(timeout=2)
         assert result["value"] == "once"
 
+    def test_single_query_panel_times_out_at_approvals_timeout(self):
+        """``chat -q`` has no prompt_toolkit app to answer the panel: it denies at
+        ``approvals.timeout`` instead of parking the turn until the safe maximum."""
+        cli = _make_cli_stub()
+        cli._single_query_mode = True
+        cli._persist_prompt_summary = MagicMock()
+        with patch("tools.approval_context.approval_wait_seconds", return_value=1):
+            started = time.monotonic()
+            assert cli._approval_callback("rm -rf /tmp/x", "delete") == "timeout"
+        assert time.monotonic() - started < 5
+        assert cli._approval_state is None
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}

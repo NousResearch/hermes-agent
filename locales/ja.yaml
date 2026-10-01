@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "承認"
     label: "承認"
+    timeout_denying: "⏱ タイムアウト — コマンドを拒否します"
+    timed_out_no_response: "タイムアウト（応答なし）"
     outcome_once: "今回のみ許可"
     outcome_session: "セッション中は許可"
     outcome_always: "許可リストに追加"

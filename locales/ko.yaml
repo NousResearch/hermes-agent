@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "승인"
     label: "승인"
+    timeout_denying: "⏱ 시간 초과 — 명령을 거부해요"
+    timed_out_no_response: "시간 초과 (응답 없음)"
     outcome_once: "한 번 허용됨"
     outcome_session: "세션 동안 허용됨"
     outcome_always: "허용 목록에 추가됨"

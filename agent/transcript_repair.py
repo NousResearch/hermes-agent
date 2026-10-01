@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields)
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields, message_uid_or_none)
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
@@ -89,7 +89,7 @@ def is_content_blank(content: Any) -> bool:
 
 
 def _active_logical_message_row(
-    conn: sqlite3.Connection, session_id: str, role: str, message_uid: Any,
+    conn: sqlite3.Connection, session_id: str, role: str, message_uid: str | None,
 ) -> Mapping[str, Any] | None:
     """Newest active physical row for one durable logical message.
 
@@ -98,7 +98,7 @@ def _active_logical_message_row(
     when the live dict also carries a stored-row snapshot, so a fresh message that merely resembles an
     older one can never be adopted here.
     """
-    if not isinstance(message_uid, str) or not message_uid:
+    if message_uid is None:
         return None
     return conn.execute(
         "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND message_uid = ? "
@@ -135,7 +135,7 @@ def resolve_and_repair_transcript_batch(
         elif isinstance(expected, str):
             # Logical identity + the CAS version prove this dict came from durable replay. A new message
             # has neither proof, even when role/content/timestamp happen to equal an older message exactly.
-            target_row = _active_logical_message_row(conn, session_id, role, msg.get(MESSAGE_UID))
+            target_row = _active_logical_message_row(conn, session_id, role, message_uid_or_none(msg))
         if target_row is None:
             inserted_rows.append(msg)
             continue
@@ -155,6 +155,9 @@ def resolve_and_repair_transcript_batch(
             adopt = transcript_row_snapshot(target_row) != expected
             if not adopt:
                 serialized = serialize_message_fn(msg, float(target_row["timestamp"]))
+                if "token_count" not in msg:
+                    # Replay dicts never carry token_count; a missing key means "unknown", not NULL.
+                    serialized = {**serialized, "token_count": target_row["token_count"]}
                 if any(target_row[column] != serialized[column] for column in _OWNED_COLUMNS):
                     _rewrite_row(conn, session_id, target_row, serialized)
                     wrote = True
@@ -172,9 +175,9 @@ def resolve_and_repair_transcript_batch(
             ).rowcount > 0
         else:
             # Legacy dict (no digest: a row-addressed resume, a clone, or a repair_alternation=False
-            # projection) over a non-blank assistant row: another writer already filled it. Adopt its content only, never the whole row: the live tool_calls /
-            # reasoning* / codex_* fields may be sanitizer-fixed while the durable JSON still holds the raw
-            # escaped surrogate, and live-only fields must survive.
+            # projection) over a non-blank assistant row: another writer already filled it. Adopt its content
+            # only, never the whole row: the live tool_calls / reasoning* / codex_* fields may be sanitizer-fixed
+            # while the durable JSON still holds the raw escaped surrogate, and live-only fields must survive.
             if role == "assistant":
                 canonical = {"content": decode_content_fn(target_row["content"]), _CONTENT_ONLY: True}
 

@@ -156,7 +156,13 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
 
 def _build_roster() -> tuple[list[dict], set[str]]:
     """``(roster_for_prompt, valid_assignee_names)``; entries are
-    ``{name, description, has_description}``."""
+    ``{name, description, has_description}``.
+
+    ``valid_assignee_names`` stays "every profile that exists" — both callers
+    (``_normalize_assignee_choice``, and the "picked unknown assignee" info log)
+    mean exactly that by it. Only the OFFERED roster drops reserved,
+    unspawnable names; the two lists are different questions.
+    """
     try:
         all_profiles = profiles_mod.list_profiles()
     except Exception as exc:
@@ -167,6 +173,8 @@ def _build_roster() -> tuple[list[dict], set[str]]:
         # Never offer a reserved, unspawnable name to the decomposer: offering
         # `hermes` is how a child gets filed into a lane that dies
         # spawn_failed. `default` is reserved-but-spawnable and is kept.
+        # The refusal itself is the write path's job (kanban_assignee_gate);
+        # this is only about not tempting the LLM with a dead lane.
         if reserved_and_unspawnable(p.name):
             continue
         desc = (p.description or "").strip()
@@ -175,7 +183,7 @@ def _build_roster() -> tuple[list[dict], set[str]]:
             "description": desc or f"(no description; profile named {p.name!r})",
             "has_description": bool(desc),
         })
-    return roster, {entry["name"] for entry in roster}
+    return roster, {p.name for p in all_profiles}
 
 
 def _format_roster(roster: list[dict]) -> str:

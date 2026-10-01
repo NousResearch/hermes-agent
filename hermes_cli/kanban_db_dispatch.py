@@ -2313,12 +2313,24 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     gate). Otherwise ``None`` so an unassigned shared-board card is never
     written to. When the profiles module isn't importable trust the
     operator's config: the downstream check still buckets a missing profile
-    as nonspawnable."""
+    as nonspawnable.
+
+    ``profile_exists`` alone is NOT that predicate: it is deliberately
+    regex-only, so it reports True for ``hermes`` (a pre-reserved-list dir
+    that still resolves) while ``hermes -p hermes`` refuses to start. Trusting
+    it here would stamp the reserved dead lane onto every unassigned ready row
+    — the same defect the file-time gate refuses at ``create_task``, arriving
+    through the config instead of a filing call.
+    """
     name = (default_assignee or "").strip() or None
-    if name:
-        profile_exists = _profile_exists_fn()
-        if profile_exists is not None and not profile_exists(name):
-            return None
+    if not name:
+        return None
+    from hermes_cli.kanban_assignee_gate import reserved_and_unspawnable
+    if reserved_and_unspawnable(name):
+        return None
+    profile_exists = _profile_exists_fn()
+    if profile_exists is not None and not profile_exists(name):
+        return None
     return name
 
 

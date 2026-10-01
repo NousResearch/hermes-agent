@@ -1,4 +1,5 @@
 import { remoteRequestMatchesBaseUrl } from './connection-config'
+import { withEmbedRefererStamp } from './embed-referer'
 import { registryGatewayWsUrl } from './plugin-profile-routes'
 
 export interface RegistryGatewayWsConnection {
@@ -32,9 +33,7 @@ export interface RemoteHeaderSource {
 
 interface SessionLike {
   webRequest?: {
-    onBeforeSendHeaders?: (
-      listener: (details: RemoteRequestDetails, callback: RemoteRequestCallback) => void
-    ) => void
+    onBeforeSendHeaders?: (listener: (details: RemoteRequestDetails, callback: RemoteRequestCallback) => void) => void
   }
 }
 
@@ -114,9 +113,14 @@ export function attachRemoteRequestHeaderListener(
   sessionLike: SessionLike,
   headersForRequest: (requestUrl: string) => Record<string, string>
 ) {
-  sessionLike?.webRequest?.onBeforeSendHeaders?.((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRequest)
-  })
+  // The YouTube embed Referer stamp composes onto this same listener: Electron
+  // allows a single onBeforeSendHeaders listener per session, so the default
+  // session (where chat embeds' iframes live) gets both behaviors here.
+  sessionLike?.webRequest?.onBeforeSendHeaders?.(
+    withEmbedRefererStamp((details, callback) => {
+      applyRemoteRequestHeaders(details, callback, headersForRequest)
+    })
+  )
 }
 
 export function createRemoteWsHeaderStore(limit = 100) {

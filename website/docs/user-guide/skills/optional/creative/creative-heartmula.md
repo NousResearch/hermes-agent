@@ -21,7 +21,7 @@ HeartMuLa: Suno-like song generation from lyrics + tags.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `music`, `audio`, `generation`, `ai`, `heartmula`, `heartcodec`, `lyrics`, `songs` |
-| Related skills | [`audiocraft-audio-generation`](./creative-audiocraft-audio-generation.md), [`songwriting-and-ai-music`](../../bundled/creative/creative-songwriting-and-ai-music.md) |
+| Related skills | [`audiocraft-audio-generation`](../../optional/creative/creative-audiocraft-audio-generation.md), [`songwriting-and-ai-music`](../../bundled/creative/creative-songwriting-and-ai-music.md) |
 
 ## Reference: full SKILL.md
 

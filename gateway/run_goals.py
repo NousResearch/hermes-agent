@@ -460,14 +460,18 @@ class GatewayGoalsMixin:
         store — a ``/loop`` set from a secondary profile's chat would never fire. Every served
         profile's store is scanned under its own runtime scope (same shape as ``_handoff_watcher``),
         and each hit is fired against that profile's adapters."""
-        from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes
+        from gateway.run import _async_profile_runtime_scope, _resolve_handoff_watch_scopes
         from gateway.run_idle_gates import profile_has_active_loop
         await asyncio.sleep(5)  # let platforms finish connecting
         warned_no_route: set = set()
 
         def _scope(profile_home):
-            return (_async_profile_runtime_scope(profile_home) if profile_home is not None
-                    else nullcontext())
+            # profile_home None = the launch profile's own store; once the process multiplexes it
+            # binds its own scope instead of running on ambient env (see _scope_or_null).
+            if profile_home is not None:
+                return _async_profile_runtime_scope(profile_home)
+            from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+            return async_launch_profile_scope_if_multiplexed()
 
         async def _scan_one_store(profile_name: Optional[str]) -> None:
             from hermes_cli.loops import list_active_loops
@@ -483,7 +487,9 @@ class GatewayGoalsMixin:
 
         while self._running:
             try:
-                for profile_name, profile_home in _handoff_watch_scopes(self):
+                # Multiplex resolution walks the filesystem off-loop; a stalled walk on the loop
+                # trips the loop-liveness watchdog (exit 75).
+                for profile_name, profile_home in await _resolve_handoff_watch_scopes(self):
                     # Idle gate (run_idle_gates): skip the scope entry when the profile's store holds
                     # no active loop. The root scan (None) is unscoped and stays cheap.
                     if profile_home is not None and not await self._run_in_executor_with_context(

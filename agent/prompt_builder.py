@@ -24,7 +24,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
-    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
+    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
@@ -49,7 +49,9 @@ def _get_context_file_read_timeout() -> float:
     return _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 
-def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
+def _read_text_with_timeout(
+    path: Path, timeout: Optional[float] = None, encoding: str = "utf-8-sig"
+) -> Optional[str]:
     """``path.read_text()`` on a daemon thread so a slow file can't stall startup.
 
     Returns the text, or ``None`` after *timeout* seconds (logged at WARNING;
@@ -63,7 +65,7 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
 
     def _reader() -> None:
         try:
-            result.put((True, path.read_text(encoding="utf-8")))
+            result.put((True, path.read_text(encoding=encoding)))
         except Exception as exc:  # re-raised on the caller thread
             result.put((False, exc))
 
@@ -253,9 +255,10 @@ SESSION_SEARCH_GUIDANCE = (
 # patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
 # to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. Only
 # the compaction-pruning contract lives here — nothing else teaches it.
+SKILL_SAFETY_HEADING = "## Skill Safety Rule"
 SKILLS_GUIDANCE = (
     "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
-    "## Skill Safety Rule\n"
+    f"{SKILL_SAFETY_HEADING}\n"
     "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
     "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
@@ -387,6 +390,15 @@ TASK_COMPLETION_GUIDANCE = (
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
     "produce. Reporting a blocker honestly is always better than inventing a result."
+)
+
+ASYNC_HANDOFF_GUIDANCE = (
+    "# Async handoff\n"
+    "When delegate_task explicitly says background work will deliver its result only after you end the current turn, "
+    "ending the turn is the required handoff — not abandoning the task. Finish only work that does not depend on the "
+    "pending result, then give a brief status and stop so delivery can occur. Do not manufacture polling, no-op, "
+    "placeholder, or unrelated tool calls just to keep the turn open. Do not claim the pending result or task "
+    "completion before it is delivered."
 )
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
@@ -584,14 +596,20 @@ STEER_CHANNEL_NOTE = (
 )
 
 
-def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
+def hud_surface_note(valid_tool_names: "set[str] | None" = None,
+                     deferred_tool_names: "frozenset[str] | set[str]" = frozenset()) -> str:
     """Per-turn note for a message typed into the desktop's floating HUD ("this"/"here" = the app behind it).
 
     A per-turn fact, not a platform (one session alternates between app window and HUD), so it rides the
     model-bound message, never the byte-stable system prompt. Each sentence is gated on the tool it names (an
     unknown tool name invites a hallucinated call); without read_window_below the whole note is withheld.
+    ``deferred_tool_names`` are tools this session reaches only through the tool_call bridge (the default
+    tool_search defer list holds the desktop tools): they count as available, and the note says to invoke
+    them via tool_call, since a direct call to a deferred name is rejected as an unknown tool.
     """
-    names = valid_tool_names or set()
+    direct = valid_tool_names or set()
+    deferred = set(deferred_tool_names) - direct
+    names = direct | deferred
     if "read_window_below" not in names:
         return ""
     gated = (
@@ -610,9 +628,14 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
         ("computer_use" in names and "browser_navigate" in names,
          "When the app underneath is a browser, that means driving the "
          "user's browser rather than opening yours with browser_navigate."),
-        (True, "This is a prior, not a rule: when the request names its own target, follow the request.]"),
+        (True, "This is a prior, not a rule: when the request names its own target, follow the request."),
     )
-    return " ".join(text for ok, text in gated if ok)
+    note = " ".join(text for ok, text in gated if ok)
+    named = ("read_window_below", "computer_use") if "computer_use" in names else ("read_window_below",)
+    bridged = [name for name in named if name in deferred]
+    if bridged:
+        note += f" Call {' and '.join(bridged)} through the tool_call bridge (deferred behind tool search)."
+    return note + "]"
 
 
 # Models whose system prompt is sent as the 'developer' role (stronger instruction-following weight);
@@ -723,10 +746,13 @@ PLATFORM_HINTS = {
         "formatting. SMS messages are limited to ~1600 characters, so be brief and direct."
     ),
     "bluebubbles": (
-        "You are chatting via iMessage (BlueBubbles). iMessage does not render markdown formatting — use "
-        "plain text. Keep responses concise as they appear as text messages. You can send media files "
-        "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .heic) appear "
-        "as photos and other files arrive as attachments."
+        # The adapter runs strip_markdown(keep_link_targets=True): markers vanish, the layout stays.
+        "You are texting via iMessage (BlueBubbles). Replies arrive as plain text bubbles, so write like a person "
+        "texting: short and conversational, answer first, no preamble or recap. Markdown does not render and is "
+        "stripped, so skip headers, tables, code fences and backticks; for a few items use short lines or a "
+        "sentence rather than nested bullets. Put a command or code snippet on its own line as plain text so it "
+        "can be copied. Write links as bare URLs (iMessage auto-links them). "
+        f"{_MEDIA_NATIVE}Images (.jpg, .png, .heic) appear as photos and other files arrive as attachments."
     ),
     "mattermost": (
         "You are in a Mattermost workspace communicating with your user. Mattermost renders standard "
@@ -904,10 +930,11 @@ def _tenv_read(name: str, default: str = "") -> str:
 _BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
 # (config key, default) pairs forwarded to _create_environment's container_config.
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
+# OS/kernel only: the sandbox's user, $HOME and cwd are user-identifying and nothing consumes
+# them — the model can `whoami && pwd` when a task actually needs them.
 _BACKEND_PROBE_CMD = (
-    "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
-    "\"$(uname -r 2>/dev/null || echo unknown)\" "
-    "\"$HOME\" \"$(pwd)\" \"$(whoami 2>/dev/null || id -un 2>/dev/null || echo unknown)\""
+    "printf 'os=%s\\nkernel=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
+    "\"$(uname -r 2>/dev/null || echo unknown)\""
 )
 
 
@@ -950,11 +977,8 @@ def _format_backend_probe(output: str) -> str:
     """Render the probe's key=value lines as an indented summary ("" if nothing usable)."""
     parsed = {k.strip(): v.strip() for k, _, v in (line.partition("=") for line in output.splitlines() if "=" in line)}
     known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None  # noqa: E731
-    fields = (
-        ("OS", " ".join(x for x in (known("os"), known("kernel")) if x)),
-        ("User", known("user")), ("Home", parsed.get("home")), ("Working directory", parsed.get("cwd")),
-    )
-    return "\n".join(f"  {label}: {value}" for label, value in fields if value)
+    os_line = " ".join(x for x in (known("os"), known("kernel")) if x)
+    return f"  OS: {os_line}" if os_line else ""
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
@@ -1001,7 +1025,7 @@ def _local_host_hints() -> list[str]:
     # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
     try:
         host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
-                          "and probes there, never under the system temp dir; entries are pruned after 72h)")
+                          "and probes there, never under the system temp dir; entries idle for 24h are pruned)")
     except OSError:
         pass
     if not (sys.platform == "win32" and not is_wsl()):
@@ -1014,6 +1038,42 @@ def _local_host_hints() -> list[str]:
     return ["\n".join(host_lines), _WINDOWS_BASH_SHELL_HINT]
 
 
+def bot_screen_note(running: bool, display: "str | None", holder: str) -> str:
+    """The one-line Bot Screen status the model sees — the prompt's ``_bot_screen_hint`` body,
+    parameterised so the display watcher can stage the same sentence as a per-turn note when a
+    screen starts or stops mid-session (#125830; the byte-stable prompt only converges at
+    compaction). ``holder`` is ``lease.AGENT``/``lease.HUMAN``; "" when there is nothing to say
+    (a stop with no display known, or an unknown holder on a running screen)."""
+    if running:
+        if not display:
+            return ""
+        held = ("a human holds it — do not drive the screen; ask them or wait" if holder == "human"
+                else "you hold it" if holder == "agent" else "")
+        if not held:
+            return ""
+        return (f"Bot Screen: this profile's own headless desktop is RUNNING on display {display} "
+                f"({held}). 'screen N' / ':N' / 'the bot screen' / 'your screen' means THIS screen: "
+                f"GUI apps you launch from the terminal already open there (their DISPLAY is routed "
+                f"to it), and display introspection (xrandr/xdotool/wmctrl) targets it. It is NOT "
+                f"the user's own display.")
+    return ("Bot Screen: this profile's own headless desktop is no longer running. Do not refer to "
+            "'the bot screen' or route GUI launches at it; GUI apps from the terminal open on the "
+            "user's own display again.")
+
+
+def _bot_screen_hint() -> str:
+    """One line naming this profile's running Bot Screen (#125830): the display, and who holds it.
+
+    Pure reads (``published_env`` + the lease file); never raises — a missing/unimportable
+    bot_desktop module or an unreadable lease must not break prompt construction. ``""`` when
+    no screen is running, so the block simply drops out of the environment hints."""
+    try:
+        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+        return bot_screen_note(True, _bd_runtime.published_env().get("DISPLAY"), _bd_lease.get().holder)
+    except Exception:
+        return ""
+
+
 def _remote_backend_hint(backend: str) -> str:
     """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
@@ -1022,7 +1082,9 @@ def _remote_backend_hint(backend: str) -> str:
     if probe:
         return lead + (
             f"this {backend} environment — NOT on the machine where Hermes itself is running. The host OS, "
-            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}"
+            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}\n"
+            f"  The sandbox's current user, $HOME, and working directory are not listed here; if you need them, "
+            f"probe directly with a terminal call like `whoami && pwd`."
         )
     description = (
         _BACKEND_FALLBACK_DESCRIPTIONS.get(backend)
@@ -1031,7 +1093,7 @@ def _remote_backend_hint(backend: str) -> str:
     )
     return lead + (
         f"{description} — NOT on the machine where Hermes itself runs. The backend probe didn't respond at "
-        f"prompt-build time, so the sandbox's current user, $HOME, and working directory are unknown from here. "
+        f"prompt-build time, so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
         f"If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
     )
 
@@ -1060,6 +1122,10 @@ def build_environment_hints() -> str:
     backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
     hints = [_remote_backend_hint(backend)] if is_remote_backend else _local_host_hints()
+    # A host-placed Bot Screen is only reachable from a local backend (a sandboxed terminal cannot
+    # open windows on the gateway host), and a sandbox-placed one is the sandbox probe's business.
+    if not is_remote_backend:
+        hints.append(_bot_screen_hint())
     hints += [WSL_ENVIRONMENT_HINT] if is_wsl() else []
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 
@@ -1116,7 +1182,7 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+_SKILLS_SNAPSHOT_VERSION = 3
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1168,13 +1234,19 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     """The disk snapshot if it exists, is current-version, and its manifest still matches."""
     try:
-        snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8"))
+        snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8-sig"))
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
     if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
             and snapshot.get("manifest") == _build_skills_manifest(skills_dir)):
         return snapshot
     return None
+
+
+def _requires_apps_list(frontmatter: dict) -> list[str]:
+    raw = frontmatter.get("requires_apps")
+    items = raw if isinstance(raw, list) else [raw] if raw else []
+    return [str(a).strip() for a in items if str(a).strip()]
 
 
 def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict, description: str) -> dict:
@@ -1192,12 +1264,21 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "requires_apps": _requires_apps_list(frontmatter),
     }
     if org_id:
         entry["org_id"] = org_id
-        try:  # author from the pull-time provenance sidecar; best-effort
-            prov = json.loads((skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE).read_text(encoding="utf-8"))
-            entry["org_author"] = str(prov.get("author_device") or "") or str(prov.get("author_user_id") or "")
+        # Author from the pull-time provenance sidecar (token-verified at
+        # push by the plane's author_mismatch guard). Best-effort.
+        try:
+            import json as _json
+
+            prov_path = (
+                skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE
+            )
+            prov = _json.loads(prov_path.read_text(encoding="utf-8-sig"))
+            device = str(prov.get("author_device") or "")
+            entry["org_author"] = device or str(prov.get("author_user_id") or "")
         except Exception:
             entry["org_author"] = ""
     return entry
@@ -1206,10 +1287,11 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once -> (is_compatible, frontmatter, description); errors yield (True, {}, "")."""
     try:
-        frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+        raw = skill_file.read_text(encoding="utf-8-sig")
+        frontmatter, _ = parse_frontmatter(raw)
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
-        if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
-            return False, frontmatter, ""
+        if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
+            return False, frontmatter, extract_skill_description(frontmatter)
         return True, frontmatter, extract_skill_description(frontmatter)
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
@@ -1289,7 +1371,7 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for desc_file in iter_skill_index_files(root, "DESCRIPTION.md"):
         try:
-            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8"))[0].get("description")
+            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8-sig"))[0].get("description")
             if cat_desc:
                 rel = desc_file.relative_to(root)
                 found["/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"] = str(cat_desc).strip().strip("'\"")
@@ -1414,9 +1496,13 @@ def _build_skills_system_prompt_inner(
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
         _oneshot_prompt_variant(),
     )
+    snapshot = _load_skills_snapshot(skills_dir)
+    app_gated = snapshot is not None and any(
+        entry.get("requires_apps") for entry in snapshot.get("skills", []) if isinstance(entry, dict)
+    )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
-        if cached is not None:
+        if cached is not None and not app_gated:
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
@@ -1428,9 +1514,10 @@ def _build_skills_system_prompt_inner(
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
     # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
-    snapshot = _load_skills_snapshot(skills_dir)
     if snapshot is not None:
-        candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or []))
+        # Platforms and app presence are host facts that change without SKILL.md changing: re-evaluate both.
+        candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
+                       and skill_matches_apps({"requires_apps": entry.get("requires_apps") or []}))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
         category_descriptions = {str(k): str(v) for k, v in (snapshot.get("category_descriptions") or {}).items()}
     else:
@@ -1742,26 +1829,3 @@ def build_context_files_prompt(
         return ""
     return ("# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
             + "\n".join(sections))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'org_id_of_path': ('agent.skill_utils', 'org_id_of_path'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

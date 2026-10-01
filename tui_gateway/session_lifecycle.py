@@ -433,6 +433,28 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         interrupt_for_session(
             session_key=str(session_key or "") if _tui_owns_lifecycle else "",
             origin_ui_session_id=_lifecycle_own_sid(session), reason=end_reason)
+    # Session-persistent code kernels (execute_code) share this owner key and die at the same boundary, like the
+    # gateway's /stop and /new (approval.clear_session); otherwise each finished conversation keeps a live
+    # interpreter until kernel_idle_timeout. Only when the TUI owns the lifecycle: a viewer tab over a
+    # gateway-owned session must not kill the gateway's kernels.
+    if _tui_owns_lifecycle and session_key:
+        with contextlib.suppress(Exception):
+            from tools.approval import clear_session
+            clear_session(str(session_key))
+    # A session's in-flight background memory/skill review ends WITH the session too (#102895): the
+    # review fork is a SEPARATE AIAgent instance tracked only on the parent's
+    # _background_review_agent/_active_children (agent/background_review.py) — never on
+    # session["running"] or session["_run_thread"] — so it is invisible both to the run_thread join
+    # in _teardown_popped_session and to session.interrupt's running-gated request_hard_interrupt in
+    # _interrupt_session_turn. Every finalize path (explicit close, idle-timeout reap, ws-orphan
+    # reap, shutdown) funnels through here, so cancelling here closes the gap for all of them at
+    # once. Without it, a review whose provider degraded into a failed-tool retry loop keeps calling
+    # the model forever after the session is gone: nothing ever sets its _interrupt_requested.
+    if agent is not None:
+        with contextlib.suppress(Exception):
+            from agent.background_review import cancel_background_review_for_live_turn
+            cancel_background_review_for_live_turn(
+                agent, message=f"session ended ({end_reason})", tool_reason="session ended")
     # Close the slash-worker in this single ``_finalized``-guarded chokepoint (a direct caller can't leak it); idempotent.
     with contextlib.suppress(Exception):
         if worker := session.get("slash_worker"):
@@ -458,6 +480,38 @@ def _announce_session_reclaimed(session: dict, end_reason: str) -> None:
         logger.debug("session.reclaimed broadcast failed", exc_info=True)
 
 
+def _announce_cancelled_gateway_approvals(session: dict, reason: str, *, session_id: str = "") -> None:
+    """Tell connected clients pending gateway approvals are being dropped (interrupt/reap/teardown, #106678).
+
+    Broadcast, not session-targeted: reap/interrupt run on timer threads with no live transport or contextvar,
+    so ``_emit`` would miss detached clients (same as ``session.reclaimed``). Fail-open by design: a missing
+    session key, an empty queue, and a broadcast failure never raise — the deny-resolve / teardown must proceed
+    either way (silence in the notice channel must not strand the agent thread or the session teardown).
+    """
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return
+    try:
+        from tools.approval import list_gateway_approvals
+        pending = list_gateway_approvals(session_key)
+    except Exception:
+        logger.debug("list_gateway_approvals failed", exc_info=True)
+        return
+    if not pending:
+        return
+    request_ids = [str(item.get("request_id") or "") for item in pending]
+    request_ids = [rid for rid in request_ids if rid]
+    try:
+        _broadcast_global_event("approval.cancelled", {
+            "session_id": str(session_id or session.get("_sid") or ""),
+            "stored_session_id": session_key,
+            "reason": reason,
+            "cancelled_count": len(pending),
+            "request_ids": request_ids})
+    except Exception:
+        logger.debug("approval.cancelled broadcast failed", exc_info=True)
+
+
 def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
     """Fully tear down a session: finalize, unregister notifier, close agent (``session.close`` + WS reaper). The
     slash-worker is closed in ``_finalize_session`` (the single chokepoint), NOT here. Idempotent via ``_finalized``."""
@@ -465,6 +519,10 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
         return
     _finalize_session(session, end_reason=end_reason)
     _announce_session_reclaimed(session, end_reason)
+    with contextlib.suppress(Exception):
+        # Same user-visible hole as the interrupt's deny-resolve (#106678): a pending prompt
+        # popped by unregister must not just vanish from every surface without a notice.
+        _announce_cancelled_gateway_approvals(session, end_reason)
     with contextlib.suppress(Exception):
         from tools.approval import unregister_gateway_notify
         # One approval callback per key: after a takeover it is the new runtime's registration.
@@ -549,8 +607,45 @@ def _settle_isolated_turn_before_close(session: dict) -> None:
             return
         session["_deferred_active_session_lease"] = lease
         _deferred_active_session_leases[str(lease.lease_id)] = lease
+        _deferred_active_session_lease_ages[str(lease.lease_id)] = time.time()
     logger.warning("isolated turn still live after %.1fs close grace; holding lease for %s until the child settles",
                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS, session.get("session_key"))
+
+
+# A deferred lease is released by the compute-host turn's completion callback
+# (_on_compute_host_turn_done → _release_deferred_active_session_lease). If that callback
+# is lost — supervisor restart/reload, a child killed without failing its pending turns,
+# a dropped completion — the lease sits in the registry FOREVER: _own_live_lease_ids
+# vouches for it, so the orphan sweep never reclaims it, and the concurrency cap treats
+# the dead session as active (#62823 zombie slot). A deferred lease past this generous
+# ceiling (the longest legitimate isolated turn is the compression ceiling, minutes) is
+# force-released by the reaper tick instead of leaking the slot until process exit.
+_DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS = 1800.0
+_deferred_active_session_lease_ages: dict[str, float] = {}
+
+
+def _reap_stale_deferred_leases(now: float | None = None) -> int:
+    """Force-release deferred leases whose settlement callback never arrived. Returns the count."""
+    now = time.time() if now is None else now
+    stale = [
+        lease_id for lease_id, deferred_at in list(_deferred_active_session_lease_ages.items())
+        if now - deferred_at > _DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS
+    ]
+    reaped = 0
+    for lease_id in stale:
+        _deferred_active_session_lease_ages.pop(lease_id, None)
+        lease = _deferred_active_session_leases.pop(lease_id, None)
+        if lease is None:
+            continue
+        if (err := _lease_retry(3, lease.release)) is not None:
+            logger.warning("Failed to force-release stale deferred active session lease %s", lease_id,
+                           exc_info=err)
+            continue
+        logger.warning("Force-released deferred active session lease %s held past %.0fs without a "
+                       "compute-host settlement (zombie concurrency slot, #62823)",
+                       lease_id, _DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS)
+        reaped += 1
+    return reaped
 
 
 def _release_deferred_active_session_lease(session: dict) -> None:
@@ -559,6 +654,7 @@ def _release_deferred_active_session_lease(session: dict) -> None:
     if lease is None:
         return
     _deferred_active_session_leases.pop(str(lease.lease_id), None)
+    _deferred_active_session_lease_ages.pop(str(lease.lease_id), None)
     if (err := _lease_retry(3, lease.release)) is not None:
         logger.warning("Failed to release deferred active session slot", exc_info=err)
 
@@ -587,9 +683,15 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return bool(_ws_session_is_detached(session) and not session.get("running"))
 
 
-def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None = None) -> bool:
+def _interrupt_session_turn(
+    sid: str, session: dict, *, request_id: str | None = None, orphan: bool = False,
+) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
-    channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics."""
+    channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics.
+
+    ``orphan=True`` (reaper path) labels dropped approvals ``ws_orphan_reap``; the label comes from the
+    caller, never from request_id prefix sniffing — a future orphan caller may use another id (#106678).
+    """
     use_compute_host = _session_uses_compute_host(session)
     should_interrupt = bool(session.get("running"))
     run_thread_alive = False
@@ -609,12 +711,16 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
         # resources. Observer-only; dispatch failures never break the interrupt.
+        # Every caller (session.interrupt RPC, orphan/idle reapers, lease takeover) is off-turn, so bind the
+        # SESSION's profile as _finalize_session does or an observer's get_hermes_home() names the launch
+        # profile (#125063). hydrate_secrets=False: observer-only, /stop must stay fast.
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
-                "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
-                reason="user_stop", invalidation_reason="session_interrupt",
-            )
+            with _session_profile_runtime_scope(session, hydrate_secrets=False):
+                _invoke_hook(
+                    "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
+                    reason="user_stop", invalidation_reason="session_interrupt",
+                )
         except Exception:
             logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
     if not use_compute_host:
@@ -634,8 +740,26 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
                 if session.get("running"):
                     session["running"] = False
                     _clear_inflight_turn(session)
+    # Sibling of the #102895 finalize-path fix above: an explicit /stop (or the WS-orphan reaper's
+    # interrupt-at-grace) must also reach a background memory/skill review, not just the foreground
+    # turn. The review fork is invisible to `should_interrupt`/`run_thread_alive` above (both gated
+    # on the FOREGROUND turn's session["running"]/_run_thread) — a user hitting Stop while only the
+    # post-turn review is still running (the common case: the main turn already finished) would see
+    # "stopped" while the review keeps calling the model. Fires unconditionally (both compute-host
+    # and in-process turns) since the review is always local to this process.
+    if (agent_for_review := session.get("agent")) is not None:
+        with contextlib.suppress(Exception):
+            from agent.background_review import cancel_background_review_for_live_turn
+            cancel_background_review_for_live_turn(
+                agent_for_review, message="session interrupted", tool_reason="session interrupted")
     _clear_pending(sid)
     with contextlib.suppress(Exception):
+        # Deny-resolve every pending approval so no agent thread blocks on the queue. The
+        # deny is silent without the broadcast: a reconnecting client sees a bare 4001 on
+        # approval.pending and the prompt looks lost rather than cancelled (#106678).
+        # Announce BEFORE the queue is drained, or there is nothing left to name.
+        reason = "ws_orphan_reap" if orphan else "interrupt"
+        _announce_cancelled_gateway_approvals(session, reason, session_id=sid)
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
     return use_compute_host
@@ -703,6 +827,14 @@ def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> Non
     """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``).
     Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
     at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
+    if transport is not _detached_ws_transport and _transport_is_dead(transport):
+        # The rebinding socket already closed: its disconnect cleanup ran before this late RPC (a
+        # resume-then-drop burst), so nothing will detach it again. The client is NOT back — re-arm the
+        # reap the caller cancelled instead of leaving a detached session with no Timer (#116464).
+        with _sessions_lock:
+            if _ws_session_is_detached(session) and sid not in _pending_ws_reaps:
+                _schedule_ws_orphan_reap(sid)
+        return
     _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
@@ -743,11 +875,40 @@ def _schedule_ws_orphan_reap(
     sid: str, *, delay_s: float | None = None, _expected_timer: threading.Timer | None = None,
 ) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned. Called from the WS-disconnect path; a
-    reconnect or ``session.resume`` cancels the reap by re-binding a live transport. Disabled when grace is 0."""
+    reconnect or ``session.resume`` cancels the reap by re-binding a live transport. Disabled when grace is 0.
+
+    The grace is measured in AWAKE (monotonic) time: ``threading.Timer``'s wait elapses in wall-clock time on
+    platforms without a monotonic condvar (macOS lacks ``pthread_condattr_setclock``), so a system sleep makes
+    the timer fire "early" in awake-time terms. Without the sleep check below, closing a laptop lid for longer
+    than the grace reaped the parked session at the instant of wake — before the Desktop's WS reconnect or
+    ``session.resume`` could re-bind a transport — so every sleep/wake cycle 404'd the open chat (#44183)."""
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
+    grace_s = _WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s)
+    # Sample both clocks at arm time: time.monotonic() (mach_absolute_time / CLOCK_MONOTONIC)
+    # does not advance while the host is asleep, so the divergence between the two clocks'
+    # elapsed times at fire time is exactly the time the host spent asleep.
+    armed_monotonic = time.monotonic()
+    armed_wall = time.time()
 
     def _reap() -> None:
+        # The timer fired. If more wall-clock than monotonic time elapsed, the host
+        # slept through the wait: the grace has NOT been granted in awake time, so
+        # re-arm for the remaining awake grace instead of reaping. The slack keeps
+        # ordinary timer jitter and NTP slew from re-arming a legitimately-expired
+        # reap, and a fired-without-elapsed timer (tests, spurious dispatch) shows
+        # zero divergence and reaps normally.
+        slept_s = (time.time() - armed_wall) - (time.monotonic() - armed_monotonic)
+        if slept_s > _WS_ORPHAN_REAP_SLEEP_SLACK_S:
+            rearm_delay = max(0.0, grace_s - (time.monotonic() - armed_monotonic))
+            if rearm_delay <= 0:
+                pass  # no awake grace left — fall through and reap
+            else:
+                # Re-arm through the public scheduler with THIS timer as the expected
+                # one: the fresh closure's identity guard then matches the entry it
+                # installs, so the awake-remainder fire proceeds to the real reap.
+                _schedule_ws_orphan_reap(sid, delay_s=rearm_delay, _expected_timer=timer)
+                return
         # Serialize the re-check against session.resume (rebinds under _session_resume_lock). Claim teardown by popping
         # under both locks, then release the resume lock before slow finalization. Order: resume_lock -> sessions_lock.
         reschedule_delay = interrupt_session = session = None
@@ -798,7 +959,8 @@ def _schedule_ws_orphan_reap(
                 _pending_ws_reaps.pop(sid, None)
         if interrupt_session is not None:
             try:
-                isolated = _interrupt_session_turn(sid, interrupt_session, request_id=f"client-gone-{sid}")
+                isolated = _interrupt_session_turn(
+                    sid, interrupt_session, request_id=f"client-gone-{sid}", orphan=True)
                 logger.info("client_gone sid=%s action=interrupt turn_isolation=%s", sid, isolated)
             except Exception:
                 logger.exception("client_gone interrupt failed sid=%s", sid)

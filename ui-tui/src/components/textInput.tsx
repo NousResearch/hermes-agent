@@ -783,6 +783,7 @@ export function TextInput({
   mask,
   mouseApiRef,
   cursorSnapshotRef,
+  ignoreVerticalArrows = false,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
@@ -1429,7 +1430,7 @@ export function TextInput({
         return
       }
 
-      if (k.upArrow || k.downArrow) {
+      if ((k.upArrow || k.downArrow) && !ignoreVerticalArrows) {
         flushKeyBurst()
 
         const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
@@ -1473,7 +1474,9 @@ export function TextInput({
       const delFwd = k.delete || fwdDel.current
 
       const isPrintableInput =
-        (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
+        !event.isControlChord &&
+        (event.keypress.isPasted || inp.length > 0) &&
+        PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
 
       if (!isPrintableInput) {
         flushKeyBurst()
@@ -1613,7 +1616,7 @@ export function TextInput({
         } else {
           ;({ cursor: c, value: v } = killToLineEnd(v, c))
         }
-      } else if (event.keypress.isPasted || inp.length > 0) {
+      } else if (event.keypress.isPasted || (inp.length > 0 && !event.isControlChord)) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
@@ -1826,6 +1829,8 @@ interface TextInputProps {
   columns?: number
   cursorSnapshotRef?: MutableRefObject<InputCursorSnapshot | null>
   focus?: boolean
+  /** Leave ↑/↓ to the owner: a form that moves field focus with them owns the key, not the field. */
+  ignoreVerticalArrows?: boolean
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
@@ -1876,7 +1881,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
-  (key.ctrl && input === 't') ||
+  (key.ctrl && (input === 'r' || input === 't')) ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

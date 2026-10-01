@@ -149,6 +149,103 @@ _DOWNLOAD_USER_AGENT = (
 )
 
 
+def _managed_install() -> bool:
+    """True when a package manager (NixOS) owns this install's modes.
+
+    Mirrors the check ``hermes_cli.config._secure_dir`` makes internally, read
+    here so the *creation* mode honours the same carve-out as reconciliation.
+    Import is local and failure means "not managed": an unimportable config
+    module is the single-user source-install case, where 0700 is correct.
+    """
+    try:
+        from hermes_cli.config import is_managed
+
+        return bool(is_managed())
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _secure_cache_dir(new_subpath: str, old_name: str) -> Path:
+    """Resolve a Hermes media-cache dir, creating it owner-only (0700).
+
+    A downloaded image or video is as sensitive as whatever the user pointed
+    the agent at — a private attachment, an internal screenshot, a document
+    scan. Created with a bare ``mkdir(parents=True, exist_ok=True)`` these
+    inherited the umask and landed 0755, readable by every other local
+    account. ``HERMES_HOME`` is 0700 by default so default-config exposure is
+    narrow; the concrete scenario is the documented ``HERMES_HOME_MODE=0701``
+    hatch (letting nginx/caddy traverse to a served subdirectory), where a
+    0755 child really is world-readable.
+
+    The mode is passed to ``mkdir`` so it is set *at creation*, leaving no
+    window where the directory sits world-readable before a follow-up chmod.
+    Policy is then reconciled through ``hermes_cli.config._secure_dir`` — the
+    house helper — rather than a hand-rolled chmod, which is what keeps this
+    correct off a single-user desktop: managed/NixOS installs are skipped,
+    ``HERMES_HOME_MODE`` stays honoured, and ``HERMES_UID``/``HERMES_GID``
+    ownership is applied so a root-created dir does not lock out uid-mapped
+    Docker workers (#34107).
+
+    The managed/NixOS carve-out applies to **creation as well as
+    reconciliation**. ``cache/vision`` and ``cache/video`` are not among the
+    directories the NixOS module's ``systemd.tmpfiles`` rules pre-create, so
+    they are made lazily at runtime; a hardcoded 0700 here would be the only
+    thing setting their mode and would silently override a design that pins
+    ``stateDir/.hermes`` to ``2770`` and runs the gateway with ``UMask =
+    "0007"`` so "interactive users in the hermes group can read/write"
+    gateway-created state. On such a host the gateway and a hostUsers CLI
+    share one ``$HERMES_HOME``, so a 0700 cache created by whichever ran
+    first makes vision fail with EACCES for the other. Skipping the explicit
+    mode there lets the inherited setgid + umask land 2770, matching
+    ``ensure_hermes_home``'s managed branch and its ``logs/curator``
+    lazy-mkdir precedent.
+
+    Running it unconditionally also heals a directory an older Hermes left at
+    0755. That retroactive tighten is safe *here* because this is
+    Hermes-private scratch that the same user re-reads in the same call —
+    there is no user-shared content to strand. Note ``parents=True`` applies
+    the mode to the leaf only, so an intermediate ``cache/`` keeps its default
+    mode; it is shared with other subsystems and holds only directory names.
+    """
+    cache_dir = get_hermes_dir(new_subpath, old_name)
+    if _managed_install():
+        # Managed mode: the NixOS-configured umask/setgid owns the mode, and
+        # _secure_dir would no-op here anyway.
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+    # mode= is honored only for the leaf and is not further masked by umask
+    # for the bits we care about; _secure_dir reconciles anything unusual.
+    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        from hermes_cli.config import _secure_dir
+
+        _secure_dir(cache_dir)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("vision: cache dir chmod skipped: %s", exc)
+    return cache_dir
+
+
+def _write_private_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` with owner-only (0600) permissions.
+
+    ``Path.write_bytes`` lands 0644 under a default umask. The enclosing cache
+    dir is 0700, so this matters only under ``HERMES_HOME_MODE=0701`` — but
+    ``tools.computer_use.tool`` already writes private captures into this
+    very directory, and one directory with two file-mode conventions is the
+    kind of inconsistency that rots. POSIX mode bits are advisory on Windows
+    (``os.chmod`` there only toggles the read-only flag), so on an ``os.open``
+    failure this degrades to a plain write rather than failing the download.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    try:
+        fd = os.open(str(path), flags, 0o600)
+    except OSError:
+        path.write_bytes(data)
+        return
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+
+
 async def _ssrf_redirect_guard(response):
     """Re-validate each redirect target (a public URL 302ing to 169.254.169.254 would otherwise
     bypass the pre-flight check). Async because httpx.AsyncClient awaits hooks."""
@@ -309,11 +406,13 @@ def _import_pillow_for_resize():
         from PIL import Image
     except ImportError:
         try:
-            from tools.lazy_deps import ensure as _ensure_dep
-            # prompt=False: never raise a blocking input() prompt mid-session. Under the interactive CLI
-            # prompt_toolkit owns stdin, so a bare input() deadlocks the terminal (#40490). The install is
-            # already gated by security.allow_lazy_installs, so reaching here is opt-in.
-            _ensure_dep("tool.vision", prompt=False)
+            # pm-era wiring: never raise a blocking input() prompt mid-session. Under the
+            # interactive CLI prompt_toolkit owns stdin, so a bare input() deadlocks the
+            # terminal (#40490). The install is already gated by security.allow_lazy_installs,
+            # so reaching here is opt-in.
+            from pm import ensure_import
+
+            ensure_import("vision")
             from PIL import Image
         except Exception:
             return None
@@ -457,27 +556,33 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return False
 
 
+def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
+    """One gate for both native lanes — the ``vision_analyze`` fast path and the ``computer_use`` capture route
+    (#115248): the profile's ``supports_vision_tool_messages=False`` veto first, then either the provider's tool
+    results are known to carry media or the capability lookup (config override → catalog → probes → profile)
+    attests the model as vision-capable."""
+    if _profile_rejects_tool_media(provider, model):
+        return False
+    if _supports_media_in_tool_results(provider, model):
+        return True
+    from agent.image_routing import _lookup_supports_vision
+    return _lookup_supports_vision(provider, model, cfg) is True
+
+
 def _should_use_native_vision_fast_path() -> bool:
     """True when image routing resolves to ``native`` AND the provider accepts images in tool
     results, or the user set the ``model.supports_vision`` override (escape hatch for
     custom/local providers). Any failure → False."""
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
+        from agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
         provider = _read_main_provider()
         model = _read_main_model()
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        # The profile veto applies ahead of the capability lookup too: a
-        # model marked vision-capable by models.dev / custom_providers must
-        # not re-open the multimodal-envelope route the profile rejects.
-        if _profile_rejects_tool_media(provider, model):
-            return False
-        return (
-            _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True)
+        return _accepts_tool_result_images(provider, model, cfg)
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False
@@ -539,10 +644,9 @@ async def _prepare_image(
         resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
     except ImageResolutionError as exc:
         raise _ImagePrepError(str(exc)) from exc
-    temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
-    await asyncio.to_thread(path.write_bytes, resolved.data)
+    await asyncio.to_thread(_write_private_bytes, path, resolved.data)
     mime, size_bytes, crop_offset = resolved.mime, len(resolved.data), {}
     try:
         normalized_path, mime, norm_err = await asyncio.to_thread(_normalize_to_supported_image, path, mime)
@@ -574,8 +678,8 @@ async def _prepare_image(
 def _too_large_message(image_data_url: str) -> str:
     return (
         f"Image too large for vision API: base64 payload is {len(image_data_url) / (1024 * 1024):.1f} MB "
-        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Install Pillow "
-        f"(`pip install Pillow`) for better auto-resize, or compress the image manually.")
+        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Run `hermes pm repair` "
+        f"to restore Pillow for auto-resize, or compress the image manually.")
 
 
 async def _resize_prepared(prepared: _PreparedImage, scale_info: dict, **kwargs) -> str:
@@ -982,10 +1086,9 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
                 video_url, ResolveContext(task_id=task_id), permitted=("video",))
         except ImageResolutionError as exc:
             raise ValueError(f"Could not read video from terminal backend: {exc}") from exc
-        temp_dir = get_hermes_dir("cache/video", "temp_video_files")
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = _secure_cache_dir("cache/video", "temp_video_files")
         path = temp_dir / f"terminal_video_{uuid.uuid4()}{suffix}"
-        path.write_bytes(resolved.data)
+        _write_private_bytes(path, resolved.data)
         temp_paths.append(path)
         return path
     if local_path.is_file():
@@ -997,7 +1100,13 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
         blocked = check_website_access(video_url)
         if blocked:
             raise PermissionError(blocked["message"])
-        path = get_hermes_dir("cache/video", "temp_video_files") / f"temp_video_{uuid.uuid4()}.mp4"
+        # Hardened here rather than inside _download_media: that helper takes
+        # a caller-supplied destination (tools/image_source.py hands its
+        # sibling a /tmp NamedTemporaryFile it owns the mode of), and
+        # chmod-ing an arbitrary caller's parent to 0700 would be a
+        # destructive side effect on a path Hermes does not own.
+        temp_dir = _secure_cache_dir("cache/video", "temp_video_files")
+        path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
         temp_paths.append(path)
         # Video downloads retry every failure class (legacy behavior).
         await _download_media(
@@ -1078,13 +1187,3 @@ registry.register(
     check_fn=check_video_requirements,
     is_async=True,
     emoji="🎬")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-import sys  # noqa: F401,E402
-import threading  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

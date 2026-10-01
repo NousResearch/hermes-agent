@@ -84,6 +84,19 @@ class BaseTextDebounceMixin:
         """Buffer normal queue-mode busy text and schedule a bounded flush."""
         store = self._text_debounce_store()
         state = store.get(session_key)
+        if state is None or not self._can_merge_text_debounce_events(
+            state.event, event
+        ):
+            queue_depth = getattr(self.gateway_runner, "_queue_depth", None)
+            depth = (
+                queue_depth(session_key, adapter=self)
+                if callable(queue_depth)
+                else int(session_key in self._pending_messages)
+                + (len(state.earlier_events) + 1 if state else 0)
+            )
+            limit = getattr(self.gateway_runner, "_BUSY_QUEUE_MAX_PENDING", 32)
+            if depth >= limit:
+                return False
         if state is not None and not self._can_merge_text_debounce_events(
             state.event, event
         ):
@@ -92,18 +105,6 @@ class BaseTextDebounceMixin:
             if state is not None and not self._can_merge_text_debounce_events(
                 state.event, event
             ):
-                depth = (
-                    len(state.earlier_events)
-                    + 1
-                    + int(session_key in self._pending_messages)
-                )
-                if depth >= 32:
-                    logger.warning(
-                        "[%s] Dropping busy follow-up for %s: pending queue at cap (32)",
-                        self.name,
-                        session_key,
-                    )
-                    return False
                 state.earlier_events.append(state.event)
                 state.event = event
                 state.first_ts = state.last_ts = time.monotonic()

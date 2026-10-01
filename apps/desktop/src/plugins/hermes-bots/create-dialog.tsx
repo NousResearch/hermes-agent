@@ -43,9 +43,10 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
-import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource } from './canonical-group-capabilities'
+import { HOSTED_PROFILE_OWNERS_URL } from './canonical-group-locales'
 import { registerCanonicalGroup } from './canonical-group-registry'
-import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
+import { canonicalGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, isCanonicalGroupCreateRefusal, readGroupExecutionMode } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -1147,6 +1148,9 @@ interface CreateGroupChatDialogProps {
 export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: CreateGroupChatDialogProps) {
   const { t } = useI18n()
   const b = useBots()
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const [createRefused, setCreateRefused] = useState(false)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
@@ -1160,6 +1164,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setChecked({})
       setName('')
       setImage(null)
+      setCreateRefused(false)
     }
   }, [open])
 
@@ -1167,6 +1172,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   // sidebar, but it is not a routable room member. Never offer it here.
   const selectableRoster = roster.filter(bot => !bot?.ghost)
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
+  const eligibility = canonicalGroupEligibility({ connectionId: connectionId ?? '', profile }, durableGroupChatMembers(selected))
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
 
@@ -1191,16 +1197,18 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
     const route = captureCanonicalGroupRoute()
     const sourceCurrent = groupCreationSource(route)
+    setCreateRefused(false)
+    const roomMembers = durableGroupChatMembers(selected)
+    const rosterEligibility = canonicalGroupEligibility(route, roomMembers)
 
-    const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
-    const mode = groupExecutionMode(capabilities)
+    const { mode } = await readGroupExecutionMode(route)
 
     if (!sourceCurrent() || mode === 'unavailable') {
       throw new Error(b.canonical.driverUnavailable)
     }
 
-    if (mode === 'canonical') {
-      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+    if (mode === 'canonical' && rosterEligibility.eligible) {
+      const created = await createCanonicalGroup(route, base, roomMembers)
 
       // Creation already succeeded; leave it on its owner without adopting a stale result.
       if (!sourceCurrent()) {return}
@@ -1209,6 +1217,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       onCreated?.(key)
 
       return
+    }
+
+    if (mode === 'canonical' && !rosterEligibility.eligible) {
+      host.notify({ kind: 'info', message: b.canonical[rosterEligibility.reason] })
     }
 
     // Creating a group is always a FRESH room. Without this, re-creating a
@@ -1237,7 +1249,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     // Persist every machine identity, including today's active source. That
     // member becomes remote after a source switch and cannot rely on the new
     // gateway's name-keyed bot metadata to remain seated in this room.
-    const roomMembers = durableGroupChatMembers(selected)
     updateGroupChat(groupName, (room: GroupChatRoom) => {
       room.members = roomMembers
       room.roomId = roomId
@@ -1255,7 +1266,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     onClose()
     onCreated?.(groupName)
     } catch (error) {
-      host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+      const refused = isCanonicalGroupCreateRefusal(error)
+      setCreateRefused(refused)
+      host.notify({ kind: 'error', message: refused ? b.canonical.createRefused : error instanceof Error ? error.message : String(error) })
     } finally { creating.current = false }
   }
 
@@ -1273,6 +1286,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogTitle>{b.group.newTitle}</DialogTitle>
           <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
+        {selected.length >= 2 && !eligibility.eligible && <p role="status">{b.canonical[eligibility.reason]}</p>}
+        {createRefused && <p role="alert">{b.canonical.createRefused}{' '}
+          <a href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>
+        </p>}
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}

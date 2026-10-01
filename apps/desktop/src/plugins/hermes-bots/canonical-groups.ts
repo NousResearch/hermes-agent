@@ -1,5 +1,8 @@
 import { host } from '@hermes/plugin-sdk'
 
+import { groupExecutionMode } from './canonical-group-capabilities'
+import type { GroupExecutionMode } from './canonical-group-capabilities'
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import type { GroupMember } from './types'
 
 export interface CanonicalGroupRoute {
@@ -70,10 +73,49 @@ export async function canonicalGroupRequest<T>(
   }, method, { ...params, profile: route.profile })
 }
 
+interface GroupSurface {
+  mode: GroupExecutionMode
+  methods?: string[]
+  error?: unknown
+}
+
+// Gate mounts share reads within an activation; explicit discovery/submit/retry reads stay fresh.
+// Remember only classification, never a route substitute or authority binding.
+const groupSurfaces = new Map<string, { epoch?: number; mode?: GroupExecutionMode; read: Promise<GroupSurface> }>()
+
+function advertisedGroupMethods(value: unknown): string[] {
+  const methods = (value as { methods?: unknown } | null)?.methods
+
+  return Array.isArray(methods) ? methods.filter((method): method is string => typeof method === 'string') : []
+}
+
+export function knownGroupExecutionMode(route: CanonicalGroupRoute): GroupExecutionMode | undefined {
+  return groupSurfaces.get(JSON.stringify([route.connectionId, route.profile]))?.mode
+}
+
+export function readGroupExecutionMode(route: CanonicalGroupRoute, epoch?: number, refresh = false): Promise<GroupSurface> {
+  const key = JSON.stringify([route.connectionId, route.profile])
+  const previous = groupSurfaces.get(key)
+
+  if (!refresh && epoch !== undefined && previous?.epoch === epoch) {return previous.read}
+
+  const record = { epoch, mode: previous?.mode, read: canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+    .then(value => ({ mode: groupExecutionMode(value), methods: advertisedGroupMethods(value) }))
+    .catch(error => ({ mode: groupExecutionMode(undefined, error, previous?.mode), error })) }
+
+  groupSurfaces.set(key, record)
+
+  void record.read.then(result => { record.mode = result.mode })
+
+  return record.read
+}
+
 export async function discoverCanonicalGroups(
-  route: CanonicalGroupRoute
+  route: CanonicalGroupRoute, epoch?: number, refresh = false
 ): Promise<{ driver: boolean; rooms: CanonicalRoom[] }> {
-  const capabilities = await canonicalGroupRequest<{ driver: boolean }>(route, 'groups.capabilities')
+  const { mode } = await readGroupExecutionMode(route, epoch, refresh)
+
+  if (mode !== 'canonical') {return { driver: false, rooms: [] }}
   const rooms: CanonicalRoom[] = []
   let offset = 0
 
@@ -93,7 +135,50 @@ export async function discoverCanonicalGroups(
     offset = page.next_offset
   }
 
-  return { driver: capabilities.driver === true, rooms }
+  return { driver: true, rooms }
+}
+
+export function canonicalGroupEligibility(
+  route: CanonicalGroupRoute, members: GroupMember[]
+): { eligible: true; roster: CanonicalRoomMember[] } | { eligible: false; reason: 'classicCount' | 'classicConnection' | 'classicMembers' } {
+  if (members.length < 2 || members.length > 6) {return { eligible: false, reason: 'classicCount' }}
+
+  const profiles = new Set<string>()
+  const handles = new Set(['all', 'everyone'])
+  const roster: CanonicalRoomMember[] = []
+
+  for (const member of members) {
+    const connectionId = member.route?.connectionId ?? member.connectionId
+
+    if ((connectionId !== undefined && connectionId !== route.connectionId) ||
+      (member.connectionId !== undefined && member.connectionId !== route.connectionId) ||
+      (connectionId === undefined && member.remoteSource)) {
+      return { eligible: false, reason: 'classicConnection' }
+    }
+
+    const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
+    const handle = member.handle ?? profile
+
+    if (!profile.trim() || !handle.trim() || profiles.has(profile.toLowerCase()) || handles.has(handle.toLowerCase())) {
+      return { eligible: false, reason: 'classicMembers' }
+    }
+
+    profiles.add(profile.toLowerCase())
+    handles.add(handle.toLowerCase())
+    roster.push({
+      member_id: profile, profile, handle,
+      target: { kind: 'local', profile },
+      ...(member.display_name ? { display_name: member.display_name } : {})
+    })
+  }
+
+  return { eligible: true, roster }
+}
+
+export function isCanonicalGroupCreateRefusal(error: unknown): boolean {
+  const refusal = error as { code?: unknown; data?: { reason?: unknown } } | null
+
+  return refusal?.code === 4001 && refusal.data?.reason === 'invalid_params'
 }
 
 export async function createCanonicalGroup(
@@ -103,41 +188,13 @@ export async function createCanonicalGroup(
 ): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
   requireRoute(route)
 
-  if (!name.trim() || members.length < 2 || members.length > 6) {
-    throw new Error('A canonical group needs a name and two to six members')
-  }
+  if (!name.trim()) {throw new Error('A canonical group needs a name and two to six members')}
+  const eligibility = canonicalGroupEligibility(route, members)
 
-  const profiles = new Set<string>()
-  const handles = new Set(['all', 'everyone'])
-
-  const roster = members.map(member => {
-    const connectionId = member.route?.connectionId ?? member.connectionId
-
-    if ((connectionId !== undefined && connectionId !== route.connectionId) ||
-      (member.connectionId !== undefined && member.connectionId !== route.connectionId) ||
-      (connectionId === undefined && member.remoteSource)) {
-      throw new Error('Group members must belong to the same authority connection')
-    }
-
-    const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
-    const handle = member.handle ?? profile
-
-    if (!profile.trim() || !handle.trim() || profiles.has(profile.toLowerCase()) || handles.has(handle.toLowerCase())) {
-      throw new Error('Group members need unique profiles and non-reserved handles')
-    }
-
-    profiles.add(profile.toLowerCase())
-    handles.add(handle.toLowerCase())
-
-    return {
-      member_id: profile, profile, handle,
-      target: { kind: 'local', profile },
-      ...(member.display_name ? { display_name: member.display_name } : {})
-    }
-  })
+  if (!eligibility.eligible) {throw new Error(CANONICAL_GROUP_LOCALES.en[eligibility.reason])}
 
   const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', {
-    room_id: crypto.randomUUID(), name, members: roster
+    room_id: crypto.randomUUID(), name, members: eligibility.roster
   })
 
   return { binding: { ...route, roomId: room.room_id }, room }

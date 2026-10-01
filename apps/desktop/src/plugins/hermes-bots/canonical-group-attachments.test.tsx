@@ -5,10 +5,14 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
 
 const request = vi.hoisted(() => vi.fn())
-vi.mock('@hermes/plugin-sdk', () => ({
-  host: { requestProfile: request },
-  Button: (props: ComponentProps<'button'>) => <button {...props} />
-}))
+vi.mock('@hermes/plugin-sdk', async () => {
+  const { captureGroupRequests } = await import('./group-test-utils')
+
+  return {
+    host: { requestProfile: captureGroupRequests(request).request },
+    Button: (props: ComponentProps<'button'>) => <button {...props} />
+  }
+})
 vi.mock('./canonical-group-labels', () => ({
   useCanonicalGroupLabels: () => ({ attachFiles: 'Attach files', download: 'Download',
     removeAttachment: 'Remove', uploadFailed: 'Attachment failed' })

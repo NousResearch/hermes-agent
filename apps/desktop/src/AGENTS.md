@@ -96,6 +96,17 @@ reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-ch
 `bot-row-opens-canonical-chat.test.ts`, `hide-bot-chats.test.ts`; plus repo-root
 `tests/tui_gateway/test_profiles_list_canonical_session.py`.
 
+### Group Chats: gateway rooms and classic rooms
+
+A Group Chat is either a **gateway room** (the gateway owns its log and runs its turns; `canonical-group-*`) or a **classic room** (Desktop runs its rounds; `group-*`). Keep the boundary sharp:
+
+- `groupExecutionMode` in `canonical-group-capabilities.ts` is the single resolver. Canonical means `groups.capabilities.methods` includes `groups.discard`; anything else (current `main`, standalone `hermes serve` or `hermes dashboard`, `-32601`) is classic. Don't key on `driver`, `persistent_process` or `room_link.reason`.
+- Only call methods the connection advertises, with exactly the fields in `gateway/session_group_controls.py`; `canonical-groups-contract.test.ts` checks every captured request.
+- Never auto-replay a gateway-room action. Send resends only on the user's Retry, with the same journaled `event_id`; Retry, Discard and approvals send the exact identity from `driver_status.pending_actions`.
+- A 4001 with `invalid_params`, `permission_denied`, `unknown_execution` or `stale_generation` retires a Send; every other failure keeps it. A failed Send returns only to the room it was sent from.
+- Live status, Stop and polling come from the current `driver_status`, never from the last replayed event; unresolved members are listed beside live work, not instead of it.
+- A gateway room never falls back to classic execution, and a classic room is never converted silently: **Start gateway group** creates a fresh gateway room without replaying history.
+
 ## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)
 
 `$freeTierStatus` mirrors `free_tier.status` (pull; refreshed with the status snapshot and after a

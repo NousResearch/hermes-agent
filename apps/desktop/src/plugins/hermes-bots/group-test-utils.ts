@@ -21,7 +21,97 @@
  */
 
 import type { PluginContext } from '@hermes/plugin-sdk'
-import { vi } from 'vitest'
+import { afterEach, vi } from 'vitest'
+
+// Appendix A, pinned #106742 base cb8d692: session_group_controls.py, not the legacy generated contract.
+export const GROUP_METHODS = {
+  'groups.capabilities': 'session:read', 'groups.list': 'session:read', 'groups.state': 'session:read',
+  'groups.log': 'session:read', 'groups.create': 'session:control', 'groups.rename': 'session:control',
+  'groups.disband': 'session:control', 'groups.send': 'session:submit',
+  'groups.attachment.upload': 'session:submit', 'groups.attachment.download': 'session:read',
+  'groups.stop': 'session:control', 'groups.retry': 'session:control', 'groups.discard': 'session:control',
+  'groups.approve': 'session:approve'
+}
+export const _FIELDS: Record<string, readonly string[]> = {
+  'groups.capabilities': [],
+  'groups.list': ['limit', 'offset', 'include_disbanded'],
+  'groups.state': ['room_id', 'include_disbanded'],
+  'groups.log': ['room_id', 'since_seq', 'limit', 'include_disbanded'],
+  'groups.create': ['room_id', 'name', 'members'],
+  'groups.rename': ['room_id', 'event_id', 'name'],
+  'groups.disband': ['room_id', 'cancel_id'],
+  'groups.send': ['room_id', 'event_id', 'payload'],
+  'groups.attachment.upload': ['room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'],
+  'groups.attachment.download': ['room_id', 'event_id', 'attachment_id'],
+  'groups.stop': ['room_id', 'cancel_id'],
+  'groups.retry': ['room_id', 'member_id', 'task_id', 'execution_generation'],
+  'groups.discard': ['room_id', 'member_id', 'task_id', 'execution_generation'],
+  'groups.approve': ['room_id', 'member_id', 'task_id', 'execution_generation', 'choice', 'request_id'],
+  'profiles.list': ['include_sessions']
+}
+export const CANONICAL_GROUP_CAPABILITIES = {
+  protocol_version: 2, driver: true, persistent_process: true,
+  authority_gateway_id: 'install:93438dd9ed694adbb344565a88c816d1',
+  room_link: { enabled: false, reason: 'canonical_driver_required' },
+  features: ['room_identity', 'monotonic_log', 'replayable_disband'],
+  methods: ['groups.capabilities', 'groups.list', 'groups.state', 'groups.log', 'groups.create',
+    'groups.rename', 'groups.disband', 'groups.send', 'groups.attachment.upload',
+    'groups.attachment.download', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'],
+  max_log_limit: 500
+}
+export const STANDALONE_GROUP_CAPABILITIES = {
+  protocol_version: 2, driver: true, persistent_process: true,
+  authority_gateway_id: 'install:8cb572a923474a4c98052b779f70c2c8',
+  room_link: { enabled: true, profile: 'default',
+    catalog: { installation_id: 'install:8cb572a923474a4c98052b779f70c2c8', protocol_versions: [2],
+      link_modes: ['direct'], persistent_process: true, text: true, attachments: false,
+      execution_policy: { version: 1, target_profile: 'default',
+        enabled_toolsets: ['bot_room', 'browser', 'code_execution', 'connections', 'cronjob', 'delegation', 'file',
+          'image_gen', 'memory', 'session_search', 'skills', 'terminal', 'todo', 'vision', 'web'],
+        approval_mode: 'manual', max_iterations: 9007199254740991,
+        policy_digest: '788febe7936c56fb17ce5b6b8d937156784ce44312c3fcb0e55c9a64a3cdf691' },
+      endpoint: { available: false, reason: 'not_configured' },
+      catalog_digest: '43ed12a4155a6607dbe0997aaa47a1b7521351962076380157d62ac4eb708dd1' },
+    endpoint: { available: false, reason: 'not_configured' } },
+  features: ['authority_epoch', 'coordinator_fencing', 'room_identity', 'monotonic_log', 'idempotent_send',
+    'replayable_disband', 'typed_events', 'actor_identity', 'log_replication', 'authority_takeover'],
+  methods: ['groups.capabilities', 'groups.list', 'groups.create', 'groups.state', 'groups.send', 'groups.rename',
+    'groups.log', 'groups.disband', 'groups.replicate', 'groups.replica_state', 'groups.promote',
+    'groups.demote', 'groups.stop', 'groups.retry', 'groups.approve', 'groups.peer.invite',
+    'groups.peer.revoke', 'groups.peer.register'],
+  max_log_limit: 500
+}
+
+export interface GroupRequestCall {
+  method: string
+  params: Record<string, unknown>
+}
+
+export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
+  for (const { method, params } of calls) {
+    if (!Object.hasOwn(GROUP_METHODS, method)) {throw new Error(`Undeclared canonical group method: ${method}`)}
+
+    for (const field of Object.keys(params)) {
+      if (field !== 'profile' && !_FIELDS[method].includes(field)) {
+        throw new Error(`Undeclared canonical group field: ${method}.${field}`)
+      }
+    }
+  }
+}
+
+/** Keep each file's existing mock/answers; check its captured wire calls after every test. */
+export function captureGroupRequests(request: (...args: [unknown, string, Record<string, unknown>?, ...unknown[]]) => unknown) {
+  const calls: GroupRequestCall[] = []
+  afterEach(() => assertCanonicalGroupCalls(calls.splice(0)))
+
+  return { calls, request: (...args: [unknown, string, Record<string, unknown>?, ...unknown[]]) => {
+    const [, method, params] = args
+
+    if (method.startsWith('groups.')) {calls.push({ method, params: { ...params } })}
+
+    return request(...args)
+  } }
+}
 
 /** One message in a scripted session transcript, in the gateway's own shape. */
 export interface ScriptedMessage {
@@ -177,9 +267,9 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
   }
 
   const handle = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
-    // A legacy Desktop room: no hosted-room driver, nonpersistent owner.
+    // Standalone servers keep Desktop rooms classic despite advertising a live driver.
     if (method === 'groups.capabilities') {
-      return { driver: false, persistent_process: false }
+      return STANDALONE_GROUP_CAPABILITIES
     }
 
     if (method === 'profiles.list') {

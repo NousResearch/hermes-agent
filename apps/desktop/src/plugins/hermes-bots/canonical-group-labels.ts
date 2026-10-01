@@ -13,6 +13,7 @@ export function useCanonicalGroupLabels() {
     cancel: t.common.cancel,
     refresh: t.common.refresh,
     retry: t.common.retry,
+    save: t.common.save,
     send: t.common.send,
     stop: t.composer.stop,
     discard: t.composer.queueLostDiscard,

@@ -172,7 +172,13 @@ describe('mergeOlderTranscriptPage', () => {
   // reply twice, but must not drop rows the store does not hold either.
   const narration = { type: 'text', text: 'earlier tool narration', sourceRowId: 52201 } as const
   const answer = { type: 'text', text: 'the answer', sourceRowId: 52203 } as const
-  const toolCall = { type: 'tool-call', toolCallId: 't1', toolName: 'read_file', args: {} } as unknown as ChatMessage['parts'][number]
+
+  const toolCall = {
+    type: 'tool-call',
+    toolCallId: 't1',
+    toolName: 'read_file',
+    args: {}
+  } as unknown as ChatMessage['parts'][number]
 
   it.each([
     {
@@ -194,10 +200,21 @@ describe('mergeOlderTranscriptPage', () => {
       expected: ['prompt', '1770000000000-4-assistant', 'assistant-stream-1']
     }
   ])('$name (#123801)', ({ live, foldParts, expected }) => {
-    const existing: ChatMessage[] = [chat('prompt', 52200), { id: 'assistant-stream-1', role: 'assistant', ...live, parts: [...live.parts] }]
-    const fold: ChatMessage = { id: '1770000000000-4-assistant', role: 'assistant', parts: [...foldParts], rowId: 52201 }
+    const existing: ChatMessage[] = [
+      chat('prompt', 52200),
+      { id: 'assistant-stream-1', role: 'assistant', ...live, parts: [...live.parts] }
+    ]
 
-    expect(mergeOlderTranscriptPage(existing, [chat('prompt-refetch', 52200), fold]).map(message => message.id)).toEqual(expected)
+    const fold: ChatMessage = {
+      id: '1770000000000-4-assistant',
+      role: 'assistant',
+      parts: [...foldParts],
+      rowId: 52201
+    }
+
+    expect(
+      mergeOlderTranscriptPage(existing, [chat('prompt-refetch', 52200), fold]).map(message => message.id)
+    ).toEqual(expected)
   })
 })
 

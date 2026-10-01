@@ -132,17 +132,14 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
   // held; one unheld row (narration beside a tool call) means dropping it
   // would lose that content, so it is appended as before.
   const partRowAnchor = (message: ChatMessage): number | undefined => {
-    const rows = message.parts.flatMap(part =>
-      part.type === 'text' && part.sourceRowId !== undefined ? [part.sourceRowId] : []
-    )
+    const anchors = transcriptRowIds(message).map(heldRowAnchor)
 
-    if (message.rowId !== undefined) {
-      rows.push(message.rowId)
+    if (!anchors.length || anchors.includes(undefined)) {
+      return undefined
     }
 
-    const anchors = rows.map(heldRowAnchor)
-
-    return anchors.length > 0 && anchors.every(anchor => anchor !== undefined) ? anchors[anchors.length - 1] : undefined
+    // Anchor on the message's own row when it has one, else its last part row.
+    return message.rowId !== undefined ? anchors[0] : anchors[anchors.length - 1]
   }
 
   for (const message of olderPage) {

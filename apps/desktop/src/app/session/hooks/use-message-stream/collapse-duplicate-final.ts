@@ -43,16 +43,27 @@ export function collapseDuplicateFinalAfterToolInterim(
     return null
   }
 
+  return mergeLiveIntoKept(messages, streamIndex, priorIndex, options.completeMessage)
+}
+
+/** Fold the live bubble's non-text parts into the kept bubble, then drop the live one. */
+function mergeLiveIntoKept(
+  messages: ChatMessage[],
+  streamIndex: number,
+  keptIndex: number,
+  completeMessage: (message: ChatMessage) => ChatMessage
+): DuplicateFinalCollapse {
+  const kept = messages[keptIndex]
   const next = messages.slice()
-  next[priorIndex] = options.completeMessage(
+  next[keptIndex] = completeMessage(
     withUniqueToolCallIdsWithinMessage({
-      ...prior,
-      parts: [...prior.parts, ...live.parts.filter(part => part.type !== 'text')]
+      ...kept,
+      parts: [...kept.parts, ...messages[streamIndex].parts.filter(part => part.type !== 'text')]
     })
   )
   next.splice(streamIndex, 1)
 
-  return { keptId: prior.id, messages: next }
+  return { keptId: kept.id, messages: next }
 }
 
 /**
@@ -88,9 +99,9 @@ export function identicalInterimSiblingIndex(
   messages: ChatMessage[],
   boundaryIndex: number,
   finalText: string,
-  options: { interimBoundaryPending: boolean; excludeIndex?: number }
+  options: { interimBoundaryPending: boolean; excludeIndex?: number; hasFailure?: boolean }
 ): number {
-  if (!finalText || !options.interimBoundaryPending) {
+  if (!finalText || !options.interimBoundaryPending || options.hasFailure) {
     return -1
   }
 
@@ -125,28 +136,12 @@ export function collapseDuplicateFinalOntoIdenticalInterim(
   options: {
     completeMessage: (message: ChatMessage) => ChatMessage
     finalText: string
-    hasFailure: boolean
   }
 ): DuplicateFinalCollapse | null {
-  if (streamIndex < 0 || interimIndex < 0 || options.hasFailure || !options.finalText) {
+  // A non-negative interimIndex already implies a non-empty finalText and no failure.
+  if (streamIndex < 0 || interimIndex < 0 || chatMessageText(messages[streamIndex]).trim() !== options.finalText) {
     return null
   }
 
-  const live = messages[streamIndex]
-  const interim = messages[interimIndex]
-
-  if (!live || !interim || chatMessageText(live).trim() !== options.finalText) {
-    return null
-  }
-
-  const next = messages.slice()
-  next[interimIndex] = options.completeMessage(
-    withUniqueToolCallIdsWithinMessage({
-      ...interim,
-      parts: [...interim.parts, ...live.parts.filter(part => part.type !== 'text')]
-    })
-  )
-  next.splice(streamIndex, 1)
-
-  return { keptId: interim.id, messages: next }
+  return mergeLiveIntoKept(messages, streamIndex, interimIndex, options.completeMessage)
 }

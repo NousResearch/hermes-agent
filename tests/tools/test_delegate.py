@@ -168,6 +168,31 @@ class TestStripBlockedTools(unittest.TestCase):
 
 
 class TestDelegateTask(unittest.TestCase):
+    def test_fork_mode_clones_parent_history(self):
+        parent = _make_mock_parent()
+        parent._session_messages = [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": [{"type": "text", "text": "Earlier answer"}]},
+        ]
+        child = MagicMock()
+        with patch("run_agent.AIAgent", return_value=child):
+            _build_child_agent(
+                task_index=0,
+                goal="Use the earlier answer",
+                context=None,
+                toolsets=None,
+                model="test-model",
+                max_iterations=5,
+                parent_agent=parent,
+                task_count=1,
+                context_mode="fork",
+            )
+
+        fork_history = child._delegate_fork_history
+        self.assertEqual(fork_history, parent._session_messages)
+        self.assertIsNot(fork_history, parent._session_messages)
+        self.assertIsNot(fork_history[1]["content"], parent._session_messages[1]["content"])
+
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)

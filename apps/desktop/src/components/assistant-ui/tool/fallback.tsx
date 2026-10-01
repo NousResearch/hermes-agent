@@ -66,11 +66,13 @@ import {
   cleanVisibleText,
   CONNECTION_CARD_KEY,
   countDiffLineStats,
+  fileEditPath,
   inlineDiffFromResult,
   isCardTool,
   isFileEditTool,
   isPreviewableTarget,
   looksRedundant,
+  parseMaybeObject,
   type SearchResultRow,
   selectMessageRunning,
   toolCopyPayload,
@@ -520,6 +522,10 @@ function ToolEntry({ part }: ToolEntryProps) {
   // copyAction reads the uncapped view.detail; clampForDisplay below only bounds
   // what's painted, so the row's Copy button still yields the full output.
   const copyAction = useMemo(() => toolCopyPayload(stablePart, view), [stablePart, view])
+  const editPath = useMemo(
+    () => (isFileEdit ? fileEditPath(parseMaybeObject(args), toolResultRecord(stablePart)) : ''),
+    [args, isFileEdit, stablePart]
+  )
 
   const diffStats = useMemo(
     () => (isFileEdit && view.inlineDiff ? countDiffLineStats(view.inlineDiff) : null),
@@ -597,7 +603,24 @@ function ToolEntry({ part }: ToolEntryProps) {
     >
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
-          action={dismissAction}
+          action={
+            editPath ? (
+              <span className="flex items-center gap-0.5">
+                <CopyButton
+                  appearance="icon"
+                  buttonSize="icon-xs"
+                  className="size-5 rounded-md text-(--ui-text-tertiary) hover:text-(--ui-text-primary)"
+                  iconClassName="size-3"
+                  label={copy.copyPath}
+                  stopPropagation
+                  text={editPath}
+                />
+                {dismissAction}
+              </span>
+            ) : (
+              dismissAction
+            )
+          }
           onToggle={
             hasExpandableContent
               ? () => {

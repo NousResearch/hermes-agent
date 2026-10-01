@@ -28,6 +28,22 @@ def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
         return False
 
 
+def fast_search_entitled(*, force_fresh: bool = False) -> bool:
+    """Eligibility for the managed Perplexity ``search_type: "fast"`` route: a registered Portal
+    identity of ANY tier, with no credit or tool-pool requirement — that route is served without
+    funding checks. The anonymous guest tier is excluded: it has no Portal account behind it, so
+    it keeps the keyless ring. Fails closed on unknown/error, like
+    :func:`managed_nous_tools_enabled`."""
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+        account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
+                        else get_nous_portal_account_info())
+        return (bool(account_info.logged_in) and account_info.error is None
+                and not account_info.is_anonymous_tier)
+    except Exception:
+        return False
+
+
 def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gateway", *,
                                           force_fresh: bool = False) -> str:
     """Return account-aware guidance for an unavailable Nous Tool Gateway path."""

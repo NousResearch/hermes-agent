@@ -445,7 +445,7 @@ If no shared backend has **ever** been selected (no `web.backend` written by you
 | `SEARXNG_URL` | searxng |
 | `BRAVE_SEARCH_API_KEY` | brave-free |
 | `ddgs` package importable | ddgs |
-| Nous identity present (any account, including the free tier) | managed web search (`web_search` only); extract and the keyless ring below are unchanged |
+| Registered Nous Portal identity (any tier, including the no-credit free tier; anonymous guests excluded) | managed web search (`web_search` only); extract and the keyless ring below are unchanged |
 | *(nothing set at all)* | keyless ring: exa / parallel / firecrawl / keenable (round-robin) |
 
 **Keyless free-tier ring:** when *no* credential above is present, requests rotate across the ring vendors' public free tiers (Exa, Parallel, Firecrawl, Keenable) so web tools work on a fresh install with zero setup — and a rate-limited request fails over to the next vendor in the ring automatically. Pin one vendor in `hermes tools` to stop the rotation (the ring is then only used as failover succession on throttles). All free tiers are vendor-rate-limited under burst load; sustained normal usage goes through fine. Set `web.keyless_fallback: false` to turn the tier off — with it off and no credentials, web tools are unavailable until a provider is configured.

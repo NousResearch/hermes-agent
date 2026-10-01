@@ -66,9 +66,8 @@ class GatewayShutdownNoticesMixin:
         cron work because cron runs on the scheduler's own thread pool rather than ``self._running_agents``
         (#60432).
 
-        One process ticks every profile's store, and ``stop()`` runs in the launch profile's scope. Each
-        run is therefore handled inside its own profile's scope: the job is read from that profile's
-        store, the text is in that profile's language, and the notice leaves through that profile's bot.
+        Each run includes its owning home. Enter that profile's scope before reading its job,
+        notification preferences and language or selecting its delivery adapter.
         """
         from gateway.run_shutdown import _log_suppressed
         if not interrupted_runs:
@@ -148,8 +147,6 @@ class GatewayShutdownNoticesMixin:
         """
         from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key
         restart_source = self._restart_command_source if self._restart_requested else None
-        # Translate per target, inside that profile's scope. ``stop()`` runs in the launch profile's
-        # scope, so text resolved here would be in the launch profile's language for every profile.
         notice_key = "gateway.shutdown.notice_restart" if self._restart_requested else "gateway.shutdown.notice_shutdown"
         served_homes = getattr(self, "_served_profile_homes", None) or {}
         restart_key = None
@@ -310,8 +307,10 @@ class GatewayShutdownNoticesMixin:
                 await present_notification(send_notice, platform=platform)
 
     def _served_platform_config(self, profile: Optional[str], platform: Platform):
-        """A served secondary profile's own entry for *platform*, for ``_notice_allowed``. ``None`` for the
-        primary profile and for a profile whose config has no entry for *platform* (a shared-bot
-        satellite), so the decision falls back to ``self.config``."""
+        """Return the served secondary profile's platform configuration.
+
+        Return ``None`` for the primary profile or a shared-bot satellite without a platform
+        entry. ``_notice_allowed`` then uses the launch profile's platform configuration.
+        """
         profile_config = (getattr(self, "_profile_configs", None) or {}).get(profile) if profile else None
         return profile_config.platforms.get(platform) if profile_config is not None else None

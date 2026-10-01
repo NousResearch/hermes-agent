@@ -698,7 +698,8 @@ class TestValidateCronBaseUrl:
         configured, stored = "https://api.acmellm.example/v1", "sk-stored-acmellm-key"
         monkeypatch.setenv("ACMELLM_API_KEY", stored)
         get_config_path().write_text(
-            f"custom_providers:\n  - name: acme\n    base_url: {configured}\n", encoding="utf-8")
+            f"custom_providers:\n  - name: acme\n    base_url: {configured}\n"
+            "  - name: broken\n    base_url: http://[::1/v1\n", encoding="utf-8")
 
         def attached(bu):
             return resolve_runtime_provider(requested="custom", explicit_base_url=bu)["api_key"]

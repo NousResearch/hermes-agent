@@ -299,15 +299,14 @@ async def test_short_tagged_bot_chunk_waits_for_followup_window(adapter, monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("forwarded", [False, True])
-async def test_batched_thread_messages_include_the_history_backfill_once(adapter, monkeypatch, forwarded):
+@pytest.mark.parametrize("initial_history", [False, True])
+async def test_batched_thread_messages_include_the_history_backfill_once(adapter, monkeypatch, forwarded, initial_history):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     adapter.config.extra["history_backfill"] = True
     adapter._text_batch_delay_seconds = 0.6
     backfill = "[Recent channel messages]\n[Alice] earlier"
-    # The second message's backfill scans back to the bot's last reply, so it repeats the first
-    # message's backfill and then the first message itself.
-    adapter._fetch_channel_context = AsyncMock(side_effect=[backfill, f"{backfill}\n[Jezza] first"])
+    adapter._fetch_channel_context = AsyncMock(side_effect=[backfill if initial_history else None, backfill])
     thread = FakeThread(channel_id=456, parent=FakeTextChannel(channel_id=321))
     first = make_message(channel=thread, content="first")
     second = make_message(channel=thread, content="second")
@@ -326,13 +325,88 @@ async def test_batched_thread_messages_include_the_history_backfill_once(adapter
     assert (event.text, event.channel_context, event.message_id, event.merged_message_ids) == (
         "first\nsecond", expected_context, str(first.id), [str(second.id)],
     )
+    assert getattr(event, "_discord_history_backfill_prepared", False) is True
+    assert adapter._fetch_channel_context.await_count == (1 if initial_history else 2)
+    assert adapter._fetch_channel_context.await_args.kwargs["before"] is first
     from gateway.platforms.base_pending import withdraw_from_event
 
+    changed, retained_first = withdraw_from_event(event, lambda part: part.message_id == str(second.id))
+    assert (changed, retained_first.text, retained_first.channel_context,
+            getattr(retained_first, "_discord_history_backfill_prepared", False)) == (
+        True, "first", backfill if initial_history else None, initial_history,
+    )
     changed, remaining = withdraw_from_event(event, lambda part: part.message_id == str(first.id))
     assert changed is True
     assert (remaining.text, remaining.channel_context, remaining.message_id, remaining.merged_message_ids) == (
-        "second", forwarded_context, str(second.id), [],
+        "second", forwarded_context if initial_history else expected_context, str(second.id), [],
     )
+    assert getattr(remaining, "_discord_history_backfill_prepared", False) is not initial_history
+
+
+@pytest.mark.asyncio
+async def test_concurrent_thread_chunks_include_shared_history_once(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["history_backfill"] = True
+    adapter._text_batch_delay_seconds = 30
+    backfill = "[Recent channel messages]\n[Alice] earlier"
+    fetches_started, release_fetches = asyncio.Event(), asyncio.Event()
+    participation_started = asyncio.Event()
+    release_participation = (asyncio.Event(), asyncio.Event())
+    fetched = participated = 0
+
+    async def fetch(*_args, **_kwargs):
+        nonlocal fetched
+        fetched += 1
+        value = backfill if fetched == 1 else f"{backfill}\n[Jezza] first"
+        if fetched == 2:
+            fetches_started.set()
+        await release_fetches.wait()
+        return value
+
+    original_mark = adapter._threads.mark_async
+
+    async def mark(thread_id):
+        nonlocal participated
+        ordinal = 0 if asyncio.current_task() is calls[0] else 1
+        await original_mark(thread_id)
+        participated += 1
+        if participated == 2:
+            participation_started.set()
+        await release_participation[ordinal].wait()
+
+    adapter._fetch_channel_context = fetch
+    monkeypatch.setattr(adapter._threads, "mark_async", mark)
+    thread = FakeThread(channel_id=456, parent=FakeTextChannel(channel_id=321))
+    first = make_message(channel=thread, content="first")
+    second = make_message(channel=thread, content="second")
+    second.id = 124
+    second.message_snapshots = [SimpleNamespace(content="forwarded words", attachments=[])]
+    calls = [asyncio.create_task(adapter._handle_message(message)) for message in (first, second)]
+    try:
+        await asyncio.wait_for(fetches_started.wait(), timeout=2)
+        release_fetches.set()
+        await asyncio.wait_for(participation_started.wait(), timeout=2)
+        release_participation[0].set()
+        assert await asyncio.wait_for(calls[0], timeout=2) is True
+        release_participation[1].set()
+        assert await asyncio.gather(*calls) == [True, True]
+        key, = adapter._pending_text_batches
+        pending = adapter._pending_text_batches[key]
+        assert (pending.text, pending.channel_context, pending.message_id, pending.merged_message_ids,
+                getattr(pending, "_discord_history_backfill_prepared", False)) == (
+            "first\nsecond", f"{backfill}\n\n[Forwarded message]\nforwarded words", "123", ["124"], True,
+        )
+        await adapter._flush_text_batch_now(key)
+        adapter.handle_message.assert_awaited_once_with(pending)
+    finally:
+        release_fetches.set()
+        for release in release_participation:
+            release.set()
+        for task in (*calls, *adapter._pending_text_batch_tasks.values()):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*calls, *adapter._pending_text_batch_tasks.values(), return_exceptions=True)
 
 
 @pytest.mark.asyncio

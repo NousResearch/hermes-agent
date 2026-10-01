@@ -100,6 +100,7 @@ class HostedRoomRuntime:
         turn_lock: Callable[[str], ContextManager[Any]], rpc: InternalSessionRPC | None = None,
         transport_resolver: MemberTransportResolver | None = None,
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
+        maintain_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         clock: Callable[[], float] = time.time,
@@ -126,6 +127,9 @@ class HostedRoomRuntime:
         self.db_path = Path(db_path)
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
+        # Upkeep for the leased room (peer grant renewal): after Stop and new work, and between
+        # polls of an active turn.
+        self.maintain_leased_room = maintain_leased_room
         self.pending_action, self.clock = pending_action, clock
         # Off: a turn the member never received goes back to the queue (FIFO, bounded backoff).
         # On: a member turn is deferred with its proof instead, so the room's next turn can run.
@@ -538,6 +542,19 @@ class HostedRoomRuntime:
             current = state.get_task(self.db_path, task["identity"])
             if current["status"] not in state.TERMINAL_STATUSES:
                 return
+            lease = self._maintain_room(binding, lease)
+        self._maintain_room(binding, lease)
+
+    def _maintain_room(self, binding: HostedRoomBinding, lease: state.DriverLease) -> state.DriverLease:
+        if self.maintain_leased_room is not None and not self._stop.is_set():
+            lease = self._renew_lease_if_needed(lease)
+            try:
+                self.maintain_leased_room(binding, lease)
+            except (state.StaleLeaseError, state.RoomUnavailableError):
+                raise  # the room's own fences decide, as for any leased work
+            except Exception as exc:  # upkeep never decides the fate of a turn
+                self._record_error(f"room {binding.room_id} upkeep failed: {exc}")
+        return lease
 
     def _defer_unavailable_route(self, task: Mapping[str, Any]) -> float:
         key = (task["identity"].room_id, _member_id(task))
@@ -729,6 +746,7 @@ class HostedRoomRuntime:
                 return receipt
             info = transport.info(**_session_kw(profile, session_id))
             self._report_pending_action(task, session_id=session_id, info=info)
+            lease = self._maintain_room(binding, lease)
             remaining = max(0.0, deadline_monotonic - time.monotonic())
             self._wake.wait(min(self.active_poll_interval_seconds, remaining))
             self._wake.clear()

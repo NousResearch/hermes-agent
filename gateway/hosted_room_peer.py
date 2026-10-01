@@ -500,6 +500,17 @@ def room_grant_token_digest(token: str) -> str:
     return hashlib.sha256(encoded + b"." + signature).hexdigest()
 
 
+def unverified_room_grant_claims(token: str) -> dict[str, Any]:
+    """A grant's payload, unverified: for comparing a renewal with its grant, never for trust."""
+    try:
+        payload = json.loads(_split_token(token)[0].decode("ascii"))
+    except Exception as exc:
+        raise HostedRoomGrantError("room grant payload is invalid") from exc
+    if not isinstance(payload, dict):
+        raise HostedRoomGrantError("room grant payload is invalid")
+    return payload
+
+
 def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, leeway_seconds: float = 5 * 60) -> bool:
     """Read only grant timing to schedule refresh; trust is established by the target, not here."""
     try:

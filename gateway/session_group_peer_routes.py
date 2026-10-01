@@ -1,4 +1,5 @@
-"""Canonical peer routes: one current grant per member, replaced grants retired at once.
+"""Canonical peer routes: one current grant per member, renewed before it expires, and
+replaced grants retired at once.
 
 A route is persisted, then published. A registration that replaces a member's grant first
 revokes the old grant exactly on the member's gateway; if that cannot be confirmed, nothing
@@ -12,10 +13,15 @@ During one attempt, ``CanonicalPeerClient`` keeps the attempt on that route:
 - reads, Stop and approvals of accepted work follow the current grant of the same route, since
   the grant the attempt started with may have been retired meanwhile;
 - a health report applies only while the grant it was made with is still current.
+
+``maintain_peer_grants`` renews each room's grants inside that room's own driver cycle, within
+a small per-cycle budget, so a member keeps working until the horizon its gateway's operator
+chose at invitation (``status_ttl_seconds``), without being invited again.
 """
 from contextlib import contextmanager
 from copy import copy
 from dataclasses import replace
+import hashlib
 import logging
 
 from gateway import hosted_room_links as links
@@ -24,6 +30,12 @@ from hermes_state_runtime import RuntimeStoreError
 logger = logging.getLogger(__name__)
 
 _GRANT_ERRORS = frozenset({'invalid_room_grant', 'room_reauthorization_required'})
+_RENEWAL_BUDGET_SECONDS = 2.0  # per room cycle, all of its requests together
+_LEASE_HEADROOM_SECONDS = 5.0  # keep the room lease and Stop ahead of renewal
+_SCAN_SECONDS = 5.0
+_ATTEMPT_SECONDS = 60.0  # at most one renewal attempt per route per minute
+_RETRY_SECONDS, _MAX_RETRY_SECONDS = 30.0, 120.0
+_RENEWED_TTL_SECONDS = 3600.0
 _NEW_WORK = frozenset({'dispatch', 'recover_dispatch', 'probe'})
 _OBSERVATION = frozenset({'history', 'status', 'stop', 'stop_receipt'})
 
@@ -71,6 +83,9 @@ def publish_route(service, *, room_id, member_id, route, client, target_url, cat
             grant=route.grant, catalog=catalog, cancellation_scope_id=route.cancellation_scope_id,
             trace_id=route.trace_id, authorize=authorize)
         service._publish_route((room_id, member_id), route, client)
+        if not renewal:  # an operator's new grant is scheduled afresh, not after the old one's
+            getattr(service, '_peer_renewals', {}).pop((room_id, member_id), None)
+            getattr(service, '_peer_renewal_scans', {}).pop(room_id, None)
         if replaced is not None and renewal:
             try:
                 _retire(client, replaced)
@@ -125,9 +140,10 @@ def before_sending(method):
 class CanonicalPeerClient:
     """One attempt's client for its peer route (see the module docstring)."""
 
-    def __init__(self, service, binding, key, route, client):
+    def __init__(self, service, binding, key, route, client, *, renewal_lease=None):
         self._service, self._binding, self._key = service, binding, key
         self._route, self._client = route, client
+        self._renewal_lease = renewal_lease  # a maintenance renewal publishes only under this lease
         self._members = service._room(binding.room_id)['members']
         self._grant = route.grant  # this attempt's grant: its own renewal, or an adopted one
 
@@ -202,16 +218,20 @@ class CanonicalPeerClient:
             return current.grant
 
     def _refresh_if_due(self, name, grant, kwargs):
-        """Renew an expiring grant before a dispatch, as the base client does, then publish it."""
+        """Renew an expiring grant before new work, then publish the renewal."""
         from gateway.hosted_room_peer import HostedMemberDispatch, room_grant_needs_dispatch_refresh
         refresh = getattr(self._client, 'refresh_grant', None)
-        if (name not in {'dispatch', 'recover_dispatch'} or not callable(refresh)
-                or not room_grant_needs_dispatch_refresh(grant)):
+        if not callable(refresh) or not room_grant_needs_dispatch_refresh(grant):
             return grant
-        checked = HostedMemberDispatch.from_mapping(kwargs['dispatch'])
+        if name == 'probe':  # maintenance: an hour at a time, capped by the grant's horizon
+            digests, extra = (self._route.capability_digest, self._route.execution_policy_digest), {
+                'ttl_seconds': _RENEWED_TTL_SECONDS}
+        else:
+            checked = HostedMemberDispatch.from_mapping(kwargs['dispatch'])
+            digests, extra = (checked.capability_digest, checked.execution_policy_digest), {}
         try:
-            refreshed = refresh(grant=grant, capability_digest=checked.capability_digest,
-                                execution_policy_digest=checked.execution_policy_digest)
+            refreshed = refresh(grant=grant, capability_digest=digests[0], execution_policy_digest=digests[1],
+                                **extra)
         except Exception as exc:
             if (getattr(exc, 'needs_reauthorization', False)
                     or room_grant_needs_dispatch_refresh(grant, leeway_seconds=0)):
@@ -220,12 +240,13 @@ class CanonicalPeerClient:
             return grant  # still valid for now; a later attempt renews it
         return self._publish_renewal(grant, refreshed)
 
-    def _publish_renewal(self, grant, refreshed, *, authorize=None):
+    def _publish_renewal(self, grant, refreshed):
         """Make a renewal current, or retire it: a renewal is never left both live and unpublished."""
         replacement = str(refreshed.get('grant') or '')
         if not replacement:
             raise RuntimeError('peer returned no refreshed room grant')
         try:
+            self._verify_renewal(grant, replacement)
             if refreshed.get('catalog') is not None:
                 from gateway.hosted_room_peer import GatewayRoomCatalog
                 from tui_gateway.hosted_room_peer_http import digest_reauthorization_error
@@ -242,7 +263,7 @@ class CanonicalPeerClient:
             publish_route(self._service, room_id=self._key[0], member_id=self._key[1],
                           route=replace(self._route, grant=replacement), client=self._client,
                           target_url=stored.target_url, catalog=stored.catalog,
-                          expected_grant=grant, authorize=authorize)
+                          expected_grant=grant, authorize=self._lease_fence())
         except Exception:
             try:
                 _retire(self._client, replacement)
@@ -251,3 +272,84 @@ class CanonicalPeerClient:
             raise
         self._grant = replacement
         return replacement
+
+    def _verify_renewal(self, grant, replacement):
+        """A renewal may move only its own lifetime: the same scope, rights and horizon."""
+        from gateway.hosted_room_peer import unverified_room_grant_claims
+        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        old, new = unverified_room_grant_claims(grant), unverified_room_grant_claims(replacement)
+        moving = {'grant_id', 'issued_at', 'expires_at'}
+        try:
+            unchanged = ({k: v for k, v in old.items() if k not in moving}
+                         == {k: v for k, v in new.items() if k not in moving})
+            ordered = old['issued_at'] <= new['issued_at'] < new['expires_at'] <= new['status_expires_at']
+        except (KeyError, TypeError):
+            unchanged = ordered = False
+        if not (unchanged and ordered):
+            self._status('needs_reauthorization', grant)
+            raise PeerRunsHTTPError('peer room renewal changed the grant', status_code=403,
+                                    error_code='room_capability_catalog_changed', not_admitted=True)
+
+    def _lease_fence(self):
+        if self._renewal_lease is None:
+            return None
+        from gateway import hosted_room_driver as driver
+        lease, clock = self._renewal_lease, self._service.runtime.clock
+        return lambda conn: driver._require_active_lease(conn, lease, now=clock())
+
+
+def maintain_peer_grants(service, binding, lease):
+    """Renew a room's peer grants before they expire, within one small budget per cycle.
+
+    Called by the room's own driver cycle once Stop and new work are done, and between polls of
+    an active turn: never on a timer of its own, never ahead of a pending Stop.
+    """
+    from tui_gateway.hosted_room_peer_http import room_grant_request_budget
+    clock = service.runtime.clock
+    now = clock()
+    if now < service._peer_renewal_scans.get(binding.room_id, 0.0):
+        return
+    budget = min(_RENEWAL_BUDGET_SECONDS, lease.expires_at - now - _LEASE_HEADROOM_SECONDS)
+    if budget <= 0:
+        return
+    service._peer_renewal_scans[binding.room_id] = now + _SCAN_SECONDS
+    with room_grant_request_budget(budget, clock=clock):
+        _renew_room(service, binding, lease, now)
+
+
+def _renew_room(service, binding, lease, now):
+    from gateway import hosted_room_driver as driver
+    from gateway.hosted_room_peer import room_grant_needs_dispatch_refresh
+    from tui_gateway.hosted_room_peer_http import room_grant_request_budget_remaining
+    stored = [link for link in links.load_room_links_tolerant(service.db_path)[0]
+              if link.room_id == binding.room_id and link.status == 'ready']
+    current = {(link.room_id, link.member_id) for link in stored}
+    for key in [k for k in service._peer_renewals if k[0] == binding.room_id and k not in current]:
+        service._peer_renewals.pop(key, None)
+    for link in stored:
+        remaining = room_grant_request_budget_remaining()
+        if remaining is not None and remaining <= 0:
+            break  # routes not reached keep their schedule for the next scan
+        key = (link.room_id, link.member_id)
+        fingerprint = hashlib.sha256(link.grant.encode()).hexdigest()
+        seen, next_at, delay = service._peer_renewals.get(key, (fingerprint, 0.0, _RETRY_SECONDS))
+        if seen != fingerprint:
+            delay = _RETRY_SECONDS  # a new grant restarts the backoff, not the schedule
+        if now < next_at:
+            continue
+        service._peer_renewals[key] = (fingerprint, now + _ATTEMPT_SECONDS, _RETRY_SECONDS)
+        if not room_grant_needs_dispatch_refresh(link.grant, now=now):
+            continue
+        route, client = service.peer_routes.get(key), service.peer_clients.get(key)
+        if route is None or client is None or route.grant != link.grant:
+            continue
+        try:
+            CanonicalPeerClient(service, binding, key, route, client, renewal_lease=lease).probe(grant=route.grant)
+        except (driver.StaleLeaseError, driver.RoomUnavailableError):
+            raise
+        except Exception:
+            service._peer_renewals[key] = (fingerprint, now + delay, min(_MAX_RETRY_SECONDS, delay * 2))
+            logger.warning('Peer grant renewal pending: room=%s member=%s', *key)
+    due = [service._peer_renewals.get((link.room_id, link.member_id), ('', now + _SCAN_SECONDS, 0.0))[1]
+           for link in stored]
+    service._peer_renewal_scans[binding.room_id] = max(now + _SCAN_SECONDS, min(due, default=now + _ATTEMPT_SECONDS))

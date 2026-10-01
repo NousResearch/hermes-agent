@@ -206,6 +206,9 @@ async def _handle_room_member_grant_refresh(
             execution_policy_digest=execution_policy["policy_digest"],
             permissions=claims["permissions"], issued_at=now, ttl_seconds=dispatch_ttl,
             status_expires_at=hard_expiry)
+        # A revocation that landed after the first check must not let this renewal out; one that
+        # lands after this check covers it, since it was issued before.
+        self._room_grant_claims(request, permission="dispatch")
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response({

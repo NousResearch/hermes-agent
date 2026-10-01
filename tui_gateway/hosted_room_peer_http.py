@@ -6,14 +6,18 @@ import errno
 import hashlib
 import json
 import logging
+import math
 import re
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -63,6 +67,11 @@ _REAUTHORIZATION_MESSAGES = {
 _BUDGET_MESSAGES = {
     "size": "peer{kind} response exceeded the RoomLink size limit",
     "time": "peer{kind} response exceeded the RoomLink time budget"}
+# A grant the member's gateway refused is not sent to the same check again for a while.
+_AUTH_PROBE_COOLDOWN_SECONDS = 60.0
+_MAX_AUTH_PROBE_REJECTIONS = 64
+_AUTH_PROBE_ENDPOINTS = frozenset({
+    ("GET", "/v1/room-members/capabilities"), ("POST", "/v1/room-members/grants/refresh")})
 
 
 class _PeerResponseTooLarge(ValueError):
@@ -181,6 +190,36 @@ class PeerRunsHTTPError(RuntimeError):
             status_code in {401, 403} and error_code in _REAUTHORIZATION_CODES)
 
 
+_ROOM_GRANT_REQUEST_BUDGET: ContextVar[tuple[float, float, Callable[[], float]] | None] = ContextVar(
+    "room_grant_request_budget", default=None)
+
+
+def room_grant_request_budget_remaining() -> float | None:
+    """Seconds left in the current renewal budget, or None outside one."""
+    budget = _ROOM_GRANT_REQUEST_BUDGET.get()
+    if budget is None:
+        return None
+    wall_end, clock_end, clock = budget
+    return min(wall_end - time.monotonic(), clock_end - clock())
+
+
+@contextmanager
+def room_grant_request_budget(seconds: float, *, clock: Callable[[], float] = time.monotonic):
+    """Bound every request one renewal makes, cleanup included, by one shared deadline.
+
+    Context-local: a concurrent foreground request keeps its own timeout.
+    """
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("room grant request budget must be finite and positive")
+    outer = room_grant_request_budget_remaining()
+    seconds = min(seconds, outer) if outer is not None else seconds
+    token = _ROOM_GRANT_REQUEST_BUDGET.set((time.monotonic() + seconds, clock() + seconds, clock))
+    try:
+        yield
+    finally:
+        _ROOM_GRANT_REQUEST_BUDGET.reset(token)
+
+
 def digest_reauthorization_error(
     catalog: GatewayRoomCatalog, *, capability_digest: str | None,
     execution_policy_digest: str | None) -> PeerRunsHTTPError | None:
@@ -205,6 +244,19 @@ def _run_path(record: Mapping[str, Any], *suffix: str) -> str:
 class PeerRunsHTTPClient:
     """Drive a peer's dedicated group session via scoped async Runs APIs."""
 
+    @property
+    def timeout_seconds(self) -> float:
+        remaining = room_grant_request_budget_remaining()
+        if remaining is None:
+            return self._timeout_seconds
+        if remaining <= 0:
+            raise PeerRunsHTTPError("peer renewal request budget exhausted", retryable=True)
+        return min(self._timeout_seconds, 1.0, remaining)
+
+    @timeout_seconds.setter
+    def timeout_seconds(self, value: float) -> None:
+        self._timeout_seconds = float(value)
+
     def __init__(
         self, *, base_url: str, api_key: str, timeout_seconds: float = 30,
         receipt_db_path: Path | str | None = None, poll_min_seconds: float = 0.1,
@@ -225,6 +277,9 @@ class PeerRunsHTTPClient:
         self._recovery_backoff: dict[tuple[str, int], dict[str, Any]] = {}
         self._terminal_receipts: set[tuple[str, int]] = set()
         self._room_scope: dict[str, Any] | None = None
+        self._auth_probe_lock = threading.Lock()
+        self._auth_probe_rejections: OrderedDict[tuple[str, str, str], tuple[float, str, int, str | None]] = (
+            OrderedDict())
 
     def bind_receipt_store(self, db_path: Path | str) -> None:
         """Attach the gateway-wide durable receipt store idempotently."""
@@ -280,8 +335,10 @@ class PeerRunsHTTPClient:
     def _request(
         self, path: str, *, method: str = "GET", body: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None, room_grant: str | None = None) -> dict[str, Any]:
-        from hermes_cli.urllib_security import open_credentialed_url
-        deadline, ambiguous = time.monotonic() + self.timeout_seconds, method == "POST"
+        # A renewal never follows a redirect: it would restart the request outside its budget.
+        reject_redirects = _ROOM_GRANT_REQUEST_BUDGET.get() is not None
+        timeout = self.timeout_seconds
+        deadline, ambiguous = time.monotonic() + timeout, method == "POST"
         request = urllib.request.Request(
             f"{self.base_url}{path}", method=method,
             data=None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8"),
@@ -290,13 +347,25 @@ class PeerRunsHTTPClient:
                     f"HermesRoom {room_grant}" if room_grant else f"Bearer {self.api_key}"),
                 "Content-Type": "application/json", "User-Agent": "Hermes-RoomLink/1.0",
                 **(headers or {})})
+        probe_key = None
+        if room_grant and (method, path) in _AUTH_PROBE_ENDPOINTS:
+            probe_key = (method, path, hashlib.sha256(room_grant.encode()).hexdigest())
+            self._check_auth_probe_cooldown(probe_key)
         try:
-            with open_credentialed_url(request, timeout=self.timeout_seconds) as response:
+            with _open_roomlink_url(request, timeout=timeout, reject_redirects=reject_redirects) as response:
                 raw = _read_body(
                     response, max_bytes=MAX_PEER_RESPONSE_BYTES, deadline=deadline, kind="",
                     ambiguous=ambiguous)
         except urllib.error.HTTPError as exc:
-            self._raise_http_error(exc, method=method, path=path, deadline=deadline)
+            try:
+                if reject_redirects and exc.code in {301, 302, 303, 307, 308}:
+                    raise PeerRunsHTTPError(
+                        "peer renewal request refused an HTTP redirect", status_code=exc.code) from exc
+                self._raise_http_error(exc, method=method, path=path, deadline=deadline)
+            except PeerRunsHTTPError as failure:
+                if probe_key is not None and exc.code in {401, 403}:
+                    self._remember_auth_probe_rejection(probe_key, failure)
+                raise
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             not_admitted = ambiguous and _is_proven_pre_admission_failure(exc)
             raise PeerRunsHTTPError(
@@ -586,13 +655,21 @@ class PeerRunsHTTPClient:
         replacement = str(refreshed.get("grant") or "")
         if not replacement:
             raise PeerRunsHTTPError("peer returned no refreshed room grant")
-        # Persist only after the target proves the replacement authorizes the scoped endpoint.
-        probe = self.probe(grant=replacement)
-        error = digest_reauthorization_error(
-            GatewayRoomCatalog.from_mapping(probe.get("catalog")),
-            capability_digest=capability_digest, execution_policy_digest=execution_policy_digest)
-        if error is not None:
-            raise error
+        try:
+            # Persist only after the target proves the replacement authorizes the scoped endpoint.
+            probe = self.probe(grant=replacement)
+            error = digest_reauthorization_error(
+                GatewayRoomCatalog.from_mapping(probe.get("catalog")),
+                capability_digest=capability_digest, execution_policy_digest=execution_policy_digest)
+            if error is not None:
+                raise error
+        except Exception:
+            # A replacement nobody will use is retired, not left live until it expires.
+            try:
+                self.revoke_grant_exact(grant=replacement)
+            except Exception:
+                logger.warning("Could not retire an unused refreshed room grant")
+            raise
         return {**refreshed, "catalog": probe.get("catalog")}
 
     def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
@@ -625,3 +702,47 @@ class PeerRunsHTTPClient:
         if not value or value in {"compat", "compatibility-only"}:
             raise PeerRunsHTTPError("a scoped room grant is required")
         return value
+
+    def _check_auth_probe_cooldown(self, key: tuple[str, str, str]) -> None:
+        with self._auth_probe_lock:
+            rejected = self._auth_probe_rejections.get(key)
+            if rejected is not None and self.clock() >= rejected[0]:
+                del self._auth_probe_rejections[key]
+                rejected = None
+        if rejected is not None:
+            _, message, status_code, error_code = rejected
+            raise PeerRunsHTTPError(message, status_code=status_code, error_code=error_code)
+
+    def _remember_auth_probe_rejection(self, key: tuple[str, str, str], failure: PeerRunsHTTPError) -> None:
+        with self._auth_probe_lock:
+            self._auth_probe_rejections[key] = (
+                self.clock() + _AUTH_PROBE_COOLDOWN_SECONDS, str(failure), failure.status_code, failure.error_code)
+            self._auth_probe_rejections.move_to_end(key)
+            while len(self._auth_probe_rejections) > _MAX_AUTH_PROBE_REJECTIONS:
+                self._auth_probe_rejections.popitem(last=False)
+
+
+def _open_roomlink_url(request: urllib.request.Request, *, timeout: float, reject_redirects: bool = False):
+    """Open with the installed transport policy; within a renewal, refuse every redirect."""
+    from hermes_cli import urllib_security
+    if not reject_redirects:
+        return urllib_security.open_credentialed_url(request, timeout=timeout)
+
+    def refusing_opener(_redirect_handler):
+        policy = urllib_security._secure_opener_from_installed_policy(request.full_url)
+        for name, value in getattr(policy, "_hermes_initial_addheaders", ()):
+            if not request.has_header(name):
+                request.add_header(name, value)
+        handlers = [handler for handler in getattr(policy, "handlers", ())
+                    if not isinstance(handler, urllib.request.HTTPRedirectHandler)]
+        opener = urllib.request.build_opener(*handlers, _RefuseRedirects())
+        opener.addheaders = []
+        return opener
+    return urllib_security.open_credentialed_url(request, timeout=timeout, opener_factory=refusing_opener)
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    handler_order = 100
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)

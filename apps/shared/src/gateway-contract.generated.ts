@@ -1541,6 +1541,7 @@ export interface GroupsPeerInviteParams {
   member_id?: string | null
   grant_id?: string | null
   ttl_seconds?: number | null
+  status_ttl_seconds?: number | null
 }
 export interface GroupsPeerInviteResult {
   grant: string

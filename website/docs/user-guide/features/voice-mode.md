@@ -439,7 +439,7 @@ The bot automatically pauses its audio listener while playing TTS replies, preve
 
 ### Access Control
 
-Only users listed in `DISCORD_ALLOWED_USERS` can interact via voice. Other users' audio is silently ignored.
+Only users allowed by `DISCORD_ALLOWED_USERS` or `DISCORD_ALLOWED_ROLES` can interact via voice; a role is checked for the speaker each time they talk. Other users' audio is silently ignored.
 
 ```bash
 # ~/.hermes/.env

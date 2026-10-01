@@ -264,3 +264,19 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+def test_chat_type_override_wins_over_platform_and_global():
+    from gateway.display_config import resolve_display_setting
+    config = {"display": {"tool_progress": "all", "platforms": {
+        "telegram": {"tool_progress": "new", "group": {"tool_progress": "off"}}}}}
+    assert resolve_display_setting(config, "telegram", "tool_progress", chat_type="group") == "off"
+    assert resolve_display_setting(config, "telegram", "tool_progress", chat_type="dm") == "new"
+
+
+def test_chat_type_override_applies_to_all_resolved_settings():
+    from gateway.display_config import resolve_display_setting
+    config = {"display": {"platforms": {"whatsapp": {
+        "group": {"streaming": False, "show_reasoning": False}}}}}
+    assert resolve_display_setting(config, "whatsapp", "streaming", chat_type="group") is False
+    assert resolve_display_setting(config, "whatsapp", "show_reasoning", chat_type="group") is False

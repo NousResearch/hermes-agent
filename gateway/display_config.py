@@ -79,13 +79,13 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
 
-def resolve_display_setting(user_config: dict, platform_key: str, setting: str, fallback: Any = None) -> Any:
+def resolve_display_setting(user_config: dict, platform_key: str, setting: str, fallback: Any = None, chat_type: str | None = None) -> Any:
     """Resolve a display setting with per-platform override support (see module docstring for order).
 
     ``platform_key`` is the platform config key (``"telegram"``; see ``_platform_config_key`` in
     gateway/run.py). Returns *fallback* when nothing is configured.
     """
-    configured = _configured_display_value(user_config, platform_key, setting)
+    configured = _configured_display_value(user_config, platform_key, setting, chat_type)
     if configured is not None:
         return _normalise(setting, configured)
     val = _PLATFORM_DEFAULTS.get(platform_key, {}).get(setting)
@@ -94,15 +94,20 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
     return fallback if val is None else val
 
 
-def _configured_display_value(user_config: dict, platform_key: str, setting: str) -> Any:
+def _configured_display_value(user_config: dict, platform_key: str, setting: str, chat_type: str | None = None) -> Any:
     """First non-None operator value, without introducing tier defaults."""
     display_cfg = user_config.get("display")
     if not isinstance(display_cfg, dict):
         return None
     platforms = display_cfg.get("platforms")
     plat_overrides = platforms.get(platform_key) if isinstance(platforms, dict) else None
-    if isinstance(plat_overrides, dict) and plat_overrides.get(setting) is not None:
-        return plat_overrides[setting]
+    if isinstance(plat_overrides, dict):
+        if chat_type and isinstance(plat_overrides.get(chat_type), dict):
+            scoped = plat_overrides[chat_type]
+            if scoped.get(setting) is not None:
+                return scoped[setting]
+        if plat_overrides.get(setting) is not None:
+            return plat_overrides[setting]
     if setting == "tool_progress":
         legacy = display_cfg.get("tool_progress_overrides")
         if isinstance(legacy, dict) and legacy.get(platform_key) is not None:
@@ -112,13 +117,13 @@ def _configured_display_value(user_config: dict, platform_key: str, setting: str
     return None
 
 
-def resolve_tool_progress(user_config: dict, platform_key: str, env_mode: str | None = None) -> tuple[str, bool]:
+def resolve_tool_progress(user_config: dict, platform_key: str, env_mode: str | None = None, chat_type: str | None = None) -> tuple[str, bool]:
     """Return (mode, explicit intent) from the same winning source.
 
     Non-None YAML wins over the legacy env bridge. Null inherits through to env,
     then tier defaults. A tier's off is not an operator request to disable cards.
     """
-    configured = _configured_display_value(user_config, platform_key, "tool_progress")
+    configured = _configured_display_value(user_config, platform_key, "tool_progress", chat_type)
     if configured is not None:
         return _normalise("tool_progress", configured), True
     if env_mode:

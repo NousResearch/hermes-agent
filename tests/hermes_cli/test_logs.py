@@ -51,6 +51,24 @@ class TestExtractLevel:
     def test_info(self):
         assert _extract_level("2026-01-01 00:00:00 INFO gateway.run: msg") == "INFO"
 
+
+def test_embedded_timestamp_does_not_replace_record_verdict():
+    from hermes_cli.logs import _LineFilter
+    old = datetime.now() - timedelta(hours=3)
+    recent = datetime.now()
+    keep = _LineFilter(since=datetime.now() - timedelta(hours=1))
+    assert keep(f"{recent:%Y-%m-%d %H:%M:%S} ERROR gateway.run: failed\n")
+    assert keep(f"  fetched_at={old:%Y-%m-%dT%H:%M:%S}\n")
+
+
+def test_follow_filter_can_seed_continuation_state():
+    from hermes_cli.logs import _LineFilter
+    recent = datetime.now()
+    keep = _LineFilter(since=datetime.now() - timedelta(hours=1))
+    keep(f"{recent:%Y-%m-%d %H:%M:%S} INFO update: progress\n")
+    assert keep("  output appended after follow started\n")
+
+
 # ---------------------------------------------------------------------------
 # Logger name extraction (new for component filtering)
 # ---------------------------------------------------------------------------

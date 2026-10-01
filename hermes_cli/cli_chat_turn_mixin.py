@@ -79,6 +79,8 @@ class CLIChatTurnMixin:
         agent = self.agent
         if agent is None:
             return None
+        # Per-turn route decision for pre_api_request observers (cleared when this turn had none).
+        agent._turn_route_middleware_trace = list(turn_route.get("middleware_trace") or [])
         self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
         message = self._chat_route_images(message, images, turn_route=turn_route)
 

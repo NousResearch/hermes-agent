@@ -552,6 +552,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     request_overrides=turn_route.get("request_overrides"),
                 ):
                     _configure_quiet_agent(cli.agent)
+                    cli.agent._turn_route_middleware_trace = list(turn_route.get("middleware_trace") or [])
                     if emitter is not None:
                         emitter.attach(cli.agent)
                     _run_quiet_single_query(cli, effective_query, emitter=emitter)

@@ -1164,6 +1164,7 @@ class TurnRunner:
         # optional constructor side effect. Adapters and lightweight wrappers may
         # inspect it before the core turn facade establishes context-local runtime.
         agent.requested_provider = (turn_route.get("runtime") or {}).get("requested_provider") or ""
+        agent._turn_route_middleware_trace = list(turn_route.get("middleware_trace") or [])
         return agent
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
@@ -1190,6 +1191,8 @@ class TurnRunner:
         # configured after caching must reach the next turn; per-session serialization keeps it safe.
         if found.reused and agent is not None:
             self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())
+            # Route trace is per turn: a cached agent must not keep the previous turn's decision.
+            agent._turn_route_middleware_trace = list(turn_route.get("middleware_trace") or [])
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:

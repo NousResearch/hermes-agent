@@ -3767,15 +3767,15 @@ def _commit_compaction(
                         1 for m in messages[max(_turn_idx, len(messages) - tail_count):]
                         if isinstance(m, dict) and not m.get(_DB_PERSISTED_MARKER)
                         and not isinstance(m.get("_row_id"), int))
-                # An alternation repair folds a durable user;user pair into one dict, which then stands
-                # for every row it absorbed: counted once, the oldest carried original stays compacted=1
-                # beside its live copy and is recalled twice. Only rows still active: a live list keeps
-                # the ids after an earlier compaction archived them.
+                # A tail dict stands for every row a repair retired into it (merged users, dropped orphan
+                # tool rows): counted once, the oldest carried original stays compacted=1 beside its live
+                # copy and is recalled twice. Only rows still active: a live list keeps the ids after an
+                # earlier compaction archived them.
+                from agent.conversation_compression_archive import ABSORBED_ROW_IDS, _positive_id
                 tail_count += len({
                     r for m in _tail_held if isinstance(m, dict)
-                    for r in m.get("_absorbed_row_ids") or ()
-                    if type(r) is int and r > 0
-                    and agent._session_db.get_message_role(agent.session_id, r) is not None})
+                    for r in map(_positive_id, m.get(ABSORBED_ROW_IDS) or ())
+                    if r is not None and agent._session_db.get_message_role(agent.session_id, r) is not None})
                 persisted = compressed
                 if verbatim_tail:
                     # The kept exchanges are durable rows under the watermark, so the archive below covers

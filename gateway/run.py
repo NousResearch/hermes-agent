@@ -1159,7 +1159,10 @@ def _build_replay_entry(
     # A merged user dict lost that stamp; this one is what ties it to its durable rows at compaction.
     # The other counts the rows the repair dropped behind a dict or folded into an assistant turn,
     # which this view cannot name either; the last names them for the commit.
-    for stamp in ("_merged_durable_rows", "_unnamed_durable_rows", "_retired_durable_rows"):
+    from agent.conversation_compression_archive import (
+        MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS)
+
+    for stamp in (MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS):
         if msg.get(stamp):
             entry[stamp] = msg[stamp]
     return entry

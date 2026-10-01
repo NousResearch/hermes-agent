@@ -1703,6 +1703,6 @@ def test_repair_records_dropped_unanswered_tool_call_row_on_survivor():
 
     repairs = AIAgent._repair_message_sequence(agent, messages)
 
-    assert repairs >= 1
+    assert repairs == 1
     assert len(messages) == 1
     assert messages[0]["_absorbed_row_ids"] == [21]

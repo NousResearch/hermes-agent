@@ -50,13 +50,18 @@ def _fallback_agent():
         )
     agent.client = MagicMock()
     agent._primary_runtime = {**agent._primary_runtime, "provider": "openai-codex", "base_url": CODEX_URL}
+    agent._swap_credential = MagicMock()
+    _pin_to_fallback(agent)
+    return agent
+
+
+def _pin_to_fallback(agent):
+    agent._fallback_index = 0
     client = MagicMock(api_key="fallback-key-1234", base_url="https://openrouter.ai/api/v1")
     with patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, None)):
         assert agent._try_activate_fallback() is True
     # The weekly reset the provider declared, armed by _arm_rate_limit_cooldown.
     agent._rate_limited_until = time.monotonic() + 3 * 86400
-    agent._swap_credential = MagicMock()
-    return agent
 
 
 def _restore(agent, quota_restored):
@@ -82,4 +87,19 @@ def test_stays_on_fallback_while_quota_is_still_spent(tmp_path, monkeypatch):
     agent = _fallback_agent()
 
     assert _restore(agent, quota_restored=False) is False
+    assert agent._fallback_activated is True
+
+
+def test_a_wrong_restored_verdict_does_not_flip_back_every_turn(tmp_path, monkeypatch):
+    """The probe caches "restored" for its interval and a fresh 429 does not clear it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_exhausted_codex_pool(tmp_path, reset_in_seconds=3 * 86400)
+    agent = _fallback_agent()
+    assert _restore(agent, quota_restored=True) is True
+
+    # The primary 429s again: the pool re-benches the entry and the session falls back.
+    _write_exhausted_codex_pool(tmp_path, reset_in_seconds=3 * 86400)
+    _pin_to_fallback(agent)
+
+    assert _restore(agent, quota_restored=True) is False
     assert agent._fallback_activated is True

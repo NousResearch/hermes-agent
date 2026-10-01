@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 
 import pytest
 
-from tools import code_execution_tool
+from tools import code_execution_rpc, code_execution_tool
 from tools import file_tools
 
 
@@ -81,6 +82,17 @@ def test_programmatic_read_preserves_explicit_failure(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("payload", ["invalid json", "[]"])
+def test_programmatic_read_invalid_result_has_stable_failure_shape(monkeypatch, payload):
+    monkeypatch.setattr(file_tools, "read_file_tool", lambda **_kwargs: payload)
+
+    result = json.loads(file_tools.read_file_programmatic_tool("notes.txt"))
+
+    assert result["success"] is False
+    assert result["content"] == ""
+    assert "invalid programmatic result" in result["error"]
+
+
 def test_programmatic_read_preserves_pagination_without_display_gutters(tmp_path):
     target = tmp_path / "pages.txt"
     target.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
@@ -104,6 +116,10 @@ def test_programmatic_read_does_not_change_chat_dedup_contract(tmp_path):
     programmatic = json.loads(
         file_tools.read_file_programmatic_tool(str(target), task_id=task_id)
     )
+    tracker = file_tools._read_tracker[task_id]
+    assert tracker["dedup"] == {}
+    assert tracker["dedup_generation_reads"] == set()
+    assert tracker["dedup_hits"] == {}
     chat_first = json.loads(file_tools.read_file_tool(str(target), task_id=task_id))
     chat_second = json.loads(file_tools.read_file_tool(str(target), task_id=task_id))
 
@@ -113,37 +129,75 @@ def test_programmatic_read_does_not_change_chat_dedup_contract(tmp_path):
     assert "content" not in chat_second
 
 
-def test_sandbox_dispatch_uses_standard_dispatcher(monkeypatch):
-    captured = {}
-
-    def fake_handle_function_call(tool_name, tool_args, task_id=None):
-        captured.update(
-            tool_name=tool_name,
-            tool_args=tool_args,
-            task_id=task_id,
-            programmatic=file_tools._programmatic_read.get(),
-        )
-        return '{"success": true, "content": "raw"}'
-
-    monkeypatch.setattr(
-        "model_tools.handle_function_call",
-        fake_handle_function_call,
-    )
-
-    result = code_execution_tool._dispatch_sandbox_tool_call(
-        "read_file",
-        {"path": "notes.md", "offset": 4, "limit": 7},
-        task_id="task-1",
-    )
-
-    assert json.loads(result)["content"] == "raw"
-    assert captured == {
-        "tool_name": "read_file",
-        "tool_args": {"path": "notes.md", "offset": 4, "limit": 7},
-        "task_id": "task-1",
-        "programmatic": True,
+def test_sandbox_rpc_dispatches_stable_reads_and_enforces_call_budget(tmp_path):
+    target = tmp_path / "rpc.txt"
+    target.write_text("alpha\n1|literal\n", encoding="utf-8")
+    task_id = f"rpc-{tmp_path.name}"
+    counter, calls = [0], []
+    request = {"tool": "read_file", "args": {"path": str(target)}}
+    options = {
+        "allowed_tools": frozenset({"read_file"}),
+        "tool_call_counter": counter,
+        "max_tool_calls": 2,
+        "dispatch": code_execution_rpc._default_dispatch(task_id),
+        "tool_call_log": calls,
+        "call_start": time.monotonic(),
+        "where": "programmatic read test",
     }
+
+    first = json.loads(code_execution_rpc._handle_rpc_request(request, **options))
+    second = json.loads(code_execution_rpc._handle_rpc_request(request, **options))
+    refused = json.loads(code_execution_rpc._handle_rpc_request(request, **options))
+
+    assert first["success"] is True
+    assert first["content"] == "alpha\n1|literal\n"
+    assert second == first
+    assert "Tool call limit reached" in refused["error"]
+    assert counter == [2]
+    assert [call["tool"] for call in calls] == ["read_file", "read_file"]
+    assert str(target.resolve()) in file_tools._read_tracker[task_id]["full_write_baselines"]
     assert file_tools._programmatic_read.get() is False
+
+
+@pytest.fixture(params=["default", "compound", "sequential"])
+def raw_read_backend(request, monkeypatch):
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    file_ops = ShellFileOperations(LocalEnvironment())
+    if request.param == "compound":
+        monkeypatch.setattr(file_ops, "_native_read_enabled", lambda: False)
+    if request.param == "sequential":
+        return file_ops._read_file_sequential
+    return file_ops.read_file
+
+
+@pytest.mark.parametrize("offset,limit,expected", [
+    (1, 1, "alpha\n"),
+    (2, 1, "1|literal\n"),
+    (1, 2000, "alpha\n1|literal\n"),
+])
+def test_utf16_raw_reads_preserve_content_without_gutters(
+    tmp_path, raw_read_backend, offset, limit, expected,
+):
+    target = tmp_path / "utf16.txt"
+    target.write_bytes("alpha\n1|literal\n".encode("utf-16"))
+
+    read = raw_read_backend(str(target), offset, limit, line_numbers=False)
+
+    assert not read.error
+    assert read.content == expected
+
+
+def test_unicode_filename_retry_preserves_raw_read_mode(tmp_path, raw_read_backend):
+    target = tmp_path / "notes\u202fnow.txt"
+    target.write_text("alpha\n1|literal\n", encoding="utf-8")
+
+    read = raw_read_backend(str(tmp_path / "notes now.txt"), 1, 2000, line_numbers=False)
+
+    assert not read.error
+    assert read.content == "alpha\n1|literal\n"
+    assert "unicode-equivalent" in read.hint
 
 
 def test_programmatic_read_and_chat_raw_paths_are_byte_identical(tmp_path):

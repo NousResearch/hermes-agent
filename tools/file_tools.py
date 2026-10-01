@@ -629,7 +629,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                 task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
         if not complete:
             baselines.pop(resolved_str, None)
-        if not stable or count >= 4:
+        if deduplicate and (not stable or count >= 4):
             task_data["dedup"].pop(dedup_key, None)
             task_data["dedup_generation_reads"].discard(dedup_key)
         _cap_read_tracker_data(task_data)
@@ -841,9 +841,9 @@ def read_file_programmatic_tool(
     try:
         payload = json.loads(result)
     except (TypeError, ValueError):
-        return tool_error("read_file returned an invalid programmatic result")
+        return tool_error("read_file returned an invalid programmatic result", content="", success=False)
     if not isinstance(payload, dict):
-        return tool_error("read_file returned an invalid programmatic result")
+        return tool_error("read_file returned an invalid programmatic result", content="", success=False)
     payload.setdefault("content", "")
     payload.setdefault("success", not bool(payload.get("error")))
     return json.dumps(payload, ensure_ascii=False)

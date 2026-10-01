@@ -18,10 +18,10 @@ ANON = {"sub": "anon-1", "account_tier": "anonymous", "paid_access": False}
 EXHAUSTED = {"sub": "user-1", "paid_access": False, "tool_access": {"enabled": False, "coverage": {}}}
 
 
-def _nous_state(claims: dict, auth_method: str) -> dict:
+def _nous_state(claims: dict, auth_method: str, exp_offset: int = 3600) -> dict:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-    token = f"{seg({'alg': 'none'})}.{seg({**claims, 'exp': int(time.time()) + 3600})}.sig"
+    token = f"{seg({'alg': 'none'})}.{seg({**claims, 'exp': int(time.time()) + exp_offset})}.sig"
     return {"auth_method": auth_method, "access_token": token, "expires_at": "2099-01-01T00:00:00Z"}
 
 
@@ -122,6 +122,37 @@ def test_anonymous_guest_keeps_the_keyless_ring(monkeypatch, tmp_path, gateway_s
 
     assert web_tools._managed_web_search() is False
     assert web_tools._get_search_backend() != "perplexity"
+
+
+@pytest.mark.parametrize("tier", ["anonymous", "Anonymous", "ANONYMOUS", " anonymous "])
+def test_anonymous_tier_is_matched_case_and_whitespace_insensitively(monkeypatch, tmp_path, gateway_server, tier):
+    """The tier claim arrives verbatim from the JWT or account payload; casing must never promote
+    the guest tier to the registered route."""
+    from tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
+    from tools.tool_backend_helpers import fast_search_entitled
+
+    _write_home(tmp_path / "home", monkeypatch,
+                nous_state=_nous_state({**ANON, "account_tier": tier}, "anonymous"))
+
+    assert fast_search_entitled() is False
+    assert resolve_free_search_gateway(token_reader=peek_nous_access_token) is None
+
+
+def test_degraded_portal_lookup_does_not_grant_free_fast_search(monkeypatch, tmp_path, gateway_server):
+    """A token inside the JWT freshness window drops to the account API; when that lookup fails the
+    snapshot is still stamped ``logged_in=True``, so entitlement must key on the error, not on
+    ``logged_in`` alone."""
+    from hermes_cli.nous_account import get_nous_portal_account_info
+    from tools.tool_backend_helpers import fast_search_entitled
+
+    state = _nous_state(EXHAUSTED, "oauth", exp_offset=30)
+    state["portal_base_url"] = "http://127.0.0.1:9"  # closed port: the lookup cannot succeed
+    _write_home(tmp_path / "home", monkeypatch, nous_state=state)
+
+    info = get_nous_portal_account_info()
+    # Premise: the degraded snapshot claims a login, so `logged_in` alone would have granted it.
+    assert info.logged_in is True and info.error is not None
+    assert fast_search_entitled() is False
 
 
 def test_free_fast_search_failure_skips_paid_firecrawl_but_keeps_keyless_rescue(monkeypatch, tmp_path, gateway_server):

@@ -74,7 +74,14 @@ FREE_TIER_NEEDS_ACCOUNT_CHAT = "This needs a Nous account. Use /login to sign in
 
 
 def _is_anonymous_tier(account_info: Optional["NousPortalAccountInfo"]) -> bool:
-    return account_info is not None and account_info.account_tier == _ANON_ACCOUNT_TIER
+    return account_info is not None and account_info.is_anonymous_tier
+
+
+def _normalize_tier(value: object) -> str:
+    """Tier claims arrive verbatim from the JWT claim or the account payload, neither of which
+    strips or casefolds. Compare them normalized so casing or padding can never turn the
+    anonymous tier into a registered one."""
+    return value.strip().lower() if isinstance(value, str) else ""
 
 
 @dataclass(frozen=True)
@@ -115,8 +122,9 @@ class NousPortalAccountInfo:
 
     @property
     def is_anonymous_tier(self) -> bool:
-        """The free tier: no Nous account, so no billing, credits, or entitlement to speak of."""
-        return self.account_tier == _ANON_ACCOUNT_TIER
+        """The free tier: no Nous account, so no billing, credits, or entitlement to speak of.
+        Compared case- and whitespace-insensitively — the claim is wire data."""
+        return _normalize_tier(self.account_tier) == _ANON_ACCOUNT_TIER
 
     @property
     def is_free_tier(self) -> bool:

@@ -372,4 +372,8 @@ def resolve_restart_exit_wait_budget(
     """
     if not all(math.isfinite(_seconds(value)) for value in (drain_timeout, cron_drain_timeout)):
         return math.inf
-    return _seconds(after_turn_timeout) + resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout) + _seconds(headroom)
+    # A planned restart can spend the after-turn budget before ``stop()`` begins, and
+    # ``effective_stop_drain_timeout()`` preserves that same budget during stop when it
+    # exceeds the configured chat drain. The observer must cover both phases.
+    effective_drain = max(_seconds(drain_timeout), _seconds(after_turn_timeout))
+    return _seconds(after_turn_timeout) + resolve_systemd_timeout_stop_sec(effective_drain, cron_drain_timeout) + _seconds(headroom)

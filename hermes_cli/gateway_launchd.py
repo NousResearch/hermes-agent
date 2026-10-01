@@ -134,8 +134,8 @@ def _append_launchd_reload_log(message: str) -> None:
 
 def _launchd_reload_budget() -> float:
     """Bootstrap retry window for a plist reload: the failure happens while the old gateway is still
-    draining (default 180s), so size it to the drain timeout with a 30s floor."""
-    return max(30.0, _gw()._get_restart_drain_timeout())
+    draining, so size it to the full planned-restart exit budget with a 30s floor."""
+    return max(30.0, _gw()._get_restart_exit_wait_budget())
 
 
 def _launchctl_supervised_pid(label: str) -> int | None:

@@ -1213,9 +1213,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if sock is None:
             # Without a shutdown-capable socket a synchronous drain could become unbounded. The drain
             # is only for Relay's finalizer, so skip it and let the owner-thread finally close below.
-            with suppress(Exception):
-                logger.debug("Codex post-terminal drain skipped: no interruptible stream socket found. %s",
-                             agent._client_log_context())
+            logger.debug("Codex post-terminal drain skipped: no interruptible stream socket found. %s",
+                         agent._client_log_context())
             return
 
         timed_out = threading.Event()
@@ -1241,8 +1240,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     watchdog.join()
             if not isinstance(exc, Exception):
                 raise
-            with suppress(Exception):
-                logger.debug("Codex post-terminal watchdog failed to start; skipping finalizer drain", exc_info=True)
+            logger.debug("Codex post-terminal watchdog failed to start; skipping finalizer drain", exc_info=True)
             return
 
         try:
@@ -1252,17 +1250,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             # A timeout-triggered shutdown is the expected wakeup, not another provider failure. Other
             # transport failures still get the old diagnostic, but none may discard the completed response.
             if not timed_out.is_set():
-                with suppress(Exception):
-                    if not isinstance(exc, transport_errors):
-                        _log_failure(exc)
-                    logger.warning(
-                        "Codex Responses stream transport finalization failed after a terminal response was already "
-                        "received; returning the completed response instead of retrying. %s error=%s",
-                        agent._client_log_context(), exc,
-                    )
+                if not isinstance(exc, transport_errors):
+                    _log_failure(exc)
+                logger.warning(
+                    "Codex Responses stream transport finalization failed after a terminal response was already "
+                    "received; returning the completed response instead of retrying. %s error=%s",
+                    agent._client_log_context(), exc,
+                )
         except Exception:
-            with suppress(Exception):
-                logger.debug("Codex Responses stream finalization failed after a terminal response", exc_info=True)
+            logger.debug("Codex Responses stream finalization failed after a terminal response", exc_info=True)
         finally:
             # cancel() wins if the budget has not fired; join() also waits for an already-running shutdown
             # callback, preserving shutdown-before-close ordering at the exact timeout boundary.
@@ -1270,27 +1266,23 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             watchdog.join()
 
         if timed_out.is_set():
-            with suppress(Exception):
-                logger.warning(
-                    "Codex Responses stream remained open %.1fs after a terminal response "
-                    "(agent.stream_drain_timeout); shut down its socket and completed cleanup on the owner thread. %s",
-                    budget, agent._client_log_context(),
-                )
+            logger.warning(
+                "Codex Responses stream remained open %.1fs after a terminal response "
+                "(agent.stream_drain_timeout); shut down its socket and completed cleanup on the owner thread. %s",
+                budget, agent._client_log_context(),
+            )
 
-    def _close_event_stream(event_stream: Any) -> bool:
+    def _close_event_stream(event_stream: Any) -> None:
         close_fn = getattr(event_stream, "close", None)  # None while connect never succeeded
-        if not callable(close_fn):
-            return False
         try:
-            close_fn()
-            return True
+            if callable(close_fn):
+                close_fn()
         except Exception:
             # A failed close can leave this connection checked out of the httpx pool while the caller
-            # reuse-caches the client; poison the slot so close really closes the pool. client is None
+            # reuse-caches the client; poison the slot so close really closes the pool. ``client is None``
             # is the shared primary client — never force-shut.
             if client is not None:
                 agent._abort_request_openai_client(active_client, reason="codex_stream_close_failed")
-            return False
     show_commentary = getattr(agent, "show_commentary", True)
     wants_commentary = getattr(agent, "interim_assistant_callback", None) is not None and show_commentary
     on_commentary_message = _live(agent._fire_streamed_codex_commentary) if wants_commentary else None

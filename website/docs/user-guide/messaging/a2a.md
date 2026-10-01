@@ -131,7 +131,7 @@ Secure by default; every widening step is explicit:
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authenticated peer (dev only) |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20) |
-| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply. The orphan-task sweep never fails a task before this window elapses (floor 300s), and never while a request is still waiting on it |
+| `A2A_REPLY_TIMEOUT` | `300` | Seconds a request waits for the agent's reply. Past it the task is not failed: the caller gets it in the working state, and the reply is stored when it arrives (a task that never gets one fails at the orphan ceiling, 24 h) |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push-notification signing |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict which skills appear on the Agent Card |
 
@@ -159,4 +159,4 @@ curl -X POST http://your-host:9900/ \
 - **`403` "Host must be a loopback name…" with no token** — without a token the server answers only requests addressed to a loopback name (`localhost`, `127.x.x.x`, `[::1]`) or the `A2A_PUBLIC_URL` host, so a web page on another hostname that resolves to your machine cannot read the card or the served-agent list. Call it by one of those names, set `A2A_PUBLIC_URL` to the name a local proxy forwards, or configure a token.
 - **`403` "Content-Type must be application/json" with no token** — the POST had a missing or non-JSON `Content-Type` (plain `curl -d` sends a form type); add `-H 'Content-Type: application/json'`.
 - **`403` "browser-originated" or "cross-site request refused" with no token** — the request carried an `Origin` header or a cross-site `Sec-Fetch-Site`, which only browsers send. Call it from a local script or SDK, or configure a token.
-- **Replies time out on long tasks** — raise `A2A_REPLY_TIMEOUT` (the orphan sweep follows it, so a late reply is stored, not discarded), or have the caller register a push-notification config and poll `GetTask`.
+- **Replies take longer than `A2A_REPLY_TIMEOUT`** — the caller gets the task in the working state and fetches the reply with `GetTask` (or registers a push-notification config); the same holds when a streaming client disconnects. Raise `A2A_REPLY_TIMEOUT` to keep blocking callers waiting longer.

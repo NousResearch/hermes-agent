@@ -54,7 +54,7 @@ def test_probe_reports_the_requested_interpreters_linked_sqlite() -> None:
     assert info.sqlite_source_id == source_id
 
 
-@pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable probe stub")
+@pytest.mark.platforms("posix")  # uses a POSIX executable probe stub
 def test_probe_uses_child_payload_and_sanitizes_python_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

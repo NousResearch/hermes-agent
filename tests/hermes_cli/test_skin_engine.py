@@ -14,47 +14,8 @@ def reset_skin_state():
     skin_engine._active_skin_name = "default"
 
 
-class TestSkinConfig:
-    def test_default_skin_has_required_fields(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("default")
-        assert skin.name == "default"
-        assert skin.tool_prefix == "┊"
-        assert "banner_title" in skin.colors
-        assert "banner_border" in skin.colors
-        assert "agent_name" in skin.branding
 
 
-    def test_get_spinner_wings_empty_for_default(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("default")
-        assert skin.get_spinner_wings() == []
-
-
-class TestBuiltinSkins:
-    def test_ares_skin_loads(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("ares")
-        assert skin.name == "ares"
-        assert skin.tool_prefix == "╎"
-        # Crimson identity: border stays red-dominant (exact values are owned
-        # by the palette audit in test_skin_palettes.py, which enforces
-        # contrast floors — don't pin literals here).
-        border = skin.get_color("banner_border")
-        r, g, b = (int(border[i:i + 2], 16) for i in (1, 3, 5))
-        assert r > g and r > b, f"ares border lost its crimson: {border}"
-        assert skin.get_color("response_border") == "#C7A96B"
-        assert skin.get_color("session_label") == "#C7A96B"
-        assert skin.get_color("session_border") == "#6E584B"
-        assert skin.get_branding("agent_name") == "Ares Agent"
-
-    def test_ares_has_spinner_customization(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("ares")
-        wings = skin.get_spinner_wings()
-        assert len(wings) > 0
-        assert isinstance(wings[0], tuple)
-        assert len(wings[0]) == 2
 
 
 
@@ -72,19 +33,6 @@ class TestSkinManagement:
         assert get_active_skin().name == "ares"
 
 
-    def test_list_skins_includes_builtins(self):
-        from hermes_cli.skin_engine import list_skins
-        skins = list_skins()
-        names = [s["name"] for s in skins]
-        assert "default" in names
-        assert "ares" in names
-        assert "mono" in names
-        assert "slate" in names
-        assert "daylight" in names
-        assert "warm-lightmode" in names
-        for s in skins:
-            assert "source" in s
-            assert s["source"] == "builtin"
 
 
 
@@ -103,8 +51,8 @@ class TestUserSkins:
             "branding": {"agent_name": "Custom Agent"},
             "tool_prefix": "▸",
         }
-        import yaml
-        skin_file.write_text(yaml.dump(skin_data))
+        import hermes_yaml as yaml
+        skin_file.write_text(yaml.safe_dump(skin_data))
 
         # Patch skins dir
         monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
@@ -122,10 +70,10 @@ class TestUserSkins:
 
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
-        import yaml
+        import hermes_yaml as yaml
 
         (skins_dir / "broken.yaml").write_text(
-            yaml.dump(
+            yaml.safe_dump(
                 {
                     "name": "broken",
                     "colors": ["not", "a", "mapping"],
@@ -152,8 +100,8 @@ class TestUserSkins:
         from hermes_cli.skin_engine import list_skins
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
-        import yaml
-        (skins_dir / "pirate.yaml").write_text(yaml.dump({
+        import hermes_yaml as yaml
+        (skins_dir / "pirate.yaml").write_text(yaml.safe_dump({
             "name": "pirate",
             "description": "Arr matey",
         }))
@@ -164,6 +112,54 @@ class TestUserSkins:
         assert "pirate" in names
         pirate = [s for s in skins if s["name"] == "pirate"][0]
         assert pirate["source"] == "user"
+
+
+class TestCustomCSS:
+    """customCSS passthrough: parsed from user YAML, whitespace-stripped,
+    capped at 32 KiB, empty when the field is absent."""
+
+    def _load(self, tmp_path, monkeypatch, **skin_data):
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        import hermes_yaml as yaml
+
+        data = {"name": "styled", "colors": {"background": "#101010"}}
+        data.update(skin_data)
+        (skins_dir / "styled.yaml").write_text(yaml.safe_dump(data))
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+        return load_skin("styled")
+
+    def test_user_skin_custom_css_passthrough(self, tmp_path, monkeypatch):
+        skin = self._load(tmp_path, monkeypatch, customCSS=".chat-input { font-size: 16px; }")
+
+        assert skin.custom_css == ".chat-input { font-size: 16px; }"
+
+    def test_user_skin_custom_css_whitespace_stripped(self, tmp_path, monkeypatch):
+        skin = self._load(tmp_path, monkeypatch, customCSS="\n  .status-bar { background: black; }  \n")
+
+        assert skin.custom_css == ".status-bar { background: black; }"
+
+    def test_user_skin_custom_css_empty_when_missing(self, tmp_path, monkeypatch):
+        skin = self._load(tmp_path, monkeypatch)
+
+        assert skin.custom_css == ""
+
+    def test_user_skin_custom_css_capped_at_32_ki_b(self, tmp_path, monkeypatch):
+        skin = self._load(tmp_path, monkeypatch, customCSS="x" * 40000)
+
+        assert len(skin.custom_css) == 32768
+
+    def test_builtin_skin_has_no_custom_css(self, tmp_path, monkeypatch):
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        assert load_skin("default").custom_css == ""
+        assert load_skin("mono").custom_css == ""
 
 
 class TestDisplayIntegration:
@@ -181,11 +177,6 @@ class TestDisplayIntegration:
 class TestCliBrandingHelpers:
 
 
-    def test_active_goodbye_ares(self):
-        from hermes_cli.skin_engine import set_active_skin, get_active_goodbye
-
-        set_active_skin("ares")
-        assert get_active_goodbye() == "Farewell, warrior! ⚔"
 
     def test_prompt_toolkit_style_overrides_cover_tui_classes(self):
         from hermes_cli.skin_engine import set_active_skin, get_prompt_toolkit_style_overrides

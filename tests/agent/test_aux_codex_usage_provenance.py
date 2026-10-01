@@ -18,7 +18,7 @@ def adapter(raw):
 @pytest.mark.parametrize('as_dict',[True,False])
 @pytest.mark.parametrize('async_mode',[True,False])
 def test_actual_adapter_keeps_live_compression_usage(as_dict,async_mode):
-    # Actual Tokyo repeat #2 totals; a separate synthetic reasoning count checks its path.
+    # Cached input and synthetic reasoning exercise independent detail buckets.
     raw={'input_tokens':6358,'output_tokens':23,'total_tokens':6381,
          'input_tokens_details':{'cached_tokens':6144,'cache_write_tokens':0},
          'output_tokens_details':{'reasoning_tokens':7}}

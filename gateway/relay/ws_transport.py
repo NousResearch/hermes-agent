@@ -1,7 +1,7 @@
 """Production WebSocket RelayTransport — the gateway's live link to the connector.
 
 The gateway dials OUT to the connector's relay endpoint and speaks the
-newline-delimited JSON frame protocol of ``docs/relay-connector-contract.md``:
+newline-delimited JSON frame protocol of ``website/docs/developer-guide/relay-connector-contract.md``:
 gateway -> connector: hello, outbound, interrupt, going_idle, inbound_ack;
 connector -> gateway: descriptor, inbound, outbound_result, interrupt_inbound,
 going_idle_ack, passthrough_forward. Outbound calls block on a per-request future
@@ -326,7 +326,7 @@ class WebSocketRelayTransport:
         if not WEBSOCKETS_AVAILABLE:
             raise RuntimeError(
                 "WebSocketRelayTransport requires the 'websockets' package "
-                "(install the messaging extra)."
+                "(a hermes-agent core dependency)."
             )
         self._url = _ws_dial_url(url)
         self._platform = platform
@@ -425,7 +425,10 @@ class WebSocketRelayTransport:
         # WAN-friendly keepalive: the library default (20s pong deadline) produces
         # spurious `1011 keepalive ping timeout` closes under transient latency /
         # event-loop stalls; 60s tolerates them while detecting a dead link ~90s.
-        kwargs: Dict[str, Any] = {"ping_interval": 30, "ping_timeout": 60}
+        # happy_eyeballs_delay reaches loop.create_connection (default None = serial
+        # walk over AAAA then A): race IPv6/IPv4 so a blackholed IPv6 route costs
+        # 250 ms, not the connect timeout (#114265).
+        kwargs: Dict[str, Any] = {"ping_interval": 30, "ping_timeout": 60, "happy_eyeballs_delay": 0.25}
         headers = self._upgrade_headers()
         if headers:
             kwargs["additional_headers"] = headers

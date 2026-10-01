@@ -84,17 +84,14 @@ describe('RealProfileConsentDialog', () => {
       fireEvent.click(screen.getByRole('button', { name: promptCopy.enable }))
     })
 
-    // Saves the WHOLE merged record with only use_real_profile added — the
-    // same shape the Capabilities toggle writes, through the same cache, so
-    // the existing toggle flips on without a refetch.
-    expect(mocks.save).toHaveBeenCalledWith(
-      {
-        browser: { allow_private_urls: false, use_real_profile: true },
-        model: { provider: 'nous' }
-      },
-      undefined
-    )
-    expect(mocks.cache).toHaveBeenCalledWith(mocks.save.mock.calls[0][0])
+    // Saves ONLY the toggled key (PUT deep-merges) — the same shape the
+    // Capabilities toggle writes — while the shared cache gets the merged
+    // record so the existing toggle flips on without a refetch.
+    expect(mocks.save).toHaveBeenCalledWith({ browser: { use_real_profile: true } }, undefined)
+    expect(mocks.cache).toHaveBeenCalledWith({
+      browser: { allow_private_urls: false, use_real_profile: true },
+      model: { provider: 'nous' }
+    })
     expect(mocks.notify).toHaveBeenCalled()
   })
 

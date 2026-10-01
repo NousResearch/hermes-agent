@@ -1153,15 +1153,18 @@ async def test_reply_line_survives_a_parent_that_cannot_be_read(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "attachment",
+    "attachment, expected_message",
     [
-        {"file": {"url": "mxc://example.org/encrypted", "key": {}, "iv": "", "hashes": {}}},
-        {},
+        (
+            {"file": {"url": "mxc://example.org/encrypted", "key": {}, "iv": "", "hashes": {}}},
+            "what is this?\n[matrix image attachment could not be downloaded: photo.png]",
+        ),
+        ({}, "what is this?"),
     ],
     ids=["encrypted-download-fails", "no-url"],
 )
-async def test_media_without_a_cached_file_reaches_a_live_session_as_its_caption(
-    tmp_path, monkeypatch, attachment
+async def test_unavailable_media_reaches_a_live_session_without_an_attachment(
+    tmp_path, monkeypatch, request, attachment, expected_message
 ):
     adapter = _make_adapter()
     adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock()))
@@ -1183,10 +1186,13 @@ async def test_media_without_a_cached_file_reaches_a_live_session_as_its_caption
         **attachment,
     }
     await adapter._handle_media_message(ROOM, SENDER, "$photo", 1000.0, content, {}, "m.image")
-    event = adapter.handle_message.await_args.args[0]
+    dispatch = adapter.handle_message.await_args
+    assert dispatch is not None
+    event = dispatch.args[0]
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
     runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+    request.addfinalizer(runner.session_store.close_all_db_handles)
     runner.adapters = {Platform.MATRIX: adapter}
     state = runner._session_state("session")
 
@@ -1195,7 +1201,7 @@ async def test_media_without_a_cached_file_reaches_a_live_session_as_its_caption
     )
 
     assert (event.media_urls, event.media_types, message, state.persistent.native_image_paths) == (
-        [], [], "what is this?", [],
+        [], [], expected_message, [],
     )
 
 

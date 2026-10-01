@@ -843,6 +843,55 @@ def _run_agent_tool_execution_middleware(
 # Sequential wait-loop poll cadence: /stop lands within ~1s even if the tool never polls is_interrupted().
 _SEQUENTIAL_INTERRUPT_POLL_SECONDS = 1.0
 
+# Unwind margin added to a tool's own requested timeout when the executor funds it: the
+# tool needs room past its nominal window to return its result (teardown, output capture,
+# the terminal backend's own kill+reap). Not part of the comparison — only the extension
+# adds it, so an operator-configured generic deadline is never silently shortened.
+_SEQUENTIAL_UNWIND_MARGIN_S = 30.0
+
+# Tools whose call arguments carry a per-call bounded wait they enforce themselves, so
+# the generic sequential deadline must fund it. ``terminal`` validates ``timeout`` against
+# its own 600s foreground cap (``FOREGROUND_MAX_TIMEOUT``); a legal 600s request used to be
+# killed by the 420s concurrent-batch fallback and the model retried with progressively
+# shorter sleeps forever. ``process`` manages background jobs under its own supervision
+# (poll/wait have no foreground wait to fund), so it is deliberately absent.
+_SEQUENTIAL_SELF_BOUNDED_TOOLS = frozenset({"terminal"})
+
+
+def _sequential_deadline_seconds(generic_timeout: float | None, function_name: str, function_args: dict) -> float | None:
+    """Effective sequential deadline for one call.
+
+    ``generic_timeout`` is the configured ``timeouts.tools.sequential_call`` bound (None =
+    unbounded). A self-bounded tool's valid, finite, positive per-call ``timeout`` is an
+    intentional wait the executor funds: the deadline extends to ``timeout + unwind margin``
+    when that is longer than the generic bound. Extension only — a longer configured
+    generic deadline, a disabled (None) one, or junk in the argument leaves it untouched,
+    so boundedness is preserved for every other tool. The tool itself owns rejecting
+    invalid values; the executor only ever reads validated-shaped numbers.
+    """
+    if generic_timeout is None or function_name not in _SEQUENTIAL_SELF_BOUNDED_TOOLS:
+        return generic_timeout
+    raw = function_args.get("timeout")
+    # bool is an int subclass (a model-emitted `true` would extend to 1s + margin and cut
+    # a legal wait short); complex is a number but not orderable. Strings are NOT coerced:
+    # the tool validates the raw value and this layer must not fund a wait the tool may
+    # reject. NaN/inf fail the range checks below.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return generic_timeout
+    try:
+        requested = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return generic_timeout
+    if not (requested > 0.0) or requested == float("inf") or requested != requested:
+        return generic_timeout
+    from tools.terminal_tool import FOREGROUND_MAX_TIMEOUT
+
+    # Background calls return a process handle, and over-cap foreground calls
+    # are promoted to background. Neither actually waits the requested window.
+    if function_args.get("background") or requested > FOREGROUND_MAX_TIMEOUT:
+        return generic_timeout
+    return max(generic_timeout, requested + _SEQUENTIAL_UNWIND_MARGIN_S)
+
 
 def _resolve_sequential_tool_timeout() -> float | None:
     """Deadline for one sequential call: ``timeouts.tools.sequential_call``, else the
@@ -920,6 +969,10 @@ def _run_sequential_tool_execution_middleware(
     from agent.tool_dispatch_helpers import _extend_tool_timeout
 
     timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
+    # A tool's own per-call bounded wait comes first (a legal 600s terminal call under
+    # its foreground cap must be funded, not cut at the 420s generic default); then a
+    # registry-declared transport budget (MCP servers), which extends it further.
+    timeout_s = _sequential_deadline_seconds(timeout_s, function_name, function_args)
     timeout_s = _extend_tool_timeout(function_name, timeout_s)
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)

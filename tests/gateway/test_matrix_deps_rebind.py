@@ -112,6 +112,24 @@ def test_extra_names_track_the_e2ee_mode(monkeypatch):
         assert matrix_adapter._extra_names() == ["matrix", "matrix-e2ee"]
 
 
+@pytest.mark.parametrize("mode,expected", [
+    ("off", True),     # plain client: no crypto dep needed
+    ("optional", False),  # E2EE configured but deps missing → updater must install
+    ("required", False),  # E2EE required and deps missing → updater must install
+])
+def test_matrix_deps_present_reports_e2ee_missing_regardless_of_mode(monkeypatch, mode, expected):
+    """``matrix_deps_present()`` (the registry ``check_fn``) must return False when E2EE deps are
+    missing for ANY non-off mode, so the updater's configured-features pass evaluates
+    ``extra_names_fn`` and proactively installs ``[matrix-e2ee]``.
+
+    Regression: the original gate ``_resolve_e2ee_mode() != "required"`` short-circuited to True
+    for ``optional`` mode, hiding the missing E2EE closure from the updater.
+    """
+    monkeypatch.setattr(matrix_adapter, "_check_e2ee_deps", lambda: False)
+    monkeypatch.setenv("MATRIX_E2EE_MODE", mode)
+    assert matrix_adapter.matrix_deps_present() is expected
+
+
 def test_setup_enabling_e2ee_prepares_the_e2ee_extra(tmp_path, monkeypatch):
     """Saying yes to E2EE in setup must install the closure, not just the plain SDK."""
     import pm

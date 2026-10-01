@@ -34,14 +34,32 @@
       branch = if rawRef != null then builtins.replaceStrings [ "refs/heads/" ] [ "" ] rawRef else null;
       dirty = dirtyRevision != null;
       lastModified = inputs.self.lastModified or null;
+      lastModifiedDate = inputs.self.lastModifiedDate or null;
+      # pyproject.toml intentionally keeps a placeholder version for source
+      # installs. Nix sources do not retain .git metadata, so pass the flake
+      # tag (or the source date for branch evaluations) to the install stamp.
+      version =
+        if rawRef != null && lib.hasPrefix "refs/tags/" rawRef then
+          lib.removePrefix "refs/tags/" rawRef
+        else if lastModifiedDate != null then
+          let
+            date = builtins.substring 0 10 lastModifiedDate;
+            year = builtins.substring 0 4 date;
+            month = builtins.substring 5 2 date;
+            day = builtins.substring 8 2 date;
+          in "${year}.${toString (builtins.fromJSON month)}.${toString (builtins.fromJSON day)}"
+        else
+          "0.0.0";
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
         inherit
+          version
           rev
           branch
           dirty
           lastModified
+          lastModifiedDate
           ;
       };
 

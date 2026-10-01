@@ -11,6 +11,14 @@ from __future__ import annotations
 
 import dataclasses
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .server import _emit
+    from .session_history import _clear_inflight_turn
+    from .session_lifecycle import _claim_session_turn, _holds_turn_claim, _owns_turn_claim, _release_session_turn
+
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()

@@ -16,7 +16,7 @@ import time
 from contextlib import contextmanager
 from typing import Annotated, Any, Iterator, Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.redact import redact_sensitive_text
@@ -106,7 +106,6 @@ class UpdateTaskRequest(_RequestModel):
 
 class CommentRequest(_RequestModel):
     body: str = Field(min_length=1, max_length=20_000)
-    author: str = Field(default="external-api", min_length=1, max_length=128)
 
 
 class CompleteRequest(_RequestModel):
@@ -116,6 +115,15 @@ class CompleteRequest(_RequestModel):
 class BlockRequest(_RequestModel):
     reason: Optional[str] = Field(default=None, max_length=20_000)
     kind: Optional[str] = None
+
+
+def _actor(request: Request) -> str:
+    """Durable provenance (comment author, task creator) for this request: the principal the
+    token seam verified, else the fixed ``external-api`` surface. Never caller-supplied: the
+    live comment bridge skips comments whose author equals the worker's identity as its own
+    (``inject_new_comments_from_env``), so a chosen author could silence an operator steer."""
+    principal = getattr(request.state, "token_principal", None)
+    return getattr(principal, "principal", None) or "external-api"
 
 
 @contextmanager
@@ -376,6 +384,7 @@ def list_tasks(
 @router.post("/tasks", status_code=201)
 def create_task(
     payload: CreateTaskRequest,
+    request: Request,
     response: Response,
     board: Optional[str] = Query(default=None),
     idempotency_header: Annotated[Optional[str], Header(alias="Idempotency-Key")] = None,
@@ -391,7 +400,7 @@ def create_task(
                 title=payload.title,
                 body=payload.body,
                 assignee=payload.assignee,
-                created_by="external-api",
+                created_by=_actor(request),
                 workspace_kind="scratch",
                 tenant=payload.tenant,
                 priority=payload.priority,
@@ -451,12 +460,13 @@ def update_task(
 def comment_task(
     task_id: str,
     payload: CommentRequest,
+    request: Request,
     board: Optional[str] = Query(default=None),
 ) -> dict[str, Any]:
     with _connection(board) as conn:
         _require_task(conn, task_id)
         try:
-            comment_id = kanban_db.add_comment(conn, task_id, payload.author, payload.body)
+            comment_id = kanban_db.add_comment(conn, task_id, _actor(request), payload.body)
         except ValueError as exc:
             raise _client_error(exc, fallback="comment rejected") from exc
         row = conn.execute(

@@ -128,7 +128,7 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
 
     comment = client.post(
         f"/api/plugins/kanban/v1/tasks/{parent_id}/comment",
-        json={"body": "private operator note", "author": "ops-dashboard"},
+        json={"body": "private operator note"},
     )
     assert comment.status_code == 201
     assert "private operator note" not in comment.text

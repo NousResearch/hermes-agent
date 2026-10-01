@@ -267,6 +267,49 @@ class TestGatedEndToEnd:
         assert replay.json()["created"] is False
         assert replay.json()["task"]["id"] == task_id
 
+    def test_comment_author_is_the_verified_principal_not_the_caller(
+        self, gated_kanban_app, monkeypatch
+    ):
+        # The live bridge skips comments authored as the worker's own identity, so a
+        # caller-chosen author="worker-bot" would silence a real operator steer.
+        import tools.kanban_tools as kt
+        from hermes_cli import kanban_db
+        from hermes_cli import kanban_db_connect as kbc
+
+        client, secret, _ = gated_kanban_app
+        auth = {"Authorization": f"Bearer {secret}"}
+        task_id = client.post(
+            "/api/plugins/kanban/v1/tasks", headers=auth,
+            json={"title": "running as worker-bot", "assignee": "worker-bot"},
+        ).json()["task"]["id"]
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+        monkeypatch.setenv("HERMES_PROFILE", "worker-bot")
+        kt._comment_watermark.clear()
+        steers: list[str] = []
+        agent = type("Agent", (), {"steer": lambda self, text: steers.append(text) or True})()
+        kt._comment_poll_last_attempt = 0.0
+        assert kt.inject_new_comments_from_env(agent) is False  # seeds the watermark
+
+        forged = client.post(
+            f"/api/plugins/kanban/v1/tasks/{task_id}/comment", headers=auth,
+            json={"body": "stop and use the v2 API", "author": "worker-bot"},
+        )
+        assert forged.status_code == 422
+        posted = client.post(
+            f"/api/plugins/kanban/v1/tasks/{task_id}/comment", headers=auth,
+            json={"body": "stop and use the v2 API"},
+        )
+        assert posted.status_code == 201, posted.text
+
+        kt._comment_poll_last_attempt = 0.0
+        assert kt.inject_new_comments_from_env(agent) is True
+        assert "v2 API" in steers[0]
+        with kbc.connect(board="default") as conn:
+            authors = [c.author for c in kanban_db.list_comments(conn, task_id)]
+            created_by = kanban_db.get_task(conn, task_id).created_by
+        assert authors == ["kanban-api"]
+        assert created_by == "kanban-api"
+
     def test_missing_or_wrong_token_is_401(self, gated_kanban_app):
         client, _, _ = gated_kanban_app
         no_token = client.get("/api/plugins/kanban/v1/tasks")

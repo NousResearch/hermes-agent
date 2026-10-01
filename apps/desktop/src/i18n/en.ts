@@ -5288,6 +5288,8 @@ export const en: Translations = {
       readAloudFailed: 'Read aloud failed',
       preparingAudio: 'Preparing audio...',
       stopReading: 'Stop reading',
+      playbackSpeed: 'Playback speed',
+      playbackSpeedNormal: 'normal',
       readAloud: 'Read aloud',
       copyFullResponse: 'Copy full response',
       readAloudFullResponseHint: 'Shift-click: read the full response',

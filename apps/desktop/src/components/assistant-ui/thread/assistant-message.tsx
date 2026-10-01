@@ -31,6 +31,7 @@ import { threadMessageIndex } from '@/components/assistant-ui/thread/thread-mess
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
+import { VoiceSpeedControl } from '@/components/assistant-ui/thread/voice-speed-control'
 import { isApprovalActivity, isCurrentTurnMessage } from '@/components/assistant-ui/tool/approval-activity'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { formatElapsed } from '@/components/chat/activity-timer'
@@ -1064,6 +1065,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
         {fullResponseAvailable && (
           <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
         )}
+        <VoiceSpeedControl />
         <ReadAloudButton
           fullResponseAvailable={fullResponseAvailable}
           getFullText={getFullResponseText}

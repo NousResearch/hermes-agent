@@ -10,6 +10,7 @@ import {
   type VoicePlaybackSource,
   type VoicePlaybackState
 } from '@/store/voice-playback'
+import { $voicePlaybackSpeed } from '@/store/voice-playback-speed'
 
 import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 
@@ -18,6 +19,13 @@ import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 // fails to start or stalls mid-stream for this long (rearmed on each progress
 // tick, so legitimately long speech is never cut off).
 const PLAYBACK_STALL_MS = 15_000
+
+// Device-level speech rate ($voicePlaybackSpeed). Every playback path starts
+// from it; the WS path re-reads it per chunk, so a mid-stream change takes
+// hold on the next chunk without restarting audio.
+function applyVoicePlaybackRate(audio: HTMLAudioElement): void {
+  audio.playbackRate = $voicePlaybackSpeed.get()
+}
 
 let currentAudio: HTMLAudioElement | null = null
 // Every live playback registers its barge-in stop here: streaming sessions
@@ -300,6 +308,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         try {
           await new Promise<void>((resolve, reject) => {
             const audio = new Audio(url)
+            applyVoicePlaybackRate(audio)
             playing = audio
             audio.addEventListener('ended', () => resolve(), { once: true })
             audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
@@ -443,6 +452,10 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       return
     }
 
+    // Re-read per chunk: a rate change made while a reply is speaking takes
+    // hold from the next chunk, without restarting audio.
+    const speed = $voicePlaybackSpeed.get()
+
     // Provider chunks are not sample-aligned — carry any odd byte over.
     let bytes = new Uint8Array(data)
 
@@ -474,11 +487,14 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
     const source = context.createBufferSource()
     source.buffer = buffer
+    // Rate ≥ 1 shortens the chunk; the timeline math below consumes the
+    // SHORTENED duration so back-to-back chunks never overlap or gap.
+    source.playbackRate.value = speed
     source.connect(context.destination)
 
     const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
     source.start(startAt)
-    nextStartAt = startAt + buffer.duration
+    nextStartAt = startAt + buffer.duration / speed
 
     if (!started) {
       started = true
@@ -639,6 +655,7 @@ async function playSpeechDataUrl(
   }
 
   const audio = new Audio(response.data_url)
+  applyVoicePlaybackRate(audio)
   currentAudio = audio
   setVoicePlaybackState(currentState('speaking', options, audio))
 
@@ -824,6 +841,20 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
 export function isVoicePlaybackActive() {
   return $voicePlayback.get().status !== 'idle'
 }
+
+// Retune the reply that is already playing when the user changes the speed:
+// the in-flight data-URL audio element (the only playback not re-read per
+// chunk). rate < 0.0625 or > 16 is outside the HTMLMediaElement spec range;
+// the store clamps its window tighter (0.25–4), but never trust a live store
+// in a DOM property. The streaming path needs no element — its per-chunk
+// re-read picks the change up natively.
+$voicePlaybackSpeed.subscribe(speed => {
+  if (!currentAudio || currentAudio.paused) {
+    return
+  }
+
+  currentAudio.playbackRate = Math.min(4, Math.max(0.0625, speed))
+})
 
 // ---------------------------------------------------------------------------
 // Interruption latch — the next prompt.submit carries `interrupted: true` so

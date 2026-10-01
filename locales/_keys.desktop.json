@@ -278,6 +278,8 @@
     "assistant.thread.loadingResponse",
     "assistant.thread.loadingSession",
     "assistant.thread.moreActions",
+    "assistant.thread.playbackSpeed",
+    "assistant.thread.playbackSpeedNormal",
     "assistant.thread.preparingAudio",
     "assistant.thread.processingPrompt",
     "assistant.thread.react",

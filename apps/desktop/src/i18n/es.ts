@@ -5667,6 +5667,8 @@ export const esOverrides = {
       readAloudFailed: 'Falló la lectura en voz alta',
       preparingAudio: 'Preparando audio...',
       stopReading: 'Detener lectura',
+      playbackSpeed: 'Velocidad de reproducción',
+      playbackSpeedNormal: 'normal',
       readAloud: 'Leer en voz alta',
       copyFullResponse: 'Copiar la respuesta completa',
       readAloudFullResponseHint: 'Mayús+clic: leer la respuesta completa',

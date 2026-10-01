@@ -5676,6 +5676,8 @@ export const deOverrides = {
       readAloudFailed: 'Vorlesen fehlgeschlagen',
       preparingAudio: 'Bereitet Audio vor...',
       stopReading: 'Vorlesen stoppen',
+      playbackSpeed: 'Wiedergabegeschwindigkeit',
+      playbackSpeedNormal: 'normal',
       readAloud: 'Vorlesen',
       copyFullResponse: 'Vollständige Antwort kopieren',
       readAloudFullResponseHint: 'Umschalt-Klick: vollständige Antwort vorlesen',

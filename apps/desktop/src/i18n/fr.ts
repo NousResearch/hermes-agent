@@ -5689,6 +5689,8 @@ export const frOverrides = {
       readAloudFailed: 'Échec de la lecture à voix haute',
       preparingAudio: "Préparation de l'audio…",
       stopReading: 'Arrêter la lecture',
+      playbackSpeed: 'Vitesse de lecture',
+      playbackSpeedNormal: 'normale',
       readAloud: 'Lire à voix haute',
       copyFullResponse: 'Copier la réponse complète',
       readAloudFullResponseHint: 'Maj+clic : lire la réponse complète',

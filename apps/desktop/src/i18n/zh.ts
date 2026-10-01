@@ -4859,6 +4859,8 @@ export const zh = defineLocale({
       readAloudFailed: '朗读失败',
       preparingAudio: '正在准备音频...',
       stopReading: '停止朗读',
+      playbackSpeed: '播放速度',
+      playbackSpeedNormal: '正常',
       readAloud: '朗读',
       copyFullResponse: '复制完整回复',
       readAloudFullResponseHint: '按住 Shift 点击：朗读完整回复',

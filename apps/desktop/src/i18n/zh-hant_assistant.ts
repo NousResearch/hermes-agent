@@ -127,6 +127,8 @@ export const zhHantAssistant = {
       readAloudFailed: '朗讀失敗',
       preparingAudio: '正在準備音訊...',
       stopReading: '停止朗讀',
+      playbackSpeed: '播放速度',
+      playbackSpeedNormal: '正常',
       readAloud: '朗讀',
       copyFullResponse: '複製完整回覆',
       readAloudFullResponseHint: '按住 Shift 點擊：朗讀完整回覆',

@@ -3912,6 +3912,8 @@ export const ja = defineLocale({
       readAloudFailed: '読み上げに失敗しました',
       preparingAudio: '音声を準備中...',
       stopReading: '読み上げを停止',
+      playbackSpeed: '再生速度',
+      playbackSpeedNormal: '通常',
       readAloud: '読み上げ',
       copyFullResponse: '回答全体をコピー',
       readAloudFullResponseHint: 'Shiftを押しながらクリック: 回答全体を読み上げ',

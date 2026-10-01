@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sessionsLimit, resetSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
   $activeSessionId,
   $cronSessions,
+  $currentBranch,
+  $currentCwd,
   $freshDraftReady,
   $messagingSessions,
   $sessionProfilesTruncated,
@@ -11,6 +14,8 @@ import {
   $sessionsLoading,
   setActiveSessionId,
   setCronSessions,
+  setCurrentBranch,
+  setCurrentCwdTransient,
   setFreshDraftReady,
   setMessagingSessions,
   setSessionProfilesTruncated,
@@ -18,6 +23,13 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
+import { $retainedTodosBySession, restoreSessionTodosFromSnapshot } from '@/store/todos'
+import {
+  $transcriptTailBySessionId,
+  clearTranscriptTailPaging,
+  recordTranscriptTail,
+  transcriptTailState
+} from '@/store/transcript-tail'
 
 import {
   $gatewaySwitching,
@@ -64,10 +76,21 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     $stalledSessionIds.set([])
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
+    clearTranscriptTailPaging()
   })
 
   it('clears lists and arms loading so sidebar skeletons retrigger', () => {
+    restoreSessionTodosFromSnapshot(
+      's1',
+      {
+        revision: 2,
+        todos: [{ id: 'task', content: 'Old gateway task', status: 'in_progress' }]
+      },
+      false
+    )
     wipeSessionListsForGatewaySwitch()
+
+    expect($retainedTodosBySession.get().s1).toBeUndefined()
 
     expect($sessions.get()).toEqual([])
     expect($sessionProfilesTruncated.get()).toEqual({})
@@ -77,6 +100,45 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+  })
+
+  it("drops the outgoing gateway's draft workspace so the next gateway seeds its own (#114306)", () => {
+    setCurrentCwdTransient('/opt/data/profiles/tenant-a')
+    setCurrentBranch('main')
+
+    wipeSessionListsForGatewaySwitch()
+
+    expect($currentCwd.get()).toBe('')
+    expect($currentBranch.get()).toBe('')
+  })
+
+  it("leaves the outgoing backend's project scope so the next draft cannot start in it (#54990)", () => {
+    $projectScope.set('p_old_backend')
+
+    wipeSessionListsForGatewaySwitch()
+
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+  })
+
+  it("forgets the previous backend's in-memory paging state", () => {
+    const page = {
+      messages: Array.from({ length: 120 }, (_, index) => ({
+        id: index,
+        role: 'user' as const,
+        content: '',
+        timestamp: 1
+      })),
+      pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 120 }
+    }
+
+    recordTranscriptTail('recycled-id', page, { connectionId: 'local', profile: 'default' })
+
+    wipeSessionListsForGatewaySwitch()
+
+    // A same-id session on the next backend must resolve its own tail alone.
+    recordTranscriptTail('recycled-id', page, { connectionId: 'remote-1', profile: 'default' })
+    expect(Object.keys($transcriptTailBySessionId.get())).toHaveLength(1)
+    expect(transcriptTailState('recycled-id')?.possiblyTruncated).toBe(true)
   })
 
   it('strands in-flight profile-list fetches so the old backend cannot repaint the rail (#85731)', () => {

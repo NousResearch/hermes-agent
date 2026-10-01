@@ -6,7 +6,8 @@ backend-specific compatibility is checked before implementation.
 
 Implemented: native Telegram streaming default off (other agreed display defaults
 already native), medium reasoning, compression at 0.85 with three tail user
-messages, approvals off, quiet restart/transcript notices and local STT selection.
+messages, approvals off, quiet restart/transcript notices, unwrapped cron
+deliveries and local STT selection.
 Explicit operator values remain supported. No custom Telegram renderer or config
 loader was added. Shared conversation defaults and product rules are implemented; deployment
 files are prepared. Live server validation remains pending.
@@ -50,6 +51,8 @@ proposal; those settings were not approved.
   mode for every group.
 - Quiet operational notices: reference disables gateway restart notifications
   and transcript echo. These are separate from assistant progress updates.
+- Cron deliveries send the job's output without the native job-name header and
+  stop/manage footer (`cron.wrap_response: false`).
 
 Do not copy the reference's fixed context length or provider-specific caching
 parameters without checking the selected Codex model and backend support.

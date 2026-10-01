@@ -8,7 +8,7 @@
 
 Default to quiet Telegram delivery, medium reasoning, 85% compression with three
 real user messages retained, execution approvals and session/MCP confirmations
-off, no restart/transcript echoes, and
+off, no restart/transcript echoes, unwrapped cron deliveries, and
 local transcription. Explicit operator preferences still win. An unrelated cloud
 key must never make the default local transcription upload audio.
 
@@ -23,6 +23,6 @@ explicit opt-ins still prompt. Explicit MCP reloads retain native cache invalida
 
 ## Validation
 
-Run `tests/hermes_cli/test_employee_runtime_defaults.py`, gateway display/config,
+Run `tests/hermes_cli/test_employee_runtime_defaults.py`, cron delivery wrapping, gateway display/config,
 compression-default and transcription tests through `scripts/run_tests.sh`.
 Exercise defaults and explicit overrides across profiles A → B → A.

@@ -23,7 +23,7 @@ the explicit differences below.
 | Conversation framing | Native sender framing, session IDs, transcript mirroring and delivery history. | Removed compact handles and deferred delivery queue. |
 | Browser | Select native Browser Use through deployment settings. No changed lifecycle or provider implementation. | Reverted cloud resolver, browser CLI/provider and fork profile provisioning. |
 | Video | Keep OpenRouter/Gemini video route. | `tools/vision_tools.py` and deployment settings. |
-| Runtime defaults | Keep medium reasoning, 85% compression, three tail user messages, approvals and session/MCP confirmations off, shared group sessions and quiet Telegram/restart/transcript settings. | Native defaults and settings; operators can override. |
+| Runtime defaults | Keep medium reasoning, 85% compression, three tail user messages, approvals and session/MCP confirmations off, shared group sessions, unwrapped cron deliveries and quiet Telegram/restart/transcript settings. | Native defaults and settings; operators can override. |
 | Transcription | Local Whisper; bundle its default model in the Railway image. | Native transcription; Docker dependency/model cache and deployment settings. |
 | Configuration | Native mutable configuration and credential handling. | Removed fork config/auth/guide write prohibitions. Review-only write scope remains. |
 | CLI/admin APIs | Native commands, personality, memory configuration and endpoints. | Reverted command filtering, authoring/API rejection and custom doctor behavior. Skills remain disabled in agent runtime. |

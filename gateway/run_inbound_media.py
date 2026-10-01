@@ -88,14 +88,21 @@ def rehomed_media_path(raw: str) -> str:
         return raw
 
 
-def _build_media_placeholder(event) -> str:
-    """Text placeholder for media-only events (later replaced by vision enrichment).
-    Queued media is dequeued via .text only, so a caption-less event would otherwise be lost."""
+def _build_media_placeholder(event: MessageEvent) -> str:
+    """Render media-only pending input in the active profile."""
     from gateway.run import _event_media_is_image, _event_media_is_audio, _event_media_is_video
+    from tools.credential_files import to_agent_visible_cache_path
 
-    parts = []
-    media_urls = getattr(event, "media_urls", None) or []
-    for i, url in enumerate(media_urls):
+    if not event.media_urls:
+        return ""
+
+    rehome_inbound_media(event)
+    if not event.media_urls:
+        return "[attachment unavailable]"
+
+    parts: list[str] = []
+    for i, raw in enumerate(event.media_urls):
+        url = to_agent_visible_cache_path(raw)
         if _event_media_is_image(event, i):
             parts.append(f"[User sent an image: {url}]")
         elif _event_media_is_audio(event, i):

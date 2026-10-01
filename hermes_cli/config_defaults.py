@@ -12,6 +12,9 @@ docs of config.yaml.
 DEFAULT_SANDBOX_IMAGE = "nousresearch/hermes-sandbox:desktop"
 LEGACY_SANDBOX_IMAGES = ("nikolaik/python-nodejs:python3.11-nodejs20", "nikolaik/python-nodejs:python3.14-nodejs22")
 LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
+# Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
+DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
+LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
@@ -220,10 +223,10 @@ DEFAULT_CONFIG = {
         "verify_on_stop": False,
         # Inactivity warning (seconds), once per run before gateway_timeout; no interrupt. 0 = off.
         "gateway_timeout_warning": 900,
-        # Max seconds any surface (CLI, TUI/Desktop, messaging gateway) blocks an agent awaiting a
-        # clarify-tool reply; then it unblocks with "[user did not respond within Xm]". 0 or less =
-        # unlimited. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout (a legacy
-        # top-level ``clarify.timeout`` still wins when explicitly set).
+        # Max seconds a messaging platform blocks an agent awaiting a clarify-tool reply; then it
+        # unblocks with "[user did not respond within Xm]". 0 or less = unlimited. CLI, TUI and
+        # Desktop wait until answered. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout
+        # (a legacy top-level ``clarify.timeout`` still wins when explicitly set).
         # 1h because users step away and a shorter value evicted the entry mid-think so a later
         # button tap hit a dead entry. Tradeoff: a higher value holds the gateway's running-agent
         # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
@@ -356,7 +359,8 @@ DEFAULT_CONFIG = {
         "singularity_image": f"docker://{DEFAULT_SANDBOX_IMAGE}",
         "modal_image": DEFAULT_SANDBOX_IMAGE,
         "daytona_image": DEFAULT_SANDBOX_IMAGE,
-        "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
+        "vercel_image": DEFAULT_VERCEL_IMAGE,  # vercel_sandbox backend only: a Vercel-managed or VCR image
+        "vercel_runtime": "",  # deprecated by Vercel; a legacy runtime pin (node24 | node22 | python3.13) overrides vercel_image
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
@@ -1658,8 +1662,9 @@ DEFAULT_CONFIG = {
     #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.
     #   deny blocks instantly so the agent finds another way instead of waiting out the
     #   timeout and failing closed.
-    # timeout: seconds before an unanswered prompt fails closed (CLI and gateway). 60s
-    #   proved too tight for Telegram/Discord push notifications, hence 300.
+    # timeout: seconds before an unanswered prompt fails closed on messaging platforms, ACP and
+    #   approval transport plugins; CLI, TUI and Desktop wait until answered. 60s proved too
+    #   tight for Telegram/Discord push notifications, hence 300.
     "approvals": {
         # single_query_mode — what to do when a single-query (-q) session hits a dangerous command. -q runs
         # export HERMES_INTERACTIVE=1 (for interactive sudo prompts) but have NO user waiting to answer
@@ -1719,10 +1724,6 @@ DEFAULT_CONFIG = {
         # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
         # abandoned. 0 = no deadline (load inline). Max 600.
         "load_timeout_seconds": 10,
-        # Keep loading external plugins that still import pre-decomposition module paths after the
-        # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
-        # old paths raise ImportError once the compat layer is actually removed.
-        "allow_deprecated_imports": False,
         # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
         # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
         # scan-gated by that same pipeline).
@@ -2400,6 +2401,14 @@ DEFAULT_CONFIG = {
         # finish in budget, while every other workspace keeps its diagnostics. Must be a list —
         # any other shape logs a warning and skips LSP for every workspace until fixed.
         "exclude_roots": [],
+        # Directories (~ expanded; everything under an entry counts) whose projects a language
+        # server may load code from: the project's own .venv/venv interpreter, node_modules
+        # TypeScript SDK, svelte.config.js, build files (cargo, Gradle, mix, ...). The worktree of
+        # the launch dir or the session's workspace (hermes -w, a Desktop project, terminal.cwd) is
+        # always trusted; in any other checkout (a clone the agent made) only servers that run no
+        # project code start, pinned to Hermes-side tools, and the npx tsc / rustfmt lint fallbacks
+        # are skipped.
+        "trusted_workspaces": [],
         # Missing server binaries: auto = install via npm/go/pip into <HERMES_HOME>/lsp/bin/ on
         # first use; manual = only binaries on PATH; off = alias for manual.
         "install_strategy": "auto",
@@ -2648,6 +2657,11 @@ DEFAULT_CONFIG = {
         # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
         # updates. Empty = default ad-hoc identifier-pinned signing.
         "macos_signing_identity": "",
+        # Windows only: explicit ssh client for SSH connections, the -G config probe and SSH
+        # terminals, e.g. "C:\\Program Files\\Git\\usr\\bin\\ssh.exe" when the in-box OpenSSH is
+        # missing or broken. Empty = System32 OpenSSH, then Git for Windows' ssh.exe, then PATH.
+        # Read by the app before its first window; restart to apply. Ignored off-Windows.
+        "ssh_path": "",
         # Auto-continue a turn killed by a crash: resuming re-submits the interrupted prompt if
         # fresh; a stale one just shows the recovered partial transcript.
         "auto_continue": {
@@ -2702,7 +2716,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 48,  # Config schema version - bump this when adding new required fields
+    "_config_version": 49,  # Config schema version - bump this when adding new required fields
 }
 
 

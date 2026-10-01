@@ -16,6 +16,7 @@ Contract:
 """
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -112,7 +113,13 @@ def test_live_backend_survives_timezone_drifted_parent_marker(tmp_path):
         parent.kill()
         parent.wait(timeout=10)
         assert _wait_exit(serve, timeout=15.0), "backend outlived its dead parent"
-        assert serve.returncode == 0
+        # The watchdog raises SIGTERM so the graceful exit-flush handlers run
+        # (#108601) instead of the old os._exit(0); the chaining handler then
+        # restores the default disposition, so the process dies by SIGTERM
+        # exactly like a SIGTERM from a live desktop — not os._exit(0).
+        assert serve.returncode == -int(signal.SIGTERM), (
+            f"expected death by SIGTERM (graceful path), got returncode {serve.returncode}"
+        )
     finally:
         for proc in (serve, parent):
             if proc is not None and proc.poll() is None:

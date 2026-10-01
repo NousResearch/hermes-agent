@@ -741,12 +741,71 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
     return json.dumps({**json.loads(resp), **payload})  # text capture: merge the action payload in
 
 # ── Cache files (screenshots, element spills, vision temps) ─────────────────
+def _secure_dir_policy(cache_dir) -> None:
+    """Create/reconcile a Hermes media-cache dir owner-only (0700), except managed.
+
+    A capture is as sensitive as the screen it came from — an open password
+    manager, a private chat, a bank tab. The umask-derived 0755 these dirs
+    used to get made every local account able to list (and read) those
+    frames whenever ``HERMES_HOME`` itself is traversable, which is exactly
+    what the documented ``HERMES_HOME_MODE=0701`` web-server escape hatch
+    arranges. Delegates to the same house policy as every Hermes secret dir —
+    ``hermes_cli.config._secure_dir`` — with the mode passed to ``mkdir`` so
+    there is no window between mkdir and chmod; managed/NixOS installs keep
+    their group-share design (the mode is left to the configured umask/setgid
+    because these lazily-created dirs are not covered by the module's
+    ``systemd.tmpfiles`` rules). Best-effort; never breaks a capture.
+    """
+    try:
+        managed = False
+        try:
+            from hermes_cli.config import is_managed
+
+            managed = bool(is_managed())
+        except Exception:  # pragma: no cover - defensive
+            pass
+        if managed:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            return
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            from hermes_cli.config import _secure_dir
+
+            _secure_dir(cache_dir)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("computer_use: cache dir chmod skipped: %s", exc)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: cache dir creation failed for %s: %s", cache_dir, exc)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _write_private_bytes(path, data: bytes) -> None:
+    """Write ``data`` to ``path`` with owner-only (0600) permissions.
+
+    ``Path.write_bytes`` would land 0644 under a default umask. POSIX mode
+    bits are advisory on Windows (``os.chmod`` there only toggles the
+    read-only flag), so this is a best-effort narrowing that falls back to a
+    plain write rather than failing the capture.
+    """
+    import os as _os_priv
+
+    flags = _os_priv.O_WRONLY | _os_priv.O_CREAT | _os_priv.O_TRUNC
+    try:
+        fd = _os_priv.open(str(path), flags, 0o600)
+    except OSError:
+        path.write_bytes(data)
+        return
+    with _os_priv.fdopen(fd, "wb") as handle:
+        handle.write(data)
+
+
 def _cache_file(subdir: str, legacy: str, name: str, pattern: str = "", cap: int = 0):
-    """Path for a new file under ``$HERMES_HOME/<subdir>`` (dir created). With ``pattern``/``cap``, first unlinks the
-    oldest matching files so at most ``cap - 1`` remain (best-effort)."""
+    """Path for a new file under ``$HERMES_HOME/<subdir>`` (dir created owner-only, per #77579).
+    With ``pattern``/``cap``, first unlinks the oldest matching files so at most ``cap - 1`` remain
+    (best-effort)."""
     from hermes_constants import get_hermes_dir  # lazy so tests can patch get_hermes_dir
     cache_dir = get_hermes_dir(subdir, legacy)
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir_policy(cache_dir)
     with contextlib.suppress(Exception):
         files = sorted(cache_dir.glob(pattern), key=lambda p: p.stat().st_mtime) if pattern else []
         for stale in files[: max(0, len(files) - (cap - 1))]:
@@ -768,7 +827,8 @@ def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
     """Copy of the capture in Hermes' media cache so attachment surfaces can deliver it (None without an image)."""
     return _write_cache_file(
         "screenshot persistence", "cache/images", "image_cache", f"computer_use_{uuid.uuid4().hex}{_capture_image_format(cap)[1]}",
-        "computer_use_*.*", _MAX_CAPTURE_FILES, lambda p: p.write_bytes(base64.b64decode(cap.png_b64, validate=False)),
+        "computer_use_*.*", _MAX_CAPTURE_FILES,
+        lambda p: _write_private_bytes(p, base64.b64decode(cap.png_b64, validate=False)),
     ) if cap.png_b64 else None
 
 def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:
@@ -856,7 +916,7 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
         ext = _capture_image_format(cap)[1]
         temp_image_path = _cache_file("cache/vision", "temp_vision_images", f"computer_use_{uuid.uuid4().hex}{ext}")
         raw, scale_note = _shrink_capture_for_vision(raw, ext)
-        temp_image_path.write_bytes(raw)
+        _write_private_bytes(temp_image_path, raw)
         prompt = _VISION_PROMPT + summary + (f"\n\nNote: {scale_note}" if scale_note else "")
         result_json = _run_async(vision_analyze_tool(str(temp_image_path), prompt))
     except Exception as exc:
@@ -902,11 +962,3 @@ def check_computer_use_requirements() -> bool:
 def get_computer_use_schema() -> Dict[str, Any]:
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA
     return COMPUTER_USE_SCHEMA
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import struct  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

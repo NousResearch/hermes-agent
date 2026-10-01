@@ -294,10 +294,21 @@ def normalize_profile_name(name: str) -> str:
     case-insensitively. Dashboards/tools may pass title-cased labels — normalize before
     validation, assignment, and subprocess spawn.
 
-    Named profiles are stored lowercase under ``profiles/<id>/``. See #18498.
+    Named profiles are stored lowercase under ``profiles/<id>/``. The special
+    alias ``default`` is matched case-insensitively (``Default`` → ``default``).
+    Dashboards and tools may pass title-cased display labels; normalize before
+    validation, assignment, and subprocess spawn (see issue #18498).
+
+    Raises ``ValueError`` for non-string input: a numeric profile id (e.g. a
+    DB row id or a falsy sentinel) silently coerced via ``str()`` becomes a
+    real on-disk profile directory (``profiles/0/``, #88842). Callers that
+    hold a numeric id must resolve it to an actual profile name first.
     """
     if not isinstance(name, str):
-        name = str(name)
+        raise ValueError(
+            "profile name must be a string, got "
+            f"{type(name).__name__}: {name!r}"
+        )
     stripped = name.strip()
     if not stripped:
         raise ValueError("profile name cannot be empty")
@@ -2453,17 +2464,3 @@ def resolve_profile_env(profile_name: str) -> str:
     if not named_profile_is_live(profile_dir):
         raise _missing_profile_error(canon)
     return str(profile_dir)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
-    """Return True if the profile opted out of bundled-skill seeding."""
-    try:
-        return (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
-    except OSError:
-        return False
-# ---- END PLUGIN-COMPAT ----

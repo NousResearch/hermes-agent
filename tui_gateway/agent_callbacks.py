@@ -73,7 +73,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
         if st["open_tool"]:
             open_tool = st["open_tool"]
             st["open_tool"] = None
-            if _process_tool_chrome_enabled(csid) or _tool_lifecycle_required_for_ui(str(open_tool.get("name") or "")):
+            if _tool_progress_enabled(csid) or _tool_lifecycle_required_for_ui(str(open_tool.get("name") or "")):
                 _emit("tool.complete", csid, open_tool)
         if event_type == "subagent.tool":
             st["seq"] += 1
@@ -82,7 +82,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
                     "tool_id": f"submirror:{child_key}:{st['seq']}", "args": {}}
             if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
                 tool["preview"] = preview
-            if not _process_tool_chrome_enabled(csid) and not _tool_lifecycle_required_for_ui(tool_name):
+            if not _tool_progress_enabled(csid) and not _tool_lifecycle_required_for_ui(tool_name):
                 return
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
@@ -153,7 +153,7 @@ def _agent_cbs(sid: str) -> dict:
             sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
-        "tool_gen_callback": lambda name: _process_tool_chrome_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
+        "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
         "thinking_callback": lambda text: _agent_thinking_update(sid, text),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
@@ -162,12 +162,13 @@ def _agent_cbs(sid: str) -> dict:
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _agent_notice_update(sid, n),
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
-        "clarify_callback": lambda q, c, multi_select=False, questions=None: (
-            _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
+        "clarify_callback": lambda questions: _clarify_block(sid, questions),
         "read_terminal_callback": _read_block("terminal.read", 30),
         "read_preview_callback": _read_block("preview.read", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
-        "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
+        # The probe ladder lives in server.py (_preview_action_request) so an
+        # absent renderer fails fast instead of burning 45s per action (#94272).
+        "drive_preview_callback": lambda payload: _preview_action_request(sid, dict(payload)),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
         # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
@@ -544,6 +545,15 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         config_model_seen = _config_model_target()
         if opened:
             session_db = _open_profile_session_db(profile_home)
+        # A rebuild is not a conversation boundary (/new pops the pins before calling us): carry the
+        # session's /model, /reasoning and /fast picks, else config_model_seen below hides the
+        # reversion from the per-turn sync.
+        if "model_override" not in kwargs and isinstance(session.get("model_override"), dict):
+            kwargs["model_override"] = session["model_override"]
+        for pin, kwarg in (("create_reasoning_override", "reasoning_config_override"),
+                           ("create_service_tier_override", "service_tier_override")):
+            if kwarg not in kwargs and session.get(pin) is not None:
+                kwargs[kwarg] = session[pin]
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:

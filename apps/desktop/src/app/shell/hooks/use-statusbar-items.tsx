@@ -7,7 +7,7 @@ import { ProfileSwitcher } from '@/app/chat/sidebar/profile-dropdown-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
 import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
-import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
+import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
@@ -140,16 +140,24 @@ export function useStatusbarItems({
   const primaryTurnStartedAt = useStore($turnStartedAt)
 
   // The indicator must speak the same scope as the Spawn-tree panel it opens:
-  // every session's subagents, never background system actions. Only two
-  // COUNTS are read, so select scalars — a whole-map `useStore` re-ran this
-  // hook (rebuilding all ~9 statusbar items) on every subagent progress tick
-  // in ANY session, including background ones.
+  // running/queued from every session (never background system actions), plus
+  // terminal rows only for the session the user is in — the scope
+  // `subagentsForPanel` derives, so the count and the tree can never disagree
+  // and finished history from inactive sessions stops accumulating (#75505).
+  // Only two COUNTS are read, so select scalars — a whole-map `useStore` re-ran
+  // this hook (rebuilding all ~9 statusbar items) on every subagent progress
+  // tick in ANY session, including background ones.
   const subagentsRunning = useStoreSelector($subagentsBySession, bySession =>
     Object.values(bySession).reduce((sum, items) => sum + activeSubagentCount(items), 0)
   )
 
+  // Terminal rows only from the session the user is in — the panel drops other
+  // sessions' finished history (#75505), so the count the indicator shows must
+  // not resurrect it. Live running/queued rows stay cross-session above.
   const subagentsFailed = useStoreSelector($subagentsBySession, bySession =>
-    Object.values(bySession).reduce((sum, items) => sum + failedSubagentCount(items), 0)
+    Object.entries(bySession)
+      .filter(([sid]) => sid === primaryActiveSessionId)
+      .reduce((sum, [, items]) => sum + failedSubagentCount(items), 0)
   )
 
   // Backend truth for the free-tier chip. Refreshed on the ambient status
@@ -673,7 +681,9 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: contextBar || undefined,
+        detail: contextBar ? (
+          <ContextMeterDetail bar={contextBar} compressions={currentUsage.compressions} />
+        ) : undefined,
         // Never self-hide: the user opted this item in (it's hidden-by-
         // default), so an empty label must render as a waiting placeholder,
         // not a vanished item — an enabled-but-invisible toggle reads as
@@ -747,6 +757,7 @@ export function useStatusbarItems({
       contextBreakdownLoading,
       contextUsage,
       copy,
+      currentUsage.compressions,
       gaugeUsage,
       sessionStartedAt,
       gatewayState,

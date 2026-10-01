@@ -11,7 +11,7 @@ import { gateMatches, KNOWN } from './gates'
 test('gate signatures match their bug and not neighbouring failures', () => {
   const real =
     '"Update now" hands off to the updater and the app quits for it; the app logged:\n' +
-    '[2026-09-27T01:19:44.583Z] [hermes] [updates] state.db pre-flight failed: Python not found. Update cancelled before backend shutdown.'
+    '2026-09-27 01:19:44,583 [hermes] [updates] state.db pre-flight failed: Python not found. Update cancelled before backend shutdown.'
 
   expect(gateMatches(KNOWN.preflightPython, real)).toBe(true)
 

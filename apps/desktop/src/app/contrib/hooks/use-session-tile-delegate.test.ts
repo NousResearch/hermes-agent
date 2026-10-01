@@ -761,6 +761,52 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
   })
 
+  it('grafts same-window residue and still submits the Quick Entry prompt', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: storedId,
+      messages: [
+        { content: 'a', id: 1, role: 'user', timestamp: 1 },
+        { content: 'server-side turn residue', id: 2, role: 'assistant', timestamp: 2 }
+      ]
+    })
+
+    const stale = createClientSessionState(storedId, [
+      { id: 'u1', role: 'user', rowId: 1, parts: [textPart('a')] }
+    ])
+
+    const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, stale]]) }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([[storedId, runtimeId]]) }
+    const seeds: unknown[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef,
+      updateSessionState: vi.fn((id, updater, stored) => {
+        const prev = sessionStateByRuntimeIdRef.current.get(id) ?? createClientSessionState(stored)
+        const next = updater(prev)
+        sessionStateByRuntimeIdRef.current.set(id, next)
+        seeds.push(next)
+
+        return next
+      })
+    })
+
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'follow up')
+
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'work-vps',
+      'prompt.submit',
+      { session_id: runtimeId, text: 'follow up' },
+      1_800_000,
+      undefined
+    )
+    expect(seeds.at(-1)).toEqual(expect.objectContaining({ messages: expect.any(Array) }))
+    expect((seeds.at(-1) as { messages: unknown[] }).messages).toHaveLength(2)
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
+  })
+
   it('allows submitToSession when the authoritative transcript is not ahead', async () => {
     setSessions([row({ id: storedId, profile: 'work-vps' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({

@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+from agent.turn_context import build_api_messages
 from tests.agent import test_in_place_preflight_rewind as _rewind
 from tests.agent.test_in_place_preflight_rewind import _replies_displayed, _turn
 
@@ -48,6 +50,12 @@ def test_compaction_over_an_unanswered_prompt_keeps_one_copy_of_every_row(sessio
         cli.conversation_history = db.get_messages_as_conversation("sid", repair_alternation=True)
     elif surface == "resume":  # --resume and the TUI load the same history with row ids
         cli.conversation_history = db.get_resume_conversations("sid")[0]
+    # The repair's row counts ride on the live dicts for the commit; the request copy never carries them.
+    reload = db.get_messages_as_conversation("sid", repair_alternation=True)
+    request, _ = build_api_messages(
+        agent, reload, current_turn_user_idx=len(reload) - 1,
+        ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="")
+    assert not any({MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS} & set(m) for m in request)
     _turn(db, agent, cli, surface, 13, 5_000)
     _turn(db, agent, cli, surface, 14, 200_000)  # real usage over the threshold: the next turn compacts first
 

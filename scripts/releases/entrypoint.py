@@ -180,12 +180,15 @@ def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: s
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             execute, autopublish: bool = False, no_changelog: bool = False,
             skip_bundles: bool = False, skip_tests: bool = False,
-            published: tuple[str, str | None] = (SEED, None)) -> dict:
+            published: tuple[str, str | None] = (SEED, None),
+            run_wait: float = 0, sleep=time.sleep) -> dict:
     """Claim the next attempt of the derived version, cut its draft, and start the gate.
 
     ``published`` is the stable channel's ``(version, commit)``; the commit is
     None before the first publication. ``skip_bundles`` and ``skip_tests`` are
     written into the claim, which is the one record every later job reads.
+    ``run_wait`` is how many seconds to keep looking for the dispatched run;
+    GitHub lists it a moment after the dispatch returns.
     """
     _refresh_claims(repo, remote)
     _require_remote_main(repo, commit)
@@ -267,17 +270,31 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             "gh", "workflow", "run", WORKFLOW, "--ref", tag, "--repo", repository,
             "--raw-field", f"tag={tag}",
         ])
-        found = execute([
-            "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
-            "--branch", tag, "--json", "databaseId,url,headBranch,status",
-        ])
+        run_url = _await_run(execute, repository, tag, wait=run_wait, sleep=sleep)
     except Exception as exc:
         raise ReleaseRefused(f"release {tag} never started: {exc}") from exc
-    run_url = _dispatched_run(found, tag)
-    return {"version": version, "tag": tag, "commit": commit, "url": url,
+    return {"version": version, "tag": tag, "commit": commit, "url": url, "repository": repository,
             "final_url": f"https://github.com/{repository}/releases/tag/v{version}",
             "run_url": run_url, "autopublish": autopublish,
             "skip_bundles": skip_bundles, "skip_tests": skip_tests}
+
+
+RUN_POLL_SECONDS = 2
+RUN_WAIT_SECONDS = 30
+
+
+def _await_run(execute, repository: str, tag: str, *, wait: float, sleep) -> str:
+    """The dispatched run's URL, polling up to ``wait`` seconds. Empty if it never lists."""
+    polls = int(wait // RUN_POLL_SECONDS)
+    for poll in range(polls + 1):
+        run_url = _dispatched_run(execute([
+            "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
+            "--branch", tag, "--json", "databaseId,url,headBranch,status",
+        ]), tag)
+        if run_url or poll == polls:
+            return run_url
+        sleep(RUN_POLL_SECONDS)
+    return ""
 
 
 def _dispatched_run(raw: str, tag: str) -> str:
@@ -389,29 +406,33 @@ def abandon(version: str, *, repo: Path, remote: str, repository: str, delete, i
     return {"version": version, "tag": tag, "marker": marker, "repository": repository}
 
 
-def next_steps(result: dict) -> str:
-    """Say what started, what the operator waits for, and the next action."""
-    version = result["version"]
+def next_steps(result: dict, *, bold: bool = False) -> str:
+    """Say what was attempted, where its CI runs, and the one command that publishes it.
+
+    ``bold`` wraps the skipped-tests warning in ANSI bold; the caller decides
+    from the terminal, so piped output stays plain.
+    """
+    version, tag = result["version"], result["tag"]
+    actions_url = f"https://github.com/{result['repository']}/actions/workflows/{WORKFLOW}"
     lines = [
-        f"Claimed {result['tag']} for v{version}. The release workflow started on {result['tag']}.",
-        f"Workflow: {result['run_url']}" if result.get("run_url") else "Workflow: the run is not listed yet. Open the Actions tab for this claim.",
-        f"Draft release: {result['url']}",
-        "The draft exists now. Edit its notes while the workflow runs; the edits carry through to publication.",
-        "Wait for that workflow to finish. It builds and tests this commit.",
+        f"Attempting release {tag} for v{version}.",
+        "Release CI: " + (result.get("run_url")
+                          or f"the run is not listed yet. Find {tag} at {actions_url}"),
     ]
     if result["skip_bundles"]:
         lines.append("Bundles are skipped. Only the tag, the GitHub release and the Docker image "
                      "ship; the desktop, Termux and Store channels stay on the previous release.")
     if result["skip_tests"]:
-        lines.append("Tests are skipped. No CI, E2E, native smoke or upgrade acceptance job runs. "
-                     "The build is published untested.")
+        warning = "Tests are skipped, since you passed --skip-tests"
+        lines.append(f"\033[1m{warning}\033[0m" if bold else warning)
+    lines.append(f"Draft release: {result['url']}")
     if result["autopublish"]:
-        lines.append("Autopublish is on. A green workflow publishes the release. You do not run publish.")
+        lines.append("Edit the notes in the draft release. Autopublish is on: "
+                     f"when Release CI is green, v{version} publishes itself.")
     else:
-        lines.append("Autopublish is off. The release stays a draft after the workflow is green.")
-        lines.append("When it is green, publish the release to push this build live:")
+        lines.append("Edit the notes in the draft release. "
+                     f"When Release CI is green, to publish v{version}, run:")
         lines.append(f"    python scripts/release.py publish --version {version} --remote origin")
-    lines.append(f"After publication the release is at {result['final_url']}.")
     return "\n".join(lines)
 
 
@@ -437,9 +458,9 @@ def cmd_release(args) -> None:
         commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
         execute=execute, autopublish=args.autopublish, no_changelog=args.no_changelog,
         skip_bundles=args.skip_bundles, skip_tests=args.skip_tests,
-        published=published_stable_identity(repository),
+        published=published_stable_identity(repository), run_wait=RUN_WAIT_SECONDS,
     )
-    print(next_steps(result))
+    print(next_steps(result, bold=sys.stdout.isatty() and "NO_COLOR" not in os.environ))
 
 
 def _command_repository(args) -> tuple[Path, str, str]:

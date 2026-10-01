@@ -15,7 +15,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner
-from gateway.status import read_runtime_status
+from gateway.status import flush_runtime_status_async, read_runtime_status
 
 
 class _PortTakenAdapter(BasePlatformAdapter):
@@ -192,6 +192,7 @@ async def test_adapterless_platform_heals_once_its_adapter_appears(monkeypatch, 
         assert status["needs_attention"] is True
         await runner._reconnect_failed_platform(platform, time.monotonic() + 60)
         assert runner._failed_platforms[platform]["attempts"] == 2  # still missing: kept queued
+        assert await flush_runtime_status_async()
         assert "check the plugin" in read_runtime_status()["platforms"][platform.value]["error_message"]
 
         healthy = _HealthyAdapter()
@@ -200,6 +201,7 @@ async def test_adapterless_platform_heals_once_its_adapter_appears(monkeypatch, 
         await runner._reconnect_failed_platform(platform, time.monotonic() + 3600)
         assert runner.adapters[platform] is healthy
         assert runner._failed_platforms == {}
+        assert await flush_runtime_status_async()
         status = read_runtime_status()["platforms"][platform.value]
         assert status["state"] == "connected"
         assert status["needs_attention"] is False
@@ -212,6 +214,7 @@ async def test_adapterless_platform_heals_once_its_adapter_appears(monkeypatch, 
         monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: True)
         await runner._reconnect_failed_platform(slack, time.monotonic() + 3600)
         assert slack not in runner._failed_platforms
+        assert await flush_runtime_status_async()  # status writes are queued off-thread
         status = read_runtime_status()["platforms"][slack.value]
         assert (status["state"], status["error_code"]) == ("fatal", "adapter_unavailable")
         assert "Retrying" not in status["error_message"]

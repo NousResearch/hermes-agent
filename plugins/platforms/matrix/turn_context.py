@@ -78,7 +78,7 @@ class MatrixTurnContext:
         The parent's cached ``media_path`` can refer to another profile's cache or to a file
         that has since been moved. An entry that is still in the launch profile's cache is
         dropped, because the gateway could not move it into the routed profile."""
-        from gateway.run_inbound import rehomed_media_path
+        from gateway.run_inbound_media import rehomed_media_path
 
         def turn_path(dependency: QuotedMediaDependency) -> str | None:
             path = event.media_urls[dependency.media_index]

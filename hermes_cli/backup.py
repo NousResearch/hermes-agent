@@ -591,8 +591,6 @@ def run_backup(args) -> bool:
     the caller turns False into exit status 1 so a cron/systemd timer never publishes a "successful"
     archive that is missing state.db. Hard failures keep raising ``SystemExit``.
     """
-    if getattr(args, "keep", 0) < 0:
-        raise ValueError("--keep must be non-negative (0 keeps everything)")
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():

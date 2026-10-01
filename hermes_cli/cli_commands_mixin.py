@@ -872,10 +872,11 @@ class CLICommandsMixin:
         from hermes_cli.backup import prune_quick_snapshots
         keep = 20
         if len(parts) > 2:
-            try:
-                keep = int(parts[2])
-            except ValueError:
+            # isdecimal() also rejects "-1": a negative keep would slice away the
+            # newest snapshots instead of the oldest.
+            if not parts[2].isdecimal():
                 return print(f"  {_t('snapshot.usage_prune')}")
+            keep = int(parts[2])
         deleted = prune_quick_snapshots(keep=keep)
         print(f"  {_t('snapshot.pruned', deleted=deleted, keep=keep)}")
 

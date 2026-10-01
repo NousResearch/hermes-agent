@@ -7,10 +7,10 @@ from typing import Callable
 
 
 def _non_negative_keep(value: str) -> int:
-    keep = int(value)
-    if keep < 0:
-        raise ArgumentTypeError("--keep must be non-negative (0 keeps everything)")
-    return keep
+    # The one --keep validation: cmd_backup -> run_backup is the only caller.
+    if not value.isdecimal():
+        raise ArgumentTypeError("must be a non-negative integer (0 keeps everything)")
+    return int(value)
 
 
 def build_backup_parser(subparsers, *, cmd_backup: Callable) -> None:

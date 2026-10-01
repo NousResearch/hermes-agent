@@ -488,14 +488,14 @@ async def test_third_sender_not_dropped_when_debounce_store_is_stuck(lifecycle, 
         )
     elif lifecycle == "shutdown":
         import json
-        from gateway.shutdown_flush import _serialise_value
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         await adapter.cancel_background_tasks()
         payloads = [json.loads(path.read_text(encoding="utf-8"))
                     for path in (tmp_path / "pending_messages").glob("*.json")]
-        assert sorted((payload["data"] for payload in payloads), key=lambda value: value["text"]) == [
-            _serialise_value(event) for event in (event_a, event_b, event_c)
+        assert [(record["event"]["text"], record["event"]["source"]["user_id"])
+                for payload in payloads for record in payload["events"]] == [
+            (event.text, event.source.user_id) for event in (event_a, event_b, event_c)
         ]
         assert (adapter._pending_messages, adapter._text_debounce) == ({}, {})
     adapter._discard_text_debounce(session_key)

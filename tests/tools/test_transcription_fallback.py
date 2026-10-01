@@ -128,3 +128,60 @@ def test_all_exceptions_return_failure_envelope(audio, monkeypatch):
     assert result["provider"] == "backup"
     assert "unavailable" in result["error"]
     assert dispatch.call_count == 2
+
+
+# --- no_speech propagation across hops (silence is a property of the audio) ---
+def _hard():
+    return {"success": False, "error": "Groq API error (HTTP 500)"}
+
+
+def _silent():
+    return {"success": False, "error": "xai returned empty transcript", "no_speech": True}
+
+
+def test_hard_primary_then_silent_backup_is_not_silence(audio, monkeypatch):
+    # A real 500 on the primary must not be swallowed as "heard nothing" just
+    # because the empty-transcript backup was the last hop.
+    configure(monkeypatch, fallback_providers=["backup"])
+    monkeypatch.setattr(stt, "_dispatch_stt_provider", Mock(side_effect=[_hard(), _silent()]))
+    result = stt.transcribe_audio(audio)
+    assert result["success"] is False
+    assert result.get("no_speech") is False
+
+
+def test_silent_primary_then_hard_backup_stays_silence(audio, monkeypatch):
+    # Silence established by the primary survives a later hard backup error.
+    configure(monkeypatch, fallback_providers=["backup"])
+    monkeypatch.setattr(stt, "_dispatch_stt_provider", Mock(side_effect=[_silent(), _hard()]))
+    result = stt.transcribe_audio(audio)
+    assert result["success"] is False
+    assert result.get("no_speech") is True
+
+
+# --- whitespace dedup / upload size-guard with padded fallback names ---
+def test_padded_fallback_name_is_deduped_against_primary(audio, monkeypatch):
+    configure(monkeypatch, provider="local", fallback_providers=[" local "])
+    dispatch = Mock(return_value={"success": True, "transcript": "ok", "provider": "local"})
+    monkeypatch.setattr(stt, "_dispatch_stt_provider", dispatch)
+    assert stt.transcribe_audio(audio)["success"]
+    assert [c.args[1] for c in dispatch.call_args_list] == ["local"]
+
+
+def test_padded_fallback_name_is_deduped_against_fallback(audio, monkeypatch):
+    configure(monkeypatch, fallback_providers=["backup", " backup "])
+    dispatch = Mock(return_value={"success": False, "error": "failed"})
+    monkeypatch.setattr(stt, "_dispatch_stt_provider", dispatch)
+    stt.transcribe_audio(audio)
+    assert [c.args[1] for c in dispatch.call_args_list] == ["primary", "backup"]
+
+
+def test_padded_non_local_fallback_is_size_checked(audio, monkeypatch):
+    # " openai " strips to a cloud provider, so the upload cap must still apply.
+    configure(monkeypatch, provider="local", fallback_providers=[" openai "])
+    dispatch = Mock(return_value={"success": False, "error": "local failed"})
+    monkeypatch.setattr(stt, "_dispatch_stt_provider", dispatch)
+    size_check = Mock(return_value={"success": False, "error": "File too large"})
+    monkeypatch.setattr(stt, "_validate_audio_file_size", size_check)
+    assert stt.transcribe_audio(audio)["error"] == "File too large"
+    assert [c.args[1] for c in dispatch.call_args_list] == ["local"]
+    size_check.assert_called_once()

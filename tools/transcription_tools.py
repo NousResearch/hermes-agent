@@ -412,9 +412,19 @@ def _transcribe_prepared_audio(
     fallbacks = stt_config.get("fallback_providers", [])
     if isinstance(fallbacks, list):
         for fallback in fallbacks:
-            if isinstance(fallback, str) and fallback.strip() and fallback not in providers:
-                providers.append(fallback)
+            if isinstance(fallback, str) and fallback.strip():
+                name = fallback.strip()
+                if name not in providers:
+                    providers.append(name)
 
+    # Silence is a property of the audio, not of the last hop. Track it across the chain:
+    # a hop's no_speech verdict only stands if no earlier hop hit a hard error (an unresolved
+    # failure means we never actually established silence), and once a silence verdict stands a
+    # later hard error must not drop it. On exhaustion the accumulated verdict is stamped on the
+    # returned result so a hard primary + empty backup is not reported as silence, and a silent
+    # primary + hard backup still is.
+    no_speech_verdict = False
+    hard_error_seen = False
     for index, provider in enumerate(providers):
         # Always start with the original prepared file, never another provider's
         # temporary trim. A local-first chain must not bypass cloud size checks.
@@ -446,6 +456,12 @@ def _transcribe_prepared_audio(
                 shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
         if result.get("success"):
             return result
+        if result.get("no_speech"):
+            if not hard_error_seen:
+                no_speech_verdict = True
+        else:
+            hard_error_seen = True
+    result["no_speech"] = no_speech_verdict
     return result
 
 

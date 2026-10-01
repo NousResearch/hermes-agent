@@ -50,6 +50,20 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 # (two default dispatch ticks).
 TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 
+# Every worker runs in a transient ``hermes-worker-kanban-<task>-run-<n>.scope``
+# cgroup (``tools/process_registry``). ``--collect`` only removes that scope once
+# its cgroup is empty, so a worker that ends leaving a background child behind — a
+# ``bun run dev``, a ``python3 -m http.server``, an ``Xvfb``, a
+# ``while pgrep ...; do sleep 15; done`` loop — keeps the scope loaded and holds
+# the child's port for as long as the child lives. Nine such scopes were stopped
+# by hand on 2026-10-01 (ports 5177-5299, one a four-day-old ``bun run dev`` from
+# a card that finished on Sep 27), so the dispatcher reaps its own: every tick it
+# stops the scope of any run that has already ended.
+WORKER_SCOPE_UNIT_PREFIX = "hermes-worker-kanban-"
+WORKER_SCOPE_UNIT_RE = re.compile(
+    rf"^{re.escape(WORKER_SCOPE_UNIT_PREFIX)}(?P<task_id>.+)-run-(?P<run_id>\d+)\.scope$"
+)
+
 # ---------------------------------------------------------------------------
 # Respawn guard constants
 # ---------------------------------------------------------------------------
@@ -111,6 +125,10 @@ class DispatchResult:
     reaped_terminal_workers: list[str] = field(default_factory=list)
     """Task ids whose worker outlived its closed run and was terminated by
     :func:`reap_terminal_workers`."""
+    reaped_run_scopes: list[str] = field(default_factory=list)
+    """Scope unit names stopped by :func:`reap_terminal_run_scopes`: a closed run
+    whose transient worker scope was still loaded, holding whatever background
+    children the worker left behind."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -557,6 +575,118 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
             )
     if alive:
         reaped.append(row["task_id"])
+
+
+def _loaded_worker_scope_units() -> list[str]:
+    """Unit names of the worker scopes the user manager still has loaded.
+
+    One ``systemctl --user list-units`` call per tick: the loaded set is the
+    authoritative answer to "which worker cgroups still hold a process", and it
+    reaches a scope whose run row predates this sweep (or whose retained worker
+    evidence a previous tick already cleared) — which a per-run SELECT cannot.
+    ``systemctl`` missing, or a user bus that cannot be reached, is a silent
+    no-op: scope reaping must never be the reason a tick fails.
+    """
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return []
+    from tools.process_registry import systemd_user_bus_env
+
+    try:
+        proc = subprocess.run(
+            [binary, "--user", "list-units", "--type=scope", "--all", "--no-pager",
+             "--plain", "--no-legend", f"{WORKER_SCOPE_UNIT_PREFIX}*.scope"],
+            capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL, env=systemd_user_bus_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    units: list[str] = []
+    for line in (proc.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        unit = line.split(None, 1)[0]
+        if WORKER_SCOPE_UNIT_RE.match(unit):
+            units.append(unit)
+    return units
+
+
+def _stop_worker_scope_unit(unit_name: str) -> bool:
+    """``systemctl --user stop`` one transient worker scope; True if stopped or
+    already gone. Thin wrapper (the stop itself is shared with every other
+    scope-kill path in ``tools/process_registry``), so the sweep has one seam to
+    fake in tests."""
+    from tools.process_registry import _stop_systemd_unit
+
+    return _stop_systemd_unit(unit_name)
+
+
+def reap_terminal_run_scopes(conn: sqlite3.Connection, *, stop_fn=None) -> list[str]:
+    """Stop the transient worker scope of every run that has ended.
+
+    A worker scope is a cgroup, so stopping it reaps whatever the worker left
+    running inside it: the dev and preview servers, the ``Xvfb``, the
+    ``while pgrep ...; do sleep 15; done`` loop that had nothing left to wait for.
+    All of those outlive the agent process that started them, hold their port, and
+    answer to no signal sent to the worker's own pid — which is exactly why
+    ``reap_terminal_workers`` cannot clear them.
+
+    Only a scope whose own run row is closed is ever stopped, so a live run is
+    untouched; a scope whose run id is not in this board's DB (scopes are named by
+    task id alone) is left to the board that owns it; and a run that ended less
+    than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left alone so a worker
+    still finalising after its own transition is not killed. ``stop_fn`` is the
+    test hook. One scope's failure is logged and skips only that scope. Returns
+    the unit names stopped.
+    """
+    units = _loaded_worker_scope_units()
+    if not units:
+        return []
+    stop = stop_fn if stop_fn is not None else _stop_worker_scope_unit
+    cutoff = int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS
+    stopped: list[str] = []
+    for unit in units:
+        match = WORKER_SCOPE_UNIT_RE.match(unit)
+        if match is None:  # pragma: no cover - the lister applies the same pattern
+            continue
+        task_id, run_id = match.group("task_id"), int(match.group("run_id"))
+        try:
+            row = conn.execute(
+                "SELECT ended_at FROM task_runs WHERE id = ? AND task_id = ?",
+                (run_id, task_id),
+            ).fetchone()
+        except sqlite3.Error:  # pragma: no cover - defensive
+            _kb._log.debug(
+                "kanban dispatch: worker scope reap lookup failed for %s", unit, exc_info=True,
+            )
+            continue
+        if row is None or row["ended_at"] is None or int(row["ended_at"]) > cutoff:
+            continue
+        try:
+            if not stop(unit):
+                continue
+        except Exception:
+            _kb._log.debug(
+                "kanban dispatch: stopping worker scope %s failed for task %s",
+                unit, task_id, exc_info=True,
+            )
+            continue
+        stopped.append(unit)
+        try:
+            with _kb.write_txn(conn):
+                _kb._append_event(
+                    conn, task_id, "terminal_run_scope_reaped",
+                    {"unit": unit, "run_id": run_id}, run_id=run_id,
+                )
+        except Exception:  # pragma: no cover - the stop has already happened
+            _kb._log.debug(
+                "kanban dispatch: scope reap event failed for %s", unit, exc_info=True,
+            )
+    return stopped
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -2192,6 +2322,13 @@ def _run_reclaim_phase(
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
+    # The worker's *scope* is the other half of the same leak: killing the worker's
+    # pid does not reach a server it double-forked away from its own signal path,
+    # and the cgroup survives the run. Stop the closed run's scope (see
+    # ``reap_terminal_run_scopes``). Not dry-run gated, exactly like the terminal
+    # worker reaper on the line above: reaping is restorative, and the tick that
+    # leaves the leftover is what the operator asked to stop happening.
+    result.reaped_run_scopes = reap_terminal_run_scopes(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)

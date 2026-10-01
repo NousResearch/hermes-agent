@@ -13,6 +13,8 @@ import queue as queue_mod
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 
 from gateway.config import Platform
 from gateway.session import SessionSource
@@ -129,3 +131,67 @@ class TestTurnRunner:
             "Context length exceeded. Cannot compress further."
         )
         assert result["compression_exhausted"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["route", "agent", "callbacks", "history", "message", "conversation", "finalization"])
+@pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
+async def test_exception_after_stream_creation_finishes_consumer(monkeypatch, boundary, error_type):
+    from gateway.config import StreamingConfig
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    adapter = SimpleNamespace(
+        SUPPORTS_MESSAGE_EDITING=True, SUPPORTS_NATIVE_STREAMING=False,
+        max_message_length=4000, message_len_fn=len,
+    )
+    gateway_runner = MagicMock()
+    gateway_runner.config = SimpleNamespace(streaming=StreamingConfig(enabled=True))
+    gateway_runner._provider_routing = {}
+    gateway_runner._pre_agent_fallback_notice = None
+    gateway_runner._resolve_session_agent_runtime.return_value = ("test-model", {})
+    gateway_runner._delivery_adapter_for.return_value = adapter
+    gateway_runner._build_stream_consumer_config.return_value = (StreamConsumerConfig(), None)
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="test-chat"),
+        message="continue", session_id="test-session", session_key="test-key",
+        user_config={}, resolve_display_setting=lambda *_args: True,
+        _run_still_current=lambda: True,
+    )
+    turn = TurnRunner(gateway_runner, ctx)
+    monkeypatch.setattr(turn, "_combined_ephemeral_prompt", lambda: "")
+    monkeypatch.setattr(turn, "_resolve_turn_agent", lambda *_args: (object(), False))
+    monkeypatch.setattr(turn, "_wire_turn_agent_callbacks", lambda *_args: None)
+    monkeypatch.setattr(turn, "_load_turn_history", lambda *_args: ([], None, []))
+    monkeypatch.setattr(turn, "_prepare_turn_message", lambda *_args: ("continue", None))
+    monkeypatch.setattr(turn, "_run_conversation_with_approval", lambda *_args: {"final_response": "answer"})
+    error = error_type("failed after stream creation")
+
+    def fail(*_args):
+        raise error
+
+    target, method = {
+        "route": (gateway_runner, "_resolve_turn_agent_config"),
+        "agent": (turn, "_resolve_turn_agent"),
+        "callbacks": (turn, "_wire_turn_agent_callbacks"),
+        "history": (turn, "_load_turn_history"),
+        "message": (turn, "_prepare_turn_message"),
+        "conversation": (turn, "_run_conversation_with_approval"),
+        "finalization": (turn, "_finish_stream_consumer"),
+    }[boundary]
+    monkeypatch.setattr(target, method, fail)
+    finishes = []
+    real_finish = GatewayStreamConsumer.finish
+
+    def finish(consumer, final_text=None):
+        finishes.append(final_text)
+        real_finish(consumer, final_text)
+
+    monkeypatch.setattr(GatewayStreamConsumer, "finish", finish)
+    with pytest.raises(error_type) as caught:
+        turn.run_sync()
+    consumer = ctx.stream_consumer_holder[0]
+    assert isinstance(consumer, GatewayStreamConsumer)
+    assert (caught.value is error, finishes, ctx.result_holder) == (True, [None], [None])
+    await consumer.run()
+    assert consumer.final_response_sent is False

@@ -1824,18 +1824,23 @@ class TurnRunner(TurnStreamMixin):
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
-        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
-        agent, reused_cached_agent = self._resolve_turn_agent(
-            turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
-        )
-        if pending_fallback_notice:
-            # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
-            agent._pending_fallback_notice = pending_fallback_notice
-        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
-        agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
-        persist_msg, persist_ts = self._prepare_turn_message(agent_history)
-        result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
-        self._finish_stream_consumer(result, agent_history, stream_consumer)
+        try:
+            turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+            agent, reused_cached_agent = self._resolve_turn_agent(
+                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+            )
+            if pending_fallback_notice:
+                # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+                agent._pending_fallback_notice = pending_fallback_notice
+            self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+            agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
+            persist_msg, persist_ts = self._prepare_turn_message(agent_history)
+            result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+            self._finish_stream_consumer(result, agent_history, stream_consumer)
+        except BaseException:
+            if stream_consumer is not None:
+                stream_consumer.finish()
+            raise
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.
         # See the outer finally/completion section below. See #60671.

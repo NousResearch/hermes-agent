@@ -130,4 +130,3 @@ class TurnStreamMixin:
             stream_consumer.finish(_final_for_stream)
         except TypeError:
             stream_consumer.finish()
-

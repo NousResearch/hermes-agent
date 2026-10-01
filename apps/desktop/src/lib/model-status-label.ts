@@ -225,10 +225,16 @@ export function modelVariantTag(model: string): string {
  *  own pill (`ReasoningPill`), so a long model name can no longer push the
  *  effort out of the truncating span. Fast shows when the speed=fast param is
  *  on OR the active model is a `…-fast` variant — never both. */
-export function formatModelPillLabel(model: string, options?: { fastMode?: boolean }): string {
+export function formatModelPillLabel(model: string, options?: { fastMode?: boolean; serviceTier?: string }): string {
   const name = modelDisplayParts(model).name
 
-  const tag = model.trim() ? (options?.fastMode ? 'Fast' : modelVariantTag(model)) : ''
+  const tag = model.trim()
+    ? options?.serviceTier === 'ultrafast'
+      ? 'Ultrafast'
+      : options?.fastMode
+        ? 'Fast'
+        : modelVariantTag(model)
+    : ''
 
   return tag ? `${name} · ${tag}` : name
 }

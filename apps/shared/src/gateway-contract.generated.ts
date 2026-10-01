@@ -786,6 +786,7 @@ export interface ModelOptionProvider {
 /** ``hermes_cli/inventory.py::_apply_capabilities``. */
 export interface ModelCapabilities {
   fast: boolean
+  ultrafast?: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
 }
@@ -2945,6 +2946,7 @@ export interface SessionCreateParams {
   provider?: string | null
   reasoning_effort?: string | null
   fast?: boolean | null
+  service_tier?: string | null
   close_on_disconnect?: boolean
   hidden?: boolean
   room_plumbing?: boolean

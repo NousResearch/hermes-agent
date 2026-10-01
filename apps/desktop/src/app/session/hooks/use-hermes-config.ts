@@ -30,7 +30,7 @@ import {
 import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
 
 const DEFAULT_VOICE_SECONDS = 120
-const FAST_TIERS = new Set(['fast', 'priority', 'on'])
+const FAST_TIERS = new Set(['fast', 'priority', 'on', 'ultrafast'])
 
 function recordingLimit(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS
@@ -101,7 +101,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         ])
 
         const reasoning = normalizeConfigEffort(config.agent?.reasoning_effort)
-        const tier = (config.agent?.service_tier ?? '').trim()
+        const tier = String(config.agent?.service_tier || '').trim()
 
         // Publish the profile default regardless of whether the composer is
         // reseeded below: picker rows and preset application resolve "the
@@ -125,13 +125,12 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
           setCurrentReasoningEffort(reasoning)
           setCurrentFastMode(FAST_TIERS.has(tier.toLowerCase()))
+          setCurrentServiceTier(tier)
         }
 
         if (!canPublish()) {
           return
         }
-
-        setCurrentServiceTier(prev => (activeSessionIdRef.current ? prev : tier))
 
         if (!canPublish()) {
           return

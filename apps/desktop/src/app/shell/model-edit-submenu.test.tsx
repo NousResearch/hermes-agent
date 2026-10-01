@@ -28,8 +28,10 @@ function renderSubmenu(opts: {
   effort?: string
   fastControl: FastControl
   isActive?: boolean
+  serviceTier?: string
+  ultrafastSupported?: boolean
   onSelectModel?: (model: string) => void
-  onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
+  onSetOptions: (patch: { effort?: string; fast?: boolean; serviceTier?: string }) => void
   reasoning: boolean
 }) {
   return render(
@@ -47,6 +49,8 @@ function renderSubmenu(opts: {
             onSetOptions={opts.onSetOptions}
             provider="p1"
             reasoning={opts.reasoning}
+            serviceTier={opts.serviceTier}
+            ultrafastSupported={opts.ultrafastSupported}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -60,6 +64,33 @@ function renderSubmenu(opts: {
 // ever writes directly again, picking an effort for a kanban card would reach
 // over and change the user's live chat.
 describe('ModelEditSubmenu reports edits without performing them', () => {
+  it('reports Ultrafast separately from Fast and can return to standard', () => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      fastControl: { kind: 'param', on: true },
+      serviceTier: 'ultrafast',
+      ultrafastSupported: true,
+      onSetOptions,
+      reasoning: false
+    })
+    expect(screen.getByRole('switch', { name: 'Fast' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: 'Ultrafast' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('switch', { name: 'Ultrafast' }))
+    expect(onSetOptions).toHaveBeenCalledWith({ serviceTier: 'normal' })
+  })
+
+  it('offers only a standard reset for an unsupported carried-over speed', () => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      fastControl: { kind: 'param', on: true, canEnable: false },
+      serviceTier: 'priority',
+      onSetOptions,
+      reasoning: false
+    })
+    expect(screen.queryByRole('switch')).toBeNull()
+    fireEvent.click(screen.getByText('Use standard speed'))
+    expect(onSetOptions).toHaveBeenCalledWith({ serviceTier: 'normal' })
+  })
   it('param fast: reports the toggle', () => {
     const onSetOptions = vi.fn()
     renderSubmenu({ fastControl: { kind: 'param', on: true }, onSetOptions, reasoning: false })

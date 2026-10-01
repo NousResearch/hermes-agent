@@ -3,10 +3,20 @@ import { atom } from 'nanostores'
 import { persistString, storedString } from '@/lib/storage'
 
 import { notifyError } from './notifications'
-import { setCurrentFastMode, setCurrentReasoningEffort } from './session'
-import { sessionTileDelegate } from './session-states'
+import {
+  $activeSessionId,
+  $currentFastMode,
+  $currentReasoningEffort,
+  $currentServiceTier,
+  setCurrentFastMode,
+  setCurrentReasoningEffort,
+  setCurrentServiceTier
+} from './session'
+import { $sessionStates, sessionTileDelegate } from './session-states'
 
 const STORAGE_KEY = 'hermes.desktop.model-presets'
+const pendingWrites = new Map<string, Promise<unknown>>()
+const confirmedValues = new Map<string, string>()
 
 /** Per-model reasoning/fast preset, remembered globally across sessions and
  *  re-applied to the session whenever that model is selected. Unset dimensions
@@ -14,7 +24,11 @@ const STORAGE_KEY = 'hermes.desktop.model-presets'
 export interface ModelPreset {
   effort?: string
   fast?: boolean
+  serviceTier?: string
 }
+
+export const modelPresetServiceTier = ({ fast, serviceTier }: ModelPreset): string | undefined =>
+  serviceTier ?? (fast === undefined ? undefined : fast ? 'priority' : 'normal')
 
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
@@ -46,7 +60,16 @@ export function getModelPreset(provider: string, model: string): ModelPreset {
 /** Merge a partial preset for one model and persist. */
 export function setModelPreset(provider: string, model: string, patch: ModelPreset): void {
   const key = modelPresetKey(provider, model)
-  const next = { ...$modelPresets.get(), [key]: { ...$modelPresets.get()[key], ...patch } }
+  const tier = modelPresetServiceTier(patch)
+
+  const next = {
+    ...$modelPresets.get(),
+    [key]: {
+      ...$modelPresets.get()[key],
+      ...patch,
+      ...(tier !== undefined ? { serviceTier: tier, fast: tier !== 'normal' } : {})
+    }
+  }
 
   $modelPresets.set(next)
   persistString(STORAGE_KEY, JSON.stringify(next))
@@ -61,24 +84,66 @@ export function setModelPreset(provider: string, model: string, patch: ModelPres
  *  `primary: false` scopes the optimistic write to the tile's session slice —
  *  a tile's picker must not clobber the primary composer's effort/fast. */
 export async function applyModelPreset(
-  { effort, fast }: ModelPreset,
-  ctx: { failMessage: string; primary?: boolean; request: RequestGateway; sessionId: null | string }
+  preset: ModelPreset,
+  ctx: {
+    failMessage: string
+    primary?: boolean
+    request: RequestGateway
+    sessionId: null | string
+    isCurrent?: (dimension: 'effort' | 'speed') => boolean
+    scope?: string
+    onFailure?: (dimension: 'effort' | 'speed', confirmed: ModelPreset) => void
+  }
 ): Promise<void> {
-  if (ctx.primary ?? true) {
+  const { effort } = preset
+  const tier = modelPresetServiceTier(preset)
+  const fast = tier === undefined ? undefined : tier !== 'normal'
+  const primary = ctx.primary ?? true
+  const oldOwner = $activeSessionId.get()
+  const slice = $sessionStates.get()[ctx.sessionId ?? '']
+
+  const previous =
+    primary && !slice
+      ? { effort: $currentReasoningEffort.get(), fast: $currentFastMode.get(), serviceTier: $currentServiceTier.get() }
+      : {
+          effort: $sessionStates.get()[ctx.sessionId ?? '']?.reasoningEffort,
+          fast: $sessionStates.get()[ctx.sessionId ?? '']?.fast,
+          serviceTier: $sessionStates.get()[ctx.sessionId ?? '']?.serviceTier
+        }
+
+  const writeKey = (dimension: string) => `${ctx.scope ?? ''}::${ctx.sessionId}::${dimension}`
+
+  for (const dimension of [...(effort !== undefined ? ['effort'] : []), ...(tier !== undefined ? ['speed'] : [])]) {
+    const key = writeKey(dimension)
+
+    if (!pendingWrites.has(key)) {
+      confirmedValues.set(
+        key,
+        dimension === 'effort'
+          ? (previous.effort ?? '')
+          : previous.serviceTier || (previous.fast ? 'priority' : 'normal')
+      )
+    }
+  }
+
+  if (primary) {
     if (effort !== undefined) {
       setCurrentReasoningEffort(effort)
     }
 
     if (fast !== undefined) {
       setCurrentFastMode(fast)
+      setCurrentServiceTier(tier!)
     }
-  } else if (ctx.sessionId) {
+  }
+
+  if (ctx.sessionId) {
     sessionTileDelegate()?.updateSession(ctx.sessionId, state => ({
       ...state,
       // Like setCurrentReasoningEffort: the wire level belongs to the previous
       // effort, so it stays unknown until the next session.info re-stamps it.
       ...(effort !== undefined ? { reasoningEffort: effort, reasoningEffortWire: '' } : {}),
-      ...(fast !== undefined ? { fast } : {})
+      ...(fast !== undefined ? { fast, serviceTier: tier! } : {})
     }))
   }
 
@@ -86,15 +151,80 @@ export async function applyModelPreset(
     return
   }
 
-  try {
-    if (effort !== undefined) {
-      await ctx.request('config.set', { key: 'reasoning', session_id: ctx.sessionId, value: effort })
-    }
+  // Each dimension has its own write/failure: an effort error must not skip
+  // the speed request. A late failure cannot undo a newer edit or chat.
+  await Promise.all(
+    (
+      [
+        ['effort', effort],
+        ['speed', tier]
+      ] as const
+    ).map(async ([dimension, value]) => {
+      if (value === undefined || ctx.isCurrent?.(dimension) === false) {
+        return
+      }
 
-    if (fast !== undefined) {
-      await ctx.request('config.set', { key: 'fast', session_id: ctx.sessionId, value: fast ? 'fast' : 'normal' })
-    }
-  } catch (err) {
-    notifyError(err, ctx.failMessage)
-  }
+      try {
+        const key = writeKey(dimension)
+        const preceding = pendingWrites.get(key)
+
+        const write = Promise.resolve(preceding)
+          .catch(() => {})
+          .then(async () => {
+            await ctx.request('config.set', {
+              key: dimension === 'effort' ? 'reasoning' : 'fast',
+              session_id: ctx.sessionId,
+              value: dimension === 'speed' && value === 'priority' ? 'fast' : value
+            })
+            confirmedValues.set(key, value)
+          })
+
+        pendingWrites.set(key, write)
+
+        try {
+          await write
+        } finally {
+          if (pendingWrites.get(key) === write) {
+            pendingWrites.delete(key)
+          }
+        }
+      } catch (err) {
+        const confirmedValue = confirmedValues.get(writeKey(dimension)) ?? ''
+
+        const confirmed: ModelPreset =
+          dimension === 'effort'
+            ? { effort: confirmedValue }
+            : { serviceTier: confirmedValue || 'normal', fast: !!confirmedValue && confirmedValue !== 'normal' }
+
+        ctx.onFailure?.(dimension, confirmed)
+
+        if (ctx.isCurrent?.(dimension) ?? true) {
+          if (primary && $activeSessionId.get() === oldOwner) {
+            if (dimension === 'effort' && $currentReasoningEffort.get() === effort) {
+              setCurrentReasoningEffort(confirmed.effort ?? '')
+            } else if (dimension === 'speed' && $currentServiceTier.get() === tier) {
+              setCurrentFastMode(confirmed.fast ?? false)
+              setCurrentServiceTier(confirmed.serviceTier ?? '')
+            }
+          }
+
+          if (ctx.sessionId && (!primary || $activeSessionId.get() === oldOwner)) {
+            sessionTileDelegate()?.updateSession(ctx.sessionId, state => {
+              if (dimension === 'effort' && state.reasoningEffort === effort) {
+                return { ...state, reasoningEffort: confirmed.effort ?? '', reasoningEffortWire: '' }
+              }
+
+              if (dimension === 'speed' && state.serviceTier === tier) {
+                return { ...state, fast: confirmed.fast ?? false, serviceTier: confirmed.serviceTier ?? '' }
+              }
+
+              return state
+            })
+          }
+        }
+
+        notifyError(err, ctx.failMessage)
+      }
+    })
+  )
 }

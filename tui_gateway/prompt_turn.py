@@ -9,6 +9,7 @@ post-turn follow-ups (queued prompt, goal continuation, notifications).
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 
 from .method_ctx import HandlerRegistry, bind_module

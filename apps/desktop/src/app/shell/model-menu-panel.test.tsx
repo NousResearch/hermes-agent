@@ -4,8 +4,17 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $customModels } from '@/store/custom-models'
+import { $modelPresets, setModelPreset } from '@/store/model-presets'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModelSource } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentServiceTier,
+  $selectedStoredSessionId,
+  setCurrentModelSource
+} from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -53,6 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $selectedStoredSessionId.set(null)
   vi.clearAllMocks()
 })
 
@@ -139,6 +149,28 @@ describe('ModelMenuPanel MoA presets', () => {
 })
 
 describe('ModelMenuPanel current selection', () => {
+  it('clears a remembered Priority preset on a model without speed support', async () => {
+    $activeSessionId.set(null)
+    $currentProvider.set('openai-codex')
+    $currentModel.set('gpt-6-astra')
+    setModelPreset('openai-codex', 'gpt-daybreak-blue-latest', { serviceTier: 'priority' })
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'ChatGPT or Codex Subscription',
+          slug: 'openai-codex',
+          models: ['gpt-daybreak-blue-latest'],
+          capabilities: { 'gpt-daybreak-blue-latest': { fast: false, ultrafast: false, reasoning: true } }
+        }
+      ]
+    })
+    renderPanel()
+    fireEvent.click(await screen.findByRole('menuitem', { name: /daybreak.*blue/i }))
+    await vi.waitFor(() => expect($currentServiceTier.get()).toBe('normal'))
+    expect($currentFastMode.get()).toBe(false)
+    $modelPresets.set({})
+  })
+
   it('keeps the checkmark on the live SessionView model when a stale options response disagrees', async () => {
     $currentProvider.set('google')
     $currentModel.set('gemini-3.1-pro')

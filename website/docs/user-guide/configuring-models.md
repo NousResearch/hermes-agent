@@ -47,6 +47,12 @@ Type in the filter box to narrow by provider name, slug, or model ID.
 
 Pick a model, hit **Switch**, and Hermes writes it to `~/.hermes/config.yaml` under the `model` section. **This applies to new sessions only** — any chat tab you already have open keeps running whatever model it started with. To hot-swap the current chat, use the `/model` slash command inside it.
 
+### Subscription speed and extended context
+
+Speed is separate from reasoning effort and Daybreak access. On supported subscription models, **Fast** requests Priority; **Ultrafast** requests Astra's Ultrafast tier. Selecting one clears the other. The chosen tier is remembered per model and carried into a new chat. The profile default lives under **Settings → Model → Main model → Speed** (`agent.service_tier`: `normal`, `fast` or `ultrafast`); Ultrafast is listed only for models that offer it. Daybreak aliases do not offer accelerated speed controls; a legacy setting can be cleared with **Use standard speed**. An accepted request does not guarantee that OpenAI served the requested tier.
+
+Hermes creates the **GPT-6.1 Sol-900k** choice from an eligible discovered GPT-6.1 Sol model. The `-900k` suffix is a local context choice, removed from the model ID sent to OpenAI. Hermes limits its budget to the account catalog's maximum, and Codex may report a smaller usable context after its own reserve. Use **Refresh models** if a new model is absent. A failed discovery uses short-lived compatibility hints instead of caching them as a successful account catalog.
+
 ### Mid-session switches and context warnings
 
 When you switch models **inside an active session** (Herm TUI model picker, `hermes` CLI, or `/model` on Telegram/Discord), Hermes estimates whether your **next message** will run **preflight context compression** against the new model's window. If the session is already near or above that model's compression threshold (see [Context Compression](./configuration.md#context-compression)), the switch reply includes a warning — the same `warning_message` path used for expensive-model notices. The switch still applies immediately; compression runs on the **first user message after the switch**, before the model answers.

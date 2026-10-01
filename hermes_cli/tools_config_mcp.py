@@ -238,12 +238,15 @@ def _known_tool_platforms() -> set[str]:
     return known
 
 
-def toolset_rejections(names: List[str], platform: str) -> Dict[str, str]:
+def toolset_rejections(
+    names: List[str], platform: str, *, valid_toolsets: Set[str] | None = None,
+) -> Dict[str, str]:
     """Map each toolset in ``names`` that ``tools enable|disable`` rejects on ``platform`` to its error
     message. A toolset is rejected when it is unknown or restricted to other platforms."""
-    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
+    if valid_toolsets is None:
+        from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
 
-    valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
+        valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
     rejections: Dict[str, str] = {}
     for name in names:
         if name not in valid_toolsets:

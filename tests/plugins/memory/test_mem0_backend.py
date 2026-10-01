@@ -295,9 +295,10 @@ def _install_fake_mem0(monkeypatch):
             return cls(MemoryConfig(**config))
 
     class FakeOpenAI:
-        def __init__(self, *, api_key, base_url):
+        def __init__(self, *, api_key, base_url, default_headers=None):
             self.api_key = api_key
             self.base_url = base_url
+            self.default_headers = default_headers
             state.clients.append(self)
             self.chat = SimpleNamespace(
                 completions=SimpleNamespace(create=self._create)
@@ -441,6 +442,7 @@ class TestOSSBackend:
         client = state.clients[0]
         assert client.api_key == "configured-openai-sentinel"
         assert client.base_url == "https://openai.example/v1"
+        assert client.default_headers is None
         request = state.requests[0]
         assert request["model"] == "gpt-5-mini"
         assert request["tools"] == tools
@@ -460,6 +462,25 @@ class TestOSSBackend:
         assert len(callback_calls) == 1
         assert callback_calls[0][0] is adapter
         assert callback_calls[0][2] == request
+
+    def test_direct_openai_adds_session_header_for_opencode_relay(self, monkeypatch):
+        state, _, factory = _install_fake_mem0(monkeypatch)
+        config = factory.provider_to_class["openai"][1](
+            model="deepseek-v4.1-flash",
+            api_key="configured-openai-sentinel",
+            openai_base_url="https://opencode.ai/zen/go/v1",
+        )
+
+        module = importlib.import_module("plugins.memory.mem0._openai_llm")
+        monkeypatch.setattr(
+            "agent.opencode_affinity.resolve_affinity_key",
+            lambda session_id=None: "mem0-session-sentinel",
+        )
+        module.DirectOpenAILLM(config)
+
+        assert state.clients[0].default_headers == {
+            "x-opencode-session": "mem0-session-sentinel"
+        }
 
     def test_direct_openai_preserves_explicit_non_reasoning_override(self, monkeypatch):
         state, _, factory = _install_fake_mem0(monkeypatch)

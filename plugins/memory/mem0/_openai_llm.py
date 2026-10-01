@@ -44,7 +44,17 @@ class DirectOpenAILLM(OpenAILLM):
         if not api_key:
             raise ValueError("OpenAI API key is required for the Hermes Mem0 OSS provider")
         from openai import OpenAI
-        self.client = OpenAI(api_key=api_key, base_url=self.config.openai_base_url or get_secret("OPENAI_BASE_URL", "") or "https://api.openai.com/v1")
+        base_url = self.config.openai_base_url or get_secret("OPENAI_BASE_URL", "") or "https://api.openai.com/v1"
+        # OpenCode Go requires its session header on every request, including the
+        # requests made by Mem0's private OpenAI client.  Configure it at the SDK
+        # client boundary so chat-completions calls and future retries share the
+        # same conversation affinity as Hermes' main provider path.
+        from agent.opencode_affinity import opencode_session_headers
+        session_headers = opencode_session_headers("openai", base_url)
+        client_kwargs = {"api_key": api_key, "base_url": base_url}
+        if session_headers:
+            client_kwargs["default_headers"] = session_headers
+        self.client = OpenAI(**client_kwargs)
 
     def generate_response(self, messages: List[Dict[str, str]], response_format=None, tools: Optional[List[Dict]] = None, tool_choice: str = "auto", **kwargs):
         params = self._get_supported_params(messages=messages, **kwargs)

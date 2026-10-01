@@ -1,0 +1,14 @@
+ARO AGENT
+Copyright © 2026 samjuniors
+
+This product, "Aro Agent" (including the Aro family of products: Aro Agent,
+Aro CLI, Aro Desktop, Aro Harness), is maintained by samjuniors as a fork of
+"Hermes Agent" by Nous Research, used under the MIT License (see LICENSE).
+
+All user-facing surfaces of this fork are branded "Aro"; internal identifiers
+and upstream architecture remain derived from Hermes Agent.
+
+"Hermes" and associated marks belong to their respective owners and are used
+here only to identify the upstream project. All upstream notices and
+attribution requirements are retained in this distribution as required by the
+MIT License.

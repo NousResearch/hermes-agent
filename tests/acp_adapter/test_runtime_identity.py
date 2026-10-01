@@ -29,7 +29,7 @@ def test_version_slash_command_displays_derived_version(monkeypatch):
 
     agent = object.__new__(HermesACPAgent)
     state = cast(SessionState, SimpleNamespace(cwd="."))
-    assert agent._handle_slash_command("/version", state) == "Hermes Agent v1.2.3+4.gabcdef0"
+    assert agent._handle_slash_command("/version", state) == "Aro Agent v1.2.3+4.gabcdef0"
 
 
 @pytest.mark.asyncio

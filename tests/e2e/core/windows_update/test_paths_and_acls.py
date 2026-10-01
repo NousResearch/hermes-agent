@@ -164,7 +164,7 @@ def test_install_from_non_ascii_profile_with_spaces(journey: Journey) -> None:
 def test_hermes_works_and_updates_from_that_profile(journey: Journey) -> None:
     m = journey.machine
     version, turn, update = journey["version"], journey["turn"], journey["update"]
-    assert version.returncode == 0 and "Hermes Agent v" in version.stdout, fail_with(
+    assert version.returncode == 0 and "Aro Agent v" in version.stdout, fail_with(
         m, "hermes --version fails from a non-ASCII profile", version)
     assert turn.ok, fail_with(
         m, f"a turn fails from a non-ASCII profile (reply printed={turn.reply_id in turn.run.stdout}, "

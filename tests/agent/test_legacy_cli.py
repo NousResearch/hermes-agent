@@ -35,7 +35,7 @@ def test_metadata_invocations_never_start_an_agent(argv, monkeypatch, capsys):
 
     assert _run_console_script(monkeypatch, *argv) in (0, None)
     out = capsys.readouterr().out
-    assert "usage: hermes-agent" in out or out.startswith("Hermes Agent v")
+    assert "usage: hermes-agent" in out or out.startswith("Aro Agent v")
 
 
 def test_query_and_runner_options_reach_the_agent(monkeypatch, capsys):

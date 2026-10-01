@@ -1,6 +1,7 @@
 // The desktop product identity — THE single source for every name-shaped
-// value a variant owns. HERMES_DESKTOP_VARIANT=light builds "Hermes
-// Light", the remote-only client; everything else is full "Hermes".
+// value a variant owns. ARO_DESKTOP_VARIANT=light builds "Aro Light",
+// the remote-only client; everything else is full "Aro".
+// (Legacy HERMES_DESKTOP_VARIANT is still honored.)
 //
 // Consumed at build time by electron-builder.config.cjs (packaging
 // identity). electron/product-identity.ts is the typed runtime accessor.
@@ -9,22 +10,22 @@
 'use strict'
 
 const variants = {
-  '': { display: 'Hermes', kebab: 'hermes', pascal: 'Hermes' },
+  '': { display: 'Aro', kebab: 'aro', pascal: 'Aro' },
   light: {
-    display: 'Hermes Light',
-    kebab: 'hermes-light',
-    pascal: 'HermesLight'
+    display: 'Aro Light',
+    kebab: 'aro-light',
+    pascal: 'AroLight'
   },
   bundled: {
-    display: 'Hermes Agent',
-    kebab: 'hermes-bundled',
-    pascal: 'HermesBundled'
+    display: 'Aro Agent',
+    kebab: 'aro-bundled',
+    pascal: 'AroBundled'
   }
 }
 
-const variant = process.env.HERMES_DESKTOP_VARIANT || ''
+const variant = process.env.ARO_DESKTOP_VARIANT || process.env.HERMES_DESKTOP_VARIANT || ''
 if (!['', 'light', 'bundled', 'store'].includes(variant)) {
-  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store`)
+  throw new Error(`Unknown ARO_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store`)
 }
 
 // 'store' is a Store-submission packaging identity layered on the bundled
@@ -54,7 +55,7 @@ const displayName = buildCommit
 
 const kebabSuffix = buildCommit ? `-${buildCommit}` : canary ? '-canary' : ''
 const pascalSuffix = buildCommit ? `Commit${buildCommit}` : canary ? 'Canary' : ''
-const cliName = `${light ? 'hermes-light' : 'hermes'}${kebabSuffix}`
+const cliName = `${light ? 'aro-light' : 'aro'}${kebabSuffix}`
 if (store && (canary || buildCommit)) {
   throw new Error('Store packaging is only eligible for stable releases')
 }
@@ -66,22 +67,26 @@ const identity = {
   store,
   light,
   displayName,
-  appId: `com.nousresearch.${name.kebab}${kebabSuffix}`,
+  appId: `com.samjuniors.${name.kebab}${kebabSuffix}`,
   // Store and commit builds do not publish a release feed.
   channel: store || buildCommit ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
   appNamePascal: `${name.pascal}${pascalSuffix}`,
   artifactNamePascal: name.pascal,
   windowsExecutableName: kebabSuffix ? cliName : displayName,
   cliName,
-  msixAppIdWithOrg: `NousResearch.${name.pascal}${pascalSuffix}`,
+  msixAppIdWithOrg: `Samjuniors.${name.pascal}${pascalSuffix}`,
   ...(store
     ? {
         storeMsix: {
-          // Partner Center publisher identity (the account's publisher ID) —
-          // validated + re-signed by the Store on submission.
-          identityName: 'NousResearchInc.HermesAgent',
-          publisher: 'CN=EE6D86E4-606F-4E38-B940-AD7248C9D519',
-          publisherDisplayName: 'Nous Research Inc.'
+          // samjuniors must register its own Partner Center publisher
+          // identity before a Store submission; the upstream Nous Research
+          // values (kept here for reference) are:
+          //   identityName: 'NousResearchInc.HermesAgent'
+          //   publisher: 'CN=EE6D86E4-606F-4E38-B940-AD7248C9D519'
+          //   publisherDisplayName: 'Nous Research Inc.'
+          identityName: 'Samjuniors.AroAgent',
+          publisher: 'CN=SAMJUNIORS-PARTNER-CENTER-PLACEHOLDER',
+          publisherDisplayName: 'samjuniors'
         }
       }
     : {})

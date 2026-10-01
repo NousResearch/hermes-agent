@@ -1,3 +1,5 @@
+> **Fork 说明（samjuniors）**：本仓库以 **Aro**（Aro Agent / Aro CLI / Aro Desktop / Aro Harness）品牌维护，基于 Nous Research 的 Hermes Agent（MIT 许可）。当前品牌与路线图信息以英文 [README.md](README.md) 为准。
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>

@@ -1,3 +1,5 @@
+> **Nota del fork (samjuniors)**: este repositorio se mantiene bajo la marca **Aro** (Aro Agent / Aro CLI / Aro Desktop / Aro Harness), basado en Hermes Agent de Nous Research (licencia MIT). La información actual de marca y hoja de ruta está en el [README.md](README.md) en inglés.
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>

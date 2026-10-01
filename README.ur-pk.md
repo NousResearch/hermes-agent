@@ -1,3 +1,5 @@
+> **فورک نوٹ (samjuniors)**: یہ ریپو **Aro** برانڈ (Aro Agent / Aro CLI / Aro Desktop / Aro Harness) کے تحت برقرار ہے، Nous Research کے Hermes Agent (MIT لائسنس) پر مبنی۔ برانڈنگ اور روڈ میپ کی تازہ معلومات کے لیے انگریزی [README.md](README.md) دیکھیں۔
+
 <div dir="rtl">
 
 <p align="center">

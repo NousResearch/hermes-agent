@@ -66,7 +66,7 @@ def test_install_lands_on_head_and_publishes_hermes(journey: Journey) -> None:
     pinned = installed["pinned"]
     assert pinned == m.head, fail_with(m, f"bootstrap marker pins {pinned}, expected {m.head}", run)
     version = journey["version"]
-    assert version.returncode == 0 and "Hermes Agent v" in version.stdout, fail_with(
+    assert version.returncode == 0 and "Aro Agent v" in version.stdout, fail_with(
         m, "the published hermes.exe cannot report its version", version)
 
 

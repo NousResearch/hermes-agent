@@ -567,6 +567,10 @@ requires = ["setuptools==83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
+aro = "hermes_cli.main:main"
+aro-agent = "agent.legacy_cli:main"
+aro-acp = "acp_adapter.entry:main"
+# upstream aliases kept for compatibility
 hermes = "hermes_cli.main:main"
 hermes-agent = "agent.legacy_cli:main"
 hermes-acp = "acp_adapter.entry:main"

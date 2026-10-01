@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import logging
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Set
 
@@ -15,6 +17,9 @@ from tools.tool_backend_helpers import (
     fal_key_is_configured, has_direct_modal_credentials, normalize_browser_cloud_provider, normalize_modal_mode,
     resolve_modal_backend_state, resolve_openai_audio_api_key
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_PLATFORM_TOOLSETS = {"cli": "hermes-cli"}
@@ -299,6 +304,93 @@ def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, sele
     )
 
 
+_PLUGIN_GEN_REGISTRY_MODULES = {"image_gen": "agent.image_gen_registry", "video_gen": "agent.video_gen_registry"}
+
+
+def _plugin_gen_runtime_available(key: str, registry_name: str) -> Optional[bool]:
+    """``provider.is_available()`` for a plugin backend — the predicate the generation tool gates on.
+
+    The generation tools decide whether they exist with ``provider.is_available()``
+    (``tools/image_generation_tool.py::check_image_generation_requirements`` and the video
+    equivalent), and several backends make that predicate *stricter than, or independent of,*
+    their declared env vars: the managed-gateway fallback (``plugins/image_gen/krea``), the
+    ``key_env`` override (``plugins/image_gen/openai``), SDK presence, or a runtime key resolved
+    through ``resolve_runtime_provider`` (``plugins/image_gen/openrouter``). The row's env vars
+    answer the picker's question — "has the key been filled in" — not the runtime's, so a card
+    built on the row alone can advertise a backend the tool registry will not serve (and hide one
+    it will).
+
+    ``None`` when the provider instance cannot be resolved or asked: the caller then keeps the
+    picker's declarative readiness rather than inventing a third answer.
+    """
+    module = _PLUGIN_GEN_REGISTRY_MODULES.get(key)
+    if module is None:
+        return None
+    try:
+        # Lazy imports: a status render must not pull the provider stack in unless a plugin
+        # backend is selected, and ``get_provider`` is what the dispatcher itself uses.
+        from agent.provider_registry import is_available_safe
+
+        registry = importlib.import_module(module)
+        provider = registry.get_provider(registry_name)
+    except Exception as exc:  # registry missing / discovery failure
+        logger.debug("%s: plugin registry lookup failed for %r (%s)", key, registry_name, exc)
+        return None
+    if provider is None:
+        return None
+    return is_available_safe(provider, logger, f"{key} provider %s.is_available() raised %s")
+
+
+def _plugin_gen_backend(key: str, config: Dict[str, object], selected: Optional[str]) -> Optional[tuple[bool, str]]:
+    """``(ready, display name)`` when ``selected`` names a plugin-registered image/video backend.
+
+    ``None`` for the in-tree ``fal`` selection, the managed (``nous``) selection and never-configured
+    installs: those keep their FAL_KEY / Portal handling. A plugin-backed vendor (``deepinfra`` …)
+    declares its own registry row and env vars, so its readiness is the same value the Tools page
+    reports for that row rather than FAL's key — and ``available``/``active`` are then gated on the
+    backend's own ``is_available()``, the same predicate the generation tool's ``check_fn`` uses, so
+    the status card cannot claim a backend is usable when the tool registry will not serve it.
+
+    ``selected`` is already normalised by :func:`_selected_provider` (``read_selection`` semantics
+    lower-case the persisted value), while ``_plugin_provider_rows`` copies ``provider.name``
+    verbatim into the ``*_plugin_name`` marker and the image/video registries keep the default
+    ``normalize=str.strip`` (unlike ``tts_registry``'s ``lower_key``). The marker is therefore
+    normalised on this side too — comparing the two raw would silently drop every plugin whose id is
+    not already lower-case back to the FAL reading this function exists to remove.
+    """
+    if not selected or selected in ("nous", "fal"):
+        return None
+    from hermes_cli.tools_config_providers import _plugin_rows_for, provider_readiness_status
+
+    marker = f"{key}_plugin_name"
+    try:
+        row = next((r for r in _plugin_rows_for(key) if _norm(r.get(marker)) == selected), None)
+    except Exception as exc:  # registry missing / discovery failure -> keep the FAL/Portal reading
+        logger.debug("%s: plugin registry rows unavailable (%s)", key, exc)
+        return None
+    if row is None:
+        return None
+    registry_name = str(row.get(marker) or selected)
+    name = str(row.get("name") or selected)
+    try:
+        ready = provider_readiness_status(row, config) == "ready"
+    except Exception as exc:
+        # Fail closed: a row we cannot read must not advertise a backend as configured. Logged so a
+        # malformed third-party row is diagnosable instead of just invisible.
+        logger.debug("%s: provider_readiness_status failed for row %r (%s)", key, row.get("name"), exc)
+        ready = False
+    runtime_ready = _plugin_gen_runtime_available(key, registry_name)
+    if runtime_ready is None:
+        return ready, name
+    if runtime_ready != ready:
+        logger.debug(
+            "%s: plugin row %r declares readiness=%s but the tool's own is_available() is %s"
+            " — reporting the runtime predicate",
+            key, registry_name, ready, runtime_ready,
+        )
+    return runtime_ready, name
+
+
 def _audio_provider(cfg: Dict[str, object], default: str, gw: bool) -> str:
     provider = _norm(cfg.get("provider"), default)
     return "openai" if (provider == "nous" or gw) else (provider or default)
@@ -453,6 +545,18 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
         ),
         "modal": _modal_feature(_section(config, "terminal"), enabled["terminal"], managed["modal"], managed_tools_flag),
     }
+    # Plugin-backed image/video backends (deepinfra, …) are not FAL: their readiness comes from their
+    # own registry row, so a selected-and-ready plugin backend must report as configured and name
+    # itself instead of reading "not configured" on the dashboard System tab / `hermes status`.
+    for key in ("image_gen", "video_gen"):
+        backend = _plugin_gen_backend(key, config, selected[key])
+        if backend is None:
+            continue
+        ready, name = backend
+        features[key] = _state(
+            key, available=ready, active=bool(enabled[key] and ready), managed_by_nous=False,
+            toolset_enabled=enabled[key], current_provider=name, explicit_configured=True,
+        )
     return NousSubscriptionFeatures(
         subscribed=provider_is_nous or nous_auth_present, nous_auth_present=nous_auth_present,
         provider_is_nous=provider_is_nous, features=features, account_info=account_info,

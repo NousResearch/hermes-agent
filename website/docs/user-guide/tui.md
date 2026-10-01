@@ -6,7 +6,7 @@ description: "Launch the modern terminal UI for Hermes — mouse-friendly, rich 
 
 # TUI
 
-The TUI is the modern front-end for Hermes — a terminal UI backed by the same Python runtime as the [Classic CLI](cli.md). Same agent, same sessions, same slash commands; a cleaner, more responsive surface for interacting with them.
+The TUI is the modern front-end for Hermes — a terminal UI backed by the same Python runtime as the [Classic CLI](cli.md). Same agent and same sessions, with most of the same slash commands; a cleaner, more responsive surface for interacting with them.
 
 It's the recommended way to run Hermes interactively.
 
@@ -49,7 +49,7 @@ display:
 
 With `display.interface: tui`, a bare `hermes` (and `hermes chat`) launches the TUI. Explicit flags always win — run `hermes --cli` to drop back to the classic REPL for a single invocation, or `hermes --tui` / `HERMES_TUI=1` to force the TUI when the config default is `cli`.
 
-The classic CLI remains the shipped default. Anything documented in [CLI Interface](cli.md) — slash commands, quick commands, skill preloading, personalities, multi-line input, interrupts — works in the TUI identically.
+The classic CLI remains the shipped default. Most features documented in [CLI Interface](cli.md) — including slash commands, quick commands, skill preloading, personalities, multi-line input, and interrupts — work in the TUI. A small number of state-changing operations remain intentionally restricted to the classic CLI.
 
 ## Why the TUI
 
@@ -116,7 +116,7 @@ On macOS, `F7` means the physical F7 function key. MacBook keyboards may use tha
 
 ## Slash commands
 
-All slash commands work unchanged. A few are TUI-owned — they produce richer output or render as overlays rather than inline panels:
+Most slash commands work unchanged. A few are TUI-owned — they produce richer output or render as overlays rather than inline panels:
 
 | Command | TUI behavior |
 |---------|--------------|
@@ -130,7 +130,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
 | `/mouse [on\|off\|toggle\|wheel\|buttons\|all]` | Pick a mouse tracking preset at runtime (also persists to `display.mouse_tracking` in `config.yaml`). `wheel` (1000+1006) keeps scroll-wheel scrolling without the hover events that make tmux spam "No image in clipboard" over the prompt row; `buttons` adds drag-to-select; `all` is the default with hover-driven UI. |
 
-Every other slash command (including installed skills, quick commands, and personality toggles) works identically to the classic CLI. See [Slash Commands Reference](../reference/slash-commands.md).
+Every other slash command (including installed skills, quick commands, and personality toggles) works the same way as in the classic CLI. `/snapshot restore` and `/snapshot rewind` are intentional exceptions: they change configuration and state on disk while the TUI has cached settings, so run them in the classic CLI and relaunch the TUI afterward. See [Slash Commands Reference](../reference/slash-commands.md).
 
 ## Live session switcher
 

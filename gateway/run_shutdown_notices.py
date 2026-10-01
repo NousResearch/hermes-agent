@@ -14,6 +14,7 @@ logger = logging.getLogger("gateway.run")
 
 
 class GatewayShutdownNoticesMixin:
+    _restart_requested: bool
 
     def _restart_notification_allowed(self, platform: Platform) -> bool:
         """False when the platform config sets ``gateway_restart_notification=false``."""
@@ -271,14 +272,15 @@ class GatewayShutdownNoticesMixin:
                 continue
             chat_id = str(target.get("chat_id"))
             thread_id = target.get("thread_id")
-            dedup_key = (profile, job_id, *_notice_target_key(platform.value, chat_id, thread_id))
+            platform_str = str(platform.value)
+            dedup_key = (profile, job_id, *_notice_target_key(platform_str, chat_id, thread_id))
             if dedup_key in notified:
                 continue
             with _log_suppressed(logging.DEBUG, "Cron interrupt notice to %s:%s raised: %s", platform.value, chat_id):
                 metadata = self._thread_metadata_for_target(platform, chat_id, thread_id, adapter=adapter)
                 async def send_notice():
                     if await self._send_notice_logged(
-                        adapter, chat_id, msg, platform.value, "Cron interrupt notice to %s:%s failed: %s",
+                        adapter, chat_id, msg, str(platform.value), "Cron interrupt notice to %s:%s failed: %s",
                         "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
                     ):
                         notified.add(dedup_key)

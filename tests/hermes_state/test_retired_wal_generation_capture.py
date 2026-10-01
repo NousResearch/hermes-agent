@@ -255,6 +255,27 @@ def test_capture_refuses_to_guess_by_pathname(tmp_path, force_wal):
         db.close()
 
 
+def test_capture_does_not_recreate_missing_database_parent(tmp_path, force_wal):
+    home = tmp_path / "profile"
+    home.mkdir()
+    path = home / "state.db"
+    db = make_db(path, "gw-0", "seed")
+    try:
+        require_wal(db)
+        identity = db._db_sidecar_identity["-wal"]
+        moved = tmp_path / "archived-profile"
+        home.rename(moved)
+        try:
+            with pytest.raises(RetiredGenerationCaptureError, match="could not write"):
+                capture_retired_wal_generation(
+                    path, sidecar_identity={"-wal": identity}, trigger="unserve")
+            assert not home.exists()
+        finally:
+            moved.rename(home)
+    finally:
+        db.close()
+
+
 # ── Recoverable after the writer process has exited ──────────────────────────────────────────────────
 #
 # The gateway writer A runs in its OWN process, seeds + checkpoints history, leaves rows only in its WAL

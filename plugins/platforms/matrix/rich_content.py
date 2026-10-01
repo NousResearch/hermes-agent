@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -201,6 +203,7 @@ class MatrixRichContentMixin:
     _event_context_cache: MatrixEventContextCache
     _text_batch_delay_seconds: float
     _build_inbound_event: Callable[..., Awaitable[MessageEvent | None]]
+    _admit_text_event: Callable[[MessageEvent], Awaitable[asyncio.Future[bool] | bool]]
     _enqueue_text_event: Callable[[MessageEvent], None]
     if TYPE_CHECKING:
         async def handle_message(self, event: MessageEvent) -> None: ...
@@ -215,7 +218,7 @@ class MatrixRichContentMixin:
         relates_to: dict[str, Any],
         *,
         reply_parent: MatrixEventContext | None = None,
-    ) -> None:
+    ) -> asyncio.Future[bool] | bool | None:
         body = source_content.get("body")
         if not isinstance(body, str) or not body:
             return
@@ -228,11 +231,9 @@ class MatrixRichContentMixin:
             relates_to,
             reply_parent=reply_parent,
         )
-        if event is not None:
-            if self._text_batch_delay_seconds > 0:
-                self._enqueue_text_event(event)
-            else:
-                await self.handle_message(event)
+        if event is None:
+            return None
+        return await self._admit_text_event(event)
 
     def _retain_rich_content(
         self, event: MessageEvent, content: dict, event_id: str, sender: str

@@ -262,6 +262,7 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
         "emoji": "👍",
         "target_event_id": "$second",
         "text_content": "",
+        "reply_excerpt": None,
     }
     assert restarted.claim("work", "!room:test", "$first", "@alice:test", "👍",
                            verified_delivery_event_id="$second") is None
@@ -333,6 +334,7 @@ def test_existing_watch_database_discards_rows_without_delivery_event(tmp_path, 
         "emoji": "👍",
         "target_event_id": "$new",
         "text_content": "",
+        "reply_excerpt": None,
     }
 
 

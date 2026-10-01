@@ -21,7 +21,8 @@ def _call(call_id):
 
 
 # behaviour -> (rows another surface writes before the held suffix, the held suffix, render the held
-# suffix with gateway timestamps, rows written after the snapshot, the active rows expected after commit)
+# suffix with gateway timestamps, rows written after the snapshot, the active rows expected after commit
+# [, how many held dicts the compaction carries verbatim])
 CASES = {
     "timestamp_rendered_merged_user_names_its_run": (
         UNSEEN, [("user", "U2", {}), ("user", "U3", {}), ("assistant", "A3", {})], True, [],
@@ -43,6 +44,12 @@ CASES = {
         [], [("user", "U2", {}), ("assistant", "A2", {}), ("assistant", "A2b", {}), ("user", "U3", {}),
              ("assistant", "A3", {})], False, [("user", "UNSEEN_USER", {}), ("assistant", "A2\nA2b", {})],
         [SUMMARY, "UNSEEN_USER", "A2\nA2b"]),
+    # Two equal orphans cannot be named apart, so the commit keeps the watermark: the carried tail's
+    # rewind must widen by the rows counted behind A2, or A2's original stays summarized beside its copy.
+    "watermark_tail_rewind_widens_by_rows_dropped_behind_a_carried_dict": (
+        [], [("user", "U2", {}), ("assistant", "A2", {}), ("tool", "ORPHAN", {"tool_call_id": "killed"}),
+             ("tool", "ORPHAN", {"tool_call_id": "killed"}), ("user", "U3", {}), ("assistant", "A3", {})],
+        False, [], [SUMMARY, "A2", "U3", "A3"], 3),
 }
 
 
@@ -50,7 +57,8 @@ CASES = {
 def test_repaired_reload_commit_keeps_unseen_rows_live(tmp_path, case):
     from gateway.run import _build_gateway_agent_history
 
-    unseen, suffix, render, late, expected = CASES[case]
+    unseen, suffix, render, late, expected, *carried = CASES[case]
+    tail_count = carried[0] if carried else 0
     db = SessionDB(tmp_path / "state.db")
     try:
         db.create_session("sid", source="test")
@@ -69,9 +77,14 @@ def test_repaired_reload_commit_keeps_unseen_rows_live(tmp_path, case):
 
         covered, unresolved = coverage_for_commit(db, "sid", held)
         db.archive_and_compact(
-            "sid", [{"role": "user", "content": SUMMARY}],
-            watermark=watermark, covered_ids=covered, unresolved_held=unresolved)
+            "sid", [{"role": "user", "content": SUMMARY}, *held[len(held) - tail_count:]],
+            watermark=watermark, tail_count=tail_count, covered_ids=covered, unresolved_held=unresolved)
 
-        assert [row["content"] for row in db.get_messages("sid")] == expected
+        live = [row["content"] for row in db.get_messages("sid")]
+        assert live == expected
+        # A live row is never also summarized away: recall would return it twice.
+        recalled = [row[0] for row in db._conn.execute(
+            "SELECT content FROM messages WHERE session_id = 'sid' AND (active = 1 OR compacted = 1)").fetchall()]
+        assert [recalled.count(content) for content in live] == [1] * len(live)
     finally:
         db.close()

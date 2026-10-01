@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
 import stat
 import subprocess
 import sys
@@ -773,6 +774,7 @@ _SKILL_COUNT_LOCK = threading.Lock()
 # One scan lock per skills dir so concurrent cold scans of the SAME profile share one walk
 # while different profiles' scans still run in parallel.
 _SKILL_COUNT_SCAN_LOCKS: dict[str, threading.Lock] = {}
+_PROFILE_CREATE_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _skills_dir_signature(skills_dir: Path) -> float:
@@ -1349,7 +1351,11 @@ def create_profile(
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
-        os.rename(staging, profile_dir)
+        publish_lock = _PROFILE_CREATE_LOCKS.setdefault(canon, threading.Lock())
+        with publish_lock:
+            if profile_dir.exists():
+                raise _profile_exists_error(canon)
+            os.rename(staging, profile_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -1365,14 +1371,15 @@ def create_profile(
 
 
 def _clone_staging_dir(profile_dir: Path) -> Path:
-    """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
-    rename is atomic). A leftover from a crashed create is discarded."""
-    staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}"
+    """Create a unique staging directory beside the final profile.
+
+    The directory must remain on the profile filesystem so publishing it with rename is atomic.
+    ``mkdtemp`` makes concurrent creates in one process independent; a PID alone is shared by all
+    request threads.
+    """
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
-    if staging.is_symlink() or staging.is_file():
-        staging.unlink()
-    elif staging.is_dir():
-        shutil.rmtree(staging, ignore_errors=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{profile_dir.name}.staging-", dir=profile_dir.parent))
+    staging.rmdir()
     return staging
 
 

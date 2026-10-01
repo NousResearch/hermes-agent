@@ -1087,11 +1087,8 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         self.assertNotIn("claude", key)
 
 
-    @patch(
-        "tools.delegate_tool._load_config",
-        return_value={"inherit_mcp_toolsets": False},
-    )
-    def test_build_child_agent_strict_intersection_when_opted_out(self, mock_cfg):
+    @patch("tools.delegate_tool_toolsets._get_inherit_mcp_toolsets", return_value=False)
+    def test_build_child_agent_strict_intersection_when_opted_out(self, mock_inherit):
         parent = _make_mock_parent()
         parent.enabled_toolsets = ["web", "browser", "mcp-MiniMax"]
 
@@ -1114,6 +1111,62 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             MockAgent.call_args[1]["enabled_toolsets"],
             ["web", "browser"],
         )
+
+    @patch("tools.delegate_tool_toolsets._get_inherit_mcp_toolsets", return_value=False)
+    def test_build_child_agent_omits_mcp_from_default_parent_when_opted_out(self, mock_inherit):
+        for name, enabled_toolsets, expected in (
+            ("explicit", ["web", "browser", "mcp-MiniMax"], ["web", "browser"]),
+            ("derived", None, ["web"]),
+        ):
+            with self.subTest(parent=name):
+                parent = _make_mock_parent()
+                parent.enabled_toolsets = enabled_toolsets
+                parent.valid_tool_names = {"web_search", "mock_mcp_tool"}
+
+                with patch("model_tools.get_toolset_for_tool", side_effect={
+                    "web_search": "web", "mock_mcp_tool": "mcp-ReviewMock",
+                }.get), patch("run_agent.AIAgent") as MockAgent:
+                    MockAgent.return_value = MagicMock()
+                    _build_child_agent(
+                        task_index=0,
+                        goal="Test default toolsets",
+                        context=None,
+                        toolsets=None,
+                        model=None,
+                        max_iterations=10,
+                        parent_agent=parent,
+                        task_count=1,
+                    )
+
+                self.assertEqual(MockAgent.call_args[1]["enabled_toolsets"], expected)
+
+    @patch("tools.delegate_tool_toolsets._get_inherit_mcp_toolsets", return_value=True)
+    def test_build_child_agent_inherits_mcp_from_default_parent_when_enabled(self, mock_inherit):
+        for name, enabled_toolsets, expected in (
+            ("explicit", ["web", "browser", "mcp-MiniMax"], ["web", "browser", "mcp-MiniMax"]),
+            ("derived", None, ["mcp-ReviewMock", "web"]),
+        ):
+            with self.subTest(parent=name):
+                parent = _make_mock_parent()
+                parent.enabled_toolsets = enabled_toolsets
+                parent.valid_tool_names = {"web_search", "mock_mcp_tool"}
+
+                with patch("model_tools.get_toolset_for_tool", side_effect={
+                    "web_search": "web", "mock_mcp_tool": "mcp-ReviewMock",
+                }.get), patch("run_agent.AIAgent") as MockAgent:
+                    MockAgent.return_value = MagicMock()
+                    _build_child_agent(
+                        task_index=0,
+                        goal="Test default toolsets",
+                        context=None,
+                        toolsets=None,
+                        model=None,
+                        max_iterations=10,
+                        parent_agent=parent,
+                        task_count=1,
+                    )
+
+                self.assertEqual(MockAgent.call_args[1]["enabled_toolsets"], expected)
 
 
 class TestChildCredentialLeasing(unittest.TestCase):

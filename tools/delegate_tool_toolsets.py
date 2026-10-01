@@ -79,7 +79,7 @@ def _resolve_child_toolsets(
 ) -> tuple[List[str], List[str]]:
     """``(enabled_toolsets, disabled_toolsets)`` for a child. Children never gain tools the parent lacks: explicit
     ``toolsets`` are intersected with the parent's (composite-expanded) set, else the parent's enabled set is
-    inherited. Blocked tools are stripped twice — whole blocked toolsets here, and exact one-tool deny toolsets via
+    inherited, excluding MCP when ``inherit_mcp_toolsets`` is false. Blocked tools are stripped twice — whole blocked toolsets here, and exact one-tool deny toolsets via
     ``disabled_toolsets`` so blocked names inside mixed bundles (hermes-cli) are subtracted AFTER composite
     expansion and survive registry refreshes. Orchestrators get ``delegation`` re-added unconditionally
     (role-granted, not inherited)."""
@@ -103,8 +103,10 @@ def _resolve_child_toolsets(
             child_toolsets += [
                 name for name in sorted(parent_toolsets) if _is_mcp_toolset_name(name) and name not in child_toolsets
             ]
-    elif parent_agent and parent_enabled is not None:
-        child_toolsets = parent_enabled
+    elif parent_agent:
+        child_toolsets = list(parent_enabled) if parent_enabled is not None else sorted(parent_toolsets)
+        if not _get_inherit_mcp_toolsets():
+            child_toolsets = [name for name in child_toolsets if not _is_mcp_toolset_name(name)]
     else:
         child_toolsets = sorted(parent_toolsets) or DEFAULT_TOOLSETS
     child_toolsets = _strip_blocked_tools(child_toolsets)

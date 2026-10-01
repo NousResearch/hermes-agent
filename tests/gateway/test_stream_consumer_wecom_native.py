@@ -1075,10 +1075,10 @@ class TestNativeCommentaryPreservesAccumulated:
 
         task = asyncio.create_task(consumer.run())
         consumer.on_delta("Claude Code ")
-        await _wait_until(lambda: consumer._native_stream_opened)
+        assert await _wait_until(lambda: consumer._native_stream_opened), "native stream did not open"
         # Mid-turn commentary (Hindsight recall) — MUST NOT reset _accumulated.
         consumer.on_commentary("🔮 recalled 10 memories")
-        await _wait_until(lambda: adapter.send.await_count >= 1)
+        assert await _wait_until(lambda: adapter.send.await_count >= 1), "commentary was not sent"
         consumer.on_delta("finished (exit 0).")
         consumer.finish()
         await task

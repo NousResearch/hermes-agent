@@ -195,6 +195,8 @@ async def unserve_profile_runtime(runner, home):
     authority = registry.remove(home) if home in registry else None
     if authority is None:
         return
+    from gateway.session_logical_preparation import stop_logical_preparation
+    await stop_logical_preparation(authority)
     service = getattr(authority, 'hosted_room_service', None)
     if service is not None:
         await asyncio.to_thread(service.stop, timeout=5)
@@ -310,6 +312,8 @@ async def drain_gateway_runtime(runner):
 
 async def settle_gateway_runtime(runner):
     """Keep authority tasks alive until their last durable settlement write."""
+    from gateway.session_logical_preparation import stop_logical_preparation
+    await asyncio.gather(*(stop_logical_preparation(authority) for authority in _authorities(runner)))
     tasks = [live.task for authority in _authorities(runner)
              for live in authority.sessions.values() if live.task is not None]
     if tasks:

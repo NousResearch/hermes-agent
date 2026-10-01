@@ -14,6 +14,7 @@ from hermes_state_runtime import RuntimeStoreError, _text, admission_fingerprint
 
 VERSION = 2
 MAX_BATCH = 256
+_WORKER_STATUS_KEY = 'gateway.logical_preparation.worker.v1'
 
 # No readiness marker is installed by DDL. Only explicit preparation can certify
 # inventory coverage. Immutable projections cannot be pruned with HTTP receipts.
@@ -282,17 +283,20 @@ def _terminal(conn, key, encoded):
         return 'scoped_terminal_corruption' if pending[0] is not None else 'unclassifiable_terminal'
 
 
-def prepare_logical_attempt_index(db, *, batch_size=128):
+def prepare_logical_attempt_index(db, *, batch_size=128, epoch=None):
     """One bounded batch, outside requests; cursor survives restart.
 
-    Bootstrap calls once. Operators may call again on an owned database until
-    complete. No background thread, implicit request backfill, or live migration
-    is scheduled here. Errors name unavailable inventory, never invent identity.
+    The owning authority drains these batches off its event loop. Direct
+    preparation remains explicit; requests never backfill history. Errors name
+    unavailable inventory, never invent identity.
     """
     if type(batch_size) is not int or not 1 <= batch_size <= MAX_BATCH:
         raise RuntimeStoreError('invalid_params')
     from hermes_state_terminal import ADMISSION_PREFIX
     def write(conn):
+        if epoch is not None:
+            from hermes_state_runtime import _epoch
+            _epoch(conn, epoch)
         cookie = _schema_identity(conn)
         saved = conn.execute('SELECT * FROM logical_attempt_coverage WHERE singleton=1').fetchone()
         if saved is None or saved['version'] != VERSION or saved['schema_cookie'] != cookie:
@@ -357,8 +361,63 @@ def prepare_logical_attempt_index(db, *, batch_size=128):
         pending = conn.execute("SELECT 1 FROM logical_attempt_dirty WHERE source!='' LIMIT 1").fetchone() is not None
         return dict(processed=processed, complete=complete and not pending, coverage_complete=complete,
                     pending=pending, error=error, error_key=error_key,
-                    live_cursor=state['live_cursor'], terminal_cursor=state['terminal_cursor'])
+                    phase=state['phase'], live_cursor=state['live_cursor'], terminal_cursor=state['terminal_cursor'])
     return db._execute_write(write)
+
+
+def record_logical_preparation_worker(db, *, epoch, state):
+    """Record only the current owner's worker verdict, never payloads or failure text."""
+    from hermes_state_runtime import _epoch
+    def write(conn):
+        _epoch(conn, epoch)
+        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
+                     'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                     (_WORKER_STATUS_KEY, json.dumps(dict(epoch=epoch, state=state))))
+    db._execute_write(write)
+
+
+def logical_preparation_status(conn):
+    """Read metadata-only progress without preparing or modifying the store.
+
+    Pending counts inventory not yet visited; held counts dirty evidence already
+    visited and still unavailable. A held row can become recoverable later, so
+    the authority's fair reconciliation sweep keeps revisiting it.
+    """
+    from hermes_state_terminal import ADMISSION_PREFIX
+    cookie = _schema_identity(conn)
+    saved = conn.execute('SELECT * FROM logical_attempt_coverage WHERE singleton=1').fetchone()
+    valid = saved is not None and saved['version'] == VERSION and saved['schema_cookie'] == cookie
+    live_cursor = saved['live_cursor'] if valid else 0
+    terminal_cursor = saved['terminal_cursor'] if valid else ''
+    phase = saved['phase'] if valid else 'live'
+    pending = (conn.execute('SELECT COUNT(*) FROM session_admissions WHERE seq>?',
+                           (live_cursor,)).fetchone()[0] if phase == 'live' else 0)
+    if phase != 'covered':
+        pending += conn.execute('SELECT COUNT(*) FROM state_meta WHERE key>? AND key>=? AND key<?',
+                                (terminal_cursor, ADMISSION_PREFIX, ADMISSION_PREFIX[:-1] + '/')).fetchone()[0]
+    prepared = conn.execute("SELECT COUNT(*) FROM logical_attempts a WHERE admission_id!='' "
+                            'AND NOT EXISTS (SELECT 1 FROM logical_attempt_dirty d '
+                            'WHERE d.admission_id=a.admission_id AND d.source>\'\')').fetchone()[0]
+    held = conn.execute("SELECT COUNT(*) FROM logical_attempt_dirty d WHERE source>'' AND NOT ("
+                        "(?='live' AND source='live' AND EXISTS (SELECT 1 FROM session_admissions a "
+                        'WHERE a.admission_id=d.admission_id AND a.seq>?)) OR '
+                        "(?!='covered' AND source='terminal' AND ?||d.admission_id>?))",
+                        (phase, live_cursor, phase, ADMISSION_PREFIX, terminal_cursor)).fetchone()[0]
+    state = 'preparing' if pending or phase != 'covered' else ('held' if held else 'ready')
+    worker = conn.execute('SELECT value FROM state_meta WHERE key=?', (_WORKER_STATUS_KEY,)).fetchone()
+    current_epoch = conn.execute('SELECT epoch FROM runtime_epoch WHERE singleton=1').fetchone()
+    if worker is not None:
+        try:
+            verdict = json.loads(worker[0])
+            if current_epoch is not None and verdict['epoch'] == current_epoch[0]:
+                if verdict['state'] == 'failed':
+                    state = 'unavailable'
+                elif verdict['state'] == 'stopped' and state == 'preparing':
+                    state = 'waiting'
+        except (ValueError, TypeError, KeyError):
+            state = 'unavailable'
+    return dict(state=state,
+                phase=phase, prepared=prepared, pending=pending, held=held)
 
 
 def _dirty_batch(conn, budget):

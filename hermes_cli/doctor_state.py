@@ -496,9 +496,35 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
     if state_db_path.exists():
         _state_db_health(f, should_fix, state_db_path, _DHH)
         _state_db_stats(f.issues, state_db_path)
+        _logical_attempt_preparation(state_db_path)
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
     _state_db_wal(f, should_fix, state_db_path)
+
+
+def _logical_attempt_preparation(state_db_path):
+    """Inspect the index through the same read-only diagnostic boundary as state stats."""
+    import sqlite3
+    from hermes_state_logical_attempts import logical_preparation_status
+    try:
+        with sqlite3.connect(read_only_db_uri(state_db_path), uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='logical_attempts'").fetchone():
+                return
+            status = logical_preparation_status(conn)
+    except (OSError, sqlite3.Error, ValueError):
+        check_warn('Logical-attempt preparation is unavailable', '(restart the owning gateway to resume)')
+        return
+    message = ('Logical-attempt preparation: '
+               f"{status['prepared']} prepared, {status['pending']} pending, {status['held']} held")
+    if status['state'] == 'unavailable':
+        check_warn(message, '(preparation stopped; inspect gateway logs before restarting it)')
+    elif status['held']:
+        check_warn(message, '(unresolved evidence is retained; lookup remains fenced wherever absence is unproven)')
+    elif status['pending']:
+        check_info(message + ' (waiting for preparation by the owning gateway)')
+    else:
+        check_ok(message)
 
 
 @doctor_check()

@@ -83,22 +83,20 @@ class TestHardenGitArgv:
 # ---------------------------------------------------------------------------
 
 
+_CLEAN_GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+                  "GIT_CONFIG_NOSYSTEM": "1"}
+
+
 def _make_malicious_repo(tmp: Path) -> tuple[Path, Path]:
     """Build a repo whose .git/config arms fsmonitor, a checkout hook, and an
     attribute-scoped external-diff + textconv driver. Returns (repo, marker_stem):
     a fired sink leaves ``<marker_stem>.<sink>`` on disk."""
     repo = tmp / "poc"
-    clean = {
-        **os.environ,
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
-    }
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=clean)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=_CLEAN_GIT_ENV)
     (repo / "README").write_text("hi\n")
     ident = ["-c", "user.email=a@b", "-c", "user.name=a"]
-    subprocess.run(["git", "-C", str(repo), *ident, "add", "."], check=True, env=clean)
-    subprocess.run(["git", "-C", str(repo), *ident, "commit", "-qm", "init"], check=True, env=clean)
+    subprocess.run(["git", "-C", str(repo), *ident, "add", "."], check=True, env=_CLEAN_GIT_ENV)
+    subprocess.run(["git", "-C", str(repo), *ident, "commit", "-qm", "init"], check=True, env=_CLEAN_GIT_ENV)
 
     marker = tmp / "MARKER"
     hooks = repo / "evil-hooks"
@@ -117,7 +115,7 @@ def _make_malicious_repo(tmp: Path) -> tuple[Path, Path]:
         "diff.evil.textconv": f"touch '{marker_shell}.textconv'; cat",
     }
     for key, value in settings.items():
-        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True, env=clean)
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True, env=_CLEAN_GIT_ENV)
     (repo / ".gitattributes").write_text("* diff=evil\n")
     (repo / "README").write_text("changed\n")  # dirty working tree so diffs run
     return repo, marker
@@ -125,7 +123,7 @@ def _make_malicious_repo(tmp: Path) -> tuple[Path, Path]:
 
 def _fired(marker: Path) -> list[str]:
     out = []
-    for sink in ("fsmonitor", "hook", "extdiff", "textconv"):
+    for sink in ("fsmonitor", "hook", "extdiff", "textconv", "ssh"):
         p = Path(f"{marker}.{sink}")
         if p.exists():
             out.append(sink)
@@ -193,12 +191,13 @@ def test_subagent_worktree_add_is_safe(malicious_repo, tmp_path):
     assert _fired(marker) == []
 
 
-def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_path):
+def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_path, monkeypatch):
     """``status`` / ``ls-files`` / ``worktree add`` read the index, which runs ``core.fsmonitor``;
     ``worktree add`` also runs the repository's hooks, and ``branch -D`` its reference-transaction
     hook. Recovery hint, completion probe, kanban worktree, worktree-gc ``status``, the reclaimers'
     dirty probe (kanban teardown), and the three unattended branch deletions: the reclaim sweep,
-    the orphaned-branch pass and the cleanup after a failed ``worktree add``."""
+    the orphaned-branch pass and the cleanup after a failed ``worktree add``. The reclaim sweep's
+    ``ls-remote`` and the shallow-repo ``fetch --unshallow`` must not run a repo ``core.sshCommand``."""
     from hermes_cli import kanban_db_workspace as kw
     from hermes_cli import worktree_gc, worktree_ops
     from tools.async_delegation_recovery_hints import git_state_hint
@@ -213,24 +212,31 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     assert _fired(marker) == []
     assert dirty is False  # the probe ran: a skipped one reads as dirty
 
-    clean = _CLEAN_GIT_ENV
-    subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "branch", "pr-1"], check=True, env=clean)
+    subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "branch", "pr-1"], check=True,
+                   env=_CLEAN_GIT_ENV)
     kw._ensure_git_worktree(repo, tmp_path / "wt3", "safe3")
     worktree_ops._reap_prune_verdicts(str(repo), [(tmp_path / "wt2", 0.0, False, "reap", None)], 0.0)
     worktree_ops._prune_orphaned_branches(str(repo))
     worktree_ops._cleanup_failed_worktree_add(str(repo), tmp_path / "wt3", "safe3")
     assert _fired(marker) == []
     branches = subprocess.run(["git", "-C", str(repo), "branch", "--format=%(refname:short)"],
-                              capture_output=True, text=True, env=clean).stdout.split()
+                              capture_output=True, text=True, env=_CLEAN_GIT_ENV).stdout.split()
     assert not {"safe2", "pr-1", "safe3"} & set(branches)  # the deletions ran
 
+    for key, value in {"remote.origin.url": "ssh://git@example.invalid/x.git",
+                       "core.sshCommand": f"touch '{marker.as_posix()}.ssh'; false"}.items():
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True, env=_CLEAN_GIT_ENV)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True, env=_CLEAN_GIT_ENV).stdout
+    (repo / ".git" / "shallow").write_text(head)  # _repo_is_shallow now reads true
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)  # an env value would mask core.sshCommand
+    worktree_ops._fetch_remote_branch_heads(str(repo), timeout=20)
+    worktree_ops._deepen_shallow_repo(str(repo), timeout=20)
+    assert _fired(marker) == []
 
-_CLEAN_GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
-                  "GIT_CONFIG_NOSYSTEM": "1"}
 
-
-def _make_filter_repo(tmp: Path, attrs: str, config) -> Path:
-    """Committed repo whose ``.gitattributes`` is *attrs*; ``config(repo)`` is appended to ``.git/config``."""
+def _make_filter_repo(tmp: Path, attrs: str, config, marker: str) -> Path:
+    """Committed repo whose ``.gitattributes`` is *attrs*; ``config(repo, marker)`` is appended to ``.git/config``."""
     repo = tmp / "repo"
     subprocess.run(["git", "init", "-q", str(repo)], check=True, env=_CLEAN_GIT_ENV)
     (repo / "README").write_text("hi\n")
@@ -239,7 +245,7 @@ def _make_filter_repo(tmp: Path, attrs: str, config) -> Path:
     subprocess.run(["git", "-C", str(repo), *ident, "add", "."], check=True, env=_CLEAN_GIT_ENV)
     subprocess.run(["git", "-C", str(repo), *ident, "commit", "-qm", "init"], check=True, env=_CLEAN_GIT_ENV)
     with open(repo / ".git" / "config", "a") as fh:
-        fh.write(config(repo))
+        fh.write(config(repo, marker))
     return repo
 
 
@@ -248,38 +254,44 @@ def _evil_filter(marker: str, name: str = "evil") -> str:
             f'\tclean = touch \'{marker}.clean\'; cat\n\trequired = true\n')
 
 
-def _evil_include(condition: str, marker: str):
-    def config(repo: Path) -> str:
+def _evil_include(condition):
+    def config(repo: Path, marker: str) -> str:
         (repo / ".git" / "evil.inc").write_text(_evil_filter(marker))
         return f'[includeIf "{condition(repo)}"]\n\tpath = evil.inc\n'
     return config
 
 
-@pytest.mark.parametrize("hostile", ["plain", "case_collision", "onbranch_include", "gitdir_include", "filter_flood"])
-def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, hostile):
+@pytest.mark.parametrize("attrs, config, refused", [
+    pytest.param("README filter=evil\n", lambda r, m: _evil_filter(m), False, id="plain"),
+    pytest.param("README filter=Evil\n",
+                 lambda r, m: '[filter "evil"]\n\tsmudge = cat\n\tclean = cat\n' + _evil_filter(m, "Evil"),
+                 False, id="case_collision"),
+    pytest.param("README filter=evil\n", _evil_include(lambda r: "onbranch:safe"), True, id="onbranch_include"),
+    pytest.param("README filter=evil\n",
+                 _evil_include(lambda r: f"gitdir:{(r / '.git' / 'worktrees').as_posix()}/"), True,
+                 id="gitdir_include"),
+    pytest.param("README filter=evil\n",
+                 lambda r, m: "".join(f'[filter "f{i}"]\n\tclean = cat\n' for i in range(300)), True,
+                 id="filter_flood"),
+    # Malformed config: `git config` exits 3, which is neither "found" (0) nor "none" (1).
+    pytest.param("README filter=evil\n", lambda r, m: _evil_filter(m) + '[filter "evil"\n', True,
+                 id="broken_config"),
+])
+def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, config, refused):
     """A filter driver is named by ``.gitattributes``, so the fixed env pins cannot reach it:
     ``worktree add`` runs its smudge command and ``status`` its clean command. Subsection names are
     case-sensitive, so ``[filter "Evil"]`` must be neutralized next to a benign ``[filter "evil"]``.
     Discovery that cannot be trusted refuses the git call: any ``includeIf`` (``onbranch:`` matches the
     new branch, ``gitdir:`` the ``.git/worktrees/<name>`` dir of ``worktree add``) loads filters
-    discovery never saw, and a huge filter inventory would overflow the argv/env limit (E2BIG)."""
+    discovery never saw, a huge filter inventory would overflow the argv/env limit (E2BIG), and a
+    config git cannot parse yields no trustworthy inventory at all."""
     from hermes_cli import kanban_db_workspace as kw
     from hermes_cli import worktree_gc
     from tools.async_delegation_recovery_hints import git_state_hint
     marker = (tmp_path / "FILTER").as_posix()
-    attrs, config = {
-        "plain": ("README filter=evil\n", lambda r: _evil_filter(marker)),
-        "case_collision": ("README filter=Evil\n",
-                           lambda r: '[filter "evil"]\n\tsmudge = cat\n\tclean = cat\n' + _evil_filter(marker, "Evil")),
-        "onbranch_include": ("README filter=evil\n", _evil_include(lambda r: "onbranch:safe", marker)),
-        "gitdir_include": ("README filter=evil\n",
-                           _evil_include(lambda r: f"gitdir:{(r / '.git' / 'worktrees').as_posix()}/", marker)),
-        "filter_flood": ("README filter=evil\n",
-                         lambda r: "".join(f'[filter "f{i}"]\n\tclean = cat\n' for i in range(300))),
-    }[hostile]
-    repo = _make_filter_repo(tmp_path, attrs, config)
+    repo = _make_filter_repo(tmp_path, attrs, config, marker)
 
-    if hostile in ("onbranch_include", "gitdir_include", "filter_flood"):
+    if refused:
         res = kw._git(repo, "worktree", "add", "-b", "safe", str(tmp_path / "wt"), "HEAD", timeout=30)
         assert (res.returncode, res.stderr) == (1, FILTER_DISCOVERY_FAILED)
         assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
@@ -307,29 +319,6 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, hostile)
     assert worktree_ops._worktree_is_dirty(str(tmp_path / "wt")) is False
     assert worktree_ops._worktree_add(str(repo), tmp_path / "wt-w", "hermes/filters", "HEAD", "HEAD")
     assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
-
-
-def test_worktree_reclaim_transport_calls_ignore_repo_ssh_command(tmp_path, monkeypatch):
-    """The reclaim sweep's ``ls-remote`` and the shallow-repo ``fetch --unshallow`` run unattended;
-    a repository-level ``core.sshCommand`` must not run on either."""
-    from hermes_cli import worktree_ops
-    clean = {k: v for k, v in _CLEAN_GIT_ENV.items() if k != "GIT_SSH_COMMAND"}
-    src, repo, marker = tmp_path / "src", tmp_path / "repo", (tmp_path / "SSH").as_posix()
-    subprocess.run(["git", "init", "-q", str(src)], check=True, env=clean)
-    ident = ["-c", "user.email=a@b", "-c", "user.name=a"]
-    for n in ("1", "2"):  # two commits, so a depth-1 clone is shallow
-        (src / "f").write_text(n)
-        subprocess.run(["git", "-C", str(src), "add", "f"], check=True, env=clean)
-        subprocess.run(["git", "-C", str(src), *ident, "commit", "-qm", n], check=True, env=clean)
-    subprocess.run(["git", "clone", "-q", "--depth", "1", src.as_uri(), str(repo)], check=True, env=clean)
-    for key, value in {"remote.origin.url": "ssh://git@example.invalid/x.git",
-                       "core.sshCommand": f"touch '{marker}'; false"}.items():
-        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True, env=clean)
-
-    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
-    worktree_ops._fetch_remote_branch_heads(str(repo), timeout=20)
-    worktree_ops._deepen_shallow_repo(str(repo), timeout=20)
-    assert not Path(marker).exists()
 
 
 def test_noninteractive_env_pins_fsmonitor_and_hooks():

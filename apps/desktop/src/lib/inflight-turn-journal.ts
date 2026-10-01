@@ -2,7 +2,8 @@ import {
   type ChatMessage,
   type ChatMessagePart,
   chatMessageText,
-  normalizeWs as normalizedText
+  normalizeWs as normalizedText,
+  sameClientIdentity
 } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
@@ -545,8 +546,10 @@ function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
 
   // Identity decides when both sides carry it: hydration may rewrite a durable
   // prompt's text or attachment paths. Only unidentified rows compare content.
-  if (left.clientMessageId && right.clientMessageId) {
-    return left.clientMessageId === right.clientMessageId
+  const sameClient = sameClientIdentity(left, right)
+
+  if (sameClient !== undefined) {
+    return sameClient
   }
 
   if (left.rowId !== undefined && right.rowId !== undefined) {

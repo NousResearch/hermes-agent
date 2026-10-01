@@ -568,33 +568,32 @@ describe('recoverInFlightTurnJournal', () => {
     expect(result.streamId).toBe('assistant-stream-1')
   })
 
-  it('uses client identity across queued accept-row replacement', () => {
-    const journaled = user('queued-accept-row', 'run after this')
-    journaled.rowId = 41
-    journaled.clientMessageId = 'client-queued-replaced'
-    journalEntry([journaled, assistant('assistant-stream-1', 'partial', { pending: true })])
+  it('identity beats prose across accept-row replacement and hydration rewrite', () => {
+    // Client id decides across a queued accept-row replacement (row ids differ); the
+    // durable row id decides when neither side carries a client id.
+    const identities: Array<[Partial<ChatMessage>, Partial<ChatMessage>]> = [
+      [
+        { clientMessageId: 'client-queued-replaced', rowId: 41 },
+        { clientMessageId: 'client-queued-replaced', rowId: 57 }
+      ],
+      [{ rowId: 41 }, { rowId: 41 }]
+    ]
 
-    const replacement = user('queued-turn-row', 'run after this')
-    replacement.rowId = 57
-    replacement.clientMessageId = 'client-queued-replaced'
-    const result = recoverInFlightTurnJournal('stored-1', [replacement], { keepPending: true })
+    for (const [journaledIdentity, durableIdentity] of identities) {
+      journalEntry([
+        { ...user('user-live', 'see /tmp/upload-abc/report.pdf'), ...journaledIdentity },
+        assistant('assistant-stream-1', 'partial', { pending: true })
+      ])
 
-    expect(result.messages.map(message => message.id)).toEqual(['queued-turn-row', 'assistant-stream-1'])
-  })
+      const base = [
+        { ...user('db-u1', 'see report.pdf'), ...durableIdentity },
+        { ...user('db-u2', 'a newer turn'), rowId: 59 }
+      ]
 
-  it('anchors on durable identity when hydration rewrites the prompt text', () => {
-    const journaled = user('user-live', 'see /tmp/upload-abc/report.pdf')
-    journaled.rowId = 41
-    journalEntry([journaled, assistant('assistant-stream-1', 'partial', { pending: true })])
+      const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
 
-    const durable = user('db-u1', 'see report.pdf')
-    durable.rowId = 41
-    const newer = user('db-u2', 'a newer turn')
-    newer.rowId = 43
-    const result = recoverInFlightTurnJournal('stored-1', [durable, newer], { keepPending: true })
-
-    expect(result.messages.map(message => message.id).indexOf('assistant-stream-1')).toBe(1)
-    expect(result.messages.filter(message => message.role === 'user')).toHaveLength(2)
+      expect(result.messages.map(message => message.id)).toEqual(['db-u1', 'assistant-stream-1', 'db-u2'])
+    }
   })
 
   it('appends only the assistant tail when the user row was persisted', () => {

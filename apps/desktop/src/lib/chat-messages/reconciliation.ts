@@ -278,6 +278,14 @@ function mergeStoredAssistantErrors(nextMessages: ChatMessage[], currentMessages
 
 const normalizedMessageText = (message: ChatMessage): string => chatMessageText(message).replace(/\s+/g, ' ').trim()
 
+/** true/false when both rows carry a client id; undefined when identity cannot decide. */
+export function sameClientIdentity(
+  a: Pick<ChatMessage, 'clientMessageId'>,
+  b: Pick<ChatMessage, 'clientMessageId'>
+): boolean | undefined {
+  return a.clientMessageId && b.clientMessageId ? a.clientMessageId === b.clientMessageId : undefined
+}
+
 /**
  * Older-rowId preserved runs (#120978): a kept run whose rows ALL carry
  * rowIds older than every hydrated rowId belongs EARLIER in the transcript —

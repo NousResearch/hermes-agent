@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, sameClientIdentity } from '@/lib/chat-messages'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 
 /** A hydrated bubble can contain several source rows, including the final reply. */
@@ -10,11 +10,9 @@ export function transcriptRowIds(message: ChatMessage): number[] {
 
 /** Unknown identity is not a match, but remains eligible for legacy live projection. */
 export function conflictingTranscriptIdentity(local: ChatMessage, authoritative: ChatMessage): boolean {
-  if (
-    local.clientMessageId &&
-    authoritative.clientMessageId &&
-    local.clientMessageId === authoritative.clientMessageId
-  ) {
+  const sameClient = sameClientIdentity(local, authoritative)
+
+  if (sameClient) {
     return false
   }
 
@@ -25,11 +23,7 @@ export function conflictingTranscriptIdentity(local: ChatMessage, authoritative:
     return !localIds.some(id => authoritativeIds.includes(id))
   }
 
-  return Boolean(
-    local.clientMessageId &&
-      authoritative.clientMessageId &&
-      local.clientMessageId !== authoritative.clientMessageId
-  )
+  return sameClient === false
 }
 
 export function persistedTurnsEquivalent(a: ChatMessage['persistedTurn'], b: ChatMessage['persistedTurn']): boolean {

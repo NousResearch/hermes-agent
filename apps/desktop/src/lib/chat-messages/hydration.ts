@@ -236,7 +236,7 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
   )
 }
 
-function clientMessageId(metadata: SessionMessage['display_metadata']): string | undefined {
+export function clientMessageIdFromMetadata(metadata: SessionMessage['display_metadata']): string | undefined {
   const value = parseDisplayMetadata(metadata)?.client_message_id
 
   return typeof value === 'string' && value ? value : undefined
@@ -599,7 +599,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const reactions = messageReactions(message.display_metadata)
-    const hydratedClientMessageId = displayRole === 'user' ? clientMessageId(message.display_metadata) : undefined
+
+    const hydratedClientMessageId =
+      displayRole === 'user' ? clientMessageIdFromMetadata(message.display_metadata) : undefined
+
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.

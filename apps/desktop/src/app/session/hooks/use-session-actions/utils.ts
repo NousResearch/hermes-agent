@@ -6,7 +6,9 @@ import {
   assistantTextPart,
   type ChatMessage,
   chatMessageText,
+  clientMessageIdFromMetadata,
   preserveLocalAssistantErrors,
+  sameClientIdentity,
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
@@ -1254,34 +1256,15 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     break
   }
 
-  const inflightClientMessageId = (() => {
-    if (projection.inflight?.client_message_id) {
-      return projection.inflight.client_message_id
-    }
-
-    let metadata: unknown = projection.inflight?.display_metadata
-
-    if (typeof metadata === 'string') {
-      try {
-        metadata = JSON.parse(metadata)
-      } catch {
-        return undefined
-      }
-    }
-
-    const value = metadata && typeof metadata === 'object' ? (metadata as { client_message_id?: unknown }).client_message_id : null
-
-    return typeof value === 'string' && value ? value : undefined
-  })()
+  const inflightClientMessageId =
+    projection.inflight?.client_message_id || clientMessageIdFromMetadata(projection.inflight?.display_metadata)
 
   const persistedInLatestRun = (text: string): boolean =>
-    latestUserRun.some(message => {
-      if (inflightClientMessageId && message.clientMessageId) {
-        return inflightClientMessageId === message.clientMessageId
-      }
-
-      return textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
-    })
+    latestUserRun.some(
+      message =>
+        sameClientIdentity({ clientMessageId: inflightClientMessageId }, message) ??
+        textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
+    )
 
   const inflightUserAlreadyPersisted =
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
@@ -1576,14 +1559,11 @@ export function dedupeInflightUserAgainstTranscript(
 
   const persistedTail = persistedMessages.slice(suffixStart)
   const lastPersistedMessage = persistedTail[persistedTail.length - 1]
-  const inflightClientMessageId = projection.inflight?.client_message_id
-  const comparableClientIdentity = Boolean(inflightClientMessageId && lastPersistedMessage?.clientMessageId)
 
   const persistedUserPresent =
     lastPersistedMessage?.role === 'user' &&
-    (comparableClientIdentity
-      ? lastPersistedMessage.clientMessageId === inflightClientMessageId
-      : normalizedMessageText(lastPersistedMessage) === inflightUser)
+    (sameClientIdentity({ clientMessageId: projection.inflight?.client_message_id }, lastPersistedMessage) ??
+      normalizedMessageText(lastPersistedMessage) === inflightUser)
 
   if (!persistedUserPresent) {
     return projection

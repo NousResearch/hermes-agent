@@ -1,5 +1,5 @@
 export { sameAttachmentTurn } from './attachment-turn'
-export { toChatMessages } from './hydration'
+export { clientMessageIdFromMetadata, toChatMessages } from './hydration'
 export {
   appendAssistantTextPart,
   appendReasoningPart,
@@ -21,6 +21,7 @@ export {
   branchGroupForUser,
   preserveLocalAssistantErrors,
   preserveLocalSystemNotices,
+  sameClientIdentity,
   spliceOlderPreservedRows
 } from './reconciliation'
 export {

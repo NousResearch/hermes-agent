@@ -92,6 +92,7 @@ def _make_runner() -> GatewayRunner:
 
 def _make_adapter() -> MagicMock:
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter._pending_messages = {}
     adapter._send_with_retry = AsyncMock()
     adapter.config = MagicMock()

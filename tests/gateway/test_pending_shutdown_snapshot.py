@@ -493,3 +493,61 @@ async def test_cancel_timeout_recovers_only_non_durable_completed_input(tmp_path
         await adapter.cancel_background_tasks()
         runner.session_store.close_all_db_handles()
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_timeout_restores_captured_chain_without_withdrawn_or_alias_duplicates(monkeypatch):
+    from gateway.platforms.base_pending import ingress_order, pending_dispatch_records
+    import gateway.platforms.base_processing as processing
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+
+    adapter = _make_initialized_adapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=False)
+    runner.adapters = {adapter.platform: adapter}
+    adapter.gateway_runner = runner
+    earlier, withdrawn, current, alias, later = [_make_event(text) for text in (
+        "earlier", "withdrawn", "current", "alias", "later")]
+    key = adapter._event_session_key(current)
+    for event in (earlier, withdrawn, current, later):
+        ingress_order(event)
+    first = reserve_pending_dispatch(adapter, key, earlier)
+    removed = reserve_pending_dispatch(adapter, key, withdrawn)
+    removed.withdrawn = True
+    record = reserve_pending_dispatch(adapter, key, current)
+    record.bind(alias)
+    runner._enqueue_fifo(key, later, adapter)
+    entered, cancelled, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    wait_for = asyncio.wait_for
+
+    async def bounded_wait(awaitable, timeout):
+        return await wait_for(awaitable, 2 if timeout == 5.0 else timeout)
+
+    async def handler(event):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await finish.wait()
+
+    monkeypatch.setattr(processing.asyncio, "wait_for", bounded_wait)
+    adapter.set_message_handler(handler)
+    adapter._start_session_processing(current, key)
+    task = adapter._session_tasks[key]
+    first.task = task
+    try:
+        await wait_for(entered.wait(), 2)
+        await adapter.cancel_session_processing(key, discard_pending=False)
+        assert (cancelled.is_set(), task.done(), record.aliases) == (True, False, [alias])
+        finish.set()
+        await wait_for(task, 2)
+        await asyncio.sleep(0)
+        pending = [adapter._pending_messages[key], *(runner._overflow_queue(key) or [])]
+        assert ([event.text for event in pending], pending_dispatch_records(adapter, key), record.aliases) == (
+            ["earlier", "current", "later"], [], [alias])
+    finally:
+        finish.set()
+        await wait_for(task, 2)
+        await adapter.cancel_background_tasks()

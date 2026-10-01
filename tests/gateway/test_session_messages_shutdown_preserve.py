@@ -141,7 +141,8 @@ def test_shutdown_history_recovery_round_trips_canonical_transcript(tmp_path, mo
     db.close()
 
 
-def test_cap_drop_recovery_uses_codec_and_accepts_legacy_payload(tmp_path, monkeypatch):
+@pytest.mark.parametrize("overlapping", [False, True, "conflicting"])
+def test_cap_drop_recovery_uses_codec_and_accepts_legacy_payload(tmp_path, monkeypatch, overlapping):
     """The cap-drop producer emits v1, while pre-v1 files retain their full canonical row."""
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
@@ -174,6 +175,21 @@ def test_cap_drop_recovery_uses_codec_and_accepts_legacy_payload(tmp_path, monke
             "token_count": 4, "finish_reason": "stop", "timestamp": 203.0,
         }},
     }), encoding="utf-8")
+
+    if overlapping:
+        first = min(flush_dir.glob("pending-codec-*.json"))
+        payload = json.loads(first.read_text())
+        if overlapping == "conflicting":
+            payload["data"]["transcript"]["messages"][0]["content"] = "conflicting content"
+        (flush_dir / "pending-overlapping.json").write_text(json.dumps(payload))
+
+    if overlapping == "conflicting":
+        preserved_files = sorted(path.name for path in flush_dir.glob("*.json") if path.name != "pending-legacy.json")
+        assert (recover_pending_to_db(db), db.get_messages("codec-cap"),
+                sorted(path.name for path in flush_dir.glob("*.json"))) == (
+            1, [], preserved_files)
+        db.close()
+        return
 
     assert recover_pending_to_db(db) == 3
     restored = db.get_messages_as_conversation("codec-cap")

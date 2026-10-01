@@ -373,6 +373,8 @@ class GatewayInboundContextMixin:
 
         transcription = getattr(event, "_gateway_pending_stt_input", None)
         authored_text = transcription.authored_text(message_text) if isinstance(transcription, VoiceTranscription) else message_text
+        if _pending_stt_prepared and not isinstance(transcription, VoiceTranscription):
+            authored_text = authored_text.strip()
         expanded_authored_text = authored_text
         if "@" in authored_text:
             expanded_authored_text = await self._expand_inbound_context_references(source, session_key, authored_text)

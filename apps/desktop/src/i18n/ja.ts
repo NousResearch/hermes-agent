@@ -4117,6 +4117,10 @@ export const ja = defineLocale({
     sessionUnavailable: 'セッションが利用できません',
     createSessionFailed: '新しいセッションを作成できませんでした',
     promptFailed: 'プロンプトに失敗しました',
+    steerFailed: '実行中のターンをリダイレクトできませんでした',
+    sessionResumeFailed: 'このセッションに接続できませんでした',
+    sessionResumeFailedBody:
+      'バックエンドがこのメッセージを受け付けなかったため、入力欄に残っています。もう一度送信してみてください。',
     staleSessionTitle: 'チャットが最新ではありません',
     staleSessionBody:
       'このウィンドウは同じチャットの別ビューより遅れています。最新のメッセージを読み込みました。送信する場合はもう一度送ってください。',

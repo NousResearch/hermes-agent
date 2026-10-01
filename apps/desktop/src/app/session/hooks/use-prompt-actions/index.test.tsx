@@ -564,6 +564,54 @@ describe('usePromptActions slash session targeting', () => {
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(calls).not.toContain('slash.exec')
   })
+
+  it('tells the user their message went nowhere when the session cannot be resumed (#90232)', async () => {
+    // A wedged remote leaves the durable session unresumable: every send
+    // bounced silently back into the composer with no error, so the user
+    // kept typing at a chat that was not receiving anything.
+    const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw new Error('backend unreachable')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={{ current: null }}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRoutedStoredSessionId={() => null}
+        getRuntimeIdForStoredSession={() => null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={{ current: 'stored-90232' }}
+        storedSessionId="stored-90232"
+      />
+    )
+
+    expect(await handle!.submitText('hello again')).toBe(false)
+    // The conversation is never forked to a contextless chat…
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    // …and the silent bounce is now a visible failure.
+    expect($notifications.get()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'error',
+          title: 'Could not reach this session',
+          message: expect.stringContaining('backend unreachable')
+        })
+      ])
+    )
+
+    clearNotifications()
+  })
 })
 
 describe('usePromptActions /wake', () => {
@@ -2743,6 +2791,32 @@ describe('usePromptActions redirectPrompt', () => {
     )
 
     expect(await handle!.redirectPrompt('boom')).toBe(false)
+  })
+
+  it('surfaces an error notice when the redirect RPC fails instead of silently bouncing the text back (#90232)', async () => {
+    // The composer restores refused/failed correction words into the draft
+    // (or the queue) — the only trace of a dead-socket redirect used to be
+    // the text reappearing in the composer with zero feedback.
+    const requestGateway = vi.fn(async () => {
+      throw new Error('Hermes gateway connection closed')
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.redirectPrompt('course correct')).toBe(false)
+    expect($notifications.get()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'error',
+          message: expect.stringContaining('Hermes gateway connection closed')
+        })
+      ])
+    )
+
+    clearNotifications()
   })
 
   it('skips the RPC entirely for empty text', async () => {

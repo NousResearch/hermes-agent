@@ -390,6 +390,30 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionDriftReason()
 
+      // A submit that never left the renderer — the session binding could not
+      // be re-established, so the draft restore in the composer is the ONLY
+      // trace. Tell the user their message did not go anywhere (#90232): a
+      // silent bounce back into the composer is indistinguishable from a sent
+      // message on a dead remote. Foreground only — a queue drain keeps its
+      // entry and its own retry/stuck feedback, so a toast per attempt would
+      // just spam while the bounded backoff runs.
+      const notifyResumeAbort = (err: unknown): void => {
+        if (!targetIsCurrentView() || options?.fromQueue) {
+          return
+        }
+
+        if (err) {
+          notifyError(err, copy.sessionResumeFailed, { id: 'submit-resume-failed' })
+        } else {
+          notify({
+            id: 'submit-resume-failed',
+            kind: 'error',
+            title: copy.sessionResumeFailed,
+            message: copy.sessionResumeFailedBody
+          })
+        }
+      }
+
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns. The
       // foreground ChatBar and background drainers can briefly overlap during a
@@ -607,7 +631,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // would fork a contextless chat against whichever profile is active.
         try {
           await resumeStoredSession(routedStoredSessionId)
-        } catch {
+        } catch (err) {
+          notifyResumeAbort(err)
+
           return abortForSessionSwitch(null)
         }
 
@@ -706,12 +732,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               })
             }
           }
-        } catch {
+        } catch (err) {
           // A target stored conversation is not a new-chat draft. If its
           // runtime cannot be rebound, stop here rather than silently replacing
           // it with a contextless session (#55578). For a background/queued
           // drain this abort is a no-op on foreground state (both helpers are
           // targetIsCurrentView-guarded) and simply drops the queued send.
+          notifyResumeAbort(err)
+
           return abortForSessionSwitch(null)
         }
 
@@ -724,6 +752,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         if (!sessionId) {
+          // The resume "succeeded" but produced no runtime id — the session
+          // binding is still wedged. Same feedback contract as the throws
+          // above; the words are back in the composer, not lost.
+          notifyResumeAbort(null)
+
           return abortForSessionSwitch(null)
         }
 

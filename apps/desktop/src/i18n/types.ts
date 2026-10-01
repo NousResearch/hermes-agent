@@ -4586,6 +4586,9 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
+    steerFailed: string
+    sessionResumeFailed: string
+    sessionResumeFailedBody: string
     staleSessionTitle: string
     staleSessionBody: string
     providerCredentialRequired: string

@@ -5523,6 +5523,10 @@ export const en: Translations = {
     sessionUnavailable: 'Session unavailable',
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
+    steerFailed: 'Could not redirect the running turn',
+    sessionResumeFailed: 'Could not reach this session',
+    sessionResumeFailedBody:
+      'The backend did not accept this message, so it is still in the composer. Try sending it again.',
     staleSessionTitle: 'Chat out of date',
     staleSessionBody:
       'This window was behind another view of the same chat. Latest messages were loaded. Send again if you still want to.',

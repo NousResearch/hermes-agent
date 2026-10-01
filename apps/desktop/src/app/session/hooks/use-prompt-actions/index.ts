@@ -845,8 +845,13 @@ export function usePromptActions({
         const { result } = await withSessionNotFoundResume(target.sessionId, target.storedSessionId, send, target)
 
         return result
-      } catch {
-        // Swallow — caller queues the text so nothing is lost.
+      } catch (err) {
+        // The redirect never reached the gateway (dead socket, refused,
+        // timed out). The optimistic correction bubble is gone and the caller
+        // bounces the words back into the composer/queue — without this
+        // notice that restore is silent, the exact "message bounced back
+        // with no feedback" signature of #90232.
+        notifyError(err, copy.steerFailed, { id: 'steer-failed' })
       }
 
       return false
@@ -854,6 +859,7 @@ export function usePromptActions({
     [
       activeSessionIdRef,
       appendSessionTextMessage,
+      copy,
       getRoutedStoredSessionId,
       requestGateway,
       runtimeIdByStoredSessionIdRef,

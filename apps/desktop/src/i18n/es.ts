@@ -5999,6 +5999,10 @@ export const esOverrides = {
     sessionUnavailable: 'Sesión no disponible',
     createSessionFailed: 'No se pudo crear una sesión nueva',
     promptFailed: 'Falló el prompt',
+    steerFailed: 'No se pudo redirigir el turno en curso',
+    sessionResumeFailed: 'No se pudo acceder a esta sesión',
+    sessionResumeFailedBody:
+      'El backend no aceptó este mensaje, así que sigue en el editor. Prueba a enviarlo de nuevo.',
     staleSessionTitle: 'Chat desactualizado',
     staleSessionBody:
       'Esta ventana estaba detrás de otra vista del mismo chat. Se cargaron los mensajes más recientes. Envía de nuevo si aún quieres.',

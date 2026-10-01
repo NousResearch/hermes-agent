@@ -4243,6 +4243,10 @@ export const ru = defineLocale({
     sessionUnavailable: 'Сеанс недоступен',
     createSessionFailed: 'Не удалось создать новый сеанс',
     promptFailed: 'Промпт не удался',
+    steerFailed: 'Не удалось перенаправить текущий ход',
+    sessionResumeFailed: 'Не удалось связаться с этим сеансом',
+    sessionResumeFailedBody:
+      'Бэкенд не принял это сообщение, поэтому оно осталось в поле ввода. Попробуйте отправить его ещё раз.',
     staleSessionTitle: 'Чат устарел',
     staleSessionBody:
       'Это окно отставало от другого вида того же чата. Загружены последние сообщения. Отправьте снова, если всё ещё хотите.',

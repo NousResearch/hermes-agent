@@ -6021,6 +6021,10 @@ export const frOverrides = {
     sessionUnavailable: 'Session indisponible',
     createSessionFailed: 'Impossible de créer une nouvelle session',
     promptFailed: "Échec de l'invite",
+    steerFailed: 'Impossible de rediriger le tour en cours',
+    sessionResumeFailed: "Impossible d'atteindre cette session",
+    sessionResumeFailedBody:
+      "Le backend n'a pas accepté ce message, il est donc toujours dans l'éditeur. Réessaie de l'envoyer.",
     staleSessionTitle: 'Conversation obsolète',
     staleSessionBody:
       'Cette fenêtre était en retard sur une autre vue du même chat. Les derniers messages ont été chargés. Renvoyez si vous le souhaitez encore.',

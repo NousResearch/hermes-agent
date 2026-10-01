@@ -3600,6 +3600,9 @@ export const ar = defineLocale({
     sessionUnavailable: 'الجلسة غير متاحة',
     createSessionFailed: 'فشل إنشاء الجلسة',
     promptFailed: 'فشل إرسال الرسالة',
+    steerFailed: 'تعذّ إعادة توجيه الدور الجاري',
+    sessionResumeFailed: 'تعذّ الوصول إلى هذه الجلسة',
+    sessionResumeFailedBody: 'لم يقبل الخادم هذه الرسالة، لذا لا تزال في مربّع الكتابة. حاول إرسالها مرة أخرى.',
     staleSessionTitle: 'المحادثة غير محدّثة',
     staleSessionBody:
       'كانت هذه النافذة متأخرة عن عرض آخر لنفس المحادثة. تم تحميل أحدث الرسائل. أعد الإرسال إذا كنت لا تزال تريد ذلك.',

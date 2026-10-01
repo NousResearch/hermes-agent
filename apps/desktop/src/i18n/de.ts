@@ -6007,6 +6007,10 @@ export const deOverrides = {
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
+    steerFailed: 'Der laufende Durchlauf konnte nicht umgelenkt werden',
+    sessionResumeFailed: 'Diese Sitzung ist nicht erreichbar',
+    sessionResumeFailedBody:
+      'Das Backend hat diese Nachricht nicht angenommen, sie steht also noch im Composer. Versuche, sie erneut zu senden.',
     staleSessionTitle: 'Chat veraltet',
     staleSessionBody:
       'Dieses Fenster war hinter einer anderen Ansicht desselben Chats. Die neuesten Nachrichten wurden geladen. Senden Sie erneut, wenn Sie noch möchten.',

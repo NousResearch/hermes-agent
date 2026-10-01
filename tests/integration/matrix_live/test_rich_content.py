@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +20,7 @@ from tests.integration.matrix_live.conftest import (
     _wait_for,
 )
 from tests.integration.matrix_live.context_client import hand_off
+from tests.integration.matrix_live.rich_content_client import PNG
 
 
 @pytest.mark.parametrize("gateway", ["pause-image-context"], indirect=True)
@@ -191,16 +193,19 @@ def test_native_emotes_and_stickers_reach_model_and_withdraw_only_new_input(
         current = requests[4]["messages"][-1]["content"]
         assert isinstance(current, list)
         text = "".join(part.get("text", "") for part in current)
-        assert "[sticker: Retained queued sticker]" in text
-        assert "[redacted]" in text and "Withdrawn queued sticker" not in text
-        assert f"[sticker: {live_room.bot.user_id}" not in text
-        pixels = [
-            part["image_url"]["url"] for part in current if part["type"] == "image_url"
-        ]
-        assert len(pixels) == 1
-        assert base64.b64decode(pixels[0].split(",", 1)[1]).startswith(
-            b"\x89PNG\r\n\x1a\n"
+        expected_prefix = (
+            '[Replying to alice: "[notice: Rich content thread root]"]\n\n'
+            '[sticker: Retained queued sticker]\n\n[Image attached at: '
         )
+        image_path = text.removeprefix(expected_prefix).removesuffix("]")
+        assert re.fullmatch(r"/opt/data/cache/images/img_[0-9a-f]+\.png", image_path)
+        assert current == [
+            {"type": "text", "text": expected_prefix + image_path + "]"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64," + base64.b64encode(PNG).decode()},
+            },
+        ]
     except Exception as exc:
         requests = [
             [

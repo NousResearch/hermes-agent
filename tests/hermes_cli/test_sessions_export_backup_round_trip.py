@@ -48,7 +48,7 @@ def test_jsonl_backup_round_trips_compaction_archived_turns(tmp_path, monkeypatc
 
     dst = SessionDB(db_path=tmp_path / "restored.db")
     try:
-        payload = [json.loads(line) for line in backup.read_text(encoding="utf-8").splitlines() if line]
+        payload = [json.loads(line) for line in backup.read_text(encoding="utf-8-sig").splitlines() if line]
         assert dst.import_sessions(payload)["ok"]
         assert _shape(dst, include_compacted=True) == shown, "display history must survive the backup"
         assert _shape(dst) == live, "archived turns must not come back as live context"

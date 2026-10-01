@@ -5,7 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cli as cli_module
+from agent.i18n import t
 from cli import HermesCLI
+from tools import approval_context
 
 
 class _FakeBuffer:
@@ -67,6 +69,28 @@ def _make_background_cli_stub():
 
 
 class TestCliApprovalUi:
+    def test_panel_waits_for_an_answer_past_approvals_timeout(self):
+        """The CLI is attended: ``approvals.timeout`` (the messaging knob) must not deny an unanswered
+        panel, and the hint row shows no countdown."""
+        cli = _make_cli_stub()
+        cli._secret_state = cli._slash_confirm_state = cli._connection_state = cli._clarify_state = None
+        result = {}
+        with patch("cli.CLI_CONFIG", {"approvals": {"timeout": 1}}):
+            thread = threading.Thread(
+                target=lambda: result.__setitem__("value", cli._approval_callback("rm -rf /tmp/x", "delete")),
+                daemon=True)
+            thread.start()
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            thread.join(timeout=2.5)
+            assert thread.is_alive() and cli._approval_state is not None
+            assert cli._approval_deadline is None
+            assert cli._tui_hint_text()[-1] == ('class:clarify-countdown', '')
+            cli._approval_state["response_queue"].put("once")
+            thread.join(timeout=2)
+        assert result["value"] == "once"
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}
@@ -206,12 +230,12 @@ class TestCliApprovalUi:
         rendered = "".join(text for _style, text in fragments)
 
         # All four choices visible even with a huge command.
-        for label in ("Allow once", "Allow for this session",
-                      "Add to permanent allowlist", "Deny"):
+        for key in ("approval_once", "approval_session", "approval_always", "approval_deny"):
+            label = t(f"cli.tui.{key}")
             assert label in rendered, f"choice {label!r} missing"
 
         # Command got truncated with a marker.
-        assert "(command truncated" in rendered
+        assert t("cli.tui.approval_command_truncated") in rendered
 
     def test_background_task_registers_thread_local_approval_callbacks(self):
         """Background /btw tasks must use the prompt_toolkit approval UI.
@@ -238,6 +262,7 @@ class TestCliApprovalUi:
 
                 seen["approval"] = _get_approval_callback()
                 seen["sudo"] = _get_sudo_password_callback()
+                seen["approval_wait"] = approval_context.approval_wait_seconds()
                 return {
                     "final_response": "done",
                     "messages": [],
@@ -246,6 +271,7 @@ class TestCliApprovalUi:
                 }
 
         with patch("run_agent.AIAgent", FakeAgent), \
+             patch.object(approval_context, "_get_approval_config", lambda: {"timeout": 1}), \
              patch.object(cli_module, "_cprint"), \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()
@@ -261,6 +287,8 @@ class TestCliApprovalUi:
         assert seen["approval"].__func__ is HermesCLI._approval_callback
         assert seen["sudo"].__self__ is cli
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
+        # The panel waits until answered, so the turn's accounting must too (not approvals.timeout).
+        assert seen["approval_wait"] > 1
         assert not cli._background_tasks
 
 
@@ -309,42 +337,6 @@ class TestModalPaintNow:
         # ...but _paint_now() always paints.
         cli._paint_now()
         assert cli._app.invalidate.called
-
-
-    def _drive(self, cli, target, state_attr):
-        result = {}
-
-        def _run():
-            result["value"] = target()
-
-        with patch.object(cli_module, "_cprint"):
-            thread = threading.Thread(target=_run, daemon=True)
-            thread.start()
-            deadline = time.time() + 2
-            while getattr(cli, state_attr) is None and time.time() < deadline:
-                time.sleep(0.01)
-            assert getattr(cli, state_attr) is not None
-            assert cli._app.invalidate.called, (
-                f"{state_attr} panel was not painted despite throttle + resize gates"
-            )
-            # Reset so we can prove the response-received teardown also repaints
-            # (the panel must clear at once, not be held by the throttle).
-            cli._app.invalidate.reset_mock()
-            getattr(cli, state_attr)["response_queue"].put(
-                "deny" if state_attr == "_approval_state" else
-                ("a" if state_attr == "_clarify_state" else "pw")
-            )
-            thread.join(timeout=2)
-            # clarify returns immediately on a response (no teardown repaint);
-            # approval and sudo repaint to tear the panel down.
-            if state_attr != "_clarify_state":
-                assert cli._app.invalidate.called, (
-                    f"{state_attr} panel was not repainted on teardown"
-                )
-        assert not thread.is_alive()
-        return result["value"]
-
-
 
 
     def test_secret_response_teardown_paints(self):
@@ -492,7 +484,9 @@ class TestPersistPromptSummary:
         result = {}
 
         def _run():
-            result["value"] = cli._clarify_callback("Pick a path?", ["A", "B"])
+            result["value"] = cli._clarify_callback([{
+                "qid": "q0", "question": "Pick a path?", "choices": ["A", "B"],
+                "choices_offered": ["A", "B"], "multi_select": False}])
 
         with patch.object(cli_module, "_cprint", printed.append):
             t = threading.Thread(target=_run, daemon=True)
@@ -500,10 +494,10 @@ class TestPersistPromptSummary:
             deadline = time.time() + 2
             while cli._clarify_state is None and time.time() < deadline:
                 time.sleep(0.01)
-            cli._clarify_state["response_queue"].put("B")
+            cli._clarify_batch_lock(cli._clarify_state, "B")
             t.join(timeout=2)
 
-        assert result["value"] == "B"
+        assert result["value"] == {"answers": {"q0": "B"}, "outcome": "submitted"}
         summary = "\n".join(printed)
         assert "Clarify" in summary
         assert "Pick a path?" in summary
@@ -550,7 +544,7 @@ class TestClearOverlaysForInterrupt:
 
         # Each blocked thread would have received a terminal value.
         assert approval_q.get_nowait() == "deny"
-        assert clarify_q.get_nowait()  # cancellation sentinel string
+        assert clarify_q.get_nowait() is None
         assert sudo_q.get_nowait() == ""
         assert secret_q.get_nowait() == ""
 
@@ -572,7 +566,7 @@ class TestClearOverlaysForInterrupt:
 
         assert cli._approval_state is None  # cleared despite dead queue
         assert cli._clarify_state is None
-        assert clarify_q.get_nowait()
+        assert clarify_q.get_nowait() is None
 
     def test_interrupt_unblocks_thread_blocked_on_approval(self):
         """End-to-end: a worker blocked on the approval queue unblocks when the

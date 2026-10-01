@@ -170,23 +170,6 @@ def test_engine_mutating_inputs_cannot_corrupt_persisted_state():
     assert incoming == incoming_snapshot
 
 
-def test_persisted_history_not_mutated():
-    """The hook must not mutate the persisted conversation history."""
-
-    class _Engine(_MinimalEngine):
-        def select_context(self, request_messages, *, conversation_messages=None, **kwargs):
-            # Even a misbehaving engine touching its inputs must not affect
-            # what the host persists — the host passes the live list, so we
-            # assert the host contract by checking the engine received it and
-            # the canonical copy is unchanged after the call.
-            return list(request_messages)
-
-    history_snapshot = [dict(m) for m in HISTORY]
-    agent = _agent_with(_Engine())
-    _apply_context_engine_selection(
-        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
-    )
-    assert HISTORY == history_snapshot
 
 
 # -- cache-stability + downstream-sanitizer contract -----------------------

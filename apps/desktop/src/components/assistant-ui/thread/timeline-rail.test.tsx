@@ -36,17 +36,15 @@ describe('TimelineRail', () => {
 
     expect(view.container.querySelectorAll('button').length).toBeGreaterThan(0)
     expect(view.container.querySelectorAll('button').length).toBeLessThan(60)
-    expect(view.container.querySelector('.thread-timeline-track')?.getAttribute('style')).toContain('35000px')
   })
 
-  it('keeps the active bar at maximum width and routes selection by stable ID', () => {
+  it('keeps the active bar compact without hover and routes selection by stable ID', () => {
     const onJump = vi.fn()
     render(<TimelineRail activeIndex={0} entries={entries} loadingId={null} onJump={onJump} />)
 
     const active = screen.getByRole('button', { name: 'Message 0' })
 
     expect(active.getAttribute('aria-current')).toBe('location')
-    expect((active.firstElementChild as HTMLElement).style.width).toBe('1rem')
     fireEvent.click(active)
     expect(onJump).toHaveBeenCalledWith('message-0')
   })

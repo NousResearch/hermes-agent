@@ -14,11 +14,12 @@ import json
 import logging
 import os
 import platform
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from utils import atomic_json_write
 
@@ -123,6 +124,10 @@ class LedgerEntry:
     host: str = ""
     port: Optional[int] = None
     profile: str = ""
+    hermes_home: str = ""
+    # `serve --isolated`: opted out of the host singleton (Desktop's SSH backend for another
+    # machine). Attach-first readers must never adopt it; argv is truncated, so this is canonical.
+    isolated: bool = False
 
 
 def _ledger_path() -> Path:
@@ -144,10 +149,10 @@ def _read_ledger(path: Path) -> Optional[list[dict]]:
     roster.
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return []
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     if not text.strip():
         return []
@@ -176,14 +181,22 @@ def _same_incarnation(proc, create_time: Optional[float]) -> bool:
     return create_time is None or abs(float(proc.create_time()) - float(create_time)) < 2.0
 
 
-def _pid_alive_matches(pid: int, create_time: Optional[float]) -> Optional[bool]:
+def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool = False) -> Optional[bool]:
     """True/False when provable; ``None`` when psutil can't say."""
     try:
         import psutil
     except Exception:
         return None
     try:
-        return _same_incarnation(psutil.Process(int(pid)), create_time)
+        proc = psutil.Process(int(pid))
+        if strict:
+            return (create_time is not None and proc.create_time() == create_time
+                    and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
+        # A zombie keeps its create_time until its parent reaps it, but it is already dead: the
+        # dashboard stop check (``gateway.status._pid_exists``) books it stopped, so the ledger must
+        # not report it as a live pre-update survivor. Windows has no zombies (and status() is slow there).
+        return _same_incarnation(proc, create_time) and (
+            os.name == "nt" or proc.status() != getattr(psutil, "STATUS_ZOMBIE", "zombie"))
     except psutil.NoSuchProcess:
         return False
     except Exception:
@@ -195,16 +208,21 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
 
     Called at the top of every long-lived entry point; dead ``(pid, create_time)`` entries are
     pruned on every write. ``detail`` may carry ``host``/``port``/``profile`` so the update
-    pipeline can relaunch a manually-started serve with its real bind address.
+    pipeline can relaunch a manually-started serve with its real bind address, and ``isolated``
+    so attach-first discovery skips a backend that opted out of the host singleton.
     """
+    from hermes_constants import hermes_home_key
+
     tag = parse_spawn_tag(os.environ.get(SPAWN_ENV_VAR))
     spawner_pid, spawner_create = (tag.spawner_pid, tag.spawner_create) if tag else _desktop_spawner_identity()
     entry = _new_entry(os.getpid(), _process_create_time(), purpose, project_root, spawner_pid, spawner_create)
+    entry.hermes_home = hermes_home_key()
     if detail:
         try:
             entry.host = str(detail.get("host") or "")
             entry.port = int(detail["port"]) if detail.get("port") is not None else None
             entry.profile = str(detail.get("profile") or "")
+            entry.isolated = bool(detail.get("isolated"))
         except (TypeError, ValueError):
             pass
     try:
@@ -216,6 +234,25 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
     except Exception:
         pass
     return _append_entry(entry)
+
+
+def is_desktop_owned_backend(argv: Optional[Sequence[str]] = None) -> bool:
+    """Whether this process is the backend Desktop spawned and owns.
+
+    ``HERMES_DESKTOP=1`` is inherited by every shell and agent child the app launches, so the
+    flag alone is not ownership proof (same class as #116107). Desktop hands its backend a
+    per-spawn credential the terminal pane never receives (and the terminal tool's env policy
+    strips from agent children): the local pool spawn mints ``HERMES_DASHBOARD_SESSION_TOKEN``,
+    the SSH spawn passes a 0600 token FILE on argv and deliberately sets no token env var.
+    ``argv`` defaults to this process's own.
+    """
+    if os.environ.get("HERMES_DESKTOP") != "1":
+        return False
+    if os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"):
+        return True
+    from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+
+    return is_desktop_ssh_backend_argv(list(sys.argv[1:] if argv is None else argv))
 
 
 def _desktop_spawner_identity() -> tuple[Optional[int], Optional[float]]:
@@ -302,8 +339,13 @@ def register_child(pid: int, purpose: str, *, project_root: Optional[Path] = Non
     return _append_entry(entry)
 
 
-def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
-    """Live-verified ledger entries for THIS install (a corrupt ledger is quarantined, read as empty).
+def ledger_entries(
+    *, project_root: Optional[Path] = None, all_installs: bool = False, verified_only: bool = False,
+) -> list[dict]:
+    """Ledger entries for this install, or all installs when explicitly requested.
+
+    ``verified_only`` requires an exact live PID/create-time pair. The default preserves
+    unknown processes for reapers, which must not mistake missing proof for a dead process.
 
     Entries whose ``(pid, create_time)`` no longer matches a live process are excluded (PID reuse reads as
     dead, thanks to the create-time pair). A corrupt ledger is quarantined and read as empty — identical
@@ -317,9 +359,10 @@ def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
         return []
     return [
         e for e in entries
-        if e.get("install") == want_install
+        if (all_installs or e.get("install") == want_install)
         and isinstance(e.get("pid"), int)
-        and _pid_alive_matches(e["pid"], e.get("create_time")) is not False
+        and (_pid_alive_matches(e["pid"], e.get("create_time"), strict=True) is True
+             if verified_only else _pid_alive_matches(e["pid"], e.get("create_time")) is not False)
     ]
 
 
@@ -360,11 +403,17 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
                 proc = psutil.Process(pid)
                 if not _same_incarnation(proc, entry.get("create_time")):
                     continue  # PID reused since registration
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2.0)
-                except psutil.TimeoutExpired:
-                    proc.kill()
+                # Windows: descendants (npx.cmd → node.exe) have no pgid to group-kill and
+                # reparent with ParentId=null when the direct child exits first (#61059), so
+                # reap the whole tree. On POSIX the killpg-based sweep already reaches them.
+                if _IS_WINDOWS:
+                    _kill_process_tree_windows(proc)
+                else:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2.0)
+                    except psutil.TimeoutExpired:
+                        proc.kill()
             reaped.append(pid)
         except Exception:
             logger.debug("mcp-helper orphan reap failed for %s", entry, exc_info=True)
@@ -374,6 +423,36 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
 
 
 # Layer 3 — Windows job-object self-attach
+
+
+def _kill_process_tree_windows(proc) -> None:
+    """Terminate *proc* and every still-alive descendant (npx.cmd → node.exe), Windows-only
+    (#61059): without a pgid there is no group-kill, and grandchildren reparent to nothing
+    (ParentId=null) once the direct child exits, so they must be reached through the tree."""
+    import psutil
+
+    try:
+        descendants = proc.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        descendants = []
+    for child in descendants:
+        try:
+            child.terminate()
+        except Exception:  # noqa: BLE001 - raced away or refused; keep going
+            pass
+    try:
+        proc.terminate()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _, alive = psutil.wait_procs(descendants + [proc], timeout=2.0)
+    except Exception:  # noqa: BLE001 - broken fake/raced process; nothing more to force-kill
+        return
+    for survivor in alive:
+        try:
+            survivor.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def attach_self_to_kill_on_close_job() -> bool:

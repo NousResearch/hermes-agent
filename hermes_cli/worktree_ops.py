@@ -4,6 +4,7 @@ Every git call goes through ``_git``/``_git_out``/``_git_quiet`` (UTF-8 text, ca
 bounded timeout). Classification helpers fail SAFE toward "preserve". ``cli`` re-exports
 these names; ``_cprint`` is imported lazily from ``cli`` to avoid a cycle.
 """
+import atexit
 import concurrent.futures
 import json
 import logging
@@ -18,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
+from hermes_cli._subprocess_compat import kill_process_tree
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -77,6 +79,20 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def release_lsp_clients(wt_path: str) -> None:
+    """Shut down this process's language servers for ``wt_path`` before ``git worktree remove``.
+
+    A gateway outlives the sessions it runs, so without this the ``(server, root)`` client for the
+    removed tree stays registered (tsserver heaps of several GiB pointed at a deleted worktree).
+    Best-effort: LSP trouble must never block worktree removal.
+    """
+    try:
+        from agent.lsp import release_workspace
+        release_workspace(wt_path)
+    except Exception as e:
+        logger.debug("LSP release for worktree %s failed: %s", wt_path, e)
+
+
 def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str) -> None:
     """Sweep the leftovers of a failed/timed-out ``git worktree add`` (fail-soft).
 
@@ -98,6 +114,70 @@ def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str
 
 
 _PACK_SPRAWL_THRESHOLD = 15
+_REPACK_TIMEOUT = 1800
+# One repack attempt per clone per interval, box-wide. Every ``hermes -w`` launch on a shared clone
+# used to start its own ``git repack -a`` of the whole store; on a multi-agent box that stacked 50+
+# concurrent multi-GB repacks (each too slow under the others to ever finish inside the timeout).
+_REPACK_MIN_INTERVAL = 6 * 3600
+_REPACK_LOCK = "hermes-repack.lock"
+
+
+def _claim_repack_slot(git_dir: Path) -> bool:
+    """Exactly one process per clone gets to repack per ``_REPACK_MIN_INTERVAL``.
+
+    The lock file's mtime is the stamp: younger than the interval means another launch is
+    repacking (or just tried and timed out) — skip. A stale lock is taken over by ``replace``,
+    which only one of N racing processes can win; the O_EXCL create then serializes against a
+    process that found no lock at all.
+    """
+    lock = git_dir / _REPACK_LOCK
+    try:
+        st = lock.stat()
+    except FileNotFoundError:
+        pass
+    else:
+        if time.time() - st.st_mtime < _REPACK_MIN_INTERVAL:
+            return False
+        try:
+            lock.replace(lock.with_suffix(".stale"))
+        except OSError:
+            return False
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\n")
+    lock.with_suffix(".stale").unlink(missing_ok=True)
+    return True
+
+
+def _run_bounded_repack(repo_root: str) -> None:
+    """Incremental geometric repack whose whole process tree dies with the timeout or with us.
+
+    ``repack`` forks ``pack-objects``; ``subprocess.run(timeout=)`` killed only the parent and
+    left the grandchild packing for days, and a daemon thread's child outlived the CLI the same
+    way. A new session/process group + ``atexit`` reaps both cases.
+    """
+    cmd = ["git", "repack", "-d", "--geometric=2", "--write-midx", "--quiet"]
+    if os.name == "posix":
+        cmd = ["nice", "-n", "19", *cmd]
+        group_kw: dict = {"process_group": 0}
+    else:
+        group_kw = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    proc = subprocess.Popen(cmd, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, **group_kw)
+
+    def _reap() -> None:
+        if proc.poll() is None:
+            kill_process_tree(proc)
+
+    atexit.register(_reap)
+    try:
+        proc.wait(timeout=_REPACK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        _reap()
+        logger.info("git repack exceeded %ds; killed (next attempt in %dh)", _REPACK_TIMEOUT, _REPACK_MIN_INTERVAL // 3600)
 
 
 def _maintain_pack_health(repo_root: str) -> None:
@@ -113,12 +193,12 @@ def _maintain_pack_health(repo_root: str) -> None:
         packs = len(list(pack_dir.glob("*.pack")))
         if packs < _PACK_SPRAWL_THRESHOLD:
             return
+        if not _claim_repack_slot(pack_dir.parent.parent):
+            return
+        from hermes_cli.gitlock import clear_stale_tmp_packs
+        clear_stale_tmp_packs(Path(repo_root))
         logger.info("git pack sprawl (%d packs) — repacking in background", packs)
-        cmd = ["git", "repack", "-a", "-d", "--quiet"]
-        if os.name == "posix":
-            cmd = ["nice", "-n", "19", *cmd]
-        subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800,
-                       cwd=repo_root, check=False)
+        _run_bounded_repack(repo_root)
         # Repacking can strand now-duplicated admin files; prune on the same pass.
         _git(["worktree", "prune"], repo_root, timeout=60, check=False)
     except Exception as e:
@@ -136,6 +216,7 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
     remote-tracking ref is used (the pre-push stale-base gate backstops genuine staleness).
     """
     from hermes_cli._subprocess_compat import noninteractive_git_env
+    from hermes_cli.update_cmd_check import tracking_refspec
 
     def _run(args, timeout: float = 20):
         return _git(args, repo_root, timeout=timeout, stdin=subprocess.DEVNULL, env=noninteractive_git_env())
@@ -164,7 +245,7 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
         if age is not None and age < freshness_window and _ref_exists(ref):
             return ref, f"{ref} (fetched {int(age)}s ago)"
         try:
-            fetched = _run(["fetch", remote, branch], timeout=fetch_timeout)
+            fetched = _run(["fetch", remote, tracking_refspec(remote, branch)], timeout=fetch_timeout)
             if fetched.returncode == 0:
                 return ref, f"{ref} (fetched)"
             reason = "fetch failed"
@@ -461,15 +542,22 @@ def _deepen_shallow_repo(repo_root: str, timeout: int = 600) -> bool:
         names = [r.strip() for r in remotes.splitlines() if r.strip()]
         remote = "origin" if "origin" in names else names[0]
 
-        for extra in (["--filter=blob:none"], []):
-            try:
-                result = _git(["fetch", remote, "--unshallow", *extra], repo_root, timeout=timeout)
-            except subprocess.TimeoutExpired:
-                return False
-            if result.returncode == 0:
-                break
-            logger.debug("git fetch --unshallow%s failed: %s", " " + " ".join(extra) if extra else "",
-                         result.stderr.strip()[-500:])
+        try:
+            for extra in (["--filter=blob:none"], []):
+                try:
+                    result = _git(["fetch", remote, "--unshallow", *extra], repo_root, timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    return False
+                if result.returncode == 0:
+                    break
+                logger.debug("git fetch --unshallow%s failed: %s", " " + " ".join(extra) if extra else "",
+                             result.stderr.strip()[-500:])
+        finally:
+            # The filtered attempt makes the clone partial (git writes the config before fetching,
+            # so even when it fails); its old packs need the marker or git 2.53+ crashes every
+            # later fetch (#124272). Markers are inert in a clone without a promisor remote.
+            from hermes_cli.gitlock import mark_unmarked_packs_promisor
+            mark_unmarked_packs_promisor(Path(repo_root))
     except Exception as e:
         logger.debug("Deepening shallow repo failed (non-fatal): %s", e)
         return False
@@ -492,7 +580,7 @@ def _worktree_merge_cache_path() -> Path:
 def _load_worktree_merge_cache() -> Dict[str, bool]:
     """Load the ``git cherry`` verdict cache. Missing/corrupt cache = empty."""
     try:
-        entries = json.loads(_worktree_merge_cache_path().read_text(encoding="utf-8")).get("verdicts")
+        entries = json.loads(_worktree_merge_cache_path().read_text(encoding="utf-8-sig")).get("verdicts")
     except Exception:
         return {}
     # A hand-edited or partially written cache must never inject a non-bool verdict.

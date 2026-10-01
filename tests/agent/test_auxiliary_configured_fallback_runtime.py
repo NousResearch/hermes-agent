@@ -7,11 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.auxiliary_client import (
-    _is_recoverable_aux_fallback_error,
-    async_call_llm,
-    call_llm,
-)
+from agent.auxiliary_client import async_call_llm, call_llm
+from agent.auxiliary_health import fallback_candidate_unavailable_reason
 
 
 _PROVIDER = "custom:test-gateway"
@@ -113,7 +110,7 @@ def _common_patches(primary, middle_sync, final_sync):
 def test_unstructured_503_text_does_not_override_explicit_route():
     error = RuntimeError("HTTP 503 Service Unavailable")
 
-    assert _is_recoverable_aux_fallback_error(error) is False
+    assert fallback_candidate_unavailable_reason(error) is None
 
 
 @pytest.mark.parametrize("status_code", [502, 503])

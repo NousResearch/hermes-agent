@@ -11,7 +11,7 @@ from plugins.memory.honcho.config_schema import CONFIG_SCHEMA
 
 def _point_at(monkeypatch, path):
     from plugins.memory.honcho.client import _host_block
-    monkeypatch.setattr(mp, "_honcho_resolvers", lambda: (lambda: "hermes", lambda: path, _host_block))
+    monkeypatch.setattr(mp, "_honcho_resolvers", lambda name: (lambda: "hermes", lambda: path, _host_block))
 
 
 @pytest.mark.parametrize("corrupt", [True, False], ids=["unparseable-file-is-left-alone", "parseable-file-is-merged"])

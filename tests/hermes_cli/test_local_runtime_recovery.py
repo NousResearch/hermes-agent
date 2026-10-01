@@ -382,7 +382,8 @@ print(json.dumps({'pid': proc.pid, 'create_time': proc.create_time(), 'executabl
         proc = psutil.Process(state["pid"])
         try:
             owner.wait(timeout=10)
-            route = {"base_url": "http://127.0.0.1:59999/v1", "api_key": "test-only"}
+            route = {"base_url": "http://127.0.0.1:59999/v1", "api_key": "test-only",
+                     "pid": state["pid"]}
             supervisor.state_path().write_text(json.dumps({**state, **route}))
             assert proc.ppid() != state["owner_pid"]
             assert endpoint._state_endpoint() == route
@@ -419,7 +420,8 @@ def test_retained_endpoint_validates_identity(tmp_path, monkeypatch, damage):
             path.mkdir()
         got = endpoint._state_endpoint()
         if damage == "valid":
-            assert got == {"base_url": state["base_url"], "api_key": state["api_key"]}
+            assert got == {"base_url": state["base_url"], "api_key": state["api_key"],
+                           "pid": state["pid"]}
             proc.terminate()
             proc.wait(timeout=5)
             assert endpoint._state_endpoint() is None

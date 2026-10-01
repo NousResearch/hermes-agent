@@ -10,7 +10,6 @@ from __future__ import annotations
 from contextlib import contextmanager, suppress
 import logging
 import os
-import signal
 import time
 from pathlib import Path
 
@@ -144,17 +143,21 @@ def _stop_state_server(state: dict) -> bool:
     spawn while any of the tree is still alive: two routers side by side each autoload their own
     copy of a model (#120691). So enumerate the tree while the parent is still up, stop all of
     it, escalate to kill, and tell the caller the truth — False means "still here, do not
-    replace it yet"."""
+    replace it yet". A pid that cannot be determined is NOT "stopped": the caller dropped it or
+    the record is damaged, and either way refusing to replace is the safe direction."""
     from hermes_cli.local_runtime.endpoint import _pid_alive
 
     raw = state.get("pid")
     if isinstance(raw, bool):
-        return True
+        return False
     try:
         pid = int(raw)
     except (TypeError, ValueError):
-        return True
+        return False
     if pid <= 0:
+        # A record that never named a usable pid describes no live router of ours: nothing to
+        # stop, nothing to keep — the boot may proceed (a spawn beside THIS is not a second
+        # router, because there is no router).
         return True
 
     # Children first (the parent must be alive to walk them).
@@ -179,9 +182,14 @@ def _stop_state_server(state: dict) -> bool:
         return True
 
     def _signal(v, *, kill: bool) -> None:
+        # terminate_pid is the repo's cross-platform terminate helper (#89614): POSIX
+        # SIGTERM/SIGKILL, Windows taskkill — signal.SIGKILL does not exist there, and a bare
+        # os.kill(pid, SIGTERM) on Windows TerminateProcesses without touching the children.
+        from gateway.status import terminate_pid
+
         with suppress(Exception):
             if isinstance(v, int):
-                os.kill(v, signal.SIGKILL if kill else signal.SIGTERM)
+                terminate_pid(v, force=kill)
             elif kill:
                 v.kill()
             else:

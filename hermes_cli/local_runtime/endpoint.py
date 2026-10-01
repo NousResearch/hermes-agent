@@ -49,7 +49,20 @@ def _state_endpoint() -> dict | None:
     else:
         if legacy_recorded_process(state) is None:
             return None
-    return {"base_url": base_url, "api_key": state.get("api_key", "")}
+    # ``pid`` rides along so stop/replace decisions can act on the incumbent (#120691): the
+    # liveness guards above have already matched this exact incarnation, so the pid is verified,
+    # not merely recorded. Readers that only want the endpoint ignore the extra key.
+    return {"base_url": base_url, "api_key": state.get("api_key", ""), "pid": state.get("pid")}
+
+
+def _endpoint_only(state: dict | None) -> dict | None:
+    """Provider-facing endpoint: the pid that _state_endpoint() carries for stop/replace
+    decisions is internal bookkeeping, never part of the wire contract — llamacpp consumers
+    (providers.py, runtime_provider_custom.py) hand this dict around and assert its exact
+    {base_url, api_key} shape."""
+    if state is None:
+        return None
+    return {"base_url": state["base_url"], "api_key": state.get("api_key", "")}
 
 
 def managed_root() -> "tuple[str, str] | None":
@@ -84,7 +97,7 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
     """
     managed = _state_endpoint()
     if managed:
-        return managed
+        return _endpoint_only(managed)
 
     from hermes_cli.local_runtime.detect import detect_server
 
@@ -100,7 +113,7 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
             time.sleep(0.25)
             managed = _state_endpoint()
             if managed:
-                return managed
+                return _endpoint_only(managed)
     return None
 
 

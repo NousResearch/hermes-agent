@@ -7,9 +7,12 @@ tree and must report honestly, and the boot must refuse to spawn beside a still-
 """
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import psutil
 
@@ -84,21 +87,49 @@ def test_stop_state_server_reports_a_surviving_incumbent(monkeypatch):
         _cleanup(parent, child)
 
 
-def test_stop_state_server_treats_a_missing_router_as_stopped():
+def test_stop_state_server_treats_a_pid_free_record_as_stopped():
+    # A record that never named a usable pid describes no live router of ours: the boot may
+    # proceed (a spawn beside THIS is not a second router, because there is no router).
     assert bootstrap._stop_state_server({"pid": -1}) is True
-    assert bootstrap._stop_state_server({"pid": "not-a-pid"}) is True
-    assert bootstrap._stop_state_server({}) is True
+    assert bootstrap._stop_state_server({"pid": "not-a-pid"}) is False, (
+        "a pid we cannot read is one we cannot verify gone — refuse to replace")
+    assert bootstrap._stop_state_server({}) is False, (
+        "an endpoint dict that dropped the pid must not be reported as verified-gone")
 
 
 def test_ensure_never_boots_a_second_router_beside_a_live_incumbent(monkeypatch, tmp_path):
-    import hermes_cli.local_runtime.endpoint as endpoint
+    """The vacuity probe: this must FAIL with the guard deleted from ensure_local_runtime.
+
+    Drives the real code path: a real state file (written the way supervisor._write_state writes
+    it — modern identity fields included, so recorded_process() verifies the live incumbent) and
+    a REAL live incumbent that ignores our signals for the stop window. The real
+    _state_endpoint() resolves it (and now carries the pid), a stubbed installed_engine lets the
+    boot proceed past the no-engine early return, and the Recorder supervisor's construction is
+    exactly the bug the guard must prevent.
+    """
+    import hermes_cli.local_runtime.recovery as recovery
     import hermes_cli.local_runtime.supervisor as supervisor
 
-    monkeypatch.setattr(bootstrap, "runtimes_root", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path, raising=False)
+    # Staleness forces the replace path; without it the adopt branch returns before the guard.
     monkeypatch.setattr(bootstrap, "_presets_stale", lambda: True)
-    monkeypatch.setattr(bootstrap, "_stop_state_server", lambda state: False)
-    monkeypatch.setattr(endpoint, "_state_endpoint",
-                        lambda: {"base_url": "http://127.0.0.1:18434/v1", "pid": 12345})
+    # Ensure_local_runtime's spawned supervisor would read models_dir() under the real home.
+    monkeypatch.setattr(bootstrap, "models_dir", lambda: tmp_path / "models")
+
+    # A live incumbent that ignores every signal we send within the stop window: the real
+    # _stop_state_server must run against it and report False.
+    parent, child = _spawn_router_shaped_proc()
+    proc = psutil.Process(parent.pid)
+    state = {"base_url": "http://127.0.0.1:18434/v1", "api_key": "k",
+             "pid": proc.pid, "create_time": proc.create_time(), "executable": proc.exe(),
+             "owner_pid": os.getpid(), "owner_create_time": psutil.Process().create_time()}
+    supervisor.state_path().parent.mkdir(parents=True, exist_ok=True)
+    supervisor.state_path().write_text(json.dumps(state), encoding="utf-8")
+
+    # "Llama-server ignores SIGTERM for the stop window": signal delivery is real, death is not.
+    monkeypatch.setattr(psutil.Process, "terminate", lambda self: None)
+    monkeypatch.setattr(psutil.Process, "kill", lambda self: None)
+
     booted = []
 
     class _Recorder:
@@ -106,7 +137,15 @@ def test_ensure_never_boots_a_second_router_beside_a_live_incumbent(monkeypatch,
             booted.append(a)
 
     monkeypatch.setattr(supervisor, "LlamaServerSupervisor", _Recorder)
+    # A fake engine so the boot proceeds past the no-engine early return to the supervisor
+    # constructor — exactly where the guard must have refused to go.
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda *a, **k: SimpleNamespace(binary=tmp_path / "llama-server"))
 
-    result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}}, force=True)
-    assert result is None, "a still-live incumbent must be adopted, never replaced by a spawn"
-    assert not booted, "a second router was booted beside a live incumbent"
+    try:
+        result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}}, force=True)
+        assert result is None, "a still-live incumbent must be adopted, never replaced by a spawn"
+        assert not booted, "a second router was booted beside a live incumbent"
+    finally:
+        monkeypatch.undo()
+        _cleanup(parent, child)

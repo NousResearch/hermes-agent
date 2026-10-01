@@ -109,6 +109,10 @@ def _profile_from_session_key(session_key: str) -> Optional[str]:
 class RelayAdapter(BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
+    # Connector egress splits against negotiated max_message_length, so the
+    # gateway-level cap must not pre-truncate relay deliveries.
+    splits_long_messages = True
+
     def __init__(
         self,
         config: PlatformConfig,

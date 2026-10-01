@@ -23,9 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          persist-credentials: false # this job is read-only
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
@@ -45,20 +47,54 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          fetch-depth: 0 # need the merge-base to diff changed catalog files
+          # The pull_request checkout is GitHub's merge commit; depth 2 brings its
+          # first parent (the base tip), which is all the diff below needs.
+          fetch-depth: 2
+          # `hermes plugins validate` below runs pinned-repo code; keep the
+          # job's token out of .git/config where that code could read it.
+          persist-credentials: false
 
       - name: Find changed catalog entries
         id: changed
         run: |
           set -euo pipefail
-          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-          # Added + modified entry files only; deletions and removed.yaml
-          # have nothing to clone.
-          CHANGED=$(git diff --name-only --diff-filter=AM "$MERGE_BASE"...HEAD \
-            -- 'plugin-catalog/*.yaml' 'plugin-catalog/*.yml' \
-            | grep -v '/removed\.yaml$' || true)
+          # HEAD is the PR merge commit: diffing it against its first parent is
+          # exactly what the PR would land. Refuse anything else rather than
+          # silently diffing a single commit.
+          if ! git rev-parse -q --verify 'HEAD^2' >/dev/null; then
+            echo "::error::expected the pull_request merge commit as HEAD"
+            exit 1
+          fi
+          # Added + modified + renamed + typechanged entry files only; deletions
+          # and removed.yaml have nothing to clone. A rename or file->symlink
+          # change that slipped past this list would skip the supply-chain gate.
+          CHANGED=$(git diff --name-only --diff-filter=AMRT 'HEAD^1' HEAD \
+            -- 'plugin-catalog/*.yaml' 'plugin-catalog/*.yml')
+          # The grep can only shrink the list and runs on its own so a git diff
+          # failure still fails the step instead of looking like "no changes".
+          CHANGED=$(printf '%s' "$CHANGED" | grep -v '/removed\.yaml$' || true)
+
+          if [ -n "$CHANGED" ]; then
+            # Admission PRs must be data-only: the gate's own enforcement code
+            # (this workflow, the validator, the composite actions, the built
+            # hermes) resolves from the PR checkout, so an entry PR that also
+            # touches tooling could neuter the gate vetting it. Contributor
+            # email maps are data the gate never executes; README/policy/CI PRs
+            # with no entry change skip this check.
+            ALL=$(git diff --name-only 'HEAD^1' HEAD)
+            OUTSIDE=$(printf '%s' "$ALL" | grep -vE '^(plugin-catalog|contributors/emails)/' || true)
+            if [ -n "$OUTSIDE" ]; then
+              echo "::error::catalog entry PRs may only touch plugin-catalog/** and contributors/emails/**, found:"
+              # Filenames are PR-controlled; a newline in one could smuggle a
+              # workflow command into the log.
+              printf '%s' "$OUTSIDE" | tr '\0\n' ' '
+              echo
+              exit 1
+            fi
+          fi
+
           echo "Changed catalog entries:"
           echo "${CHANGED:-<none>}"
           {
@@ -78,43 +114,133 @@ jobs:
         if: steps.changed.outputs.files != ''
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          # A hostile repo URL must never block the job on a credential prompt.
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
           FAILED=0
-          while IFS= read -r entry; do
+          WORKROOT=$(realpath "$(mktemp -d)")
+          # Entries arrive on fd 3, not stdin: `hermes plugins validate` executes
+          # plugin-declared install code that could otherwise read stdin and
+          # silently drain the remaining entry list.
+          while IFS= read -r entry <&3; do
             [ -z "$entry" ] && continue
             echo "::group::validate $entry"
 
-            # Parse repo / sha / subdir from the entry yaml.
-            eval "$(python3 - "$entry" <<'PYEOF'
+            # A symlinked or missing entry file is not a catalog entry.
+            if [ -L "$entry" ] || [ ! -f "$entry" ]; then
+              echo "::error file=$entry::catalog entry must be a regular file"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+
+            # Parse repo / sha / subdir from the entry yaml. These fields are
+            # PR-controlled, so the entry is rejected here before anything uses
+            # them -- the clone must be remote-only and the subdir a plain
+            # relative path, or the pinned sha ends up validating files outside
+            # the pinned commit. `python3 -I` keeps the PR checkout's own
+            # modules off sys.path (cwd is the PR tree) so it cannot shadow the
+            # parser's imports; ruamel.yaml comes from installed packages.
+            PARSED=$(python3 -I - "$entry" <<'PYEOF'
+          import re
           import shlex
           import sys
 
-          import hermes_yaml as yaml
+          from ruamel.yaml import YAML
 
-          with open(sys.argv[1], encoding="utf-8") as fh:
-              data = yaml.safe_load(fh) or {}
-          print(f"REPO={shlex.quote(str(data.get('repo', '')))}")
-          print(f"SHA={shlex.quote(str(data.get('sha', '')))}")
-          print(f"SUBDIR={shlex.quote(str(data.get('subdir', '') or ''))}")
+          try:
+              with open(sys.argv[1], encoding="utf-8") as fh:
+                  data = YAML(typ='safe').load(fh)
+          except Exception:
+              data = None
+          repo = str(data.get('repo', '')) if isinstance(data, dict) else ''
+          sha = data.get('sha', '') if isinstance(data, dict) else ''
+          subdir_raw = data.get('subdir', '') if isinstance(data, dict) else ''
+          if subdir_raw is None:
+              subdir_raw = ''  # `subdir:` with no value means the repo root
+          subdir = subdir_raw if isinstance(subdir_raw, str) else ''
+          bad = ""
+          if data is None:
+              bad = "entry yaml is empty or unparseable"
+          elif not isinstance(data, dict):
+              bad = "entry yaml must be a mapping"
+          elif not re.fullmatch(r"https://\S+", repo):
+              # No whitespace either: the value is echoed into the log, where a
+              # newline would smuggle workflow commands like ::error::.
+              bad = "repo must be an https:// git URL"
+          elif not isinstance(sha, str):
+              bad = "sha must be a string"
+          elif not re.fullmatch(r"[0-9a-f]{40}", sha):
+              # A ref name would validate the branch tip, not the pin; a leading
+              # '-' would become a checkout option.
+              bad = "sha must be exactly 40 lowercase hex characters"
+          elif not isinstance(subdir_raw, str):
+              # Never coerce: a falsy non-string (0, false) would silently mean
+              # the clone root while the structural gate rejects the entry.
+              bad = "subdir must be a string"
+          elif subdir and (
+              not re.fullmatch(r"[A-Za-z0-9._/-]+", subdir)
+              or any(seg in ("", ".", "..") for seg in subdir.split("/"))
+          ):
+              bad = "subdir must be a relative path without '.' or '..' segments"
+          print(f"REPO={shlex.quote(repo)}")
+          print(f"SHA={shlex.quote(str(sha))}")
+          print(f"SUBDIR={shlex.quote(subdir)}")
+          print(f"BAD={shlex.quote(bad)}")
           PYEOF
-          )"
+          ) || PARSED="BAD='catalog entry parser failed'"
+            # Reset before eval: a killed or truncated parser must not let this
+            # entry inherit a previous entry's repo/sha and pass on its content.
+            REPO="" SHA="" SUBDIR="" BAD=""
+            eval "$PARSED"
+            # Check before echo: a rejected value must never reach the log, where
+            # a newline in it would smuggle workflow commands like ::error::.
+            if [ -n "$BAD" ]; then
+              echo "::error file=$entry::$BAD"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
             echo "repo=$REPO sha=$SHA subdir=$SUBDIR"
 
-            CLONE_DIR=$(mktemp -d)
+            CLONE_DIR=$(realpath "$(mktemp -d -p "$WORKROOT")")
             # Full clone (no --depth 1): the pinned sha may not be the branch tip.
-            if ! git clone "$REPO" "$CLONE_DIR"; then
+            # 600s: listed repos reach >1 GB (hermes-jackal-verified 1.43 GB,
+            # hindsight 741 MB); 120s would false-fail a re-pin on a slow runner.
+            if ! timeout 600 git clone "$REPO" "$CLONE_DIR" </dev/null; then
               echo "::error file=$entry::clone failed for $REPO"
               FAILED=1; echo "::endgroup::"; continue
             fi
 
+            # The pin must name a commit object -- a tag-object sha would peel
+            # to a commit the reviewer never declared as the pin.
+            if [ "$(git -C "$CLONE_DIR" cat-file -t "$SHA" 2>/dev/null)" != "commit" ]; then
+              echo "::error file=$entry::pinned sha $SHA is not a commit object in $REPO"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
             # SUPPLY-CHAIN GATE: the pinned sha must be reachable in the repo.
-            if ! git -C "$CLONE_DIR" checkout --detach "$SHA"; then
+            if ! git -C "$CLONE_DIR" checkout --detach "$SHA" </dev/null; then
               echo "::error file=$entry::pinned sha $SHA is not reachable in $REPO"
               FAILED=1; echo "::endgroup::"; continue
             fi
 
             PLUGIN_DIR="$CLONE_DIR${SUBDIR:+/$SUBDIR}"
+            # A symlinked directory inside the clone could still point outside
+            # it, so confine the resolved path under the clone, not the lexical one.
+            RESOLVED_DIR=$(realpath -m -- "$PLUGIN_DIR")
+            if [ "$RESOLVED_DIR" != "$CLONE_DIR" ] && [ "${RESOLVED_DIR#"$CLONE_DIR"/}" = "$RESOLVED_DIR" ]; then
+              echo "::error file=$entry::subdir '$SUBDIR' resolves outside the pinned clone"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+            # Confinement is per-symlink too, across the whole clone: find does
+            # not descend into a symlinked directory, so an allowed in-clone
+            # link like plugin/ext -> ../lib would otherwise hide lib/evil ->
+            # /outside from a PLUGIN_DIR-only scan while reads through it still
+            # escape the pin.
+            if ! find "$CLONE_DIR" -path "$CLONE_DIR/.git" -prune -o -type l -print0 | while IFS= read -r -d '' link; do
+                target=$(realpath -m -- "$link")
+                case "$target" in "$CLONE_DIR"|"$CLONE_DIR"/*) ;; *) exit 1 ;; esac
+              done; then
+              echo "::error file=$entry::a symlink in the repo resolves outside the pinned clone"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
             # Native plugin.yaml OR portable Agent Plugins v1 plugin.json
             # (#81196; native manifest wins when both exist).
             if [ ! -f "$PLUGIN_DIR/plugin.yaml" ] && [ ! -f "$PLUGIN_DIR/plugin.yml" ] && [ ! -f "$PLUGIN_DIR/plugin.json" ]; then
@@ -123,7 +249,7 @@ jobs:
             fi
 
             # Manifest schema + declared-vs-registered capability check.
-            if ! hermes plugins validate --install-deps "$PLUGIN_DIR"; then
+            if ! timeout 600 hermes plugins validate --install-deps "$PLUGIN_DIR" </dev/null; then
               echo "::error file=$entry::hermes plugins validate failed"
               FAILED=1; echo "::endgroup::"; continue
             fi
@@ -132,16 +258,22 @@ jobs:
             # A desktop bundle that both fetches from GitHub AND writes/renames
             # plugin files is a self-updater; either half alone is fine (a
             # plugin may read the API, or manage its own data files).
-            SELF_UPDATE=$(grep -rlE 'releases/latest|raw\.githubusercontent\.com' \
-                --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.ts' "$PLUGIN_DIR" \
-              | xargs -r grep -lE 'writeTextFile|renamePath|writeFile\(' || true)
+            # NUL-delimited both ways: committed filenames with spaces or
+            # newlines must not split into grep options or forged log lines.
+            SELF_UPDATE=$(grep -rlZE 'releases/latest|releases/download|raw\.githubusercontent\.com|codeload\.github\.com' \
+                --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.ts' \
+                --include='*.jsx' --include='*.tsx' --include='*.mts' --include='*.cts' \
+                "$PLUGIN_DIR" \
+              | xargs -r0 grep -lZE 'writeTextFile|renamePath|writeFile\(|writeFileSync|renameSync|copyFileSync|cpSync|createWriteStream' || true)
+            SELF_UPDATE=$(printf '%s' "$SELF_UPDATE" | tr '\0\n' ' ')
             if [ -n "$SELF_UPDATE" ]; then
               echo "::error file=$entry::self-updating code in catalog build (fetches GitHub AND writes plugin files): $SELF_UPDATE"
               FAILED=1; echo "::endgroup::"; continue
             fi
             echo "✅ PASS: $entry"
             echo "::endgroup::"
-          done <<< "$CHANGED_FILES"
+          done 3<<< "$CHANGED_FILES"
+          rm -rf "$WORKROOT"
 
           if [ "$FAILED" -ne 0 ]; then
             echo "❌ FAIL: one or more catalog entries failed pinned-source validation"

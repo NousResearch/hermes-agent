@@ -395,7 +395,10 @@ async def test_correction_read_receipts_follow_the_configured_processing_policy(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["pending-agent", "interrupt", "steer", "queue"])
-async def test_runner_queues_a_correction_that_arrives_without_the_adapter_guard(monkeypatch, tmp_path, mode):
+@pytest.mark.parametrize("earlier_type", [MessageType.TEXT, MessageType.PHOTO])
+async def test_runner_queues_a_correction_that_arrives_without_the_adapter_guard(
+    monkeypatch, tmp_path, mode, earlier_type,
+):
     adapter = adapter_for(monkeypatch, {ROOM: True})
     adapter.handle_message = AsyncMock()
     incoming = edit_event("latest correction", "$edit")
@@ -421,7 +424,12 @@ async def test_runner_queues_a_correction_that_arrives_without_the_adapter_guard
     session_key = runner._session_key_for_source(correction.source)
     agent = SimpleNamespace(interrupt=MagicMock(), steer=MagicMock(return_value=True), redirect=MagicMock())
     runner._session_state(session_key).turn.agent = _AGENT_PENDING_SENTINEL if mode == "pending-agent" else agent
-    earlier = MessageEvent("earlier text", source=correction.source, message_id="$earlier")
+    earlier = MessageEvent(
+        "earlier text", message_type=earlier_type, source=correction.source, message_id="$earlier",
+        allow_gateway_control=correction.allow_gateway_control,
+        media_urls=["photo.png"] if earlier_type == MessageType.PHOTO else [],
+        media_types=["image/png"] if earlier_type == MessageType.PHOTO else [],
+    )
     adapter._pending_messages[session_key] = earlier
 
     await runner._handle_message(correction)

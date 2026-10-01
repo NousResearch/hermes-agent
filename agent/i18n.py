@@ -67,11 +67,10 @@ _catalog_cache: dict[tuple[str, str], dict[str, str]] = {}
 _supported_cache: dict[str, tuple[str, ...]] = {}
 _catalog_lock = threading.Lock()
 
-# Least-recently-used first; capped like the lru_cache(maxsize=8) it replaced (a process only
-# serves a handful of profile homes, but home overrides also come from per-request callers).
 _language_cache: dict[str, str | None] = {}
 _LANGUAGE_CACHE_MAX = 8
 _language_lock = threading.Lock()
+_language_generation = 0
 
 
 def _locales_dir() -> Path:
@@ -181,16 +180,15 @@ def surface_catalog(lang: str, surface: str = i18n_layers.CORE_SURFACE) -> dict[
 
 
 def _config_language_cached(hermes_home: str) -> str | None:
-    """``display.language`` from config.yaml, read once per profile home (``t()`` is a hot path).
-    Keyed by home so a multiplexed gateway serving several profiles doesn't freeze the first
-    profile's language for every other profile. A result read from a FailedConfigRead fallback
-    (config.yaml exists but could not be read or parsed: a transient I/O error, or a half-saved
-    edit) is never memoised, so it's retried on the next call instead of pinning the language for
-    the life of the process; a reader that raises is not memoised either. A config.yaml that does
-    not exist yet is NOT a failed read — that result (no language) is cached like any other."""
+    """Cache successful config language reads by profile home until reset.
+
+    FailedConfigRead results remain uncached so the next lookup can recover.
+    A missing config file is a successful defaults read.
+    """
     with _language_lock:
+        generation = _language_generation
         if hermes_home in _language_cache:
-            _language_cache[hermes_home] = _language_cache.pop(hermes_home)  # mark most recent
+            _language_cache[hermes_home] = _language_cache.pop(hermes_home)
             return _language_cache[hermes_home]
     try:
         from hermes_cli.config import load_config_readonly
@@ -203,9 +201,11 @@ def _config_language_cached(hermes_home: str) -> str | None:
         return None
     if not isinstance(cfg, FailedConfigRead):
         with _language_lock:
+            if generation != _language_generation:
+                return result
             _language_cache.pop(hermes_home, None)
             while len(_language_cache) >= _LANGUAGE_CACHE_MAX:
-                _language_cache.pop(next(iter(_language_cache)))  # evict least recently used
+                _language_cache.pop(next(iter(_language_cache)))
             _language_cache[hermes_home] = result
     return result
 
@@ -218,12 +218,14 @@ def reset_language_cache() -> None:
     """Invalidate cached language resolution, merged catalogs and every layer view (call after
     ``save_config`` changes ``display.language``, after a pack registers/unregisters, or after editing
     an overlay file)."""
-    with _language_lock:
-        _language_cache.clear()
+    global _language_generation
     with _catalog_lock:
         _catalog_cache.clear()
         _supported_cache.clear()
     i18n_layers.clear_cache()
+    with _language_lock:
+        _language_cache.clear()
+        _language_generation += 1
 
 
 def _resolve_language(home: str) -> str:

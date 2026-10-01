@@ -29,7 +29,7 @@ class _ExecApprovalDeclined(RuntimeError):
 def _exec_approval_metadata(base: "dict | None", approval_data: dict) -> dict:
     """Preserve transport context and attach the pending approval identity."""
     metadata = dict(base or {})
-    approval_id = str(approval_data.get("approval_id") or "")
+    approval_id = str(approval_data.get("approval_id") or approval_data.get("request_id") or "")
     if approval_id:
         metadata["approval_id"] = approval_id
     return metadata
@@ -63,7 +63,7 @@ def notify_approval(self, approval_data: dict) -> None:
                     description=desc, metadata=_exec_approval_metadata(
                         {**(ctx._status_thread_metadata or {}), "requester_user_id": ctx.source.user_id},
                         approval_data,
-                    ), request_id=approval_data.get("request_id"), **flags,
+                    ), **flags,
                 ),
                 "send_exec_approval scheduling error",
             )

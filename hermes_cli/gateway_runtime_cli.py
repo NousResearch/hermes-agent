@@ -1,4 +1,4 @@
-"""Machine-readable ensure boundary. No bootstrap credentials leave this command."""
+"""Credential-free ensure discovery and private same-user ticket bootstrap."""
 from dataclasses import asdict
 import json
 import sys
@@ -30,3 +30,50 @@ def cmd_gateway_ensure(args) -> None:
         payload, code = {"state": "inaccessible", "reason_code": "invalid_invocation", "endpoint": None}, 2
     print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
     raise SystemExit(code)
+
+
+def cmd_gateway_ticket(args) -> None:
+    """Private same-user transport bootstrap; never discover or start another owner.
+
+    SSH carries the request on stdin and the result on its encrypted stdout. The
+    exact endpoint must still be served; no credential or scope is accepted in argv.
+    """
+    from pathlib import Path
+    from hermes_constants import get_hermes_home
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.gateway_client import _session_ticket
+
+    try:
+        request = json.loads(sys.stdin.buffer.read(65537))
+        if (not isinstance(request, dict) or set(request) - {"profile_id", "instance_id", "purpose", "profile"} or not {"profile_id", "instance_id", "purpose"} <= set(request)
+                or request["purpose"] not in {"interactive", "native-http"}):
+            raise ValueError("invalid request")
+        home = get_hermes_home().resolve()
+        with redirect_stdout(sys.stderr):
+            discovery = discover_gateway_endpoint(home)
+            endpoint = discovery.endpoint
+            if (discovery.state != "ready" or endpoint is None
+                    or endpoint.profile_id != request["profile_id"]
+                    or endpoint.instance_id != request["instance_id"]):
+                raise ValueError("stale endpoint")
+            profile = request.get("profile")
+            if profile is not None:
+                from hermes_cli.profiles import get_profile_dir, profile_exists
+                if not isinstance(profile, str) or not profile_exists(profile):
+                    raise ValueError("invalid profile")
+                target_home = get_profile_dir(profile).resolve()
+                target = discover_gateway_endpoint(target_home)
+                if (target.state != "ready" or target.endpoint is None
+                        or target.endpoint.instance_id != endpoint.instance_id
+                        or Path(target.endpoint.control_home or target.endpoint.profile_id).resolve()
+                           != Path(endpoint.control_home or endpoint.profile_id).resolve()):
+                    raise ValueError("profile is not served by pinned owner")
+                home, endpoint = target_home, target.endpoint
+            ticket = _session_ticket(home, endpoint, purpose=request["purpose"])
+        payload = {"ticket": ticket, "profile_id": endpoint.profile_id,
+                   "instance_id": endpoint.instance_id, "runtime_protocol": 1, "profile": profile}
+    except Exception:
+        # A caller receives bounded diagnostics, never private control/socket data.
+        print('{"error":"native_ticket_unavailable"}')
+        raise SystemExit(4) from None
+    print(json.dumps(payload, separators=(",", ":"), sort_keys=True))

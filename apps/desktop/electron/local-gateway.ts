@@ -28,6 +28,8 @@ import net from 'node:net'
 import path from 'node:path'
 
 export interface GatewayEndpoint {
+  ssh_transport_id?: string
+  ssh_profile?: string
   profile_id: string
   instance_id: string
   authority_epoch: number
@@ -37,6 +39,16 @@ export interface GatewayEndpoint {
   supervisor: string
   /** Multiplexer home whose control socket answers for a served secondary; null when the profile owns its own. */
   control_home?: string | null
+}
+
+type TicketPurpose = 'interactive' | 'native-http'
+const ticketTransports = new Map<string, { origin: string; mint: (endpoint: GatewayEndpoint, purpose: TicketPurpose) => Promise<string> }>()
+
+export function registerGatewayTicketTransport(id: string, origin: string,
+  mint: (endpoint: GatewayEndpoint, purpose: TicketPurpose) => Promise<string>) {
+  ticketTransports.set(id, { origin, mint })
+
+  return () => { ticketTransports.delete(id) }
 }
 
 /** The single-line JSON `hermes gateway ensure --json` prints, or a diagnosis of why there is none.
@@ -168,20 +180,25 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
   const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? new URL(urlOrProfile).searchParams.get('profile') : urlOrProfile)?.trim()
 
   if (!profile || profile === 'current') {return endpoint}
-  const own = path.basename(endpoint.profile_id)
-  const ownName = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? own : 'default'
+  if (endpoint.ssh_transport_id) {return { ...endpoint, ssh_profile: profile }}
+  const paths = path
+  const own = paths.basename(endpoint.profile_id)
+  const ownName = paths.basename(paths.dirname(endpoint.profile_id)) === 'profiles' ? own : 'default'
 
   if (profile === ownName) {return endpoint}
 
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {throw new Error('Invalid profile route')}
-  const root = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? path.dirname(path.dirname(endpoint.profile_id)) : launchHome
-  const home = profile === 'default' ? root : path.join(root, 'profiles', profile)
+  const root = paths.basename(paths.dirname(endpoint.profile_id)) === 'profiles' ? paths.dirname(paths.dirname(endpoint.profile_id)) : endpoint.ssh_transport_id ? endpoint.profile_id : launchHome
+  const home = profile === 'default' ? root : paths.join(root, 'profiles', profile)
 
   return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }
 }
 
 export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string }, url: string, launchHome = descriptor.gatewayEndpoint.profile_id) {
-  if (new URL(url).origin !== descriptor.gatewayEndpoint.api_origin || descriptor.baseUrl !== descriptor.gatewayEndpoint.api_origin) {
+  const expected = descriptor.gatewayEndpoint.ssh_transport_id
+    ? ticketTransports.get(descriptor.gatewayEndpoint.ssh_transport_id)?.origin : descriptor.gatewayEndpoint.api_origin
+
+  if (!expected || new URL(url).origin !== expected || descriptor.baseUrl !== expected) {
     throw new Error('Native gateway HTTP origin mismatch')
   }
 
@@ -221,6 +238,18 @@ async function resolveControlSocket(home: string): Promise<string> {
 }
 
 export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' = 'interactive'): Promise<string> {
+  if (endpoint.ssh_transport_id) {
+    const transport = ticketTransports.get(endpoint.ssh_transport_id)
+
+    if (!transport) {throw new Error('Gateway ticket transport retired')}
+
+    const ticket = await transport.mint(endpoint, purpose)
+
+    if (ticketTransports.get(endpoint.ssh_transport_id) !== transport) {throw new Error('Gateway ticket transport retired')}
+
+    return ticket
+  }
+
   if (process.platform === 'win32') {
     if (!windowsTicketClient) {throw new Error('Gateway ticket client is not configured')}
 

@@ -13,6 +13,7 @@ configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
 
   return mintGatewayTicketWithPython(backend, resolveHermesCwd(), endpoint, purpose)
 })
+import { attachSshGateway } from './ssh-gateway'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -6209,6 +6210,11 @@ async function buildReadinessHealthProbe(baseUrl, authMode, token) {
 // a manual "Use gateway" click. Run the cascade once and retry once; anything
 // that is not that exact case surfaces unchanged.
 async function waitForRemoteHermes(remote) {
+  if (remote.gatewayEndpoint) {
+    await fetchJsonForBackend(remote, '/api/config', { timeoutMs: 15000 })
+
+    return
+  }
   try {
     await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
   } catch (error) {
@@ -9758,6 +9764,7 @@ async function teardownSshConnection(profile) {
   sshConnections.delete(scope)
 
   terminalIpc.disposeTerminalSessionsForSshScope(scope)
+  state.release?.()
 
   // Kill the owned remote serve --isolated *before* closing the SSH
   // transport. Spawn detaches with setsid/nohup, so closing the tunnel
@@ -9772,7 +9779,7 @@ async function teardownSshConnection(profile) {
       },
       {
         cleanupRemote:
-          state.remotePlatform === 'Windows'
+          state.canonical ? async () => {} : state.remotePlatform === 'Windows'
             ? async () => {
                 // connectWindowsRemote does not share POSIX lock/kill. Stay
                 // silent on the kill path, but leave a log so quit is not a
@@ -9978,6 +9985,13 @@ async function bootstrapSshConnection(
 // drop its forward and transport, and surface a fence error so the managed
 // updater refuses to mutate a remote install with an unfenced serve.
 async function rollbackSshBootstrapResult(ssh, result, profile, sshConfig, boundaryError) {
+  if (result.canonical) {
+    result.release()
+    await ssh.cancelForward(result.localPort, result.remotePort, result.remoteHost).catch(() => undefined)
+    await ssh.close()
+
+    return
+  }
   const cleanupErrors: string[] = []
   const scope = sshScopeKey(profile)
 
@@ -10043,7 +10057,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   const hostLabel = sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
   const existing = sshConnections.get(scope)
 
-  if (existing && existing.fingerprint !== fingerprint) {
+  if (existing && (existing.fingerprint !== fingerprint || existing.canonical)) {
     await teardownSshConnection(profile)
   }
 
@@ -10088,7 +10102,12 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
 
     const platform = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
-    result = await lifecycle({
+    result = platform.os === 'Windows' ? null : await attachSshGateway({
+      ssh, profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
+      remoteHermesPath: sshConfig.remoteHermesPath || '', pickLocalPort: async () => Number(await pickLocalPort()), signal: lease.signal
+    })
+    if (result) {result.platform = platform}
+    result ??= await lifecycle({
       ssh,
       platform,
       profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
@@ -10151,10 +10170,13 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       }
     },
     publish: () => {
-      persistSshConnectionToken(profile, source, result.token, metadata.registryConnectionId)
+      if (!result.canonical) {persistSshConnectionToken(profile, source, result.token, metadata.registryConnectionId)}
       removeForceCleanup()
       sshConnections.set(scope, {
         ssh,
+        canonical: result.canonical === true,
+        release: result.release,
+        remoteHost: result.remoteHost,
         fingerprint,
         ownershipId: result.ownershipId || sshOwnershipKey(profile),
         localPort: result.localPort,
@@ -10181,17 +10203,20 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
         // site may label a registry-qualified SSH scope as the primary backend.
         primaryRegistryScope: metadata.primaryRegistryScope === true
       })
-      sshIsolatedKeepalives.start(scope, { baseUrl: result.baseUrl, token: result.token })
+      if (!result.canonical) {sshIsolatedKeepalives.start(scope, { baseUrl: result.baseUrl, token: result.token })}
     },
     rollback: error => rollbackSshBootstrapResult(ssh, result, profile, sshConfig, error)
   })
 
   sshRememberLog(
-    `[ssh] connection ${result.reused ? 'REUSED' : 'spawned'} dashboard: ` +
+    `[ssh] connection ${result.canonical ? 'attached canonical gateway' : result.reused ? 'REUSED dashboard' : 'spawned dashboard'}: ` +
       `${result.hermesVersion || 'hermes (version unknown)'} at ${result.hermesPath || '?'}`
   )
 
-  const connection = await buildRemoteConnection(
+  const connection = result.canonical ? {
+    baseUrl: result.baseUrl, wsUrl: result.wsUrl, gatewayEndpoint: result.gatewayEndpoint,
+    authMode: 'native', token: '', mode: 'remote', source, remoteHost: hostLabel, remoteKind: 'ssh'
+  } : await buildRemoteConnection(
     result.baseUrl,
     'token',
     result.token,
@@ -10810,6 +10835,9 @@ function profileRouteOptions(
 async function forgetLocalGatewayDescriptor(profile) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const route = resolveProfileBackendRoute(key, profileRouteOptions(key))
+  const remoteScope = route.backend === 'primary' ? sshScopeKey(null) : sshScopeKey(key)
+
+  if (sshConnections.get(remoteScope)?.canonical) {await teardownSshConnection(remoteScope)}
 
   if (route.backend === 'primary') {
     const attempt = backendConnectionState.startAttempt()
@@ -10830,6 +10858,13 @@ async function forgetLocalGatewayDescriptor(profile) {
 // its composite key, so the stale descriptor lives wherever ensureRegistryBackend
 // put it.
 async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
+  if (connectionId && connectionId !== 'local') {
+    const key = backendScopeKey(connectionId, profile)
+    backendPool.delete(key)
+    await teardownSshConnection(key)
+
+    return
+  }
   const profileKey = String(profile ?? '').trim() || 'default'
 
   const localRoute = resolveRegistryLocalRoute(profileKey, {
@@ -11557,6 +11592,10 @@ async function updateManagedSshConnection(source, correlationId) {
   let ephemeral: null | { close: () => Promise<void>; target: RemoteUpdateTarget } = null
   let launchAttempted = false
   const firstState = scopes.find(scope => scope.state)?.state
+
+  if (scopes.some(scope => scope.state?.canonical)) {
+    throw new Error('Update this gateway on its SSH host, then reconnect Desktop. Desktop does not own its service lifecycle.')
+  }
 
   const target = firstState
     ? remoteUpdateTargetFromState(firstState)

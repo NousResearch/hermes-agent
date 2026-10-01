@@ -510,21 +510,22 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     ``AccessDenied`` for a process owned by another user, which ``ps`` still reports, so ``ps``
     stays as the fallback rather than being replaced.
 
-    On Windows, the argv boundaries from psutil are significant. In particular, a Python
-    interpreter under a directory containing spaces must remain one token when the returned string
-    is parsed again by the gateway identity matchers. ``list2cmdline`` preserves those boundaries
-    using the same quoting convention as Windows process command lines. Keep the existing
-    space-joined representation on POSIX, where the inline source matcher expects its source to be
-    reconstructed from the command-line string."""
+    NUL-separated argv must remain token-preserving when the returned string is parsed again by
+    the gateway identity matchers. ``list2cmdline`` quotes spaced argv elements, including the
+    interpreter path, and keeps the space-free representation unchanged. Use it for both /proc
+    and psutil so POSIX and Windows take the same path; the inline-source matcher can then recover
+    the source and still evaluate the end-to-end gateway verdict."""
     with contextlib.suppress(OSError):
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
         if raw:
-            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+            parts = [part.decode("utf-8", errors="ignore") for part in raw.split(b"\x00") if part]
+            if parts:
+                return subprocess.list2cmdline(parts)
     with contextlib.suppress(Exception):
         import psutil  # type: ignore
         cmdline_parts = psutil.Process(pid).cmdline()
         if cmdline_parts:
-            return subprocess.list2cmdline(cmdline_parts) if _IS_WINDOWS else " ".join(cmdline_parts)
+            return subprocess.list2cmdline(cmdline_parts)
     if not _IS_WINDOWS:
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             result = subprocess.run(

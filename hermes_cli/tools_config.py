@@ -91,6 +91,9 @@ CONFIGURABLE_TOOLSETS = [
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
+    ("matrix_followup", "🔁 Matrix Reaction Follow-ups", "let a reaction to a reply start a follow-up"),
+    ("matrix_read",     "📜 Matrix History",           "read room, thread and event history"),
+    ("matrix_reaction", "👍 Matrix Reactions",         "add and remove the agent's reactions"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
 ]

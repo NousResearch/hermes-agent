@@ -185,7 +185,7 @@ Deny rules are a shell-command policy, not a complete shell interpreter or an OS
 
 ### Approval Timeout
 
-In the CLI, the TUI and the Desktop app an approval prompt has no deadline: it stays up until you answer it, interrupt the turn (Ctrl+C / Stop), or close the session. The command does not run while it waits.
+In the CLI, the TUI and the Desktop app an approval prompt has no deadline: it stays up until you answer it, interrupt the turn (Ctrl+C / Stop), or close the session. Nothing runs while it waits.
 
 On messaging platforms (and in ACP editors and approval transport plugins) the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
 

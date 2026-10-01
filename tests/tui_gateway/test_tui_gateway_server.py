@@ -11714,6 +11714,7 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     assert resp["result"]["status"] == "streaming"
     assert captured["session_key"] == "session-key"
     assert captured["approval_wait"] > 1
+    assert approval_context.approval_wait_seconds() == 1  # unbound again once the turn ends
 
 
 def test_prompt_submit_expands_context_refs(monkeypatch):

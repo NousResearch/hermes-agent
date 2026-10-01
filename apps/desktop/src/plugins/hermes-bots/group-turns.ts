@@ -1027,7 +1027,6 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
   // holds Desktop prompts until they are answered).
   let hardCap = started + GROUP_TURN_HARD_CAP_MS
   let lastPolled = started
-  let wasAwaitingUser = false
   // After the terminal frame fires, the gateway still has to flip
   // session.running off in its turn `finally` — re-check quickly for a few
   // beats instead of falling back to the slow backstop cadence.
@@ -1085,14 +1084,11 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     const done = !busy && !awaitingUser
     const polledAt = Date.now()
 
-    // Credit only intervals blocked on the user at both ends, not busy work
-    // that preceded the prompt.
-    if (awaitingUser && wasAwaitingUser) {
+    if (awaitingUser) {
       hardCap += polledAt - lastPolled
     }
 
     lastPolled = polledAt
-    wasAwaitingUser = awaitingUser
     // The gateway's retained error for THIS turn. A turn that dies before its
     // prompt is committed (agent-init failure, no-agent refusal) never grows
     // the transcript, so the tombstone — not the message count — is the only

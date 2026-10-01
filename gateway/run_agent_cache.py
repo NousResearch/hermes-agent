@@ -620,13 +620,13 @@ class GatewayAgentCacheMixin:
         return f"[Voice channel now: {vc_now or 'not connected to a voice channel'}]"
 
     async def _rehydrate_prompt_pins(self, session_key: str, expected_session_id: Optional[str]) -> None:
-        """Adopt the durable pin snapshot for an internal turn when this process holds no pins for
-        *session_key* (a restart). Eviction clears only ``ephemeral_pin`` and keeps ``channel_pin``,
-        so an evicted agent still re-renders instead of reviving the snapshot."""
+        """Adopt the durable pin snapshot for an internal turn when this process holds no context pin
+        for *session_key*: a restart, or an eviction (/stop, /undo, /model), which clears only
+        ``ephemeral_pin``. Without it the wake renders from its origin-only source (no chat or user
+        names) and the next human turn re-keys back, rewriting the system bytes twice. Human turns
+        never call this, so an evicted agent's next human turn still re-renders."""
         state = self._peek_session_state(session_key)
-        if state is not None and (
-            state.conversation.ephemeral_pin is not None or state.conversation.channel_pin is not None
-        ):
+        if state is not None and state.conversation.ephemeral_pin is not None:
             return
         try:
             pin = sanitize_prompt_pin(await self.async_session_store.get_prompt_pin(
@@ -639,7 +639,8 @@ class GatewayAgentCacheMixin:
             return
         conversation = self._session_state(session_key).conversation
         conversation.ephemeral_pin = (pin["context_key"], pin["context_prompt"], pin["redact_pii"])
-        conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
+        if conversation.channel_pin is None:
+            conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
 
     async def _persist_prompt_pins(self, session_key: Optional[str], expected_session_id: Optional[str]) -> None:
         """Persist this conversation's pins before the agent runs; the store no-ops an unchanged
@@ -672,7 +673,7 @@ class GatewayAgentCacheMixin:
         source rebuilt from the persisted origin, without chat_name/user_name/message_id. Rendering
         from it re-keyed the pin, and the next human turn re-keyed it back (A→B→A), rewriting
         already-sent system bytes each time. An internal event is never a real metadata change, so
-        it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart); with
+        it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart or an eviction); with
         no pin yet it renders and pins as usual. The pin records the ``privacy.redact_pii`` it was
         rendered under: bytes from another privacy policy are never reused, even by an internal
         event."""

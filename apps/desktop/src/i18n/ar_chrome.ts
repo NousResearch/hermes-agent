@@ -555,5 +555,16 @@ export const arChrome = {
       copyPageUrl: 'نسخ رابط الصفحة',
       inspectElement: 'فحص العنصر'
     }
-  },
-} satisfies Pick<TranslationOverrides, 'externalOpenFailed' | 'fileMenu' | 'titlebar' | 'keybinds' | 'sidebar' | 'shell' | 'rightSidebar' | 'zones' | 'contextMenu'>
+  }
+} satisfies Pick<
+  TranslationOverrides,
+  | 'externalOpenFailed'
+  | 'fileMenu'
+  | 'titlebar'
+  | 'keybinds'
+  | 'sidebar'
+  | 'shell'
+  | 'rightSidebar'
+  | 'zones'
+  | 'contextMenu'
+>

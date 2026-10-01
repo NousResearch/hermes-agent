@@ -323,5 +323,8 @@ export const arBoot = {
     change: 'تغيير',
     startChatting: 'ابدأ',
     docs: provider => `وثائق ${provider}`
-  },
-} satisfies Pick<TranslationOverrides, 'boot' | 'remoteDisplayBanner' | 'updates' | 'guidedGreeting' | 'install' | 'onboarding'>
+  }
+} satisfies Pick<
+  TranslationOverrides,
+  'boot' | 'remoteDisplayBanner' | 'updates' | 'guidedGreeting' | 'install' | 'onboarding'
+>

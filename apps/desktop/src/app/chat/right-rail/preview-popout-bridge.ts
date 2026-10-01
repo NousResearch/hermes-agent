@@ -31,8 +31,7 @@ const READ_TIMEOUT_MS = 8_000
 type ActPayload = Omit<PreviewActAction, 'kind'> & { kind: string }
 
 type BridgeRequest =
-  | { id: string; kind: 'act'; payload: ActPayload }
-  | { id: string; kind: 'read'; payload: PreviewReadOptions }
+  { id: string; kind: 'act'; payload: ActPayload } | { id: string; kind: 'read'; payload: PreviewReadOptions }
 
 type BridgeResponse =
   | { id: string; kind: 'act'; result: PreviewActResult }
@@ -148,19 +147,15 @@ function askPopout<T>(
 
 /** Ask the browser pop-out to run drive_preview. Null when no pop-out answers. */
 export function requestPopoutPreviewAct(payload: ActPayload): Promise<PreviewActResult | null> {
-  return askPopout(
-    { id: nextId('act'), kind: 'act', payload },
-    ACT_TIMEOUT_MS,
-    response => (response.kind === 'act' ? response.result : undefined)
+  return askPopout({ id: nextId('act'), kind: 'act', payload }, ACT_TIMEOUT_MS, response =>
+    response.kind === 'act' ? response.result : undefined
   )
 }
 
 /** Ask the browser pop-out to run read_preview. Null when no pop-out answers. */
 export function requestPopoutPreviewRead(payload: PreviewReadOptions = {}): Promise<PreviewReadResult | null> {
-  return askPopout(
-    { id: nextId('read'), kind: 'read', payload },
-    READ_TIMEOUT_MS,
-    response => (response.kind === 'read' ? response.result : undefined)
+  return askPopout({ id: nextId('read'), kind: 'read', payload }, READ_TIMEOUT_MS, response =>
+    response.kind === 'read' ? response.result : undefined
   )
 }
 
@@ -186,7 +181,11 @@ export function installPopoutPreviewResponder(): () => void {
 
     const request = data as Partial<BridgeRequest> & { id?: unknown; kind?: unknown }
 
-    if (typeof request.id !== 'string' || (request.kind !== 'act' && request.kind !== 'read') || !('payload' in request)) {
+    if (
+      typeof request.id !== 'string' ||
+      (request.kind !== 'act' && request.kind !== 'read') ||
+      !('payload' in request)
+    ) {
       return
     }
 

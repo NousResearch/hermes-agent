@@ -723,9 +723,7 @@ describe('unhideOpeningUserRows', () => {
   })
 
   it('leaves a hidden opening row without content hidden', () => {
-    const messages = unhideOpeningUserRows([
-      { id: 1, role: 'user', content: '', display_kind: 'hidden', timestamp: 1 }
-    ])
+    const messages = unhideOpeningUserRows([{ id: 1, role: 'user', content: '', display_kind: 'hidden', timestamp: 1 }])
 
     expect(messages[0].display_kind).toBe('hidden')
   })

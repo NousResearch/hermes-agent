@@ -1471,6 +1471,20 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
 _LIVE_SEND_CONFIRM_TIMEOUT_SECS = 60
 
 
+def _observe_late_live_send(future: Any, job_id: str, where: str) -> None:
+    try:
+        result = future.result()
+    except Exception as exc:
+        logger.warning(
+            "Job '%s': live adapter send to %s failed after confirmation timeout: %s",
+            job_id, where, exc)
+        return
+    if not _confirm_adapter_delivery(result, job_id):
+        logger.warning(
+            "Job '%s': live adapter send to %s returned an unconfirmed result "
+            "after confirmation timeout", job_id, where)
+
+
 def _live_send_text(
     t: _TargetDelivery, text_to_send: str, route_thread_id: Optional[str], route_metadata: dict, *,
     target_errors: list, delivery_errors: list, unverified_targets: list,
@@ -1498,17 +1512,20 @@ def _live_send_text(
         send_result = dispatch.result(timeout=_LIVE_SEND_CONFIRM_TIMEOUT_SECS)
     except TimeoutError:
         # A slow confirmation is not a failure. A send that has started may still land, so a
-        # standalone resend would duplicate it. A send the loop never started (wedged loop) must
+        # standalone resend would duplicate it. A send that the loop never started (wedged loop) must
         # go through standalone, or the message is lost.
         if dispatch.withdraw():
             msg = f"live adapter send to {t.where} timed out before the coroutine was dispatched"
             logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
             target_errors.append(msg)
             return False, False, None
+        unverified_targets.append(t.where)
+        dispatch.add_done_callback(
+            lambda future: _observe_late_live_send(future, job["id"], t.where))
         logger.warning(
             "Job '%s': live adapter send to %s:%s timed out "
             "after 60s; already dispatched (in flight), "
-            "assuming delivered (skipping standalone fallback "
+            "delivery unverified (skipping standalone fallback "
             "to avoid duplicate)",
             job["id"], t.platform_name, t.chat_id)
         return True, True, None

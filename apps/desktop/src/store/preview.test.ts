@@ -11,6 +11,7 @@ import {
   $previewTabs,
   $previewTarget,
   $visiblePreviewTabs,
+  adoptDraftPreviewTabs,
   beginPreviewServerRestart,
   closeAgentPreview,
   closeBrowserPreviewMatchingLiveUrl,
@@ -478,14 +479,36 @@ describe('preview session scoping (#73890)', () => {
     expect(paths($previewTabs.get())).toEqual(['/work/a.html'])
   })
 
-  it('adopts ownerless draft tabs when a session appears', () => {
+  it('keeps a draft tabs in the draft until that draft itself gets its stored id', () => {
     openPreview(fileTarget('/work/draft.html'))
-    expect($previewTabs.get()[0]?.sessionId).toBeUndefined()
+    newBrowserTab()
+    expect($previewTabs.get().map(tab => tab.sessionId)).toEqual([undefined, undefined])
 
+    // Focus moving elsewhere — an existing session clicked in the sidebar, or
+    // a side tile — must not take the draft's tabs with it.
+    $selectedStoredSessionId.set('existing-x')
+    expect($visiblePreviewTabs.get()).toHaveLength(0)
+
+    const previousTree = $layoutTree.get()
+
+    try {
+      $layoutTree.set(group(['workspace', 'session-tile:tile-t'], { active: 'session-tile:tile-t', id: 'grp-draft' }))
+      noteActiveTreeGroup('grp-draft')
+      expect($visiblePreviewTabs.get()).toHaveLength(0)
+    } finally {
+      noteActiveTreeGroup(null)
+      $layoutTree.set(previousTree)
+    }
+
+    $selectedStoredSessionId.set(null)
+    expect(paths($visiblePreviewTabs.get())).toEqual(['/work/draft.html', 'about:blank'])
+
+    // The draft's first send assigns its stored id: now the tabs are its own.
+    adoptDraftPreviewTabs('sess-new')
     $selectedStoredSessionId.set('sess-new')
 
-    expect($previewTabs.get()[0]?.sessionId).toBe('sess-new')
-    expect(paths($visiblePreviewTabs.get())).toEqual(['/work/draft.html'])
+    expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['sess-new', 'sess-new'])
+    expect(paths($visiblePreviewTabs.get())).toEqual(['/work/draft.html', 'about:blank'])
   })
 
   it('owns a strip "+" Browser by the focused session, never adopting it elsewhere', () => {

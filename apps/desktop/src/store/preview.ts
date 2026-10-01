@@ -473,21 +473,20 @@ export function preferredVisibleTabId(): RightRailTabId | null {
   return isVisible(remembered) ? remembered! : (visible[0]?.id ?? null)
 }
 
-// A fresh draft has no session yet, so tabs opened there are ownerless — adopt
-// them into the session the moment one exists, or the drawer would silently
-// lose them at first send. Every other open is stamped with its owner, so
-// only a draft's tabs can be ownerless here.
-$focusedStoredSessionId.listen(sessionId => {
-  if (sessionId == null) {
-    return
-  }
-
+/** A fresh draft has no session yet, so tabs opened there are ownerless (the
+ *  drawer of every draft shows them). Called where the draft's first send
+ *  assigns its stored id — beside the composer draft's own hand-over — so the
+ *  tabs follow it into the conversation. Never on a focus change: clicking an
+ *  existing session or a side tile must leave the draft's tabs in the draft. */
+export function adoptDraftPreviewTabs(storedSessionId: string): void {
   const tabs = $previewTabs.get()
 
   if (tabs.some(tab => tab.sessionId == null && !tab.pinned)) {
-    $previewTabs.set(tabs.map(tab => (tab.sessionId == null && !tab.pinned ? { ...tab, sessionId } : tab)))
+    $previewTabs.set(
+      tabs.map(tab => (tab.sessionId == null && !tab.pinned ? { ...tab, sessionId: storedSessionId } : tab))
+    )
   }
-})
+}
 
 /** The tab the rail actually shows. A stale or missing selection falls back to
  *  the first tab, so the strip, `⌘W`, and the pane never disagree about which

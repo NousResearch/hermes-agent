@@ -44,11 +44,15 @@ def _critical_module_import_failures(
         "    except Exception as exc:\n"
         "        if %r:\n"
         "            failures.append((name, type(exc).__name__, str(exc)))\n"
+        "    except SystemExit as exc:\n"
+        "        # A successful Windows relaunch request is not an import failure during stash comparison.\n"
+        "        if not (%r and exc.code in (None, 0)):\n"
+        "            failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except BaseException as exc:\n"
         "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "sys.stdout.write('\\n%s' + json.dumps(failures))\n"
         % (_UPDATE_CRITICAL_MODULES, tuple(sorted(FIRST_PARTY_MODULE_ROOTS)), report_runtime_errors,
-           report_runtime_errors, marker))
+           report_runtime_errors, report_runtime_errors, marker))
     try:
         result = subprocess.run(
             runtime_command(Path(root), code=probe), cwd=str(root), capture_output=True, text=True,

@@ -155,6 +155,18 @@ def test_import_guard_reports_probe_termination_by_default(monkeypatch, probe_ro
     assert module == "critical-module probe"
     assert error and "9" in error
 
+def test_import_guard_ignores_successful_system_exit_during_stash_comparison(
+    monkeypatch, probe_root
+):
+    (probe_root / "consumer.py").write_text("raise SystemExit(0)\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_validation, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    assert update_cmd._validate_critical_modules_import(
+        probe_root, report_runtime_errors=True
+    ) == (True, None, None)
+
+
 def test_import_guard_reports_system_exit_by_default(monkeypatch, probe_root):
     """Catchable terminating imports must not complete with a healthy marker."""
     (probe_root / "consumer.py").write_text("raise SystemExit('stopped')\n")

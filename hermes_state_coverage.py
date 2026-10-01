@@ -11,16 +11,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import _placeholders
-from hermes_state_messages import _parse_tool_calls, _tool_calls_len
+from hermes_state_messages import _parse_tool_calls
 
 
 class SessionCoverageMixin:
     """Coverage helpers for SessionDB; relies on SessionMessagesMixin's codec/identity helpers."""
-
-    def _tail_rows_after_watermark(self, conn, sql: str, params) -> Tuple[List[int], int]:
-        """``(ids, tool_call_count)`` of the concurrent-tail rows selected by *sql* (``SELECT id, tool_calls``)."""
-        rows = conn.execute(sql, params).fetchall()
-        return [int(r["id"]) for r in rows], sum(_tool_calls_len(r["tool_calls"]) for r in rows)
 
     def _resolve_carried_row_ids(
         self, conn, session_id: str, carried_messages: List[Dict[str, Any]],
@@ -201,7 +196,7 @@ class SessionCoverageMixin:
             return None
         from agent.context_compressor import _DB_PERSISTED_MARKER
         from agent.conversation_compression_archive import (
-            MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_DURABLE_ROWS, RETIRED_ROW)
+            ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_DURABLE_ROWS, RETIRED_ROW)
 
         proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
         merged_away: Set[int] = set()
@@ -233,7 +228,7 @@ class SessionCoverageMixin:
                     message.get(_DB_PERSISTED_MARKER) and len(matches) != 1 and not run):
                 return None
             proved.extend(matches or run)
-            merged_away.update(set(run[1:]) - set(message.get("_absorbed_row_ids") or ()))
+            merged_away.update(set(run[1:]) - set(message.get(ABSORBED_ROW_IDS) or ()))
         return list(dict.fromkeys(proved)), merged_away
 
     @staticmethod
@@ -246,11 +241,11 @@ class SessionCoverageMixin:
         without ids are in neither, so their count is added. A dict that holds a ``_row_id`` was
         written back as a single row by an earlier compaction.
         """
-        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+        from agent.conversation_compression_archive import ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
         def behind(message: Dict[str, Any]) -> int:
             merged, unnamed = message.get(MERGED_DURABLE_ROWS), message.get(UNNAMED_DURABLE_ROWS)
-            unlisted = merged - 1 - len(message.get("_absorbed_row_ids") or ()) if type(merged) is int else 0
+            unlisted = merged - 1 - len(message.get(ABSORBED_ROW_IDS) or ()) if type(merged) is int else 0
             return max(0, unlisted) + (unnamed if type(unnamed) is int else 0)
 
         return sum(

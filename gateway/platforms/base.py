@@ -3889,8 +3889,6 @@ class BasePlatformAdapter(ABC):
                     return
                 if not self._same_text_debounce_sender(state.event, event):
                     return
-                # The pending slot and this buffer are the only places where a queued turn can wait,
-                # and both reply to other messages. Keep the text in the buffer, under its quote.
                 logger.debug("[%s] Busy text for %s replies to a third message; merging it into the "
                              "debounce buffer, which keeps its own reply context", self.name, session_key)
         now = time.monotonic()
@@ -3901,14 +3899,19 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
             if event.media_urls:
+                state.event.media_text_inlined.extend(
+                    [None] * (len(state.event.media_urls) - len(state.event.media_text_inlined))
+                )
                 state.event.media_urls.extend(event.media_urls)
                 state.event.media_types.extend(event.media_types)
+                state.event.media_text_inlined.extend(event.media_text_inlined)
+                state.event.media_text_inlined.extend(
+                    [None] * (len(state.event.media_urls) - len(state.event.media_text_inlined))
+                )
             state.event.absorb_reply_context(event)
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
             if latest_message_id is not None:
-                # Responses should anchor to the latest inbound message, while
-                # reply_to_* remains the user's original quote/author context.
                 state.event.message_id = str(latest_message_id)
             state.last_ts = now
         state.cancel_timer()

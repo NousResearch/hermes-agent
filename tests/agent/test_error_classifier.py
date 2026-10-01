@@ -988,6 +988,15 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_compress is False
 
+    def test_llama_cpp_failed_to_parse_grammar(self):
+        e = MockAPIError(
+            "Failed to initialize samplers: failed to parse grammar",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="local-llama")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+        assert result.retryable is True
+
     def test_openai_regex_lookaround_rejection_strips_pattern_and_retries(self):
         """Strict OpenAI-compatible endpoints reject ``pattern`` lookaround with a 400 (#42631).
         Driven through the production path (classifier → ``recover_after_classification``):

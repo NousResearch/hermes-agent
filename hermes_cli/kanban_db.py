@@ -1311,6 +1311,16 @@ def create_task(
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
+
+    # Only persistent kinds inherit the board ``default_workdir``: a scratch
+    # task inheriting it would point cleanup at the user's source tree.
+    if workspace_path is None and project_repo is None and workspace_kind in {"dir", "worktree"}:
+        board_default = _board_meta_for(board).get("default_workdir")
+        if board_default:
+            workspace_path = str(board_default)
+    if workspace_kind == "worktree" and workspace_path is None and project_obj is None:
+        raise ValueError("worktree workspace requires workspace_path or project")
+
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
@@ -1326,13 +1336,6 @@ def create_task(
             return row["id"]
 
     now = int(time.time())
-
-    # Only persistent kinds inherit the board ``default_workdir``: a scratch
-    # task inheriting it would point cleanup at the user's source tree.
-    if workspace_path is None and project_repo is None and workspace_kind in {"dir", "worktree"}:
-        board_default = _board_meta_for(board).get("default_workdir")
-        if board_default:
-            workspace_path = str(board_default)
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):

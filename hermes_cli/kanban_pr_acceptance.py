@@ -17,8 +17,16 @@ _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
-    if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+    repo_match = _REPO.fullmatch(value) if isinstance(value, str) else None
+    pr_match = _PR.fullmatch(value) if isinstance(value, str) else None
+    repo = repo_match[0] if repo_match else pr_match[1] if pr_match else None
+    if repo and repo.casefold() == "owner/repo":
+        raise ValueError("completion_contract placeholder OWNER/REPO is not valid; pass the actual repository")
+    if not (repo_match or pr_match):
+        raise ValueError(
+            "completion_contract must be local-only, an actual GitHub repository, "
+            "or an exact GitHub PR URL"
+        )
     return value
 
 

@@ -224,6 +224,7 @@ def main(argv: list[str] | None = None) -> None:
         logger.exception("ACP agent crashed")
         sys.exit(1)
     finally:
+        agent.cancel_running_turns()
         # The stdio client that drove these conversations is gone. Without an
         # ended_at writer here, source='acp' rows stay open forever and the
         # ended-session guard keeps prune/archive away from them (#118216). A

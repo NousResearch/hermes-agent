@@ -133,6 +133,8 @@ prompt(..., session_id)
 - 在可用时调用 `agent.interrupt()`
 - 使 prompt 响应返回 `stop_reason="cancelled"`
 
+客户端断开连接（stdio EOF）时，适配器在退出前以同样方式取消所有仍在运行的轮次，因此不会有轮次在无人连接时继续运行工具或调用模型。
+
 ### Fork
 
 `fork_session()` 将消息历史深拷贝至新的活跃会话，在保留对话状态的同时为 fork 分配独立的 session ID 和 cwd。

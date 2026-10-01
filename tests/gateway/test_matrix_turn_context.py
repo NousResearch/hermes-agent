@@ -1250,10 +1250,11 @@ async def test_quoted_image_is_the_file_in_the_cache_of_a_routed_profile(
     monkeypatch.setattr(runner, "_enrich_message_with_vision", analyse)
     if move == "move-fails":
         monkeypatch.setattr(
-            "gateway.run_inbound_media.shutil.move", lambda *_args: (_ for _ in ()).throw(OSError("busy"))
+            "gateway.run_inbound_media.shutil.copy2", lambda *_args: (_ for _ in ()).throw(OSError("busy"))
         )
     turns = []
     expected = []
+    prior_files = []
     for turn, home in enumerate((launch, routed, routed, launch)):
         event = await adapter._build_inbound_event(
             ROOM, SENDER, f"$reply{turn}", "what is this?", {"body": "what is this?"},
@@ -1267,8 +1268,10 @@ async def test_quoted_image_is_the_file_in_the_cache_of_a_routed_profile(
                 event=event, source=source, history=[], session_key=session_key
             )
         [quoted] = event.media_urls
+        prior_files.append(Path(quoted))
         turns.append(
             {
+                "retained_files": [path.is_file() for path in prior_files],
                 "own": Path(quoted).parent == home / "cache" / "images" and Path(quoted).is_file(),
                 "pixels": runner._session_state(session_key).persistent.native_image_paths,
                 "description": f"<pixels of {quoted}>" in prepared,
@@ -1277,6 +1280,7 @@ async def test_quoted_image_is_the_file_in_the_cache_of_a_routed_profile(
         visible = move == "moved" or home == launch
         expected.append(
             {
+                "retained_files": [True] * len(prior_files),
                 "own": visible,
                 "pixels": [quoted] if visible and mode == "native" else [],
                 "description": visible and mode == "text",

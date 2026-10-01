@@ -208,7 +208,7 @@ _OPTIONAL_ID_STEPS = (
      "WhatsApp Business Account ID. Found in: App Dashboard →\n"
      "WhatsApp → API Setup, near the top — 'WhatsApp Business\n"
      "Account ID'. Numeric, ~15+ digits.\n"
-     "Not required for messaging — useful for analytics."))
+     "When set, inbound webhooks must match this business account."))
 
 
 def _credential_step(step) -> bool:

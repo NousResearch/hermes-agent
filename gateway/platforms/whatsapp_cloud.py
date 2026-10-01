@@ -247,6 +247,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         bare = re.sub(r"\D", "", str(target).split("@", 1)[0]) or target
         return bare in self._normalize_allow_ids(entries) or super()._entry_matches(entries, target)
 
+    def _webhook_identity_matches(self, entry_id: Any, metadata: Any) -> bool:
+        """Bind a signed callback to this adapter's configured Meta identities."""
+        metadata = metadata if isinstance(metadata, dict) else {}
+        incoming_phone_number_id = str(metadata.get("phone_number_id") or "").strip()
+        incoming_waba_id = str(entry_id or "").strip()
+        return (
+            (not self._phone_number_id or incoming_phone_number_id == self._phone_number_id)
+            and (not self._waba_id or incoming_waba_id == self._waba_id)
+        )
+
     def _allow_all_env_names(self) -> tuple[str, ...]:
         """Also honor the documented WHATSAPP_CLOUD_ALLOW_ALL_USERS opt-in."""
         return (*super()._allow_all_env_names(), "WHATSAPP_CLOUD_ALLOW_ALL_USERS")
@@ -765,6 +775,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if not isinstance(change, dict) or change.get("field") != "messages":
                     continue  # account_alerts, template_status_update, … — not message ingress
                 value = change.get("value") or {}
+                if not isinstance(value, dict) or not self._webhook_identity_matches(
+                    entry.get("id"), value.get("metadata")
+                ):
+                    logger.warning(
+                        "[whatsapp_cloud] ignoring signed webhook whose WABA or phone-number identity "
+                        "does not match this adapter"
+                    )
+                    continue
                 contacts_by_waid = {
                     wa_id: str((contact.get("profile") or {}).get("name") or "").strip()
                     for contact in value.get("contacts") or []

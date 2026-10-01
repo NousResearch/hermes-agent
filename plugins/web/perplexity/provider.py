@@ -222,14 +222,11 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             managed = False if direct else _managed_web_search()
             gateway = _managed_gateway(managed=managed) if managed else None
             if gateway is None and managed:
-                from hermes_cli.nous_account import FREE_TIER_NEEDS_ACCOUNT, get_nous_portal_account_info
-                from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
+                from tools.tool_backend_helpers import (
+                    NOUS_MANAGED_PROVIDER, fast_search_unavailable_message, selection_error)
 
-                # A guest holds a real identity but is excluded by tier, so it must not be told
-                # there is no identity.
-                failure = (FREE_TIER_NEEDS_ACCOUNT if get_nous_portal_account_info().is_anonymous_tier
-                           else "the Nous Tool Gateway is not available (unreachable)")
-                raise ValueError(selection_error("web", NOUS_MANAGED_PROVIDER, failure))
+                raise ValueError(selection_error("web", NOUS_MANAGED_PROVIDER,
+                                                 fast_search_unavailable_message()))
             logger.info("Perplexity search: '%s' (limit=%d%s)", query, limit, ", managed" if gateway else "")
             payload = {
                 "query": query,

@@ -135,7 +135,7 @@ def test_managed_search_without_identity_names_the_gateway(monkeypatch, tmp_path
     register_all_web_providers()
 
     error = json.loads(web_tools.web_search_tool("local fixture", limit=3))["error"]
-    assert "Nous Tool Gateway" in error and "hermes tools" in error
+    assert "no usable Nous identity" in error and "hermes tools" in error
     assert "PERPLEXITY_API_KEY" not in error
     assert local_gateway == []
 

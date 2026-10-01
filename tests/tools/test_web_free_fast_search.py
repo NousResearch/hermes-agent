@@ -22,7 +22,12 @@ def _nous_state(claims: dict, auth_method: str, exp_offset: int = 3600) -> dict:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
     token = f"{seg({'alg': 'none'})}.{seg({**claims, 'exp': int(time.time()) + exp_offset})}.sig"
-    return {"auth_method": auth_method, "access_token": token, "expires_at": "2099-01-01T00:00:00Z"}
+    state = {"auth_method": auth_method, "access_token": token, "expires_at": "2099-01-01T00:00:00Z"}
+    # anon_auth persists the tier alongside the token, and it is what survives a failed lookup
+    # (the JWT claim is unreachable once the token is inside its refresh window).
+    if claims.get("account_tier"):
+        state["account_tier"] = claims["account_tier"]
+    return state
 
 
 @pytest.fixture
@@ -157,16 +162,33 @@ def test_degraded_portal_lookup_does_not_grant_free_fast_search(monkeypatch, tmp
 
 def test_guest_on_a_stored_nous_selection_is_told_it_needs_an_account(monkeypatch, tmp_path, gateway_server):
     """A guest holds a real Nous identity, so the refusal must not claim it has none."""
-    from hermes_cli.nous_account import FREE_TIER_NEEDS_ACCOUNT
-
     _write_home(tmp_path / "home", monkeypatch, nous_state=_nous_state(ANON, "anonymous"),
                 config={"web": {"backend": "nous", "keyless_rescue": False}})
 
     result = _search()
 
     assert result["success"] is False
-    assert FREE_TIER_NEEDS_ACCOUNT in result["error"]
+    assert "needs a Nous account" in result["error"]
     assert "no Nous identity" not in result["error"]
+
+
+def test_guest_whose_lookup_fails_is_still_told_it_needs_an_account(monkeypatch, tmp_path, gateway_server):
+    """A failed lookup must not make a guest look like a registered identity in the refusal."""
+    from hermes_cli.nous_account import get_nous_portal_account_info
+
+    state = _nous_state(ANON, "anonymous", exp_offset=30)
+    state["portal_base_url"] = "http://127.0.0.1:9"  # closed port: the lookup cannot succeed
+    _write_home(tmp_path / "home", monkeypatch, nous_state=state,
+                config={"web": {"backend": "nous", "keyless_rescue": False}})
+
+    info = get_nous_portal_account_info()
+    # Premise: the snapshot carries the error AND the tier it could not re-read.
+    assert info.error is not None and info.is_anonymous_tier is True
+
+    result = _search()
+
+    assert result["success"] is False
+    assert "needs a Nous account" in result["error"]
 
 
 def test_free_fast_search_failure_skips_paid_firecrawl_but_keeps_keyless_rescue(monkeypatch, tmp_path, gateway_server):

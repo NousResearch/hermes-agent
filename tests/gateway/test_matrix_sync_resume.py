@@ -1,6 +1,7 @@
 """Matrix sync positions must resume without replaying accepted user turns."""
 
 import asyncio
+from contextlib import closing
 import sys
 from enum import Enum
 from types import ModuleType, SimpleNamespace
@@ -12,7 +13,6 @@ from agent import secret_scope
 from gateway.config import PlatformConfig
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.platforms.matrix import adapter as matrix
-from contextlib import closing
 
 
 NOW = 1_700_000_000.0
@@ -1618,6 +1618,7 @@ async def test_restart_fixture_buffers_prime_before_initial_checkpoint_and_watch
             adapter = create()
             connect = asyncio.create_task(adapter.connect())
         assert await connect
+        await adapter._sync_checkpoints.settled()
         await asyncio.gather(*adapter._background_tasks)
         assert (admitted, await adapter._client.sync_store.get_next_batch()) == (
             [("$prime", "Prime encrypted thread")],

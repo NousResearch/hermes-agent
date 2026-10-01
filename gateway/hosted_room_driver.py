@@ -475,15 +475,19 @@ def _transition(
     db_path: DbPath, identity: TaskIdentity, *, sql: str, set_params: tuple[Any, ...], fence_params: tuple[Any, ...],
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
-    guard: Callable[[sqlite3.Row], None] | None = None) -> dict[str, Any]:
+    guard: Callable[[sqlite3.Row], None] | None = None,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
     is raised. ``lease_first`` checks the lease before the row load (recovery paths) instead of after the
-    replay (settlement paths: an identical replay still succeeds after the lease moved on).
+    replay (settlement paths: an identical replay still succeeds after the lease moved on). ``authorize``
+    runs first inside the same write transaction, so a caller's own checks commit or roll back with it.
     """
     params = (*set_params, identity.room_id, identity.task_id, *fence_params)
     with _transaction(db_path) as conn:
+        if authorize is not None:
+            authorize(conn)
         if lease is not None and lease_first:
             _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
@@ -502,7 +506,8 @@ def _transition(
 def _generation_transition(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, execution_generation: int,
     cancel_generation: int, *, now: float, set_params: tuple[Any, ...],
-    replay: Callable[[sqlite3.Row], Any] | None = None) -> dict[str, Any]:
+    replay: Callable[[sqlite3.Row], Any] | None = None,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Lease-first transition from ``_GENERATION_TRANSITIONS`` fenced on status + both generations."""
     status, set_clause, generation_stale, stale = _GENERATION_TRANSITIONS[name]
     def guard(row: sqlite3.Row) -> None:
@@ -510,7 +515,8 @@ def _generation_transition(
             raise StaleTaskError(generation_stale)
     return _transition(
         db_path, identity, lease=lease, now=now, replay=replay, guard=guard, sql=_generation_update(set_clause, status),
-        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale)
+        set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale,
+        authorize=authorize)
 
 
 def _run_fence_transition(
@@ -751,13 +757,14 @@ def defer_indeterminate_task(
 
 def requeue_deferred_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    expected_cancel_generation: int, clock: Clock,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Explicitly retry a fenced deferred turn under a new generation."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     now = _timestamp(clock)
     return _generation_transition(
         db_path, identity, lease, "requeue_deferred", expected_execution_generation, expected_cancel_generation,
-        now=now, set_params=(now,))
+        now=now, set_params=(now,), authorize=authorize)
 
 
 _NONADMISSION_PROOF_FIELDS = frozenset({

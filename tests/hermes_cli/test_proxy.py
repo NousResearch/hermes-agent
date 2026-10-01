@@ -407,9 +407,8 @@ def test_loopback_proxy_serves_only_local_non_browser_requests(bound, headers, a
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()
-        assert (status == 200, len(captured["requests"]) == 1) == (allowed, allowed), status
-        if not allowed:
-            assert 400 <= status < 500
+        assert status == (200 if allowed else 403)
+        assert len(captured["requests"]) == int(allowed)
 
     asyncio.run(run())
 

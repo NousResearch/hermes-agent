@@ -56,7 +56,10 @@ def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Re
 
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
-_WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
+# Sec-Fetch-Site values a browser sends for a request no foreign page made (typed URL / own page).
+_UNFORGED_FETCH_SITES = frozenset({"none", "same-origin"})
+# On a wildcard bind a DNS-rebound page is same-origin with its Host, so only "none" is trusted.
+_WILDCARD_FETCH_SITES = frozenset({"none"})
 
 
 def _canonical_host(host: str) -> str:
@@ -83,13 +86,18 @@ def _parse_authority(authority: str) -> Optional[tuple[str, int]]:
 
 def _is_wildcard(bound: str) -> bool:
     try:
-        return bound in _WILDCARD_HOSTS or ipaddress.ip_address(bound).is_unspecified
+        return bound == "" or ipaddress.ip_address(bound).is_unspecified
     except ValueError:
         return False
 
 
 def _local_request_error(
-    host_header: str, origin: Optional[str], bound_host: str, fetch_site: Optional[str] = None
+    host_header: str,
+    origin: Optional[str],
+    fetch_site: Optional[str],
+    *,
+    wildcard: bool,
+    allowed_hosts: frozenset,
 ) -> Optional[str]:
     """Why a request must be refused, or None. The proxy attaches the operator's subscription
     credential to whatever reaches it, so a web page in the operator's browser must not be able
@@ -101,15 +109,14 @@ def _local_request_error(
     its own to match, and a DNS-rebound page is same-origin with its Host, so every page-made
     browser request is refused there."""
     target = _parse_authority(host_header)
-    bound = _canonical_host(bound_host.strip("[]"))
-    wildcard = _is_wildcard(bound)
-    if target is None or (not wildcard and target[0] not in _LOOPBACK_HOSTS | {bound}):
+    if target is None or (not wildcard and target[0] not in allowed_hosts):
         return "host_not_allowed"
     if origin is not None:
         scheme, sep, rest = origin.strip().partition("://")
         if wildcard or not sep or scheme.lower() != "http" or _parse_authority(rest) != target:
             return "origin_not_allowed"
-    if fetch_site is not None and fetch_site.strip().lower() not in ({"none"} if wildcard else {"none", "same-origin"}):
+    trusted_sites = _WILDCARD_FETCH_SITES if wildcard else _UNFORGED_FETCH_SITES
+    if fetch_site is not None and fetch_site.strip().lower() not in trusted_sites:
         return "origin_not_allowed"
     return None
 
@@ -193,17 +200,26 @@ def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> "web
     the single loop and every other in-flight streaming completion.
     """
     _require_aiohttp()
+    # The bind address is fixed for the app's lifetime, so derive the Host policy once.
+    bound = _canonical_host(bound_host.strip("[]"))
+    wildcard = _is_wildcard(bound)
+    allowed_hosts = _LOOPBACK_HOSTS | {bound}
 
     @web.middleware
     async def local_only(request: "web.Request", handler):
         refusal = _local_request_error(
             request.headers.get("Host", ""),
             request.headers.get("Origin"),
-            bound_host,
             request.headers.get("Sec-Fetch-Site"),
+            wildcard=wildcard,
+            allowed_hosts=allowed_hosts,
         )
         if refusal:
-            return _json_error(403, "Request refused: only local, non-browser clients may use this proxy.", code=refusal)
+            return _json_error(
+                403,
+                "Request refused: browser requests and foreign Host names are not accepted by this proxy.",
+                code=refusal,
+            )
         return await handler(request)
 
     app = web.Application(client_max_size=MAX_REQUEST_BYTES, middlewares=[local_only])

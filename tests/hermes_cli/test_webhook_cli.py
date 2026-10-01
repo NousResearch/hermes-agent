@@ -136,6 +136,24 @@ class TestRemove:
         assert "keep" in subs
         assert "drop" not in subs
 
+
+class TestEnableDisable:
+
+    def test_disable_and_enable_existing_subscription(self, capsys):
+        webhook_command(_make_args(webhook_action="subscribe", name="pause-me"))
+        webhook_command(_make_args(webhook_action="disable", name=" pause me "))
+        assert _load_subscriptions()["pause-me"]["enabled"] is False
+
+        webhook_command(_make_args(webhook_action="enable", name="pause-me"))
+        assert _load_subscriptions()["pause-me"]["enabled"] is True
+        assert "Enabled webhook subscription: pause-me" in capsys.readouterr().out
+
+    def test_missing_subscription_does_not_create_entry(self, capsys):
+        webhook_command(_make_args(webhook_action="disable", name="missing"))
+
+        assert _load_subscriptions() == {}
+        assert "No subscription named 'missing'" in capsys.readouterr().out
+
 class TestPersistence:
 
     def test_corrupted_file(self):

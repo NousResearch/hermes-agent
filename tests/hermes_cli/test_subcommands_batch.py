@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
 
 from hermes_cli.subcommands.config import build_config_parser
 from hermes_cli.subcommands.login import build_login_parser
+from hermes_cli.subcommands.webhook import build_webhook_parser
 
 
 
@@ -26,6 +28,20 @@ def _h(name):
 
 
 
+
+
+@pytest.mark.parametrize("action", ["disable", "enable"])
+def test_webhook_builder_parses_subscription_toggle(action):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("webhook")
+    build_webhook_parser(sub, cmd_webhook=handler)
+
+    ns = parser.parse_args(["webhook", action, "nightly-build"])
+
+    assert ns.func is handler
+    assert ns.webhook_action == action
+    assert ns.name == "nightly-build"
 
 
 def test_config_get_unset_subcommands_parse():

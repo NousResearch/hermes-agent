@@ -111,6 +111,19 @@ def _json_error(message: str, status: int) -> "web.Response":
     return web.json_response({"error": message}, status=status)
 
 
+def _route_enabled(route: dict, *, name: str, source: str) -> bool:
+    """Accept the default or a real boolean; reject truthy non-booleans."""
+    enabled = route.get("enabled", True)
+    if isinstance(enabled, bool):
+        return enabled
+    logger.warning(
+        "[webhook] %s route '%s' skipped: 'enabled' must be a boolean when set.",
+        source,
+        name,
+    )
+    return False
+
+
 def _peek_session_id(store, session_key: str):
     """Prefer the store's lock-held accessor; the private-path fallback is for older stores / test doubles."""
     if callable(peek := getattr(store, "peek_session_id", None)):
@@ -170,7 +183,14 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: Optional[str] = extra.get("host", DEFAULT_HOST) or None
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         self._global_secret: str = extra.get("secret", "")
-        self._static_routes: Dict[str, dict] = extra.get("routes", {})
+        raw_static_routes: Dict[str, dict] = extra.get("routes", {})
+        # A disabled config route still reserves its URL name until removed from config.yaml.
+        self._reserved_static_route_names = set(raw_static_routes)
+        self._static_routes: Dict[str, dict] = {
+            name: route
+            for name, route in raw_static_routes.items()
+            if isinstance(route, dict) and _route_enabled(route, name=name, source="Static")
+        }
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)
@@ -384,8 +404,18 @@ class WebhookAdapter(BasePlatformAdapter):
             data = json.loads(subs_path.read_text(encoding="utf-8-sig"))
             if not isinstance(data, dict):
                 return
-            self._dynamic_routes = {  # static routes take precedence
-                k: v for k, v in data.items() if k not in self._static_routes and self._dynamic_route_allowed(k, v)}
+            dynamic_routes: Dict[str, dict] = {}
+            for name, route in data.items():
+                if name in self._reserved_static_route_names:
+                    continue
+                if not isinstance(route, dict):
+                    logger.warning("[webhook] Dynamic route '%s' skipped: route config must be an object.", name)
+                    continue
+                if not _route_enabled(route, name=name, source="Dynamic"):
+                    continue
+                if self._dynamic_route_allowed(name, route):
+                    dynamic_routes[name] = route
+            self._dynamic_routes = dynamic_routes
             self._routes = {**self._dynamic_routes, **self._static_routes}
             self._dynamic_routes_mtime = mtime
             logger.info("[webhook] Reloaded %d dynamic route(s): %s", len(self._dynamic_routes),
@@ -548,10 +578,9 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Route %s is not authorized for profile %r", route_name, profile or "default")
             # Same as unknown-route so profile mismatches can't enumerate route bindings.
             return route_name, None, profile, _json_error(f"Unknown route: {route_name}", 404)
-        # Disabled routes stay in the subscriptions file (dashboard can re-enable) but reject events.
-        # Only an explicit ``enabled: false`` turns a route off.
-        if route_config.get("enabled", True) is False:
-            return route_name, None, profile, _json_error(f"Route disabled: {route_name}", 403)
+        # Disabled routes stay in the subscriptions file (dashboard can re-enable) but never enter dispatch.
+        if not _route_enabled(route_config, name=route_name, source="Runtime"):
+            return route_name, None, profile, _json_error(f"Unknown route: {route_name}", 404)
         return route_name, route_config, profile, None
 
     @staticmethod

@@ -496,6 +496,23 @@ class TestHTTPHandling:
 
 
     @pytest.mark.asyncio
+    async def test_disabled_route_behaves_like_unknown_route(self):
+        """Disabled routes never reach authentication or dispatch."""
+        adapter = _make_adapter(
+            routes={"paused": {"enabled": False, "secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        )
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/paused", json={"a": 1})
+            assert resp.status == 404
+            assert (await resp.json())["error"] == "Unknown route: paused"
+
+        adapter.handle_message.assert_not_called()
+
+
+    @pytest.mark.asyncio
     async def test_route_without_secret_rejects_unsigned_request(self):
         """Missing HMAC secret must fail closed even if connect() was bypassed."""
         routes = {"test": {"prompt": "hi"}}

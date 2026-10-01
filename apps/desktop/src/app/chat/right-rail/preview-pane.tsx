@@ -1223,7 +1223,12 @@ export function PreviewPane({
       const detail = event as Event & {
         errorCode?: number
         errorDescription?: string
+        isMainFrame?: boolean
         validatedURL?: string
+      }
+
+      if (detail.isMainFrame !== true) {
+        return
       }
 
       const errorCode = detail.errorCode

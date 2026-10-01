@@ -664,8 +664,12 @@ def _save_toolset_pin(cfg, enabled, save_config) -> None:
     """Pin ``platform_toolsets.cli``: the key ``_load_enabled_toolsets`` reads and ``hermes tools`` writes.
     An empty selection clears the pin so the platform default applies again."""
     from hermes_cli.tools_config import _save_platform_tools
+    from hermes_cli.toolset_scope import toolset_allowed_for_platform
 
     wanted = _clean_names(enabled)
+    restricted = sorted(name for name in wanted if not toolset_allowed_for_platform(name, "cli"))
+    if restricted:
+        raise ValueError(f"Toolsets unavailable on cli: {', '.join(restricted)}")
     if wanted:
         _save_platform_tools(cfg, "cli", wanted)
     elif isinstance(cfg.get("platform_toolsets"), dict):

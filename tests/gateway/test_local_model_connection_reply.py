@@ -208,7 +208,7 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
                 raise RuntimeError(str(exc)) from exc
 
         monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 30)
-        runner = SimpleNamespace(_resolve_session_agent_runtime=_resolve,
+        runner = SimpleNamespace(_prepare_session_agent_runtime=_resolve,
                                  _get_system_prompt_for_channel=lambda *a, **k: "",
                                  _ephemeral_system_prompt="")
         ctx = TurnContext(source=SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm"),
@@ -235,7 +235,7 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
             raise RuntimeError(detail)
 
         monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 30)
-        runner = SimpleNamespace(_resolve_session_agent_runtime=_resolve,
+        runner = SimpleNamespace(_prepare_session_agent_runtime=_resolve,
                                  _get_system_prompt_for_channel=lambda *a, **k: "",
                                  _ephemeral_system_prompt="", _adapter_for_source=lambda _s: None)
         for platform, chat_id in ((Platform.LOCAL, "local-1"), (Platform.SLACK, "C1")):

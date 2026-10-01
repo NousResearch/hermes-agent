@@ -1,8 +1,8 @@
 """A fallback resolved during gateway credential resolution (before any AIAgent exists) must carry a
 user-visible notice through the agent's one-shot fallback-notice mechanism (#74349).
 
-Drives the production entry point — ``GatewayTurnMixin._resolve_session_agent_runtime`` bound to the
-runner, then ``TurnRunner.run_sync`` — so the pop in run_turn.py and the attach in run_turn_runner.py
+Drives the production entry points — ``GatewayTurnMixin``'s runtime selection bound to the runner,
+then ``TurnRunner.run_sync`` — so the capture on the selection and the attach in run_turn_runner.py
 are both pinned (a helper-only test stays green with either removed)."""
 import types
 from types import SimpleNamespace
@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from gateway.run_turn import GatewayTurnMixin
 from gateway.session import Platform, SessionSource
+from gateway.session_state import ConversationState
 from gateway.turn_context import TurnContext
 from hermes_cli.auth import AuthError
 
@@ -31,13 +32,14 @@ class _RecordingAgent:
 
 def _runner_with_real_runtime_resolution():
     runner = MagicMock()
-    runner.config = SimpleNamespace(streaming=None)
+    runner.config = SimpleNamespace(streaming=None, to_dict=dict)
     runner._provider_routing = {}
     runner._agent_cache_lock = None
     runner._agent_cache = {}
     runner._session_db = runner._prefill_messages = None
     runner._pending_model_notes = runner._pending_skills_reload_notes = {}
     runner.session_store._entries = {}
+    runner.session_store.get_model_override.return_value = None
     runner._get_system_prompt_for_channel.return_value = None
     runner._resolve_session_reasoning_config.return_value = None
     runner._resolve_session_service_tier.return_value = None
@@ -52,11 +54,12 @@ def _runner_with_real_runtime_resolution():
     runner._resolve_session_key_or_none.return_value = "test-session-key"
     runner._peek_session_state.return_value = None
     runner._sessions_map.return_value = {}
-    runner._resolve_session_agent_runtime = types.MethodType(GatewayTurnMixin._resolve_session_agent_runtime, runner)
+    for name in ("_resolve_session_agent_runtime", "_prepare_session_agent_runtime", "_select_session_agent_runtime"):
+        setattr(runner, name, types.MethodType(getattr(GatewayTurnMixin, name), runner))
     # Pass the resolved runtime straight through so the kwargs handed to AIAgent are the resolved ones.
     # (Production pops ``request_overrides`` out of the runtime into the route; mirror that so the
     # resolved kwargs never carry it twice.)
-    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt: {
+    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt, **_kw: {
         "model": model, "runtime": {k: v for k, v in rt.items() if k != "request_overrides"}}
     return runner
 
@@ -101,7 +104,7 @@ def test_model_override_fast_path_clears_stale_notice():
     runner = _runner_with_real_runtime_resolution()
     runner._pre_agent_fallback_notice = "⚠️ Provider fallback: stale"
     override = {"model": "claude-sonnet-5", "provider": "anthropic", "api_key": "k", "base_url": "u"}
-    runner._peek_session_state.return_value = SimpleNamespace(conversation=SimpleNamespace(model_override=override))
+    runner._peek_session_state.return_value = SimpleNamespace(conversation=ConversationState(model_override=override))
     with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
          patch("gateway.run._credential_pool_for_provider", return_value=None):
         model, runtime = runner._resolve_session_agent_runtime(session_key="test-session-key")

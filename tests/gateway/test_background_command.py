@@ -41,6 +41,8 @@ def _make_runner():
     # MagicMock's default truthy return would otherwise rehydrate a fake model
     # and make the session-scoped reasoning resolver receive a MagicMock.
     mock_store.get_model_override.return_value = None
+    # Its cached entries agree: runtime selection re-reads them before publishing.
+    mock_store._entries = {}
     runner.session_store = mock_store
 
     from gateway.hooks import HookRegistry

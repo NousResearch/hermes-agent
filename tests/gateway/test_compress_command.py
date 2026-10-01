@@ -56,6 +56,10 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
+    # Like a real SessionStore with no persisted /model override; runtime selection
+    # re-reads the cached entries before publishing, so they must agree.
+    runner.session_store.get_model_override.return_value = None
+    runner.session_store._entries = {}
     runner._session_db = None
     return runner
 

@@ -277,6 +277,8 @@ class TestIterBackupFiles:
             "cache/images/x.png": True,
             "cache/citations/ledger.json": True,
             "profiles/sage/cache/images/y.png": True,
+            "cache/generated/images/x.png": True,
+            "profiles/sage/cache/generated/videos/v.mp4": True,
             "skills/example/cache/state.db": True,
         }
         for rel in files:

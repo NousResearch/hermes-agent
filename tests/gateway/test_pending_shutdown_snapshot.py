@@ -9,6 +9,8 @@ import pytest
 
 from gateway.platforms.base_pending import release_pending_dispatch, reserve_pending_dispatch
 from gateway.platforms.event import MessageType
+from hermes_constants import get_hermes_home
+from hermes_state_registry import close_all_under
 from tests.gateway.test_active_session_text_merge import _make_event, _make_initialized_adapter
 from tests.gateway.test_busy_followup_after_session_release import _QueueRunner
 
@@ -256,11 +258,11 @@ async def test_shutdown_recovers_queued_input_cancelled_in_post_admission_hook(t
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["shutdown", "stop"])
+@pytest.mark.parametrize("action", ["shutdown", "stop", "withdraw"])
 @pytest.mark.parametrize("ownership", ["provisional", "durable", "other-profile", "read-error"])
 async def test_pending_dispatch_preserves_only_inputs_without_durable_ownership(tmp_path, monkeypatch, action, ownership):
     from gateway.config import GatewayConfig
-    from gateway.platforms.base_pending import bind_pending_dispatch_input
+    from gateway.platforms.base_pending import pending_dispatch_record
     from gateway.run import _profile_runtime_scope
     from gateway.session import SessionStore
     from gateway.session_transcript import TranscriptReadError
@@ -302,7 +304,9 @@ async def test_pending_dispatch_preserves_only_inputs_without_durable_ownership(
             entered = asyncio.Event()
 
             async def handler(_event):
-                bind_pending_dispatch_input(session_id, owner)
+                record = pending_dispatch_record(adapter, key, _event)
+                assert record is not None
+                record.input_session_id, record.input_owner = session_id, owner
                 entered.set()
                 await asyncio.Event().wait()
 
@@ -316,6 +320,17 @@ async def test_pending_dispatch_preserves_only_inputs_without_durable_ownership(
                         raise TranscriptReadError(session_id)
                     monkeypatch.setattr(runner.session_store, "has_input_owner", failed_read)
                 depth = runner._queue_depth(key, adapter=adapter)
+                if action == "withdraw":
+                    assert event.message_id is not None
+                    assert event.source.user_id is not None
+                    found = adapter.withdraw_pending_message(event.message_id, chat_id=event.source.chat_id,
+                                                             sender_id=event.source.user_id)
+                    record = pending_dispatch_record(adapter, key, event)
+                    assert record is not None
+                    assert (found, record.withdrawn, event.text, depth) == (
+                        ownership != "durable", ownership != "durable", f"input-{index}",
+                        0 if ownership == "durable" else 1,
+                    )
                 if action == "shutdown":
                     await adapter.cancel_background_tasks()
                     payloads = [json.loads(path.read_text(encoding="utf-8")) for path in (homes[profile] / "pending_messages").glob("*.json")]
@@ -338,3 +353,83 @@ async def test_pending_dispatch_preserves_only_inputs_without_durable_ownership(
         runner.session_store.close_all_db_handles()
         for db in dbs.values():
             db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["lease", "agent-start", "pins"])
+@pytest.mark.parametrize("partial", [False, True])
+async def test_shutdown_preserves_dispatch_waiting_for_the_turn_lease(tmp_path, monkeypatch, phase, partial):
+    from unittest.mock import AsyncMock
+    from tests.gateway.test_duplicate_user_message import _bootstrap, _event
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _bootstrap(monkeypatch, tmp_path)
+    from gateway.session import SessionStore
+    from gateway.platforms.base_pending import pending_dispatch_record
+
+    store = SessionStore(tmp_path / "sessions", runner.config)
+    runner.session_store = store
+    adapter = _make_initialized_adapter()
+    runner.adapters = {adapter.platform: adapter}
+    runner._delivery_adapter_for = lambda _source: adapter
+    runner._intake_adapter_for = lambda _source: adapter
+    runner._run_agent = AsyncMock()
+    adapter.gateway_runner = runner
+    adapter.set_message_handler(runner._handle_message)
+    entered = asyncio.Event()
+
+    async def acquire(*_args):
+        entered.set()
+        await asyncio.Event().wait()
+
+    if phase == "lease":
+        runner._hmwa_acquire_turn_lease = acquire
+    if phase == "agent-start":
+        async def hook(kind, *_args):
+            if kind == "agent:start":
+                await acquire()
+        runner.hooks.emit = hook
+    if phase == "pins":
+        runner._persist_prompt_pins = acquire
+    first = _event()
+    first.reply_to_message_id, first.reply_to_text = "quote", "quoted text"
+    first.reply_to_author_id, first.reply_to_author_name = "author", "Quoted author"
+    first.metadata = {"nested": {"future": [1, False]}}
+    later = _event()
+    later.text, later.message_id = "later queued input", "later"
+    key = runner._session_key_for_source(first.source)
+    monkeypatch.setattr(adapter, "_event_session_key", lambda event: key)
+    runner._enqueue_fifo(key, first, adapter)
+    if partial:
+        from gateway.platforms.base import merge_pending_message_event
+        retained = _event()
+        retained.text, retained.message_id = "retained contribution", "retained"
+        merge_pending_message_event(adapter._pending_messages, key, retained, merge_text=True)
+    runner._enqueue_fifo(key, later, adapter)
+    started = adapter._pending_messages.pop(key)
+    adapter._stage_next_queued_event(key, started)
+    assert adapter._start_session_processing(started, key)
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        assert first.message_id is not None
+        assert first.source.user_id is not None
+        record = pending_dispatch_record(adapter, key, first)
+        assert record is not None
+        if phase != "lease":
+            assert record.input_session_id is not None
+            assert record.input_owner is not None
+            assert not store.has_input_owner(record.input_session_id, record.input_owner)
+        original = _wire_event(first)
+        found = adapter.withdraw_pending_message(first.message_id, chat_id=first.source.chat_id,
+                                                 sender_id=first.source.user_id)
+        assert (found, _wire_event(first)) == (False, original)
+    finally:
+        await adapter.cancel_background_tasks()
+        store.close_all_db_handles()
+        close_all_under(get_hermes_home())
+
+    payloads = [json.loads(path.read_text()) for path in (tmp_path / "pending_messages").glob("*.json")]
+    assert [[record["event"] for record in payload["events"]] for payload in payloads] == [
+        [_wire_event(first), _wire_event(later)]
+    ]
+    runner._run_agent.assert_not_awaited()

@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from gateway.run_common import _UNSET
+from gateway.platforms.base_pending import pending_dispatch_revision, pending_dispatch_withdrawn
+
+if TYPE_CHECKING:
+    from gateway.run import GatewayRunner
 
 if TYPE_CHECKING:
     from gateway.config import GatewayConfig
@@ -36,6 +40,9 @@ class GatewayInboundVoiceMixin:
     if TYPE_CHECKING:
         config: GatewayConfig
         _echo_stt_transcripts = GatewayRunner._echo_stt_transcripts
+        _delivery_adapter_for = GatewayRunner._delivery_adapter_for
+        _session_key_for_source = GatewayRunner._session_key_for_source
+
 
     _EMPTY_TEXT_PLACEHOLDER = "(The user sent a message with no text content)"
 
@@ -163,19 +170,26 @@ class GatewayInboundVoiceMixin:
     async def _transcribe_pending_audio_event_once(
         self, event, user_text: Optional[str] = None
     ) -> tuple[str | None, list[str]]:
+        adapter = self._delivery_adapter_for(event.source)
+        key = self._session_key_for_source(event.source)
+        if pending_dispatch_withdrawn(adapter, key, event):
+            return None, []
         if hasattr(event, "_gateway_pending_stt_text"):
-            return event._gateway_pending_stt_text, list(
-                getattr(event, "_gateway_pending_stt_transcripts", []) or []
-            )
-        audio_paths = self._pending_event_audio_paths(event)
-        if not audio_paths:
-            return user_text if user_text is not None else (
-                getattr(event, "text", None) or None
-            ), []
-        text = (
-            user_text if user_text is not None else (getattr(event, "text", "") or "")
-        )
-        result = await self._transcribe_voice_clips(text, audio_paths)
+            return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
+        while True:
+            if pending_dispatch_withdrawn(adapter, key, event):
+                return None, []
+            revision = pending_dispatch_revision(adapter, key, event)
+            audio_paths = self._pending_event_audio_paths(event)
+            if not audio_paths:
+                return user_text if user_text is not None else (getattr(event, "text", None) or None), []
+            text = user_text if user_text is not None else (getattr(event, "text", "") or "")
+            result = await self._transcribe_voice_clips(text, audio_paths)
+            if pending_dispatch_withdrawn(adapter, key, event):
+                return None, []
+            if pending_dispatch_revision(adapter, key, event) == revision:
+                break
+            user_text = event.text
         event._gateway_pending_stt_text = result.text
         event._gateway_pending_stt_transcripts = result.transcripts()
         event._gateway_pending_stt_clips = result.clips
@@ -199,17 +213,17 @@ class GatewayInboundVoiceMixin:
             return
         echoed = set(getattr(event, "_gateway_pending_stt_echoed_paths", ()))
         clips = getattr(event, "_gateway_pending_stt_clips", ())
-        unsent = [clip for clip in clips if clip.path not in echoed]
-        event._gateway_pending_stt_echoed_paths = echoed | {
-            clip.path for clip in unsent
-        }
-        await self._echo_stt_transcripts(
-            adapter,
-            source,
-            [clip.text for clip in unsent],
-            metadata=metadata,
-            log_context=log_context,
-        )
+        key = self._session_key_for_source(event.source)
+        for clip in clips:
+            if pending_dispatch_withdrawn(adapter, key, event):
+                return
+            if clip.path in echoed or clip.path not in event.media_urls:
+                continue
+            echoed.add(clip.path)
+            event._gateway_pending_stt_echoed_paths = set(echoed)
+            await self._echo_stt_transcripts(
+                adapter, source, [clip.text], metadata=metadata, log_context=log_context,
+            )
 
     async def _transcribe_and_echo_pending_voice(
         self, event, adapter, source, text: str, *, log_context: str, metadata=_UNSET
@@ -220,23 +234,22 @@ class GatewayInboundVoiceMixin:
         if not self._pending_event_audio_paths(event):
             return text, []
         try:
-            (
-                enriched_text,
-                transcripts,
-            ) = await self._transcribe_pending_audio_event_once(event, text)
-            if metadata is _UNSET:
-                metadata = self._thread_metadata_for_source(
-                    source, self._reply_anchor_for_event(event)
+            key = self._session_key_for_source(event.source)
+            while True:
+                if pending_dispatch_withdrawn(adapter, key, event):
+                    return "", []
+                revision = pending_dispatch_revision(adapter, key, event)
+                enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event, text)
+                echo_metadata = (self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                                 if metadata is _UNSET else metadata)
+                await self._echo_pending_stt_transcripts_once(
+                    event, adapter, source, transcripts, metadata=echo_metadata, log_context=log_context,
                 )
-            await self._echo_pending_stt_transcripts_once(
-                event,
-                adapter,
-                source,
-                transcripts,
-                metadata=metadata,
-                log_context=log_context,
-            )
-            return enriched_text or text, transcripts
+                if pending_dispatch_withdrawn(adapter, key, event):
+                    return "", []
+                if pending_dispatch_revision(adapter, key, event) == revision:
+                    return enriched_text or text, transcripts
+                text = event.text or ""
         except Exception as trans_exc:
             logger.warning("%s transcription failed: %s", log_context, trans_exc)
             return text, []

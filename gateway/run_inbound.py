@@ -83,6 +83,10 @@ def strip_inbound_source_note(event: Any, message_text: Any) -> Any:
 class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMixin, GatewayInboundVoiceMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
+    if TYPE_CHECKING:
+        _session_key_for_source = GatewayRunner._session_key_for_source
+        _restore_pending_dispatch = GatewayRunner._restore_pending_dispatch
+
     _peek_session_state: Callable[[str], Optional[SessionState]]
 
     if TYPE_CHECKING:
@@ -508,6 +512,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMi
             except Exception as exc:
                 logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
         if steered:
+            from gateway.platforms.base_pending import release_pending_dispatch
+            release_pending_dispatch(self._delivery_adapter_for(event.source), _quick_key, event, claimed=True)
             self._fold_into_running_turn(running_agent, _quick_key, event)
             logger.debug("PRIORITY steer for session %s", _quick_key)
             return True
@@ -521,9 +527,14 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMi
         from gateway.run import _build_media_placeholder
         # Text-only corrections redirect the live turn (preserving displayed context) when the
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
+        from gateway.platforms.base_pending import pending_dispatch_withdrawn, release_pending_dispatch
+        adapter = self._delivery_adapter_for(source)
+        if pending_dispatch_withdrawn(adapter, _quick_key, event):
+            return
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
         if self._hm_text_only(event) and _can_redirect and hasattr(running_agent, "redirect"):
             if self._redirect_active_turn(running_agent, (event.text or "").strip(), _quick_key, event):
+                release_pending_dispatch(adapter, _quick_key, event, claimed=True)
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
                 return
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
@@ -537,6 +548,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMi
             _interrupt_text = _build_media_placeholder(event)
         # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
         # — that copy was never consumed and grew unbounded.
+        if pending_dispatch_withdrawn(adapter, _quick_key, event):
+            return
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_handle_running_session_message(
@@ -549,6 +562,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMi
         if _handled:
             return _result
         if not await self._strict_session_current(event, _quick_key):
+            return None
+        from gateway.platforms.base_pending import pending_dispatch_withdrawn
+        if pending_dispatch_withdrawn(self._delivery_adapter_for(source), _quick_key, event):
             return None
 
         if event.internal or event.defer_until_idle:
@@ -1139,10 +1155,28 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMi
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
-        _admitted = await self._hm_admit_event(event)
-        if _admitted is None:
+        from gateway.platforms.base_pending import pending_dispatch_record, pending_dispatch_withdrawn
+        _dispatch_adapter = self._delivery_adapter_for(event.source)
+        _dispatch_key = self._session_key_for_source(event.source)
+        _reservation = pending_dispatch_record(_dispatch_adapter, _dispatch_key, event)
+        while True:
+            _admission_revision = _reservation.revision if _reservation is not None else 0
+            _admitted = await self._hm_admit_event(event)
+            if _reservation is not None and _reservation.withdrawn:
+                return None
+            if _admitted is None:
+                return None
+            if _reservation is not None and _reservation.revision != _admission_revision:
+                event = _reservation.event
+                continue
+            event, source, is_internal = _admitted
+            if _reservation is not None:
+                _reservation.bind(event)
+            break
+        if pending_dispatch_withdrawn(
+            self._delivery_adapter_for(source), self._session_key_for_source(source), event,
+        ):
             return None
-        event, source, is_internal = _admitted
         if not is_internal:
             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
             record_gateway_slash_command(event)
@@ -1161,6 +1195,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMi
 
         _quick_key = self._session_key_for_source(source)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
+        if pending_dispatch_withdrawn(self._delivery_adapter_for(source), _quick_key, event):
+            return None
         if _reply is not None:
             return _reply
 
@@ -1193,6 +1229,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMi
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
         # passes the "already running" guard and spins up a duplicate agent for the same session.
+        if _reservation is not None:
+            if _reservation.withdrawn:
+                return None
+            if _reservation.revision != _admission_revision:
+                self._restore_pending_dispatch(_quick_key, _reservation.event, _dispatch_adapter)
+                return None
         _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
         if _limit_message is not None:
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
@@ -1200,7 +1242,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMi
 
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 
-        from gateway.platforms.base_pending import release_pending_dispatch
+        from gateway.platforms.base_pending import close_pending_dispatch_withdrawal, release_pending_dispatch
+        close_pending_dispatch_withdrawal(self._delivery_adapter_for(source), _quick_key, event)
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease
@@ -1222,6 +1265,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundAdmissionMi
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:
+                release_pending_dispatch(self._delivery_adapter_for(source), _quick_key, event, claimed=True)
                 # A rejected message, not a completed turn: return before the /goal judge so it
                 # cannot consume the resend notice and enqueue a synthetic continuation loop.
                 logger.error(

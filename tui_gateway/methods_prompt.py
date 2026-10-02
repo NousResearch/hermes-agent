@@ -5,6 +5,10 @@ method_ctx.bind_module), so they reference server.py globals bare.
 """
 
 import contextlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .session_lifecycle import _start_turn_thread
 
 from .method_ctx import HandlerRegistry, bind_module
 

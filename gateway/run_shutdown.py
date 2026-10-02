@@ -1531,13 +1531,21 @@ class GatewayShutdownMixin:
         """
         return self._wedged_chat_agent_count() + self._wedged_cron_job_count()
 
+    def _restart_wait_cron_counts(self) -> dict:
+        """``cron.scheduler.get_restart_wait_cron_counts``, counted per profile-scoped run.
+
+        Fail-soft toward waiting: if the split can't be read, every active cron run stays
+        awaitable and nothing is excluded.
+        """
+        try:
+            from cron.scheduler import get_restart_wait_cron_counts
+            return get_restart_wait_cron_counts()
+        except Exception:
+            return {"awaitable": self._active_cron_job_count(), "wedged": 0, "restart_safe": 0}
+
     def _wedged_cron_job_count(self) -> int:
         """Cron runs past ``cron.scheduler.get_wedged_job_ids``'s allowance; 0 if cron can't import."""
-        try:
-            from cron.scheduler import get_wedged_job_ids
-            return len(get_wedged_job_ids())
-        except Exception:
-            return 0
+        return self._restart_wait_cron_counts()["wedged"]
 
     def _restart_safe_cron_count(self) -> int:
         """Cron runs whose worker owns a restart-safe systemd scope; 0 if cron can't import.
@@ -1550,11 +1558,7 @@ class GatewayShutdownMixin:
         Degraded (no user bus) workers are NOT in this set — they share the cgroup and die with a
         systemd stop, so they keep holding the wait.
         """
-        try:
-            from cron.scheduler import get_restart_safe_external_job_ids
-            return len(get_restart_safe_external_job_ids())
-        except Exception:
-            return 0
+        return self._restart_wait_cron_counts()["restart_safe"]
 
     def _wedged_chat_agent_count(self) -> int:
         """Running chat agents with no activity for ``agent.gateway_timeout`` (0 when disabled);
@@ -1585,16 +1589,21 @@ class GatewayShutdownMixin:
     def _awaitable_work_count(self) -> int:
         """Active work minus the units the restart wait must not hold for.
 
-        Two disjoint exclusions, both subtracted here so a unit in both sets is never dropped
-        twice: wedged turns (idle past ``agent.gateway_timeout`` / past the cron in-flight
-        allowance — restart is their remedy, #115469) and cron runs executing in a restart-safe
-        external worker (``_restart_safe_cron_count``), which outlives this process either way.
+        Two disjoint exclusions: wedged turns (idle past ``agent.gateway_timeout`` / past the cron
+        in-flight allowance — restart is their remedy, #115469) and cron runs executing in a
+        restart-safe external worker (``_restart_safe_cron_count``), which outlives this process
+        either way. Cron runs are counted per profile-scoped run by the scheduler, not by
+        subtracting from the bare-ID active count: two profiles can run the same job ID, and one
+        excluded run must not hide the other.
         """
-        return max(
-            0,
-            self._active_work_count()
-            - self._wedged_agent_count()
-            - self._restart_safe_cron_count(),
+        non_cron = (
+            self._running_agent_count()
+            + self._active_api_run_count()
+            + self._active_deferred_agent_worker_count()
+        )
+        return (
+            max(0, non_cron - self._wedged_chat_agent_count())
+            + self._restart_wait_cron_counts()["awaitable"]
         )
 
     def _describe_active_work(self) -> list:
@@ -1625,18 +1634,13 @@ class GatewayShutdownMixin:
                         unit["idle_s"] = summary.get("seconds_since_activity")
             units.append(unit)
         with suppress(Exception):
-            from cron.scheduler import (
-                get_restart_safe_external_job_ids,
-                get_running_job_details,
-                get_wedged_job_ids,
-            )
+            from cron.scheduler import get_running_job_details, get_wedged_job_ids
             wedged = get_wedged_job_ids()
-            restart_safe = get_restart_safe_external_job_ids()
             for job in get_running_job_details():
                 units.append({"kind": "cron", "job_id": job["job_id"], "elapsed_s": job["elapsed_s"],
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
                               "wedged": job["job_id"] in wedged,
-                              "restart_safe": job["job_id"] in restart_safe})
+                              "restart_safe": bool(job.get("restart_safe"))})
         for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units

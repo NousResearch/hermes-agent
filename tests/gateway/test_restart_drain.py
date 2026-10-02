@@ -658,7 +658,7 @@ async def test_request_restart_skips_wait_for_scope_isolated_cron_worker(monkeyp
         runner.stop.assert_awaited_once()
     finally:
         sched.release_running_job("scoped-screening-job")
-        assert sched.get_restart_safe_external_job_ids() == frozenset()
+        assert sched.get_restart_wait_cron_counts()["restart_safe"] == 0
 
 
 @pytest.mark.asyncio
@@ -688,3 +688,64 @@ async def test_request_restart_still_waits_for_worker_without_its_own_scope(monk
             await asyncio.wait_for(runner._await_active_work_before_restart(), timeout=0.5)
     finally:
         sched.release_running_job("degraded-job")
+
+
+def _register_in_profile(monkeypatch, sched, home, job_id):
+    """Claim ``job_id`` in-flight under profile ``home`` (the multiplexed ticker binds it per tick)."""
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert sched.try_register_running_job(job_id)
+
+
+def test_same_job_id_scoped_in_one_profile_does_not_hide_degraded_in_another(monkeypatch, tmp_path):
+    """One gateway ticks every profile, so two profiles can run ``daily-brief`` at once.
+
+    Profile A's run is in its own scope (outlives the restart); profile B's is degraded (shares the
+    gateway cgroup, dies with a systemd stop). The wait must still hold for B: counting by bare job
+    ID let A's exclusion cancel the single collapsed ``daily-brief`` and restart killed B mid-run.
+    """
+    import cron.scheduler as sched
+
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    runner, _adapter = make_restart_runner()
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    try:
+        _register_in_profile(monkeypatch, sched, home_a, "daily-brief")
+        sched._record_external_cron_worker("daily-brief", 4321, scope_isolated=True)
+        _register_in_profile(monkeypatch, sched, home_b, "daily-brief")
+        sched._record_external_cron_worker("daily-brief", 4322, scope_isolated=False)
+
+        assert runner._restart_safe_cron_count() == 1
+        assert runner._awaitable_work_count() == 1
+        flags = sorted(u["restart_safe"] for u in runner._describe_active_work() if u["kind"] == "cron")
+        assert flags == [False, True]
+
+        # B finishes: only the scoped run is left, and it no longer holds the wait.
+        sched.release_running_job("daily-brief", home_b)
+        assert runner._awaitable_work_count() == 0
+    finally:
+        sched.release_running_job("daily-brief", home_a)
+        sched.release_running_job("daily-brief", home_b)
+
+
+def test_same_job_id_wedged_in_one_profile_does_not_hide_live_run_in_another(monkeypatch, tmp_path):
+    """Sibling of the scoped case for the wedged exclusion: profile A's ``daily-brief`` is past its
+    in-flight allowance, profile B's is a young live run. Only A may be skipped.
+    """
+    import cron.scheduler as sched
+
+    monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    runner, _adapter = make_restart_runner()
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    try:
+        _register_in_profile(monkeypatch, sched, home_a, "daily-brief")
+        with sched._running_lock:
+            sched._running_since[sched._inflight_key("daily-brief")] = time.time() - 702 * 60
+        _register_in_profile(monkeypatch, sched, home_b, "daily-brief")
+
+        assert runner._wedged_agent_count() == 1
+        assert runner._awaitable_work_count() == 1
+    finally:
+        sched.release_running_job("daily-brief", home_a)
+        sched.release_running_job("daily-brief", home_b)

@@ -1195,7 +1195,9 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
     assert len(marks) == 1 and marks[0][0][1] is False
     assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
     assert execution_ledger.get_execution(record["id"])["status"] == "failed"
-def test_restart_safe_external_job_ids_track_only_scoped_workers(tmp_path, monkeypatch):
+
+
+def test_restart_wait_counts_exclude_only_scoped_workers(tmp_path, monkeypatch):
     """Only a worker in its OWN scope may be skipped by the gateway restart wait.
 
     A ``degraded`` dispatch is still an external subprocess but stays in the gateway cgroup, so a
@@ -1214,20 +1216,23 @@ def test_restart_safe_external_job_ids_track_only_scoped_workers(tmp_path, monke
         scheduler._record_external_cron_worker("job-scoped", 4321, scope_isolated=True)
         scheduler._record_external_cron_worker("job-degraded", 4322, scope_isolated=False)
         scheduler._record_external_cron_worker("job-scoped-wedged", 4323, scope_isolated=True)
-        assert scheduler.get_restart_safe_external_job_ids() == frozenset(
-            {"job-scoped", "job-scoped-wedged"})
+        assert scheduler.get_restart_wait_cron_counts() == {
+            "awaitable": 1, "wedged": 0, "restart_safe": 2}
+        details = {d["job_id"]: d["restart_safe"] for d in scheduler.get_running_job_details()}
+        assert details == {"job-scoped": True, "job-degraded": False, "job-scoped-wedged": True}
 
         with scheduler._running_lock:
             scheduler._running_since[scheduler._inflight_key("job-scoped-wedged")] = (
                 time.time() - 702 * 60)
         assert scheduler.get_wedged_job_ids() == frozenset({"job-scoped-wedged"})
-        assert scheduler.get_restart_safe_external_job_ids() == frozenset({"job-scoped"})
+        # Wedged and scoped: counted once, as wedged.
+        assert scheduler.get_restart_wait_cron_counts() == {
+            "awaitable": 1, "wedged": 1, "restart_safe": 1}
     finally:
         for job_id in jobs:
             scheduler.release_running_job(job_id)
     # Scoped to THIS test's claims: the module keeps other runs' entries (a launch that never went
     # through a claim, e.g. a stubbed worker in a sibling test, is not this test's to assert on).
     keys = {scheduler._inflight_key(job_id) for job_id in jobs}
-    assert scheduler.get_restart_safe_external_job_ids() == frozenset()
     assert not keys & scheduler._scope_isolated_job_ids
     assert not keys & set(scheduler._running_worker_pids)

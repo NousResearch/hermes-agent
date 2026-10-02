@@ -74,7 +74,7 @@ class TestRunConversationCodexPath:
         [
             ({"enabled": True, "effort": "high"}, "priority", "high", "fast"),
             ({"enabled": False}, None, "none", None),
-            # Hermes-only levels are clamped to the route's vocabulary; raw "ultra" fails the turn with 400.
+            # Hermes-only levels are clamped to the route's vocabulary: gpt-5.4 has no `max`, so ultra goes out as xhigh.
             # A tier codex has no word for is not sent.
             ({"enabled": True, "effort": "ultra"}, "ultrafast", "xhigh", None),
         ],

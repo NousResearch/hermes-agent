@@ -573,6 +573,9 @@ class HostedRoomService:
             raise RuntimeError("room approval is no longer pending")
         if choice not in {"once", "deny"}:
             raise RuntimeError("room approval choice must be once or deny")
+        offered = (action.get("approval") or {}).get("choices")
+        if not isinstance(offered, list) or choice not in offered:
+            raise RuntimeError("room approval choice is not offered by this request")
         approve = _hook(client, "approve_receipt")
         if route is not None and approve is not None:
             result = approve(

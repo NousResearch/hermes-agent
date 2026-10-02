@@ -143,6 +143,19 @@ class PtySession:
         self.attached = False
         self.last_detached_at = time.monotonic()
 
+    def runs_pid(self, pid: Optional[int]) -> bool:
+        """Whether this PTY's child is the process named by ``pid``.
+
+        A bridge that cannot report one (already reaped, or a stub) is simply
+        not a match.
+        """
+        if pid is None:
+            return False
+        try:
+            return int(self.bridge.pid) == pid
+        except (AttributeError, TypeError, ValueError, OSError):
+            return False
+
     async def close(self) -> None:
         self.alive = False
         if self._drain_task is not None:
@@ -235,7 +248,9 @@ class PtySessionRegistry:
                     await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
                     await session.close()
 
-    async def close_orphaned_sessions(self, resume: Optional[str], *, keep_key: str) -> None:
+    async def close_orphaned_sessions(
+        self, resume: Optional[str], *, keep_key: str, holder_pid: Optional[int] = None,
+    ) -> None:
         """Close a keep-alive PTY stranded under a superseded attach token.
 
         Rotating the token — the dashboard's *New chat* — moves the tab to a
@@ -243,13 +258,18 @@ class PtySessionRegistry:
         its session. That terminal is out of the user's reach, so the next
         return to the same chat is refused as a session held elsewhere. A PTY
         with a live viewer is never a candidate: somebody is still using it.
+
+        A chat that was never resumed from carries no resume target in its key,
+        so ``holder_pid`` — the process holding the lease for the session being
+        resumed — identifies that terminal instead.
         """
         if not resume:
             return
         async with self._attach_lock:
             doomed = [
                 key for key, session in self._sessions.items()
-                if key != keep_key and not session.attached and _resume_target(key) == resume
+                if key != keep_key and not session.attached
+                and (_resume_target(key) == resume or session.runs_pid(holder_pid))
             ]
             for key in doomed:
                 session = self._sessions.pop(key, None)

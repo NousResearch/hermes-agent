@@ -88,6 +88,7 @@ export const zhHantArtifacts = {
     editing: '編輯中',
     unsavedChanges: '未儲存的變更',
     saveFailed: message => `無法儲存：${message}`,
+    saveScopeChanged: '請切換回原本的連線和設定檔以儲存此草稿。',
     diskChangedTitle: '檔案已在磁碟上變更',
     diskChangedBody: '此檔案自開啟以來已變更。用你的版本覆寫，還是放棄你的編輯並重新載入？',
     overwrite: '覆寫',

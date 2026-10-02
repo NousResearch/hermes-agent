@@ -57,7 +57,7 @@ export interface CatalogMeta {
 }
 
 // Docs section describing the PR-based submission workflow.
-export const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting-a-plugin-to-the-catalog";
+export const SUBMIT_PLUGIN_URL = "/developer-guide/plugins/catalog-submission";
 
 /** Deep link into the Desktop app's Install Plugin dialog, catalog mode: the app
  *  resolves the reviewed pin itself, so the page never hands it a repo URL. */

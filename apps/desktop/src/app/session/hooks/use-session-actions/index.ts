@@ -29,7 +29,7 @@ import {
 } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
-import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
+import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
@@ -1331,12 +1331,11 @@ export function useSessionActions({
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
-      // $selectedStoredSessionId) and, for a cold target, drop the previous
-      // transcript so the thread shows its loader instead of the old session
-      // lingering until resume lands. A warm-cached target keeps its transcript —
-      // the cached fast-path repaints it this same tick. Setting the ref here is
-      // also what use-route-resume's self-heal assumes ("set synchronously at
-      // resume entry").
+      // $selectedStoredSessionId) and drop the previous session's transcript so
+      // the thread shows this session's proven warm transcript or its loader
+      // instead of the old session lingering until resume lands. Setting the
+      // ref here is also what use-route-resume's self-heal assumes ("set
+      // synchronously at resume entry").
       setFreshDraftReady(false)
       clearNotifications()
       resetViewSync()
@@ -1394,7 +1393,18 @@ export function useSessionActions({
         return { runtimeId, state }
       }
 
-      if (!takeWarmCache()) {
+      // The selection moved above, but a warm runtime is only (re)bound after
+      // the awaits below. Until then the foreground may stay on a runtime only
+      // if it already IS this session's own warm runtime (a same-session
+      // re-resume). Leaving another chat's runtime bound is #89696: the primary
+      // view reads the active runtime's slice and the view sync admits only the
+      // active runtime, so a turn still streaming there keeps painting under
+      // this session's route, and a re-entrant resume of this target would
+      // snapshot it as this session's local pending turn (resumeStartMessages).
+      const warmAtEntry = takeWarmCache()
+      const foregroundIsTarget = warmAtEntry !== null && warmAtEntry.runtimeId === activeSessionIdRef.current
+
+      if (!foregroundIsTarget) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
         // History load is not turn-busy. Drop the previous session's leftover
@@ -1432,6 +1442,23 @@ export function useSessionActions({
 
       if (ownerRoute || listedStored?.profile) {
         provisional.paint(transcriptRestScope(ownerRoute, listedStored, ambientConnectionId))
+      }
+
+      // An unbound warm target whose transcript is already persisted-display
+      // authority paints now, display-only, instead of waiting out the awaits
+      // below; the fast path re-proves it against the resolved owner before
+      // binding. An unproven warm cache can be a compressed runtime tail, so it
+      // keeps the loader (#73646).
+      if (warmAtEntry && !foregroundIsTarget && listedStored) {
+        const entryProvenance = createPersistedDisplayTranscriptProvenance({
+          lineageRootId: listedStored._lineage_root_id ?? null,
+          scope: transcriptRestScope(ownerRoute, listedStored, ambientConnectionId),
+          storedSessionId
+        })
+
+        if (hasPersistedDisplayTranscriptProvenance(warmAtEntry.state, entryProvenance)) {
+          setMessages(warmAtEntry.state.messages)
+        }
       }
 
       const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
@@ -2683,6 +2710,9 @@ export function useSessionActions({
   // Shared fork: create a child session seeded with `branchMessages`, linked to
   // `parentStoredId` so it nests under its parent, then open it as its own tab
   // and switch to it — the parent chat stays put (mirrors openNewSessionTile).
+  // `idempotencyKey` lets a caller-driven retry reuse the SAME key so the
+  // backend can dedupe (without it, every call generates a fresh key and a
+  // response-lost retry would spawn a duplicate child).
   const forkBranch = useCallback(
     async (
       branchMessages: BranchMessage[],
@@ -2691,9 +2721,15 @@ export function useSessionActions({
       cwd?: string,
       profile?: null | string,
       branchCount?: number,
-      ownerRoute?: SessionOwnerRoute
+      ownerRoute?: SessionOwnerRoute,
+      idempotencyKey?: string
     ): Promise<boolean> => {
       creatingSessionRef.current = true
+
+      // Stable per-attempt key so a backend retry after a lost response returns
+      // the SAME child session instead of spawning a duplicate. Generated here
+      // for first-time calls; supplied by the retry action on subsequent tries.
+      const key = idempotencyKey ?? `branch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 
       try {
         // A branch belongs to its parent's OWNING backend. Two facets, and both
@@ -2744,6 +2780,9 @@ export function useSessionActions({
         if (!createFlight) {
           const branchParams = {
             session_id: sourceSessionId,
+            // Stable per-attempt key: a lost-response retry of session.branch /
+            // session.branch_whole returns the SAME child (#65410).
+            idempotency_key: key,
             ...(branchCount !== undefined ? { count: branchCount } : {})
           }
 
@@ -2752,7 +2791,10 @@ export function useSessionActions({
             source: 'desktop',
             ...(cwd && { cwd }),
             ...(profile ? { profile } : {}),
-            ...(parentStoredId && { parent_session_id: parentStoredId })
+            ...(parentStoredId && { parent_session_id: parentStoredId }),
+            // Stable per-attempt key: a backend retry after a lost response
+            // returns the SAME child instead of spawning a duplicate (#65410).
+            idempotency_key: key
           }
 
           createFlight = (
@@ -2902,7 +2944,28 @@ export function useSessionActions({
         // Navigate throw or earlier failure after arming pending — never leave
         // creatingSessionRef stuck true.
         releaseCreatingSessionGuard()
-        notifyError(err, copy.branchFailed)
+        // Backend restart / WS drop mid-RPC leaves the branch uncreated with no
+        // recovery path. Surface a persistent error with a retry action so the
+        // user can re-attempt without re-doing the whole branch flow. The retry
+        // passes the SAME idempotency key so the backend can dedupe if the
+        // first create actually committed but its response was lost.
+        notifyError(err, copy.branchFailed, {
+          action: {
+            label: t.common.retry,
+            onClick: () => {
+              void forkBranch(
+                branchMessages,
+                sourceSessionId,
+                parentStoredId,
+                cwd,
+                profile,
+                branchCount,
+                ownerRoute,
+                key
+              )
+            }
+          }
+        })
 
         return false
       } finally {
@@ -2919,6 +2982,7 @@ export function useSessionActions({
       requestGateway,
       resumeSession,
       selectedStoredSessionIdRef,
+      t,
       updateSessionState
     ]
   )
@@ -3225,6 +3289,13 @@ export function useSessionActions({
         // back, and a rolled-back row must keep its watermark/marker.
         forgetSessionUnread(removedIds, profile)
         clearQueuedPrompts(storedSessionId)
+        // The journaled in-flight tail holds this session's prompt and tool
+        // calls in localStorage; a deleted session must not leave that copy
+        // behind to age out on its own. Purge after the RPC lands (same
+        // rollback argument as the unread watermark above), passing every id
+        // the delete holds: the stored tip, the row id, the lineage root, and
+        // the closing runtime id — the journal keys on the stored id.
+        purgeInFlightTurnJournals([...removedIds, closingRuntimeId])
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)

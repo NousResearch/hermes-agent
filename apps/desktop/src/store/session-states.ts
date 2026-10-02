@@ -156,6 +156,19 @@ export function runtimeSessionOwner(sessionId: null | string | undefined): Sessi
   return id ? sessionOwnerByRuntimeId.get(id) : undefined
 }
 
+/** The composite source scope (connection + profile) a runtime's own events
+ *  proved — `registryBackendScopeKey` of the socket that delivered them.
+ *  Undefined for a runtime whose events arrived untagged (the local legacy
+ *  primary), whose source is then whatever gateway is actively serving this
+ *  window. Reaction-overlay reads key the displayed session's scope with
+ *  this, so an overlay recorded on one source never paints another
+ *  source's same-numbered row. */
+export function sessionEventScopeFor(runtimeId: null | string | undefined): string | undefined {
+  const id = String(runtimeId ?? '').trim()
+
+  return id ? sessionScopeByRuntimeId.get(id) : undefined
+}
+
 /** Forget only profile-pool runtime owners during permanent LOCAL profile
  * teardown. These string routes came exclusively from the legacy secondary
  * producer; exact connection descriptors must survive a same-named remote
@@ -448,7 +461,7 @@ function clearEventSilence(runtimeId: string) {
   }
 }
 
-function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolean {
+export function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolean {
   return Boolean(state && (state.busy || state.awaitingResponse || state.turnLive) && !state.needsInput)
 }
 

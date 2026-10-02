@@ -2,12 +2,17 @@ import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { useI18n } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
-import { clearSessionDraft, type ComposerAttachment, isFreshDraftScope } from '@/store/composer'
+import {
+  clearSessionDraft,
+  type ComposerAttachment,
+  freezeComposerTransportPayload,
+  isFreshDraftScope
+} from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
@@ -355,21 +360,43 @@ export function useComposerSubmit({
       return
     }
 
+    // Freeze `@terminal:` chips the same way idle submit / queue enqueue do.
+    // Steer used to forward the bare token only (#77078).
+    const frozen = freezeComposerTransportPayload(text)
+
+    if (frozen.missingLabels.length > 0) {
+      notify({
+        kind: 'warning',
+        title: translateNow('composer.terminalSelectionMissingTitle'),
+        message: translateNow('composer.terminalSelectionMissingBody')
+      })
+
+      return
+    }
+
     triggerHaptic('submit')
     clearDraft()
 
     // The draft is already cleared, so a refused or failed redirect must keep
     // the only copy: queue it for the next turn, or restore it when there is no
-    // queue yet (a new chat is busy before its first session exists).
+    // queue yet (a new chat is busy before its first session exists). Keep the
+    // frozen transport for the queue; restoring to the composer keeps the chip
+    // form so the user can re-send it as-is.
+    const hasTerminalTransport = frozen.displayText !== frozen.transportText
+
     const keep = () => {
       if (activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+        enqueueQueuedPrompt(activeQueueSessionKey, {
+          text: frozen.displayText,
+          attachments: [],
+          ...(hasTerminalTransport ? { displayText: frozen.displayText, frozenTransport: frozen.transportText } : {})
+        })
       } else {
-        loadIntoComposer(text, [])
+        loadIntoComposer(frozen.displayText, [])
       }
     }
 
-    void Promise.resolve(onSteer(text))
+    void Promise.resolve(onSteer(frozen.transportText))
       .then(accepted => {
         if (!accepted) {
           keep()

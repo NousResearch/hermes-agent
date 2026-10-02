@@ -22,6 +22,24 @@ def test_extra_supported_ungated_extra_is_true():
     assert extras.extra_supported("no-such-gate-for-this-one") is True
 
 
+def test_matrix_extra_is_gated_off_on_python_3_14(monkeypatch):
+    monkeypatch.setattr(extras, "_PLATFORM_GATES", None)
+    from packaging.markers import default_environment
+
+    base = {
+        **default_environment(),
+        "sys_platform": "linux",
+        "platform_system": "Linux",
+        "platform_machine": "x86_64",
+    }
+    assert extras.extra_supported(
+        "matrix", environment={**base, "python_version": "3.13"}, importable=lambda _: False
+    )
+    assert not extras.extra_supported(
+        "matrix", environment={**base, "python_version": "3.14"}, importable=lambda _: False
+    )
+
+
 def test_ensure_import_raises_on_gated_off_extra(monkeypatch, synced):
     from packaging.markers import default_environment
 

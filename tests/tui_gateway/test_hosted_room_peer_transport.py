@@ -158,14 +158,20 @@ def test_peer_transport_dispatches_full_fenced_coordinates_and_exact_stop():
             session_id="group-session",
             source=ROOM_SESSION_SOURCE,
             expected_task_id="other-task",
+            expected_execution_generation=3,
         )
         is None
     )
+    assert transport.interrupt(
+        profile="reviewer", session_id="group-session", source=ROOM_SESSION_SOURCE,
+        expected_task_id="task-1", expected_execution_generation=2) is None
+    assert not [call for call in client.calls if call[0] == "stop"]
     stopped = transport.interrupt(
         profile="reviewer",
         session_id="group-session",
         source=ROOM_SESSION_SOURCE,
         expected_task_id="task-1",
+        expected_execution_generation=3,
     )
     assert stopped["status"] == "cancelled"
     assert len([call for call in client.calls if call[0] == "stop"]) == 1

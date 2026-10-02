@@ -90,6 +90,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -1664,7 +1665,6 @@ class FeishuAdapter(BasePlatformAdapter):
         # Lock the markdown decision at the whole-message level so every chunk consistently uses ``post``.
         # See #26841.
         prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
-        last_response = None
 
         async def _send_plain(chunk: str) -> Any:
             return await self._feishu_send_with_retry(
@@ -1675,8 +1675,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 metadata=metadata,
             )
 
-        try:
-            for chunk in chunks:
+        async def _send_chunk(chunk: str, _index: int) -> SendResult:
+            try:
                 msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
                 try:
                     response = await self._feishu_send_with_retry(
@@ -1694,12 +1694,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await _send_plain(chunk)
-                last_response = response
+            except Exception as exc:
+                logger.error("[Feishu] Send error: %s", exc, exc_info=True)
+                return SendResult(success=False, error=str(exc))
+            # A rejected chunk stops the send: skipping it would report success with a hole in the reply.
+            return self._finalize_send_result(response, "send failed")
 
-            return self._finalize_send_result(last_response, "send failed")
-        except Exception as exc:
-            logger.error("[Feishu] Send error: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+        return await send_split(chunks, _send_chunk)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a previously sent Feishu text/post message."""

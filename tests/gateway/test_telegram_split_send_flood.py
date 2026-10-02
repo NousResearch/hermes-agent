@@ -3,9 +3,11 @@
 A reply past ``MAX_MESSAGE_LENGTH`` goes out as several ``sendMessage`` calls. When chunk 2 is refused
 (``RetryAfter`` past the inline cap) the adapter must report the partial delivery via the existing
 ``partial_overflow`` contract and ``_send_with_retry`` must resume from the undelivered remainder — never
-re-send chunk 1 (the reporter saw a duplicated head), never drop the tail.
+re-send chunk 1 (the reporter saw a duplicated head), never drop the tail. A refusal the adapter hands to
+the delivery ledger keeps that promise too: the ledger's later redelivery sends only the remainder.
 """
 import asyncio
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -113,3 +115,50 @@ async def test_concurrent_split_sends_to_one_chat_do_not_interleave():
     assert len(order) >= 4
     switches = sum(1 for a, b in zip(order, order[1:]) if a != b)
     assert switches == 1, order
+
+
+@pytest.mark.asyncio
+async def test_ledger_redelivery_of_a_partial_final_sends_only_the_undelivered_tail(monkeypatch):
+    """The over-cap refusal above leaves the final to the delivery ledger. Through the whole obligation path
+    (``send_final_ledgered`` -> ledger row -> the runner's timed redelivery once the wait has passed), every
+    word of the reply must reach the chat exactly once: the redelivery sends the tail, not the head again."""
+    from gateway import delivery_ledger as dl
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    sent: list = []
+    calls = {"n": 0}
+
+    async def fake_send_message(text: str, **_kw):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise _FloodError(120.0)
+        sent.append(text)
+        return MagicMock(message_id=1000 + calls["n"])
+
+    adapter = _adapter(AsyncMock(side_effect=fake_send_message))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock())
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._profile_adapters = {}
+    runner.session_store = None
+    runner._async_session_store = MagicMock(_store=None, clear_resume_pending=AsyncMock())
+    adapter.gateway_runner = runner
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="4242", chat_type="dm", user_id="u1")
+    content = _three_chunk_text()
+
+    result, _ = await adapter.send_final_ledgered(
+        MessageEvent(text="write it up", source=source, message_id="m1"), "agent:main:telegram:dm:4242",
+        content, {}, reply_to=None)
+    assert result.success is False and result.error == "flood_control:120.0"
+
+    # The platform's wait passes; the runner's flood timer then redelivers this bot's due rows.
+    adapter._telegram_send_cooldown_until.clear()
+    real_time = dl.time.time
+    monkeypatch.setattr(dl, "time", MagicMock(time=lambda: real_time() + 200))
+    assert await runner._redeliver_failed_obligations_for_platform(Platform.TELEGRAM) == 1
+
+    delivered_words = [word for text in sent for word in re.findall(r"\bw\d+\b", text)]
+    assert delivered_words == content.split()

@@ -29,6 +29,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,
 )
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import redact_phone
 from gateway.platforms.helpers import cancel_task
@@ -709,20 +710,21 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         base_params = await self._with_target({"account": self.account}, chat_id)
         chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
-        last_result = None
-        for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
+
+        async def _send_chunk(chunk: Tuple[str, List[str]], index: int) -> SendResult:
+            plain_text, text_styles = chunk
             params: Dict[str, Any] = dict(base_params, message=plain_text)
             if len(text_styles) == 1:
                 params["textStyle"] = text_styles[0]
             elif text_styles:
                 params["textStyles"] = text_styles
-            logger.info("[Signal] Sending response chunk %d/%d (%d chars) to %s", idx, len(chunks), len(plain_text),
-                        chat_id)
-            last_result, err = await self._rpc_send(params, "RPC send failed")
-            if err:
-                return err
-        # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
-        return SendResult(success=True, message_id=None, raw_response=last_result)
+            logger.info("[Signal] Sending response chunk %d/%d (%d chars) to %s", index + 1, len(chunks),
+                        len(plain_text), chat_id)
+            rpc_result, err = await self._rpc_send(params, "RPC send failed")
+            # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
+            return err or SendResult(success=True, message_id=None, raw_response=rpc_result)
+
+        return await send_split(chunks, _send_chunk)
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""

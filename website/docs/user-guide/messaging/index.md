@@ -298,8 +298,15 @@ Semantics are honest at-least-once:
   after the recorded penalty expires, without requiring a reconnect or restart.
   A restart during the penalty adopts the stored reply without spending a retry
   attempt or re-running the agent. Retries retain the original bot profile, chat
-  and thread. A rate-limit recovery prefix warns that earlier chunks may already
-  have arrived; the ledger cannot infer partial delivery from message length.
+  and thread. Unless the adapter reported which parts landed (below), a rate-limit
+  recovery prefix warns that earlier chunks may already have arrived; the ledger
+  cannot infer partial delivery from message length.
+- A split reply refused after some of its parts landed, when the adapter reports
+  which ones (Telegram and the other adapters that split long replies do), is
+  retried from the first part that did not land: the parts already on screen are
+  not sent again. The gateway keeps that knowledge in memory for the connection
+  that sent the reply, so a retry after a restart, or after a reconnect replaced
+  that connection, falls back to the whole reply with the recovery prefix.
 - Any other rejected final send (a platform 5xx, an unclassified error) is retried the same
   way after a growing backoff (30 s, then 2 min); the last budgeted attempt is left for the
   next gateway start, so an outage that outlasts the timer never strands the reply. A

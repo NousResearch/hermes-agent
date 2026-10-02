@@ -58,6 +58,7 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
+from gateway.platforms.base_split_send import send_split
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
@@ -709,8 +710,8 @@ class TeamsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
-        last_message_id = None
-        for chunk in self.truncate_message(self.format_message(content)):
+
+        async def _send_chunk(chunk: str, _index: int) -> SendResult:
             try:
                 if reply_to and reply_to.isdigit() and reply_to != "0":
                     try:
@@ -721,11 +722,12 @@ class TeamsAdapter(BasePlatformAdapter):
                         result = await self._app.send(chat_id, chunk)
                 else:
                     result = await self._app.send(chat_id, chunk)
-                last_message_id = getattr(result, "id", None)
-                self._remember_sent(result)
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
-        return SendResult(success=True, message_id=last_message_id)
+            self._remember_sent(result)
+            return SendResult(success=True, message_id=getattr(result, "id", None))
+
+        return await send_split(self.truncate_message(self.format_message(content)), _send_chunk)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if self._app:

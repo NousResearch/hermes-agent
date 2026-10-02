@@ -311,6 +311,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
@@ -3089,50 +3090,66 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             chunks = self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             )
-            message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
-            for i, chunk in enumerate(chunks):
+
+            async def _send_chunk(chunk: str, index: int) -> SendResult:
+                nonlocal reference
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
-                    chunk_reference = reference if i == 0 else None
+                    chunk_reference = reference if index == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
-                except Exception as e:
-                    if chunk_reference is not None and self._is_reply_reference_rejected(e):
+                    try:
+                        msg = await channel.send(content=chunk, reference=chunk_reference)
+                    except Exception as e:
+                        if chunk_reference is None or not self._is_reply_reference_rejected(e):
+                            raise
                         logger.warning(
                             "[%s] Reply target %s rejected the reply reference; retrying send without reply reference",
                             self.name, reply_to,
                         )
                         reference = None
                         msg = await channel.send(content=chunk, reference=None)
-                    else:
-                        raise
-                message_ids.append(str(msg.id))
-            # Track the last sent message for history backfill (skips the full history scan).
-            if message_ids:
-                _target_id = thread_id or chat_id
-                if nonconversational:
-                    await self._nonconversational_messages.mark_many(message_ids)
-                elif not _looks_like_nonconversational_history_message(content):
-                    self._last_self_message_id[_target_id] = message_ids[-1]
-            # Connection-shaped failure (WS drop / closed session): use the ledger's runtime-retryable
-            # marker so the reconnect sweep can replay this final response instead of stranding it until a
-            # process restart (#95382 silent partial loss).
-            result = SendResult(
-                success=True,
-                message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
-            )
+                except Exception as e:
+                    logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
+                    return self._send_failure_result(e)
+                return SendResult(success=True, message_id=str(msg.id))
+
+            async def _finish(results: List[SendResult]) -> SendResult:
+                message_ids = [result.message_id for result in results]
+                # Track the last sent message for history backfill (skips the full history scan).
+                if message_ids:
+                    _target_id = thread_id or chat_id
+                    if nonconversational:
+                        await self._nonconversational_messages.mark_many(message_ids)
+                    elif not _looks_like_nonconversational_history_message(content):
+                        self._last_self_message_id[_target_id] = message_ids[-1]
+                result = SendResult(
+                    success=True,
+                    message_id=message_ids[0] if message_ids else None,
+                    raw_response={"message_ids": message_ids}
+                )
+                return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
+
+            # A chunk failure after earlier chunks landed comes back as a partial delivery whose retry
+            # resumes at the failed chunk (``_finish`` records the response once the rest lands).
+            result = await send_split(chunks, _send_chunk, finish=_finish)
+            if result.success:
+                return result
             return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
-            if _is_discord_transport_error(e):
-                # Connection-shaped failure: runtime-retryable marker so the reconnect sweep can replay it.
-                result = SendResult(success=False, error="send_path_degraded", retryable=True)
-            else:
-                result = SendResult(success=False, error=str(e))
-            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
+            return await self._record_response_async(
+                reply_to, self._send_failure_result(e), content, bool(metadata and metadata.get("notify")), metadata)
+
+    @staticmethod
+    def _send_failure_result(e: BaseException) -> SendResult:
+        """Failed send: a connection-shaped failure (WS drop / closed session) carries the ledger's
+        runtime-retryable ``send_path_degraded`` marker so the reconnect sweep can replay this final
+        response instead of stranding it until a process restart (#95382 silent partial loss)."""
+        if _is_discord_transport_error(e):
+            return SendResult(success=False, error="send_path_degraded", retryable=True)
+        return SendResult(success=False, error=str(e))
 
     @staticmethod
     def _forum_thread_parts(thread: Any) -> tuple:

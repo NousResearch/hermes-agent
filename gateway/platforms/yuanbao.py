@@ -47,6 +47,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
 )
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import helpers as _mdchunk
 from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
@@ -2406,18 +2407,21 @@ class MessageSender:
         if adapter._connection.ws is None:
             return SendResult(success=False, error="Not connected", retryable=True)
         adapter._outbound.slow_notifier.cancel(chat_id)
+
+        async def _send_chunk(chunk: str, index: int) -> "SendResult":
+            return await self.send_text_chunk(chat_id, chunk, reply_to if index == 0 else None, group_code=group_code)
+
+        async def _finish(_results: List["SendResult"]) -> "SendResult":
+            with contextlib.suppress(Exception):  # delivery done → FINISH heartbeat (RUNNING… → message → FINISH)
+                await adapter._outbound.heartbeat.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
+            return SendResult(success=True)
+
         async with self.get_chat_lock(chat_id):
             content_to_send = self.strip_cron_wrapper(content)
             chunks = self.truncate_message(content_to_send, adapter.MAX_TEXT_CHUNK)
             logger.info("[%s] truncate_message: input=%d chars, max=%d, output=%d chunk(s) sizes=%s",
                         adapter.name, len(content_to_send), adapter.MAX_TEXT_CHUNK, len(chunks), [len(c) for c in chunks])
-            for i, chunk in enumerate(chunks):
-                result = await self.send_text_chunk(chat_id, chunk, reply_to if i == 0 else None, group_code=group_code)
-                if not result.success:
-                    return result
-        with contextlib.suppress(Exception):  # delivery done → FINISH heartbeat (RUNNING… → message → FINISH)
-            await adapter._outbound.heartbeat.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
-        return SendResult(success=True)
+            return await send_split(chunks, _send_chunk, finish=_finish)
 
     async def send_media(self, chat_id: str, handler_name: str, reply_to: Optional[str] = None,
                          caption: Optional[str] = None, **kwargs: Any) -> "SendResult":
@@ -2725,6 +2729,13 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None, group_code: str = "") -> SendResult:
         return await self._outbound.sender.send_text(chat_id, content, reply_to, group_code=group_code)
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Any) -> Optional[SendResult]:
+        """Send the undelivered tail under the same per-chat lock ``send_text`` holds, so no other
+        send to this chat lands between its chunks."""
+        async with self._outbound.sender.get_chat_lock(chat_id):
+            return await super()._resume_partial_send(chat_id, result, reply_to=reply_to, metadata=metadata)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "group" if chat_id.startswith("group:") else "dm"}

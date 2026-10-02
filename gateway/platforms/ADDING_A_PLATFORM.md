@@ -115,6 +115,10 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | `send_image(chat_id, image_url, caption) -> SendResult` | Send an image |
 | `get_chat_info(chat_id) -> dict` | Return `{name, type, chat_id}` for a chat |
 
+If `send()` splits a long reply into several messages (`splits_long_messages = True`), post the chunks
+through `gateway.platforms.base_split_send.send_split`: when a later chunk fails, the base retry then
+resumes at that chunk instead of re-posting the chunks the user already has.
+
 ### Optional methods (have default stubs in base)
 
 | Method | Purpose |

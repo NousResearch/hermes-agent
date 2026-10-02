@@ -75,6 +75,7 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
@@ -1407,25 +1408,28 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
-        last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+
+        async def _send_chunk(chunk: str, _index: int) -> SendResult:
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
             try:
-                last_event_id = await self._send_room_message(chat_id, msg_content)
-                logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
+                event_id = await self._send_room_message(chat_id, msg_content)
+                logger.info("Matrix: sent event %s to %s", event_id, chat_id)
             except Exception as exc:
                 if not (self._encryption and getattr(self._client, "crypto", None)):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
                     return SendResult(success=False, error=str(exc))
                 try:  # E2EE error: retry once after sharing keys
                     await self._client.crypto.share_keys()
-                    last_event_id = await self._send_room_message(chat_id, msg_content)
-                    logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
+                    event_id = await self._send_room_message(chat_id, msg_content)
+                    logger.info("Matrix: sent event %s to %s (after key share)", event_id, chat_id)
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
-        return SendResult(success=True, message_id=last_event_id)
+            return SendResult(success=True, message_id=event_id)
+
+        return await send_split(
+            self.truncate_message(self.format_message(content), self.max_message_length), _send_chunk)
 
     async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""

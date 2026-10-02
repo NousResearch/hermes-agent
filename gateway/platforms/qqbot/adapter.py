@@ -43,6 +43,7 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
 from gateway.platforms.helpers import MessageDeduplicator, cancel_task
@@ -1366,14 +1367,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True)
 
-        chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH)
-        last_result = SendResult(success=False, error="No chunks")
-        for chunk in chunks:
-            last_result = await self._send_chunk(chat_id, chunk, reply_to)
-            if not last_result.success:
-                return last_result
-            reply_to = None  # only reply_to the first chunk
-        return last_result
+        async def _send_one(chunk: str, index: int) -> SendResult:
+            return await self._send_chunk(chat_id, chunk, reply_to if index == 0 else None)  # reply_to the first chunk only
+
+        return await send_split(self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH), _send_one)
 
     _PERMANENT_SEND_ERRORS = ("invalid", "forbidden", "not found")
 

@@ -50,6 +50,7 @@ from gateway.platforms.base import (
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
 )
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling module; support both package and flat plugin-dir import
@@ -2251,19 +2252,10 @@ class SlackAdapter(BasePlatformAdapter):
                 # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
-            # Clear Slack Assistant status as soon as the final message is posted.
-            if thread_ts:
-                await self.stop_typing(chat_id, metadata=metadata)
-            # Track sent ts (and the thread root) so thread replies get answered
-            # without an @mention.
-            sent_ts = last_result.get("ts") if last_result else None
-            if sent_ts:
-                self._bot_message_ts.add(self._workspace_message_marker(team_id, sent_ts))
-                if thread_ts:
-                    self._bot_message_ts.add(self._workspace_message_marker(team_id, thread_ts))
-                self._trim_bot_message_timestamps()
-            return SendResult(success=True, message_id=sent_ts, raw_response=last_result)
+            result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts, metadata)
+            if not result.success:
+                await self._clear_thread_status_quietly(chat_id, metadata)
+            return result
         except Exception as e:  # pragma: no cover - defensive logging
             # Clear the status even when the failure preceded thread_ts resolution:
             # stop_typing falls back to metadata / the uniquely tracked status.
@@ -2273,36 +2265,62 @@ class SlackAdapter(BasePlatformAdapter):
             # tracked status for this channel, so a failed turn cannot leave "is thinking..." visible
             # (#24117).
             logger.error("[Slack] Send error: %s", e, exc_info=True)
-            _retryable = self._is_retryable_upload_error(e)
-            return SendResult(
-                success=False, error=str(e), retryable=_retryable,
-                retry_after=self._retry_after_from_exc(e) if _retryable else None)
+            return self._send_error_result(e)
+
+    def _send_error_result(self, e: BaseException) -> SendResult:
+        """Failed ``SendResult`` for a Slack API error: retryable (with ``Retry-After``) for 429 / 5xx /
+        connection errors so ``_send_with_retry`` backs off instead of falling back to plain text."""
+        _retryable = self._is_retryable_upload_error(e)
+        return SendResult(
+            success=False, error=str(e), retryable=_retryable,
+            retry_after=self._retry_after_from_exc(e) if _retryable else None)
 
     async def _post_chunks(
-        self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str]
-    ) -> Any:
-        """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk; returns the last response.
+        self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk through ``send_split`` (a retry after a
+        later chunk failed never re-posts the earlier ones); the result carries the last response.
         Block Kit only for single-chunk messages (a >39k response is pathological for the 50-block /
         3000-char limits); ``text`` stays the notification/accessibility fallback. With
         ``reply_broadcast`` only the first chunk is also posted to the main channel."""
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         broadcast = self.config.extra.get("reply_broadcast", False)
         blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
-        last_result = None
-        for i, chunk in enumerate(chunks):
+
+        async def _post_chunk(chunk: str, index: int) -> SendResult:
             kwargs = {
                 "channel": chat_id, "text": chunk,
                 "mrkdwn": True, **_slack_unfurl_kwargs(self.config.extra)}
-            if blocks and i == 0:
+            if blocks and index == 0:
                 kwargs["blocks"] = blocks
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
-                if broadcast and i == 0:
+                if broadcast and index == 0:
                     kwargs["reply_broadcast"] = True
             client_fn = lambda: self._get_client(chat_id, team_id=team_id)  # noqa: E731
-            last_result = await self._call_with_block_fallback(
-                client_fn, "chat_postMessage", kwargs, "send")
-        return last_result
+            try:
+                response = await self._call_with_block_fallback(client_fn, "chat_postMessage", kwargs, "send")
+            except Exception as e:
+                logger.error("[Slack] Send error: %s", e, exc_info=True)
+                return self._send_error_result(e)
+            return SendResult(success=True, message_id=response.get("ts") if response else None, raw_response=response)
+
+        async def _finish(results: List[SendResult]) -> SendResult:
+            # Clear Slack Assistant status as soon as the final message is posted.
+            if thread_ts:
+                await self.stop_typing(chat_id, metadata=metadata)
+            # Track sent ts (and the thread root) so thread replies get answered
+            # without an @mention.
+            sent_ts = results[-1].message_id
+            if sent_ts:
+                self._bot_message_ts.add(self._workspace_message_marker(team_id, sent_ts))
+                if thread_ts:
+                    self._bot_message_ts.add(self._workspace_message_marker(team_id, thread_ts))
+                self._trim_bot_message_timestamps()
+            return results[-1]
+
+        return await send_split(chunks, _post_chunk, finish=_finish)
 
     @staticmethod
     def _retry_after_from_exc(e: BaseException) -> Optional[float]:

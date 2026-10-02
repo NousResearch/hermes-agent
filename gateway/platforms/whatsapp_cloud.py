@@ -24,7 +24,7 @@ import shutil
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from aiohttp import web
@@ -42,6 +42,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.base_exec_approval import ea_header_text
 from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
@@ -367,11 +368,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         formatted = self.format_message(content)
-        last_message_id: Optional[str] = None
-        for idx, chunk in enumerate(self.truncate_message(formatted, self._outgoing_chunk_limit())):
+
+        async def _send_chunk(chunk: str, index: int) -> SendResult:
             # Quote the user's message on the first chunk only.
             payload = self._outbound_payload(
-                chat_id, "text", {"body": chunk, "preview_url": True}, reply_to if idx == 0 else None
+                chat_id, "text", {"body": chunk, "preview_url": True}, reply_to if index == 0 else None
             )
             ids, err = await self._post_messages(
                 payload,
@@ -380,12 +381,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             if err is not None:
                 return SendResult(success=False, error=err)
-            last_message_id = ids[0].get("id") if ids else last_message_id
-        # Index (chat_id, wamid) → text: Meta's inbound ``context`` carries only the
-        # quoted message's id, so this is how replies to our messages resolve text.
-        if last_message_id:
-            await rich_sent_store.record_async(chat_id, last_message_id, formatted)
-        return SendResult(success=True, message_id=last_message_id)
+            return SendResult(success=True, message_id=ids[0].get("id") if ids else None)
+
+        async def _finish(results: List[SendResult]) -> SendResult:
+            last_message_id = next((r.message_id for r in reversed(results) if r.message_id), None)
+            # Index (chat_id, wamid) → text: Meta's inbound ``context`` carries only the
+            # quoted message's id, so this is how replies to our messages resolve text.
+            if last_message_id:
+                await rich_sent_store.record_async(chat_id, last_message_id, formatted)
+            return SendResult(success=True, message_id=last_message_id)
+
+        return await send_split(self.truncate_message(formatted, self._outgoing_chunk_limit()), _send_chunk, finish=_finish)
 
     # ------------------------------------------------------------------ typing indicator + read receipts
     async def send_typing(self, chat_id: str, metadata=None) -> None:

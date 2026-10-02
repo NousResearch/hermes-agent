@@ -190,6 +190,7 @@ from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsap
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
@@ -632,24 +633,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         chat_id = to_whatsapp_jid(chat_id)
+
+        async def _send_chunk(chunk: str, index: int) -> SendResult:
+            if index:
+                await asyncio.sleep(0.3)  # avoid rate limiting between chunks
+            payload: Dict[str, Any] = {"chatId": chat_id, "message": chunk}
+            if reply_to and index == 0:
+                payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
+            result = await self._post_bridge_message("send", payload, timeout=30)
+            return result if result.success else SendResult(success=False, error=result.error)
+
+        async def _finish(results: list[SendResult]) -> SendResult:
+            sent_message_ids = [str(r.message_id) for r in results if r.message_id]
+            return SendResult(success=True, message_id=results[-1].message_id, continuation_message_ids=tuple(sent_message_ids[:-1]),
+                              raw_response={"message_ids": sent_message_ids})
+
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
-            sent_message_ids: list[str] = []
-            last_message_id = None
-            for idx, chunk in enumerate(chunks):
-                payload: Dict[str, Any] = {"chatId": chat_id, "message": chunk}
-                if reply_to and idx == 0:
-                    payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
-                result = await self._post_bridge_message("send", payload, timeout=30)
-                if not result.success:
-                    return SendResult(success=False, error=result.error)
-                last_message_id = result.message_id
-                if last_message_id:
-                    sent_message_ids.append(str(last_message_id))
-                if len(chunks) > 1:
-                    await asyncio.sleep(0.3)  # avoid rate limiting between chunks
-            return SendResult(success=True, message_id=last_message_id, continuation_message_ids=tuple(sent_message_ids[:-1]),
-                              raw_response={"message_ids": sent_message_ids})
+            return await send_split(chunks, _send_chunk, finish=_finish)
         except Exception as e:
             return SendResult(success=False, error=str(e))
 

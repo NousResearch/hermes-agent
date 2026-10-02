@@ -442,9 +442,8 @@ class GatewayStartupMixin:
             content = row["content"]
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
-            metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             try:
-                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
+                result = await self._send_obligation(adapter, row, content)
             except Exception as send_err:
                 logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
                 result = None
@@ -465,6 +464,29 @@ class GatewayStartupMixin:
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
             await self._arm_flood_timers_for_waiting_rows()
         return redelivered
+
+    @staticmethod
+    async def _send_obligation(adapter: BasePlatformAdapter, row: dict, content: str):
+        """One redelivery send. A reply this process saw partly delivered resumes after the head the user
+        already has (the adapter resumes only a remainder it knows never landed, so no marker is due);
+        otherwise the whole, possibly marked, ``content`` goes out. A send that again lands only partly
+        is remembered for the row's next attempt."""
+        from gateway.delivery_ledger import remember_partial_send, take_partial_send
+        result = None
+        partial = take_partial_send(row["obligation_id"])
+        if partial is not None:
+            previous, reply_to, metadata, sender = partial
+            # Only the adapter that sent the head can resume it: a ``send_split`` resume is bound to that
+            # adapter's connection. After a reconnect replaced it, the replacement sends the whole reply.
+            if sender is adapter:
+                result = await adapter._resume_partial_send(
+                    row["chat_id"], previous, reply_to=reply_to, metadata=metadata)
+        if result is None:
+            reply_to, metadata = None, ({"thread_id": row["thread_id"]} if row.get("thread_id") else None)
+            result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
+        if not getattr(result, "success", False) and BasePlatformAdapter._is_partial_delivery(result):
+            remember_partial_send(row["obligation_id"], result, reply_to=reply_to, metadata=metadata, adapter=adapter)
+        return result
 
     async def _obligation_adapter(self, row: dict):
         """Resolve the adapter for a claimed ledger row, or None when it cannot be delivered now."""

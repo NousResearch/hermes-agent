@@ -43,9 +43,10 @@ RECONNECTED_MARKER = ("♻️ Recovered reply — the messaging platform reconne
                       "delivery failed, so this may be a duplicate:\n\n")
 # A reply refused by flood control may have gone out as several requests (the adapter chunks long replies,
 # and MarkdownV2 escaping alone can push a reply that fits one message into two), and the platform may have
-# accepted the first chunk(s) before refusing the rest; the send result does not say which landed. The raw
-# length of the stored text says nothing about that, so every flood redelivery carries a marker, and neither
-# of the markers above tells the truth here (no restart, no reconnect): the rate limit gets its own.
+# accepted the first chunk(s) before refusing the rest. When the adapter said which landed, this process
+# resends only the rest (``remember_partial_send``); otherwise nothing here knows which did, and the raw
+# length of the stored text says nothing about that, so every full flood redelivery carries a marker, and
+# neither of the markers above tells the truth here (no restart, no reconnect): the rate limit gets its own.
 FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of "
                 "it may already have arrived above:\n\n")
 
@@ -317,6 +318,30 @@ def mark_delivered(obligation_id: str) -> None:
 
 def mark_failed(obligation_id: str, error: str = "") -> None:
     _update_state(obligation_id, "failed", error=error)
+
+
+# A split reply refused after its first chunks landed comes back as a partial delivery whose result carries
+# what the adapter needs to send only the rest (``_resume_partial_send``: Telegram's undelivered chunks, or the
+# ``resume`` of ``base_split_send.send_split``). That cannot be persisted, so it is kept here for this process:
+# a redelivery of the row resumes from it instead of re-sending the whole reply and duplicating the head the
+# user already has. The remainder belongs to the adapter that sent the head (a ``send_split`` resume is bound
+# to it), so that adapter is kept too. After a restart the row falls back to the marked full resend.
+_PARTIAL_SENDS: Dict[str, tuple] = {}
+
+
+def remember_partial_send(
+        obligation_id: str, result: Any, *, reply_to: Optional[str], metadata: Any, adapter: Any) -> None:
+    """Keep a partly delivered send (with the ``reply_to``/``metadata`` it went out with and the ``adapter``
+    that sent it) for the row's next redelivery; bounded like the ledger itself."""
+    _PARTIAL_SENDS.pop(obligation_id, None)
+    _PARTIAL_SENDS[obligation_id] = (result, reply_to, metadata, adapter)
+    while len(_PARTIAL_SENDS) > _MAX_ROWS:
+        _PARTIAL_SENDS.pop(next(iter(_PARTIAL_SENDS)))
+
+
+def take_partial_send(obligation_id: str) -> Optional[tuple]:
+    """``(result, reply_to, metadata, adapter)`` of the row's remembered partial send, removed; else ``None``."""
+    return _PARTIAL_SENDS.pop(obligation_id, None)
 
 
 def release_runtime_claim(obligation_id: str, error: str = "") -> bool:

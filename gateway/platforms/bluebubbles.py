@@ -22,6 +22,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
 )
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.event import MessageEvent, MessageType
 from .media_cache import ext_for_mime
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
@@ -368,19 +369,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()] or [text]
         chunks = [c for para in paragraphs for c in (
             [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
-        last = SendResult(success=True)
-        for chunk in chunks:
-            guid = await self._resolve_chat_guid(chat_id)
-            if not guid:
-                if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
-                    return await self._create_chat_for_handle(chat_id, chunk)
-                return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
+        guid = await self._resolve_chat_guid(chat_id)
+        if not guid:
+            if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
+                return await self._create_chat_for_handle(chat_id, chunks[0])
+            return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
+
+        async def _send_chunk(chunk: str, _index: int) -> SendResult:
             payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
             if reply_to and self._private_api_enabled and self._helper_connected:
                 payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
-            if not (last := await self._post_message("/api/v1/message/text", payload)).success:
-                return last
-        return last
+            return await self._post_message("/api/v1/message/text", payload)
+
+        return await send_split(chunks, _send_chunk)
 
     # --- Media sending (outbound) ---
 

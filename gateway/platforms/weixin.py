@@ -35,6 +35,7 @@ from gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
+from gateway.platforms.base_split_send import send_split
 from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -1030,7 +1031,6 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         context_token = self._token_store.get(self._account_id, chat_id)
-        last_message_id: Optional[str] = None
         # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
         # profile's scope: Docker MEDIA translation infers the sandbox from the active profile (#109024).
         with self._media_delivery_scope(self.build_source(chat_id=chat_id)):
@@ -1038,22 +1038,37 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             local_files, final_content = self.extract_local_files(self.extract_images(cleaned_content)[1])
             deliveries = [(p, v, "media") for p, v in self.filter_media_delivery_paths(media_files)]
             deliveries += [(p, False, "local file") for p in self.filter_local_delivery_paths(local_files)]
+        # Media already on screen counts as delivered: a text failure after it must not re-send it.
+        media_sent: List[SendResult] = []
+
+        async def _send_chunk(chunk: str, index: int) -> SendResult:
+            if index and self._send_chunk_delay_seconds > 0:
+                await asyncio.sleep(self._send_chunk_delay_seconds)
+            client_id = f"hermes-weixin-{uuid.uuid4().hex}"
+            try:
+                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+            except Exception as exc:
+                logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+                return SendResult(success=False, error=str(exc))
+            return SendResult(success=True, message_id=client_id)
+
         try:
             for path, is_voice, label in deliveries:
                 ext = Path(path).suffix.lower()
                 sender, key = next(((m, k) for exts, m, k in _OUTBOUND_BY_EXT if is_voice or ext in exts), ("send_document", "file_path"))
                 try:
-                    await getattr(self, sender)(chat_id=chat_id, metadata=metadata, **{key: path})
+                    sent = await getattr(self, sender)(chat_id=chat_id, metadata=metadata, **{key: path})
                 except Exception as exc:
                     logger.warning("[%s] %s delivery failed for %s: %s", self.name, label, path, exc)
+                else:
+                    if getattr(sent, "success", False):
+                        media_sent.append(sent)
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
-            for idx, chunk in enumerate(chunks):
-                client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
-                last_message_id = client_id
-                if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
-                    await asyncio.sleep(self._send_chunk_delay_seconds)
-            return SendResult(success=True, message_id=last_message_id)
+
+            async def _finish(results: List[SendResult]) -> SendResult:
+                return SendResult(success=True, message_id=results[-1].message_id if chunks else None)
+
+            return await send_split(chunks, _send_chunk, finish=_finish, delivered=media_sent)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))

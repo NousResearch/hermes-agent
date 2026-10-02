@@ -55,7 +55,7 @@ from agent.turn_preflight_gate import run_preflight_gate
 from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
-from agent.turn_tool_round import run_tool_round
+from agent.turn_tool_round import max_turn_tool_calls, run_tool_round
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
@@ -1412,6 +1412,7 @@ class _LoopState:
     # reports a prompt below threshold.
     max_compression_attempts: Any
     api_call_count: int = 0
+    tool_call_count: int = 0
     final_response: Any = None
     interrupted: bool = False
     failed: bool = False
@@ -1633,7 +1634,8 @@ def _run_conversation_turn(
         s.api_call_count = int(codex_result.get("api_calls") or 0)
         s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
 
-    while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    _turn_tool_cap = max_turn_tool_calls(agent)
+    while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0 and s.tool_call_count < _turn_tool_cap) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)

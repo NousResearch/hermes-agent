@@ -123,12 +123,15 @@ def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: List[str], logge
 
 def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
-    _pending_verification_response, _pending_verification_response_previewed, logger,
+    _pending_verification_response, _pending_verification_response_previewed, logger, tool_call_count=0,
 ) -> Tuple[Any, Any, bool, Any]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback, interrupted)``."""
+    from agent.turn_tool_round import max_turn_tool_calls
+
     budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
+        or int(tool_call_count or 0) >= max_turn_tool_calls(agent)
     )
     preserved_verification_fallback = False
     if (
@@ -510,10 +513,11 @@ def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
     _turn_exit_reason, _pending_verification_response=None,
-    _pending_verification_response_previewed=False,
+    _pending_verification_response_previewed=False, tool_call_count=0,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
+    from agent.turn_tool_round import max_turn_tool_calls
 
     final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
@@ -521,7 +525,7 @@ def finalize_turn(
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
-        logger=logger,
+        logger=logger, tool_call_count=tool_call_count,
     )
 
     # A non-interrupted turn that fell out of the loop after a tool result, with no
@@ -574,6 +578,7 @@ def finalize_turn(
         and not failed
         and not interrupted
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
+        and int(tool_call_count or 0) < max_turn_tool_calls(agent)
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)

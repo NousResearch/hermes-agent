@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 import logging
+import sys
 from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
@@ -21,6 +22,13 @@ logger = logging.getLogger("agent.conversation_loop")
 
 # Post-response housekeeping tools: a round made only of these mutes tool progress.
 _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session_search"})
+
+def max_turn_tool_calls(agent):
+    """Per-turn tool-execution cap, tied to the turn iteration limit."""
+    try:
+        return max(0, int(getattr(agent, "max_iterations", sys.maxsize)))
+    except (TypeError, ValueError):
+        return sys.maxsize
 
 
 @dataclass
@@ -40,6 +48,7 @@ class ToolRoundVerdict:
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
     current_turn_user_idx: Any
+    tool_call_count: Any = 0
     result: Optional[Dict[str, Any]] = None
 
 
@@ -48,7 +57,7 @@ def run_tool_round(
     conversation_history: Any, api_call_count: Any, effective_task_id: Any, user_message: Any,
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
-    truncated_tool_call_retries: Any, current_turn_user_idx: Any,
+    truncated_tool_call_retries: Any, current_turn_user_idx: Any, tool_call_count: Any = 0,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -62,8 +71,23 @@ def run_tool_round(
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
             truncated_tool_call_retries=truncated_tool_call_retries,
-            current_turn_user_idx=current_turn_user_idx, result=result,
+            current_turn_user_idx=current_turn_user_idx, tool_call_count=tool_call_count,
+            result=result,
         )
+
+    _turn_tool_cap = max_turn_tool_calls(agent)
+    if int(tool_call_count or 0) >= _turn_tool_cap:
+        logger.warning(
+            "Per-turn tool-call cap reached (%s/%s): ending turn for summary",
+            tool_call_count, _turn_tool_cap,
+        )
+        if not agent.quiet_mode:
+            agent._safe_print(
+                f"Tool-call cap reached ({tool_call_count}/{_turn_tool_cap}): requesting summary...",
+                diagnostic=True,
+            )
+        _turn_exit_reason = "budget_exhausted"
+        return _verdict("break")
 
     if not agent.quiet_mode:
         agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
@@ -88,6 +112,15 @@ def run_tool_round(
     assistant_message.tool_calls = agent._deduplicate_tool_calls(
         agent._cap_delegate_task_calls(assistant_message.tool_calls)
     )
+
+    _turn_tool_remaining = max_turn_tool_calls(agent) - int(tool_call_count or 0)
+    if len(assistant_message.tool_calls) > _turn_tool_remaining:
+        logger.warning(
+            "Trimming %d tool call(s) to the per-turn cap (%s)",
+            len(assistant_message.tool_calls) - max(0, _turn_tool_remaining),
+            max_turn_tool_calls(agent),
+        )
+        assistant_message.tool_calls = assistant_message.tool_calls[:max(0, _turn_tool_remaining)]
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.
@@ -152,6 +185,7 @@ def run_tool_round(
             agent.stream_delta_callback(None)
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    tool_call_count += len(assistant_message.tool_calls)
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
     finish_tool_round(agent)

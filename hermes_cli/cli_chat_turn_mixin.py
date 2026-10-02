@@ -236,6 +236,10 @@ class CLIChatTurnMixin:
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
             staged_user_message = stamp_message_timestamp({"role": "user", "content": message})
+            from hermes_maintenance_source import current_admitted_source, with_extraction
+            source = current_admitted_source()
+            if source is not None and isinstance(message, str):
+                staged_user_message["_maintenance_source"] = with_extraction(source, message)
             from tools.process_registry_notifications import TimelineNotification
             if isinstance(message, TimelineNotification):
                 staged_user_message.update(content=str(message), display_kind=message.display_kind,
@@ -569,6 +573,7 @@ class CLIChatTurnMixin:
         # prompt. Only reached in busy_input_mode == "interrupt"; "queue" mode routes
         # Enter straight to _pending_input.
         if pending_message:
+            from hermes_cli.maintenance_input import authored_source
             all_parts = [pending_message]
             while not self._interrupt_queue.empty():
                 try:
@@ -597,14 +602,27 @@ class CLIChatTurnMixin:
                 _cprint(f"\n{t('cli.chat.sending_after_interrupt_multi', count=len(all_parts), preview=preview)}")
             else:
                 _cprint(f"\n{t('cli.chat.sending_after_interrupt', preview=preview)}")
-            self._pending_input.put(payload)
+            if any(authored_source(part) is not None for part in all_parts):
+                for part in all_parts:
+                    self._pending_input.put(part)
+            else:
+                self._pending_input.put(payload)
 
         # A /steer the agent finished before absorbing becomes the next user turn.
         _leftover_steer = turn.result.get("pending_steer") if turn.result else None
         if _leftover_steer:
+            from hermes_cli.maintenance_input import take_steer_inputs
             preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
             _cprint(f"\n{t('cli.chat.delivering_leftover_steer', preview=preview)}")
-            self._pending_input.put(_leftover_steer)
+            resolved_steers = take_steer_inputs(self, _leftover_steer)
+            if resolved_steers:
+                for steer_input in resolved_steers:
+                    self._pending_input.put(steer_input)
+            elif resolved_steers is None:
+                self._pending_input.put(_leftover_steer)
+            else:
+                logging.warning(
+                    "leftover steer has no matching local source identity; dropping it fail-closed")
 
         return response
 

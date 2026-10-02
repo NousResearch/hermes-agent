@@ -349,6 +349,50 @@ def _is_bot_sender(sender: Any) -> bool:
     return getattr(sender, "sender_type", "") in {"bot", "app"}
 
 
+def _attribute_or_empty(value: Any, *names: str) -> str:
+    for name in names:
+        candidate = getattr(value, name, None) if value is not None else None
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return ""
+
+
+def _serialize_feishu_event_structure(
+    *, data: Any, message: Any, sender_id: Any, message_type: str,
+    reply_to_message_id: Optional[str], thread_id: Optional[str],
+) -> str:
+    """Canonical raw message envelope; authored text remains a separate source field."""
+    raw_content = getattr(message, "content", "") or ""
+    try:
+        content = json.loads(raw_content) if raw_content else None
+    except (ValueError, TypeError, AttributeError):
+        content = raw_content
+    sender = getattr(getattr(data, "event", None), "sender", None)
+    envelope = {
+        "message": {
+            "message_id": getattr(message, "message_id", None),
+            "message_type": message_type,
+            "content": content,
+            "chat_id": getattr(message, "chat_id", None),
+            "chat_type": getattr(message, "chat_type", None),
+            "thread_id": thread_id,
+            "parent_id": getattr(message, "parent_id", None),
+            "upper_message_id": getattr(message, "upper_message_id", None),
+            "root_id": getattr(message, "root_id", None),
+            "reply_to_message_id": reply_to_message_id,
+        },
+        "sender": {
+            "sender_type": getattr(sender, "sender_type", None),
+            "sender_id": {
+                "open_id": _attribute_or_empty(sender_id, "open_id"),
+                "user_id": _attribute_or_empty(sender_id, "user_id"),
+                "union_id": _attribute_or_empty(sender_id, "union_id"),
+            },
+        },
+    }
+    return json.dumps(envelope, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
 def _sender_identity(sender: Any) -> frozenset:
     # Take any non-empty id variant — tenant sender_id_type decides which are populated.
     sid = getattr(sender, "sender_id", None)
@@ -1329,6 +1373,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._chat_locks: "collections.OrderedDict[str, asyncio.Lock]" = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._message_quote_author_cache: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -2616,9 +2661,12 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _process_inbound_message(
         self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
+        raw_message_type = str(getattr(message, "message_type", "") or "").strip().lower()
         text, inbound_type, media_urls, media_types, media_text_inlined, mentions = await self._extract_message_content(message)
+        authored_text = text
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
+            authored_text = text
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
         # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped.
@@ -2639,6 +2687,11 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None) or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        reply_to_author_id = reply_to_author_name = None
+        if reply_to_message_id:
+            quote_cache = getattr(self, "_message_quote_author_cache", None)
+            if isinstance(quote_cache, dict):
+                reply_to_author_id, reply_to_author_name = quote_cache.get(reply_to_message_id, (None, None))
         sender_primary = (
             getattr(sender_id, "open_id", None) or getattr(sender_id, "user_id", None)
             or getattr(sender_id, "union_id", None) or "<unknown>"
@@ -2652,10 +2705,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
+        source_chat_type = self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
+            chat_type=source_chat_type,
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
@@ -2668,6 +2722,7 @@ class FeishuAdapter(BasePlatformAdapter):
             message_id=message_id, media_urls=media_urls, media_types=media_types,
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id, reply_to_author_name=reply_to_author_name,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
@@ -2683,6 +2738,25 @@ class FeishuAdapter(BasePlatformAdapter):
             if authored == normalized.text:
                 from hermes_inbound_evidence import mark_authenticated_human
                 mark_authenticated_human(normalized, self)
+        control_kind = {
+            "queue": "explicit_queue", "steer": "explicit_steer",
+            "retry": "retry_previous_input",
+        }.get(normalized.get_command())
+        if (getattr(sender, "sender_type", None) == "user" and raw_message_type in ("text", "post")
+                and not is_bot and (inbound_type != MessageType.COMMAND or control_kind)
+                and authored_text):
+            from hermes_maintenance_source import seal_feishu_text_event
+            structure = _serialize_feishu_event_structure(
+                data=data, message=message, sender_id=sender_id, message_type=raw_message_type,
+                reply_to_message_id=reply_to_message_id, thread_id=thread_id)
+            receipt = seal_feishu_text_event(
+                normalized, self, raw=authored_text, extraction=authored_text, display=text,
+                event_structure=structure, message_type=raw_message_type, thread_id=thread_id,
+                reply_to_message_id=reply_to_message_id,
+                reply_to_author_id=reply_to_author_id, reply_to_text=reply_to_text,
+                control_kind=control_kind)
+            if receipt is not None:
+                normalized._maintenance_feishu_display = text
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
@@ -2982,6 +3056,14 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         existing.text = next_text
+        prior_receipts = getattr(existing, "_maintenance_feishu_receipts", None)
+        added_receipts = getattr(event, "_maintenance_feishu_receipts", None)
+        if isinstance(prior_receipts, tuple) and isinstance(added_receipts, tuple):
+            existing._maintenance_feishu_receipts = prior_receipts + added_receipts
+            existing._maintenance_feishu_display = next_text
+        elif prior_receipts is not None or added_receipts is not None:
+            existing._maintenance_feishu_receipts = ()
+            existing._maintenance_feishu_display = None
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         existing.media_text_inlined.extend(event.media_text_inlined)
@@ -2990,6 +3072,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if event.message_id:
             existing.message_id = event.message_id
             existing.source.message_id = event.message_id
+        existing.source.user_id = event.source.user_id
+        existing.source.user_name = event.source.user_name
+        existing.source.user_id_alt = event.source.user_id_alt
+        existing.source.is_bot = event.source.is_bot
         self._pending_text_batch_counts[key] = next_count
         self._schedule_text_batch_flush(key)
 
@@ -3360,6 +3446,20 @@ class FeishuAdapter(BasePlatformAdapter):
             text = self._extract_text_from_raw_content(
                 msg_type=msg_type, raw_content=raw_content, mentions=parent_mentions,
             )
+            parent_sender = getattr(parent, "sender", None)
+            parent_sender_id = (getattr(parent_sender, "sender_id", None)
+                                or getattr(parent_sender, "id", None))
+            open_id = _attribute_or_empty(parent_sender_id, "open_id")
+            user_id = _attribute_or_empty(parent_sender_id, "user_id")
+            union_id = _attribute_or_empty(parent_sender_id, "union_id")
+            author_id = (parent_sender_id if isinstance(parent_sender_id, str) and parent_sender_id
+                         else user_id or open_id or union_id)
+            author_name = _attribute_or_empty(parent_sender, "name", "sender_name")
+            quote_cache = getattr(self, "_message_quote_author_cache", None)
+            if isinstance(quote_cache, dict):
+                quote_cache[message_id] = (author_id, author_name)
+                while len(quote_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
+                    quote_cache.popitem(last=False)
             self._message_text_cache[message_id] = text
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
                 self._message_text_cache.popitem(last=False)

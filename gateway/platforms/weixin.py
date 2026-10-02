@@ -886,6 +886,32 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return
         elif not self._is_dm_intake_allowed(sender_id):
             return
+        from hermes_maintenance_source import mint_platform_text
+        plain_items = [item for item in item_list if isinstance(item, dict)
+                       and item.get("type") == ITEM_TEXT and not item.get("ref_msg")]
+        raw_texts = []
+        for item in plain_items:
+            raw_text = (item.get("text_item") or {}).get("text")
+            if isinstance(raw_text, str) and raw_text.strip():
+                raw_texts.append(raw_text)
+        if raw_texts:
+            text = "\n".join(raw_texts)
+        receipts = []
+        if raw_texts and message_id:
+            try:
+                structure = json.dumps(item_list, ensure_ascii=False, sort_keys=True,
+                                       separators=(",", ":"), default=str)
+            except (TypeError, ValueError):
+                structure = ""
+            combined_text = "\n".join(raw_texts)
+            receipt = mint_platform_text(
+                adapter=self, authority="weixin-human", receiver=self._account_id,
+                actor=sender_id, chat_id=effective_chat_id, chat_type=chat_type,
+                event_id=message_id, raw=combined_text, extraction=combined_text, display=text,
+                event_structure=structure, message_type="text",
+                input_kind="mixed_items" if len(item_list) > 1 else "text")
+            if receipt is not None:
+                receipts.append(receipt)
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)
@@ -903,6 +929,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
             message_id=message_id or None, media_urls=media_paths, media_types=media_types, timestamp=datetime.now())
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
+        if receipts:
+            event._maintenance_sources = tuple(receipts)
+            event._maintenance_display = event.text
         if event.message_type == MessageType.TEXT:
             self._enqueue_text_event(event)
         else:

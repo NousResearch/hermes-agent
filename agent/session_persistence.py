@@ -248,6 +248,10 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
         admission = current_row_admission()
         if admission is not None:
             row["_authenticated_inbound"] = admission
+        from hermes_maintenance_source import current_admitted_source, with_display
+        source = msg.get("_maintenance_source") or current_admitted_source()
+        if source is not None:
+            row["_maintenance_source"] = with_display(source, row.get("content"))
     return row
 
 
@@ -400,7 +404,7 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
             # The CAS digest / adopted row are local repair bookkeeping, not transcript payload.
             divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "",
                                             [{k: v for k, v in r.items()
-                                              if k not in REPAIR_BOOKKEEPING_FIELDS and k != "_authenticated_inbound"}
+                                              if k not in REPAIR_BOOKKEEPING_FIELDS and k not in ("_authenticated_inbound", "_maintenance_source")}
                                              for r in batch_rows])
         except Exception:
             logger.warning("JSONL divert failed after state.db %s for %s",

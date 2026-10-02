@@ -1492,7 +1492,12 @@ class CLITuiMixin:
         multimodal follow-ups, or a turn that finished in the race). queue → next turn.
         """
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
-        _effective_mode = self.busy_input_mode
+        from hermes_cli.maintenance_input import AuthoredInput, commit_control, remember_steer
+        _requested_mode = self.busy_input_mode
+        _effective_mode = _requested_mode
+        _control_kind = {
+            "queue": "busy_queue", "steer": "busy_steer", "interrupt": "busy_interrupt",
+        }.get(_requested_mode, "busy_queue")
         redirected = False
         if _effective_mode == "steer":
             if images or not text:
@@ -1506,16 +1511,24 @@ class CLITuiMixin:
                     _cprint(f"  {_DIM}{t('cli.tui.steer_failed_queued', error=exc)}{_RST}")
                     accepted = False
                 if accepted:
+                    control = commit_control(self, _control_kind, text)
+                    if control is not None:
+                        remember_steer(self, text, control)
                     preview = text[:80] + ("..." if len(text) > 80 else "")
                     _cprint(f"  {_ACCENT}{t('cli.tui.steered', preview=preview)}{_RST}")
                 else:
                     _effective_mode = "queue"
         if _effective_mode == "queue":
+            control = commit_control(self, _control_kind, text) if text and not images else None
+            payload = AuthoredInput(payload, source=control) if control is not None else payload
             self._pending_input.put(payload)
             preview = text if text else _tn("cli.tui.images_attached_preview", len(images))
             preview = preview[:80] + ('...' if len(preview) > 80 else '')
             _cprint("  " + t("cli.tui.queued_next_turn", preview=preview))
         elif _effective_mode == "interrupt":
+            control = commit_control(self, _control_kind, text) if text and not images else None
+            if control is not None:
+                payload = AuthoredInput(payload, source=control)
             if not images and text:
                 try:
                     if (
@@ -1523,6 +1536,8 @@ class CLITuiMixin:
                         and getattr(self.agent, "_supports_active_turn_redirect", False) is True
                         and hasattr(self.agent, "redirect")):
                         redirected = bool(self.agent.redirect(text))
+                        if redirected and control is not None:
+                            remember_steer(self, text, control)
                 except Exception:
                     redirected = False
             if redirected:
@@ -1534,7 +1549,8 @@ class CLITuiMixin:
                     with open(_hermes_home / "interrupt_debug.log", "a", encoding="utf-8") as _f:
                         _f.write(
                             f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                            f"agent_running={self._agent_running}\n")
+                            f"agent_running={self._agent_running}\n"
+                        )
                 except Exception:
                     pass
         # First-touch onboarding: one-line tip about the /busy knob on the first busy-while-

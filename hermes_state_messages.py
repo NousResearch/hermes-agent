@@ -386,7 +386,7 @@ class SessionMessagesMixin:
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
-        message_uid: Optional[str] = None) -> int:
+        message_uid: Optional[str] = None, _maintenance_source: Any = None) -> int:
         """Append one message; returns the row id and bumps the session counters. ``platform_message_id``:
         the platform's own id. ``api_content``: byte-fidelity sidecar, the exact string sent to the API when
         it differed from ``content``, stored as sent except lone surrogates. ``message_uid``: the id a caller
@@ -405,6 +405,8 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            from hermes_maintenance_source import bind_committed_source
+            bind_committed_source(conn, self.db_path, session_id, msg_id, _maintenance_source)
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
@@ -479,9 +481,12 @@ class SessionMessagesMixin:
             )
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             from hermes_inbound_evidence import bind_committed_row
+            from hermes_maintenance_source import bind_committed_source
             for row in inserted_rows:
                 bind_committed_row(conn, self.db_path, session_id, row.get("_row_id"),
                                    row.get("_authenticated_inbound"))
+                bind_committed_source(conn, self.db_path, session_id, row.get("_row_id"),
+                                      row.get("_maintenance_source"))
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)

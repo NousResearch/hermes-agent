@@ -63,6 +63,9 @@ class CLITuiRuntimeMixin:
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
         from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         from tools.process_registry_notifications import TimelineNotification
+        from hermes_cli.maintenance_input import authored_raw, authored_source
+        authored_raw_input = authored_raw(user_input)
+        authored_reuse = authored_source(user_input)
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
@@ -72,6 +75,8 @@ class CLITuiRuntimeMixin:
         submit_images = []
         if isinstance(user_input, tuple):
             user_input, submit_images = user_input
+
+        raw_authored_input = authored_raw_input or (user_input if isinstance(user_input, str) else None)
 
         if isinstance(user_input, str):
             user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
@@ -122,7 +127,28 @@ class CLITuiRuntimeMixin:
         self._turn_summary_begin()
         self._app.invalidate()
         try:
-            self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
+            from hermes_maintenance_source import (
+                admit_reused_local_source, local_input, mint_local_input)
+            from hermes_constants import get_hermes_home
+            import contextlib
+            original = notification_preview or user_input
+            receiving_session = getattr(self, "session_id", None) or getattr(getattr(self, "agent", None), "session_id", None)
+            source = None
+            if authored_reuse is not None:
+                source = admit_reused_local_source(
+                    authored_reuse, home=get_hermes_home(), session_id=receiving_session)
+                if source is None:
+                    logger.warning("refusing local turn with invalid reused maintenance source")
+                    return
+            elif (isinstance(raw_authored_input, str) and raw_authored_input.strip()
+                  and receiving_session and (authored_raw_input is not None
+                  or not _looks_like_slash_command(raw_authored_input))
+                  and not notification_preview and not is_voice_input and not submit_images):
+                source = mint_local_input(
+                    raw_authored_input, home=get_hermes_home(), session_id=receiving_session)
+            source_scope = local_input(source) if source is not None else contextlib.nullcontext()
+            with source_scope:
+                self.chat(original, images=submit_images or None, voice_input=is_voice_input)
         finally:
             self._tui_after_turn()
 

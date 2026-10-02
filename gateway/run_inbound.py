@@ -210,6 +210,8 @@ class GatewayInboundMixin:
         from gateway.run import _is_slack_ignored_channel
         from hermes_inbound_evidence import reset_admission, admit_authenticated_human
         reset_admission()
+        from hermes_maintenance_source import reset_admitted_source
+        reset_admitted_source()
         source = event.source
         # getattr(self, ...) throughout: bare test runners build GatewayRunner via object.__new__.
         _config = getattr(self, "config", None)
@@ -302,6 +304,52 @@ class GatewayInboundMixin:
             admit_authenticated_human(event, self._intake_adapter_for(source),
                                       self._resolve_profile_home_for_source(source),
                                       self._session_key_for_source(source))
+            from hermes_inbound_evidence import current_row_admission
+            if (source.platform.value == "feishu" and event.get_command() != "retry"
+                    and current_row_admission() is not None):
+                from hermes_maintenance_source import mint_feishu_plain_text
+                event._maintenance_source = mint_feishu_plain_text(
+                    event, self._intake_adapter_for(source),
+                    self._resolve_profile_home_for_source(source), self._session_key_for_source(source))
+                from hermes_maintenance_source import admit_feishu_source
+                admit_feishu_source(event._maintenance_source)
+        if source.platform.value == "feishu":
+            from hermes_maintenance_source import (admit_feishu_source, admit_reused_feishu_source,
+                                                   current_admitted_source, mint_feishu_text)
+            reuse = getattr(event, "_maintenance_source_reuse", None)
+            if reuse is not None:
+                candidate = admit_reused_feishu_source(
+                    reuse, event, self._intake_adapter_for(source),
+                    self._resolve_profile_home_for_source(source),
+                    self._session_key_for_source(source))
+                if candidate is None:
+                    return None
+                event._maintenance_source = candidate
+                admit_feishu_source(candidate)
+            elif (event.get_command() != "retry"
+                  and (current_admitted_source() is None or getattr(event, "reply_to_message_id", None)
+                       or getattr(source, "thread_id", None))):
+                candidate = mint_feishu_text(
+                    event, self._intake_adapter_for(source),
+                    self._resolve_profile_home_for_source(source), self._session_key_for_source(source))
+                if candidate is not None:
+                    event._maintenance_source = candidate
+                    admit_feishu_source(candidate)
+        if source.platform.value in ("qqbot", "weixin"):
+            from hermes_maintenance_source import (admit_platform_source, admit_platform_text,
+                                                   admit_reused_platform_source)
+            adapter = self._intake_adapter_for(source)
+            home = self._resolve_profile_home_for_source(source)
+            key = self._session_key_for_source(source)
+            reuse = getattr(event, "_maintenance_source_reuse", None)
+            if reuse is not None:
+                candidate = admit_reused_platform_source(reuse, event, adapter, home, key)
+                if candidate is None:
+                    return None
+                event._maintenance_source = candidate
+                admit_platform_source(candidate)
+            elif event.get_command() != "retry":
+                event._maintenance_source = admit_platform_text(event, adapter, home, key)
         return event, source, False
 
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:
@@ -423,6 +471,26 @@ class GatewayInboundMixin:
         except Exception:
             return None
         if _pending_clarify is None:
+            # An independently running maintenance worker cannot own an
+            # in-process clarify entry. Hydrate only a host receipt that was
+            # durably committed after the real channel send. Zero or multiple
+            # candidates remain unresolved; never guess or consume the reply.
+            try:
+                from hermes_maintenance_source import host_question_delivery_for_session
+                _home = self._resolve_profile_home_for_source(source)
+                _host_row, _host_candidates = host_question_delivery_for_session(_home, _quick_key)
+                if _host_candidates > 1:
+                    return ""
+                if _host_row is not None:
+                    _binding = json.loads(_host_row["control_binding_json"])
+                    _choices = (json.loads(_host_row["choices_json"])
+                                if _host_row.get("choices_json") else None)
+                    _pending_clarify = _clarify_mod.register_host_delivery(
+                        _host_row["prompt_id"], _quick_key, _host_row["question"],
+                        _choices, _binding)
+            except Exception:
+                return None
+        if _pending_clarify is None:
             return None
         _clarify_has_audio = bool(self._pending_event_audio_paths(event))
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
@@ -440,7 +508,41 @@ class GatewayInboundMixin:
         # they can retry; on timeout the agent unblocks with an empty response.
         if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
             return None
-        _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply)
+        _control_pending, _control_candidates = _clarify_mod.get_pending_control_for_session(_quick_key)
+        _bound_clarify = _pending_clarify.control_binding is not None
+        if _bound_clarify and (_control_pending is not _pending_clarify
+                               or len(_control_candidates) != 1):
+            return _retain("multiple host-bound clarify candidates")
+        _text_outcome, _coerced_reply = _clarify_mod.prepare_text_response(
+            _pending_clarify, _raw_clarify_reply)
+        if _text_outcome == _clarify_mod.TEXT_RESOLVED and _bound_clarify:
+            platform = getattr(getattr(source, "platform", None), "value", None)
+            if platform not in ("feishu", "qqbot", "weixin"):
+                return _retain("bound clarify has no trusted platform source")
+            from hermes_maintenance_source import (admit_platform_source,
+                                                   commit_platform_control_source,
+                                                   derive_platform_control_source,
+                                                   mint_feishu_text)
+            _adapter = self._delivery_adapter_for(source)
+            _home = self._resolve_profile_home_for_source(source)
+            _key = self._session_key_for_source(source)
+            if platform == "feishu":
+                _base = mint_feishu_text(event, _adapter, _home, _key)
+            else:
+                _base = getattr(event, "_maintenance_source", None)
+            _control = derive_platform_control_source(
+                _base, kind="typed_clarify_response", text=_raw_clarify_reply,
+                binding=_pending_clarify.control_binding) if _base is not None else None
+            _session_entry = await self.async_session_store.get_or_create_session(source)
+            if (_control is None or commit_platform_control_source(
+                    _home, _session_entry.session_id, _control) is None):
+                return _retain("typed clarify source unavailable")
+            admit_platform_source(_control)
+            if not _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, _coerced_reply):
+                return _retain("clarify lost resolution race")
+        elif _text_outcome == _clarify_mod.TEXT_RESOLVED:
+            if not _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, _coerced_reply):
+                return _retain("clarify lost resolution race")
         if _text_outcome == _clarify_mod.TEXT_RESOLVED:
             logger.info(
                 "Gateway intercepted clarify text response (session=%s, id=%s)",
@@ -991,9 +1093,21 @@ class GatewayInboundMixin:
     # /queue and /steer on the idle path: no agent is running, so strip the prefix and send the
     # payload as a regular user turn; an empty payload surfaces the usage hint.
     async def _hm_cmd_queue(self, event, source, _quick_key):
+        payload = event.get_command_args().strip()
+        if getattr(getattr(source, "platform", None), "value", None) in ("qqbot", "weixin"):
+            control = (await self._hm_commit_control_source(event, source, "explicit_queue", payload)
+                       if payload else None)
+            if control is None:
+                return True, t("gateway.queue.usage")
         return self._hm_send_payload_as_turn(event, t("gateway.queue.usage"))
 
     async def _hm_cmd_steer(self, event, source, _quick_key):
+        payload = event.get_command_args().strip()
+        if getattr(getattr(source, "platform", None), "value", None) in ("qqbot", "weixin"):
+            control = (await self._hm_commit_control_source(event, source, "explicit_steer", payload)
+                       if payload else None)
+            if control is None:
+                return True, t("gateway.steer.failed", error="control source unavailable")
         return self._hm_send_payload_as_turn(event, t("gateway.steer.usage_idle"))
 
     @staticmethod

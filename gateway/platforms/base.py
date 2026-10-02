@@ -2530,6 +2530,14 @@ class BasePlatformAdapter(ABC):
         else:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
+            prior_sources = getattr(existing, "_maintenance_sources", ())
+            added_sources = getattr(event, "_maintenance_sources", ())
+            if prior_sources and added_sources and isinstance(prior_sources, tuple) and isinstance(added_sources, tuple):
+                existing._maintenance_sources = prior_sources + added_sources
+                existing._maintenance_display = existing.text
+            elif prior_sources or added_sources:
+                existing._maintenance_sources = ()
+                existing._maintenance_display = None
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)

@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import sys
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
@@ -523,6 +523,8 @@ def _run_agent(
     # be reopened before the agent can stamp a new lifecycle boundary.
     session_db = _create_session_db_for_oneshot()
     resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
+    from hermes_state_ids import new_session_id
+    receiving_sid = resume_sid or (new_session_id() if sys.stdin.isatty() else None)
     choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
     # Resolution-time fallback (#81209): a quota-exhausted/expired primary raises AuthError here, before
     # AIAgent (and its mid-session ``fallback_model`` wiring) exists, so walk the chain like the gateway.
@@ -582,7 +584,7 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
-            session_id=resume_sid,
+            session_id=receiving_sid,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             # The resolved provider's request body (a custom entry's extra_body), as `hermes chat` passes it.
@@ -600,7 +602,14 @@ def _run_agent(
         agent.tool_gen_callback = None
 
         aux_before = _auxiliary_usage(session_db, resume_sid) if ledger else {}
-        result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        from hermes_maintenance_source import mint_local_input, local_input
+        from hermes_constants import get_hermes_home
+        receiving_session = getattr(agent, "session_id", None) or receiving_sid
+        source_scope = (local_input(mint_local_input(
+            prompt, home=get_hermes_home(), session_id=receiving_session))
+            if receiving_session and sys.stdin.isatty() else nullcontext())
+        with source_scope:
+            result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         if ledger:
             _attach_auxiliary_usage(result, session_db, aux_before,
                                     fallback_session_id=agent.session_id or resume_sid)

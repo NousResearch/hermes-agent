@@ -107,6 +107,11 @@ def test_committed_binding_survives_thread_hop_and_is_profile_scoped(tmp_path, m
                     proof = read_authenticated_inbound(home, "s1", row_id)
                     assert proof and proof["content"] == event.text and proof["user_id"] == "u1"
                     assert proof["platform_message_id"] == f"m{n}"
+                    from hermes_maintenance_source import pending_sources, read_committed_source
+                    pending = pending_sources(home)
+                    assert len(pending) == 1 + (n == 2)
+                    assert any((proof := read_committed_source(home, sid)) is not None
+                               and proof["message_row_id"] == row_id for sid in pending)
                     db._write_sql("UPDATE messages SET content=? WHERE id=?", ("tampered", row_id))
                     assert read_authenticated_inbound(home, "s1", row_id) is None
                     db._write_sql("UPDATE messages SET content=? WHERE id=?", (event.text, row_id))
@@ -143,6 +148,8 @@ def test_untrusted_or_changed_input_never_attests(tmp_path, case):
                        "hidden": {"display_kind": "internal_notification"}}
             row_id = await ingress._run_in_executor_with_context(lambda: persist_through_runner(db, event, row_change=changes.get(case)))
             assert read_authenticated_inbound(tmp_path / "home", "s1", row_id) is None
+            from hermes_maintenance_source import pending_sources
+            assert pending_sources(tmp_path / "home") == []
         finally:
             reset_admission()
             db.close()
@@ -194,6 +201,43 @@ def test_current_event_lookup_requires_exact_admission_and_commit(tmp_path):
                 assert current_authenticated_inbound(home, 'other') is None
                 assert current_authenticated_inbound(tmp_path / 'other') is None
             assert current_authenticated_inbound(home) is None
+        finally:
+            reset_admission()
+            db.close()
+    asyncio.run(scenario())
+
+
+def test_maintenance_source_rechecks_feishu_session_and_row_bindings(tmp_path):
+    from hermes_maintenance_source import pending_sources, read_committed_source
+    async def scenario():
+        home = tmp_path / 'binding'
+        db = store(home)
+        try:
+            adapter, event = await incoming()
+            ingress = Ingress(home, adapter)
+            assert await ingress._hm_admit_event(event)
+            row_id = await ingress._run_in_executor_with_context(persist_through_runner, db, event)
+            source_id = pending_sources(home)[0]
+            assert read_committed_source(home, source_id)
+            for table, column, bad, original in (
+                ('sessions', 'source', 'cli', 'feishu'),
+                ('sessions', 'user_id', 'other', 'u1'),
+                ('sessions', 'chat_id', 'other', 'c1'),
+                ('sessions', 'chat_type', 'group', 'dm'),
+                ('messages', 'platform_message_id', 'other', event.message_id),
+                ('messages', 'display_kind', 'internal_notification', None),
+                ('messages', '_compressed_summary', 1, 0),
+            ):
+                key = 'id=?'
+                target = 's1' if table == 'sessions' else row_id
+                db._write_sql(f'UPDATE {table} SET {column}=? WHERE {key}', (bad, target))
+                assert read_committed_source(home, source_id) is None, (table, column)
+                db._write_sql(f'UPDATE {table} SET {column}=? WHERE {key}', (original, target))
+                assert read_committed_source(home, source_id)
+            db._write_sql('UPDATE messages SET active=0 WHERE id=?', (row_id,))
+            assert read_committed_source(home, source_id)
+            db._write_sql('DELETE FROM messages WHERE id=?', (row_id,))
+            assert read_committed_source(home, source_id)
         finally:
             reset_admission()
             db.close()

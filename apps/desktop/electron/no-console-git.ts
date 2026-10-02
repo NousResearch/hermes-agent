@@ -306,7 +306,7 @@ export function execGit(
     env: options.env,
     // Timed commands own a POSIX group so a promisor fetch cannot outlive
     // the git process. On Windows taskkill follows the Python host's tree.
-    detached: Boolean(options.timeoutMs) && process.platform !== 'win32',
+    detached: (Boolean(options.timeoutMs) || options.maxBufferBytes !== undefined) && process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -401,7 +401,7 @@ export function execGit(
     child.stdout?.on('data', chunk => append(chunk, true))
     child.stderr?.on('data', chunk => append(chunk, false))
 
-    if (timer) {
+    if (timer || options.maxBufferBytes !== undefined) {
       timedChildren.add(child)
       child.once('close', () => timedChildren.delete(child))
     }

@@ -242,7 +242,7 @@ test('bounded git output preserves its prefix and reaps the process tree', async
   try {
     const script = tree.args[0]
     fs.appendFileSync(script, `setTimeout(() => process.stdout.write('x'.repeat(8192)), 500);`)
-    const running = execGit(process.execPath, tree.args, { timeoutMs: 5000, maxBufferBytes: 1024 })
+    const running = execGit(process.execPath, tree.args, { maxBufferBytes: 1024 })
     const failed = running.catch(error => error)
     const port = await tree.port()
     const error = await failed

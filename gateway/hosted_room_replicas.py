@@ -261,14 +261,29 @@ def _replica_read_envelope_locked(conn: sqlite3.Connection, room_id: str) -> boo
     return count <= limits.MAX_EVENTS_PER_ROOM + limits.CONTROL_EVENT_COUNT_RESERVE and largest <= MAX_LOG_PAGE_BYTES
 
 
-def _load_replica_locked(conn: sqlite3.Connection, room_id: str):
-    """Preflight metadata before SELECT*/decode; quota failure retains the copy."""
+def _load_replica_header_locked(conn: sqlite3.Connection, room_id: str):
+    """Bounded identity/coverage metadata, also usable for exact authorized retirement."""
     bounded = conn.execute(
         f"SELECT ({_replica_header_bounds_sql()}) FROM hosted_room_replicas WHERE room_id=?", (room_id,)).fetchone()
     if bounded is None:
         return None
     if not bounded[0]:
         raise ReplicaError("stored replica metadata exceeds read bounds; history is preserved")
+    row = conn.execute(_SELECT_REPLICA, (room_id,)).fetchone()
+    # The physical bound allows every valid UTF-8 character; apply the existing
+    # logical character limits only after the bounded fetch.
+    if (len(row["room_id"]) > MAX_ROOM_ID_CHARS or len(row["name"]) > MAX_ROOM_NAME_CHARS
+            or len(row["authority_gateway_id"]) > MAX_ACTOR_ID_CHARS
+            or len(row["quarantine_reason"] or "") > 256):
+        raise ReplicaError("stored replica metadata exceeds read bounds; history is preserved")
+    return row
+
+
+def _load_replica_locked(conn: sqlite3.Connection, room_id: str):
+    """Preflight metadata before SELECT*/decode; quota failure retains the copy."""
+    row = _load_replica_header_locked(conn, room_id)
+    if row is None:
+        return None
     if not _replica_read_envelope_locked(conn, room_id):
         raise ReplicaCapacityError("stored replica exceeds current read capacity; history is preserved")
     used = conn.execute("""SELECT
@@ -277,13 +292,6 @@ def _load_replica_locked(conn: sqlite3.Connection, room_id: str):
     from gateway import hosted_rooms as limits
     if used > min(limits.MAX_GATEWAY_EVENT_BYTES, MAX_REPLICA_EVENT_BYTES):
         raise ReplicaCapacityError("stored replica exceeds current capacity; history is preserved")
-    row = conn.execute(_SELECT_REPLICA, (room_id,)).fetchone()
-    # The physical bound allows every valid UTF-8 character; apply the existing
-    # logical character limits only after the bounded fetch.
-    if (len(row["room_id"]) > MAX_ROOM_ID_CHARS or len(row["name"]) > MAX_ROOM_NAME_CHARS
-            or len(row["authority_gateway_id"]) > MAX_ACTOR_ID_CHARS
-            or len(row["quarantine_reason"] or "") > 256):
-        raise ReplicaError("stored replica metadata exceeds read bounds; history is preserved")
     return row
 
 

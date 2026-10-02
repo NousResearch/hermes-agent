@@ -1,5 +1,6 @@
 """Copy retirement on real SQLite: no cleanup authority is ever inferred, and retired copies stay retired."""
 
+import base64
 import json
 import sqlite3
 from contextlib import closing, contextmanager
@@ -259,6 +260,82 @@ def test_a_quarantined_copy_stays_unreclaimable_after_retirement(pair):
         assert conn.execute("SELECT COUNT(*) FROM hosted_room_replica_events").fetchone()[0] == 1
 
 
+@pytest.mark.parametrize("pressure", ["bytes", "count", "page"])
+@pytest.mark.parametrize("quarantined", [False, True])
+def test_exact_retirement_remains_available_for_held_history(pair, monkeypatch, pressure, quarantined):
+    entry = enrolled(pair)
+    copied_prefix(pair, count=3)
+    if quarantined:
+        with sqlite3.connect(pair[1]) as conn:
+            conn.execute("UPDATE hosted_room_replicas SET quarantine_reason='duplicate_event_id',quarantined_at=1")
+    disband(pair[0])
+    outgoing = notice(pair[0], entry)
+    with sqlite3.connect(pair[1]) as conn:
+        before = conn.execute("SELECT * FROM hosted_room_replica_events ORDER BY seq").fetchall()
+    if pressure == "bytes":
+        monkeypatch.setattr(rooms, "MAX_GATEWAY_EVENT_BYTES", 1)
+    elif pressure == "count":
+        monkeypatch.setattr(rooms, "MAX_EVENTS_PER_ROOM", 1)
+        monkeypatch.setattr(rooms, "CONTROL_EVENT_COUNT_RESERVE", 0)
+    else:
+        monkeypatch.setattr(replicas, "MAX_LOG_PAGE_BYTES", 1)
+    with pytest.raises(replicas.ReplicaCapacityError, match="preserved"):
+        replicas.copy_state(pair[1], room_id="room")
+    with rooms._transaction(pair[1], immediate=True) as conn:
+        assert _prune_disbanded_replicas_locked(conn, now=10**12, max_replica_event_bytes=0) == 0
+        assert [tuple(row) for row in conn.execute("SELECT * FROM hosted_room_replica_events ORDER BY seq")] == before
+        assert conn.execute("SELECT quarantine_reason FROM hosted_room_replicas").fetchone()[0] == (
+            "duplicate_event_id" if quarantined else None)
+    if quarantined:
+        with pytest.raises(retirement.RetirementConflictError):
+            retire(pair[1], outgoing)
+        with sqlite3.connect(pair[1]) as conn:
+            assert conn.execute("SELECT * FROM hosted_room_replica_events ORDER BY seq").fetchall() == before
+            assert conn.execute(f"SELECT COUNT(*) FROM {retirement.RETIREMENT_TABLE}").fetchone()[0] == 0
+        return
+    receipt = retire(pair[1], outgoing)
+    assert (receipt["stored_seq"], receipt["source_latest_seq"]) == (3, 3)
+    assert retire(pair[1], outgoing) == receipt
+    with rooms._transaction(pair[1], immediate=True) as conn:
+        assert _prune_disbanded_replicas_locked(conn, now=None, max_replica_event_bytes=0) == 1
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_replica_events").fetchone()[0] == 0
+        assert conn.execute("SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id='room'").fetchone()[0] == "replica"
+    with pytest.raises(replicas.ReplicaHistoryExpiredError):
+        replicas.copy_state(pair[1], room_id="room")
+    assert retire(pair[1], outgoing) == receipt
+    with pytest.raises(retirement.RetirementConflictError):
+        enroll(pair[1], entry)
+
+
+@pytest.mark.parametrize("column", ["name", "authority_epoch"])
+def test_retirement_rejects_unbounded_header_before_fetch(pair, monkeypatch, column):
+    entry = enrolled(pair)
+    copied_prefix(pair)
+    disband(pair[0])
+    outgoing = notice(pair[0], entry)
+    malformed = "a\0" + "x" * 4096
+    with sqlite3.connect(pair[1]) as conn:
+        conn.execute(f"UPDATE hosted_room_replicas SET {column}=?", (malformed,))
+    transaction = retirement._transaction
+
+    @contextmanager
+    def bounded_transaction(path):
+        with transaction(path) as conn:
+            def bounded_row(cursor, values):
+                assert not any(isinstance(value, str) and len(value) > 2048 for value in values), "unbounded fetch"
+                return sqlite3.Row(cursor, values)
+            conn.row_factory = bounded_row
+            yield conn
+
+    monkeypatch.setattr(retirement, "_transaction", bounded_transaction)
+    with pytest.raises(retirement.RetirementConflictError, match="metadata"):
+        retire(pair[1], outgoing)
+    with sqlite3.connect(pair[1]) as conn:
+        assert conn.execute(f"SELECT {column} FROM hosted_room_replicas").fetchone()[0] == malformed
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_replica_events").fetchone()[0] == 1
+        assert conn.execute(f"SELECT COUNT(*) FROM {retirement.RETIREMENT_TABLE}").fetchone()[0] == 0
+
+
 def test_one_receipt_supersedes_only_that_copys_earlier_obligations(pair):
     first = enrolled(pair)
     second = prepare(pair[0], enrollment_id="replacement", replace_enrollment_id=first["enrollment_id"])
@@ -292,7 +369,9 @@ def test_an_invalid_capability_never_takes_the_writer(pair, monkeypatch):
     disband(pair[0])
     outgoing = notice(pair[0], entry)
     monkeypatch.setattr(retirement, "_transaction", lambda _db: pytest.fail("unauthorized write transaction"))
-    wrong = outgoing.value[:-1] + ("A" if outgoing.value[-1] != "A" else "B")
+    signature = base64.urlsafe_b64decode(outgoing.value.split(".", 1)[1] + "==")
+    changed = bytes([signature[0] ^ 1]) + signature[1:]
+    wrong = "ed25519-v2." + base64.urlsafe_b64encode(changed).decode("ascii").rstrip("=")
     with pytest.raises(retirement.RetirementAuthorizationError):
         retirement.retire_copy(pair[1], payload=outgoing.payload(), value=wrong, local_gateway_id=TARGET)
 

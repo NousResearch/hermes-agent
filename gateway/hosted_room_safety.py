@@ -754,17 +754,28 @@ def _prune_disbanded_replicas_locked(
     # or an old writer committed new history since the last replica read.
     _audit_existing_replicas_locked(conn)
     canonical = "(disbanded_at IS NOT NULL AND last_seq=latest_seq)"
-    eligible, terminal_at = canonical, "disbanded_at"
+    eligible, terminal_at, authorized_retirement = canonical, "disbanded_at", "0"
     if table_exists(conn, RETIREMENT_TABLE):
         retired = f"""SELECT retired_at FROM {RETIREMENT_TABLE} AS retirement
             WHERE retirement.room_id=hosted_room_replicas.room_id
               AND retirement.authority_gateway_id=hosted_room_replicas.authority_gateway_id
               AND retirement.authority_epoch=hosted_room_replicas.authority_epoch"""
-        eligible = f"({canonical} OR EXISTS ({retired}))"
+        authorized_retirement = f"EXISTS ({retired})"
+        eligible = f"({canonical} OR {authorized_retirement})"
         terminal_at = f"CASE WHEN {canonical} THEN disbanded_at ELSE ({retired}) END"
     eligible += """ AND quarantine_reason IS NULL AND NOT EXISTS (
         SELECT 1 FROM hosted_room_quarantine WHERE hosted_room_quarantine.room_id=hosted_room_replicas.room_id)"""
     eligible += f" AND ({_replica_header_bounds_sql()})"
+
+    def reclaimable(room_id: str) -> bool:
+        # A verified owner notice authorizes releasing this exact retained copy
+        # without requiring its opaque history to fit today's read envelope.
+        # Automatic terminal pruning still requires bounded validation, and the
+        # common SQL eligibility excludes genuine quarantine in both cases.
+        retired = conn.execute(
+            f"SELECT ({authorized_retirement}) FROM hosted_room_replicas WHERE room_id=?", (room_id,)).fetchone()
+        return bool(retired and retired[0]) or _replica_read_envelope_locked(conn, room_id)
+
     candidates: set[str] = set()
     if now is not None:
         cutoff = now - limits.DISBANDED_REPLICA_RETENTION_SECONDS
@@ -786,7 +797,7 @@ def _prune_disbanded_replicas_locked(
                      ORDER BY ({terminal_at}) ASC, room_id ASC"""
             ).fetchall():
                 room_id = str(row["room_id"])
-                if not _replica_read_envelope_locked(conn, room_id):
+                if not reclaimable(room_id):
                     continue
                 candidates.add(room_id)
                 retained_bytes -= int(row["event_bytes"])
@@ -802,13 +813,13 @@ def _prune_disbanded_replicas_locked(
                      ORDER BY ({terminal_at}) ASC, room_id ASC"""
             ).fetchall():
                 room_id = str(row["room_id"])
-                if not _replica_read_envelope_locked(conn, room_id):
+                if not reclaimable(room_id):
                     continue
                 candidates.add(room_id)
                 retained_rooms -= 1
                 if retained_rooms <= max_replica_rooms:
                     break
-    candidates = {room_id for room_id in candidates if _replica_read_envelope_locked(conn, room_id)}
+    candidates = {room_id for room_id in candidates if reclaimable(room_id)}
     if not candidates:
         return 0
     placeholders = ",".join("?" for _ in candidates)

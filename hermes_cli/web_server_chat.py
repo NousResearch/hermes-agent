@@ -483,14 +483,14 @@ def _resolve_chat_argv(
             # loaded from the launch profile's .env or external secret sources are
             # profile residue, not exports.
             from agent.secret_scope import load_env_file
-            from hermes_cli.env_loader import get_secret_source_owned_names
+            from hermes_cli.env_loader import get_secret_source_owned_names, launch_dotenv_keys
 
             with _hermes_home_scope(authority.home):
                 raw_launch_terminal = read_raw_config().get("terminal")
             launch_owned = terminal_config_owned_env_vars(raw_launch_terminal)
             if isinstance(raw_launch_terminal, dict) and "home_mode" in raw_launch_terminal:
                 launch_owned.add("TERMINAL_HOME_MODE")
-            launch_dotenv_owned = set(load_env_file(authority.home / ".env"))
+            launch_dotenv_owned = set(load_env_file(authority.home / ".env")) | set(launch_dotenv_keys())
             launch_external_owned = set(get_secret_source_owned_names(authority.home))
             restorable_terminal = set(TERMINAL_CONFIG_ENV_MAP.values()) | {
                 "TERMINAL_HOME_MODE"

@@ -243,7 +243,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             continue
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
-    _SECRET_SOURCE_OWNED_NAMES_BY_HOME[home_key] = frozenset(report.provenance)
+    previously_owned = _SECRET_SOURCE_OWNED_NAMES_BY_HOME.get(home_key, frozenset())
+    _SECRET_SOURCE_OWNED_NAMES_BY_HOME[home_key] = frozenset(
+        set(previously_owned).union(report.provenance)
+    )
     _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
     return dict(values)
 
@@ -645,6 +648,15 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         _SECRET_SOURCE_WRITES_BY_HOME[home_key] = kept
     else:
         _SECRET_SOURCE_WRITES_BY_HOME.pop(home_key, None)
+    # The same revoked names no longer belong to this home's source boundary.
+    # Otherwise a later genuine operator TERMINAL_* export is suppressed.
+    revoked = set(writes) - set(kept)
+    if revoked:
+        remaining_owned = _SECRET_SOURCE_OWNED_NAMES_BY_HOME.get(home_key, frozenset()) - revoked
+        if remaining_owned:
+            _SECRET_SOURCE_OWNED_NAMES_BY_HOME[home_key] = remaining_owned
+        else:
+            _SECRET_SOURCE_OWNED_NAMES_BY_HOME.pop(home_key, None)
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:

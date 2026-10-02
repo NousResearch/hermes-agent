@@ -940,6 +940,32 @@ class TestProfileScopedChatPty:
         assert env.get("TERMINAL_DOCKER_ENV") != marker
         assert env["TERMINAL_SSH_USER"] == "operator-user"
 
+    def test_chat_argv_does_not_restore_removed_launch_dotenv_key(
+        self, isolated_profiles, monkeypatch
+    ):
+        """A key loaded at boot remains launch-owned after its .env line is removed."""
+        from hermes_cli import env_loader
+        from tui_gateway import launch_profile_policy
+
+        launch_home = isolated_profiles["default"]
+        (launch_home / ".env").write_text("", encoding="utf-8")
+        monkeypatch.setattr(launch_profile_policy, "_authority", None)
+        monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"TERMINAL_DOCKER_ENV"})
+        monkeypatch.setenv("TERMINAL_DOCKER_ENV", "old-launch-secret")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert env.get("TERMINAL_DOCKER_ENV") != "old-launch-secret"
+        assert env["TERMINAL_SSH_USER"] == "operator-user"
+
     def test_chat_argv_scrubs_skipped_external_credentials_but_keeps_global_export(
         self, isolated_profiles, monkeypatch
     ):

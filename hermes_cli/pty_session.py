@@ -230,6 +230,35 @@ class PtySessionRegistry:
                     await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
                     await session.close()
 
+    async def release_detached_in_profile(self, profile: str, *, keep_prefix: str) -> int:
+        """Close detached keep-alive PTYs another browser state abandoned in ``profile``.
+
+        A tab that starts a NEW chat rotates its attach token, and a closed tab's
+        token dies with its sessionStorage — either way the old PTY's key starts
+        with a raw token no socket will ever present again, so it can never be
+        reattached, yet its child keeps holding the active-session lease and
+        refuses an explicit resume of that chat for the whole TTL (#131172).
+        Keys under ``keep_prefix`` (this tab's own token) are spared: the
+        same-token fresh→resume transition is ``close_other_sessions``' job, and
+        a detached own-token PTY is this tab's reconnect window. So is any
+        session a live socket is still viewing — that PTY belongs to a real
+        other window and keeps its lease.
+        """
+        marker = f"\0{profile}\0"
+        async with self._attach_lock:
+            keys = [
+                key for key, s in self._sessions.items()
+                if not key.startswith(keep_prefix) and marker in key and not s.attached
+            ]
+            sessions = [self._sessions.pop(key) for key in keys if key in self._sessions]
+        # Close outside the registry lock: a close can wait out its helpers'
+        # SIGHUP grace, and this lock serializes every new chat. The resume
+        # path still awaits each close before spawning, because the child's
+        # active-session lease is only released once its close finishes.
+        for session in sessions:
+            await session.close()
+        return len(sessions)
+
     def detach(self, key: str, ws) -> None:
         s = self._sessions.get(key)
         if s is not None:

@@ -3,7 +3,7 @@ repo: https://github.com/moorcheh-ai/memanto
 subdir: integrations/hermes-agents/hermes_memanto
 sha: 21554fe8ac40685a45f222022b08e58459760b7d
 version: "0.1.1"
-description: "Memanto memory agent — typed long-term memory (remember/recall/answer) with auto-recall, turn capture, and RAG answers. Disclosure — conversation turns, recall queries and Hermes memory writes are sent to Moorcheh cloud (api.moorcheh.ai) under a per-profile agent namespace; requires MOORCHEH_API_KEY; settings live in $HERMES_HOME/memanto.json."
+description: "Memanto memory agent — typed long-term memory (remember/recall/answer) with auto-recall, turn capture, and RAG answers. Disclosure — each user turn (as a recall query), completed user+assistant turns, Hermes memory writes and memanto_answer questions are sent to Moorcheh cloud (api.moorcheh.ai) under a per-profile agent namespace by default; requires MOORCHEH_API_KEY; settings in $HERMES_HOME/memanto.json."
 maintainer: moorcheh-ai
 tier: community
 category: memory

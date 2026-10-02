@@ -331,7 +331,9 @@ THREAT_PATTERNS = [
     (r'xmrig|stratum\+tcp|monero|coinhive|cryptonight', "crypto_mining", "critical", "mining", "cryptocurrency mining reference"),
     (r'hashrate|nonce.*difficulty', "mining_indicators", "medium", "mining", "possible cryptocurrency mining indicators"),
     # ── Supply chain: curl/wget pipe to shell ──
-    (rf'curl\s+[^\n]*\|\s*{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
+    # A runnable curl pipeline needs an operand; prose like ``curl | sh install`` is a
+    # non-executable install-method label, not a download-and-execute instruction (#118155).
+    (rf'curl\s+(?=[^\s|])[^\n]*\|\s*{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
     (rf'wget\s+[^\n]*-O\s*-\s*\|\s*{_SHELL_NAMES_RE}',
      "wget_pipe_shell", "critical", "supply_chain", "wget piped to shell (download-and-execute)"),
     (r'curl\s+[^\n]*\|\s*python', "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),

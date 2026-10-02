@@ -99,10 +99,20 @@ class PluginEviction:
             disabled = plugins.get("disabled")
             if disabled is None:
                 disabled = plugins["disabled"] = []
+            enabled = plugins.get("enabled")
             memory = config.get("memory")
             for name in names:
                 if name not in disabled:
                     disabled.append(name)
+                # The two lists are one selection, so a key in both is a state no reader
+                # agrees on: the deny-list renders it disabled while the allow-list still
+                # counts it. Every other writer (_activate_key) purges the opposing list in
+                # the same edit; eviction has to as well, or the only way back is a manual
+                # re-enable. The bare leaf goes with it so a legacy spelling cannot keep
+                # vetoing the canonical key (same rule as _discard_key_and_leaf).
+                if enabled is not None:
+                    enabled[:] = [kept for kept in enabled
+                                  if kept != name and kept != name.rsplit("/", 1)[-1]]
                 # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
                 if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
                     memory["provider"] = ""

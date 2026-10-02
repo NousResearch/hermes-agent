@@ -7,6 +7,15 @@ exposed over stdio MCP; codex registers it via ``~/.codex/config.toml
 
 from __future__ import annotations
 
+# First, like every entry point: stdio, import-path and environ-lifetime fixes (hermes_bootstrap).
+# Only as ``python -m``: codex_runtime & co. import this module for a constant, and the
+# bootstrap's scratch/TMPDIR exports must not fire in those library importers.
+if __name__ == "__main__":
+    try:
+        import hermes_bootstrap  # noqa: F401
+    except ModuleNotFoundError:
+        pass  # a partial ``hermes update`` can leave the bootstrap unregistered
+
 import inspect
 import json
 import logging
@@ -51,7 +60,8 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "vision_analyze", "image_generate", "skill_view", "skills_list", "text_to_speech",
     # Kanban handoff tools: stateless (read HERMES_KANBAN_TASK, write kanban.db).
     # Without them a codex-runtime worker can't report completion and hangs.
-    "kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes", "kanban_comment",
+    "kanban_complete", "kanban_block", "kanban_schedule", "kanban_request_review",
+    "kanban_request_changes", "kanban_comment",
     "kanban_heartbeat", "kanban_show", "kanban_list",
     # Orchestrator-only (the kanban tool gates them on HERMES_KANBAN_TASK unset).
     "kanban_create", "kanban_unblock", "kanban_link",

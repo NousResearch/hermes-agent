@@ -11,7 +11,9 @@ from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from tools.registry import tool_error
+
+from hermes_platform import declaration
+from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
@@ -23,6 +25,8 @@ from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
+
+declaration.on_change = invalidate_check_fn_cache
 
 _NEEDS_REAUTH_MSG = (
     "MCP server '{s}' requires re-authentication. Run `hermes mcp login {s}` (or delete the tokens file under "
@@ -107,6 +111,22 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     server task to rebuild (probing a dead transport would re-arm the breaker forever)."""
     from tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
     not_connected = tool_error(f"MCP server '{server_name}' is not connected")
+    from tools.mcp_liveness import unavailable_details
+    details = unavailable_details(server_name)
+    if details is not None:
+        decl, current, sentence = details
+        not_connected = tool_error(
+            sentence,
+            server=server_name,
+            state=current.state,
+            app={
+                "name": decl.name,
+                "version": current.availability.version,
+                "path": current.availability.path,
+            },
+            user_action=current.user_action,
+            retry=current.retry,
+        )
     server = _discovery._get_connected_server_for_call(server_name)
     wait = min(5.0, float(tool_timeout or 5.0))
     if server and (server.session or _loop._wait_for_server_session_ready(server, timeout=wait)):
@@ -457,15 +477,8 @@ def _capped_structured_content(result):
     """``structuredContent`` (or None); over the hard cap it degrades to the head+tail
     truncated JSON string (multi-MB JSON flood guard)."""
     # Hard-cap pathological payloads before they propagate (#56059); ordinary large results pass untouched
-    # to the spillover layer.
-    # content and structuredContent are ALTERNATIVES — never both forwarded (ported from
-    # MoonshotAI/kimi-code#3234). Spec-following servers already render their data into content (the
-    # verbatim dual-emit SHOULD, or a faithful human reorganisation), so forwarding both sent the same
-    # information to the model twice. content wins whenever it rendered anything usable; there is no
-    # reliable signal that the structured payload is richer than what the server put in content (semantic
-    # equality misses faithful reorganisations, size ratios misjudge both directions), so no heuristic is
-    # attempted. structuredContent fills in only when the content blocks rendered effectively empty, which
-    # keeps structuredContent-only servers working. Server-level `_meta` is also surfaced (ported from
+    # to the spillover layer. Arbitration against ``content`` lives in _render_call_tool_result.
+    # Server-level `_meta` is also surfaced (ported from
     # MoonshotAI/kimi-code#2596): servers return namespaced metadata there (validated contracts,
     # browser-handoff payloads, ...) that was previously invisible to the agent. Protocol-reserved keys are
     # dropped first (kimi-code#2600) — per the MCP spec's key-name rules a prefix is reserved when a
@@ -481,20 +494,46 @@ def _capped_structured_content(result):
     return _truncate_mcp_text_result(as_json) if len(as_json) > _MCP_HARD_RESULT_CAP_CHARS else structured
 
 
+def _content_dual_emits_structured(result, structured) -> bool:
+    """True when some text block is ``structuredContent`` serialized as JSON — the spec's
+    backwards-compat dual-emit ("a tool that returns structured content SHOULD also return the
+    serialized JSON in a TextContent block"). Compared as parsed JSON so whitespace, indent, key
+    order and ``ensure_ascii`` escaping do not matter; checked per block because the spec puts the
+    copy in *a* block and a server may add a status line next to it. Deterministic equality, not a
+    richness heuristic: a prose summary or a reorganised rendering fails it and keeps its
+    ``structuredContent`` (#115430)."""
+    for block in (result.content or []):
+        text = getattr(block, "text", None)
+        if not text:
+            continue
+        try:
+            if json.loads(text) == structured:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 def _render_call_tool_result(result, server_name: str) -> str:
-    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are
-    ALTERNATIVES, never both forwarded (kimi-code#3234): spec-following servers already render
-    their data into content, so forwarding both sent it twice. content wins whenever it rendered
-    anything usable (no richness heuristic is attempted — none is reliable); structuredContent
-    fills in only when the blocks rendered effectively empty, keeping structuredContent-only
-    servers working. ``_meta`` minus reserved keys is always surfaced."""
+    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
+    forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
+    (the spec's backwards-compat dual-emit; compared as parsed JSON) is dropped, because that copy
+    would reach the model twice (kimi-code#3234). Any other usable text — a status line, a prose
+    summary, a reorganised rendering — keeps ``structuredContent`` alongside it (#115430): the
+    earlier "content wins whenever it rendered anything" rule irreversibly lost servers whose
+    data lived only in ``structuredContent``, while the residual duplicate for a faithful
+    reorganisation costs only tokens, so data-preservation wins. No richness or size heuristic is
+    used. ``structuredContent`` fills ``result`` when the blocks rendered effectively empty
+    (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
         return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
     text_result, usable_parts = _render_content_blocks(result, server_name)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
-    if structured is not None and usable_parts > 0:
-        structured = None  # drop notices do not count as usable content
+    # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
+    # usable text it would be a second multi-MB copy — the flood #56059 caps — so it only fills an empty result.
+    if structured is not None and usable_parts > 0 and (isinstance(structured, str) or _content_dual_emits_structured(result, structured)):
+        structured = None
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
@@ -648,13 +687,36 @@ _make_get_prompt_handler = _make_utility_handler(
 
 
 def _make_check_fn(server_name: str):
-    """Connection-alive check; lazy (schema-cache registered) servers count as available."""
+    """Connection-alive check; lazy (schema-cache registered) servers count as available.
+
+    When the server's owner registered an application declaration (`requires.app`), the
+    application must also be present on this host, or the tools are not offered even while a
+    stale connection lingers. With no declaration registered the check is the connection check
+    alone. Returns a plain bool: the registry caches ``bool(fn())``.
+    """
     from tools.mcp_tool_scope import _resolve_server_key
 
-    def _check() -> bool:
+    def _connected() -> bool:
         with _core._lock:
             key = _resolve_server_key(server_name)
             server = _core._servers.get(key)
             return ((server is not None and (server.session is not None or server._is_recycled_stdio()))
                     or key in _core._lazy_server_configs)
+
+    def _check() -> bool:
+        if not _connected():
+            return False
+        return _declared_app_offerable(server_name)
     return _check
+
+
+def _declared_app_offerable(server_name: str) -> bool:
+    """True unless the registered declaration is unavailable on this host. Called only for a
+    connected server, so a reachable loopback port outranks the interactive-session rule."""
+    from hermes_platform import declaration
+    from hermes_platform.resolver.availability import availability
+
+    decl = declaration.lookup(server_name)
+    if decl is None:
+        return True
+    return bool(availability(decl).offerable)

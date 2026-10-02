@@ -9,7 +9,7 @@ Every platform plugin under ``plugins/platforms/<name>/`` ships its own
     sys.path.insert(0, "plugins/platforms/teams")
     from adapter import TeamsAdapter
 
-…then whichever collects first in an xdist worker wins
+…then whichever collects first in a shared process wins
 ``sys.modules["adapter"]``, and the other raises ``ImportError`` at
 collection time. The fallout cascades across unrelated tests sharing that
 worker because ``sys.path`` is still polluted.

@@ -159,3 +159,13 @@ test('the dedicated compress action becomes a fenced canonical mutation and sett
   expect(await protocol.settle('session.title', { session_id: 's' }, untouched, fakeRequest)).toBe(untouched)
   expect(calls).toHaveLength(1)
 })
+
+test('group plumbing reaches the canonical GUI contract without dropping profile-follow semantics', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  const options = { title: 'Group: owned · thread', hidden: true, room_plumbing: true, follow_profile_config: true }
+  const request = protocol.prepare('session.create', options)
+  expect(request).toMatchObject({ ...options, source: 'gui', request_id: expect.any(String) })
+  expect(protocol.prepare('session.create', options)).toEqual(request)
+  expect(protocol.prepare('session.create', { ...options, room_plumbing: false }).request_id).not.toBe(request.request_id)
+  expect(() => protocol.prepare('session.create', { ...options, ignore_rules: true })).toThrow('ignore_rules')
+})

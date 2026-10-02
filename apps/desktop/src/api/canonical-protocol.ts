@@ -126,14 +126,14 @@ export class CanonicalDesktopProtocol {
     }
 
     if (method === 'session.create') {
-      const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config'])
+      const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config', 'room_plumbing'])
       const unsupported = Object.keys(params).filter(key => !allowed.has(key) && !(key === 'fast' && params[key] === false))
 
       if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
 
       // The socket is bound to a profile already; only a sibling the host multiplexes rides as `profile`.
       const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-        ['request_id', 'cwd', 'model', 'toolsets', 'title', 'hidden'].includes(key) || (key === 'profile' && value && value !== 'default')))
+        ['request_id', 'cwd', 'model', 'toolsets', 'title', 'hidden', 'room_plumbing', 'follow_profile_config'].includes(key) || (key === 'profile' && value && value !== 'default')))
 
       const key = JSON.stringify(result)
       const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()

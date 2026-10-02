@@ -36,12 +36,12 @@ def desktop_userdata_dir() -> Path:
 
 def source_built_gui_artifacts(hermes_home: Path) -> "list[Path]":
     """GUI build artifacts produced by ``hermes desktop`` inside the checkout (same ``hermes-agent/`` layout
-    install.sh uses). The Python agent runs from source + venv and never needs the Electron build output or
-    node_modules (the workspace-root node_modules only carries Electron, ~200MB)."""
+    install.sh uses). The workspace-root node_modules is shared with the TUI, dashboard and other
+    workspaces, so only the desktop workspace's own dependencies belong to GUI removal."""
     agent_root = hermes_home / "hermes-agent"
     desktop_dir = agent_root / "apps" / "desktop"
     return [desktop_dir / "dist", desktop_dir / "release", desktop_dir / "node_modules",
-            agent_root / "node_modules", hermes_home / "desktop-build-stamp.json"]
+            hermes_home / "desktop-build-stamp.json"]
 
 
 def desktop_install_record() -> Path:

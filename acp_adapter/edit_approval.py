@@ -12,8 +12,9 @@ import json
 import logging
 import re
 import tempfile
+import threading
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
 from typing import Any, Callable
@@ -42,10 +43,23 @@ class EditApprovalState:
 
     allow_for_session: bool = False
     generation: int = 0
+    _lock: Any = field(default_factory=threading.Lock, repr=False)
+
+    def snapshot(self) -> tuple[bool, int]:
+        with self._lock:
+            return self.allow_for_session, self.generation
+
+    def grant(self, generation: int) -> bool:
+        with self._lock:
+            if self.generation != generation:
+                return False
+            self.allow_for_session = True
+            return True
 
     def revoke(self) -> None:
-        self.allow_for_session = False
-        self.generation += 1
+        with self._lock:
+            self.allow_for_session = False
+            self.generation += 1
 
 
 EditApprovalRequester = Callable[[EditProposal], bool]
@@ -244,7 +258,8 @@ def make_acp_edit_approval_requester(
                 logger.debug("ACP edit auto-approval policy check failed", exc_info=True)
 
         can_grant_session = should_auto_approve_edit(proposal, AUTO_APPROVE_SESSION)
-        if session_state.allow_for_session and can_grant_session:
+        allowed, generation = session_state.snapshot()
+        if allowed and can_grant_session:
             return True
         options = [PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit")]
         if can_grant_session:
@@ -252,7 +267,6 @@ def make_acp_edit_approval_requester(
             options.append(PermissionOption(option_id="allow_session", kind="allow_always",
                                             name="Allow edits for session"))
         options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
-        generation = session_state.generation
         response, _timed_out = await_permission(
             request_permission_fn, loop, session_id, tool_call=build_acp_edit_tool_call(proposal),
             options=options,
@@ -263,10 +277,7 @@ def make_acp_edit_approval_requester(
             return False
         option_id = getattr(outcome, "option_id", None)
         if option_id == "allow_session" and can_grant_session:
-            if session_state.generation != generation:
-                return False
-            session_state.allow_for_session = True
-            return True
+            return session_state.grant(generation)
         return option_id == "allow_once"
 
     return _requester

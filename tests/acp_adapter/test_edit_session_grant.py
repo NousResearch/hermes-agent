@@ -140,6 +140,44 @@ def test_real_file_dispatch_reuses_consent(tmp_path):
     asyncio.run(run())
 
 
+def test_restored_session_does_not_inherit_runtime_consent(tmp_path):
+    from acp_adapter.session import SessionManager
+    from hermes_state import SessionDB
+    db = SessionDB(tmp_path / 'sessions.db')
+    try:
+        factory = lambda: SimpleNamespace(model='fixture', provider=None, base_url=None, api_mode=None)
+        first = SessionManager(agent_factory=factory, db=db)
+        state = first.create_session(cwd=str(tmp_path))
+        assert state.edit_approval_state.grant(state.edit_approval_state.snapshot()[1])
+        state.history.append({'role': 'user', 'content': 'fixture'})
+        first.save_session(state.session_id)
+        restored = SessionManager(agent_factory=factory, db=db).get_session(state.session_id)
+        assert restored is not None
+        assert not restored.edit_approval_state.snapshot()[0]
+    finally:
+        db.close()
+
+
+def test_consent_generation_is_checked_under_the_same_lock_as_revocation():
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from acp_adapter.edit_approval import EditApprovalState
+    state = EditApprovalState()
+    generation = state.snapshot()[1]
+    started = threading.Event()
+    def grant():
+        started.set()
+        return state.grant(generation)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with state._lock:
+            pending = pool.submit(grant)
+            assert started.wait(2)
+            # Reproduce a revocation ordered before a waiting grant.
+            state.generation += 1
+        assert not pending.result(timeout=2)
+    assert not state.snapshot()[0]
+
+
 def test_existing_policy_and_failing_policy_preserve_prompt_behavior(tmp_path):
     from unittest.mock import AsyncMock
     async def run():

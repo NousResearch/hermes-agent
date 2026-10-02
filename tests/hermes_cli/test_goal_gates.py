@@ -1,6 +1,7 @@
 """Tests for /goal quality gates (GoalGate, run_gate, GoalManager gate flow)."""
 
 import json
+import shlex
 import subprocess
 import sys
 from unittest.mock import patch
@@ -257,7 +258,12 @@ def backend_and_session(tmp_path, monkeypatch):
     backend, session = tmp_path / "backend", tmp_path / "session"
     for folder, code in ((backend, 0), (session, 1)):
         folder.mkdir()
-        (folder / "check.sh").write_text(f"pwd\nexit {code}\n", encoding="utf-8")
+        # Shell pwd may use MSYS paths on Windows; the gate must report the
+        # native directory identity that its process actually received.
+        python = shlex.quote(sys.executable.replace("\\", "/"))
+        (folder / "check.sh").write_text(
+            f"{python} -c 'import os; print(os.getcwd())'\nexit {code}\n", encoding="utf-8"
+        )
     monkeypatch.chdir(backend)
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
 

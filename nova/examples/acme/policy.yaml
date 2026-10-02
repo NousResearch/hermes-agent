@@ -13,8 +13,10 @@ actions:
     requires_approval: true
 
   send_external_email:
-    description: Send email to someone outside the company
-    tools: [email_send]
+    description: Send a message to someone outside the company
+    # The runtime's outbound message tool. Its arguments are `action` (send, list, react),
+    # `target` (platform:recipient) and `message` — the content.
+    tools: [send_message]
     # Not required tenant-wide; an individual agent may still require it.
     requires_approval: false
 
@@ -34,8 +36,8 @@ permissions:
     tools: [erp_stock_query]
 
   contact_suppliers:
-    description: Email suppliers about stock and deliveries
-    tools: [email_send]
+    description: Message suppliers about stock and deliveries
+    tools: [send_message]
 
 # Tools every agent keeps regardless of its permissions. Without these an allow-list
 # would produce agents that run work and never close it.

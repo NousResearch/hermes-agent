@@ -180,10 +180,8 @@ def test_a_tool_may_perform_only_one_action(tmp_path):
     shutil.copytree(EXAMPLE_BUNDLE, root)
     path = root / "policy.yaml"
     path.write_text(
-        path.read_text(encoding="utf-8").replace(
-            "  send_external_email:\n    description: Send email to someone outside the company\n    tools: [email_send]",
-            "  send_external_email:\n    description: Send email\n    tools: [crm_refund]",
-        ),
+        # The first `send_message` is send_external_email's: make it claim refunds' tool.
+        path.read_text(encoding="utf-8").replace("    tools: [send_message]\n", "    tools: [crm_refund]\n", 1),
         encoding="utf-8",
     )
     with pytest.raises(SpecError, match="one tool performs one business action"):

@@ -457,6 +457,28 @@ capabilities:
     live_validated: true
     priority: none
 
+  - id: policy.approval_triage
+    name: Risk-gated approvals (triage)
+    category: governance
+    description: >-
+      An approval-gated call is triaged by a decision provider's answers to configured
+      questions, combined by a rule in code. Shadow by default (records what it would have
+      done, a person still decides); enforce lets a call run only for a graduated action on
+      the model it graduated on. Every failure escalates. Tested with scripted providers;
+      the provider client was checked live, but no tenant has run triage in a worker yet.
+    hermes_source: nova/runtime/hermes/enforcement.py
+    hermes_symbol: _triage, _autonomous_intent, post_tool_call
+    runtime_enforcement: tested
+    nova_status: partial
+    customer_visible: true
+    customer_editable: true
+    required_role: admin
+    tenant_safe: true
+    audit_required: true
+    core_changes_required: false
+    live_validated: false
+    priority: p1
+
   - id: policy.tool_allowlist
     name: Positive tool scoping
     category: governance

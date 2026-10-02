@@ -48,6 +48,7 @@ function HeldCallView({ task }: { task: Task }) {
         {held.action ? <> ({held.action})</> : null}
       </p>
       {held.reason ? <p className="text-ink-muted text-[12.5px]">{held.reason}</p> : null}
+      {held.triage ? <p className="text-ink-faint text-[12px]">{held.triage}</p> : null}
       <details className="text-[12px]" onClick={(e) => e.stopPropagation()}>
         <summary className="text-ink-faint cursor-pointer">Exact call</summary>
         <pre className="glass-solid text-ink mt-1 max-h-64 overflow-auto rounded-lg p-2 font-mono text-[11.5px] whitespace-pre-wrap break-all">

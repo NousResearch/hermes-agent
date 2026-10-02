@@ -68,6 +68,10 @@ PLUGIN_MANIFEST = Path(__file__).parent / "plugin_manifest.yaml"
 PLUGIN_ENTRY = Path(__file__).parent / "enforcement.py"
 #: The pure decision module, copied beside it so the same code decides in both places.
 PLUGIN_DECIDE = Path(__file__).parents[2] / "policy" / "decide.py"
+#: The triage rule and the provider's wire client (earned autonomy), copied beside it for
+#: the same reason. Both are standard library only; see ``nova/autonomy``.
+PLUGIN_TRIAGE = Path(__file__).parents[2] / "autonomy" / "triage.py"
+PLUGIN_TRIAGE_WIRE = Path(__file__).parents[2] / "autonomy" / "providers" / "typesafe.py"
 
 #: The plugin directory names, which are also the keys the runtime enables them by.
 POLICY_PLUGIN_NAME = "nova-policy"
@@ -722,6 +726,8 @@ def plan_writes(
         writes[plugin_dir / "plugin.yaml"] = PLUGIN_MANIFEST.read_text(encoding="utf-8")
         writes[plugin_dir / "__init__.py"] = PLUGIN_ENTRY.read_text(encoding="utf-8")
         writes[plugin_dir / "_decide.py"] = PLUGIN_DECIDE.read_text(encoding="utf-8")
+        writes[plugin_dir / "_triage.py"] = PLUGIN_TRIAGE.read_text(encoding="utf-8")
+        writes[plugin_dir / "_triage_typesafe.py"] = PLUGIN_TRIAGE_WIRE.read_text(encoding="utf-8")
 
     # The knowledge plugin is likewise installed ONLY for an agent that was granted a
     # corpus. An agent with no grant keeps no knowledge tool and no configuration file, so

@@ -94,6 +94,8 @@ def view(record: dict[str, Any]) -> dict[str, Any]:
         "agent_id": record.get("agent_id", ""),
         "call": summarize_call(str(record.get("tool", "")), record.get("args")),
         "arguments": arguments,
+        # What risk triage made of the call, when the action is triaged. Empty otherwise.
+        "triage": record.get("triage", ""),
     }
 
 

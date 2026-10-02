@@ -109,7 +109,7 @@ def test_no_plugin_is_installed_without_a_declared_policy(tmp_path, runtime, aud
         ("ticket_create", None),         # granted by create_ticket
         ("kanban_complete", None),       # baseline — a worker must report its outcome
         ("crm_refund", "approve"),       # tenant-wide approval
-        ("email_send", "approve"),       # agent-specific approval
+        ("send_message", "approve"),     # agent-specific approval
         ("terminal", "block"),           # explicitly denied
         ("erp_stock_query", "block"),    # another agent's permission
         ("totally_unknown", "block"),    # unlisted, default deny
@@ -139,7 +139,7 @@ def test_escalation_rule_key_names_the_action_and_the_call(applied):
     """
     plugin = load_installed_plugin(applied, "customer-support", "nova_p3")
     refund = plugin.pre_tool_call(tool_name="crm_refund", args={}, tool_call_id="c1")
-    email = plugin.pre_tool_call(tool_name="email_send", args={}, tool_call_id="c2")
+    email = plugin.pre_tool_call(tool_name="send_message", args={}, tool_call_id="c2")
     assert refund["rule_key"] == "nova:refund:c1"
     assert email["rule_key"].startswith("nova:send_external_email:")
 

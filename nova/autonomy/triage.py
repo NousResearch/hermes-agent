@@ -24,7 +24,10 @@ confidence to meet. Choice and score carry one, and must meet their ``min_confid
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import re
 import threading
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
@@ -158,3 +161,139 @@ def within_deadline(fn: Callable[[], Any], seconds: float) -> Optional[Any]:
     if worker.is_alive():
         return None
     return box.get("value")
+
+
+# -- what is sent ---------------------------------------------------------------------
+#
+# ``metadata_only`` (the default) sends the tool, the business action, the platform a
+# message goes to, and size signals per argument — never a value. ``full_args`` sends the
+# arguments themselves. In both, anything that looks like a credential is replaced before
+# it is put in the state, and so is any value of this process's own secret-named
+# environment variables (the agent's ``.env``), whatever it looks like.
+
+METADATA_ONLY, FULL_ARGS = "metadata_only", "full_args"
+REDACTED = "[redacted]"
+
+_SECRET_PATTERNS = [re.compile(p) for p in (
+    r"sk-[A-Za-z0-9_-]{16,}",                       # OpenAI-style and many others
+    r"sk-ant-[A-Za-z0-9_-]{16,}",
+    r"gh[pousr]_[A-Za-z0-9]{20,}",                  # GitHub
+    r"xox[abposr]-[A-Za-z0-9-]{10,}",               # Slack
+    r"AKIA[0-9A-Z]{16}",                            # AWS access key id
+    r"AIza[0-9A-Za-z_-]{30,}",                      # Google API key
+    r"apikey_[A-Za-z0-9_]{20,}",
+    r"\b\d{8,10}:[A-Za-z0-9_-]{30,}\b",             # Telegram bot token
+    r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",  # JWT
+    r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+    r"(?i)\b(?:password|passwd|secret|api[_-]?key|token)\s*[:=]\s*\S+",
+)]
+_SECRET_KEY_NAME = re.compile(r"(?i)(pass(word)?|secret|token|api[_-]?key|credential|private[_-]?key|auth)")
+_SECRET_ENV_NAME = re.compile(r"(?i)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)")
+
+
+def secret_values(environ: Mapping[str, str]) -> List[str]:
+    """Values of secret-named variables, long enough that replacing them cannot erase prose."""
+    return sorted({v for k, v in environ.items() if _SECRET_ENV_NAME.search(k) and len(v or "") >= 8},
+                  key=len, reverse=True)
+
+
+def redact(value: Any, secrets: Sequence[str] = ()) -> Any:
+    """``value`` with every credential-shaped string, and every known secret, replaced."""
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret and secret in value:
+                value = value.replace(secret, REDACTED)
+        for pattern in _SECRET_PATTERNS:
+            value = pattern.sub(REDACTED, value)
+        return value
+    if isinstance(value, Mapping):
+        return {str(k): (REDACTED if _SECRET_KEY_NAME.search(str(k)) and isinstance(v, (str, int, float))
+                         else redact(v, secrets)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact(v, secrets) for v in value]
+    return value
+
+
+def _shape(value: Any) -> Dict[str, Any]:
+    """Size signals for one argument, with nothing of its content."""
+    if isinstance(value, str):
+        return {"type": "text", "chars": len(value), "lines": value.count("\n") + 1 if value else 0,
+                "links": len(re.findall(r"https?://", value)),
+                "email_addresses": len(re.findall(r"[^\s@]+@[^\s@]+\.[^\s@]+", value)),
+                "digits": sum(ch.isdigit() for ch in value),
+                "attachments": value.count("MEDIA:")}
+    if isinstance(value, bool):
+        return {"type": "boolean"}
+    if isinstance(value, (int, float)):
+        return {"type": "number"}
+    if isinstance(value, Mapping):
+        return {"type": "object", "keys": len(value)}
+    if isinstance(value, (list, tuple)):
+        return {"type": "list", "items": len(value)}
+    return {"type": "other"}
+
+
+def _platform(args: Mapping[str, Any]) -> str:
+    """The channel a message goes to, from a ``platform:recipient`` target. Never the recipient."""
+    target = args.get("target")
+    if isinstance(target, str) and ":" in target:
+        head = target.split(":", 1)[0].strip().lower()
+        if re.match(r"^[a-z][a-z0-9_-]{0,31}$", head):
+            return head
+    return ""
+
+
+def build_state(tool: str, action: str, args: Any, data: str, secrets: Sequence[str] = ()) -> Dict[str, Any]:
+    """What the provider is shown about one call. Unknown ``data`` is treated as metadata only."""
+    args = args if isinstance(args, Mapping) else {}
+    state: Dict[str, Any] = {"tool": tool, "business_action": action, "data": METADATA_ONLY}
+    platform = _platform(args)
+    if platform:
+        state["platform"] = platform
+    if data == FULL_ARGS:
+        state["data"] = FULL_ARGS
+        state["arguments"] = redact(dict(args), secrets)
+    else:
+        state["arguments"] = {str(k): _shape(v) for k, v in sorted(args.items(), key=lambda kv: str(kv[0]))}
+    return state
+
+
+def digest(value: Any) -> str:
+    """A stable fingerprint of ``value``: what the audit log keeps instead of content."""
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def safe_answers(questions: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """The fake provider's answers: the safest possible answer to each question."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for q in questions:
+        if q.get("type") == NOUL:
+            out[q["id"]] = {"type": NOUL, "p": 0.0}
+        elif q.get("type") == CHOICE:
+            pick = list(q["allowed"])[0]
+            out[q["id"]] = {"type": CHOICE, "choice": pick, "confidence": 1.0,
+                            "probabilities": {o: (1.0 if o == pick else 0.0) for o in q["options"]}}
+        elif q.get("type") == SCORE:
+            out[q["id"]] = {"type": SCORE, "confidence": 1.0,
+                            "probabilities": [1.0] + [0.0] * (len(q["levels"]) - 1)}
+    return out
+
+
+def explain(result: Mapping[str, Any], *, mode: str, proceed: bool) -> str:
+    """One line for the person deciding: what triage made of this call, and why."""
+    failed = list(result.get("failed") or ())
+    if mode == "shadow":
+        head = ("Triage (shadow) would have let this through: every check passed"
+                if result.get("verdict") == AUTO_OK and not failed
+                else "Triage (shadow) would have asked a person anyway")
+    elif proceed:
+        head = "Triage let this through: every check passed"
+    else:
+        head = "Triage asked a person"
+    if failed:
+        reasons = "; ".join(f"{f.get('id') or 'triage'}: {f.get('why')}" for f in failed[:4])
+        more = f" (+{len(failed) - 4} more)" if len(failed) > 4 else ""
+        return f"{head} — {reasons}{more}."
+    return head + "."

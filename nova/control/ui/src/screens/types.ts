@@ -46,6 +46,8 @@ export type Task = {
 export type HeldCall = {
   request_id: string; tool: string; action: string; reason: string;
   requested_at: string; agent_id: string; call: string; arguments: string;
+  /** What risk triage made of the call, when the action is triaged. */
+  triage?: string;
 };
 export type ModelError = {
   category: string; headline: string; remedy: string; owner: string; raw: string;

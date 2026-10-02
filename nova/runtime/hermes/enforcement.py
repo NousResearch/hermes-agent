@@ -52,6 +52,26 @@ except ImportError:  # in-tree layout, for tests that import this module directl
         decide_paths,
     )
 
+# Risk triage for approval-gated calls (nova/autonomy): the rule, and the provider's wire
+# client, each copied beside this file like ``_decide``. Optional in a way the decision is
+# not: a profile installed without them (the gateway's default profile, or an install from
+# before triage) never triages, which is the behaviour every escalation had before — it
+# goes to a person. Their absence can only ever mean "ask", never "allow".
+try:
+    from . import _triage as _triage_rule
+except ImportError:
+    try:
+        from nova.autonomy import triage as _triage_rule
+    except ImportError:  # pragma: no cover — neither layout present
+        _triage_rule = None
+try:
+    from . import _triage_typesafe as _triage_wire
+except ImportError:
+    try:
+        from nova.autonomy.providers import typesafe as _triage_wire
+    except ImportError:  # pragma: no cover
+        _triage_wire = None
+
 #: Written beside the profile's configuration by the runtime adapter.
 POLICY_FILENAME = "nova-policy.json"
 
@@ -422,8 +442,17 @@ def _hold_task(task_id: str, reason: str) -> bool:
         return False
 
 
+def _answered(task_id: str, tool_name: str, args: Dict[str, Any]) -> bool:
+    """Whether a person has already been asked about exactly this call in this task."""
+    try:
+        record = read_request(approvals_root(_plugin_home()), task_id, request_id(task_id, tool_name, args))
+    except Exception:  # noqa: BLE001 — unreadable: triage and the hold below decide
+        return False
+    return (record or {}).get("status") in (PENDING, APPROVED, REFUSED)
+
+
 def _approval_in_task(policy: Dict[str, Any], decision: Decision, tool_name: str,
-                      args: Dict[str, Any], task_id: str) -> Optional[Dict[str, Any]]:
+                      args: Dict[str, Any], task_id: str, *, triage_note: str = "") -> Optional[Dict[str, Any]]:
     """The directive for an escalated call in task work. None lets it run.
 
     Fails closed like everything else here: a store that cannot be read or written means
@@ -453,6 +482,7 @@ def _approval_in_task(policy: Dict[str, Any], decision: Decision, tool_name: str
             "args": json.loads(canonical_args(args)),
             "requested_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "run_id": os.environ.get("HERMES_KANBAN_RUN_ID", ""),
+            **({"triage": triage_note} if triage_note else {}),
         })
     held = _hold_task(task_id, f"{APPROVAL_BLOCK_PREFIX} [{rid}]: {decision.reason} — "
                                f"{summarize_call(tool_name, args)}")
@@ -471,6 +501,160 @@ def _hold_message(rid: str, held: bool) -> str:
             f"kanban_block with the reason \"{APPROVAL_BLOCK_PREFIX} [{rid}]\" and stop. {then}")
 
 
+# -- risk triage ----------------------------------------------------------------
+#
+# Runs only for a call ``decide()`` already sent to a person, and only for an action the
+# compiled policy configures. The most it can do is let that one call run, and only when
+# every condition holds: the tenant chose ``enforce``, the action is ``graduated``, the
+# provider is a real one and the model answering is the one the action graduated on, and
+# every question passed. Anything else — including any failure here — is the existing
+# escalation, with what triage found added to the message the person reads.
+
+
+def _ask_typesafe(state: Dict[str, Any], questions: list, timeout: float):
+    if _triage_wire is None:
+        raise RuntimeError("the provider client is not installed")
+    normalized, version, _usage, latency = _triage_wire.request_answers(
+        os.environ.get(_triage_wire.API_KEY_ENV, ""), state, questions, timeout=timeout)
+    return normalized, version, latency
+
+
+def _ask_fake(state: Dict[str, Any], questions: list, timeout: float):
+    return _triage_rule.safe_answers(questions), "fake-1", 0
+
+
+#: Provider name -> ``ask(state, questions, timeout) -> (answers, model_version, latency_ms)``.
+#: Tests replace an entry to script answers; nothing else does.
+_PROVIDERS: Dict[str, Any] = {"typesafe": _ask_typesafe, "fake": _ask_fake}
+
+#: Calls this process let through without a person, awaiting their outcome from
+#: ``post_tool_call``: tool_call_id (or tool name) -> the intent's correlation id.
+_AUTONOMOUS: Dict[str, str] = {}
+
+
+def _triage(policy: Dict[str, Any], decision: Decision, tool_name: str, args: Dict[str, Any],
+            call: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    """``{"proceed", "note"}`` for an escalated call, or None when triage does not apply."""
+    config = policy.get("autonomy")
+    if not isinstance(config, dict) or _triage_rule is None:
+        return None
+    action = (config.get("actions") or {}).get(decision.action)
+    provider = config.get("provider")
+    if not isinstance(action, dict) or provider in (None, "", "none"):
+        return None
+    mode = config.get("mode") if config.get("mode") in ("shadow", "enforce") else "shadow"
+    started = time.monotonic()
+    detail: Dict[str, Any] = {"tool": tool_name, "action": decision.action, "mode": mode,
+                              "action_state": action.get("state", "supervised"), "provider": provider,
+                              "data": config.get("data", "metadata_only")}
+    try:
+        questions = list(action.get("questions") or [])
+        timeout = min(max(float(config.get("timeout_seconds") or 2.0), 0.2), 10.0)
+        state = _triage_rule.build_state(tool_name, decision.action, args, detail["data"],
+                                         _triage_rule.secret_values(os.environ))
+        ask = _PROVIDERS.get(provider)
+        failure: Dict[str, str] = {}
+
+        def run():
+            try:
+                return ask(state, questions, timeout)
+            except Exception as exc:  # noqa: BLE001 — recorded, and means "no answer"
+                failure["reason"] = str(getattr(exc, "reason", "") or type(exc).__name__)
+                return None
+
+        answered = _triage_rule.within_deadline(run, timeout) if ask else None
+        normalized, version, latency = answered if answered else (None, "", int((time.monotonic() - started) * 1000))
+        result = _triage_rule.combine(questions, normalized)
+        if answered is None:
+            result["failed"] = [{"id": "", "why": "provider_unavailable" + (
+                f" ({failure['reason']})" if failure.get("reason") else
+                "" if ask else f" (unknown provider {provider!r})")}]
+        graduated = action.get("state") == "graduated"
+        expected = str(action.get("model_version") or "")
+        if graduated and result["verdict"] == _triage_rule.AUTO_OK and version != expected:
+            result = {"verdict": _triage_rule.ESCALATE, "failed": [{"id": "model_version", "why": (
+                f"answered by model {version or '(none)'!r}, but this action graduated on {expected!r}")}]}
+        proceed = (mode == "enforce" and graduated and provider != "fake"
+                   and result["verdict"] == _triage_rule.AUTO_OK and not result["failed"])
+        note = _triage_rule.explain(result, mode=mode, proceed=proceed)
+        detail.update({
+            "verdict": result["verdict"], "failed": result["failed"], "proceed": proceed,
+            "answers": normalized or {}, "model_version": version, "latency_ms": latency,
+            # Fingerprints, never content: what was sent and what was asked about.
+            "state_digest": _triage_rule.digest(state), "args_digest": _triage_rule.digest(args),
+        })
+    except Exception as exc:  # noqa: BLE001 — triage that cannot run is "ask a person"
+        proceed, note = False, f"Triage could not run ({type(exc).__name__}); a person decides."
+        detail.update({"verdict": "escalate", "proceed": False,
+                       "failed": [{"id": "", "why": f"triage error ({type(exc).__name__})"}]})
+    _write_event(policy, "policy.triage", {**detail, **{k: v for k, v in call.items() if v}})
+    return {"proceed": proceed, "note": note}
+
+
+def _autonomous_intent(policy: Dict[str, Any], decision: Decision, tool_name: str,
+                       args: Dict[str, Any], call: Dict[str, str]) -> None:
+    """The write-ahead record of a call that runs with no person: intent now, outcome later.
+
+    ``post_tool_call`` writes ``committed`` or ``failed``. A worker that dies in between
+    leaves the intent open, which is how a reviewer finds an action whose outcome is unknown.
+    """
+    correlation = "autonomous-" + (call.get("tool_call_id") or uuid.uuid4().hex)
+    _AUTONOMOUS[call.get("tool_call_id") or tool_name] = correlation
+    _write_event(policy, "policy.autonomous_action", {
+        "tool": tool_name, "action": decision.action, "args_digest": _triage_rule.digest(args),
+        **{k: v for k, v in call.items() if v},
+    }, phase="intent", correlation_id=correlation)
+
+
+def post_tool_call(tool_name: str = "", tool_call_id: str = "", status: str = "",
+                   error_type: str = "", **_: Any) -> None:
+    """Close the write-ahead record of a call triage let through. Nothing else."""
+    try:
+        correlation = _AUTONOMOUS.pop(str(tool_call_id or ""), None) or _AUTONOMOUS.pop(tool_name, None)
+        if correlation is None:
+            return
+        policy = _load_policy() or {}
+        ok = str(status or "ok") == "ok"
+        _write_event(policy, "policy.autonomous_action",
+                     {"tool": tool_name, "status": status or "ok", "tool_call_id": tool_call_id,
+                      **({"error_type": error_type} if error_type else {})},
+                     phase="committed" if ok else "failed", correlation_id=correlation)
+    except Exception:  # noqa: BLE001 — an observer must never break the worker
+        pass
+
+
+def _write_event(policy: Dict[str, Any], kind: str, detail: Dict[str, Any], *,
+                 phase: str = "record", correlation_id: str = "") -> None:
+    """Append one event to the tenant's audit log, in the control plane's format."""
+    target = (policy or {}).get("audit_log")
+    if not target:
+        return
+    event = {
+        "event_id": uuid.uuid4().hex,
+        "correlation_id": correlation_id or os.environ.get("HERMES_KANBAN_TASK", "") or "runtime",
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "kind": kind,
+        "phase": phase,
+        "actor": "nova-policy-plugin",
+        "tenant_id": (policy or {}).get("tenant_id", ""),
+        "model_visible": False,
+        "subject": (policy or {}).get("agent_id", ""),
+        "digest": "",
+        "detail": detail,
+        "error": "",
+    }
+    try:
+        line = (json.dumps(event, sort_keys=True, separators=(",", ":"), default=str) + "\n").encode("utf-8")
+        handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(handle, line)
+        finally:
+            os.close(handle)
+    except OSError:
+        # A governance record we cannot write must not stop the decision being enforced.
+        pass
+
+
 def _record(policy: Dict[str, Any], decision, tool_name: str, call: Optional[Dict[str, str]] = None) -> None:
     """Append a governance record for a refusal or an escalation.
 
@@ -478,23 +662,7 @@ def _record(policy: Dict[str, Any], decision, tool_name: str, call: Optional[Dic
     them would bury the events a reviewer is actually looking for. What was refused, and
     what needed a human, is the governance question.
     """
-    target = (policy or {}).get("audit_log")
-    if not target:
-        return
-    event = {
-        "event_id": uuid.uuid4().hex,
-        "correlation_id": os.environ.get("HERMES_KANBAN_TASK", "") or "runtime",
-        "ts": datetime.now(timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z"),
-        "kind": "policy.decision",
-        "phase": "record",
-        "actor": "nova-policy-plugin",
-        "tenant_id": (policy or {}).get("tenant_id", ""),
-        "model_visible": False,
-        "subject": (policy or {}).get("agent_id", ""),
-        "digest": "",
-        "detail": {
+    _write_event(policy, "policy.decision", {
             "tool": tool_name,
             "effect": decision.effect,
             "reason": decision.reason,
@@ -504,19 +672,7 @@ def _record(policy: Dict[str, Any], decision, tool_name: str, call: Optional[Dic
             # The runtime's ids for this call, so a person's answer to an escalation
             # (the approval hooks carry the same ids) can be joined back to it.
             **{key: value for key, value in (call or {}).items() if value},
-        },
-        "error": "",
-    }
-    try:
-        line = (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-        handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            os.write(handle, line)
-        finally:
-            os.close(handle)
-    except OSError:
-        # A governance record we cannot write must not stop the decision being enforced.
-        pass
+    })
 
 
 def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
@@ -580,13 +736,21 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
     if decision.effect == ALLOW:
         return None
 
-    _record(policy or {}, decision, tool_name, call)
-
     if decision.effect == REQUIRE_APPROVAL:
         task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        # A call a person already answered on the board is not triaged again: their answer
+        # stands, and asking the provider would only spend a call to second-guess it.
+        triage = None
+        if not (task_id and _answered(task_id, tool_name, args or {})):
+            triage = _triage(policy, decision, tool_name, args or {}, call)
+        if triage and triage["proceed"]:
+            _autonomous_intent(policy, decision, tool_name, args or {}, call)
+            return None
+        note = (triage or {}).get("note", "")
+        _record(policy or {}, decision, tool_name, call)
         if task_id:
             try:
-                return _approval_in_task(policy, decision, tool_name, args or {}, task_id)
+                return _approval_in_task(policy, decision, tool_name, args or {}, task_id, triage_note=note)
             except Exception as exc:  # noqa: BLE001 — an approval we cannot track is refused
                 return {"action": "block", "message": (
                     f"BLOCKED by NOVA policy: {decision.reason}, and the approval request could "
@@ -594,7 +758,7 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
                 )}
         return {
             "action": "approve",
-            "message": decision.reason,
+            "message": f"{decision.reason}\n{note}" if note else decision.reason,
             # One key per call. The runtime's prompt offers "always", which saves the key to
             # the profile's allowlist and from then on lets every call carrying it through
             # before any prompt or hook — so a per-action key turned one click into a NOVA
@@ -602,6 +766,8 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
             # "once", "session" and "always" all approve this call and nothing else.
             "rule_key": f"nova:{decision.action or tool_name}:{tool_call_id or uuid.uuid4().hex}",
         }
+
+    _record(policy or {}, decision, tool_name, call)
 
     if decision.effect == DENY:
         return {"action": "block", "message": f"BLOCKED by NOVA policy: {decision.reason}"}
@@ -627,6 +793,7 @@ def register(ctx: Any) -> None:
     registration itself.
     """
     ctx.register_hook("pre_tool_call", pre_tool_call)
+    ctx.register_hook("post_tool_call", post_tool_call)
     ctx.register_hook("on_session_start", on_session_start)
 
 

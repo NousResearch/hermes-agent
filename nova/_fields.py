@@ -93,6 +93,24 @@ class Doc:
         self._seen.add(key)
         return self._data.get(key, default)
 
+    def value(self, key: str) -> Any:
+        """A raw value, consumed, for a field whose shape the caller validates itself."""
+        return self._raw(key)
+
+    def number(self, key: str, *, default: Optional[float] = None,
+               minimum: Optional[float] = None, maximum: Optional[float] = None) -> Optional[float]:
+        """A number, whole or decimal, optionally within ``[minimum, maximum]``."""
+        value = self._raw(key)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+            raise self._fail(key, f"must be a number, got {type(value).__name__}")
+        if minimum is not None and value < minimum:
+            raise self._fail(key, f"must be at least {minimum:g}, got {value}")
+        if maximum is not None and value > maximum:
+            raise self._fail(key, f"must be at most {maximum:g}, got {value}")
+        return float(value)
+
     def has(self, key: str) -> bool:
         return key in self._data
 

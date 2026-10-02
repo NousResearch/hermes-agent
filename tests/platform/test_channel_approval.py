@@ -146,8 +146,8 @@ def test_the_variant_escalates_where_the_base_allows(example):
     ).document
     variant = compile_policy(derive_specs(example)[0], example.policy).document
 
-    assert decide(base, "email_send", calls_used=0).effect == ALLOW
-    assert decide(variant, "email_send", calls_used=0).effect == REQUIRE_APPROVAL
+    assert decide(base, "send_message", calls_used=0).effect == ALLOW
+    assert decide(variant, "send_message", calls_used=0).effect == REQUIRE_APPROVAL
 
 
 def test_a_tool_denied_to_the_base_stays_denied_on_the_variant(example):

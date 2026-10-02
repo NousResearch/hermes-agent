@@ -121,8 +121,10 @@ def test_the_enforcement_plugin_registers_its_hook():
             registered.append((name, callback.__name__))
 
     enforcement.register(Context())
-    # on_session_start records a task refused by delegation on the board before the first turn.
-    assert registered == [("pre_tool_call", "pre_tool_call"), ("on_session_start", "on_session_start")]
+    # on_session_start records a task refused by delegation on the board before the first turn;
+    # post_tool_call closes the write-ahead record of a call triage let through without a person.
+    assert registered == [("pre_tool_call", "pre_tool_call"), ("post_tool_call", "post_tool_call"),
+                          ("on_session_start", "on_session_start")]
 
 
 def test_the_installed_policy_plugin_has_a_register_function():

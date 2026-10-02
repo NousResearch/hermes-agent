@@ -254,3 +254,19 @@ contact) escalated on the question that should catch each one.
   enforce timeout.
 - 15 hand-written messages are a check on the wording, not a measure of accuracy. Shadow
   agreement on real traffic is the measure.
+
+### Live check through the installed hook (phase 2)
+
+The example bundle was applied with `autonomy: {provider: typesafe, mode: shadow, data:
+full_args}`, and `send_message` was called through the plugin installed in the profile,
+which uses its own `_triage.py` and `_triage_typesafe.py`. Both calls were answered by
+`jev-1.13.0` in under 1 s. The person was shown what triage found, and the `policy.triage`
+records held answers and digests but no message content.
+
+**Finding: the recipient question has nothing to go on.** A real `send_message` call carries
+only `target: telegram:<id>`, not who the recipient is. The routine shipping note escalated
+on `recipient` alone (confidence 0.86 against 0.90). It passed in the earlier check only
+because that check supplied `recipient_type` itself. Before a tenant runs `enforce`, either
+give triage a recipient signal NOT taken from the agent's own arguments (for example a
+lookup of known customers), or drop the recipient question from the set. Shadow mode will
+show how often it is the only failure.

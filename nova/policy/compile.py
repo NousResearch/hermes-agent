@@ -168,6 +168,19 @@ def compile_policy(
         # or zero means no budget. The tenant-wide figure is injected at apply time.
         "monthly_budget_usd": spec.limits.monthly_budget_usd or 0,
     }
+    # Risk triage for this agent's approval actions (nova/autonomy). Absent unless declared
+    # and applicable, so a policy without it compiles byte-for-byte as before. An older
+    # enforcement point ignores the key and escalates every call, which is the safe reading.
+    autonomy = policy.autonomy.compiled_for(approval_actions) if policy.autonomy is not None else None
+    if autonomy is not None:
+        document["autonomy"] = autonomy
+    if policy.autonomy is not None and policy.autonomy.active:
+        idle = sorted(set(policy.autonomy.actions) - set(approval_actions))
+        if idle and autonomy is not None:
+            warnings.append(
+                f"autonomy is configured for {', '.join(idle)}, which this agent does not need "
+                "approval for, so triage never runs for it here"
+            )
     return CompiledPolicy(agent_id=spec.id, document=document, warnings=tuple(warnings))
 
 

@@ -111,6 +111,8 @@ class PolicySpec:
     permissions: Mapping[str, PermissionSpec] = field(default_factory=dict)
     baseline_tools: tuple[str, ...] = DEFAULT_BASELINE_TOOLS
     unlisted_tool: str = "allow"
+    #: Risk triage for approval-gated calls (``nova/autonomy/spec.py``). None: not declared.
+    autonomy: Optional[Any] = None
     source: Optional[Path] = None
 
     @classmethod
@@ -149,11 +151,19 @@ class PolicySpec:
             unlisted = defaults.choice("unlisted_tool", UNLISTED_CHOICES, default="allow")
             defaults.reject_unknown()
 
+        autonomy = None
+        autonomy_doc = doc.child("autonomy")
+        if autonomy_doc is not None:
+            from nova.autonomy.spec import AutonomySpec
+
+            autonomy = AutonomySpec.parse(autonomy_doc, known_actions=actions)
+
         spec = cls(
             actions=actions,
             permissions=permissions,
             baseline_tools=tuple(doc.str_list("baseline_tools", default=DEFAULT_BASELINE_TOOLS)),
             unlisted_tool=unlisted or "allow",
+            autonomy=autonomy,
             source=source,
         )
         doc.reject_unknown()
@@ -179,7 +189,7 @@ class PolicySpec:
         return granted
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "actions": {name: spec.to_dict() for name, spec in sorted(self.actions.items())},
             "permissions": {
                 name: spec.to_dict() for name, spec in sorted(self.permissions.items())
@@ -187,3 +197,6 @@ class PolicySpec:
             "baseline_tools": list(self.baseline_tools),
             "defaults": {"unlisted_tool": self.unlisted_tool},
         }
+        if self.autonomy is not None:
+            out["autonomy"] = self.autonomy.to_dict()
+        return out

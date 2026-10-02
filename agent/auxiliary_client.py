@@ -3644,6 +3644,20 @@ _AUTH_REFRESH_PROVIDER_BY_HOST = (
 )
 
 
+def _client_credential_key(client: Any) -> str:
+    """Return the credential carried by an auxiliary client.
+
+    Anthropic OAuth clients expose their bearer token as ``auth_token`` rather
+    than ``api_key``; recovery must identify the credential that made the
+    failed request instead of falling back to the pool's mutable current entry.
+    """
+    return str(
+        getattr(client, "api_key", None)
+        or getattr(client, "auth_token", None)
+        or ""
+    )
+
+
 def _provider_for_host(base_url: str, table: Tuple[Tuple[str, str], ...]) -> Optional[str]:
     """First provider in ``table`` whose host matches ``base_url``, else None."""
     for host, provider in table:
@@ -4152,7 +4166,7 @@ def _call_fallback_candidate_sync(
                 reason=capacity)
             return None
         fb_provider, retry = _plan_fallback_auth_retry(
-            destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
+            destination, rebuild, async_mode=False, failed_api_key=_client_credential_key(fb_client))
         failed_destination = destination
         if retry is not None:
             failed_destination = retry[2]
@@ -4202,7 +4216,7 @@ async def _call_fallback_candidate_async(
                 tag=" (async)", reason=capacity)
             return None
         fb_provider, retry = _plan_fallback_auth_retry(
-            destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""))
+            destination, rebuild, async_mode=True, failed_api_key=_client_credential_key(fb_client))
         failed_destination = destination
         if retry is not None:
             failed_destination = retry[2]
@@ -7640,7 +7654,7 @@ def _ladder_credential_rungs(
     pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=route.main_runtime)
     # Capture the exact key used so recovery finds the right pool entry even if another
     # process rotated the pool meanwhile (current() would be None).
-    _client_api_key = str(getattr(client, "api_key", "") or "")
+    _client_api_key = _client_credential_key(client)
     # Gate on the narrowed error: a connection failure from the retry above arrives here
     # unaccepted on purpose (a fresh key cannot fix an unreachable endpoint), so rotation
     # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.

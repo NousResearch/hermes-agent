@@ -83,7 +83,7 @@ def _allowlist_env_for_platform(platform: str) -> Optional[str]:
     if env_var := _PLATFORM_ALLOWLIST_ENV.get(platform):
         return env_var
     with contextlib.suppress(Exception):
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         return platform_registry.get(platform).allowed_users_env or None
     return None
 

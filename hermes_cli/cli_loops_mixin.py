@@ -211,8 +211,10 @@ class CLILoopsMixin:
             self._handle_skills_command(cmd_original)
 
     def _cmd_egress(self, cmd_original: str):
-        from hermes_cli.slash_exec import CommandContext, execute_command
-        text = execute_command("egress", CommandContext(surface="cli")).text
+        from commands.execution import CommandContext, execute_command
+        from hermes_cli.proxy_cli import format_status_text
+        text = execute_command("egress", CommandContext(
+            surface="cli", options={"egress_status": format_status_text})).text
         self._console_print(text, highlight=False, markup=False)
 
     def _cmd_statusbar(self, cmd_original: str):
@@ -260,7 +262,7 @@ class CLILoopsMixin:
                     print(f"  ({bundled_count} bundled plugins available — see: hermes plugins list)")
                 return
             try:  # loaded-plugin details (tools/hooks/commands counts, errors) by name
-                from hermes_cli.plugins import get_plugin_manager
+                from plugin_runtime.lifecycle import get_plugin_manager
                 loaded = {p["name"]: p for p in get_plugin_manager().list_plugins()}
             except Exception:
                 loaded = {}

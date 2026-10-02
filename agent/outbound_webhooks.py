@@ -84,7 +84,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
     targets = iter_configured_targets(cfg)
     if not targets:
         return []
-    from hermes_cli.plugins import get_plugin_manager
+    from plugin_runtime.lifecycle import get_plugin_manager
     manager = get_plugin_manager()
     home_key = _home_key()
     registered: List[WebhookTarget] = []
@@ -160,7 +160,7 @@ def reset_for_tests() -> None:
 
 
 def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
-    from hermes_cli.plugins import VALID_HOOKS
+    from plugin_runtime.dispatch import VALID_HOOKS
 
     def warn(msg: str, *args: Any) -> None:
         logger.warning("hooks.outbound[%d]" + msg, index, *args)

@@ -18,7 +18,7 @@ class TestBuildLearnPrompt:
 
 class TestLearnRegistryWiring:
     def test_learn_is_not_cli_only(self):
-        from hermes_cli.commands import resolve_command
+        from commands import resolve_command
 
         cmd = resolve_command("learn")
         assert cmd is not None and cmd.name == "learn"

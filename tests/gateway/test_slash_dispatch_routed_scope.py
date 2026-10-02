@@ -64,7 +64,7 @@ async def test_idle_dispatch_runs_table_handlers_under_the_routed_runtime(homes)
 @pytest.mark.asyncio
 async def test_busy_dispatch_binds_the_same_runtime_scope(homes):
     launch, routed = homes
-    from hermes_cli.commands import resolve_command
+    from commands import resolve_command
     seen = {}
 
     async def _probe(_event):

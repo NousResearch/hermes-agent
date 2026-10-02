@@ -97,7 +97,7 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
         config_mod.save_env_value_secure = lambda key, value: {"success": True}
     import cli as cli_mod
     from gateway.run import GatewayRunner
-    from hermes_cli.commands import COMMAND_REGISTRY
+    from commands import COMMAND_REGISTRY
     from hermes_cli.config import DEFAULT_CONFIG
 
     # config parsing: CLI, gateway, TUI all accept auto/cold; default stays off

@@ -206,7 +206,7 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
-    from hermes_cli import plugins as _plugins_mod
+    import plugin_runtime.api as _plugins_mod
 
     monkeypatch.setattr(
         _plugins_mod,
@@ -235,7 +235,7 @@ async def test_sync_plugin_command_runs_off_loop_thread(monkeypatch):
     import time
 
     import gateway.run as gateway_run
-    from hermes_cli import plugins as _plugins_mod
+    import plugin_runtime.api as _plugins_mod
 
     runner = _make_runner()
     seen_threads = []

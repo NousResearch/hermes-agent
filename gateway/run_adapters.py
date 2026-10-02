@@ -980,7 +980,7 @@ class GatewayAdapterLifecycleMixin:
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_config()
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
             discover_plugins()
             self._subscribe_plugin_rewire(get_plugin_manager(), profile_name, profile_home)
             # This profile's `hooks:` block: start() registered before any profile scope existed.
@@ -1786,7 +1786,7 @@ class GatewayAdapterLifecycleMixin:
                 "thread_sessions_per_user", getattr(self.config, "thread_sessions_per_user", False)
             )
         with _log_suppressed(logging.DEBUG, "Platform registry lookup for '%s' failed: %s", platform.value):
-            from gateway.platform_registry import platform_registry
+            from plugin_runtime.platform_registry import platform_registry
             if platform_registry.is_registered(platform.value):
                 adapter = platform_registry.create_adapter(platform.value, config)
                 if adapter is None:  # registered but failed — never fall through to built-ins

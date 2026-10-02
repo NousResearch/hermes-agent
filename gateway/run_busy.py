@@ -923,7 +923,7 @@ class GatewayBusySessionMixin:
         """Slash handlers dispatched only on the idle path (busy dispatch has its own allowlist)."""
         return self._command_handler_table(self._IDLE_COMMANDS)
 
-    # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
+    # busy_handler key (commands CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
         k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
     }

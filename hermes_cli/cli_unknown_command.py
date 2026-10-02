@@ -9,7 +9,7 @@ from collections.abc import Iterable
 def unknown_command_lines(typed: str, known: Iterable[str]) -> tuple[str, str]:
     """(lead line, pointer line) for a slash token with no handler.
 
-    ``known`` holds names WITH the leading slash (``hermes_cli.commands.COMMANDS`` keys plus skill
+    ``known`` holds names WITH the leading slash (``hermes_cli.commands_presentation.COMMANDS`` keys plus skill
     commands). A close match (typo) becomes ``Did you mean /model?``; prefix expansion already ran
     before this, so only fuzzy matches are considered here.
     """

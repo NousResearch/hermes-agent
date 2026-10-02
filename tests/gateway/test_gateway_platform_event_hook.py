@@ -39,11 +39,11 @@ if _repo not in sys.path:
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.profile_routing import ProfileRoute  # noqa: E402
-from hermes_cli.plugins import (  # noqa: E402
-    PluginContext,
-    PluginManager,
+from plugin_runtime.manifest import (
     PluginManifest,
 )
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext  # noqa: E402
 
 
 def _adapter(extra=None) -> TelegramAdapter:
@@ -579,7 +579,7 @@ class TestFixturePluginObservationPath:
         adapter = _adapter()
         adapter.set_platform_event_handler(runner._handle_gateway_platform_event)
 
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+        with patch("plugin_runtime.lifecycle.get_plugin_manager", return_value=manager):
             asyncio.run(adapter._on_platform_update(
                 _auth_reaction_update(user_id=777), context=MagicMock(),
             ))

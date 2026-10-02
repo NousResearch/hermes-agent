@@ -1,0 +1,82 @@
+{
+  "phase": "7.7",
+  "date": "2026-10-01",
+  "phase7_foundation": "f04be5e51b",
+  "phase7_ownership_head": "fb3fe11e07",
+  "phase7_test_fixes": [
+    "4dd049d17e",
+    "671e89a0a"
+  ],
+  "combined_phase5_phase6_phase7_merge": "144d5b0f",
+  "tests": {
+    "phase7_config": 173,
+    "phase7_model_tools": 23,
+    "phase7_boundary": 44,
+    "combined_auth": 65,
+    "combined_regression_passed": 188,
+    "combined_regression_skipped": 1
+  },
+  "baseline": {
+    "commands": 102,
+    "toolset_cases": 2100,
+    "approved_explicit_empty_changes": 104
+  },
+  "checks": {
+    "combined_ownership_python_files": 8200,
+    "combined_syntax_passed": true,
+    "compatibility_pointers_no_internal_use": 2082,
+    "staged_diff_check": true,
+    "unmerged_entries": 0
+  },
+  "packaging": {
+    "phase7_wheel": true,
+    "phase7_archive_members": 2192,
+    "phase7_extracted_imports_passed": true,
+    "combined_wheel": true,
+    "combined_archive_members": 2330,
+    "combined_extracted_imports_and_route_checks_passed": true,
+    "retired_phase7_files_absent": true,
+    "phase7_installed_fresh_venv": true,
+    "combined_installed_fresh_venv": true,
+    "installed_console_entrypoint_help": true,
+    "installed_cli_tools_auth_help": true
+  },
+  "known_baseline_failure": {
+    "test": "tests/gateway/test_session_policy.py::test_launch_policy_reaches_real_turn_runner",
+    "reproduced_on_phase4": true,
+    "classification": "Windows file-effect failure; no broad all-green claim"
+  },
+  "not_verified": [
+    "full repository suite",
+    "full Desktop/TUI server suite",
+    "full Nix distribution",
+    "signed installers"
+  ],
+  "final_recheck_date": "2026-10-02",
+  "final_phase7_run": {
+    "python": "3.14.7",
+    "files": 41,
+    "passed": 582,
+    "failed": 0,
+    "runner": "scripts/run_tests.sh",
+    "seconds": 93.2
+  },
+  "final_combined_run": {
+    "python": "3.14.7",
+    "files": 41,
+    "passed": 363,
+    "failed": 0,
+    "skipped": 2,
+    "runner": "scripts/run_tests.sh",
+    "seconds": 55.6
+  },
+  "final_runtime_run": {
+    "python": "3.14.7",
+    "files": 3,
+    "passed": 108,
+    "failed": 0,
+    "runner": "scripts/run_tests.sh",
+    "seconds": 10.0
+  },
+  "final_combined_implementation_head": "a75f79c78cc9c368577abe2886c421bb6d10281c"
+}

@@ -24,17 +24,20 @@ def _names(selection, disabled=None):
 @pytest.mark.parametrize("surface", ["cli", "http", "rpc"])
 def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monkeypatch):
     """Exercise the real config writer, availability gate, skills gate and handler."""
+    from hermes_cli.config import has_xai_tool_credentials
+
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     from hermes_cli.config import load_config, save_config
-    from hermes_cli.tools_config import _apply_toolset_change, _get_platform_tools
+    from hermes_cli.config_toolsets import apply_toolset_change
+    from tools.platform_policy import get_platform_tools
     from tools.registry import registry
 
     save_config({"platform_toolsets": {"cli": ["file"], "telegram": ["file"]}})
 
     def selected(platform="cli"):
-        return sorted(_get_platform_tools(load_config(), platform, include_default_mcp_servers=False))
+        return sorted(get_platform_tools(load_config(), platform, include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials))
 
     before = _names(selected())  # Warm both cache layers before enabling.
     assert not before
@@ -61,7 +64,7 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
             assert "error" not in response, response
             assert "kanban" in response["result"]["changed"]
         else:
-            _apply_toolset_change(load_config(), "cli", ["kanban"], action)
+            apply_toolset_change(load_config(), "cli", ["kanban"], action)
 
     try:
         toggle(True)
@@ -100,11 +103,13 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tmp_path, monkeypatch):
+    from hermes_cli.config import has_xai_tool_credentials
+
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     from hermes_cli.config import load_config, save_config
-    from hermes_cli.tools_config import _get_platform_tools
+    from tools.platform_policy import get_platform_tools
     from agent.delegation_context import delegated_child_context
 
     save_config({"toolsets": ["kanban"] if legacy else [], "platform_toolsets": {"telegram": ["kanban"]}})
@@ -118,12 +123,12 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     assert bool(_names(["all"])) is legacy
     assert not _names(["kanban"], ["kanban"])
     assert not _names([])
-    assert bool(_names(sorted(_get_platform_tools(load_config(), "cli")))) is legacy
+    assert bool(_names(sorted(get_platform_tools(load_config(), "cli", xai_credentials_present=has_xai_tool_credentials)))) is legacy
     # An explicitly saved (non-empty) selection is authoritative over the legacy key.
     cfg = load_config()
     cfg["platform_toolsets"]["cli"] = ["file"]
     save_config(cfg)
-    assert not _names(sorted(_get_platform_tools(load_config(), "cli")))
+    assert not _names(sorted(get_platform_tools(load_config(), "cli", xai_credentials_present=has_xai_tool_credentials)))
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
     worker = _names(["file"])

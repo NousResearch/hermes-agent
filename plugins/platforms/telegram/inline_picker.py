@@ -33,7 +33,7 @@ def collect_inline_catalog() -> List[Dict[str, str]]:
             catalog.append({"name": name, "description": desc or ""})
 
     try:
-        from hermes_cli.commands_platforms import _collect_gateway_skill_entries, _sanitize_telegram_name, telegram_bot_commands
+        from gateway.command_platforms import _collect_gateway_skill_entries, _sanitize_telegram_name, telegram_bot_commands
     except Exception:  # pragma: no cover - defensive
         logger.debug("inline picker: commands registry unavailable", exc_info=True)
         return catalog

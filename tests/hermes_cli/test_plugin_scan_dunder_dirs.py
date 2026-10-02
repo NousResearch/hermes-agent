@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hermes_cli.plugins import PluginManager
+from plugin_runtime.manager import PluginManager
 
 
 def test_scan_skips_dunder_dirs_and_still_loads_real_plugin(tmp_path: Path):

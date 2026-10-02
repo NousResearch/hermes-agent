@@ -291,7 +291,7 @@ async def delete_agent_plugin(request: Request, name: str):
 async def post_agent_plugin_activate(request: Request):
     """``hermes plugins install`` / ``enable`` in another process asks this backend to load the plugin
     for ``home`` and hand its MCP servers and skills to that profile's open chats
-    (``hermes_cli.plugins_activation.load_and_go_live``). ``home`` must be a profile this host serves."""
+    (``plugin_runtime.activation.load_and_go_live``). ``home`` must be a profile this host serves."""
     _require_token(request)
     try:
         body = await request.json()
@@ -303,7 +303,7 @@ async def post_agent_plugin_activate(request: Request):
     profile = profile_name_for_home(home) if str(home) not in ("", ".") else None
     if profile is None:
         raise HTTPException(status_code=400, detail="Not a Hermes profile home.")
-    from hermes_cli.plugins_activation import load_and_go_live
+    from plugin_runtime.activation import load_and_go_live
 
     def _run():
         with _config_profile_scope(None if profile == "default" else profile):

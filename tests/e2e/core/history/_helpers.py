@@ -575,15 +575,17 @@ class InProcessSession:
     owns ``history`` and hands it back each turn; ``/compress`` goes through ``compress_now``."""
 
     def __init__(self, base_url: str, hermes_home: Path, sid: str, *, platform: str = "cli") -> None:
+        from hermes_cli.config import has_xai_tool_credentials
+
         from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from tools.platform_policy import get_platform_tools
         from hermes_state import SessionDB
         from run_agent import AIAgent
 
         self.db = SessionDB(db_path=hermes_home / "state.db")
         # The CLI entrypoints enable the platform's configured toolsets; a bare AIAgent would
         # advertise a different tools array than every real surface resuming this session.
-        toolsets = sorted(_get_platform_tools(load_config(), platform))
+        toolsets = sorted(get_platform_tools(load_config(), platform, xai_credentials_present=has_xai_tool_credentials))
         self.agent = AIAgent(provider="custom", base_url=base_url, api_key="sk-fake-e2e", model="fake-model",
                              session_db=self.db, session_id=sid, quiet_mode=True, platform=platform,
                              enabled_toolsets=toolsets)

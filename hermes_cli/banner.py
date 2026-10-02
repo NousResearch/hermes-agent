@@ -574,7 +574,7 @@ def _mcp_configured() -> bool:
         return bool((load_config() or {}).get("mcp_servers"))
 
     def _portable():
-        from hermes_cli.plugins import get_portable_mcp_server_names_nowait
+        from plugin_runtime.lifecycle import get_portable_mcp_server_names_nowait
         return bool(get_portable_mcp_server_names_nowait())
     return _quiet(_native, True) or _quiet(_portable, True)
 

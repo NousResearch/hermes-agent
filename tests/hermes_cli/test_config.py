@@ -1395,17 +1395,20 @@ class TestEnvWriteDenylist:
         ],
     )
     def test_non_exec_near_misses_still_writable(self, allowed_key):
+        if os.name == "nt" and allowed_key in {"git_config_parameters", "ld_preload"}:
+            with pytest.raises(ValueError, match="denylist"):
+                save_env_value(allowed_key, "test-value-123")
+            assert allowed_key not in load_env()
+            return
         save_env_value(allowed_key, "test-value-123")
         env = load_env()
         assert env[allowed_key] == "test-value-123"
 
     @pytest.mark.parametrize("protected_key", ["Ld_Preload", "Git_Config_Parameters"])
-    def test_windows_policy_denies_mixed_case_exec_names(self, protected_key, monkeypatch):
+    @pytest.mark.skipif(os.name != "nt", reason="Windows environment names are case-insensitive")
+    def test_windows_policy_denies_mixed_case_exec_names(self, protected_key):
         """Windows env names are case-insensitive, so the writer must refuse the mixed-case
         spelling of a denied exec-influence name too."""
-        import hermes_cli.config as config_mod
-
-        monkeypatch.setattr(config_mod, "_IS_WINDOWS", True)
         with pytest.raises(ValueError, match="denylist"):
             save_env_value(protected_key, "1")
 

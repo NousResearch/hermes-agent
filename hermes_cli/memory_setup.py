@@ -359,9 +359,10 @@ def cmd_status(args) -> None:
 
     # Memory tool enablement for the CLI platform via the canonical resolver, respecting the
     # check_fn gate when both stores are disabled.
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.config import has_xai_tool_credentials
+    from tools.platform_policy import get_platform_tools
     from tools.memory_tool import check_memory_requirements
-    cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    cli_tools = get_platform_tools(config, "cli", include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials)
     memory_tool_enabled = ("memory" in cli_tools) and check_memory_requirements()
 
     print("\nMemory status\n" + "─" * 40)

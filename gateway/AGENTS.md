@@ -96,7 +96,7 @@ briefs are labelled user turns appended at a turn boundary, preserving role alte
 
 ## `/login` (off-turn, paired DM only)
 
-`/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and
+`/login` is registered in `commands/__init__.py` with `busy_policy="dispatch"` and
 `desktop="settings"`, listed in `run_busy.py::_PLAIN_COMMANDS`, and handled by
 `GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
 `chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
@@ -259,3 +259,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 assert on hardcoded platform lists or command counts (root: no change-detectors). Session-key and
 guard behaviour are invariants worth a test; platform API quirks belong in connector comments +
 tests, not in prose.
+
+Platform command-menu projections (Telegram, Discord and Slack) are owned by
+`gateway/command_platforms.py`; command identities and availability come from `commands`.
+Plugin metadata remains in `plugin_runtime.api`, and authorization remains in `slash_access.py`.

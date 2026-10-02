@@ -12,6 +12,7 @@ with a voice input message type so the streaming-TTS consumer setup
 branch is entered.  The fake agent returns synchronously, the executor
 finishes, and the outer finalisation code runs — proving no NameError.
 """
+from tools import platform_policy
 
 import asyncio
 import sys
@@ -115,7 +116,7 @@ def _setup_monkeypatches(monkeypatch, tmp_path):
     )
 
     import hermes_cli.tools_config as tools_config
-    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+    monkeypatch.setattr(platform_policy, "get_platform_tools", lambda user_config, platform_key, **_policy_inputs: {"core"})
 
 
 def test_run_agent_voice_turn_no_name_error(monkeypatch, tmp_path):

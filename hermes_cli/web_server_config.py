@@ -621,9 +621,10 @@ def _apply_nous_gateway_defaults(cfg: dict) -> list:
     key or explicit backend are skipped. Failures never block saving the assignment."""
     try:
         from hermes_cli.nous_subscription import apply_nous_managed_defaults
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
 
-        enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=False)
+        enabled = get_platform_tools(cfg, "cli", include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials)
         return sorted(apply_nous_managed_defaults(cfg, enabled_toolsets=enabled, force_fresh=True))
     except Exception:
         _log.debug("apply_nous_managed_defaults skipped", exc_info=True)

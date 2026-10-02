@@ -340,7 +340,7 @@ def _with_session_toolsets(selection, platform: str | None) -> list[str]:
     toolsets when *platform* is given; the ones its PROFILE's role reserves, from the backend-written
     profile.yaml under the session's home override), minus toolsets reserved for another role.
 
-    The fold-in happens after ``_get_platform_tools`` already subtracted ``agent.disabled_toolsets``,
+    The fold-in happens after ``get_platform_tools`` already subtracted ``agent.disabled_toolsets``,
     so the same subtraction is applied to the fold-in itself — otherwise ``disabled_toolsets:
     [project]`` is a no-op on desktop/TUI, the only surfaces where the client toolsets exist
     (#54433). ``desktop_ui`` is kept regardless: it is the client's own control surface, not a
@@ -366,7 +366,7 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
     unresolved = [name for name in explicit if name not in built_in]
     if unresolved:
         try:
-            from hermes_cli.plugins import discover_plugins
+            from plugin_runtime.lifecycle import discover_plugins
             discover_plugins()
             plugin_valid = [name for name in unresolved if validate_toolset(name)]
         except Exception:
@@ -427,14 +427,15 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
         cfg = load_config()
         # include_default_mcp_servers=True is the runtime variant (the agent must be able to call
         # default MCP servers); the config-editing variant would silently drop MCP tools from the TUI.
         # Passing ``False`` here is the config-editing variant — used when we need to persist a toolset list
         # without baking in implicit MCP defaults. Using the wrong variant at agent creation time makes MCP
         # tools silently missing from the TUI. See PR #3252 for the original design split.
-        enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
+        enabled = get_platform_tools(cfg, "cli", include_default_mcp_servers=True, xai_credentials_present=has_xai_tool_credentials)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
         return sorted(_with_session_toolsets(enabled, session_platform)) if enabled else None
@@ -451,7 +452,7 @@ def _load_disabled_toolsets() -> list[str] | None:
     AIAgent, where ``get_tool_definitions`` strips the named toolsets even out of composite
     defaults like ``hermes-cli`` (#17309). The desktop/TUI gateway historically dropped it, so
     e.g. ``disabled_toolsets: [browser]`` silently had no effect on Desktop — the only consumer
-    was ``_get_platform_tools``'s name-level subtraction, which can't reach inside a composite
+    was ``get_platform_tools``'s name-level subtraction, which can't reach inside a composite
     default toolset (#44499).
     """
     try:

@@ -180,7 +180,7 @@ async def test_auto_registers_plugin_commands_for_discord(adapter):
     adapter._run_simple_slash = AsyncMock()
 
     with patch(
-        "hermes_cli.plugins.get_plugin_commands",
+        "plugin_runtime.api.get_plugin_commands",
         return_value={
             "metricas": {
                 "handler": lambda _a: "ok",
@@ -209,7 +209,7 @@ async def test_plugin_command_name_conflict_skipped(adapter):
     adapter._run_simple_slash = AsyncMock()
 
     with patch(
-        "hermes_cli.plugins.get_plugin_commands",
+        "plugin_runtime.api.get_plugin_commands",
         return_value={
             "status": {
                 "handler": lambda _a: "plugin-status",
@@ -263,7 +263,7 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
         for i in range(200)
     }
 
-    with patch("hermes_cli.plugins.get_plugin_commands", return_value=many_plugins):
+    with patch("plugin_runtime.api.get_plugin_commands", return_value=many_plugins):
         adapter._register_slash_commands()
 
     tree_names = set(adapter._client.tree.commands.keys())
@@ -530,7 +530,7 @@ def test_register_skill_command_callback_dispatches_by_name(adapter):
     ]
 
     with patch(
-        "hermes_cli.commands_platforms.discord_skill_commands_by_category",
+        "gateway.command_platforms.discord_skill_commands_by_category",
         return_value=(mock_categories, mock_uncategorized, 0),
     ):
         adapter._register_slash_commands()
@@ -580,7 +580,7 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         ]
 
     with patch(
-        "hermes_cli.commands_platforms.discord_skill_commands_by_category",
+        "gateway.command_platforms.discord_skill_commands_by_category",
         return_value=(large_categories, [], 0),
     ):
         adapter._register_slash_commands()

@@ -8,6 +8,7 @@ Only HTTP transports are faked; the caches themselves are exercised for real.
 """
 
 from __future__ import annotations
+import plugin_runtime.lifecycle as plugin_lifecycle
 
 import contextlib
 import importlib.util
@@ -154,10 +155,10 @@ def test_memory_provider_skill_prune_only_touches_the_active_home(homes, monkeyp
     """Pruning under profile B (whose active provider differs) must leave profile A's registered
     provider skill in place; A's own later prune still retracts it."""
     import plugins.memory as mem
-    from hermes_cli.plugins import _reset_plugin_managers_for_tests, get_plugin_manager
+    from plugin_runtime.lifecycle import get_plugin_manager
 
     a, b = homes
-    _reset_plugin_managers_for_tests()
+    plugin_lifecycle.reset_plugin_managers_for_tests()
     mem._REGISTERED_MEMORY_PROVIDER_SKILLS.clear()
     skill_dir = a / "plugins" / "provA" / "skills" / "maint"
     skill_dir.mkdir(parents=True)
@@ -174,7 +175,7 @@ def test_memory_provider_skill_prune_only_touches_the_active_home(homes, monkeyp
             assert get_plugin_manager().find_plugin_skill("provA:maint") is None
     finally:
         mem._REGISTERED_MEMORY_PROVIDER_SKILLS.clear()
-        _reset_plugin_managers_for_tests()
+        plugin_lifecycle.reset_plugin_managers_for_tests()
 
 
 def test_openviking_atexit_commits_every_profile_provider(homes):

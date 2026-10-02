@@ -1,38 +1,11 @@
 """Validation for the ``platform_toolsets`` config section."""
 
-import ast
 from typing import Callable, List, Optional
 
-from hermes_cli.platforms import PLATFORMS
-from hermes_cli.toolset_scope import toolset_allowed_for_platform
+from tools.platform_policy import platform_default_toolset
+from tools.toolset_scope import toolset_allowed_for_platform, parse_platform_toolsets_value
 
 _NO_TOOLS = "the agent will have no tools on this platform. Run `hermes tools` to reconfigure."
-
-
-def parse_platform_toolsets_value(value: object) -> Optional[List[str]]:
-    """The toolset list a saved ``platform_toolsets.<platform>`` value encodes, or None.
-
-    Older ``hermes config set`` builds stored a bare ``[...]`` argument as a plain string, so an
-    explicit selection like ``'["browser", "terminal"]'`` parses as str, not list (#115866).
-    Every reader and writer of the section goes through this one parser so the runtime,
-    ``hermes doctor`` and ``hermes plugins enable`` agree on what the user configured. Any other
-    shape (null, scalar, unparseable string) is None: the caller decides how to report it.
-    """
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str) and value.strip().startswith("["):
-        try:
-            parsed = ast.literal_eval(value.strip())
-        except (ValueError, SyntaxError):
-            return None
-        if isinstance(parsed, list):
-            return [str(item) for item in parsed]
-    return None
-
-
-def _platform_default_toolset(platform: object) -> str:
-    info = PLATFORMS.get(platform)
-    return info.default_toolset if info is not None else f"hermes-{platform}"
 
 
 def _platform_default_is_valid(
@@ -43,7 +16,7 @@ def _platform_default_is_valid(
     # Dynamic plugin platforms are resolved by toolsets.resolve_toolset() even though their synthesized
     # hermes-<platform> name is not in TOOLSETS.
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
 
         return platform_registry.is_registered(platform)
     except Exception:
@@ -66,7 +39,7 @@ def validate_platform_toolsets(
 
     valid_count = 0
     for platform, raw in platform_toolsets.items():
-        default = _platform_default_toolset(platform)
+        default = platform_default_toolset(platform)
         default_valid = _platform_default_is_valid(platform, default, is_valid_toolset, is_allowed_for_platform)
         platform_valid_count = 0
         toolsets = parse_platform_toolsets_value(raw)

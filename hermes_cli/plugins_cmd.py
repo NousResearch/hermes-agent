@@ -16,7 +16,7 @@ from typing import Any, NoReturn, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
-from hermes_cli.plugin_capabilities import _child_dict
+from plugin_runtime.capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
 from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: F401
 from utils import rmtree_readonly  # noqa: F401
@@ -640,7 +640,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     ``allow_tool_override`` grant changes only with an explicit True/False flag;
     None leaves it unchanged. Bundled plugins are trusted.
     """
-    from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
+    from plugin_runtime.relay_policy import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
     console = _console()
 
     def _refuse_legacy_relay(plugin: str) -> None:
@@ -787,7 +787,7 @@ def _discover_all_plugins() -> list:
     seen: dict = {}
     # memory/, context_engine/ and model-providers/ load through dedicated registries, not the
     # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
-    from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
+    from plugin_runtime.discovery import discover_entrypoint_manifests, get_bundled_plugins_dir
     for base, source, skip in (
         (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "model-providers"}),
         (_plugins_dir(), "user", set()),
@@ -843,7 +843,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
         return next((e.toolset for t in tool_names if (e := registry.get_entry(t)) and e.toolset), None)
 
     def _from_loaded_plugin() -> Optional[str]:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
         discover_plugins()  # idempotent — ensures plugins are loaded
         for _key, loaded in get_plugin_manager()._plugins.items():
             if loaded.manifest.name == name or _key == name:
@@ -851,7 +851,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
         return None
 
     def _from_manifest_on_disk() -> Optional[str]:
-        from hermes_cli.plugins import get_bundled_plugins_dir
+        from plugin_runtime.discovery import get_bundled_plugins_dir
         return next((
             toolset for base in (get_bundled_plugins_dir(), _plugins_dir())
             if base.is_dir() and (base / name).is_dir()
@@ -874,7 +874,7 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
     if not toolset_key:
         return
     from hermes_cli.config import load_config, save_config
-    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    from tools.toolset_scope import parse_platform_toolsets_value
     config = load_config()
     platform_toolsets = _child_dict(config, "platform_toolsets")
     changed = False
@@ -957,6 +957,42 @@ def _catalog():
 def _action_pack(args):
     from hermes_cli.plugin_packs import pack_command
     pack_command(args)
+
+
+def cmd_compat(args: Any | None = None) -> None:
+    """``hermes plugins compat`` — which installed plugins import paths scheduled for removal, and where."""
+    import sys
+    from pathlib import Path
+    from plugin_runtime.compat import (
+        ALLOW_KEY, COMPAT_REMOVAL, compat_report, removal_in_effect, scan_plugin, summary_lines)
+    console = _console()
+    path = getattr(args, "path", None)
+    if path:
+        hits = scan_plugin(Path(path).expanduser().resolve())
+        report = {Path(path).name: hits} if hits else {}
+    else:
+        report = compat_report(force=True)
+    if getattr(args, "json", False):
+        print(json.dumps({"removal_date": COMPAT_REMOVAL, "in_effect": removal_in_effect(),
+                          "plugins": {k: [h.__dict__ for h in v] for k, v in report.items()}}, indent=2))
+        sys.exit(1 if report else 0)
+    if not report:
+        console.print(f"[green]✓ No enabled plugin imports paths scheduled for removal on {COMPAT_REMOVAL}.[/green]")
+        return
+    head, tail = summary_lines(report)
+    console.print(f"[bold {'red' if removal_in_effect() else 'yellow'}]{head}[/]")
+    console.print(f"[dim]{tail}[/dim]")
+    for name, hits in sorted(report.items()):
+        table = _table(((f"{name}  ({len(hits)} import{'s' if len(hits) != 1 else ''})", "bold"), ("old path", "yellow"), ("new path", "green")),
+                       title=None, show_lines=False)
+        for h in hits:
+            table.add_row(f"{h.file}:{h.line}", h.old, h.new)
+        console.print()
+        console.print(table)
+    console.print()
+    console.print(f"[dim]After {COMPAT_REMOVAL} these plugins are not loaded. Update them, or force-load with "
+                  f"plugins.{ALLOW_KEY}: true in config.yaml (the old paths still break once the compat layer is reverted).[/dim]")
+    sys.exit(1)
 
 
 # Tri-state flags: neither --x nor --no-x given == None == interactive prompt.

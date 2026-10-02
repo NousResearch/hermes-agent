@@ -696,7 +696,7 @@ class PluginLiveNow(Result):
 
 
 class PluginActivation(Result):
-    """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
+    """What a plugin loaded mid-run does NOW vs later (runtime summary from ``plugin_runtime.activation``). ``activated_now``
     kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook
     names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded
     (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the

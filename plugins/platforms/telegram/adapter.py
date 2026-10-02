@@ -2745,7 +2745,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Register the command menu (from COMMAND_REGISTRY) in every scope — Telegram picks the
         narrowest matching one per chat type; forum topics are handled lazily by _ensure_forum_commands."""
         from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeDefault
-        from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
+        from gateway.command_platforms import telegram_menu_commands, telegram_menu_max_commands
         if not self._bot:
             return
         # Telegram allows 100 commands but has an undocumented ~4KB payload limit; default cap 60.
@@ -6405,7 +6405,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if chat_id in self._forum_command_registered:
                     return
                 from telegram import BotCommand, BotCommandScopeChat
-                from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
+                from gateway.command_platforms import telegram_menu_commands, telegram_menu_max_commands
                 menu_commands, _ = await asyncio.to_thread(
                     telegram_menu_commands, max_commands=telegram_menu_max_commands())
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
@@ -7314,7 +7314,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

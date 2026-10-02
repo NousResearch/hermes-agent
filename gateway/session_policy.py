@@ -83,7 +83,8 @@ def present_sections(config):
 
 
 def build_policy(params, config, *, private_secrets=None, profile_terminal=True):
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.config import has_xai_tool_credentials
+    from tools.platform_policy import get_platform_tools
     from toolsets import validate_toolset
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
@@ -143,7 +144,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
                 or ('desktop_ui' in explicit and source != 'gui')):
             raise RuntimeStoreError('invalid_params')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
-    enabled = _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
+    enabled = get_platform_tools(config, 'acp' if source == 'acp' else 'cli', xai_credentials_present=has_xai_tool_credentials)
     if explicit is not None:
         from toolsets import resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}
@@ -152,7 +153,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
             raise RuntimeStoreError('invalid_params')
     elif source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
-        # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
+        # The fold-in lands after get_platform_tools subtracted agent.disabled_toolsets, so
         # subtract again or `disabled_toolsets: [project]` is a no-op here (#54433).
         # desktop_ui is the client's own control surface, not a model toolset.
         from agent.skill_utils import parse_config_string_list
@@ -163,8 +164,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
             enabled.add('desktop_ui')
     if safe_mode:
         # Plugin toolsets are user customizations; the safe worker never imports them.
-        from hermes_cli.tools_config import _get_plugin_toolset_keys
-        enabled -= _get_plugin_toolset_keys()
+        from tools.platform_policy import get_plugin_toolset_keys
+        enabled -= get_plugin_toolset_keys()
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     terminal['TERMINAL_CWD'] = cwd
     request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key'}}

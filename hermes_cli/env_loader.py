@@ -682,3 +682,14 @@ def _process_hermes_home() -> Path:
         return get_routing_process_hermes_home()
     except Exception:
         return Path.home() / ".hermes"
+
+
+def _refresh_plugin_secret_sources(home: Path) -> None:
+    """Re-apply dotenv/external secrets after runtime plugin sources register."""
+    reset_secret_source_cache(home)
+    load_hermes_dotenv(hermes_home=home)
+
+
+from plugin_runtime.host_bindings import bind_plugin_host
+
+bind_plugin_host(refresh_secret_sources=_refresh_plugin_secret_sources)

@@ -6,9 +6,14 @@ import shutil
 import hermes_yaml as yaml
 
 from hermes_cli.plugins import PluginManager
+from plugin_runtime.manager import PluginManager as RuntimePluginManager
 
 
 LEGACY_PLUGIN = Path(__file__).parent / "fixtures" / "plugin_compat_legacy"
+
+
+def test_plugin_manager_compatibility_export_is_runtime_identity():
+    assert PluginManager is RuntimePluginManager
 
 
 def test_legacy_plugin_loads_and_ignores_additive_hook_and_manifest_fields(

@@ -26,7 +26,7 @@ def _hook_calls(mock_invoke_hook):
     ]
 
 
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("plugin_runtime.api.invoke_hook")
 def test_interrupt_running_turn_fires_agent_loop_stopped(mock_invoke_hook):
     from tui_gateway import server
 
@@ -44,7 +44,7 @@ def test_interrupt_running_turn_fires_agent_loop_stopped(mock_invoke_hook):
     }
 
 
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("plugin_runtime.api.invoke_hook")
 def test_interrupt_idle_session_does_not_fire_hook(mock_invoke_hook):
     """No live turn -> nothing for a plugin to cancel -> no hook noise."""
     from tui_gateway import server
@@ -56,7 +56,7 @@ def test_interrupt_idle_session_does_not_fire_hook(mock_invoke_hook):
     assert _hook_calls(mock_invoke_hook) == []
 
 
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("plugin_runtime.api.invoke_hook")
 def test_hook_failure_does_not_break_interrupt(mock_invoke_hook):
     """A misbehaving plugin must never prevent the interrupt itself."""
     mock_invoke_hook.side_effect = RuntimeError("plugin exploded")

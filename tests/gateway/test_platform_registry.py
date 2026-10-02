@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from gateway.platform_registry import PlatformRegistry, PlatformEntry
+from plugin_runtime.platform_registry import PlatformRegistry, PlatformEntry
 from gateway.config import Platform, GatewayConfig
 
 
@@ -23,7 +23,7 @@ class TestPlatformEnumDynamic:
 
     def test_dynamic_member_with_hyphens(self):
         """Registered plugin platforms with hyphens work once registered."""
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         entry = PlatformEntry(
             name="my-platform",
@@ -244,7 +244,7 @@ class TestGatewayConfigPluginPlatform:
     def test_get_connected_platforms_includes_registered_plugin(self):
         """Plugin platform with registry entry passes get_connected_platforms."""
         # Register a fake plugin platform
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         test_entry = PlatformEntry(
             name="testplat",
@@ -288,7 +288,7 @@ class TestPlatformsMerge:
 
     def test_get_all_platforms_includes_plugin(self):
         from hermes_cli.platforms import get_all_platforms
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="testmerge",
@@ -326,7 +326,7 @@ class TestApplyYamlConfigFnDispatch:
         return hermes_home
 
     def _register_hook(self, name, hook_fn):
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         entry = PlatformEntry(
             name=name,
@@ -354,7 +354,7 @@ class TestApplyYamlConfigFnDispatch:
             good_called["count"] += 1
             return None
 
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
         _reg.register(PlatformEntry(
             name="mybadplat",
             label="MyBad",
@@ -410,7 +410,7 @@ class TestPluginPlatformSharedKeyBridge:
     def test_shared_keys_bridged_for_plugin_platform(self, tmp_path, monkeypatch):
         """A plugin platform's ``require_mention``/``dm_policy``/etc. flow into
         ``PlatformConfig.extra`` without the plugin needing its own bridge."""
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="mysharedplat",
@@ -472,7 +472,7 @@ class TestPluginEnablementGate:
         Previously this auto-enabled Discord and the gateway spammed
         ``ERROR ... [Discord] No bot token configured`` on every reconnect.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="myunconfiguredplat",
@@ -506,7 +506,7 @@ class TestPluginEnablementGate:
         enable, log, and move on.  Anything else would re-introduce the
         #31116 bug for plugins whose probe has a transient failure.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         def _bad_probe(cfg):
             raise RuntimeError("plugin bug")
@@ -540,7 +540,7 @@ class TestPluginEnablementGate:
         ``config.platforms``.  A rejected plugin should be invisible, not
         present-but-partially-populated.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="myrejectedplat",
@@ -577,7 +577,7 @@ class TestPluginEnablementGate:
         (#79812).  Skipping enablement here would mean a configured platform
         whose SDK isn't installed yet never gets the chance to install it.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         installer = MagicMock(return_value=True)
         _reg.register(PlatformEntry(
@@ -616,7 +616,7 @@ class TestPluginEnablementGate:
         Without an installer, missing deps are a hard block — enabling the
         platform would just queue guaranteed connect failures.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from plugin_runtime.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="myhardblockplat",
@@ -656,10 +656,10 @@ class TestMigratedPlatformWiring:
     )
 
     def test_lazy_installable_platforms_have_split_wiring(self):
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
 
         discover_plugins()
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
 
         # Materialize deferred loaders (wecom_callback is registered by the
         # "wecom" manifest's loader; a cold get() by its own name misses).

@@ -38,9 +38,9 @@ class SpriteProvider:
 
 def _discover() -> None:
     try:
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from plugin_runtime.lifecycle import ensure_plugins_discovered
 
-        _ensure_plugins_discovered()
+        ensure_plugins_discovered()
     except Exception as exc:  # noqa: BLE001 - discovery is best-effort
         logger.debug("image-gen plugin discovery failed: %s", exc)
 

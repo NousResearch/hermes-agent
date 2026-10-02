@@ -2687,11 +2687,12 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
 
         with _worker_profile_scope(hermes_home):
             cfg = load_config()
-            toolsets = sorted(_get_platform_tools(cfg, "cli"))
+            toolsets = sorted(get_platform_tools(cfg, "cli", xai_credentials_present=has_xai_tool_credentials))
         return toolsets or None
     except Exception as exc:
         _kb._log.debug(

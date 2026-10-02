@@ -1582,7 +1582,7 @@ class TestAuthorizationEmailMatch:
         from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
         from gateway.session import SessionSource
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
 
         monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "alice@example.com")
         # Plugin platforms become available during the normal gateway startup
@@ -1626,12 +1626,12 @@ class TestCronSchedulerRegistry:
         discover + manually invoke the register hook so the resolver sees
         ``cron_deliver_env_var``.
         """
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         if platform_registry.get("google_chat") is not None:
             return
         # Discover first so the plugin is loaded at all.
         try:
-            from hermes_cli.plugins import discover_plugins
+            from plugin_runtime.lifecycle import discover_plugins
             discover_plugins()
         except Exception:
             pass
@@ -1645,7 +1645,7 @@ class TestCronSchedulerRegistry:
             manifest = _M()
             _manager = type("_Mgr", (), {"_plugin_platform_names": set()})()
             def register_platform(self, **kwargs):
-                from gateway.platform_registry import PlatformEntry
+                from plugin_runtime.platform_registry import PlatformEntry
                 entry = PlatformEntry(source="plugin", **kwargs)
                 platform_registry.register(entry)
         _register(_Ctx())

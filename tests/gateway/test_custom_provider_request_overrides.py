@@ -7,6 +7,7 @@ than replacing them with an empty dict.
 """
 
 from __future__ import annotations
+from tools import platform_policy
 
 import asyncio
 import sys
@@ -190,7 +191,7 @@ async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(mo
 
     import hermes_cli.tools_config as tools_config
 
-    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+    monkeypatch.setattr(platform_policy, "get_platform_tools", lambda user_config, platform_key, **_policy_inputs: {"core"})
 
     runner = _make_runner()
     source = _make_source()
@@ -245,7 +246,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
 
     import hermes_cli.tools_config as tools_config
 
-    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+    monkeypatch.setattr(platform_policy, "get_platform_tools", lambda user_config, platform_key, **_policy_inputs: {"core"})
 
     runner = _make_runner()
     source = _make_source()

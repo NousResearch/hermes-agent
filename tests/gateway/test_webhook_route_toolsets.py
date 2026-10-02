@@ -3,7 +3,7 @@
 A webhook route config may carry a ``toolsets`` list that replaces the
 platform-level ``platform_toolsets.webhook`` resolution for runs triggered by
 that route only. The gateway validates the override through the same
-``_get_platform_tools`` path as platform config, so restricted/unknown names
+``get_platform_tools`` path as platform config, so restricted/unknown names
 behave identically to a manually configured platform toolset list.
 
 The grant must bind to the route whose secret authenticated the request
@@ -23,7 +23,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.webhook import WebhookAdapter
 from gateway.run import GatewayRunner
-from hermes_cli.tools_config import _get_platform_tools
+from tools.platform_policy import get_platform_tools
 
 
 class _Src:
@@ -91,6 +91,8 @@ class TestGatewayResolveEnabledToolsetsForSource:
     def test_override_validated_like_platform_config(self):
         # Contract: resolving with an override is byte-identical to resolving
         # the same list configured as platform_toolsets.webhook.
+        from hermes_cli.config import has_xai_tool_credentials
+
         override = ["terminal", "file", "web", "discord_admin"]
         wa = _make_adapter({"mon": {"secret": "x", "toolsets": override}})
         gr = _make_runner(wa)
@@ -98,24 +100,28 @@ class TestGatewayResolveEnabledToolsetsForSource:
             gr, BASE_CONFIG, _Src("webhook:mon:d"), "webhook"
         )
         expected = sorted(
-            _get_platform_tools(
+            get_platform_tools(
                 {"platform_toolsets": {"webhook": list(override)}}, "webhook"
-            )
+            , xai_credentials_present=has_xai_tool_credentials)
         )
         assert res == expected
         # discord_admin is platform-restricted to discord — must be dropped.
         assert "discord_admin" not in res
 
     def test_no_override_uses_platform_resolution(self):
+        from hermes_cli.config import has_xai_tool_credentials
+
         wa = _make_adapter({"plain": {"secret": "x"}})
         gr = _make_runner(wa)
         res = GatewayRunner._resolve_enabled_toolsets_for_source(
             gr, BASE_CONFIG, _Src("webhook:plain:d"), "webhook"
         )
-        assert res == sorted(_get_platform_tools(BASE_CONFIG, "webhook"))
+        assert res == sorted(get_platform_tools(BASE_CONFIG, "webhook", xai_credentials_present=has_xai_tool_credentials))
         assert "terminal" not in res
 
     def test_adapter_exception_falls_back_to_platform_resolution(self):
+        from hermes_cli.config import has_xai_tool_credentials
+
         wa = _make_adapter({})
         wa.toolsets_for_source = lambda source: (_ for _ in ()).throw(
             RuntimeError("boom")
@@ -124,14 +130,16 @@ class TestGatewayResolveEnabledToolsetsForSource:
         res = GatewayRunner._resolve_enabled_toolsets_for_source(
             gr, BASE_CONFIG, _Src("webhook:mon:d"), "webhook"
         )
-        assert res == sorted(_get_platform_tools(BASE_CONFIG, "webhook"))
+        assert res == sorted(get_platform_tools(BASE_CONFIG, "webhook", xai_credentials_present=has_xai_tool_credentials))
 
     def test_missing_adapter_falls_back_to_platform_resolution(self):
+        from hermes_cli.config import has_xai_tool_credentials
+
         gr = _make_runner(None)
         res = GatewayRunner._resolve_enabled_toolsets_for_source(
             gr, BASE_CONFIG, _Src("webhook:mon:d"), "webhook"
         )
-        assert res == sorted(_get_platform_tools(BASE_CONFIG, "webhook"))
+        assert res == sorted(get_platform_tools(BASE_CONFIG, "webhook", xai_credentials_present=has_xai_tool_credentials))
 
     def test_original_config_not_mutated(self):
         cfg = {"platform_toolsets": {"webhook": ["web"]}}

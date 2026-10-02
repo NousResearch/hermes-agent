@@ -130,7 +130,7 @@ retains its legacy unscoped contract.
 and skill-derived commands. `complete.slash` uses the existing CLI completer (registry, plugins,
 skills/bundles, argument completions); quick commands remain catalog-only. Shared data builders
 live in `tui_gateway/command_discovery.py`, without importing the legacy server. Definitions
-come from `hermes_cli/commands.py` (`hermes_cli/AGENTS.md`).
+come from `commands/__init__.py` (`hermes_cli/AGENTS.md`).
 
 The canonical gateway exposes the same two discovery RPCs through `gateway/session_discovery.py`.
 It requires authenticated `session:read` capability and the authority's exact profile before any

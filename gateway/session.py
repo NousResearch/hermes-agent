@@ -195,7 +195,7 @@ def _should_redact_pii(platform: Platform, enabled: bool) -> bool:
     if not enabled or platform in _PII_SAFE_PLATFORMS:
         return enabled
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         entry = platform_registry.get(platform.value)
         return bool(entry and entry.pii_safe)
     except Exception:
@@ -232,12 +232,13 @@ def _slack_tools_loaded() -> bool:
     if not token.strip():
         return False
     try:
-        # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
+        # Read-only loader: this runs per turn via _ephemeral_change_key, and get_platform_tools
         # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
         from hermes_cli.config import load_config_readonly
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
         # include_default_mcp_servers defaults True so a default-enabled Slack MCP counts too.
-        return "slack" in _get_platform_tools(load_config_readonly(), "slack")
+        return "slack" in get_platform_tools(load_config_readonly(), "slack", xai_credentials_present=has_xai_tool_credentials)
     except Exception:
         return False
 
@@ -247,14 +248,15 @@ def _discord_tools_loaded() -> bool:
     toolset enabled AND `DISCORD_BOT_TOKEN` set (the tool's `check_fn` gates on it)."""
     try:
         from agent.secret_scope import get_secret
-        # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
+        # Read-only loader: this runs per turn via _ephemeral_change_key, and get_platform_tools
         # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
         from hermes_cli.config import load_config_readonly
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
 
         if not (get_secret("DISCORD_BOT_TOKEN", "") or "").strip():
             return False
-        enabled = _get_platform_tools(load_config_readonly(), "discord", include_default_mcp_servers=False)
+        enabled = get_platform_tools(load_config_readonly(), "discord", include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials)
         return "discord" in enabled or "discord_admin" in enabled
     except Exception:
         return False
@@ -1347,7 +1349,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

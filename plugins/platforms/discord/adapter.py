@@ -4467,7 +4467,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, BasePlatformA
                 # e.g. name conflict with a subcommand group.
                 pass
         try:
-            from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
+            from commands import COMMAND_REGISTRY, is_gateway_available as _is_gateway_available
+            from gateway.command_presentation import resolve_config_gates as _resolve_config_gates
             try:
                 already_registered = {cmd.name for cmd in tree.get_commands()}
             except Exception:
@@ -4481,7 +4482,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, BasePlatformA
             logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
         # Mirror PluginContext.register_command() commands into the native slash picker.
         try:
-            from hermes_cli.commands import _iter_plugin_command_entries
+            from commands import plugin_command_entries as _iter_plugin_command_entries
             for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
                 _auto_register(plugin_name, plugin_desc, plugin_args_hint)
         except Exception as e:
@@ -4615,7 +4616,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, BasePlatformA
     def _refresh_skill_catalog_state(self) -> None:
         """Re-scan disk and repopulate ``self._skill_entries``/``_skill_lookup`` in place.
         No Discord API calls: autocomplete and handler read these attributes directly."""
-        from hermes_cli.commands_platforms import discord_skill_commands_by_category
+        from gateway.command_platforms import discord_skill_commands_by_category
         reserved = getattr(self, "_skill_group_reserved_names", set())
         categories, uncategorized, hidden = discord_skill_commands_by_category(
             reserved_names=set(reserved),
@@ -7385,7 +7386,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

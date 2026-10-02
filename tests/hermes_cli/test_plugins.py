@@ -1,4 +1,5 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
+import plugin_runtime.lifecycle as plugin_lifecycle
 
 import logging
 import json
@@ -13,16 +14,16 @@ import hermes_yaml as yaml
 
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
-    PluginContext,
-    PluginManager,
     PluginManifest,
     _dispatch_pre_tool_call_hooks,
     get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
     has_middleware,
-    resolve_plugin_command_result,
     _portable_skill_namespace,
 )
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
+from plugin_runtime.dispatch import resolve_plugin_command_result
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
 from hermes_cli.middleware import (
     apply_llm_request_middleware,
@@ -122,7 +123,7 @@ class TestPluginDiscovery:
     def test_removed_relay_plugin_identity_cannot_be_reloaded(
         self, monkeypatch, caplog
     ):
-        from hermes_cli import plugins as plugins_mod
+        import plugin_runtime.manager as runtime_manager
 
         manifest = PluginManifest(
             name="nemo_relay",
@@ -137,11 +138,11 @@ class TestPluginDiscovery:
         )
         monkeypatch.setattr(manager, "_scan_entry_points", lambda: [])
         monkeypatch.setattr(
-            plugins_mod,
+            runtime_manager,
             "_get_enabled_plugins",
             lambda: {"observability/nemo_relay"},
         )
-        monkeypatch.setattr(plugins_mod, "_get_disabled_plugins", lambda: set())
+        monkeypatch.setattr(runtime_manager, "_get_disabled_plugins", lambda: set())
         loaded: list[PluginManifest] = []
         monkeypatch.setattr(manager, "_load_plugin", loaded.append)
 
@@ -158,7 +159,7 @@ class TestPluginDiscovery:
         self, tmp_path, monkeypatch
     ):
         from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
-        from hermes_cli import plugins as plugins_mod
+        from plugin_runtime import discovery as runtime_discovery
 
         home = tmp_path / "home"
         plugin = home / "plugins" / "portable"
@@ -204,7 +205,7 @@ class TestPluginDiscovery:
         empty_bundled.mkdir()
         monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
         monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
+        monkeypatch.setattr(runtime_discovery, "get_bundled_plugins_dir", lambda: empty_bundled)
 
         manager = PluginManager()
         manager.discover_and_load()
@@ -235,7 +236,7 @@ class TestPluginDiscovery:
         """Readable server names can clash where the old digest could not: the second plugin's server
         is skipped with a warning naming the first, and the first's config is the one served."""
         from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
-        from hermes_cli import plugins as plugins_mod
+        from plugin_runtime import discovery as runtime_discovery
 
         home = tmp_path / ".hermes"
         # Two unrelated plugins both call their server "shared": one readable name, one owner.
@@ -253,7 +254,7 @@ class TestPluginDiscovery:
         empty_bundled.mkdir()
         monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
         monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
+        monkeypatch.setattr(runtime_discovery, "get_bundled_plugins_dir", lambda: empty_bundled)
 
         manager = PluginManager()
         manager.discover_and_load()
@@ -264,7 +265,7 @@ class TestPluginDiscovery:
 
     def test_disabled_portable_plugin_registers_nothing(self, tmp_path, monkeypatch):
         from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
-        from hermes_cli import plugins as plugins_mod
+        from plugin_runtime import discovery as runtime_discovery
 
         home = tmp_path / "home"
         plugin = home / "plugins" / "portable"
@@ -286,7 +287,7 @@ class TestPluginDiscovery:
         empty_bundled.mkdir()
         monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
         monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
+        monkeypatch.setattr(runtime_discovery, "get_bundled_plugins_dir", lambda: empty_bundled)
 
         manager = PluginManager()
         manager.discover_and_load()
@@ -378,7 +379,8 @@ class TestPluginDiscovery:
 
     def test_middleware_helpers_skip_no_listener_work(self, monkeypatch):
         manager = types.SimpleNamespace(_middleware={})
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr("plugin_runtime.api.delivery_manager", lambda: manager)
+        monkeypatch.setattr("plugin_runtime.lifecycle.delivery_manager", lambda: manager)
 
         request = {"messages": []}
         args = {"path": "README.md"}
@@ -592,8 +594,8 @@ class TestPluginLoading:
         hermes_home.mkdir(exist_ok=True)
         (hermes_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["chronos"]}}))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from hermes_cli import plugins as plugins_mod
-        monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
+        from plugin_runtime import discovery as runtime_discovery
+        monkeypatch.setattr(runtime_discovery, "get_bundled_plugins_dir", lambda: bundled)
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -653,7 +655,7 @@ class TestPluginLoading:
             group=ENTRY_POINTS_GROUP,
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.importlib.metadata.entry_points",
+            "plugin_runtime.discovery.importlib.metadata.entry_points",
             lambda: SimpleNamespace(
                 select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
             ),
@@ -706,7 +708,7 @@ class TestPluginLoading:
             group=ENTRY_POINTS_GROUP,
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.importlib.metadata.entry_points",
+            "plugin_runtime.discovery.importlib.metadata.entry_points",
             lambda: SimpleNamespace(
                 select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
             ),
@@ -768,7 +770,7 @@ class TestPluginLoading:
             group=ENTRY_POINTS_GROUP,
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.importlib.metadata.entry_points",
+            "plugin_runtime.discovery.importlib.metadata.entry_points",
             lambda: SimpleNamespace(
                 select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
             ),
@@ -861,7 +863,7 @@ class TestPluginLoading:
             group=ENTRY_POINTS_GROUP,
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.importlib.metadata.entry_points",
+            "plugin_runtime.discovery.importlib.metadata.entry_points",
             lambda: SimpleNamespace(
                 select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
             ),
@@ -963,11 +965,9 @@ class TestDeliveryParity:
 
     def _fresh_manager(self, monkeypatch, register_body):
         """Build an undiscovered manager whose sweep registers via plugins."""
-        import hermes_cli.plugins as plugins_mod
-
         mgr = PluginManager()
         assert mgr._discovered is False
-        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: mgr)
+        monkeypatch.setattr(plugin_lifecycle, "get_plugin_manager", lambda: mgr)
 
         def _inner(self_inner):
             register_body(self_inner)
@@ -1164,7 +1164,7 @@ class TestForceReloadSymmetry:
         import time
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.15
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 0.15
         )
 
         hold = threading.Event()
@@ -1198,7 +1198,7 @@ class TestForceReloadSymmetry:
 
     def test_hook_exception_still_isolated_under_timeout_path(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 1.0
         )
 
         def boom(**_kwargs):
@@ -1211,7 +1211,7 @@ class TestForceReloadSymmetry:
     def test_system_exit_is_reported_under_timeout_path(self, monkeypatch, caplog):
         """Bounded hooks isolate SystemExit without losing its failure report."""
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 1.0
         )
 
         def exits(**_kwargs):
@@ -1230,7 +1230,7 @@ class TestForceReloadSymmetry:
         (#109624), on both the caller-thread and the bounded-worker path, and the block message
         names the callback and the error so a crashing guard is distinguishable from a slow one."""
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: timeout
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: timeout
         )
 
         def boom(**_kwargs):
@@ -1263,7 +1263,7 @@ class TestForceReloadSymmetry:
     def test_subagent_stop_stays_on_caller_thread(self, monkeypatch):
         """Caller-thread hooks must not move the body onto a timeout worker."""
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 1.0
         )
         seen = {}
 
@@ -1280,7 +1280,7 @@ class TestForceReloadSymmetry:
     def test_system_exit_from_caller_thread_hook_is_isolated(self, monkeypatch, caplog):
         """A plugin dependency calling sys.exit() must not terminate hook dispatch."""
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 1.0
         )
 
         def exits(**_kwargs):
@@ -1296,7 +1296,7 @@ class TestForceReloadSymmetry:
     def test_keyboard_interrupt_from_caller_thread_hook_propagates(self, monkeypatch):
         """Plugin isolation must not swallow an operator's Ctrl-C."""
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 1.0
         )
         later_calls = []
 
@@ -1330,7 +1330,7 @@ class TestForceReloadSymmetry:
         import time
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 0.1
         )
 
         hold = threading.Event()
@@ -1357,7 +1357,7 @@ class TestForceReloadSymmetry:
         """Two concurrent calls of one tool are different work, not a duplicate (#98382)."""
         import time
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 5.0
         )
 
         hold = threading.Event()
@@ -1396,7 +1396,7 @@ class TestForceReloadSymmetry:
         """Negative control: the same call identity stays a duplicate while its worker
         is still running, so the running gate (not timeout suppression) dedupes it."""
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 5.0
         )
 
         hold = threading.Event()
@@ -1432,10 +1432,10 @@ class TestForceReloadSymmetry:
         ``_HOOK_MAX_ABANDONED_WORKERS`` live ones — a hung plugin leaks a bounded few threads,
         never one per call (#98382), and past the cap it is skipped with a warning that names
         the callback (#105223)."""
-        import hermes_cli.plugins_dispatch as dispatch
+        import plugin_runtime.dispatch as dispatch
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 0.1
         )
 
         hold = threading.Event()
@@ -1467,7 +1467,7 @@ class TestForceReloadSymmetry:
         from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 0.1
         )
         hold = threading.Event()
         starts = []
@@ -1494,7 +1494,7 @@ class TestForceReloadSymmetry:
         """If the worker completes between the wait expiring and the timeout branch taking the
         lock, it has already released its token; recording it as abandoned anyway would block
         every later call id for that callback until reload. A fresh call must still run."""
-        import hermes_cli.plugins_dispatch as dispatch
+        import plugin_runtime.dispatch as dispatch
 
         class _RacingEvent(threading.Event):
             def wait(self, timeout=None):
@@ -1509,7 +1509,7 @@ class TestForceReloadSymmetry:
 
         monkeypatch.setattr(dispatch, "threading", _Threading())
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 0.1
         )
         starts = []
 
@@ -1537,7 +1537,7 @@ class TestForceReloadSymmetry:
         )
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 0.1
         )
 
         hold = threading.Event()
@@ -1551,7 +1551,7 @@ class TestForceReloadSymmetry:
 
         import hermes_cli.plugins as plugins_mod
 
-        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+        monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", mgr)
 
         t0 = time.monotonic()
         msg = resolve_pre_tool_block("web_search", {"query": "x"})
@@ -1572,7 +1572,7 @@ class TestForceReloadSymmetry:
         from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 1.0
         )
 
         calls = []
@@ -1609,7 +1609,7 @@ class TestForceReloadSymmetry:
         from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+            "plugin_runtime.dispatch._resolve_hook_callback_timeout", lambda: 0.1
         )
 
         hold = threading.Event()
@@ -1623,7 +1623,7 @@ class TestForceReloadSymmetry:
 
         import hermes_cli.plugins as plugins_mod
 
-        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+        monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", mgr)
 
         dispatch_calls = []
 
@@ -1665,12 +1665,12 @@ class TestForceReloadSymmetry:
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-a"))
         mgr_a = PluginManager()
-        plugins_mod._plugin_manager = mgr_a
+        plugin_lifecycle._plugin_manager = mgr_a
         shell_hooks_mod.register_from_config(cfg, accept_hooks=True)
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-b"))
         mgr_b = PluginManager()
-        plugins_mod._plugin_manager = mgr_b
+        plugin_lifecycle._plugin_manager = mgr_b
         shell_hooks_mod.register_from_config(cfg, accept_hooks=True)
 
         assert len(mgr_a._hooks.get("on_session_start", [])) == 1
@@ -1698,7 +1698,7 @@ class TestPreToolCallBlocking:
 
     def test_block_message_returned_for_valid_directive(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [{"action": "block", "message": "blocked by plugin"}],
         )
         assert get_pre_tool_call_block_message("todo", {}, task_id="t1") == "blocked by plugin"
@@ -1718,7 +1718,7 @@ class TestPreToolCallDirective:
             lambda hook_name, **kwargs: observed.append((hook_name, kwargs)),
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [],
         )
 
@@ -1736,7 +1736,7 @@ class TestPreToolCallDirective:
     def test_approve_directive_returned(self, monkeypatch):
         from hermes_cli.plugins import get_pre_tool_call_directive
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "approve", "message": "needs human ok"}
             ],
@@ -1748,7 +1748,7 @@ class TestPreToolCallDirective:
         """approve may omit a message (block may not)."""
         from hermes_cli.plugins import get_pre_tool_call_directive
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [{"action": "approve"}],
         )
         assert get_pre_tool_call_directive("write_file", {}) == ("approve", None)
@@ -1759,7 +1759,7 @@ class TestPreToolCallDirective:
         approve means no prompt at all, so the veto would otherwise be dropped silently."""
         from hermes_cli.plugins import _get_pre_tool_call_directive_details
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "modify", "args": {"path": "/safe"}},
                 {"action": "approve", "message": "earlier plugin approves", "rule_key": "k"},
@@ -1776,7 +1776,7 @@ class TestPreToolCallDirective:
         incl. its rule_key) and must keep accumulating modify directives that follow it."""
         from hermes_cli.plugins import _get_pre_tool_call_directive_details
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "block"},  # message-less block is invalid and ignored
                 {"action": "approve", "message": "first", "rule_key": " write_file:ssh "},
@@ -1800,7 +1800,7 @@ class TestResolvePreToolBlock:
 
         seen = {}
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "approve", "message": "why"}
             ],
@@ -1827,7 +1827,7 @@ class TestResolvePreToolBlock:
         seen = {}
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {
                     "action": "approve",
@@ -1856,7 +1856,7 @@ class TestResolvePreToolBlock:
     def test_approve_gate_exception_fails_closed(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [{"action": "approve", "message": "why"}],
         )
         def _boom(*a, **k):
@@ -1872,7 +1872,7 @@ class TestPreToolCallModify:
     def test_modify_returns_merged_args(self, monkeypatch):
         """A single modify hook should return merged args."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "modify", "args": {"path": "/safe/dir"}}
             ],
@@ -1886,7 +1886,7 @@ class TestPreToolCallModify:
     def test_modify_accumulates_multiple_hooks(self, monkeypatch):
         """Multiple modify hooks should accumulate — hook A + hook B both survive."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "modify", "args": {"path": "/safe"}},
                 {"action": "modify", "args": {"content": "fixed"}},
@@ -1901,7 +1901,7 @@ class TestPreToolCallModify:
     def test_modify_last_wins_on_same_key(self, monkeypatch):
         """When two hooks modify the same key, the later hook wins."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "modify", "args": {"path": "/first"}},
                 {"action": "modify", "args": {"path": "/second"}},
@@ -1915,7 +1915,7 @@ class TestPreToolCallModify:
     def test_modify_with_block_returns_both(self, monkeypatch):
         """When a modify precedes a block, both are returned."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "modify", "args": {"path": "/safe"}},
                 {"action": "block", "message": "still blocked"},
@@ -1930,7 +1930,7 @@ class TestPreToolCallModify:
     def test_modify_after_block_is_invisible(self, monkeypatch):
         """A modify after a block is never reached — first block wins."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "block", "message": "stopped"},
                 {"action": "modify", "args": {"path": "/invisible"}},
@@ -1945,7 +1945,7 @@ class TestPreToolCallModify:
     def test_modify_with_none_args(self, monkeypatch):
         """Modify should handle None args gracefully."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "modify", "args": {"path": "/safe"}}
             ],
@@ -1957,7 +1957,7 @@ class TestPreToolCallModify:
     def test_modify_none_when_no_hooks(self, monkeypatch):
         """No hooks → both return values are None."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [],
         )
         block_msg, modified = _dispatch_pre_tool_call_hooks(
@@ -1969,7 +1969,7 @@ class TestPreToolCallModify:
     def test_modify_invalid_args_ignored(self, monkeypatch):
         """Non-dict args and empty dicts should be silently ignored."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "modify", "args": "not a dict"},
                 {"action": "modify", "args": {}},          # empty
@@ -1987,7 +1987,7 @@ class TestGetPreVerifyContinueMessage:
 
 
     def test_none_when_no_hooks(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugin_policy.invoke_hook", lambda hook_name, **kwargs: [])
         assert get_pre_verify_continue_message() is None
 
     def test_forwards_scope_signals_to_hooks(self, monkeypatch):
@@ -1997,7 +1997,7 @@ class TestGetPreVerifyContinueMessage:
             seen.update(kwargs)
             return []
 
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", capture)
+        monkeypatch.setattr("hermes_cli.plugin_policy.invoke_hook", capture)
         get_pre_verify_continue_message(coding=True, attempt=2, changed_paths=["a.py"])
         assert seen["coding"] is True
         assert seen["attempt"] == 2
@@ -2014,7 +2014,7 @@ class TestThreadToolWhitelist:
         )
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [],
         )
         set_thread_tool_whitelist({"memory", "skill_manage"})
@@ -2031,7 +2031,7 @@ class TestThreadToolWhitelist:
         )
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [],
         )
         set_thread_tool_whitelist({"memory"})
@@ -2050,7 +2050,7 @@ class TestThreadToolWhitelist:
         )
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: [],
         )
 
@@ -2090,7 +2090,7 @@ class TestPluginContext:
         ``shell_exec``, ``write_file``) without the operator's knowledge.
         """
         from tools.registry import registry
-        from hermes_cli.plugins import PluginToolOverrideError
+        from plugin_runtime.context import PluginToolOverrideError
 
         registry.register(
             name="gated_override_target",
@@ -2134,7 +2134,8 @@ class TestPluginContext:
 
             # And the raise path itself works for callers that invoke
             # register_tool directly without going through PluginManager.
-            from hermes_cli.plugins import PluginContext, PluginManifest
+            from hermes_cli.plugins import PluginManifest
+            from plugin_runtime.context import PluginContext
             manifest = PluginManifest(name="evil_override_plugin", source="user")
             ctx = PluginContext(manager=mgr, manifest=manifest)
             with pytest.raises(PluginToolOverrideError) as excinfo:
@@ -2254,7 +2255,7 @@ class TestPluginToolVisibility:
 
         mgr = PluginManager()
         mgr.discover_and_load()
-        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+        monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", mgr)
 
         from model_tools import get_tool_definitions
 
@@ -2400,7 +2401,7 @@ class TestPluginCommands:
 
         import hermes_cli.plugins as plugins_mod
 
-        with patch.object(plugins_mod, "_plugin_manager", None):
+        with patch.object(plugin_lifecycle, "_plugin_manager", None):
             engine = plugins_mod.get_plugin_context_engine()
             assert engine is not None
             assert engine.name == "stub-engine"
@@ -2576,7 +2577,7 @@ class TestPluginCommandResultResolution:
         async def _handler():
             return "threaded-ok"
 
-        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        monkeypatch.setattr("plugin_runtime.dispatch.asyncio.get_running_loop", lambda: _Loop())
         assert resolve_plugin_command_result(_handler()) == "threaded-ok"
 
     def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
@@ -2590,8 +2591,8 @@ class TestPluginCommandResultResolution:
             await _asyncio.sleep(10)
             return "should-not-reach"
 
-        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
-        monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
+        monkeypatch.setattr("plugin_runtime.dispatch.asyncio.get_running_loop", lambda: _Loop())
+        monkeypatch.setattr("plugin_runtime.dispatch._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
 
         with pytest.raises(TimeoutError):
             resolve_plugin_command_result(_slow_handler())

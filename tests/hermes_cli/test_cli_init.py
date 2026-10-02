@@ -750,7 +750,7 @@ class TestPluginToolsetStartupValidation:
         monkeypatch.setattr(_cli_mod, "validate_toolset", lambda name: name in registry)
         monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
+            "plugin_runtime.lifecycle.get_plugin_toolset_keys_nowait",
             lambda: set(plugin_keys),
         )
         stub._init_toolsets(list(toolsets))

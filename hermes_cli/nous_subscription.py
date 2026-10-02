@@ -164,7 +164,7 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
     target_tools = set(resolve_toolset(toolset_key))
     if not target_tools:
         return False
-    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    from tools.toolset_scope import parse_platform_toolsets_value
     for platform, raw_toolsets in platform_toolsets.items():
         toolset_names = list(parse_platform_toolsets_value(raw_toolsets) or [])
         if not toolset_names:
@@ -718,7 +718,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

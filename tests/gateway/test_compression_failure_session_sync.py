@@ -1,3 +1,4 @@
+from tools import platform_policy
 import asyncio
 import sys
 import threading
@@ -138,7 +139,7 @@ def _install_compression_failure_agent(monkeypatch, agent_cls=_CompressionThenFa
 
     import hermes_cli.tools_config as tools_config
 
-    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda *_args, **_kwargs: {"core"})
+    monkeypatch.setattr(platform_policy, "get_platform_tools", lambda *_args, **_kwargs: {"core"})
 
 
 def _run_compression_failure_turn(runner, source, *, run_generation=None):

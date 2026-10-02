@@ -31,7 +31,7 @@ import pytest
 
 def test_fire_helper_is_observer_only_and_never_raises(monkeypatch):
     """Directive-shaped returns are ignored; plugin exceptions don't escape."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     calls = {}
 
@@ -63,7 +63,7 @@ def test_fire_helper_is_observer_only_and_never_raises(monkeypatch):
 
 
 def test_fire_helper_swallows_manager_errors(monkeypatch):
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     def _boom():
         raise RuntimeError("plugin discovery exploded")
@@ -90,7 +90,7 @@ def _make_cli():
 
 
 def test_cli_fires_for_recognized_command(monkeypatch):
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     captured = {}
 
@@ -112,7 +112,7 @@ def test_cli_fires_for_recognized_command(monkeypatch):
 
 def test_cli_reports_canonical_name_for_alias(monkeypatch):
     """/exit is an alias of /quit — hook payload reports canonical 'quit'."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     captured = {}
     monkeypatch.setattr(
@@ -131,7 +131,7 @@ def test_cli_reports_canonical_name_for_alias(monkeypatch):
 
 
 def test_cli_passes_raw_args(monkeypatch):
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     captured = {}
     monkeypatch.setattr(
@@ -148,7 +148,7 @@ def test_cli_passes_raw_args(monkeypatch):
 
 def test_cli_hook_before_handler(monkeypatch):
     """The hook fires BEFORE the command handler runs."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     order = []
     monkeypatch.setattr(
@@ -273,7 +273,7 @@ def _make_runner():
 
 @pytest.mark.asyncio
 async def test_gateway_fires_for_recognized_command(monkeypatch):
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     captured = {}
     monkeypatch.setattr(
@@ -301,7 +301,7 @@ async def test_gateway_fires_for_recognized_command(monkeypatch):
 @pytest.mark.asyncio
 async def test_gateway_reports_canonical_name_for_alias(monkeypatch):
     """/q is an alias of /queue — payload reports canonical name."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     captured = {}
     monkeypatch.setattr(
@@ -324,7 +324,7 @@ async def test_gateway_reports_canonical_name_for_alias(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_gateway_does_not_fire_for_plain_text(monkeypatch):
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     fired = []
     monkeypatch.setattr(
@@ -347,7 +347,7 @@ async def test_gateway_does_not_fire_for_plain_text(monkeypatch):
 async def test_gateway_control_plane_intercept_excluded(monkeypatch):
     """Commands hitting the running-agent intercept path must NOT fire the
     hook — /stop et al. during an active run are control-plane operations."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     fired = []
     monkeypatch.setattr(
@@ -370,7 +370,7 @@ async def test_gateway_control_plane_intercept_excluded(monkeypatch):
 @pytest.mark.asyncio
 async def test_gateway_hook_failure_is_non_fatal(monkeypatch):
     """A raising fire helper must not break command dispatch."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_cli import plugin_policy as plugins_mod
 
     def _boom(**kwargs):
         raise RuntimeError("bad plugin infra")

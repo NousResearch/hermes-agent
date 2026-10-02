@@ -85,7 +85,7 @@ class PlatformActions:
 
     def _capability_granted(self) -> bool:
         try:
-            from hermes_cli.plugin_capabilities import plugin_capability_granted
+            from plugin_runtime.capabilities import plugin_capability_granted
 
             return plugin_capability_granted(self._plugin_id, CAPABILITY_ID)
         except Exception:
@@ -201,6 +201,11 @@ class PlatformActions:
             result.get("ok"),
             "" if result.get("ok") else f" error={result.get('error')}",
         )
+
+
+from plugin_runtime.host_bindings import bind_plugin_host
+
+bind_plugin_host(platform_actions_factory=PlatformActions)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

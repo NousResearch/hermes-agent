@@ -9,7 +9,7 @@ from agent.secret_sources.base import (
     FetchResult,
     SecretSource,
 )
-from hermes_cli.plugins import PluginManager
+from plugin_runtime.manager import PluginManager
 
 
 class _StubSource(SecretSource):

@@ -22,7 +22,10 @@ import pytest
 
 from gateway.config import PlatformConfig, Platform
 from gateway.run_plugin_rewire import GatewayPluginRewireMixin
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest, discover_plugins, get_plugin_manager
+from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.manifest import PluginManifest
+from plugin_runtime.context import PluginContext
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -69,7 +72,7 @@ def _factory_manager(calls: list, plugin: str = "p") -> PluginManager:
 def test_rewire_is_idempotent_per_native_client():
     calls: list = []
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={}))
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=_factory_manager(calls)):
+    with patch("plugin_runtime.lifecycle.get_plugin_manager", return_value=_factory_manager(calls)):
         adapter.rewire_plugin_handlers()  # before connect wired anything: nothing to do
         assert calls == []
         adapter._wire_plugin_handlers("app-1")
@@ -77,7 +80,7 @@ def test_rewire_is_idempotent_per_native_client():
         adapter.rewire_plugin_handlers()
         assert calls == ["app-1"]
         # A force re-discovery re-registers a NEW factory object for the same plugin: still once.
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=_factory_manager(calls)):
+        with patch("plugin_runtime.lifecycle.get_plugin_manager", return_value=_factory_manager(calls)):
             adapter.rewire_plugin_handlers()
         assert calls == ["app-1"]
         adapter._wire_plugin_handlers("app-2")  # rebuilt native client: wired again, once
@@ -101,7 +104,7 @@ def test_telegram_late_plugin_handler_precedes_core_catch_all():
     plugin_handler = object()
     mgr = PluginManager()
     ctx = PluginContext(manifest=PluginManifest(name="p", version="0", description=""), manager=mgr)
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+    with patch("plugin_runtime.lifecycle.get_plugin_manager", return_value=mgr):
         adapter._wire_plugin_handlers(app)  # connect(): plugins first (none yet), then core
         adapter._register_handlers(app)
         core = list(app.handlers[0])  # text catch-all, COMMAND catch-all, ..., CallbackQueryHandler
@@ -119,7 +122,7 @@ def test_slack_late_action_handler_registers_one_listener():
     adapter._app = MagicMock()
     mgr = PluginManager()
     ctx = PluginContext(manifest=PluginManifest(name="p", version="0", description=""), manager=mgr)
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+    with patch("plugin_runtime.lifecycle.get_plugin_manager", return_value=mgr):
         adapter._register_plugin_action_handlers()  # connect
         async def cb(ack, body, action):
             pass

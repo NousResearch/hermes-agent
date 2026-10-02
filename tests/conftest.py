@@ -17,6 +17,7 @@ These invariants make the local test run match CI closely. Gaps that
 remain (CPU count, worker count) are addressed by the canonical
 test runner at ``scripts/run_tests.sh``.
 """
+import plugin_runtime.lifecycle as plugin_lifecycle
 
 import asyncio
 import atexit
@@ -383,14 +384,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
     #    singleton might still be cached from a previous test).
     try:
         import hermes_cli.plugins as _plugins_mod
-        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+        monkeypatch.setattr(_plugin_lifecycle, "_plugin_manager", None)
         # Also clear the keyed per-home manager cache (and any plugin
         # submodules it left in sys.modules) so a manager built for a
         # previous test's tmp_path HERMES_HOME can't leak forward. Paths
         # are unique per test, so collisions are unlikely, but a full
         # reset keeps this fixture the single source of plugin-state
         # hygiene rather than relying on path uniqueness.
-        _plugins_mod._reset_plugin_managers_for_tests()
+        _plugin_lifecycle.reset_plugin_managers_for_tests()
     except Exception:
         pass
     # Explicitly clear provider-specific base URL overrides that don't match

@@ -144,8 +144,8 @@ def _dispatch_to_plugin_provider(
         return None
     try:
         from agent.transcription_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-        _ensure_plugins_discovered()
+        from plugin_runtime.lifecycle import ensure_plugins_discovered
+        ensure_plugins_discovered()
         plugin_provider = get_provider(key)
         if plugin_provider is None:
             # Long-lived sessions may have discovered plugins before a backend
@@ -223,7 +223,7 @@ def _apply_pre_transcription_hook(
     wins). ``language_override`` is None unless a hook explicitly set ``language``, so backends keep
     their own config/env resolution."""
     try:
-        from hermes_cli.plugins import has_hook, invoke_hook
+        from plugin_runtime.api import has_hook, invoke_hook
         if not has_hook("pre_transcription"):
             return model, None, prompt
         hook_results = invoke_hook(

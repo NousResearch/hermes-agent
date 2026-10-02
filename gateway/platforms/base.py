@@ -2250,7 +2250,7 @@ class BasePlatformAdapter(ABC):
         plugin, so identity alone would double-register). Each factory is isolated so a bad plugin
         can't block connecting."""
         try:
-            from hermes_cli.plugins import get_plugin_manager
+            from plugin_runtime.lifecycle import get_plugin_manager
             factories = get_plugin_manager().get_platform_handler_factories(
                 getattr(self.platform, "value", str(self.platform)))
         except Exception as e:  # pragma: no cover - defensive
@@ -4017,7 +4017,7 @@ class BasePlatformAdapter(ABC):
         # runner. Without this, they are queued as pending messages and either: See #4926.
         self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
-        from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
+        from commands import is_interrupt_then_dispatch, should_bypass_active_session
         if should_bypass_active_session(cmd):
             try:
                 # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.

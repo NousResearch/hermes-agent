@@ -443,7 +443,7 @@ def _prepare_deferred_agent_startup() -> None:
     _deferred_agent_startup_done = True
     _accept_hooks = os.environ.get("HERMES_ACCEPT_HOOKS", "").lower() in {"1", "true", "yes", "on"}
     try:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
 
         discover_plugins()
     except Exception:
@@ -759,7 +759,7 @@ build_bundle_invocation_message = _lazy_shim("agent.skill_bundles", "build_bundl
 def _get_plugin_cmd_handler_names() -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
     try:
-        from hermes_cli.plugins import get_plugin_commands
+        from plugin_runtime.api import get_plugin_commands
         return set(get_plugin_commands().keys())
     except Exception:
         return set()
@@ -1184,15 +1184,15 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         cmd_lower = command.lower().strip()  # lowercase only for matching; args keep their case
         cmd_original = command.strip()
 
-        # Aliases resolve via the central registry (hermes_cli/commands.py).
-        from hermes_cli.commands import resolve_command as _resolve_cmd
+        # Aliases resolve via the central registry (commands/__init__.py).
+        from commands import resolve_command as _resolve_cmd
         _base_word = cmd_lower.split()[0].lstrip("/")
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
 
         # Observer-only pre_command plugin hook (return values ignored; never raises).
         if _cmd_def is not None:
-            from hermes_cli.plugins import fire_pre_command_hook
+            from hermes_cli.plugin_policy import fire_pre_command_hook
             fire_pre_command_hook(
                 surface="cli", command=canonical, alias_used=_base_word, args_raw=_slash_args(cmd_original),
                 session_key=getattr(self, "session_id", None), platform="cli",
@@ -1278,7 +1278,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         return True
 
     def _run_plugin_slash_command(self, base_cmd: str, user_args: str) -> None:
-        from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
+        from plugin_runtime.api import get_plugin_command_handler
+        from plugin_runtime.dispatch import resolve_plugin_command_result
 
         plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
         if not plugin_handler:
@@ -1334,7 +1335,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     def _expand_slash_prefix(self, cmd_original: str, cmd_lower: str, skill_commands, skill_bundles) -> bool:
         """Unique-prefix expansion against built-in COMMANDS + skill commands/bundles (agrees with tab-completion)."""
-        from hermes_cli.commands import COMMANDS
+        from hermes_cli.commands_presentation import COMMANDS
         typed_base = cmd_lower.split()[0]
         all_known = set(COMMANDS) | set(skill_commands) | set(skill_bundles)
         matches = [c for c in all_known if c.startswith(typed_base)]
@@ -1526,8 +1527,9 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         except Exception:
             toolsets_list = None
         if toolsets_list is None:
-            from hermes_cli.tools_config import _get_platform_tools
-            toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
+            from hermes_cli.config import has_xai_tool_credentials
+            from tools.platform_policy import get_platform_tools
+            toolsets_list = sorted(get_platform_tools(CLI_CONFIG, "cli", xai_credentials_present=has_xai_tool_credentials))
 
     parsed_skills = _parse_skills_argument(skills)
 
@@ -1729,7 +1731,7 @@ def main(
     os.environ["HERMES_INTERACTIVE"] = "1"  # terminal_tool: interactive sudo prompts with timeout
     # The banner names affected plugins; the raw per-name compat warnings would only duplicate it on stderr.
     with suppress(Exception):
-        from hermes_cli.plugin_compat import quiet_for_interactive
+        from plugin_runtime.compat import quiet_for_interactive
         quiet_for_interactive()
 
     if gateway:
@@ -1862,7 +1864,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

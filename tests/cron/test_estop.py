@@ -326,7 +326,7 @@ async def test_gateway_pause_command_engages_and_resumes(hermes_home):
 
 
 def test_pause_command_registered_for_gateway():
-    from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
+    from commands import GATEWAY_KNOWN_COMMANDS, resolve_command
 
     cmd = resolve_command("pause")
     assert cmd is not None and cmd.name == "pause"

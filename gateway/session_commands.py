@@ -27,7 +27,7 @@ def _parse(params, dispatch):
 
 def _resolve_alias(name, arg):
     from gateway.run import _load_gateway_config
-    from hermes_cli.commands import resolve_command
+    from commands import resolve_command
     quick = _load_gateway_config().get('quick_commands') or {}
     seen = set()
     while resolve_command(name) is None and name in quick:
@@ -66,7 +66,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     authority, actor = connection.authority, connection.actor
     authority.authorize(actor, ref, 'session:read')
     name, arg = _parse(params, dispatch)
-    from hermes_cli.commands import resolve_command
+    from commands import resolve_command
     from hermes_cli.profiles import profile_matches_home
     home = Path(authority.profile_id)
     if params.get('profile') and not profile_matches_home(params['profile'], home):

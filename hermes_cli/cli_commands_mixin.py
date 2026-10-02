@@ -1088,9 +1088,10 @@ class CLICommandsMixin:
         verb = "Disabling" if subcommand == "disable" else "Enabling"
         _cp(_accent(f"{verb} {', '.join(names)}..."))
         self._run_tools_config(tools_action=subcommand, names=names, platform="cli")
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
         from hermes_cli.config import load_config
-        self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
+        self.enabled_toolsets = get_platform_tools(load_config(), "cli", xai_credentials_present=has_xai_tool_credentials)
         self.new_session()
         _cp(_dim("Session reset. New tool configuration is active."))
 
@@ -1109,8 +1110,10 @@ class CLICommandsMixin:
 
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
-        from hermes_cli.slash_exec import CommandContext, execute_command
-        reply = execute_command("profile", CommandContext(surface="cli"))
+        from commands.execution import CommandContext, execute_command
+        from hermes_cli.profiles import profile_command_details
+        reply = execute_command("profile", CommandContext(
+            surface="cli", options=profile_command_details()))
         _say_block(f"  Profile: {reply.data['profile']}", f"  Home:    {reply.data['home']}")
 
     # ---- /handoff -------------------------------------------------------------------------
@@ -2149,7 +2152,7 @@ class CLICommandsMixin:
         """In-session ``/bundles`` — show installed skill bundles (``hermes bundles list`` rendered
         inside the running CLI). Bundles are loaded via ``/<bundle-name>``."""
         from cli import ChatConsole, _BOLD, _RST, _accent_hex
-        from hermes_cli.slash_exec import CommandContext, execute_command
+        from commands.execution import CommandContext, execute_command
         reply = execute_command("bundles", CommandContext(surface="cli"))
         if "error" in reply.data:
             return _cp(f"\033[1;31mBundle subsystem unavailable: {reply.data['error']}{_RST}")

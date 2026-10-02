@@ -52,7 +52,7 @@ def _make_runner():
 
 
 @pytest.mark.asyncio
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("plugin_runtime.api.invoke_hook")
 async def test_interrupt_fires_agent_loop_stopped_hook(mock_invoke_hook):
     """Calling ``_interrupt_and_clear_session`` with a real running agent
     must interrupt it AND dispatch the hook with the session, platform,
@@ -82,7 +82,7 @@ async def test_interrupt_fires_agent_loop_stopped_hook(mock_invoke_hook):
 
 
 @pytest.mark.asyncio
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("plugin_runtime.api.invoke_hook")
 async def test_hook_not_fired_for_pending_sentinel_stop(mock_invoke_hook):
     """The pending-sentinel /stop path (slash_commands.py) has no in-flight
     work to cancel — the agent loop never started. The hook is gated on a
@@ -113,7 +113,7 @@ async def test_hook_not_fired_for_pending_sentinel_stop(mock_invoke_hook):
 
 
 @pytest.mark.asyncio
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("plugin_runtime.api.invoke_hook")
 async def test_hook_not_fired_when_no_running_agent(mock_invoke_hook):
     """If there is no agent at all for the session key (already cleared),
     there is nothing to interrupt and the hook must not fire."""
@@ -137,7 +137,7 @@ async def test_hook_not_fired_when_no_running_agent(mock_invoke_hook):
 
 
 @pytest.mark.asyncio
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("plugin_runtime.api.invoke_hook")
 async def test_hook_dispatch_failure_does_not_break_interrupt(mock_invoke_hook):
     """A misbehaving plugin must not prevent the interrupt from completing."""
     mock_invoke_hook.side_effect = RuntimeError("plugin exploded")

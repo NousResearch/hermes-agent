@@ -670,7 +670,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     # Re-run plugin discovery so the provider registers before start_server's gate.
     try:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins(force=True)
     except Exception as exc:
         print(f"  ⚠ Plugin re-discovery failed ({exc}); the gate may still "

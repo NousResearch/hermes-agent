@@ -6,6 +6,8 @@ hooks_auto_accept: config key).
 """
 
 from __future__ import annotations
+import plugin_runtime.lifecycle as plugin_lifecycle
+from plugin_runtime.manager import PluginManager
 
 from pathlib import Path
 from unittest.mock import patch
@@ -39,7 +41,7 @@ class TestTTYPromptFlow:
         from hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
-        plugins._plugin_manager = plugins.PluginManager()
+        plugin_lifecycle._plugin_manager = PluginManager()
 
         with patch("sys.stdin") as mock_stdin, patch("builtins.input", return_value="y"):
             mock_stdin.isatty.return_value = True
@@ -58,7 +60,7 @@ class TestTTYPromptFlow:
         from hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
-        plugins._plugin_manager = plugins.PluginManager()
+        plugin_lifecycle._plugin_manager = PluginManager()
 
         with patch("sys.stdin") as mock_stdin, patch("builtins.input", return_value="n"):
             mock_stdin.isatty.return_value = True
@@ -76,7 +78,7 @@ class TestTTYPromptFlow:
         from hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
-        plugins._plugin_manager = plugins.PluginManager()
+        plugin_lifecycle._plugin_manager = PluginManager()
 
         # First call: TTY, approved.
         with patch("sys.stdin") as mock_stdin, patch("builtins.input", return_value="y"):
@@ -109,7 +111,7 @@ class TestNonTTYFlow:
         from hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
-        plugins._plugin_manager = plugins.PluginManager()
+        plugin_lifecycle._plugin_manager = PluginManager()
 
         with patch("sys.stdin") as mock_stdin:
             mock_stdin.isatty.return_value = False
@@ -124,7 +126,7 @@ class TestNonTTYFlow:
         from hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
-        plugins._plugin_manager = plugins.PluginManager()
+        plugin_lifecycle._plugin_manager = PluginManager()
         monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
 
         with patch("sys.stdin") as mock_stdin:

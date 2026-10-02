@@ -48,7 +48,7 @@ def test_describe_matches_the_runtime_once_legacy_disabled_is_migrated(profile_d
     """Describe reads ``enabled``; a legacy ``disabled: true`` reads as off, and the config
     migration turns it into the ``enabled: false`` the runtime resolver honours."""
     from hermes_cli.config_migrations import run_migrations
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from tools.platform_policy import enabled_mcp_server_names
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     _write_mcp(profile_dir, {
@@ -72,7 +72,7 @@ def test_describe_matches_the_runtime_once_legacy_disabled_is_migrated(profile_d
 
 
 def test_configure_toggle_is_what_the_runtime_resolver_and_describe_see(profile_dir):
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from tools.platform_policy import enabled_mcp_server_names
 
     _write_mcp(profile_dir, {
         "keep": {"command": "keep", "enabled": False},

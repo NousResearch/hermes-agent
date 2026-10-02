@@ -1,6 +1,7 @@
 """Approval transport plugin contract and fail-closed host routing."""
 
 from __future__ import annotations
+import plugin_runtime.lifecycle as plugin_lifecycle
 
 import asyncio
 import json
@@ -10,7 +11,9 @@ import time
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import PluginManifest
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 from tools import approval_context, approval_prompt
 
 
@@ -503,7 +506,7 @@ def register(ctx):
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
     manager = PluginManager()
-    monkeypatch.setattr(plugins_module, "_plugin_manager", manager)
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", manager)
     token = approval_context.set_hermes_interactive_context(True)
     approval.clear_session("local")
     approval._permanent_approved.clear()

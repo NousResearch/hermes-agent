@@ -956,6 +956,20 @@ def format_profile_label(name: str, display_name: Optional[str]) -> str:
     return f"{dn} ({name})" if dn and dn != name else name
 
 
+def profile_command_details(profile_name=None, home_display=None) -> dict:
+    """Resolve profile display inputs at the application boundary for shared commands."""
+    from hermes_constants import display_hermes_home
+    profile_name = str(profile_name or "").strip() or get_active_profile_name()
+    home_display = str(home_display or "").strip() or display_hermes_home()
+    label = profile_name
+    try:
+        display = read_profile_meta(get_profile_dir(profile_name)).get("display_name", "")
+        label = format_profile_label(profile_name, display)
+    except Exception:
+        pass
+    return {"profile_name": profile_name, "home_display": home_display, "profile_label": label}
+
+
 def set_profile_display_name(profile_name: str, display_name: str) -> str:
     """Set (or clear, with ``""``) a presentation-only display name. Returns the stored value;
     raises ``ValueError`` over 64 chars."""

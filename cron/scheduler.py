@@ -468,13 +468,13 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
 
 def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]:
     """Layer enabled MCP servers onto a per-job ``enabled_toolsets`` allowlist (else a per-job list
-    silently drops every MCP server). Mirrors ``_get_platform_tools``: ``no_mcp`` sentinel -> none
+    silently drops every MCP server). Mirrors ``get_platform_tools``: ``no_mcp`` sentinel -> none
     (stripped); any MCP server already listed -> allowlist, add nothing; else union all enabled."""
     result = [t for t in per_job if t != "no_mcp"]
     if "no_mcp" in per_job:
         return result
     # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from tools.platform_policy import enabled_mcp_server_names
     enabled_mcp = enabled_mcp_server_names(cfg)
     if set(result) & enabled_mcp:
         return result
@@ -486,13 +486,13 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     """Toolset list for a cron job. Precedence: per-job ``enabled_toolsets`` (+ MCP merge) >
-    ``cron`` platform config (``_get_platform_tools``, which strips _DEFAULT_OFF_TOOLSETS so fresh
+    ``cron`` platform config (``get_platform_tools``, which strips _DEFAULT_OFF_TOOLSETS so fresh
     installs run without ``moa``). A lookup failure fails CLOSED: the run errors out.
 
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update). Keeps the agent's
     job-scoped toolset override intact — #6130. Enabled MCP servers are layered on per
     ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP tools. 2.
-    Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``) so users can gate cron toolsets
+    Mirrors gateway behavior (``get_platform_tools(cfg, platform_key)``) so users can gate cron toolsets
     globally without recreating every job. 3. Never ``None``: AIAgent reads ``None`` as "every
     toolset", so an unreadable ``platform_toolsets.cron`` restriction would hand an unattended job
     the full default set (#111380). The raise reaches ``run_job``'s failure path, which records the
@@ -502,8 +502,9 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     if per_job:
         return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     try:
-        from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
+        return sorted(get_platform_tools(cfg or {}, "cron", xai_credentials_present=has_xai_tool_credentials))
     except Exception as exc:
         raise RuntimeError(
             "Cron toolset resolution failed, so this run was refused rather than given every "
@@ -4301,7 +4302,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

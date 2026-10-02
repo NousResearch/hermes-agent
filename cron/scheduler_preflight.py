@@ -345,7 +345,7 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
     requested = [str(name) for name in (job.get("enabled_toolsets") or [])]
     if not requested:
         return None
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from tools.platform_policy import enabled_mcp_server_names
     from toolsets import resolve_toolset
     from tools.mcp_tool_discovery import mcp_server_reconnecting
     missing = [name for name in requested

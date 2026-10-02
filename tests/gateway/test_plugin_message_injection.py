@@ -16,7 +16,9 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from plugin_runtime.manifest import PluginManifest
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 
 
 def _entry(*, origin=True) -> SessionEntry:
@@ -119,7 +121,7 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
         manager,
     )
 
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+    with patch("plugin_runtime.lifecycle.get_plugin_manager", return_value=manager):
         runner._install_plugin_message_injector()
         assert (
             context.inject_message(
@@ -435,7 +437,7 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     runner = _runner(_entry())
     manager = PluginManager()
 
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+    with patch("plugin_runtime.lifecycle.get_plugin_manager", return_value=manager):
         runner._install_plugin_message_injector()
         assert manager.has_gateway_message_injector is True
 

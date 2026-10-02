@@ -1,5 +1,5 @@
 """prompt_toolkit completer + inline auto-suggest for slash commands. Kept out of
-:mod:`hermes_cli.commands` (which re-exports both classes) so the registry module stays
+:mod:`commands` so the registry module stays
 prompt_toolkit-free for the gateway."""
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ from typing import Any, Dict, Optional, Tuple
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
-from hermes_cli.commands import COMMANDS, SUBCOMMANDS
+from hermes_cli.commands_presentation import COMMANDS
+from commands import SUBCOMMANDS
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -123,19 +124,20 @@ def _tools_completions(sub_text: str, sub_lower: str):
         return
     already = set(completed[1:])
     from hermes_cli.config import load_config_readonly
-    from hermes_cli.tools_config import (
-        CONFIGURABLE_TOOLSETS, _get_platform_tools, _get_plugin_toolset_keys)
+    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+    from hermes_cli.config import has_xai_tool_credentials
+    from tools.platform_policy import get_platform_tools, get_plugin_toolset_keys
     # Readonly loader: per keystroke and never mutates, so skip load_config()'s deepcopy.
     # Read-only path: the completer only inspects the config (toolset enable state + MCP server names) — it
     # never mutates it. Use the readonly loader so the per-keystroke completion doesn't pay the defensive
     # deepcopy (perf(agent) #74322 converted 29 call sites to the readonly loader; this per-keystroke site
     # was missed).
     config = load_config_readonly()
-    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    enabled = get_platform_tools(config, "cli", include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials)
     mcp_servers = config.get("mcp_servers") or {}
     want_enabled = subcommand != "enable"
     rows = [(k, label) for k, label, _d in CONFIGURABLE_TOOLSETS]
-    rows += [(k, "plugin toolset") for k in sorted(_get_plugin_toolset_keys())]
+    rows += [(k, "plugin toolset") for k in sorted(get_plugin_toolset_keys())]
     rows = [(k, m) for k, m in rows if (k in enabled) == want_enabled]
     if isinstance(mcp_servers, dict):
         rows += [(f"{srv}:", f"MCP server '{srv}'") for srv in sorted(mcp_servers)]
@@ -455,7 +457,7 @@ class SlashCommandCompleter(Completer):
             if cmd[1:].startswith(word):
                 yield _cmd_completion(cmd[1:], f"⚡ {info.get('description', 'Skill command')}")
         try:
-            from hermes_cli.plugins import get_plugin_commands
+            from plugin_runtime.api import get_plugin_commands
             for cmd_name, cmd_info in get_plugin_commands().items():
                 if cmd_name.startswith(word):
                     yield _cmd_completion(

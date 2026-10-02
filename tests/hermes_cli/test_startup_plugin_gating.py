@@ -44,8 +44,10 @@ def test_deferred_platform_loader_registers_cli_command_before_parser_table():
     """
     import argparse
 
-    from gateway.platform_registry import PlatformRegistry
-    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from plugin_runtime.platform_registry import PlatformRegistry
+    from hermes_cli.plugins import PluginManifest
+    from plugin_runtime.manager import PluginManager
+    from plugin_runtime.context import PluginContext
 
     mgr = PluginManager()
     manifest = PluginManifest(name="fake-photon-platform")
@@ -70,9 +72,9 @@ def test_deferred_platform_loader_registers_cli_command_before_parser_table():
     assert command_name not in mgr._cli_commands
     assert command_name in registry._deferred
 
-    fake_module = type(sys)("gateway.platform_registry")
+    fake_module = type(sys)("plugin_runtime.platform_registry")
     fake_module.platform_registry = registry
-    with patch.dict(sys.modules, {"gateway.platform_registry": fake_module}):
+    with patch.dict(sys.modules, {"plugin_runtime.platform_registry": fake_module}):
         _resolve_deferred_platform_cli_command(command_name)
 
     # Loader resolution must promote deferred -> concrete and fire CLI register.

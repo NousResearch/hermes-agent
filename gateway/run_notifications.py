@@ -1157,7 +1157,7 @@ class GatewayNotificationsMixin:
             # Reject dynamic pseudo-members: plugin platforms must be registered.
             if platform.value not in _BUILTIN_PLATFORM_VALUES:
                 try:
-                    from gateway.platform_registry import platform_registry
+                    from plugin_runtime.platform_registry import platform_registry
                     if not platform_registry.is_registered(platform.value):
                         raise ValueError(platform_name)
                 except Exception:

@@ -744,7 +744,7 @@ async def test_skill_catalog_scan_runs_off_the_event_loop(monkeypatch):
             # Only a free loop can set loop_ticked while this wait is in progress.
             return ({}, [("x", "desc", "/x")], 0) if loop_ticked.wait(timeout=1) else ({}, [], 0)
 
-        monkeypatch.setattr("hermes_cli.commands_platforms.discord_skill_commands_by_category", _blocking_scan)
+        monkeypatch.setattr("gateway.command_platforms.discord_skill_commands_by_category", _blocking_scan)
         task = asyncio.create_task(run_site())
         await asyncio.to_thread(scan_started.wait, 1)
         loop_ticked.set()

@@ -301,8 +301,8 @@ def _post_setup_openai_codex() -> None:
 
 
 def _xai_credentials_ready() -> bool:
-    from hermes_cli.tools_config import _xai_credentials_present  # facade binding: tests patch it there
-    return _xai_credentials_present()
+    from hermes_cli.config import has_xai_tool_credentials
+    return has_xai_tool_credentials()
 
 
 # Credential-bootstrap post_setup keys -> "credentials present" predicate. These rows have no install

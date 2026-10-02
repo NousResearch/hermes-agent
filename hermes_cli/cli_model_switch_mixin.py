@@ -906,7 +906,7 @@ class CLIModelSwitchMixin:
         if not text or has_images or not _looks_like_slash_command(text):
             return False
         try:
-            from hermes_cli.commands import resolve_command
+            from commands import resolve_command
             cmd = resolve_command(text.split(None, 1)[0].lower().lstrip('/'))
             return bool(cmd and cmd.name == "model")
         except Exception:

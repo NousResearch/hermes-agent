@@ -4,6 +4,9 @@ Kept alongside the compat layer (tests/hermes_cli/test_compat_manifest_targets.p
 """
 import importlib
 import json
+import os
+import subprocess
+import sys
 import warnings
 from pathlib import Path
 
@@ -21,7 +24,7 @@ def _a_lazy_entry():
 
 
 def test_compat_resolution_warns_once_per_name_with_the_new_location():
-    from hermes_cli.plugin_compat import HermesPluginCompatWarning, _seen
+    from plugin_runtime.compat import HermesPluginCompatWarning, _seen
     facade, name = _a_lazy_entry()
     _seen.discard((facade, name))
     mod = importlib.import_module(facade)
@@ -37,8 +40,8 @@ def test_compat_resolution_warns_once_per_name_with_the_new_location():
 
 def test_importing_the_facade_itself_does_not_warn():
     """Only RESOLVING a compat name warns; plugins that import the module for its live API stay silent."""
-    from hermes_cli.plugin_compat import HermesPluginCompatWarning
-    import sys
+    from plugin_runtime.compat import HermesPluginCompatWarning
+
     sys.modules.pop("tools.web_tools", None)
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
@@ -67,3 +70,38 @@ def test_skills_hub_compat_hook_is_idempotent_across_reload_and_reinstall():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         assert getattr(hub, name) is getattr(importlib.import_module(target_module), target_name)
+def test_documented_warning_filter_path_resolves_in_fresh_process():
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    code = (
+        "import warnings; "
+        "from plugin_runtime.compat import HermesPluginCompatWarning; "
+        "warnings.warn('compat probe', HermesPluginCompatWarning)"
+    )
+    category = "hermes_cli.plugin_compat.HermesPluginCompatWarning"
+
+    ignored = subprocess.run(
+        [sys.executable, "-W", f"ignore::{category}", "-c", code],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    raised = subprocess.run(
+        [sys.executable, "-W", f"error::{category}", "-c", code],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert ignored.returncode == 0
+    assert "Invalid -W option" not in ignored.stderr
+    assert "HermesPluginCompatWarning" not in ignored.stderr
+    assert raised.returncode != 0
+    assert "Invalid -W option" not in raised.stderr
+    assert "HermesPluginCompatWarning" in raised.stderr

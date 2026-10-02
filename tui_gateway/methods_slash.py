@@ -183,7 +183,7 @@ def _format_live_tools_output(sid: str, session: dict, arg: str) -> str:
 
 def _format_live_help_output(sid: str, session: dict, arg: str) -> str:
     try:
-        from hermes_cli.commands import COMMANDS_BY_CATEGORY
+        from hermes_cli.commands_presentation import COMMANDS_BY_CATEGORY
         lines = ["Available commands:", ""]
         for category, commands in COMMANDS_BY_CATEGORY.items():
             lines.append(f"{category}:")

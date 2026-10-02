@@ -114,7 +114,19 @@ async def probe(peer):
             assert (cwd / 'policy-proof.txt').read_text() == 'owned'
             requests = [r for r in peer.requests if r.get('model') == 'policy-' + source]
             assert len(requests) >= 2, peer.requests
-            assert any(str(cwd) in json.dumps(m) for r in requests for m in r['messages'] if m['role'] == 'tool')
+            # Terminal returns pwd in output, possibly in MSYS /c/... form.
+            tool_results = [json.loads(m['content']) for r in requests
+                            for m in r['messages'] if m['role'] == 'tool']
+            native = str(cwd.resolve()).replace('\\', '/').rstrip('/')
+            equivalents = {native}
+            if os.name == 'nt' and len(native) >= 2 and native[1] == ':':
+                equivalents.add('/' + native[0].lower() + native[2:])
+            def matches_cwd(value):
+                reported = str(value or '').strip().replace('\\', '/').rstrip('/')
+                if os.name == 'nt':
+                    return reported.casefold() in {s.casefold() for s in equivalents}
+                return reported in equivalents
+            assert any(matches_cwd(result.get('output')) for result in tool_results), tool_results
             names = {t['function']['name'] for t in requests[0]['tools']}
             assert 'terminal' in names
             assert ('desktop_ui' in agent.enabled_toolsets) == (source == 'gui')

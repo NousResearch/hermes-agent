@@ -223,7 +223,7 @@ class CLIInitMixin:
             # that has not necessarily landed yet; names it declared (or the previous launch persisted, which
             # get_plugin_toolset_keys_nowait serves) are not typos (#71650).
             try:
-                from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+                from plugin_runtime.lifecycle import get_plugin_toolset_keys_nowait
                 plugin_ts_names = get_plugin_toolset_keys_nowait()
             except Exception:
                 plugin_ts_names = set()

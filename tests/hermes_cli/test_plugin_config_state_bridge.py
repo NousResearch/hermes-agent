@@ -13,7 +13,9 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import PluginManifest
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 
 
 def _context(
@@ -39,6 +41,93 @@ def isolated_home(tmp_path: Path):
     token = set_hermes_home_override(home)
     try:
         yield home
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_runtime_config_bridge_preserves_context_setting_semantics(
+    isolated_home: Path,
+) -> None:
+    from plugin_runtime import config_bridge
+
+    path = isolated_home / "config.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump({
+            "plugins": {
+                "entries": {
+                    "fixture-plugin": {
+                        "config": {"legacy_only": 7, "endpoint": "legacy"},
+                        "settings": {"endpoint": "canonical"},
+                    }
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    endpoint = config_bridge.plugin_setting_segments("endpoint")
+    legacy_only = config_bridge.plugin_setting_segments("legacy_only")
+    assert config_bridge.read_plugin_setting("fixture-plugin", endpoint) == "canonical"
+    assert config_bridge.read_plugin_setting("fixture-plugin", legacy_only) == 7
+    assert config_bridge.read_plugin_setting(
+        "fixture-plugin", config_bridge.plugin_setting_segments("missing"), "unset"
+    ) == "unset"
+
+    config_bridge.write_plugin_setting("fixture-plugin", legacy_only, 8)
+    assert config_bridge.read_plugin_setting("fixture-plugin", legacy_only) == 8
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert raw["plugins"]["entries"]["fixture-plugin"]["config"]["legacy_only"] == 7
+    assert raw["plugins"]["entries"]["fixture-plugin"]["settings"]["legacy_only"] == 8
+
+    with pytest.raises(ValueError, match="plugin-relative config key"):
+        config_bridge.plugin_setting_segments("security.approval_mode")
+
+
+def test_runtime_config_bridge_preserves_plugin_runtime_gates(
+    isolated_home: Path,
+) -> None:
+    from plugin_runtime import config_bridge
+
+    path = isolated_home / "config.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump({
+            "plugins": {
+                "entries": {
+                    "fixture-plugin": {
+                        "mcp_allowlist": ["alpha", 7],
+                        "allow_gateway_injection": True,
+                    }
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    assert config_bridge.read_plugin_mcp_allowlist("fixture-plugin") == ["alpha", "7"]
+    assert config_bridge.read_plugin_mcp_allowlist("missing") == []
+    assert config_bridge.plugin_gateway_injection_allowed("fixture-plugin") is True
+    assert config_bridge.plugin_gateway_injection_allowed("missing") is False
+
+
+def test_runtime_config_bridge_can_pin_reads_to_manager_home(tmp_path: Path) -> None:
+    from plugin_runtime import config_bridge
+
+    alpha = tmp_path / "alpha"
+    beta = tmp_path / "beta"
+    for home, marker in ((alpha, "alpha"), (beta, "beta")):
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"marker": marker}}),
+            encoding="utf-8",
+        )
+
+    token = set_hermes_home_override(beta)
+    try:
+        assert config_bridge.load_plugin_config()["plugins"]["marker"] == "beta"
+        assert config_bridge.load_plugin_config_for_home(alpha)["plugins"]["marker"] == "alpha"
+        assert config_bridge.load_plugin_config()["plugins"]["marker"] == "beta"
     finally:
         reset_hermes_home_override(token)
 
@@ -162,7 +251,9 @@ def test_concurrent_config_writes_do_not_drop_sibling_settings(
 def test_config_cross_process_lock_preserves_every_setting(isolated_home: Path) -> None:
     script = """
 import sys
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import PluginManifest
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 ctx = PluginContext(PluginManifest(name='fixture-plugin'), PluginManager())
 for i in range(int(sys.argv[1]), int(sys.argv[2])):
     ctx.set_config(f'process_{i}', i)
@@ -233,7 +324,9 @@ def test_concurrent_state_updates_do_not_drop_keys(isolated_home: Path) -> None:
 def test_state_cross_process_lock_preserves_every_update(isolated_home: Path) -> None:
     script = """
 import sys
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import PluginManifest
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 ctx = PluginContext(PluginManifest(name='fixture-plugin'), PluginManager())
 for i in range(int(sys.argv[1]), int(sys.argv[2])):
     ctx.state.set(f'process_{i}', i)

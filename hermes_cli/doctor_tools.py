@@ -161,8 +161,9 @@ def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
     """Return toolsets enabled for the CLI, or None if config resolution fails."""
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
-        return {str(toolset) for toolset in _get_platform_tools(load_config() or {}, "cli")}
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
+        return {str(toolset) for toolset in get_platform_tools(load_config() or {}, "cli", xai_credentials_present=has_xai_tool_credentials)}
     except Exception:
         return None
 
@@ -286,7 +287,7 @@ def _check_vercel_backend(issues: list[str]) -> None:
 
 def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
     try:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()
         from agent.terminal_env_registry import get_provider
         provider = get_provider(terminal_env)

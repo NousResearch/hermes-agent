@@ -236,7 +236,7 @@ def _configured_features_missing_deps() -> list[tuple[str, str]]:
     missing: list[tuple[str, str]] = []
     try:
         from gateway.config import load_gateway_config
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
 
         for platform in load_gateway_config().get_connected_platforms():
             entry = platform_registry.get(platform.value)

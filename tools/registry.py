@@ -469,7 +469,6 @@ class ToolRegistry:
         # scope attribution stays durable after policy removal so delayed callbacks
         # remain confined to the profile that loaded them.
         self._plugin_override_policy: Dict[tuple[Optional[str], str], _PluginOverridePolicy] = {}
-        self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
@@ -595,7 +594,10 @@ class ToolRegistry:
         with self._lock:
             policy = _PluginOverridePolicy(allowed)
             self._plugin_override_policy[(scope, module_namespace)] = policy
-            self._plugin_module_scopes.setdefault(module_namespace, set()).add(scope)
+            # Scope attribution is shared by plugin-owned registries and lives in
+            # plugin_runtime so those registries do not depend on this tool module.
+            from plugin_runtime.attribution import record_plugin_module_scope
+            record_plugin_module_scope(module_namespace, scope)
             return policy
 
     def snapshot_plugin_override_policy(
@@ -658,42 +660,23 @@ class ToolRegistry:
 
     def _plugin_namespace_of_module(self, module_namespace: str) -> Optional[str]:
         """Resolve a module/submodule to its durable plugin namespace."""
-        with self._lock:
-            matches = [
-                namespace for namespace in self._plugin_module_scopes
-                if module_namespace == namespace or module_namespace.startswith(f"{namespace}.")]
-            if matches:
-                return max(matches, key=len)
-        # Also gate plugin modules currently loading but not yet policy-recorded
-        # (defensive: a handler defined in the plugin namespace is plugin code).
-        if module_namespace.startswith("hermes_plugins."):
-            return ".".join(module_namespace.split(".")[:2])
-        return None
+        from plugin_runtime.attribution import plugin_namespace_for_module
+        return plugin_namespace_for_module(module_namespace)
 
     def _plugin_scope_of(self, module_namespace: str) -> Optional[str]:
         """Return the profile scope bound to a loaded plugin module."""
-        with self._lock:
-            scopes = self._plugin_module_scopes.get(module_namespace)
-            if not scopes:
-                return None
-            active_scope = self.current_scope_key()
-            if active_scope in scopes:
-                return active_scope
-            if len(scopes) == 1:
-                return next(iter(scopes))
-            raise PermissionError(
-                f"Plugin module {module_namespace!r} is active in multiple profiles and cannot "
-                "register outside one of those scopes.")
+        from plugin_runtime.attribution import plugin_scope_for_module
+        return plugin_scope_for_module(module_namespace)
 
     def plugin_scope_for_module(self, module_namespace: str) -> Optional[str]:
         """Public host lookup for a loaded plugin module's immutable scope."""
-        owner = self._plugin_namespace_of_module(module_namespace)
-        return self._plugin_scope_of(owner or module_namespace)
+        from plugin_runtime.attribution import plugin_scope_for_module
+        return plugin_scope_for_module(module_namespace)
 
     def plugin_scope_for_callable(self, callback: Callable) -> Optional[str]:
         """Return the durable plugin scope for any supported callable shape."""
-        module_name = self._callable_module(callback)
-        return self.plugin_scope_for_module(module_name) if module_name else None
+        from plugin_runtime.attribution import plugin_scope_for_callable
+        return plugin_scope_for_callable(callback)
 
     @staticmethod
     def _caller_module() -> str:

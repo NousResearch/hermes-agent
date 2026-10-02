@@ -18,7 +18,7 @@ def _build_full_manifest(
     Other sections (OAuth scopes, socket mode) are sensible Hermes defaults, tweakable in the Slack
     UI after pasting.
     """
-    from hermes_cli.commands_platforms import slack_app_manifest
+    from gateway.command_platforms import slack_app_manifest
     if messaging_experience is None:
         messaging_experience = "assistant" if include_assistant else "none"
     messaging_experience = str(messaging_experience).strip().lower()
@@ -114,7 +114,7 @@ def slack_manifest_command(args) -> int:
         messaging_experience = "assistant"
 
     if slashes_only:
-        from hermes_cli.commands_platforms import slack_app_manifest
+        from gateway.command_platforms import slack_app_manifest
         manifest = slack_app_manifest()["features"]["slash_commands"]
     else:
         manifest = _build_full_manifest(

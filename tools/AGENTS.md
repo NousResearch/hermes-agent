@@ -153,3 +153,19 @@ interrupted entry's `summary` is the child's last real assistant text (`_build_r
 assert contracts ("every registered tool has a toolset", "no schema description names a tool from
 another toolset") rather than tool counts. Approval/security-boundary tools are E2E'd with real
 imports against a temp `HERMES_HOME` (see `tests/tools/test_approval_config_readonly.py`).
+
+## Runtime capability policy ownership
+
+`tools/platform_policy.py` owns platform defaults and configured selection, plugin/MCP
+membership rules, native recovery and final disabled-toolset suppression. It receives
+configuration values and the application's lazy xAI credential input; it must not
+load/save configuration or import CLI implementation modules. Restrictions and the
+saved-list parser live in `tools/toolset_scope.py`. Shared name expansion used by
+policy suppression and the model pipeline lives in `tools/toolset_selection.py`.
+Keep tool definitions/expansion in `toolsets.py`, availability in `tools/registry.py`,
+and schema preparation in `model_tools.py`. Selection never grants authorization.
+Do not restore CLI runtime-policy forwarding paths or duplicate these registries.
+
+Run `python scripts/check_phase7_boundaries.py` for the blocking ownership gate.
+Its contract tests live in `tests/scripts/test_check_phase7_boundaries.py`;
+retired imports, forwarding paths and duplicate command owners must stay absent.

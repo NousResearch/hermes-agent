@@ -158,7 +158,7 @@ try:  # plugin tool discovery (user/project/pip plugins)
     # message — freezing Discord/Telegram heartbeats for up to 120s whenever any configured MCP server was
     # slow or unreachable (#16856). - gateway/run.py            -> start_gateway() uses run_in_executor -
     # acp_adapter/server.py     -> asyncio.to_thread on session init
-    from hermes_cli.plugins import discover_plugins
+    from plugin_runtime.lifecycle import discover_plugins
     discover_plugins()
 except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
@@ -171,21 +171,6 @@ TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
 # Tool names from the last get_tool_definitions() call (execute_code sandbox fallback).
 _last_resolved_tool_names: List[str] = []
-
-
-# Legacy toolset names (old _tools-suffixed names -> tool name lists)
-_LEGACY_TOOLSET_MAP = {
-    "web_tools": ["web_search", "web_extract"],
-    "terminal_tools": ["terminal"],
-    "vision_tools": ["vision_analyze"],
-    "image_tools": ["image_generate"],
-    "skills_tools": ["skills_list", "skill_view", "skill_manage"],
-    "browser_tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_scroll",
-                      "browser_back", "browser_press", "browser_get_images", "browser_vision", "browser_console"],
-    "cronjob_tools": ["cronjob_manage"],
-    "file_tools": ["read_file", "write_file", "patch", "search_files"],
-    "tts_tools": ["text_to_speech"],
-}
 
 
 # --- get_tool_definitions (the main schema provider) --------------------------
@@ -281,32 +266,24 @@ def _tool_defs_cache_key(
 
 def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, disable: bool) -> None:
     """Add (or subtract) every toolset in *names* to/from *tools*, printing the selection unless quiet."""
-    from toolsets import bundle_non_core_tools, get_toolset
+    from tools.toolset_selection import resolve_toolset_selection, LEGACY_TOOLSET_MAP
     verb, icon = ("Disabled", "🚫") if disable else ("Enabled", "✅")
     for name in names:
-        if validate_toolset(name):
-            label = f"{verb} toolset"
-            if disable and (name.startswith("hermes-") or (get_toolset(name) or {}).get("posture")):
-                # Bundles/postures re-list the core tools without owning them;
-                # subtracting the whole set would empty the list — remove only the non-core delta.
-                resolved = sorted(bundle_non_core_tools(name))
-                if not quiet_mode and name.startswith("hermes-") and name not in _WARNED_DISABLED_BUNDLES:
-                    _WARNED_DISABLED_BUNDLES.add(name)
-                    logger.info(
-                        "agent.disabled_toolsets contains platform-bundle name '%s'; core tools are "
-                        "preserved and only its platform-specific tools (%s) are removed. Bundle names "
-                        "usually belong in `toolsets:`, not `disabled_toolsets` (#33924).",
-                        name, ", ".join(resolved) if resolved else "none",
-                    )
-            else:
-                resolved = resolve_toolset(name)
-        elif name in _LEGACY_TOOLSET_MAP:
-            label = f"{verb} legacy toolset"
-            resolved = _LEGACY_TOOLSET_MAP[name]
-        else:
+        resolved = resolve_toolset_selection(name, disable=disable)
+        if resolved is None:
             if not quiet_mode:
                 print(f"⚠️  Unknown toolset: {name}")
             continue
+        label = f"{verb} legacy toolset" if name in LEGACY_TOOLSET_MAP and not validate_toolset(name) else f"{verb} toolset"
+        if (disable and validate_toolset(name) and name.startswith("hermes-")
+                and not quiet_mode and name not in _WARNED_DISABLED_BUNDLES):
+            _WARNED_DISABLED_BUNDLES.add(name)
+            logger.info(
+                "agent.disabled_toolsets contains platform-bundle name '%s'; core tools are "
+                "preserved and only its platform-specific tools (%s) are removed. Bundle names "
+                "usually belong in `toolsets:`, not `disabled_toolsets` (#33924).",
+                name, ", ".join(resolved) if resolved else "none",
+            )
         (tools.difference_update if disable else tools.update)(resolved)
         if not quiet_mode:
             print(f"{icon} {label} '{name}': {', '.join(resolved) if resolved else 'no tools'}")
@@ -776,7 +753,7 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
     if not skip_pre_tool_call_hook:
         block_message: Optional[str] = None
         try:
-            from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+            from hermes_cli.plugin_policy import _dispatch_pre_tool_call_hooks
             block_message, modified_args = _dispatch_pre_tool_call_hooks(
                 function_name, function_args, middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
             )

@@ -12,7 +12,9 @@ from unittest.mock import MagicMock
 
 import hermes_yaml as yaml
 
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from plugin_runtime.manifest import PluginManifest
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 from tui_gateway import server
 
 
@@ -176,3 +178,32 @@ def test_cli_injection_still_bypasses_the_tui_host(tmp_path, monkeypatch):
 
     assert pending == ["typed"]
     assert origin.get("queued_prompt") is None
+
+
+def test_process_tui_host_publishes_bound_session_refresher(tmp_path, monkeypatch):
+    """The runtime host receives server.py's rebound refresher, not the raw split-module function."""
+    import plugin_runtime.lifecycle as lifecycle
+
+    manager = PluginManager()
+    published = {}
+    refresh = MagicMock()
+    monkeypatch.setattr(server, "_refresh_live_sessions", refresh)
+    monkeypatch.setattr(server, "_atexit_registered", False)
+    monkeypatch.setattr(server.atexit, "register", lambda _fn: None)
+    monkeypatch.setattr(lifecycle, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(
+        lifecycle,
+        "publish_tui_message_host",
+        lambda owner, injector, refresher=None: published.update(
+            owner=owner, injector=injector, refresher=refresher,
+        ),
+    )
+
+    server.install_tui_message_injector()
+    try:
+        assert published["refresher"] is server.refresh_plugin_sessions
+        published["refresher"](tmp_path, "plugin live")
+    finally:
+        server.clear_tui_message_injector(manager)
+
+    refresh.assert_called_once_with(tmp_path, preserve_prefix=True, note="plugin live")

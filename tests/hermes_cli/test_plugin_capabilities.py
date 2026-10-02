@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.plugin_capabilities import (
+from plugin_runtime.capabilities import (
     CAPABILITY_REGISTRY,
     capability_set_hash,
     consent_hash,
@@ -109,8 +109,8 @@ class TestDeclarationParsing:
         self, monkeypatch
     ):
         """Installed plugins can declare consent metadata in dist entry points."""
-        from hermes_cli import plugins as plugins_mod
-        from hermes_cli.plugins import PluginManager
+        from plugin_runtime import discovery as runtime_discovery
+        from plugin_runtime.manager import PluginManager
 
         load = MagicMock(side_effect=AssertionError("plugin code must not be imported"))
         plugin_ep = SimpleNamespace(
@@ -130,7 +130,7 @@ class TestDeclarationParsing:
             load=load,
         )
         monkeypatch.setattr(
-            plugins_mod.importlib.metadata,
+            runtime_discovery.importlib.metadata,
             "entry_points",
             lambda: [plugin_ep, capability_ep],
         )
@@ -306,7 +306,9 @@ class TestLegacyGateCompat:
 
     def test_tool_override_gate_uses_canonical_path(self, hermes_home):
         """PluginContext._tool_override_allowed honors capability grant."""
-        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+        from hermes_cli.plugins import PluginManifest
+        from plugin_runtime.manager import PluginManager
+        from plugin_runtime.context import PluginContext
 
         record_consent("capplug", ["tools.override"], ["tools.override"])
         manifest = PluginManifest(name="capplug", source="user", key="capplug")
@@ -314,14 +316,18 @@ class TestLegacyGateCompat:
         assert ctx._tool_override_allowed("write_file") is True
 
     def test_tool_override_gate_denies_without_grant(self, hermes_home):
-        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+        from hermes_cli.plugins import PluginManifest
+        from plugin_runtime.manager import PluginManager
+        from plugin_runtime.context import PluginContext
 
         manifest = PluginManifest(name="capplug", source="user", key="capplug")
         ctx = PluginContext(manifest, PluginManager())
         assert ctx._tool_override_allowed("write_file") is False
 
     def test_tool_override_gate_legacy_key(self, hermes_home):
-        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+        from hermes_cli.plugins import PluginManifest
+        from plugin_runtime.manager import PluginManager
+        from plugin_runtime.context import PluginContext
 
         (hermes_home / "config.yaml").write_text(
             "plugins:\n  entries:\n    oldplug:\n"
@@ -333,7 +339,9 @@ class TestLegacyGateCompat:
         assert ctx._tool_override_allowed("write_file") is True
 
     def test_bundled_plugin_trusted(self, hermes_home):
-        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+        from hermes_cli.plugins import PluginManifest
+        from plugin_runtime.manager import PluginManager
+        from plugin_runtime.context import PluginContext
 
         manifest = PluginManifest(name="bplug", source="bundled", key="bplug")
         ctx = PluginContext(manifest, PluginManager())
@@ -346,7 +354,9 @@ class TestLegacyGateCompat:
 
 class TestHasCapability:
     def test_probe_granted(self, hermes_home):
-        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+        from hermes_cli.plugins import PluginManifest
+        from plugin_runtime.manager import PluginManager
+        from plugin_runtime.context import PluginContext
 
         record_consent("capplug", ["llm.model_override"], ["llm.model_override"])
         manifest = PluginManifest(name="capplug", source="user", key="capplug")

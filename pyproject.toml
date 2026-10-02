@@ -798,12 +798,16 @@ youtube-transcript-api = false
 
 [tool.setuptools.packages.find]
 include = [
+  "commands",
+  "commands.*",
   "agent",
   "agent.*",
   "tools",
   "tools.*",
   "hermes_cli",
   "hermes_cli.*",
+  "plugin_runtime",
+  "plugin_runtime.*",
   "gateway",
   "gateway.*",
   "tui_gateway",

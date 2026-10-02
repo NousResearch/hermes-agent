@@ -284,7 +284,7 @@ class TestCheckVoiceRequirements:
             lambda p: plugin_provider if p == "my-plugin-stt" else None,
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered",
+            "plugin_runtime.lifecycle.ensure_plugins_discovered",
             lambda force=False: None,
         )
 

@@ -1,0 +1,50 @@
+{
+  "baseline": "f04be5e51b781733edb839cc83059f66adaef1db",
+  "date": "2026-10-01",
+  "host": "Windows",
+  "python": "3.11.15",
+  "runner": "scripts/run_tests.sh",
+  "batches": [
+    {
+      "passed": 69,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        "tests/hermes_cli/test_commands.py",
+        "tests/hermes_cli/test_commands_execute.py",
+        "tests/hermes_cli/test_cli_tools_command.py",
+        "tests/gateway/test_api_server_toolset.py",
+        "tests/gateway/test_slash_access.py",
+        "tests/hermes_cli/test_busy_policy_invariants.py"
+      ]
+    },
+    {
+      "passed": 79,
+      "failed": 1,
+      "skipped": 7,
+      "files": [
+        "tests/hermes_cli/test_tools_config.py",
+        "tests/gateway/test_command_discovery.py",
+        "tests/gateway/test_slash_access_dispatch.py",
+        "tests/gateway/test_session_policy.py",
+        "tests/tui_gateway/test_profiles_toolset_pin.py",
+        "tests/tui_gateway/test_gui_surface_toolsets.py",
+        "tests/acp_adapter/test_acp_commands.py"
+      ]
+    }
+  ],
+  "baseline_failure": {
+    "test": "tests/gateway/test_session_policy.py::test_launch_policy_reaches_real_turn_runner",
+    "fixture": "tests/gateway/fixtures/session_policy_peer.py:117",
+    "assertion": "any(str(cwd) in json.dumps(m) for r in requests for m in r['messages'] if m['role'] == 'tool')",
+    "note": "Native Windows paths use backslashes; JSON escapes them. Fixture reached filesystem-effect assertion before failing this substring assertion."
+  },
+  "capture": {
+    "commands": 102,
+    "tool_selection_cases": 2100,
+    "check": "passed"
+  },
+  "spec_conflict": "Feishu explicit [] still recovers feishu_doc and feishu_drive; strict-empty requirement conflicts with preserving existing native recovery.",
+  "phase7_1_exit_gate": "complete",
+  "phase7_integration_verified": false
+}

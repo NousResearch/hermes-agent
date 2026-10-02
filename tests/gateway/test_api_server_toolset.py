@@ -9,7 +9,9 @@ class TestApiServerPlatformConfig:
         hermes-api-server composite, so the old all-tools subset test dropped
         'terminal' entirely. Its static membership (terminal, process) IS in the
         composite, so it must stay enabled."""
+        from hermes_cli.config import has_xai_tool_credentials
+
         from tools.registry import discover_builtin_tools
-        from hermes_cli.tools_config import _get_platform_tools
+        from tools.platform_policy import get_platform_tools
         discover_builtin_tools()
-        assert "terminal" in _get_platform_tools({}, "api_server")
+        assert "terminal" in get_platform_tools({}, "api_server", xai_credentials_present=has_xai_tool_credentials)

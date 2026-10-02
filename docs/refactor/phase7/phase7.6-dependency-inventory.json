@@ -1,0 +1,1771 @@
+{
+  "compatibility_entries": [
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "Any",
+      "target": "typing"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "Callable",
+      "target": "collections.abc"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "Dict",
+      "target": "typing"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "Mapping",
+      "target": "collections.abc"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "Optional",
+      "target": "typing"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "Sequence",
+      "target": "collections.abc"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "moved-lazy",
+      "name": "SlashCommandAutoSuggest",
+      "target": "hermes_cli.commands_completion"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "moved-lazy",
+      "name": "SlashCommandCompleter",
+      "target": "hermes_cli.commands_completion"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "Tuple",
+      "target": "typing"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "restored-helper",
+      "name": "_requires_argument",
+      "target": "(deleted; restored as a dependency of discord_skill_commands)"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "restored-helper",
+      "name": "_CMD_NAME_LIMIT",
+      "target": "(deleted; restored as a dependency of discord_skill_commands)"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "restored-helper",
+      "name": "_clamp_command_names",
+      "target": "(deleted; restored as a dependency of discord_skill_commands)"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "restored-helper",
+      "name": "_collect_gateway_skill_entries",
+      "target": "(deleted; restored as a dependency of discord_skill_commands)"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "restored-def",
+      "name": "discord_skill_commands",
+      "target": "(deleted; BASE body restored)"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "moved-lazy",
+      "name": "discord_skill_commands_by_category",
+      "target": "gateway.command_platforms"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "field",
+      "target": "dataclasses"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "os",
+      "target": "os"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "shutil",
+      "target": "shutil"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "moved-lazy",
+      "name": "slack_app_manifest",
+      "target": "gateway.command_platforms"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "moved-lazy",
+      "name": "slack_native_slashes",
+      "target": "gateway.command_platforms"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "moved-lazy",
+      "name": "slack_subcommand_map",
+      "target": "gateway.command_platforms"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "subprocess",
+      "target": "subprocess"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "moved-lazy",
+      "name": "telegram_bot_commands",
+      "target": "gateway.command_platforms"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "moved-lazy",
+      "name": "telegram_menu_commands",
+      "target": "gateway.command_platforms"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "moved-lazy",
+      "name": "telegram_menu_max_commands",
+      "target": "gateway.command_platforms"
+    },
+    {
+      "facade": "hermes_cli.commands",
+      "kind": "import",
+      "name": "time",
+      "target": "time"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "moved-lazy",
+      "name": "MANAGED_FEATURE_COVERAGE_CATEGORY",
+      "target": "hermes_cli.nous_subscription"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "moved-lazy",
+      "name": "NOUS_MANAGED_PROVIDER",
+      "target": "tools.tool_backend_helpers"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "moved-lazy",
+      "name": "base_url_hostname",
+      "target": "utils"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "moved-lazy",
+      "name": "fal_key_is_configured",
+      "target": "tools.tool_backend_helpers"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "moved-lazy",
+      "name": "format_nous_portal_entitlement_message",
+      "target": "hermes_cli.nous_account"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "moved-lazy",
+      "name": "is_truthy_value",
+      "target": "utils"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "moved-lazy",
+      "name": "save_env_value",
+      "target": "hermes_cli.config"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "import",
+      "name": "shutil",
+      "target": "shutil"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "import",
+      "name": "subprocess",
+      "target": "subprocess"
+    },
+    {
+      "facade": "hermes_cli.tools_config",
+      "kind": "import",
+      "name": "sys",
+      "target": "sys"
+    }
+  ],
+  "consumers": [
+    {
+      "kind": "import",
+      "line": 1338,
+      "path": "cli.py",
+      "text": "from hermes_cli.commands_presentation import COMMANDS"
+    },
+    {
+      "kind": "reference",
+      "line": 1840,
+      "path": "cli.py",
+      "text": "'SlashCommandAutoSuggest': ('hermes_cli.commands_completion', 'SlashCommandAutoSuggest'),"
+    },
+    {
+      "kind": "reference",
+      "line": 1841,
+      "path": "cli.py",
+      "text": "'SlashCommandCompleter': ('hermes_cli.commands_completion', 'SlashCommandCompleter'),"
+    },
+    {
+      "kind": "reference",
+      "line": 14,
+      "path": "gateway/command_platforms.py",
+      "text": "# Logger name parity with the origin module (tests capture \"hermes_cli.commands\")."
+    },
+    {
+      "kind": "reference",
+      "line": 15,
+      "path": "gateway/command_platforms.py",
+      "text": "logger = logging.getLogger(\"hermes_cli.commands\")"
+    },
+    {
+      "kind": "import",
+      "line": 2954,
+      "path": "gateway/platforms/api_server.py",
+      "text": "from hermes_cli.tools_config import _get_effective_configurable_toolsets, _toolset_has_keys, get_nous_subscription_features"
+    },
+    {
+      "kind": "import",
+      "line": 1103,
+      "path": "hermes_cli/cli_commands_mixin.py",
+      "text": "from hermes_cli.tools_config import tools_disable_enable_command"
+    },
+    {
+      "kind": "import",
+      "line": 255,
+      "path": "hermes_cli/cli_info_mixin.py",
+      "text": "from hermes_cli.commands_presentation import COMMANDS_BY_CATEGORY, HELP_SESSION_SUBGROUPS"
+    },
+    {
+      "kind": "import",
+      "line": 411,
+      "path": "hermes_cli/cli_modal_mixin.py",
+      "text": "from hermes_cli.commands_presentation import COMMANDS_BY_CATEGORY"
+    },
+    {
+      "kind": "import",
+      "line": 18,
+      "path": "hermes_cli/cli_tui_mixin.py",
+      "text": "from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter"
+    },
+    {
+      "kind": "reference",
+      "line": 12,
+      "path": "hermes_cli/cli_unknown_command.py",
+      "text": "``known`` holds names WITH the leading slash (``hermes_cli.commands_presentation.COMMANDS`` keys plus skill"
+    },
+    {
+      "kind": "reference",
+      "line": 241,
+      "path": "hermes_cli/commands.py",
+      "text": "'SlashCommandAutoSuggest': ('hermes_cli.commands_completion', 'SlashCommandAutoSuggest'),"
+    },
+    {
+      "kind": "reference",
+      "line": 242,
+      "path": "hermes_cli/commands.py",
+      "text": "'SlashCommandCompleter': ('hermes_cli.commands_completion', 'SlashCommandCompleter'),"
+    },
+    {
+      "kind": "import",
+      "line": 19,
+      "path": "hermes_cli/commands_completion.py",
+      "text": "from hermes_cli.commands_presentation import COMMANDS"
+    },
+    {
+      "kind": "import",
+      "line": 127,
+      "path": "hermes_cli/commands_completion.py",
+      "text": "from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS"
+    },
+    {
+      "kind": "import",
+      "line": 98,
+      "path": "hermes_cli/main_agent_cmds.py",
+      "text": "from hermes_cli.tools_config import tools_disable_enable_command"
+    },
+    {
+      "kind": "import",
+      "line": 101,
+      "path": "hermes_cli/main_agent_cmds.py",
+      "text": "from hermes_cli.tools_config import run_post_setup_command"
+    },
+    {
+      "kind": "import",
+      "line": 105,
+      "path": "hermes_cli/main_agent_cmds.py",
+      "text": "from hermes_cli.tools_config import tools_command"
+    },
+    {
+      "kind": "import",
+      "line": 513,
+      "path": "hermes_cli/setup.py",
+      "text": "from hermes_cli.tools_config import tools_command"
+    },
+    {
+      "kind": "import",
+      "line": 173,
+      "path": "hermes_cli/setup_quick.py",
+      "text": "from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS"
+    },
+    {
+      "kind": "import",
+      "line": 305,
+      "path": "hermes_cli/setup_quick.py",
+      "text": "from hermes_cli.tools_config import tools_command"
+    },
+    {
+      "kind": "import",
+      "line": 11,
+      "path": "hermes_cli/subcommands/computer_use.py",
+      "text": "from hermes_cli.tools_config_cua import install_cua_driver"
+    },
+    {
+      "kind": "import",
+      "line": 17,
+      "path": "hermes_cli/subcommands/computer_use.py",
+      "text": "from hermes_cli.tools_config_cua import _cua_driver_contract_status, _cua_version_summary"
+    },
+    {
+      "kind": "reference",
+      "line": 18,
+      "path": "hermes_cli/tools_config.py",
+      "text": "# Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving."
+    },
+    {
+      "kind": "import",
+      "line": 19,
+      "path": "hermes_cli/tools_config.py",
+      "text": "from hermes_cli.tools_config_cua import (  # noqa: F401"
+    },
+    {
+      "kind": "import",
+      "line": 22,
+      "path": "hermes_cli/tools_config.py",
+      "text": "from hermes_cli.tools_config_post_setup import (  # noqa: F401"
+    },
+    {
+      "kind": "import",
+      "line": 25,
+      "path": "hermes_cli/tools_config.py",
+      "text": "from hermes_cli.tools_config_providers import (  # noqa: F401"
+    },
+    {
+      "kind": "import",
+      "line": 34,
+      "path": "hermes_cli/tools_config.py",
+      "text": "from hermes_cli.tools_config_mcp import (  # noqa: F401"
+    },
+    {
+      "kind": "import",
+      "line": 80,
+      "path": "hermes_cli/tools_config_mcp.py",
+      "text": "from hermes_cli.tools_config import save_config"
+    },
+    {
+      "kind": "import",
+      "line": 164,
+      "path": "hermes_cli/tools_config_mcp.py",
+      "text": "from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_effective_configurable_toolsets"
+    },
+    {
+      "kind": "import",
+      "line": 202,
+      "path": "hermes_cli/tools_config_mcp.py",
+      "text": "from hermes_cli.tools_config import PLATFORMS"
+    },
+    {
+      "kind": "import",
+      "line": 218,
+      "path": "hermes_cli/tools_config_mcp.py",
+      "text": "from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, load_config, save_config"
+    },
+    {
+      "kind": "import",
+      "line": 15,
+      "path": "hermes_cli/tools_config_post_setup.py",
+      "text": "from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver"
+    },
+    {
+      "kind": "import",
+      "line": 341,
+      "path": "hermes_cli/tools_config_post_setup.py",
+      "text": "from hermes_cli.tools_config import ("
+    },
+    {
+      "kind": "reference",
+      "line": 20,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "logger = logging.getLogger(\"hermes_cli.tools_config\")"
+    },
+    {
+      "kind": "import",
+      "line": 137,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import get_nous_subscription_features"
+    },
+    {
+      "kind": "import",
+      "line": 167,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready, get_nous_subscription_features"
+    },
+    {
+      "kind": "import",
+      "line": 168,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY"
+    },
+    {
+      "kind": "import",
+      "line": 210,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import TOOL_CATEGORIES, _post_setup_already_installed, _toolset_has_keys"
+    },
+    {
+      "kind": "import",
+      "line": 261,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import _prompt_choice, _provider_env_ready, get_nous_subscription_features"
+    },
+    {
+      "kind": "import",
+      "line": 356,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import get_nous_subscription_features"
+    },
+    {
+      "kind": "import",
+      "line": 481,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import _provider_env_ready"
+    },
+    {
+      "kind": "import",
+      "line": 502,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import get_nous_subscription_features"
+    },
+    {
+      "kind": "import",
+      "line": 545,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import _prompt_choice"
+    },
+    {
+      "kind": "import",
+      "line": 606,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import _prompt_choice"
+    },
+    {
+      "kind": "import",
+      "line": 666,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import _prompt_choice"
+    },
+    {
+      "kind": "import",
+      "line": 693,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import TOOL_CATEGORIES"
+    },
+    {
+      "kind": "import",
+      "line": 748,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import TOOL_CATEGORIES"
+    },
+    {
+      "kind": "import",
+      "line": 780,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import get_nous_subscription_features"
+    },
+    {
+      "kind": "import",
+      "line": 850,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import TOOL_CATEGORIES, get_nous_subscription_features"
+    },
+    {
+      "kind": "import",
+      "line": 915,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import _run_post_setup"
+    },
+    {
+      "kind": "import",
+      "line": 959,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import _prompt_choice"
+    },
+    {
+      "kind": "import",
+      "line": 1014,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import _prompt_choice"
+    },
+    {
+      "kind": "import",
+      "line": 1070,
+      "path": "hermes_cli/tools_config_providers.py",
+      "text": "from hermes_cli.tools_config import TOOLSET_ENV_REQUIREMENTS, _toolset_has_keys, _toolset_label"
+    },
+    {
+      "kind": "import",
+      "line": 857,
+      "path": "hermes_cli/update_cmd_maint.py",
+      "text": "from hermes_cli.tools_config_cua import install_cua_driver"
+    },
+    {
+      "kind": "import",
+      "line": 883,
+      "path": "hermes_cli/update_cmd_maint.py",
+      "text": "from hermes_cli.tools_config_post_setup import _ensure_browser_use_cli"
+    },
+    {
+      "kind": "import",
+      "line": 176,
+      "path": "hermes_cli/web_routers/tools.py",
+      "text": "from hermes_cli.tools_config import IMAGEGEN_BACKENDS, _plugin_image_gen_catalog, _plugin_video_gen_catalog"
+    },
+    {
+      "kind": "import",
+      "line": 188,
+      "path": "hermes_cli/web_routers/tools.py",
+      "text": "from hermes_cli.tools_config import TOOL_CATEGORIES, _visible_providers"
+    },
+    {
+      "kind": "import",
+      "line": 197,
+      "path": "hermes_cli/web_routers/tools.py",
+      "text": "from hermes_cli.tools_config import _is_provider_active"
+    },
+    {
+      "kind": "import",
+      "line": 207,
+      "path": "hermes_cli/web_routers/tools.py",
+      "text": "from hermes_cli.tools_config import _get_effective_configurable_toolsets"
+    },
+    {
+      "kind": "import",
+      "line": 233,
+      "path": "hermes_cli/web_routers/tools.py",
+      "text": "from hermes_cli.tools_config import _get_effective_configurable_toolsets, _toolset_has_keys, get_nous_subscription_features, gui_toolset_label"
+    },
+    {
+      "kind": "import",
+      "line": 319,
+      "path": "hermes_cli/web_routers/tools.py",
+      "text": "from hermes_cli.tools_config import ("
+    },
+    {
+      "kind": "import",
+      "line": 349,
+      "path": "hermes_cli/web_routers/tools.py",
+      "text": "from hermes_cli.tools_config import ("
+    },
+    {
+      "kind": "import",
+      "line": 505,
+      "path": "hermes_cli/web_routers/tools.py",
+      "text": "from hermes_cli.tools_config import apply_provider_selection, web_provider_capabilities"
+    },
+    {
+      "kind": "import",
+      "line": 621,
+      "path": "hermes_cli/web_routers/tools.py",
+      "text": "from hermes_cli.tools_config import valid_post_setup_keys"
+    },
+    {
+      "kind": "reference",
+      "line": 16,
+      "path": "scripts/check_phase7_boundaries.py",
+      "text": "\"hermes_cli.commands\", \"hermes_cli.slash_exec\","
+    },
+    {
+      "kind": "reference",
+      "line": 17,
+      "path": "scripts/check_phase7_boundaries.py",
+      "text": "\"hermes_cli.toolset_scope\", \"hermes_cli.commands_platforms\","
+    },
+    {
+      "kind": "reference",
+      "line": 23,
+      "path": "scripts/check_phase7_boundaries.py",
+      "text": "TOOL_FACADES = {\"hermes_cli.tools_config\", \"hermes_cli.tools_config_mcp\"}"
+    },
+    {
+      "kind": "reference",
+      "line": 25,
+      "path": "scripts/phase7_baseline.py",
+      "text": "TARGETS = (\"hermes_cli.commands\", \"hermes_cli.slash_exec\","
+    },
+    {
+      "kind": "reference",
+      "line": 26,
+      "path": "scripts/phase7_baseline.py",
+      "text": "\"hermes_cli.tools_config\", \"hermes_cli.toolset_scope\")"
+    },
+    {
+      "kind": "reference",
+      "line": 89,
+      "path": "scripts/phase7_baseline.py",
+      "text": "presentation = importlib.import_module(\"hermes_cli.commands_presentation\")"
+    },
+    {
+      "kind": "import",
+      "line": 52,
+      "path": "tests/computer_use/test_cua_pm_selection.py",
+      "text": "from hermes_cli.tools_config_cua import install_cua_driver"
+    },
+    {
+      "kind": "reference",
+      "line": 1011,
+      "path": "tests/gateway/test_api_server.py",
+      "text": "\"hermes_cli.tools_config._get_effective_configurable_toolsets\","
+    },
+    {
+      "kind": "reference",
+      "line": 1017,
+      "path": "tests/gateway/test_api_server.py",
+      "text": "\"hermes_cli.tools_config.get_nous_subscription_features\","
+    },
+    {
+      "kind": "reference",
+      "line": 1020,
+      "path": "tests/gateway/test_api_server.py",
+      "text": "\"hermes_cli.tools_config._toolset_has_keys\","
+    },
+    {
+      "kind": "import",
+      "line": 140,
+      "path": "tests/gateway/test_compression_failure_session_sync.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 192,
+      "path": "tests/gateway/test_custom_provider_request_overrides.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 247,
+      "path": "tests/gateway/test_custom_provider_request_overrides.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 40,
+      "path": "tests/gateway/test_session_bypass_policy.py",
+      "text": "import gateway.session_policy, hermes_cli.tools_config, toolsets, tools.terminal_scope  # noqa: F401,E401"
+    },
+    {
+      "kind": "import",
+      "line": 118,
+      "path": "tests/gateway/test_streaming_tts_gateway_regression.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 6,
+      "path": "tests/hermes_cli/test_approvals_command.py",
+      "text": "from hermes_cli.commands_completion import SlashCommandCompleter"
+    },
+    {
+      "kind": "import",
+      "line": 17,
+      "path": "tests/hermes_cli/test_at_context_completion_filter.py",
+      "text": "from hermes_cli.commands_completion import SlashCommandCompleter"
+    },
+    {
+      "kind": "reference",
+      "line": 23,
+      "path": "tests/hermes_cli/test_cli_tools_command.py",
+      "text": "with patch(\"hermes_cli.tools_config.load_config\","
+    },
+    {
+      "kind": "reference",
+      "line": 25,
+      "path": "tests/hermes_cli/test_cli_tools_command.py",
+      "text": "patch(\"hermes_cli.tools_config.save_config\"):"
+    },
+    {
+      "kind": "reference",
+      "line": 37,
+      "path": "tests/hermes_cli/test_cli_tools_command.py",
+      "text": "with patch(\"hermes_cli.tools_config.load_config\","
+    },
+    {
+      "kind": "reference",
+      "line": 39,
+      "path": "tests/hermes_cli/test_cli_tools_command.py",
+      "text": "patch(\"hermes_cli.tools_config.save_config\"), \\"
+    },
+    {
+      "kind": "reference",
+      "line": 54,
+      "path": "tests/hermes_cli/test_cli_tools_command.py",
+      "text": "with patch(\"hermes_cli.tools_config.load_config\","
+    },
+    {
+      "kind": "reference",
+      "line": 56,
+      "path": "tests/hermes_cli/test_cli_tools_command.py",
+      "text": "patch(\"hermes_cli.tools_config.save_config\"), \\"
+    },
+    {
+      "kind": "import",
+      "line": 7,
+      "path": "tests/hermes_cli/test_commands.py",
+      "text": "from hermes_cli.commands_presentation import COMMANDS_BY_CATEGORY"
+    },
+    {
+      "kind": "import",
+      "line": 9,
+      "path": "tests/hermes_cli/test_commands.py",
+      "text": "from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter"
+    },
+    {
+      "kind": "import",
+      "line": 12,
+      "path": "tests/hermes_cli/test_completer_config_reads.py",
+      "text": "import hermes_cli.commands_completion as commands_mod"
+    },
+    {
+      "kind": "reference",
+      "line": 55,
+      "path": "tests/hermes_cli/test_discord_skill_clamp_warning.py",
+      "text": "with caplog.at_level(logging.WARNING, logger=\"hermes_cli.commands\"), ("
+    },
+    {
+      "kind": "relative/import",
+      "line": 63,
+      "path": "tests/hermes_cli/test_image_gen_picker.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 77,
+      "path": "tests/hermes_cli/test_image_gen_picker.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 90,
+      "path": "tests/hermes_cli/test_image_gen_picker.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 105,
+      "path": "tests/hermes_cli/test_image_gen_picker.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 131,
+      "path": "tests/hermes_cli/test_image_gen_picker.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 196,
+      "path": "tests/hermes_cli/test_image_gen_picker.py",
+      "text": "from hermes_cli import auth, tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 18,
+      "path": "tests/hermes_cli/test_imagegen_managed_gateway.py",
+      "text": "from hermes_cli.tools_config import ("
+    },
+    {
+      "kind": "import",
+      "line": 26,
+      "path": "tests/hermes_cli/test_imagegen_managed_gateway.py",
+      "text": "import hermes_cli.tools_config_providers as tc"
+    },
+    {
+      "kind": "import",
+      "line": 82,
+      "path": "tests/hermes_cli/test_imagegen_managed_gateway.py",
+      "text": "import hermes_cli.tools_config as tc"
+    },
+    {
+      "kind": "import",
+      "line": 83,
+      "path": "tests/hermes_cli/test_imagegen_managed_gateway.py",
+      "text": "import hermes_cli.tools_config_post_setup as tools_config_post_setup"
+    },
+    {
+      "kind": "import",
+      "line": 84,
+      "path": "tests/hermes_cli/test_imagegen_managed_gateway.py",
+      "text": "import hermes_cli.tools_config_providers as tcp"
+    },
+    {
+      "kind": "import",
+      "line": 106,
+      "path": "tests/hermes_cli/test_imagegen_managed_gateway.py",
+      "text": "import hermes_cli.tools_config as tc"
+    },
+    {
+      "kind": "import",
+      "line": 128,
+      "path": "tests/hermes_cli/test_imagegen_managed_gateway.py",
+      "text": "import hermes_cli.tools_config as tc"
+    },
+    {
+      "kind": "import",
+      "line": 239,
+      "path": "tests/hermes_cli/test_install_cua_driver.py",
+      "text": "from hermes_cli.tools_config_cua import _print_cua_platform_notes"
+    },
+    {
+      "kind": "import",
+      "line": 256,
+      "path": "tests/hermes_cli/test_install_cua_driver.py",
+      "text": "from hermes_cli.tools_config_cua import _cua_version_summary"
+    },
+    {
+      "kind": "import",
+      "line": 893,
+      "path": "tests/hermes_cli/test_mcp_catalog.py",
+      "text": "import hermes_cli.tools_config as tc"
+    },
+    {
+      "kind": "reference",
+      "line": 1,
+      "path": "tests/hermes_cli/test_mcp_tools_config.py",
+      "text": "\"\"\"Tests for MCP tools interactive configuration in hermes_cli.tools_config.\"\"\""
+    },
+    {
+      "kind": "import",
+      "line": 5,
+      "path": "tests/hermes_cli/test_mcp_tools_config.py",
+      "text": "from hermes_cli.tools_config import _configure_mcp_tools_interactive"
+    },
+    {
+      "kind": "reference",
+      "line": 10,
+      "path": "tests/hermes_cli/test_mcp_tools_config.py",
+      "text": "_SAVE = \"hermes_cli.tools_config.save_config\""
+    },
+    {
+      "kind": "reference",
+      "line": 99,
+      "path": "tests/hermes_cli/test_old_updater_shims.py",
+      "text": "(\"hermes_cli.tools_config\", \"_pip_install\", ([\"--quiet\", \"honcho-ai\"],), {}, None),"
+    },
+    {
+      "kind": "reference",
+      "line": 100,
+      "path": "tests/hermes_cli/test_old_updater_shims.py",
+      "text": "(\"hermes_cli.tools_config\", \"_pip_install\", ([\"--quiet\", \"honcho-ai\"],), {\"timeout\": 120, \"capture_output\": False}, None),"
+    },
+    {
+      "kind": "import",
+      "line": 10,
+      "path": "tests/hermes_cli/test_path_completion.py",
+      "text": "from hermes_cli.commands_completion import SlashCommandCompleter, _file_size_label"
+    },
+    {
+      "kind": "import",
+      "line": 99,
+      "path": "tests/hermes_cli/test_path_completion.py",
+      "text": "import hermes_cli.commands_completion as commands_mod"
+    },
+    {
+      "kind": "relative/import",
+      "line": 21,
+      "path": "tests/hermes_cli/test_post_setup_gating.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 31,
+      "path": "tests/hermes_cli/test_post_setup_gating.py",
+      "text": "from hermes_cli import tools_config, tools_config_post_setup"
+    },
+    {
+      "kind": "relative/import",
+      "line": 40,
+      "path": "tests/hermes_cli/test_post_setup_gating.py",
+      "text": "from hermes_cli import tools_config, tools_config_post_setup"
+    },
+    {
+      "kind": "relative/import",
+      "line": 52,
+      "path": "tests/hermes_cli/test_post_setup_gating.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 71,
+      "path": "tests/hermes_cli/test_post_setup_gating.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 79,
+      "path": "tests/hermes_cli/test_post_setup_gating.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 88,
+      "path": "tests/hermes_cli/test_post_setup_gating.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 108,
+      "path": "tests/hermes_cli/test_post_setup_gating.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 117,
+      "path": "tests/hermes_cli/test_post_setup_gating.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 10,
+      "path": "tests/hermes_cli/test_shared_metrics_tools_toggle.py",
+      "text": "from hermes_cli.tools_config import ("
+    },
+    {
+      "kind": "reference",
+      "line": 51,
+      "path": "tests/hermes_cli/test_shared_metrics_tools_toggle.py",
+      "text": "\"hermes_cli.tools_config.save_config\","
+    },
+    {
+      "kind": "reference",
+      "line": 65,
+      "path": "tests/hermes_cli/test_shared_metrics_tools_toggle.py",
+      "text": "\"hermes_cli.tools_config.save_config\", lambda cfg: saved.append(cfg)"
+    },
+    {
+      "kind": "reference",
+      "line": 77,
+      "path": "tests/hermes_cli/test_shared_metrics_tools_toggle.py",
+      "text": "\"hermes_cli.tools_config.save_config\", lambda cfg: None"
+    },
+    {
+      "kind": "import",
+      "line": 14,
+      "path": "tests/hermes_cli/test_stt_picker.py",
+      "text": "from hermes_cli.tools_config import (  # noqa: E402"
+    },
+    {
+      "kind": "reference",
+      "line": 42,
+      "path": "tests/hermes_cli/test_stt_picker.py",
+      "text": "\"hermes_cli.tools_config.get_nous_subscription_features\""
+    },
+    {
+      "kind": "reference",
+      "line": 70,
+      "path": "tests/hermes_cli/test_stt_picker.py",
+      "text": "\"hermes_cli.tools_config._prompt_choice\", return_value=0"
+    },
+    {
+      "kind": "reference",
+      "line": 1,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "\"\"\"Tests for hermes_cli.tools_config platform tool persistence.\"\"\""
+    },
+    {
+      "kind": "import",
+      "line": 14,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import _checklist_toolset_keys, _run_post_setup, _toolset_has_keys, CONFIGURABLE_TOOLSETS, TOOL_CATEGORIES, _visible_providers, tools_command"
+    },
+    {
+      "kind": "import",
+      "line": 24,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config as _tc"
+    },
+    {
+      "kind": "import",
+      "line": 112,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config as tc"
+    },
+    {
+      "kind": "reference",
+      "line": 255,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "\"hermes_cli.tools_config._prompt_toolset_checklist\","
+    },
+    {
+      "kind": "reference",
+      "line": 260,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "\"hermes_cli.tools_config._get_enabled_platforms\","
+    },
+    {
+      "kind": "reference",
+      "line": 275,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "\"hermes_cli.tools_config._configure_toolset\","
+    },
+    {
+      "kind": "import",
+      "line": 294,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import PLATFORMS"
+    },
+    {
+      "kind": "import",
+      "line": 306,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import PLATFORMS"
+    },
+    {
+      "kind": "import",
+      "line": 323,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import PLATFORMS as TOOLS_PLATFORMS"
+    },
+    {
+      "kind": "reference",
+      "line": 374,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "with patch(\"hermes_cli.tools_config_post_setup._ensure_browser_use_cli\") as stub:"
+    },
+    {
+      "kind": "reference",
+      "line": 391,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "), patch(\"hermes_cli.tools_config_post_setup._print_warning\") as warn, patch("
+    },
+    {
+      "kind": "reference",
+      "line": 392,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "\"hermes_cli.tools_config_post_setup._print_info\""
+    },
+    {
+      "kind": "reference",
+      "line": 408,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "with patch(\"hermes_cli.tools_config_post_setup._ensure_browser_use_cli\") as ensure, patch("
+    },
+    {
+      "kind": "reference",
+      "line": 418,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "with patch(\"hermes_cli.tools_config_post_setup._ensure_browser_use_cli\") as ensure, patch("
+    },
+    {
+      "kind": "reference",
+      "line": 429,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "\"hermes_cli.tools_config_post_setup.shutil.which\", return_value=\"/usr/bin/browser-use\""
+    },
+    {
+      "kind": "import",
+      "line": 434,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import _ensure_browser_use_cli"
+    },
+    {
+      "kind": "import",
+      "line": 442,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import _ensure_browser_use_cli"
+    },
+    {
+      "kind": "reference",
+      "line": 445,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "\"hermes_cli.tools_config_post_setup.shutil.which\", return_value=None"
+    },
+    {
+      "kind": "reference",
+      "line": 449,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "), patch(\"hermes_cli.tools_config_post_setup._print_warning\") as warn:"
+    },
+    {
+      "kind": "import",
+      "line": 462,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import IMAGEGEN_BACKENDS, TOOL_CATEGORIES"
+    },
+    {
+      "kind": "import",
+      "line": 475,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import _configure_imagegen_model"
+    },
+    {
+      "kind": "reference",
+      "line": 478,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "with patch(\"hermes_cli.tools_config._prompt_choice\", return_value=1):"
+    },
+    {
+      "kind": "import",
+      "line": 481,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import IMAGEGEN_BACKENDS"
+    },
+    {
+      "kind": "import",
+      "line": 489,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import ("
+    },
+    {
+      "kind": "reference",
+      "line": 505,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "with patch(\"hermes_cli.tools_config._prompt_choice\", side_effect=fake_prompt):"
+    },
+    {
+      "kind": "import",
+      "line": 518,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import IMAGEGEN_BACKENDS, _configure_imagegen_model"
+    },
+    {
+      "kind": "reference",
+      "line": 520,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "with patch(\"hermes_cli.tools_config._prompt_choice\", return_value=0):"
+    },
+    {
+      "kind": "import",
+      "line": 527,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import _configure_imagegen_model_for_plugin"
+    },
+    {
+      "kind": "reference",
+      "line": 536,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "\"hermes_cli.tools_config._plugin_image_gen_catalog\","
+    },
+    {
+      "kind": "reference",
+      "line": 539,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "patch(\"hermes_cli.tools_config._prompt_choice\", return_value=0),"
+    },
+    {
+      "kind": "import",
+      "line": 552,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import _get_effective_configurable_toolsets"
+    },
+    {
+      "kind": "import",
+      "line": 587,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config as tc"
+    },
+    {
+      "kind": "import",
+      "line": 588,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config_providers as tcp"
+    },
+    {
+      "kind": "import",
+      "line": 608,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 640,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 687,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 688,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config_providers import _plugin_image_gen_providers"
+    },
+    {
+      "kind": "import",
+      "line": 702,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 720,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 721,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config_providers import _managed_image_catalog"
+    },
+    {
+      "kind": "import",
+      "line": 938,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "import hermes_cli.tools_config as _tc_mod"
+    },
+    {
+      "kind": "reference",
+      "line": 1014,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "with patch(\"hermes_cli.tools_config_post_setup._ensure_browser_use_cli\") as stub:"
+    },
+    {
+      "kind": "import",
+      "line": 1018,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import _run_post_setup"
+    },
+    {
+      "kind": "reference",
+      "line": 1021,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "patch(\"hermes_cli.tools_config_post_setup._print_success\") as ok, \\"
+    },
+    {
+      "kind": "reference",
+      "line": 1022,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "patch(\"hermes_cli.tools_config_post_setup._print_warning\") as warn:"
+    },
+    {
+      "kind": "import",
+      "line": 1029,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import _run_post_setup"
+    },
+    {
+      "kind": "reference",
+      "line": 1033,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "patch(\"hermes_cli.tools_config_post_setup._print_warning\") as warn, \\"
+    },
+    {
+      "kind": "reference",
+      "line": 1034,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "patch(\"hermes_cli.tools_config_post_setup._print_info\") as info:"
+    },
+    {
+      "kind": "import",
+      "line": 1040,
+      "path": "tests/hermes_cli/test_tools_config.py",
+      "text": "from hermes_cli.tools_config import ("
+    },
+    {
+      "kind": "import",
+      "line": 13,
+      "path": "tests/hermes_cli/test_tools_config_post_setup.py",
+      "text": "from hermes_cli.tools_config_post_setup import _run_post_setup"
+    },
+    {
+      "kind": "import",
+      "line": 57,
+      "path": "tests/hermes_cli/test_tools_config_post_setup.py",
+      "text": "from hermes_cli.tools_config_post_setup import _POST_SETUP_READY"
+    },
+    {
+      "kind": "import",
+      "line": 8,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "from hermes_cli.tools_config import tools_disable_enable_command"
+    },
+    {
+      "kind": "reference",
+      "line": 18,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "with patch(\"hermes_cli.tools_config.load_config\", return_value=config), \\"
+    },
+    {
+      "kind": "reference",
+      "line": 19,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "patch(\"hermes_cli.tools_config.save_config\") as mock_save:"
+    },
+    {
+      "kind": "reference",
+      "line": 37,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "with patch(\"hermes_cli.tools_config.load_config\", return_value=config), \\"
+    },
+    {
+      "kind": "reference",
+      "line": 38,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "patch(\"hermes_cli.tools_config.save_config\"):"
+    },
+    {
+      "kind": "reference",
+      "line": 62,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "with patch(\"hermes_cli.tools_config.load_config\", return_value=config):"
+    },
+    {
+      "kind": "reference",
+      "line": 77,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "with patch(\"hermes_cli.tools_config.load_config\", return_value=config), \\"
+    },
+    {
+      "kind": "reference",
+      "line": 78,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "patch(\"hermes_cli.tools_config.save_config\") as mock_save:"
+    },
+    {
+      "kind": "reference",
+      "line": 105,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "patch(\"hermes_cli.tools_config.load_config\", return_value=config), \\"
+    },
+    {
+      "kind": "reference",
+      "line": 106,
+      "path": "tests/hermes_cli/test_tools_disable_enable.py",
+      "text": "patch(\"hermes_cli.tools_config.save_config\") as save:"
+    },
+    {
+      "kind": "relative/import",
+      "line": 15,
+      "path": "tests/hermes_cli/test_tts_picker.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 88,
+      "path": "tests/hermes_cli/test_video_gen_picker.py",
+      "text": "from hermes_cli import tools_config, tools_config_providers"
+    },
+    {
+      "kind": "relative/import",
+      "line": 124,
+      "path": "tests/hermes_cli/test_video_gen_picker.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 146,
+      "path": "tests/hermes_cli/test_video_gen_picker.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "relative/import",
+      "line": 166,
+      "path": "tests/hermes_cli/test_video_gen_picker.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 8,
+      "path": "tests/hermes_cli/test_web_provider_selection.py",
+      "text": "import hermes_cli.tools_config_providers as providers"
+    },
+    {
+      "kind": "import",
+      "line": 52,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 53,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config_cua as tools_config_cua"
+    },
+    {
+      "kind": "import",
+      "line": 54,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config_post_setup as tools_config_post_setup"
+    },
+    {
+      "kind": "import",
+      "line": 80,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 81,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config_cua as tools_config_cua"
+    },
+    {
+      "kind": "import",
+      "line": 82,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config_post_setup as tools_config_post_setup"
+    },
+    {
+      "kind": "import",
+      "line": 100,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 101,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config_cua as tools_config_cua"
+    },
+    {
+      "kind": "import",
+      "line": 102,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config_post_setup as tools_config_post_setup"
+    },
+    {
+      "kind": "import",
+      "line": 120,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 121,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config_cua as tools_config_cua"
+    },
+    {
+      "kind": "import",
+      "line": 122,
+      "path": "tests/hermes_cli/test_web_routers_tools_install_on_enable.py",
+      "text": "import hermes_cli.tools_config_post_setup as tools_config_post_setup"
+    },
+    {
+      "kind": "import",
+      "line": 2964,
+      "path": "tests/hermes_cli/test_web_server.py",
+      "text": "import hermes_cli.tools_config as tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 2975,
+      "path": "tests/hermes_cli/test_web_server.py",
+      "text": "import hermes_cli.tools_config_post_setup as tools_config_post_setup"
+    },
+    {
+      "kind": "relative/import",
+      "line": 87,
+      "path": "tests/hermes_cli/test_web_server_executor_isolation.py",
+      "text": "from hermes_cli import platforms, tools_config"
+    },
+    {
+      "kind": "reference",
+      "line": 366,
+      "path": "tests/hermes_cli/test_web_server_profile_unification.py",
+      "text": "\"hermes_cli.tools_config.valid_post_setup_keys\","
+    },
+    {
+      "kind": "import",
+      "line": 177,
+      "path": "tests/plugins/browser/test_browser_provider_plugins.py",
+      "text": "from hermes_cli.tools_config import _plugin_browser_providers"
+    },
+    {
+      "kind": "relative/import",
+      "line": 234,
+      "path": "tests/plugins/video_gen/test_openrouter.py",
+      "text": "from hermes_cli import plugins as plugin_loader, tools_config"
+    },
+    {
+      "kind": "reference",
+      "line": 8,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"from hermes_cli.commands import CommandDef\", \"gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 13,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"import importlib\\nc = importlib.import_module('hermes_cli.commands')\", \"gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 15,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"c = __import__('hermes_cli.slash_exec')\", \"gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 16,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"c = _mod('hermes_cli.toolset_scope')\", \"gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 17,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"from hermes_cli.tools_config import _get_platform_tools\", \"gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 19,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"from hermes_cli.tools_config import *\", \"gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 21,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"hc, tc = _tools_mod('hermes_cli.config'), _tools_mod('hermes_cli.tools_config')\\ntc._apply_toolset_change({}, 'cli', [], 'enable')\", \"tui_gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 22,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"import importlib as i\\na = i.import_module('hermes_cli.tools_config')\\nb = a\\nf = getattr(b, '_save_platform_tools')\", \"gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 23,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"import importlib\\ngetattr(importlib.import_module('hermes_cli.tools_config'), 'get_platform_tools')\", \"gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 45,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"from hermes_cli.tools_config import _toolset_has_keys, gui_toolset_label\", \"hermes_cli/web_routers/tools.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 46,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"from hermes_cli.commands_completion import SlashCommandCompleter\", \"tui_gateway/consumer.py\"),"
+    },
+    {
+      "kind": "reference",
+      "line": 47,
+      "path": "tests/scripts/test_check_phase7_boundaries.py",
+      "text": "(\"import logging\\nlogger = logging.getLogger('hermes_cli.commands')\", \"gateway/command_platforms.py\"),"
+    },
+    {
+      "kind": "import",
+      "line": 374,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import TOOL_CATEGORIES, _is_provider_active"
+    },
+    {
+      "kind": "import",
+      "line": 634,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import TOOL_CATEGORIES"
+    },
+    {
+      "kind": "import",
+      "line": 642,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import TOOL_CATEGORIES, _plugin_browser_providers"
+    },
+    {
+      "kind": "import",
+      "line": 649,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import _write_provider_config"
+    },
+    {
+      "kind": "import",
+      "line": 660,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import _write_provider_config"
+    },
+    {
+      "kind": "import",
+      "line": 671,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import _is_provider_active"
+    },
+    {
+      "kind": "import",
+      "line": 1114,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import TOOL_CATEGORIES"
+    },
+    {
+      "kind": "import",
+      "line": 1123,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import _write_provider_config"
+    },
+    {
+      "kind": "import",
+      "line": 1132,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import _write_provider_config"
+    },
+    {
+      "kind": "import",
+      "line": 1139,
+      "path": "tests/tools/test_browser_use_cli.py",
+      "text": "from hermes_cli.tools_config import _is_provider_active"
+    },
+    {
+      "kind": "import",
+      "line": 325,
+      "path": "tests/tools/test_strict_provider_selection.py",
+      "text": "from hermes_cli.tools_config import _write_provider_config"
+    },
+    {
+      "kind": "import",
+      "line": 334,
+      "path": "tests/tools/test_strict_provider_selection.py",
+      "text": "from hermes_cli.tools_config import _write_provider_config"
+    },
+    {
+      "kind": "import",
+      "line": 343,
+      "path": "tests/tools/test_strict_provider_selection.py",
+      "text": "from hermes_cli.tools_config import _write_provider_config"
+    },
+    {
+      "kind": "import",
+      "line": 354,
+      "path": "tests/tools/test_strict_provider_selection.py",
+      "text": "from hermes_cli.tools_config import _write_provider_config"
+    },
+    {
+      "kind": "import",
+      "line": 463,
+      "path": "tests/tools/test_web_keyless_fallback.py",
+      "text": "from hermes_cli.tools_config import _write_provider_config"
+    },
+    {
+      "kind": "import",
+      "line": 480,
+      "path": "tests/tools/test_web_keyless_fallback.py",
+      "text": "from hermes_cli.tools_config import _web_tier_matches"
+    },
+    {
+      "kind": "relative/import",
+      "line": 442,
+      "path": "tests/tools/test_web_keyless_fallback.py",
+      "text": "from hermes_cli import tools_config"
+    },
+    {
+      "kind": "import",
+      "line": 10,
+      "path": "tests/tui_gateway/test_command_description_fidelity.py",
+      "text": "from hermes_cli.commands_completion import SlashCommandCompleter"
+    },
+    {
+      "kind": "import",
+      "line": 2483,
+      "path": "tests/tui_gateway/test_tui_gateway_server.py",
+      "text": "import hermes_cli.tools_config as tools_config_mod"
+    },
+    {
+      "kind": "import",
+      "line": 231,
+      "path": "tui_gateway/command_discovery.py",
+      "text": "from hermes_cli.commands_completion import SlashCommandCompleter"
+    },
+    {
+      "kind": "import",
+      "line": 553,
+      "path": "tui_gateway/methods_profiles.py",
+      "text": "from hermes_cli.tools_config import _get_effective_configurable_toolsets"
+    },
+    {
+      "kind": "import",
+      "line": 186,
+      "path": "tui_gateway/methods_slash.py",
+      "text": "from hermes_cli.commands_presentation import COMMANDS_BY_CATEGORY"
+    }
+  ],
+  "execution_mappings": {
+    "acp_adapter/commands.py": [
+      {
+        "line": 40,
+        "source": "_MID_TURN_BLOCKED_COMMANDS = frozenset({\"reset\", \"compress\", \"model\"})"
+      },
+      {
+        "line": 48,
+        "source": "_COMMANDS: dict[str, tuple[str, str, str | None]] = {\n        \"help\": (\"Show available commands\", \"List available commands\", None),\n        \"model\": (\n            \"Show or change current model\",\n            \"Show current model and provider, or switch models\",\n            \"model name to switch to\",\n        ),\n        \"tools\": (\"List available tools\", \"List available tools with descriptions\", None),\n        \"context\": (\"Show conversation context info\", \"Show conversation message counts by role\", None),\n        \"reset\": (\"Clear conversation history\", \"Clear conversation history\", None),\n        \"compress\": (\"Compress conversation context\", \"Compress conversation context\", None),\n        \"steer\": (\n            \"Inject guidance into the currently running agent turn\",\n            \"Inject guidance into the currently running agent turn\",\n            \"guidance for the active turn\",\n        ),\n        \"queue\": (\n            \"Queue a prompt to run after the current turn finishes\",\n            \"Queue a prompt to run after the current turn finishes\",\n            \"prompt to run next\",\n        ),\n        \"version\": (\"Show Hermes version\", \"Show Hermes version\", None),\n    }"
+      }
+    ],
+    "cli.py": [
+      {
+        "line": 325,
+        "source": "_COMMAND_SPINNER_FRAMES = (\"⠋\", \"⠙\", \"⠹\", \"⠸\", \"⠼\", \"⠴\", \"⠦\", \"⠧\", \"⠇\", \"⠏\")"
+      },
+      {
+        "line": 1151,
+        "source": "_SLASH_DISPATCH: dict[str, tuple[str, bool]] = {\n        \"exit\": (\"_cmd_exit\", True), \"quit\": (\"_cmd_exit\", True), \"help\": (\"_cmd_help\", True),\n        \"palette\": (\"_open_command_palette\", False), \"whoami\": (\"_handle_whoami_command\", False),\n        \"profile\": (\"_handle_profile_command\", False), \"toolsets\": (\"show_toolsets\", False),\n        \"config\": (\"show_config\", False), \"redraw\": (\"_cmd_redraw\", True), \"clear\": (\"_cmd_clear\", True),\n        \"history\": (\"show_history\", False), \"title\": (\"_cmd_title\", True), \"new\": (\"_cmd_new\", True),\n        \"model\": (\"_handle_model_switch\", True), \"codex-runtime\": (\"_handle_codex_runtime\", True),\n        \"retry\": (\"_cmd_retry\", True), \"prompt\": (\"_handle_prompt_compose_command\", True),\n        \"undo\": (\"_cmd_undo\", True), \"save\": (\"save_conversation\", True), \"skills\": (\"_cmd_skills\", True),\n        \"platforms\": (\"_show_gateway_status\", False), \"status\": (\"_show_session_status\", False),\n        \"context\": (\"_show_context_breakdown\", True), \"egress\": (\"_cmd_egress\", True),\n        \"statusbar\": (\"_cmd_statusbar\", True), \"verbose\": (\"_toggle_verbose\", False), \"yolo\": (\"_toggle_yolo\", False),\n        \"compress\": (\"_manual_compress\", True), \"subscription\": (\"_show_subscription\", False),\n        \"topup\": (\"_show_billing\", True), \"insights\": (\"_show_insights\", True), \"update\": (\"_cmd_update\", True),\n        \"version\": (\"_cmd_version\", True), \"paste\": (\"_handle_paste_command\", False), \"reload\": (\"_cmd_reload\", True),\n        \"reload-mcp\": (\"_confirm_and_reload_mcp\", True), \"reload-skills\": (\"_cmd_reload_skills\", True),\n        \"plugins\": (\"_cmd_plugins\", True), \"stop\": (\"_handle_stop_command\", False),\n        \"agents\": (\"_handle_agents_command\", False), \"bg\": (\"_handle_background_command\", True),\n        \"queue\": (\"_cmd_queue\", True), \"steer\": (\"_cmd_steer\", True), \"moa\": (\"_cmd_moa\", True),\n    }"
+      }
+    ],
+    "gateway/run_busy.py": [
+      {
+        "line": 883,
+        "source": "_COMMAND_HANDLER_ALIASES = {\"bg\": \"_handle_background_command\", \"sethome\": \"_handle_set_home_command\"}"
+      },
+      {
+        "line": 885,
+        "source": "_PLAIN_COMMANDS = (\n        \"status\", \"context\", \"restart\", \"approve\", \"deny\", \"pause\", \"agents\", \"bg\", \"btw\",\n        \"kanban\", \"subgoal\", \"heartbeat\", \"busy\", \"yolo\", \"verbose\", \"footer\", \"help\",\n        \"commands\", \"profile\", \"login\", \"update\", \"version\",\n    )"
+      },
+      {
+        "line": 891,
+        "source": "_IDLE_COMMANDS = (\n        \"topic\", \"whoami\", \"platform\", \"stop\", \"reasoning\", \"memory\", \"skills\", \"fast\",\n        \"approvals\", \"model\", \"codex-runtime\", \"personality\", \"suggestions\", \"save\", \"retry\",\n        \"sethome\", \"compress\", \"usage\", \"topup\", \"insights\", \"reload-mcp\", \"reload-skills\",\n        \"bundles\", \"debug\", \"title\", \"resume\", \"sessions\", \"branch\", \"rollback\", \"diff\", \"goal\",\n        \"loop\", \"refine\", \"review\", \"voice\",\n    )"
+      }
+    ],
+    "gateway/slash_commands.py": [],
+    "tui_gateway/methods_slash.py": [
+      {
+        "line": 19,
+        "source": "_ISOLATED_SESSION_READ_COMMANDS = frozenset({\"context\", \"tools\", \"help\"})"
+      }
+    ]
+  }
+}

@@ -182,7 +182,7 @@ def _render_terminal(ctx):
         # Plugin-registered terminal backends: show availability via the provider's doctor rows
         # (fail-soft — never break `hermes status`).
         try:
-            from hermes_cli.plugins import discover_plugins
+            from plugin_runtime.lifecycle import discover_plugins
             discover_plugins()
             from agent.terminal_env_registry import get_provider
             provider = get_provider(terminal_env)
@@ -202,7 +202,7 @@ def _render_platforms(ctx):
         _row(name, has_token, _configured(has_token) + (f" (home: {home_channel})" if home_channel else ""))
 
     try:  # Plugin-registered platforms
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             # Per-entry guard: one raising probe must not abort the listing of every remaining
             # plugin platform (matches the other check_fn sites).
@@ -387,7 +387,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

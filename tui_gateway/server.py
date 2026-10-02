@@ -2003,7 +2003,7 @@ def _cli_exec_blocked(argv: list[str]) -> str | None:
 
 def _resolve_name(name: str) -> str:
     with contextlib.suppress(Exception):
-        from hermes_cli.commands import resolve_command
+        from commands import resolve_command
         return r.name if (r := resolve_command(name)) else name
     return name
 

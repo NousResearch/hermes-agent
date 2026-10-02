@@ -1451,7 +1451,7 @@ def _warn_invalid_platform_toolsets(results: Dict[str, Any], quiet: bool) -> Non
     try:
         from toolsets import validate_toolset
         from hermes_cli.toolset_validation import validate_platform_toolsets
-        from hermes_cli.toolset_scope import toolset_allowed_for_platform
+        from tools.toolset_scope import toolset_allowed_for_platform
 
         for w in validate_platform_toolsets(
                 read_raw_config().get("platform_toolsets"), validate_toolset, toolset_allowed_for_platform):
@@ -2848,6 +2848,24 @@ def get_env_value(key: str) -> Optional[str]:
     return load_env().get(key) if val is None else val
 
 
+def has_xai_tool_credentials() -> bool:
+    """Cheap offline check for xAI credentials (auth store + env only); the runtime ``check_fn`` still gates
+    schema registration if creds expire. Also used by ``provider_readiness_status`` for ``xai_grok`` rows."""
+    try:
+        from hermes_cli.auth import _read_xai_oauth_tokens
+        _read_xai_oauth_tokens()
+        return True
+    except Exception:
+        pass
+    if str(get_env_value("XAI_API_KEY") or "").strip():
+        return True
+    try:
+        from agent.secret_scope import get_secret
+    except ImportError:  # pragma: no cover — secret_scope is in-repo
+        get_secret = os.environ.get
+    return bool(str(get_secret("XAI_API_KEY") or "").strip())
+
+
 def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     """Resolve a Hermes-managed credential preferring ``~/.hermes/.env`` over ``os.environ``, so a
     deliberate .env edit beats a stale value inherited from the parent shell."""
@@ -4094,7 +4112,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

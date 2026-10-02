@@ -122,7 +122,7 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
         rendered = _restore_plugin_prompt_sections(stored_prompt)
     else:
         try:
-            from hermes_cli.plugins import render_system_prompt_sections
+            from plugin_runtime.api import render_system_prompt_sections
             rendered = tuple(render_system_prompt_sections(_plugin_session_info(agent)))
         except Exception as exc:
             rendered = getattr(agent, "_plugin_system_prompt_sections_previous", None)
@@ -139,7 +139,7 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     """Recover frozen section bytes from the persisted full prompt.  Only the
     exact canonical container emitted by core is accepted — user/project text
     may resemble a frame."""
-    from hermes_cli.plugins import (
+    from plugin_runtime.dispatch import (
         MAX_SYSTEM_PROMPT_SECTION_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
         RenderedPluginSystemPromptSection, format_system_prompt_sections,
     )
@@ -168,7 +168,7 @@ def restore_plugin_prompt_sections(agent: Any, prompt: str) -> None:
 
 
 def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
-    from hermes_cli.plugins import format_system_prompt_sections
+    from plugin_runtime.dispatch import format_system_prompt_sections
     block = format_system_prompt_sections([s for s in sections if s.position == position])
     return [block] if block else []
 
@@ -414,7 +414,7 @@ def _default_platform_hint(platform_key: str) -> str:
     hint = PLATFORM_HINTS.get(platform_key, "")
     if not hint and platform_key:
         try:
-            from gateway.platform_registry import platform_registry
+            from plugin_runtime.platform_registry import platform_registry
             _entry = platform_registry.get(platform_key)
             hint = (_entry and _entry.platform_hint) or ""
         except Exception:
@@ -883,7 +883,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

@@ -1453,8 +1453,8 @@ def _check_plugin_stt_provider(provider: str) -> bool:
         return False
     try:
         from agent.transcription_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-        _ensure_plugins_discovered()
+        from plugin_runtime.lifecycle import ensure_plugins_discovered
+        ensure_plugins_discovered()
         plugin_provider = get_provider(key)
         if plugin_provider is None:
             # Match the transcription dispatcher: long-lived processes may need
@@ -1595,7 +1595,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

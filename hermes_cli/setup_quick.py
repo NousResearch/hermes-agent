@@ -165,14 +165,15 @@ def _blank_slate_minimal_toolsets(config: dict):
     ``vision`` (``read_file`` can't read images) and ``skills`` (the seeded ``hermes-agent`` skill
     needs ``skill_view``) stay on. Two layers enforce it: ``platform_toolsets["cli"]`` (explicit,
     so defaults aren't re-expanded) and ``agent.disabled_toolsets`` (hard-suppression applied last
-    in ``_get_platform_tools``, overriding the recovery that would re-add e.g. ``kanban``)."""
+    in ``get_platform_tools``, overriding the recovery that would re-add e.g. ``kanban``)."""
     keep = {"file", "terminal", "vision", "skills"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
         from toolsets import TOOLSETS
-        from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
+        from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+        from tools.platform_policy import get_plugin_toolset_keys
         all_keys = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
-        all_keys.update(_get_plugin_toolset_keys())
+        all_keys.update(get_plugin_toolset_keys())
         # Plain TOOLSETS entries catch recovered toolsets like ``kanban``. Skip "hermes-*" platform
         # composites, "includes" groupings, and posture toolsets (session-level picks by
         # agent/coding_context.py — disabling them would subtract terminal/read_file).

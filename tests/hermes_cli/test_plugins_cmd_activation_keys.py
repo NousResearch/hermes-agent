@@ -1,7 +1,7 @@
 """Plugin activation writes and reads the SAME key on every surface (#27548, #73131, #82898).
 
 Runs the real ``hermes_cli.plugins_cmd`` commands against a temp HERMES_HOME and checks the verdict
-through the loader's own gate (``plugins_discovery.gate_manifest``) — never by re-reading the list
+through the loader's own gate (``plugin_runtime.discovery.gate_manifest``) — never by re-reading the list
 the command just wrote.
 """
 
@@ -11,7 +11,7 @@ import pytest
 
 from hermes_cli import plugins_cmd
 from hermes_cli.config import load_config, save_config
-from hermes_cli.plugins_discovery import collect_directory_manifests, gate_manifest
+from plugin_runtime.discovery import collect_directory_manifests, gate_manifest
 
 
 def _write_plugin(root, rel, name, extra=""):
@@ -47,6 +47,10 @@ def _lists():
     return set(plugins.get("enabled") or []), set(plugins.get("disabled") or [])
 
 
+def _no_removed(_name, _path):
+    return None
+
+
 def test_disable_bundled_platform_by_manifest_name_gates_the_loader(home):
     """`hermes plugins disable photon-platform` must produce a key the loader's gate matches; the
     CLI wrote ``platforms/photon`` while discovery keyed the adapter ``photon-platform``."""
@@ -54,7 +58,7 @@ def test_disable_bundled_platform_by_manifest_name_gates_the_loader(home):
 
     enabled, disabled = _lists()
     photon = next(m for m in collect_directory_manifests() if m.name == "photon-platform")
-    gate = gate_manifest(photon, disabled, enabled)
+    gate = gate_manifest(photon, disabled, enabled, installed_plugin_removal=_no_removed)
     assert gate.action == "placeholder" and gate.error == "disabled via config"
     # And the key the CLI persists IS the loader's key — not merely an alias of it.
     assert photon.key in disabled
@@ -79,7 +83,9 @@ def test_dashboard_toggle_writes_canonical_key_and_clears_stale_aliases(home):
     enabled, disabled = _lists()
     assert enabled == {"obs/zzprobe"} and disabled == set()
     manifest = next(m for m in collect_directory_manifests() if m.name == "zz-probe-manifest")
-    assert gate_manifest(manifest, disabled, enabled).action == "load"
+    assert gate_manifest(
+        manifest, disabled, enabled, installed_plugin_removal=_no_removed,
+    ).action == "load"
     # Same state requested again by manifest name: nothing to write, no restart to announce.
     again = plugins_cmd.dashboard_set_agent_plugin_enabled("zz-probe-manifest", enabled=True)
     assert again["unchanged"] is True and again["restart_required"] is False

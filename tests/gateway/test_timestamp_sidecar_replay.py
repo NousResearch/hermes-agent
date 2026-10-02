@@ -54,7 +54,7 @@ def responses_agent(tmp_path, monkeypatch):
     sid = "sanitized-timestamp-replay"
     db = SessionDB(db_path=tmp_path / "state.db")
     monkeypatch.setattr(
-        "hermes_cli.plugins.invoke_hook",
+        "plugin_runtime.api.invoke_hook",
         lambda hook, **kw: [{"context": POLICY}] if hook == "pre_llm_call" else [],
     )
     # Titling is not under test; its daemon thread would outlive the turn holding ``db`` and race

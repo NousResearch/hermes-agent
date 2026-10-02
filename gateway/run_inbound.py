@@ -262,7 +262,7 @@ class GatewayInboundMixin:
         with suppress(Exception):
             _estop_cmd = event.get_command()
             if _estop_cmd:
-                from hermes_cli.commands import resolve_command as _resolve_estop_cmd
+                from commands import resolve_command as _resolve_estop_cmd
                 if _resolve_estop_cmd(_estop_cmd) is not None:
                     return True
         with suppress(Exception):
@@ -333,7 +333,7 @@ class GatewayInboundMixin:
         else:
             if cmd:
                 with suppress(Exception):
-                    from hermes_cli.commands import resolve_command as _resolve_update_cmd
+                    from commands import resolve_command as _resolve_update_cmd
                     _cmd_def = _resolve_update_cmd(cmd)
                     _recognized_cmd = _cmd_def.name if _cmd_def else None
             response_text = "" if _recognized_cmd else (event.text or "").strip()
@@ -577,7 +577,7 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str]]:
         """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``. Each
         command's mid-run behavior is declared on its CommandDef (busy_policy / busy_handler)."""
-        from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+        from commands import resolve_command as _resolve_cmd_inner
         _evt_cmd = event.get_command()
         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
@@ -791,7 +791,7 @@ class GatewayInboundMixin:
         raw_args = event.get_command_args().strip()
         platform = source.platform.value if source.platform else ""
         try:
-            from hermes_cli.plugins import fire_pre_command_hook
+            from hermes_cli.plugin_policy import fire_pre_command_hook
             fire_pre_command_hook(
                 surface="gateway", command=str(canonical), alias_used=str(command),
                 args_raw=raw_args, session_key=_quick_key, platform=platform,
@@ -833,7 +833,7 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """Resolve the slash command (aliases, access gate, hooks) → ``(handled, result, command,
         canonical)``; when ``handled`` the caller returns ``result`` as-is (may be None)."""
-        from hermes_cli.commands import is_gateway_known_command, resolve_command as _resolve_cmd
+        from commands import is_gateway_known_command, resolve_command as _resolve_cmd
 
         def _canon(cmd):
             # Aliases resolve to the canonical name so dispatch and hook names don't depend on them.
@@ -1095,7 +1095,7 @@ class GatewayInboundMixin:
         # underscored autocomplete form matches plugin commands registered with hyphens.
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from plugin_runtime.api import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
@@ -1153,7 +1153,7 @@ class GatewayInboundMixin:
     def _hm_unknown_slash_reply(command: str, source: SessionSource) -> Optional[str]:
         """Reply for a /command that is not built-in/plugin/skill; None when it is known."""
         from gateway.run import _check_unavailable_skill
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        from commands import GATEWAY_KNOWN_COMMANDS
         # Known commands never need an unavailable-skill hint (which can require a cold scan).
         if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
             return None
@@ -1853,7 +1853,7 @@ class GatewayInboundMixin:
 
     def _install_plugin_message_injector(self) -> None:
         """Publish this live gateway's plugin message scheduler."""
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         get_plugin_manager().set_gateway_message_injector(
             self, self._schedule_plugin_message_injection
@@ -1861,7 +1861,7 @@ class GatewayInboundMixin:
 
     def _clear_plugin_message_injector(self) -> None:
         """Remove this runner's scheduler without clobbering a newer owner."""
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         get_plugin_manager().clear_gateway_message_injector(self)
 

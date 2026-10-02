@@ -1,4 +1,5 @@
 """Tests for hermes_cli.web_server and related config utilities."""
+from hermes_cli import config as config_backend
 
 import asyncio
 import os
@@ -1478,7 +1479,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         as nameless "Irc"/"Ntfy" cards with empty descriptions.
         """
         from gateway.config import Platform
-        from gateway.platform_registry import PlatformEntry, platform_registry
+        from plugin_runtime.platform_registry import PlatformEntry, platform_registry
 
         entry = PlatformEntry(
             name="pseudofake",
@@ -2973,7 +2974,7 @@ class TestNewEndpoints:
         # No xAI credentials → the Grok OAuth-backed row needs sign-in.
         import hermes_cli.tools_config_post_setup as tools_config_post_setup
 
-        monkeypatch.setattr(tools_config, "_xai_credentials_present", lambda: False)
+        monkeypatch.setattr(config_backend, "has_xai_tool_credentials", lambda: False)
         # Local TTS engines not installed → their rows need setup.
         monkeypatch.setattr(tools_config_post_setup, "_module_installed", lambda name: False)
         monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)

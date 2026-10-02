@@ -505,7 +505,7 @@ class GatewayAgentCacheMixin:
             # running-agent fast path; the pending-sentinel /stop has no in-flight work, so it stays
             # silent. Dispatch failures are swallowed so a misbehaving plugin cannot break an interrupt.
             try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                from plugin_runtime.api import invoke_hook as _invoke_hook
 
                 _invoke_hook(
                     "agent_loop_stopped",

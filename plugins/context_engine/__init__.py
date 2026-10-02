@@ -101,14 +101,14 @@ class _EngineCollector(_loader.NoopPluginContext):
             return
         conflict = "Context engine '%s' tried to register command '/%s' which %s Skipping."
         try:
-            from hermes_cli.commands import resolve_command
+            from commands import resolve_command
             if resolve_command(clean) is not None:
                 logger.warning(conflict, self._engine_name, clean, "conflicts with a built-in command.")
                 return
         except Exception:
             pass
         try:
-            from hermes_cli.plugins import get_plugin_manager
+            from plugin_runtime.lifecycle import get_plugin_manager
             manager = get_plugin_manager()
             if clean in manager._plugin_commands:
                 logger.warning(conflict, self._engine_name, clean, "is already registered by a plugin.")

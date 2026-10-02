@@ -36,7 +36,7 @@ async def test_ensure_forum_commands_registers_once():
     adapter = _make_test_adapter()
     msg = _forum_message(chat_id=-123, is_forum=True)
 
-    with patch("hermes_cli.commands_platforms.telegram_menu_commands") as mock_menu:
+    with patch("gateway.command_platforms.telegram_menu_commands") as mock_menu:
         mock_menu.return_value = ([("new", "Start new session"), ("help", "Show help")], 0)
         with patch("telegram.BotCommand") as MockBotCommand:
             instances = []
@@ -73,7 +73,7 @@ async def test_ensure_forum_commands_race_safety():
     adapter = _make_test_adapter()
     msg = _forum_message(chat_id=-789, is_forum=True)
 
-    with patch("hermes_cli.commands_platforms.telegram_menu_commands") as mock_menu:
+    with patch("gateway.command_platforms.telegram_menu_commands") as mock_menu:
         mock_menu.return_value = ([("new", "Start new session")], 0)
         with patch("telegram.BotCommand"):
             with patch("telegram.BotCommandScopeChat"):
@@ -94,8 +94,8 @@ async def _menu_build_leaves_loop_free(adapter, run_site):
         scan_started.set()
         return ([("help", "Show help")], 0) if loop_ticked.wait(timeout=1) else ([], 0)
 
-    with patch("hermes_cli.commands_platforms.telegram_menu_commands", _blocking_menu), \
-            patch("hermes_cli.commands_platforms.telegram_menu_max_commands", lambda: 60), \
+    with patch("gateway.command_platforms.telegram_menu_commands", _blocking_menu), \
+            patch("gateway.command_platforms.telegram_menu_max_commands", lambda: 60), \
             patch("telegram.BotCommand", lambda c, d: SimpleNamespace(command=c, description=d)), \
             patch("telegram.BotCommandScopeChat", lambda chat_id: SimpleNamespace(chat_id=chat_id)):
         task = asyncio.create_task(run_site())

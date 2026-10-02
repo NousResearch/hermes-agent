@@ -173,7 +173,7 @@ class TestPerJobToolsetMcpMerge:
     def test_resolver_keeps_memory_from_platform_fallback(self):
         job = {"enabled_toolsets": None}
         with patch(
-            "hermes_cli.tools_config._get_platform_tools",
+            "tools.platform_policy.get_platform_tools",
             return_value={"web", "memory", "file"},
         ):
             result = _resolve_cron_enabled_toolsets(job, {})
@@ -657,7 +657,7 @@ class TestRunJobSessionPersistence:
         an auth failure that CI then caught. Every test enters all patches.
 
         ``extra`` is an iterable of additional context managers (e.g. a
-        per-test ``_get_platform_tools`` patch) entered alongside the base set.
+        per-test ``get_platform_tools`` patch) entered alongside the base set.
         """
         fake_db = MagicMock()
         mock_agent = MagicMock()

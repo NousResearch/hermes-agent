@@ -124,7 +124,9 @@ class TestPluginContextEngineSlot:
     """Test register_context_engine on PluginContext."""
 
     def test_register_engine(self):
-        from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
+        from hermes_cli.plugins import PluginManifest
+        from plugin_runtime.manager import PluginManager
+        from plugin_runtime.context import PluginContext
         mgr = PluginManager()
         manifest = PluginManifest(name="test-lcm")
         ctx = PluginContext(manifest, mgr)

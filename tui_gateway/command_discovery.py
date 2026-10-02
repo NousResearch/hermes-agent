@@ -126,13 +126,13 @@ class _Catalog:
 
 
 def _catalog_registry(cat: _Catalog, module_loader) -> None:
-    commands = module_loader("hermes_cli.commands")
+    commands = module_loader("commands")
     for cmd in commands.COMMAND_REGISTRY:
         meta = commands.command_desktop_meta(cmd)
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
         if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
             continue
-        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
+        cat.add(f"/{cmd.name}", (f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})" if cmd.args_hint else cmd.description), cmd.category)
         for a in cmd.aliases:
             cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
     for name, desc, category in _TUI_EXTRA:
@@ -156,7 +156,7 @@ def _catalog_quick_commands(cat: _Catalog, load_cfg) -> None:
 
 
 def _catalog_plugin_commands(cat: _Catalog, module_loader) -> None:
-    plugin_cmds = module_loader("hermes_cli.plugins").get_plugin_commands() or {}
+    plugin_cmds = module_loader("plugin_runtime.api").get_plugin_commands() or {}
     if plugin_cmds:
         cat.cat_map.setdefault("Plugin commands", [])
     for pname, info in sorted(plugin_cmds.items()):
@@ -215,7 +215,7 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
     except Exception as e:
         warning = f"skill discovery unavailable: {e}"
     return {
-        "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("hermes_cli.commands").SUBCOMMANDS.items()},
+        "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
         "commands": cat.commands,
         "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],

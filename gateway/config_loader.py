@@ -421,9 +421,9 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     platforms_data = merge_platform_sections(yaml_cfg, gateway_section, gw_data)
 
     try:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry as registry
+        from plugin_runtime.platform_registry import platform_registry as registry
     except Exception as e:
         logger.debug("plugin discovery skipped: %s", e)
         registry = None

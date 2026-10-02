@@ -155,7 +155,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = 
     specs = _parse_hooks_block(cfg.get("hooks"))
     if not specs:
         return []
-    from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
+    from plugin_runtime.lifecycle import get_plugin_manager  # lazy: avoids import cycle
     manager, home_key, registered = get_plugin_manager(), _home_key(), []
     # Idempotence + allowlist read under the lock; TTY prompt outside it; mutation re-takes the lock and re-checks.
     for spec in specs:
@@ -214,7 +214,7 @@ def reset_for_tests() -> None:
 
 def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     """Normalise ``hooks:`` into specs; malformed entries warn-and-skip, never raise."""
-    from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
+    from plugin_runtime.dispatch import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
     if not isinstance(hooks_cfg, dict):
         return []
     specs: List[ShellHookSpec] = []

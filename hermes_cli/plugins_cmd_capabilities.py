@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.plugin_capabilities import _child_dict
+from plugin_runtime.capabilities import _child_dict
 
 
 def _pc():
@@ -31,7 +31,7 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
 # ── Capability consent flow (#64228) ─────────────────────────────────────────
 def _declared_capabilities_from_manifest(manifest: dict, plugin_name: str = "?") -> list:
     """Extract + normalize the ``capabilities:`` declaration from a manifest."""
-    from hermes_cli.plugin_capabilities import parse_declared_capabilities
+    from plugin_runtime.capabilities import parse_declared_capabilities
     return parse_declared_capabilities((manifest or {}).get("capabilities"), plugin_name)
 
 
@@ -41,7 +41,7 @@ def _declared_capabilities_for_key(key: str) -> list:
     if entry is None:
         return []
     if entry[3] == "entrypoint":
-        from hermes_cli.plugins import discover_entrypoint_manifests
+        from plugin_runtime.discovery import discover_entrypoint_manifests
         for manifest in discover_entrypoint_manifests():
             if key in (manifest.key, manifest.name):
                 return list(manifest.capabilities)
@@ -59,7 +59,7 @@ def _run_capability_consent(console, plugin_id: str, declared: list, *, context:
     or in ANY non-interactive context — they stay ungranted (fail closed) and the plugin must
     degrade via ``ctx.has_capability()``. Consent + audit, NOT a sandbox.
     """
-    from hermes_cli.plugin_capabilities import CAPABILITY_REGISTRY, pending_capabilities, record_consent
+    from plugin_runtime.capabilities import CAPABILITY_REGISTRY, pending_capabilities, record_consent
     pending = pending_capabilities(plugin_id, declared)
     if not pending:
         # Refresh the consent hash so a later declaration change is detected.
@@ -101,7 +101,7 @@ def _run_capability_consent(console, plugin_id: str, declared: list, *, context:
 
 def cmd_capabilities(name: Optional[str] = None) -> None:
     """``hermes plugins capabilities [<id>]`` — declared vs granted."""
-    from hermes_cli.plugin_capabilities import (
+    from plugin_runtime.capabilities import (
         CAPABILITY_REGISTRY,
         granted_capabilities,
         plugin_capability_granted,

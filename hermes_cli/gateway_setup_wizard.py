@@ -127,7 +127,7 @@ def _all_platforms() -> list[dict]:
     running gateway; user-installed ones still need ``plugins.enabled`` (untrusted code). Matrix is
     hidden on Windows: python-olm has no wheel or native build (use WSL)."""
     try:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()
     except Exception as e:
         _gw().logger.debug("plugin discovery failed during platform enumeration: %s", e)
@@ -137,7 +137,7 @@ def _all_platforms() -> list[dict]:
     by_key = {p["key"]: p for p in platforms}
 
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
     except Exception:
         return platforms
 

@@ -458,9 +458,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         self, user_config: dict, source: "SessionSource", platform_key: str,
     ) -> list:
         """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override
-        validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
+        validated through the SAME ``get_platform_tools`` path (unknown / platform-restricted
         toolsets dropped, not trusted)."""
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
         try:
             adapter = self._delivery_adapter_for(source)
             override = adapter.toolsets_for_source(source) if adapter is not None else None
@@ -470,7 +471,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             pts = dict(user_config.get("platform_toolsets") or {})
             pts[platform_key] = [str(x) for x in override]
             user_config = {**user_config, "platform_toolsets": pts}
-        return sorted(_get_platform_tools(user_config, platform_key))
+        return sorted(get_platform_tools(user_config, platform_key, xai_credentials_present=has_xai_tool_credentials))
 
     def _resolve_turn_toolsets(self, user_config: dict, source: "SessionSource", platform_key: str):
         """``(enabled_toolsets, disabled_toolsets)`` for an agent run on ``source``."""
@@ -1769,7 +1770,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
             if _pending_cmd_word:
                 with suppress(Exception):
-                    from hermes_cli.commands import resolve_command as _rc_pending
+                    from commands import resolve_command as _rc_pending
                     if _rc_pending(_pending_cmd_word):
                         logger.info(
                             "Discarding command '/%s' from pending queue — "

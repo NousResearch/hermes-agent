@@ -81,7 +81,7 @@ def _async_capturing_caller(captured: Dict[str, Any]):
 def _set_registry(monkeypatch, entries: List[Dict[str, Any]]) -> None:
     """Point ``_resolve_task_ownership`` at a controlled plugin registry."""
     monkeypatch.setattr(
-        "hermes_cli.plugins.get_plugin_auxiliary_tasks", lambda: list(entries)
+        "plugin_runtime.api.get_plugin_auxiliary_tasks", lambda: list(entries)
     )
 
 
@@ -376,14 +376,15 @@ class TestForwardsToCallLlm:
 
 class TestOwnershipIntegration:
     def _make_manager(self):
-        from hermes_cli.plugins import PluginManager
+        from plugin_runtime.manager import PluginManager
 
         manager = PluginManager()
         manager._discovered = True
         return manager
 
     def _register(self, manager, *, name: str, key: str, task_key: str):
-        from hermes_cli.plugins import PluginContext, PluginManifest
+        from plugin_runtime.manifest import PluginManifest
+        from plugin_runtime.context import PluginContext
 
         manifest = PluginManifest(name=name, key=key)
         ctx = PluginContext(manifest, manager)
@@ -398,7 +399,7 @@ class TestOwnershipIntegration:
         manager = self._make_manager()
         self._register(manager, name="Display Name", key="my_key", task_key="classifier")
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda: manager
+            "plugin_runtime.api.ensure_plugins_discovered", lambda: manager
         )
         _set_builtins(monkeypatch, ["vision"])
 
@@ -413,7 +414,7 @@ class TestOwnershipIntegration:
         manager = self._make_manager()
         self._register(manager, name="p", key="", task_key="classifier")
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda: manager
+            "plugin_runtime.api.ensure_plugins_discovered", lambda: manager
         )
         _set_builtins(monkeypatch, ["vision"])
 
@@ -449,7 +450,7 @@ auxiliary:
 
         manager = self._make_manager()
         ctx = self._register(manager, name="my-plugin", key="my-plugin", task_key="classifier")
-        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda: manager)
+        monkeypatch.setattr("plugin_runtime.api.ensure_plugins_discovered", lambda: manager)
         _set_builtins(monkeypatch, [])
         monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "")
         monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "")

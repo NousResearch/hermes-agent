@@ -52,7 +52,8 @@ def _build_inspection_agent(platform: str) -> Any:
     """
     from run_agent import AIAgent
     from hermes_cli.config import load_config
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.config import has_xai_tool_credentials
+    from tools.platform_policy import get_platform_tools
     from agent.skill_utils import parse_config_string_list
 
     cfg = load_config()
@@ -61,7 +62,7 @@ def _build_inspection_agent(platform: str) -> Any:
     return AIAgent(
         model=model_cfg.get("default") or model_cfg.get("model") or "",
         api_key="inspect-only", base_url="https://openrouter.ai/api/v1", quiet_mode=True, save_trajectories=False,
-        platform=platform, enabled_toolsets=sorted(_get_platform_tools(cfg, platform)),
+        platform=platform, enabled_toolsets=sorted(get_platform_tools(cfg, platform, xai_credentials_present=has_xai_tool_credentials)),
         disabled_toolsets=parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None,
     )
 

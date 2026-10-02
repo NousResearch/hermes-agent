@@ -1,6 +1,7 @@
 """Tests for the direct Hermes-to-Relay shared-metrics runtime."""
 
 from __future__ import annotations
+import plugin_runtime.lifecycle as plugin_lifecycle
 
 import contextvars
 import json
@@ -15,7 +16,7 @@ import pytest
 from hermes_cli import lifecycle, plugins
 from agent import relay_runtime
 from hermes_cli.observability import relay_shared_metrics
-from hermes_cli.plugins import PluginManager
+from plugin_runtime.manager import PluginManager
 
 
 class _Request:
@@ -230,7 +231,7 @@ def direct_runtime(tmp_path, monkeypatch):
     # Pin as discovered: hook queries lazy-discover plugins (#64178), and
     # this test's contract is a runtime with ZERO plugins loaded.
     _mgr._discovered = True
-    monkeypatch.setattr(plugins, "_plugin_manager", _mgr)
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", _mgr)
     yield fake
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
@@ -250,7 +251,7 @@ def real_binding_runtime(tmp_path, monkeypatch):
     relay_runtime._reset_for_tests()
     _mgr = PluginManager()
     _mgr._discovered = True  # see direct_runtime fixture (#64178)
-    monkeypatch.setattr(plugins, "_plugin_manager", _mgr)
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", _mgr)
     yield relay
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()

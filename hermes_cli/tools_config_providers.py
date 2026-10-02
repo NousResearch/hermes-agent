@@ -19,7 +19,7 @@ from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger("hermes_cli.tools_config")
 
-# tools_config-internal names (TOOL_CATEGORIES, _cfg_section, _prompt_choice, ...) are imported lazily
+# tools_config-internal names (TOOL_CATEGORIES, _prompt_choice, ...) are imported lazily
 # inside the functions that need them: tools_config re-imports this module, and tests patch those names there.
 
 
@@ -27,9 +27,9 @@ def _plugin_registry(module: str):
     """Import a plugin registry module after plugin discovery; ``None`` on any failure."""
     try:
         registry = importlib.import_module(module)
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from plugin_runtime.lifecycle import ensure_plugins_discovered
 
-        _ensure_plugins_discovered()
+        ensure_plugins_discovered()
         return registry
     except Exception:
         return None
@@ -541,11 +541,12 @@ def _pick_model_from_catalog(
     lands on it; a saved model belonging to another provider (shared config key) or a drifted catalog
     default never indexes the catalog. Safe when stdin is not a TTY — curses_radiolist keeps the current
     selection."""
-    from hermes_cli.tools_config import _cfg_section, _prompt_choice
+    from hermes_cli.config_toolsets import config_section
+    from hermes_cli.tools_config import _prompt_choice
 
     if not catalog:
         return
-    cur_cfg = _cfg_section(config, cfg_key)
+    cur_cfg = config_section(config, cfg_key)
     current_model = cur_cfg.get("model") or default_model
     if current_model not in catalog:
         current_model = default_model if default_model in catalog else next(iter(catalog))
@@ -601,9 +602,10 @@ _configure_videogen_model_for_plugin = partial(_configure_gen_model_for_plugin, 
 
 def _configure_xai_imagine_storage(section_name: str, config: dict) -> None:
     """Prompt for xAI Imagine stored public URL behavior."""
-    from hermes_cli.tools_config import _cfg_section, _prompt_choice
+    from hermes_cli.config_toolsets import config_section
+    from hermes_cli.tools_config import _prompt_choice
 
-    storage_cfg = _cfg_section(_cfg_section(_cfg_section(config, section_name), "xai"), "storage")
+    storage_cfg = config_section(config_section(config_section(config, section_name), "xai"), "storage")
     _print_warning(
         "  xAI Imagine can store generated media and create reusable public URLs. "
         "xAI may bill for stored files and public URL hosting.")
@@ -624,9 +626,9 @@ def _configure_xai_imagine_storage(section_name: str, config: dict) -> None:
 def _select_into(config: dict, section: str, key: str, vendor, managed) -> dict:
     """Write ``config[section][key] = vendor`` (``nous`` for a managed pick) and drop any legacy ``use_gateway``
     key so the old read-time shim cannot override the new choice. Returns the section dict."""
-    from hermes_cli.tools_config import _cfg_section
+    from hermes_cli.config_toolsets import config_section
 
-    cfg = _cfg_section(config, section)
+    cfg = config_section(config, section)
     cfg[key] = NOUS_MANAGED_PROVIDER if managed else vendor
     cfg.pop("use_gateway", None)
     return cfg
@@ -660,12 +662,13 @@ _STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id"}
 
 def _configure_stt_model(stt_provider: str, config: dict) -> None:
     """Prompt for the STT model after a provider pick (when a catalog exists)."""
-    from hermes_cli.tools_config import _cfg_section, _prompt_choice
+    from hermes_cli.config_toolsets import config_section
+    from hermes_cli.tools_config import _prompt_choice
 
     catalog = STT_MODEL_CATALOG.get(stt_provider)
     if not catalog:
         return
-    prov_cfg = _cfg_section(_cfg_section(config, "stt"), stt_provider)
+    prov_cfg = config_section(config_section(config, "stt"), stt_provider)
     model_key = _STT_MODEL_CONFIG_KEY.get(stt_provider, "model")
     current = str(prov_cfg.get(model_key) or "").strip()
     ordered = list(catalog)
@@ -952,7 +955,8 @@ def _configure_vision_backend() -> None:
     Offers any authenticated provider + model (same surface as ``hermes model``) or a custom endpoint
     rather than forcing OpenRouter. "Auto" leaves the keys empty so the resolver uses the main-model
     fallback chain."""
-    from hermes_cli.tools_config import _cfg_section, _prompt_choice
+    from hermes_cli.config_toolsets import config_section
+    from hermes_cli.tools_config import _prompt_choice
 
     print()
     print(color("  Vision / Image Analysis needs a multimodal model.", Colors.YELLOW))
@@ -966,7 +970,7 @@ def _configure_vision_backend() -> None:
     idx = _prompt_choice("  Configure vision backend", choices, 0)
 
     config = load_config()
-    vision_cfg = _cfg_section(_cfg_section(config, "auxiliary"), "vision")
+    vision_cfg = config_section(config_section(config, "auxiliary"), "vision")
 
     if idx == 0:
         # Auto: clear any pinned override so the resolver auto-detects.

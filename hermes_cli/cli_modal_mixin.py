@@ -408,7 +408,7 @@ class CLIModalMixin:
         /help filtered to this surface, plus installed skill commands. Selecting inserts the exact
         command string — never a fuzzy resolution."""
         from cli import _ensure_skill_commands
-        from hermes_cli.commands import COMMANDS_BY_CATEGORY
+        from hermes_cli.commands_presentation import COMMANDS_BY_CATEGORY
 
         entries: list[tuple[str, str, str]] = []
         for category, commands in COMMANDS_BY_CATEGORY.items():

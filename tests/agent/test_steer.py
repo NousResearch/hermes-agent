@@ -759,7 +759,7 @@ class TestSteerCommandRegistry:
         handler. Otherwise it would be queued as user text and only
         delivered at turn end — defeating the whole point.
         """
-        from hermes_cli.commands import ACTIVE_SESSION_BYPASS_COMMANDS, should_bypass_active_session
+        from commands import ACTIVE_SESSION_BYPASS_COMMANDS, should_bypass_active_session
 
         assert "steer" in ACTIVE_SESSION_BYPASS_COMMANDS
         assert should_bypass_active_session("steer") is True

@@ -11,11 +11,13 @@ and reset the plugin registry around each test so module-global state
 never leaks between tests.
 """
 
+from plugin_runtime.manager import PluginManager
 import importlib.util
 
 import pytest
 
 import agent.redact as redact_mod
+from plugin_runtime.context import PluginContext
 from agent.redact import (
     _reset_plugin_redaction_patterns,
     redact_sensitive_text,
@@ -123,9 +125,9 @@ def test_reset_restores_baseline():
 def test_plugin_context_method_registers():
     import hermes_cli.plugins as plugins_mod
 
-    manager = plugins_mod.PluginManager()
+    manager = PluginManager()
     manifest = plugins_mod.PluginManifest(name="test-redactor")
-    ctx = plugins_mod.PluginContext(manifest, manager)
+    ctx = PluginContext(manifest, manager)
 
     assert ctx.register_redaction_patterns([NVAPI_PATTERN]) == 1
     out = redact_sensitive_text(f"boom {NVAPI_KEY}", force=True)
@@ -140,9 +142,9 @@ def test_plugin_context_method_never_raises(monkeypatch):
 
     monkeypatch.setattr("agent.redact.register_redaction_patterns", _boom)
 
-    manager = plugins_mod.PluginManager()
+    manager = PluginManager()
     manifest = plugins_mod.PluginManifest(name="test-redactor")
-    ctx = plugins_mod.PluginContext(manifest, manager)
+    ctx = PluginContext(manifest, manager)
     assert ctx.register_redaction_patterns([NVAPI_PATTERN]) == 0
 
 
@@ -215,9 +217,9 @@ def test_plugin_register_end_to_end(tmp_path):
     import hermes_cli.plugins as plugins_mod
 
     demo = _load_synthetic_plugin(tmp_path)
-    manager = plugins_mod.PluginManager()
+    manager = PluginManager()
     manifest = plugins_mod.PluginManifest(name="synthetic-redactor")
-    demo.register(plugins_mod.PluginContext(manifest, manager))
+    demo.register(PluginContext(manifest, manager))
 
     out = redact_sensitive_text(
         f"NIM request failed: 401 for key {NVAPI_KEY}", force=True,

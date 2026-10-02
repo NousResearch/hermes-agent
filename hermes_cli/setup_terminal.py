@@ -295,7 +295,7 @@ def setup_terminal_backend(config: dict):
     # the wizard down.
     plugin_backend_names = []
     try:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()  # idempotent — plugin state may not be loaded yet
         from agent.terminal_env_registry import list_providers
         for provider in list_providers():

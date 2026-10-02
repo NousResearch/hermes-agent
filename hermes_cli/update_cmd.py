@@ -945,11 +945,24 @@ def _pull_updates(
                     missing_shas = set(re.findall(
                         r"(?:Could not read|could not parse commit)\s+<?([0-9a-f]{40})>?",
                         merge_result.stderr or "", re.IGNORECASE))
+                    recovery_details = [merge_detail] if merge_detail else []
                     for missing_sha in missing_shas:
-                        _git_run(git_cmd, ["fetch", "origin", missing_sha])
+                        fetch_result = _git_run(git_cmd, ["fetch", "origin", missing_sha])
+                        if fetch_result.returncode != 0:
+                            fetch_detail = (fetch_result.stderr or fetch_result.stdout or "").strip()
+                            if fetch_detail:
+                                recovery_details.append(
+                                    f"Fetch origin {missing_sha} failed: {fetch_detail}")
+                            else:
+                                recovery_details.append(
+                                    f"Fetch origin {missing_sha} failed with exit code "
+                                    f"{fetch_result.returncode}.")
                     if missing_shas:
                         merge_result = _git_run(git_cmd, ["merge", "--ff-only", merge_ref])
-                        merge_detail = merge_result.stderr
+                        retry_detail = (merge_result.stderr or merge_result.stdout or "").strip()
+                        if retry_detail:
+                            recovery_details.append(retry_detail)
+                        merge_detail = "\n".join(recovery_details) or None
                 if merge_result.returncode != 0:
                     ancestry = _git_run(
                         git_cmd, ["merge-base", "--is-ancestor", "HEAD", merge_ref])
@@ -958,7 +971,7 @@ def _pull_updates(
                             git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
                     else:
                         print("✗ Fast-forward failed; refusing to reset because history divergence was not proven.")
-                        detail = (merge_result.stderr or merge_result.stdout or "").strip()
+                        detail = (merge_detail or merge_result.stderr or merge_result.stdout or "").strip()
                         if detail:
                             print(f"  {detail}")
                         if ancestry.returncode == 0:

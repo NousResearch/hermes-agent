@@ -740,9 +740,11 @@ class SessionEventsStatsResult(Result):
     sessions: int
     events: int
     bytes: int
+    tombstones: int
     max_per_session: int
     max_bytes_per_session: int
     max_bytes_process: int
+    max_tombstones: int
 
 
 method("session.events.stats", params=SessionEventsStatsParams, result=SessionEventsStatsResult,

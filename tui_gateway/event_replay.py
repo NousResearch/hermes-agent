@@ -7,8 +7,12 @@ event frames; Ink ignores unknown keys); one lock guards counters + buffers, and
 serializes per-transport writes so stamping cannot reorder frames; memory bound =
 _REPLAY_BUFFER_MAX events AND _REPLAY_BUFFER_BYTES_MAX serialized bytes per session,
 _REPLAY_PROCESS_BYTES_MAX bytes across at most _REPLAY_SESSIONS_MAX sessions, oldest evicted
-FIFO (their seq/truncation counters are retained so a revisited session stays monotonic within
-the epoch, #100122). Evicted or never-retained (oversized) frames leave a truncation watermark so a
+FIFO. A session's seq/truncation counters outlive its ring (FIFO eviction must not
+reset its numbering, #100122) but only up to _REPLAY_TOMBSTONE_MAX retained tombstones: a
+revisit while retained continues the seq exactly, and once the tombstone retires the session
+restarts ABOVE every seq it ever used (the per-epoch seq floor) with ``truncated`` reported,
+so a client sees either continuity or an explicit refetch signal — never a silently-lower
+seq. Evicted or never-retained (oversized) frames leave a truncation watermark so a
 reconnecting client refetches instead of trusting a replay with holes.
 """
 
@@ -28,6 +32,18 @@ _REPLAY_EPOCH = uuid.uuid4().hex
 # all control events. Desktop users rarely exceed a dozen live chats.
 _REPLAY_BUFFER_MAX = 512
 _REPLAY_SESSIONS_MAX = 64
+# Session seq/truncation tombstones: one (seq, watermark) pair kept per session whose ring
+# was FIFO-evicted, so a revisit continues its numbering instead of restarting at 1 under
+# still-held client watermarks (#100122, #127255 review). Distinct sessions are NOT bounded
+# by the ring — a long-lived gateway serving an unbounded stream of unique ids would pin two
+# ints per id for the process lifetime — so the tombstones themselves get an LRU cap.
+# 4× the ring: enough to cover every ring slot plus its ring eviction history, while
+# retirement remains a rarity measured in distinct session ids, not traffic. When the cap is
+# crossed, the least-recently-stamped tombstone is retired and the per-epoch seq floor
+# rises to its last seq; a later revisit restarts ABOVE that floor (retirement
+# loop in _stamp_event) so the client either sees continuity (retained) or an
+# explicit truncated refetch signal.
+_REPLAY_TOMBSTONE_MAX = 4 * _REPLAY_SESSIONS_MAX
 # A ring may legitimately hold many bounded 64 KiB tool results (512 of them ≈ 32 MiB per
 # session, ×64 sessions before any cap); bound the serialized bytes so replay memory cannot
 # scale with payload size without limit.
@@ -38,9 +54,18 @@ _replay_lock = threading.Lock()
 # sid -> deque of (seq, params dict, serialized bytes).
 _replay_buffers: "OrderedDict[str, deque]" = OrderedDict()
 _replay_buffer_bytes: dict[str, int] = {}
-_replay_evicted_through: dict[str, int] = {}
+_replay_evicted_through: "OrderedDict[str, int]" = OrderedDict()
 _replay_total_bytes = 0
-_replay_next_seq: dict[str, int] = {}
+_replay_next_seq: "OrderedDict[str, int]" = OrderedDict()
+# First seq of a sid's CURRENT numbering (cold start after retirement or process
+# start). A client watermark below it necessarily predates this numbering — the
+# reset signal for a retired tombstone (#127255 review). Part of the tombstone:
+# LRU-capped and retired with the rest.
+_replay_seq_origin: "OrderedDict[str, int]" = OrderedDict()
+# Per-epoch ceiling over every seq retired with a tombstone: a session whose tombstone
+# was retired restarts above this floor, so no frame can ever carry a seq a client already
+# saw (dispatchIfNewer would silently drop it — #100122). Only grows within the epoch.
+_replay_seq_floor = 0
 
 
 def replay_epoch() -> str:
@@ -64,9 +89,25 @@ def _stamp_event(obj: dict) -> None:
     size = len(json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8", errors="surrogatepass"))
     with _replay_lock:
-        global _replay_total_bytes
+        global _replay_total_bytes, _replay_seq_floor
         seq = _replay_next_seq.get(sid, 0) + 1
+        if sid not in _replay_next_seq:
+            # Cold start for a session with no retained tombstone (retired by the
+            # LRU cap, or genuinely new). Retired sessions must never hand out a
+            # seq the client's dispatchIfNewer gate already saw, so restart ABOVE
+            # the floor; a genuinely-new sid also starts there, which is fine:
+            # seq is opaque, only per-session monotonicity matters to clients.
+            # is_truncated() reports the numbering change to a client holding a
+            # watermark from the old numbering (it sits below the new origin).
+            seq = max(seq, _replay_seq_floor + 1)
+            _replay_seq_origin[sid] = seq
+        # Most-recently stamped session stays newest in all three LRU orders.
         _replay_next_seq[sid] = seq
+        _replay_evicted_through.setdefault(sid, 0)
+        _replay_seq_origin.setdefault(sid, seq)
+        _replay_next_seq.move_to_end(sid)
+        _replay_evicted_through.move_to_end(sid)
+        _replay_seq_origin.move_to_end(sid)
         params["seq"] = seq
         buf = _replay_buffers.get(sid)
         if buf is None:
@@ -83,11 +124,27 @@ def _stamp_event(obj: dict) -> None:
                 # Retain the truncation watermark too, raised to the latest
                 # stamped seq: the whole retained ring is gone, so a client
                 # holding any older watermark has a gap and must refetch
-                # history instead of trusting the new tail. Both counters are
-                # one int per session id seen this process (bounded by distinct
-                # sessions, not by traffic).
+                # history instead of trusting the new tail. The seq/truncation
+                # counters are one tombstone per session id, itself LRU-bounded
+                # by _REPLAY_TOMBSTONE_MAX (distinct sessions are not bounded
+                # by the ring).
                 _replay_evicted_through[oldest_sid] = max(
                     _replay_evicted_through.get(oldest_sid, 0), _replay_next_seq.get(oldest_sid, 0))
+        # Tombstone LRU cap (#127255 review): distinct session ids are not bounded by
+        # the ring, so the retained counters themselves need a bound or a long-lived
+        # gateway pins two ints per historical session for the process lifetime.
+        while len(_replay_next_seq) > _REPLAY_TOMBSTONE_MAX:
+            retired_sid, retired_seq = _replay_next_seq.popitem(last=False)
+            _replay_evicted_through.pop(retired_sid, None)
+            _replay_seq_origin.pop(retired_sid, None)
+            # The retired session's numbering is now unobservable: a later revisit
+            # must never reuse a seq a still-connected client may hold, so raise the
+            # per-epoch floor past every seq it stamped and report the reset via
+            # is_truncated to a client holding a watermark on it (refetch, like any
+            # other gap). Retiring the truncation watermark too is safe for the
+            # same reason: the restarted numbering's origin flags any watermark
+            # from the old one.
+            _replay_seq_floor = max(_replay_seq_floor, retired_seq)
         if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
             _replay_evicted_through[sid] = seq
             return
@@ -122,8 +179,22 @@ def events_since(sid: str, last_seen: int) -> list[dict]:
 
 def is_truncated(sid: str, last_seen: int) -> bool:
     """True when events between *last_seen* and the ring's oldest retained seq were
-    evicted — the client must refetch history instead of trusting the replay."""
+    evicted — the client must refetch history instead of trusting the replay.
+
+    Also true when *last_seen* predates the sid's CURRENT numbering origin: the
+    session's tombstone was retired by the LRU cap (or the process restarted,
+    which the epoch signals instead), so the numbering restarted above the seq
+    floor and a client watermark from the old numbering must refetch rather than
+    trust a tail that silently renumbers from a different origin (#127255
+    review). A watermark of 0 (never saw anything) is never truncated, matching
+    a genuinely-new session.
+    """
     with _replay_lock:
+        origin = _replay_seq_origin.get(sid or "", 1)
+        if 0 < last_seen < origin:
+            return True
+        if last_seen > _replay_next_seq.get(sid or "", 0):
+            return last_seen > 0
         return last_seen < _replay_evicted_through.get(sid or "", 0)
 
 
@@ -136,12 +207,14 @@ def latest_seq(sid: str) -> int:
 def reset_replay_state() -> None:
     """Test hook."""
     with _replay_lock:
-        global _replay_total_bytes
+        global _replay_total_bytes, _replay_seq_floor
         _replay_buffers.clear()
         _replay_buffer_bytes.clear()
         _replay_evicted_through.clear()
         _replay_next_seq.clear()
+        _replay_seq_origin.clear()
         _replay_total_bytes = 0
+        _replay_seq_floor = 0
 
 
 def replay_stats() -> dict:
@@ -151,6 +224,8 @@ def replay_stats() -> dict:
             "sessions": len(_replay_buffers),
             "events": sum(len(buffer) for buffer in _replay_buffers.values()),
             "bytes": _replay_total_bytes,
+            "tombstones": len(_replay_next_seq),
             "max_per_session": _REPLAY_BUFFER_MAX,
             "max_bytes_per_session": _REPLAY_BUFFER_BYTES_MAX,
-            "max_bytes_process": _REPLAY_PROCESS_BYTES_MAX}
+            "max_bytes_process": _REPLAY_PROCESS_BYTES_MAX,
+            "max_tombstones": _REPLAY_TOMBSTONE_MAX}

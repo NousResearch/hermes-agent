@@ -269,3 +269,105 @@ def test_truncation_detection_semantics():
     assert event_replay.is_truncated("s1", 5)
     # Unknown session: nothing evicted, nothing truncated.
     assert not event_replay.is_truncated("nope", 0)
+
+
+def test_tombstone_metadata_is_bounded_far_beyond_the_ring():
+    """#127255 review: distinct session ids are not bounded by the replay ring, so
+    the retained seq/truncation counters must have their own cap — otherwise a
+    long-lived gateway pins two ints per historical session for the process
+    lifetime, invisible in replay_stats()."""
+    stamp_max = event_replay._REPLAY_TOMBSTONE_MAX
+    assert stamp_max > event_replay._REPLAY_SESSIONS_MAX  # a real bound, not the ring
+
+    for i in range(stamp_max * 3 + 25):  # far beyond the cap, all unique ids
+        event_replay._stamp_event(_frame(f"s{i}"))
+
+    stats = replay_stats()
+    assert stats["tombstones"] == stamp_max
+    assert stats["tombstones"] <= stats["max_tombstones"]
+    assert len(event_replay._replay_next_seq) == stamp_max
+    assert len(event_replay._replay_evicted_through) == stamp_max
+    assert len(event_replay._replay_seq_origin) == stamp_max
+    # The retained tombstones are exactly the most recently stamped sessions…
+    assert list(event_replay._replay_next_seq) == [f"s{i}" for i in range(stamp_max * 3 + 25 - stamp_max, stamp_max * 3 + 25)]
+    # …each still answering its own numbering.
+    last_sid = f"s{stamp_max * 3 + 24}"
+    assert latest_seq(last_sid) == event_replay._replay_next_seq[last_sid]
+
+
+def test_retired_tombstone_restart_is_explicit_not_silent():
+    """Client semantics when a tombstone is retired (#127255 review): the session
+    restarts ABOVE every seq it ever used, so no live or replayed frame can carry
+    a seq the client's dispatchIfNewer gate already saw — and a client holding a
+    watermark from the old numbering is told truncated (refetch) instead of
+    trusting a silently renumbered tail."""
+    first = _frame("s-old")
+    event_replay._stamp_event(first)
+    old_seq = first["params"]["seq"]
+    assert old_seq == 1
+
+    # Push s-old's tombstone past the LRU cap: it is retired, its numbering
+    # unobservable.
+    for i in range(event_replay._REPLAY_TOMBSTONE_MAX + 5):
+        event_replay._stamp_event(_frame(f"s{i}"))
+    assert "s-old" not in event_replay._replay_next_seq
+
+    # Revisit: restarts above the floor — above every seq the session ever used,
+    # so no client's dispatchIfNewer gate can have seen this seq before and
+    # silently drop the frame.
+    revisited = _frame("s-old")
+    event_replay._stamp_event(revisited)
+    assert revisited["params"]["seq"] == event_replay._replay_seq_floor + 1
+    assert revisited["params"]["seq"] > old_seq
+
+    # Explicit reset signal, reusing the truncation path: a client that saw part
+    # of the old numbering refetches; a client that saw nothing does not.
+    assert event_replay.is_truncated("s-old", 1)
+    assert not event_replay.is_truncated("s-old", 0)
+    # The replay tail answers with the restarted numbering only.
+    assert [event["seq"] for event in events_since("s-old", 0)] == [revisited["params"]["seq"]]
+
+
+def test_retained_tombstone_keeps_exact_continuity():
+    """A session whose tombstone is still retained (LRU cap not crossed) keeps the
+    #127255 behavior exactly: revisit continues the seq, and old watermarks are
+    served by the truncation watermark, not by a renumbering."""
+    frames = [_frame("s-live") for _ in range(3)]
+    for f in frames:
+        event_replay._stamp_event(f)
+
+    # Fill the ring with other sessions, evicting s-live's ring but NOT its
+    # tombstone (cap is a multiple of the ring size).
+    for i in range(event_replay._REPLAY_SESSIONS_MAX + 1):
+        event_replay._stamp_event(_frame(f"s{i}"))
+    assert "s-live" not in event_replay._replay_buffers
+    assert latest_seq("s-live") == 3
+
+    revisited = _frame("s-live")
+    event_replay._stamp_event(revisited)
+    assert revisited["params"]["seq"] == 4  # exact continuity, no floor jump
+    assert [event["seq"] for event in events_since("s-live", 3)] == [4]
+    assert not event_replay.is_truncated("s-live", 3)
+
+
+def test_seq_floor_never_recycles_a_used_number():
+    """The per-epoch seq floor rises past every retired session's last seq, so a
+    retirement-then-revisit can never land under any client watermark — the core
+    invariant that lets the reset be safe at all."""
+    high = _frame("s-high")
+    event_replay._stamp_event(high)
+    for _ in range(9):
+        event_replay._stamp_event(_frame("s-high"))
+    top = high["params"]["seq"] + 9
+    assert latest_seq("s-high") == 10 and top == 10
+
+    for i in range(event_replay._REPLAY_TOMBSTONE_MAX + 5):
+        event_replay._stamp_event(_frame(f"s{i}"))  # retires s-high's tombstone
+
+    # New sessions after retirement start above the floor…
+    fresh = _frame("s-fresh")
+    event_replay._stamp_event(fresh)
+    assert fresh["params"]["seq"] == event_replay._replay_seq_floor + 1
+    # …which is above every seq the retired session ever stamped.
+    assert event_replay._replay_seq_floor >= top
+    assert fresh["params"]["seq"] > top

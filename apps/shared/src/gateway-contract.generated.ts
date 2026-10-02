@@ -3514,9 +3514,11 @@ export interface SessionEventsStatsResult {
   sessions: number
   events: number
   bytes: number
+  tombstones: number
   max_per_session: number
   max_bytes_per_session: number
   max_bytes_process: number
+  max_tombstones: number
 }
 /** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. */
 export interface LlmOneshotParams {

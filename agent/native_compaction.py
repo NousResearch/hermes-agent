@@ -175,6 +175,42 @@ def _extract_item_text(item: Any) -> Optional[str]:
     return text if text.strip() else None
 
 
+def _input_text_parts_cost(content: Any) -> Optional[int]:
+    """Measure only the adapter-owned text-only shape, including whitespace and empty parts."""
+    if not isinstance(content, list) or not content or not all(
+        isinstance(part, dict) and part.get("type") == "input_text"
+        and isinstance(part.get("text"), str) for part in content
+    ):
+        return None
+    return sum(_approx_tokens(part["text"]) for part in content)
+
+
+def _truncate_input_text_parts(content: List[Dict[str, Any]], budget: int) -> List[Dict[str, Any]]:
+    """Copy the head of validated input_text parts without flattening their metadata."""
+    head = []
+    for part in content:
+        if budget <= 0:
+            break
+        text = part["text"]
+        cost = _approx_tokens(text)
+        if cost > budget:
+            # Use the same estimator as retention: four characters per token is
+            # not a safe head bound for CJK or multibyte non-ASCII text.
+            lo, hi = 0, len(text)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if _approx_tokens(text[:mid]) <= budget:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            if lo:
+                head.append({**part, "text": text[:lo]})
+            break
+        head.append({**part})
+        budget -= cost
+    return head
+
+
 def _has_retainable_image_content(item: Any) -> bool:
     """True for a converted Responses message with a valid ``input_image`` part (only the
     adapter-owned shape counts, so empty multipart placeholders never become durable history)."""
@@ -209,8 +245,12 @@ def prune_pre_checkpoint_items(
 
     - The NEWEST contiguous run of checkpoints wins; relative order is preserved.
     - User messages are kept verbatim within ``retained_user_token_budget``; the boundary
-      message is head-truncated when it only partially fits (string content only). A
-      recognized image-only user message is retained whole at one-token cost.
+      message is head-truncated when it only partially fits (strings or text-only typed
+      ``input_text`` parts, preserving part metadata). An oversized unsupported/mixed-content
+      boundary stops older user retention rather than substituting an older ask. A recognized
+      image-only user message is retained whole at one-token cost.
+      Head truncation can still omit a trailing internal provenance footer; no footer recovery
+      or semantic classification is attempted.
     - Summaries are retained whole within ``retained_summary_token_budget``, never sliced
       (framing would corrupt) and never duplicated.
     - ``item_sources`` (parallel to ``items``) is the raw chat message each item came from.
@@ -291,7 +331,8 @@ def prune_pre_checkpoint_items(
         if is_summary:
             _retain_summary(text, item)
         elif user_remaining > 0:
-            cost = _approx_tokens(text)
+            parts_cost = _input_text_parts_cost(item.get("content"))
+            cost = parts_cost if parts_cost is not None else _approx_tokens(text)
             if cost <= user_remaining:
                 retained_reversed.append(item)
                 user_remaining -= cost
@@ -299,6 +340,14 @@ def prune_pre_checkpoint_items(
                 truncated = {**item, "content": item["content"][: user_remaining * 4]}
                 if truncated["content"].strip():
                     retained_reversed.append(truncated)
+                user_remaining = 0
+            else:
+                if parts_cost is not None:
+                    head = _truncate_input_text_parts(item["content"], user_remaining)
+                    if any(part["text"].strip() for part in head):
+                        retained_reversed.append({**item, "content": head})
+                # A non-truncatable boundary (e.g. text + image) must not let
+                # an older completed ask replace the newer oversized ask.
                 user_remaining = 0
 
     result = items[first_cp : last_cp + 1] + list(reversed(retained_reversed)) + items[last_cp + 1 :]

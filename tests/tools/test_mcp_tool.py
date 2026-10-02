@@ -2873,19 +2873,20 @@ class TestMCPDiscoveryCrossProcessLock:
 
 
 class TestRedirectHeaderStripper:
-    """Cross-origin redirect header boundary (portable Agent Plugins v1)."""
+    """Cross-origin redirect header boundary (portable Agent Plugins v1).
 
-    def _make_response(self, next_headers):
+    The guard is a REQUEST hook enforced at the final send boundary, so these
+    unit-level cases drive it directly on an ``httpx.Request``. The chain-level
+    behavior (A -> B -> A monotonic taint, hook ordering, concurrency) is covered
+    against the real client in tests/tools/test_mcp_redirect_authority.py; a
+    ``SimpleNamespace`` response double cannot reproduce the ``next_request is
+    None`` condition that made the original response hook inert.
+    """
+
+    def _make_request(self, url, headers):
         import httpx
 
-        next_request = httpx.Request(
-            "GET", "https://other.example.test/mcp", headers=next_headers
-        )
-        response = SimpleNamespace(
-            is_redirect=True,
-            next_request=next_request,
-        )
-        return response, next_request
+        return httpx.Request("GET", url, headers=headers)
 
     def test_default_strips_only_authorization(self):
         import httpx
@@ -2895,10 +2896,20 @@ class TestRedirectHeaderStripper:
         hook = _make_redirect_header_stripper(
             httpx.URL("https://origin.example.test/mcp")
         )
-        response, next_request = self._make_response(
-            {"Authorization": "Bearer x", "X-Tenant": "t"}
+        first = self._make_request(
+            "https://origin.example.test/mcp",
+            {"Authorization": "Bearer x", "X-Tenant": "t"},
         )
-        asyncio.run(hook(response))
+        asyncio.run(hook(first))
+        # The first hop is same-origin, so nothing is stripped yet.
+        assert first.headers["authorization"] == "Bearer x"
+
+        next_request = self._make_request(
+            "https://other.example.test/mcp",
+            {"Authorization": "Bearer x", "X-Tenant": "t"},
+        )
+        next_request.extensions.update(first.extensions)
+        asyncio.run(hook(next_request))
         assert "authorization" not in next_request.headers
         assert next_request.headers["x-tenant"] == "t"
 
@@ -2912,10 +2923,18 @@ class TestRedirectHeaderStripper:
             strict=True,
             configured_header_names={"x-tenant"},
         )
-        response, next_request = self._make_response(
-            {"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"}
+        first = self._make_request(
+            "https://origin.example.test/mcp",
+            {"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"},
         )
-        asyncio.run(hook(response))
+        asyncio.run(hook(first))
+
+        next_request = self._make_request(
+            "https://other.example.test/mcp",
+            {"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"},
+        )
+        next_request.extensions.update(first.extensions)
+        asyncio.run(hook(next_request))
         assert "authorization" not in next_request.headers
         assert "x-tenant" not in next_request.headers
         # Client-generated headers unrelated to package config survive.
@@ -2931,12 +2950,17 @@ class TestRedirectHeaderStripper:
             strict=True,
             configured_header_names={"x-tenant"},
         )
-        next_request = httpx.Request(
-            "GET",
-            "https://origin.example.test/other",
-            headers={"Authorization": "Bearer x", "X-Tenant": "t"},
+        first = self._make_request(
+            "https://origin.example.test/mcp",
+            {"Authorization": "Bearer x", "X-Tenant": "t"},
         )
-        response = SimpleNamespace(is_redirect=True, next_request=next_request)
-        asyncio.run(hook(response))
+        asyncio.run(hook(first))
+
+        next_request = self._make_request(
+            "https://origin.example.test/other",
+            {"Authorization": "Bearer x", "X-Tenant": "t"},
+        )
+        next_request.extensions.update(first.extensions)
+        asyncio.run(hook(next_request))
         assert next_request.headers["authorization"] == "Bearer x"
         assert next_request.headers["x-tenant"] == "t"

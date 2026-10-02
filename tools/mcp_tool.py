@@ -1679,36 +1679,91 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
     return headers
 
 
+# httpx request extensions key holding the per-chain redirect-authority state.
+# The value is a dict so it is mutable in place: httpx's
+# ``AsyncClient._build_redirect_request`` passes ``extensions=request.extensions``
+# to the next hop, so a flag set here propagates across the whole redirect chain
+# without any extra plumbing. Because the dict is created per request, chains
+# running concurrently on one shared client never share taint.
+_REDIRECT_TAINT_KEY = "hermes_mcp_redirect_taint"
+
+
+def _redirect_origin(url) -> tuple:
+    """Return the credential-authority origin of *url*.
+
+    ``httpx``'s own redirect handling exempts a plain ``http -> https`` upgrade
+    of the same host from ``Authorization`` stripping. That exemption is looser
+    than the authority policy required here, so an upgrade is treated as an
+    origin change and taints the chain.
+    """
+    return (url.scheme, url.host, url.port)
+
+
 def _make_redirect_header_stripper(
     original_url,
     *,
     strict: bool = False,
     configured_header_names: "set[str] | frozenset[str]" = frozenset(),
+    identity_header_name: "str | None" = None,
 ):
-    """Build an httpx response hook that guards cross-origin redirects.
+    """Build an httpx request hook that enforces monotonic redirect authority.
 
-    Always strips ``Authorization`` when a redirect leaves the original
-    origin. When *strict* is true (portable Agent Plugins v1 packages with
-    ``strict_redirect_headers``), every *configured* header (lowercase names
-    in *configured_header_names*) is stripped as well — the v1 spec forbids
+    This guard is registered as a **request** hook and must be the last entry in
+    the request-hook list, because httpx runs request hooks immediately before
+    each actual send (``AsyncClient._send_handling_redirects``). That makes it the
+    authoritative boundary: no earlier request hook can re-inject a sensitive
+    header after the guard has stripped it.
+
+    The policy is *monotonic per chain*: each hop is compared against the
+    previous hop's origin, and once any hop leaves the previous origin the chain
+    is irreversibly tainted. Every later send on a tainted chain drops
+    ``Authorization``, the strict package-configured headers, and the resolved
+    identity header — including a ``B -> A`` return to the original origin, which
+    must never regain authority.
+
+    When *strict* is true (portable Agent Plugins v1 packages with
+    ``strict_redirect_headers``), every *configured* header (lowercase names in
+    *configured_header_names*) is stripped as well — the v1 spec forbids
     forwarding package-configured headers to a different origin without
-    explicit user authorization.
+    explicit user authorization. ``identity_header_name`` and ``Authorization``
+    are always stripped after taint, regardless of *strict*.
     """
 
-    async def _strip_on_cross_origin_redirect(response):
-        if response.is_redirect and response.next_request:
-            target = response.next_request.url
-            if (target.scheme, target.host, target.port) != (
-                original_url.scheme, original_url.host, original_url.port,
-            ):
-                response.next_request.headers.pop("authorization", None)
-                response.next_request.headers.pop("Authorization", None)
-                if strict:
-                    for _name in configured_header_names:
-                        while _name in response.next_request.headers:
-                            del response.next_request.headers[_name]
+    async def _enforce_redirect_authority(request):
+        state = request.extensions.get(_REDIRECT_TAINT_KEY)
+        if state is None:
+            state = {"tainted": False, "origin": _redirect_origin(request.url)}
+            request.extensions[_REDIRECT_TAINT_KEY] = state
 
-    return _strip_on_cross_origin_redirect
+        # Compare THIS hop against the PREVIOUS hop, not the original origin.
+        previous_origin = state.get("origin")
+        current_origin = _redirect_origin(request.url)
+        if previous_origin is not None and current_origin != previous_origin:
+            if not state.get("tainted"):
+                state["tainted"] = True
+                logger.debug(
+                    "MCP redirect: cross-origin hop %s -> %s — "
+                    "credential authority stripped for the rest of this chain",
+                    previous_origin, current_origin,
+                )
+        state["origin"] = current_origin
+
+        if not state.get("tainted"):
+            return
+
+        # Tainted chain: strip every sensitive header on EVERY subsequent send.
+        headers = request.headers
+        for _name in ("authorization", "Authorization"):
+            while _name in headers:
+                del headers[_name]
+        _sensitive = set(configured_header_names) if strict else set()
+        if identity_header_name:
+            _sensitive.add(identity_header_name.lower())
+        for _name in _sensitive:
+            while _name in headers:
+                del headers[_name]
+
+    return _enforce_redirect_authority
 
 
 def _format_connect_error(exc: BaseException) -> str:
@@ -3687,6 +3742,10 @@ class MCPServerTask:
         _configured_header_names = {key.lower() for key in headers}
         # Optional per-user identity header (config-gated; static or
         # profile-derived). Explicit headers of the same name win.
+        # Capture the resolved (name, value) so the redirect-authority guard
+        # can strip this credential after a cross-origin hop; the capture must
+        # happen here because the name is not in ``_configured_header_names``.
+        _resolved_identity_header = _resolve_identity_header(self.name, config)
         headers = _apply_identity_header(self.name, config, headers)
         # Keep a handshake-compatible client default for the one bounded
         # discover-to-initialize legacy proof. Modern discover requests carry
@@ -3843,13 +3902,26 @@ class MCPServerTask:
                 _original_url,
                 strict=_strict_cfg_headers,
                 configured_header_names=_configured_header_names,
+                # The identity header is credential/tenant authority, so it must
+                # be part of the cross-origin authority set. It is resolved
+                # after ``_configured_header_names`` is captured above, so pass
+                # it separately. The MCP protocol-version header is NOT a
+                # credential and deliberately stays out of the stripped set.
+                identity_header_name=(
+                    _resolved_identity_header[0] if _resolved_identity_header else None
+                ),
             )
 
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                # Registered as a REQUEST hook so it runs at the final send
+                # boundary, immediately before each hop is dispatched. A
+                # response hook cannot enforce this: with follow_redirects=True
+                # httpx never populates ``response.next_request``, so a
+                # response hook would silently never fire on a redirect.
+                "event_hooks": {"request": [_strip_auth_on_cross_origin_redirect]},
             }
             if headers:
                 client_kwargs["headers"] = headers

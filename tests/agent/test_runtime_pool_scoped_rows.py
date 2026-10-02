@@ -1,7 +1,7 @@
 """A configured custom provider keeps its pool rows under the ``providers.<key>`` slug or the
-legacy ``custom:<name>`` key. Startup resolution finds rows under either; fallback activation and
-the per-turn primary restore must bind the same pool, or 429/401 rotation silently stops for the
-rest of the session."""
+legacy ``custom:<name>`` key. Startup resolution finds rows under either; fallback activation, the
+per-turn primary restore and a mid-session ``/model`` switch must bind the same pool, or 429/401
+rotation silently stops for the rest of the session."""
 
 from unittest.mock import MagicMock, patch
 
@@ -52,7 +52,27 @@ def _ctx_len():
     return patch("agent.model_metadata.get_model_context_length", return_value=200_000)
 
 
-def test_primary_keeps_its_pool_across_a_fallback_round_trip(legacy_relay_rows):
+def _away_and_back_via_fallback(agent, rt):
+    with _ctx_len():
+        assert try_activate_fallback(agent, FailoverReason.server_error)
+    agent._rate_limited_until = 0
+    agent.client = MagicMock()
+    with _ctx_len():
+        assert agent._restore_primary_runtime()
+
+
+def _away_and_back_via_model_switch(agent, rt):
+    fb = FALLBACK[0]
+    with _ctx_len():
+        agent.switch_model(fb["model"], fb["provider"], api_key="fake-or-key",
+                           base_url=fb["base_url"], api_mode="chat_completions")
+        agent.switch_model("relay-model", rt["provider"], api_key=rt["api_key"],
+                           base_url=rt["base_url"], api_mode="chat_completions")
+
+
+@pytest.mark.parametrize("away_and_back", [_away_and_back_via_fallback, _away_and_back_via_model_switch],
+                         ids=["fallback", "model_switch"])
+def test_primary_keeps_its_pool_across_a_round_trip(legacy_relay_rows, away_and_back):
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     rt = resolve_runtime_provider(requested="relay")
@@ -60,12 +80,7 @@ def test_primary_keeps_its_pool_across_a_fallback_round_trip(legacy_relay_rows):
                    credential_pool=rt["credential_pool"], fallback=FALLBACK)
     rows_before = {e.id for e in agent._credential_pool.entries()}
 
-    with _ctx_len():
-        assert try_activate_fallback(agent, FailoverReason.server_error)
-    agent._rate_limited_until = 0
-    agent.client = MagicMock()
-    with _ctx_len():
-        assert agent._restore_primary_runtime()
+    away_and_back(agent, rt)
 
     assert {e.id for e in agent._credential_pool.entries()} == rows_before == {"r1", "r2"}
 

@@ -82,6 +82,32 @@ class TestRecordAuxiliaryUsage:
         assert len(rows) == 1
         assert rows[0]["api_call_count"] == 1
 
+    def test_records_cost_provenance(self, db):
+        """cost_status/cost_source are part of the aux WRITE CONTRACT (regression #2).
+
+        They are already in _MODEL_USAGE_FIELDS and accepted by _record_model_usage,
+        but this signature once omitted them — so every record_auxiliary_usage row
+        landed with NULL provenance and became invisible when auditing
+        session_model_usage by (cost_status, cost_source), the only reliable way to
+        separate real cost from a computed artifact. A future signature edit could
+        silently reintroduce that, so pin both directions.
+        """
+        db.create_session("s1", source="cli")
+        db.record_auxiliary_usage(
+            "s1", "vision", model="gemini-3-flash", input_tokens=300, output_tokens=30,
+            estimated_cost_usd=0.001, cost_status="estimated", cost_source="provider_models_api",
+        )
+        db.record_auxiliary_usage(
+            "s1", "compression", model="glm-5", input_tokens=200, output_tokens=20,
+        )
+        rows = {r["task"]: r for r in _usage_rows(db, "s1")}
+        assert rows["vision"]["cost_status"] == "estimated"
+        assert rows["vision"]["cost_source"] == "provider_models_api"
+        # A caller with genuinely no estimate keeps NULL — the honest signal, not a gap
+        # to paper over, and not something the writer may invent.
+        assert rows["compression"]["cost_status"] is None
+        assert rows["compression"]["cost_source"] is None
+
     def test_main_loop_and_aux_rows_coexist(self, db):
         db.create_session("s1", source="cli")
         db.update_token_counts(
@@ -229,6 +255,39 @@ class TestAmbientAccountingContext:
         assert len(rows) == 1
         assert rows[0]["task"] == "web_extract"
         assert rows[0]["billing_provider"] == "openrouter"
+
+    def test_aux_chokepoint_persists_estimator_provenance(self, db):
+        """End-to-end: provenance from the estimator must reach the row, not stop in memory.
+
+        The signature fix alone is not the contract — agent/aux_accounting.record_aux_usage
+        is the only production writer for aux rows, and if it drops cost.status/cost.source
+        the columns go NULL again with no signature error to notice.
+        """
+        from agent.aux_accounting import (
+            record_aux_usage,
+            reset_accounting_context,
+            set_accounting_context,
+        )
+
+        db.create_session("s1", source="cli")
+        token = set_accounting_context(db, "s1")
+        try:
+            record_aux_usage(_mk_response(model="gemini-3-flash"), "vision", provider="gemini")
+        finally:
+            reset_accounting_context(token)
+        rows = _usage_rows(db, "s1")
+        assert len(rows) == 1
+        assert rows[0]["cost_status"] is not None
+        assert rows[0]["cost_source"] is not None
+        # Same estimator call, so the stored pair is exactly what it returned.
+        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        expected = estimate_usage_cost(
+            "gemini-3-flash",
+            normalize_usage(_mk_response().usage, provider="gemini"),
+            provider="gemini",
+        )
+        assert rows[0]["cost_status"] == expected.status
+        assert rows[0]["cost_source"] == expected.source
 
 
 

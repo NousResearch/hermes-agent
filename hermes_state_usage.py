@@ -387,6 +387,13 @@ class SessionUsageMixin:
         ``None`` when the caller genuinely has no estimate (the columns then stay NULL,
         which is the honest signal).
 
+        Caveat on aggregate rows: where ``api_call_count`` aggregates N calls (see the
+        background-review note below), ``estimated_cost_usd`` is the SUM over those N
+        calls while ``cost_status``/``cost_source`` reflect only the LAST
+        ``estimate_usage_cost`` the caller made. The provenance therefore describes the
+        source of the estimate, not of the whole aggregate — do not read
+        ``cost_status`` as a guarantee that every summed call was priced that way.
+
         See #23270.
         Background-review forks record an aggregate of N fork API calls in one write with
         ``task='background_review'`` (issue #87250).

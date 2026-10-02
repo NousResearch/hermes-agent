@@ -232,6 +232,10 @@ def test_completion_attachment_unreadable_blob_aborts_completion(tmp_path, kanba
     assert task.status == "running"
     assert atts == []
     assert events == []
+    # No orphan blob may outlive the rows the txn rolled back (AI review, PR #125782).
+    att_dir = kb.task_attachments_dir(t)
+    orphans = sorted(p.name for p in att_dir.glob("out*")) if att_dir.exists() else []
+    assert orphans == [], f"staged copy left on disk after a failed hash: {orphans}"
 
     # retry path: with the blob readable again, completion succeeds fully anchored
     with kbc.connect() as conn:

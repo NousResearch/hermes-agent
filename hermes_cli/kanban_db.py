@@ -2935,11 +2935,17 @@ def _stage_completion_artifacts(
     transaction rolls back."""
     _persist_scratch_completion_artifacts(conn, task_id, metadata)
     staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
-    for path in staged:
-        _insert_completion_attachment(
-            conn, task_id, filename=path.name, stored_path=str(path),
-            size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
-        )
+    try:
+        for path in staged:
+            _insert_completion_attachment(
+                conn, task_id, filename=path.name, stored_path=str(path),
+                size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
+            )
+    except Exception:
+        # The rows roll back with the txn, so the staged copies must not outlive
+        # them — the same cleanup request_review applies.
+        _discard_staged_copies(staged, staged[0].parent)
+        raise
     return staged
 
 

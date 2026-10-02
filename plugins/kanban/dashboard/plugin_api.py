@@ -483,9 +483,14 @@ async def upload_task_attachment(
                     out.write(chunk)
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}")
-        att_id = kanban_db.add_attachment(
-            conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
-            content_type=file.content_type, size=total, uploaded_by=(uploaded_by or "dashboard"))
+        try:
+            att_id = kanban_db.add_attachment(
+                conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
+                content_type=file.content_type, size=total, uploaded_by=(uploaded_by or "dashboard"))
+        except Exception:
+            # An unhashable blob must not outlive the row it failed to record (#125782).
+            dest_path.unlink(missing_ok=True)
+            raise
         att = kanban_db.get_attachment(conn, att_id)
         return {"attachment": _attachment_dict(att) if att else None}
 

@@ -33,7 +33,7 @@ class Proxy(BaseHTTPRequestHandler):
     def forward(self):
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         if self.command == 'POST' and self.path == '/v1/runs':
-            self.server.run_posts += 1
+            self.server.run_posts = getattr(self.server, 'run_posts', 0) + 1
         if self.path.endswith('/artifacts/ack') and self.server.mode == 'block_ack':
             self.send_response(503); self.end_headers(); return
         request = urllib.request.Request(self.server.target + self.path, method=self.command,

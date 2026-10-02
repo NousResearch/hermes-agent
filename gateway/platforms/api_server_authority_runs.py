@@ -42,8 +42,11 @@ def run_projection(adapter, run_id):
     live = authority.sessions.get(row['target_session_id'])
     if live is not None and row['status'] == 'started':
         pending = list(live.controls.snapshot(row['target_session_id'], row['generation']))
-    from gateway.session_peer_output import receipt_fields
+    from gateway.session_peer_output import accepted_dispatch_digest, receipt_fields
     output = receipt_fields(row, result)
+    digest = accepted_dispatch_digest(row)
+    if digest is not None:
+        output['peer_output_dispatch_digest'] = digest
     return {**output, 'pending_controls': pending, 'run_id': run_id, 'status': status, 'session_id': row['target_session_id'],
             'admission_id': row['admission_id'], 'execution_generation': row['generation'],
             'output': result.get('final_response', ''), 'usage': saved.get('usage', {}) if saved else {}}

@@ -41,7 +41,7 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
-import { configFieldSearchHaystack } from "@/lib/config-labels";
+import { configFieldSearchHaystack, configFieldSectionLabel } from "@/lib/config-labels";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -405,7 +405,7 @@ export default function ConfigPage() {
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
-                {section.replace(/_/g, " ")}
+                {configFieldSectionLabel(t, section)}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>

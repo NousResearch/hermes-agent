@@ -105,7 +105,25 @@ export interface Translations {
       plugins: string;
       sessions: string;
       skills: string;
+      /**
+       * Optional — built-in nav entries that used to render hardcoded English
+       * (`Files`, `Channels`, …). Falls back to the English literal in
+       * `App.tsx` so a locale that hasn't caught up still renders.
+       */
+      files?: string;
+      mcp?: string;
+      channels?: string;
+      webhooks?: string;
+      pairing?: string;
+      system?: string;
     };
+    /**
+     * Optional — localized labels for PLUGIN-provided nav tabs, keyed by the
+     * tab path (e.g. `/kanban`). Plugin manifests ship an English `label`
+     * only, so this map lets the sidebar translate them without touching the
+     * manifest. A miss falls back to the manifest label untouched.
+     */
+    pluginNav?: Record<string, string>;
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
     navigation: string;

@@ -31,8 +31,28 @@ export function configFieldCopy(t: ConfigCopyCarrier | undefined): Record<string
   return copy && typeof copy === "object" ? copy : {};
 }
 
+/**
+ * Whole-token-only lookup into `config.fieldCopy`.
+ *
+ * THE INVARIANT: a copy key is the config schema key VERBATIM, so a lookup may
+ * only ever be satisfied by that whole key — never a substring, a prefix or
+ * suffix, a word inside a larger token, or an inherited (`Object.prototype`)
+ * member. A miss returns `undefined` so the caller falls back to the original
+ * text byte-for-byte.
+ *
+ * Why this is enforced explicitly: the corruption class it guards against is a
+ * PARTIAL match — a `save` entry matching the English token `SAVE` inside
+ * `SAVED`, leaving a trailing `D`, which an uppercase/`text-transform` style
+ * then renders as `... 保存D`. `Object.prototype.hasOwnProperty` guarantees an
+ * exact own-property hit *and* that keys such as `constructor` / `toString` /
+ * `__proto__` can never resolve to a prototype member. See the "whole-token
+ * matching" block in `config-labels.test.ts` for the `SAVED` regression.
+ */
 function authored(t: ConfigCopyCarrier | undefined, key: string): string | undefined {
-  const value = configFieldCopy(t)[key];
+  if (!key) return undefined;
+  const copy = configFieldCopy(t);
+  if (!Object.prototype.hasOwnProperty.call(copy, key)) return undefined;
+  const value = copy[key];
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
@@ -68,6 +88,31 @@ export function configFieldLabel(
   schemaKey: string,
 ): string {
   return lookupConfigFieldLabel(t, schemaKey) ?? synthesizedConfigFieldLabel(schemaKey);
+}
+
+/**
+ * Whole-value translation for arbitrary backend-provided text (e.g. a config
+ * SECTION heading). Only the ENTIRE trimmed text can hit a copy key — the
+ * underlying lookup is an exact own-property read, so a partial/substring match
+ * is impossible by construction. A miss returns the ORIGINAL text untouched.
+ */
+export function translateConfigText(
+  t: ConfigCopyCarrier | undefined,
+  text: string,
+): string {
+  return lookupConfigFieldLabel(t, text.trim()) ?? text;
+}
+
+/**
+ * Config-form SECTION heading precedence: an authored `fieldCopy[<section>]`
+ * entry (whole section key only) wins; otherwise the de-underscored section
+ * name renders exactly as it did before this layer existed.
+ */
+export function configFieldSectionLabel(
+  t: ConfigCopyCarrier | undefined,
+  section: string,
+): string {
+  return lookupConfigFieldLabel(t, section) ?? section.replace(/_/g, " ");
 }
 
 /** Description precedence: authored i18n copy first, backend schema prose otherwise. */

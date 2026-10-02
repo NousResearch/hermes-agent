@@ -137,8 +137,13 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
 def _evict_modules(module_name: str) -> None:
     """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
-        del sys.modules[name]
+    # Snapshot first. Iterating the live dict from Python bytecode races every other thread's
+    # import ("dictionary changed size during iteration"); the loader then rolls the plugin back
+    # and silently drops it at boot (#123926). ``dict.copy()`` runs in C with the GIL held, so
+    # the snapshot cannot tear, and ``pop(..., None)`` tolerates a name another thread evicted
+    # between the snapshot and the delete.
+    for name in [n for n in sys.modules.copy() if n == module_name or n.startswith(prefix)]:
+        sys.modules.pop(name, None)
 
 
 def _serialized_replacement(method):

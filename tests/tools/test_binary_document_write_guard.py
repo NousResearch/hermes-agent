@@ -6,7 +6,9 @@ friends), and must refuse to OVERWRITE an existing .pdf — while still
 allowing new-.pdf creation (raw PDF syntax is text-authorable).
 """
 
+import contextlib
 import json
+import sqlite3
 import zipfile
 from pathlib import Path
 
@@ -19,7 +21,6 @@ from tools.binary_extensions import (
 )
 from tools.file_tools import patch_tool, write_file_tool
 from tools.file_tools_write_guards import _check_binary_document_write
-from tools.file_operations import ShellFileOperations
 
 
 def _make_minimal_docx(path: Path) -> None:
@@ -39,6 +40,27 @@ def _make_minimal_docx(path: Path) -> None:
         )
 
 
+@contextlib.contextmanager
+def _make_wal_db(path: Path):
+    """Yield the ``-wal`` sidecar of a WAL-mode SQLite db with unflushed pages.
+
+    SQLite deletes -wal/-shm when the last connection closes, so the
+    connection is held open for the duration: the sidecar on disk is a real
+    WAL, not fake bytes.
+    """
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (name TEXT)")
+        conn.execute("INSERT INTO t VALUES ('alpha')")
+        conn.commit()
+        wal = Path(str(path) + "-wal")
+        assert wal.exists() and wal.stat().st_size > 0, "WAL sidecar not materialised"
+        yield wal
+    finally:
+        conn.close()
+
+
 class TestExtensionHelpers:
     def test_opaque_document_extensions(self):
         for p in ("a.docx", "b.XLSX", "c.pptx", "d.doc", "e.odt", "f.ods", "g.odp",
@@ -56,99 +78,41 @@ class TestExtensionHelpers:
         assert is_pdf_path("report.txt") is False
 
 
-class TestCheckBinaryDocumentWrite:
-    def test_docx_always_rejected(self, tmp_path: Path):
-        # Even a NON-existing docx is rejected — text can't be a valid container.
-        err = _check_binary_document_write(str(tmp_path / "new.docx"))
-        assert err is not None
-        assert ".docx" in err
 
-    def test_existing_pdf_rejected(self, tmp_path: Path):
-        pdf = tmp_path / "doc.pdf"
-        pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
-        err = _check_binary_document_write(str(pdf))
-        assert err is not None
-        assert "overwrite" in err.lower()
-
-    def test_new_pdf_allowed(self, tmp_path: Path):
-        assert _check_binary_document_write(str(tmp_path / "fresh.pdf")) is None
-
-    def test_plain_text_allowed(self, tmp_path: Path):
-        assert _check_binary_document_write(str(tmp_path / "notes.txt")) is None
-
-    def test_remote_existing_pdf_uses_backend_regular_file_probe(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [("ok", "overwrite"), ("missing", None), ("unreachable", "could not establish")],
+    )
+    def test_remote_pdf_checks_captured_identity_without_resolving_again(
+        self, monkeypatch, status, expected
+    ):
         class ProbeOperations:
             def __init__(self):
                 self.paths = []
 
-            def is_regular_file(self, path):
+            def _expand_path(self, path):
+                return path
+
+            def _probe_regular_file(self, path):
                 self.paths.append(path)
-                return True
+                return 0, status
 
         operations = ProbeOperations()
-        monkeypatch.setattr(file_tools_write_guards, "_uses_container_paths", lambda _task: True)
+        monkeypatch.setattr(file_tools, "_file_ops_uses_host_paths", lambda _ops: False)
         monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: operations)
+
+        def resolve_again(*args):
+            pytest.fail("the binary guard must use the captured mutation identity")
+
+        monkeypatch.setattr(file_tools_write_guards, "_resolve_path_for_task", resolve_again)
         error = _check_binary_document_write(
             "report.pdf", task_id="remote-task", resolved_path="/remote/work/report.pdf"
         )
-        assert error is not None
-        assert "overwrite" in error.lower()
         assert operations.paths == ["/remote/work/report.pdf"]
-
-    def test_remote_new_pdf_is_allowed_after_backend_probe(self, monkeypatch):
-        class ProbeOperations:
-            def is_regular_file(self, _path):
-                return False
-
-        monkeypatch.setattr(file_tools_write_guards, "_uses_container_paths", lambda _task: True)
-        monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: ProbeOperations())
-        assert _check_binary_document_write(
-            "report.pdf", task_id="container-task", resolved_path="/workspace/report.pdf"
-        ) is None
-
-    def test_remote_pdf_probe_failure_is_fail_closed(self, monkeypatch):
-        class ProbeOperations:
-            def is_regular_file(self, _path):
-                raise OSError("transport unavailable")
-
-        monkeypatch.setattr(file_tools_write_guards, "_uses_container_paths", lambda _task: True)
-        monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: ProbeOperations())
-        error = _check_binary_document_write(
-            "report.pdf", task_id="remote-task", resolved_path="/remote/work/report.pdf"
-        )
-        assert error is not None
-        assert "could not safely determine" in error
-
-
-class TestBackendRegularFileProbe:
-    @pytest.mark.parametrize(
-        ("output", "expected"),
-        [("regular\n", True), ("missing\n", False), ("non_regular\n", False)],
-    )
-    def test_explicit_backend_probe_results(self, output, expected):
-        class Environment:
-            cwd = "/workspace"
-
-            def execute(self, _command, cwd=None, **_kwargs):
-                return {"output": output, "returncode": 0}
-
-        assert ShellFileOperations(Environment()).is_regular_file(
-            "/workspace/report.pdf"
-        ) is expected
-
-    @pytest.mark.parametrize(
-        ("output", "returncode"),
-        [("transport unavailable", 1), ("unexpected", 0)],
-    )
-    def test_transport_or_protocol_failure_raises(self, output, returncode):
-        class Environment:
-            cwd = "/workspace"
-
-            def execute(self, _command, cwd=None, **_kwargs):
-                return {"output": output, "returncode": returncode}
-
-        with pytest.raises(OSError):
-            ShellFileOperations(Environment()).is_regular_file("/workspace/report.pdf")
+        if expected is None:
+            assert error is None
+        else:
+            assert error is not None and expected in error.lower()
 
 
 class TestWriteFileToolGuard:
@@ -197,6 +161,37 @@ class TestWriteFileToolGuard:
         result = json.loads(write_file_tool(str(pdf), "%PDF-1.4\n%%EOF\n"))
         assert not result.get("error")
         assert pdf.exists()
+
+    @pytest.mark.parametrize("target", ["sidecar", "sidecar-absent", "db"])
+    def test_write_file_rejects_sqlite_wal_sidecar(self, tmp_path: Path, target: str):
+        # ".db-wal" is not a suffix in BINARY_EXTENSIONS; the sidecar must still
+        # count as its database's extension or text lands in the WAL. A
+        # checkpointed db has no sidecar on disk, so the absent case must be
+        # refused too — otherwise a garbage WAL lands next to a live database.
+        # The database file itself takes the separate binary-OVERWRITE branch
+        # (sidecar paths return earlier), so it needs its own case.
+        db = tmp_path / "state.db"
+        if target == "sidecar":
+            with _make_wal_db(db) as wal:
+                original = wal.read_bytes()
+                result = json.loads(write_file_tool(str(wal), "CREATE TABLE x(y);"))
+                # The no-baseline overwrite guard would also refuse; pin the binary
+                # refusal so the message steers the model to sqlite3, not to read_file.
+                assert "binary" in result.get("error", ""), result
+                assert wal.read_bytes() == original
+        elif target == "db":
+            with _make_wal_db(db):
+                original = db.read_bytes()
+                result = json.loads(write_file_tool(str(db), "CREATE TABLE x(y);"))
+                assert "binary" in result.get("error", ""), result
+                assert db.read_bytes() == original
+        else:
+            sqlite3.connect(db).close()
+            wal = Path(str(db) + "-wal")
+            assert not wal.exists()
+            result = json.loads(write_file_tool(str(wal), "CREATE TABLE x(y);"))
+            assert "binary" in result.get("error", ""), result
+            assert not wal.exists()
 
     def test_write_file_plain_text_unaffected(self, tmp_path: Path):
         target = tmp_path / "notes.txt"
@@ -251,6 +246,17 @@ class TestPatchToolGuard:
         result = json.loads(patch_tool(mode="patch", patch=v4a))
         err = result.get("error") or ""
         assert "binary document" not in err.lower()
+
+    def test_patch_replace_rejects_sqlite_wal_sidecar(self, tmp_path: Path):
+        with _make_wal_db(tmp_path / "state.db") as wal:
+            original = wal.read_bytes()
+            result = json.loads(
+                patch_tool(mode="replace", path=str(wal),
+                           old_string="alpha", new_string="beta"))
+            # Pin the binary refusal: the no-baseline guard would otherwise
+            # mask a regression in sidecar detection.
+            assert "binary" in result.get("error", ""), result
+            assert wal.read_bytes() == original
 
     def test_patch_replace_plain_text_unaffected(self, tmp_path: Path):
         target = tmp_path / "notes.txt"

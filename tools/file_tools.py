@@ -20,22 +20,25 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
+from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
+from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ResolvedMutationTarget, ShellFileOperations, normalize_read_pagination,
     normalize_search_pagination)
-from tools.file_operations_common import DEFAULT_READ_LIMIT
+from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
 from tools import file_state
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
     _authoritative_workspace_root, _expand_tilde, _path_resolution_warning,
-    _resolve_base_dir, _resolve_path_for_task, _terminal_env_type_for_task)
+    _resolve_base_dir, _resolve_entry_for_task, _resolve_path_for_task, _terminal_env_type_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
+    _file_metadata, _file_version,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
@@ -105,6 +108,7 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
         f"{lines_kept} line(s) (showing lines {offset}-{next_offset - 1} of "
         f"{total_lines}). Use offset={next_offset} to continue.")
     if len(trimmed.split("\n", 1)[0]) >= max_chars:
+        result_dict["truncated_lines"] = True
         result_dict["hint"] += (
             " Note: the first line alone exceeded the budget and was "
             "clamped mid-line; its remainder is not retrievable via offset.")
@@ -154,7 +158,7 @@ def _rewrite_v4a_patch_with_resolved_targets(
 ) -> str:
     """Rewrite legacy V4A headers to captured backend identities."""
     file_re = re.compile(
-        r"^(?P<prefix>\*{3}[ \t]*(?:Update|Add|Delete)[ \t]+File:[ \t]*)"
+        r"^(?P<prefix>\*{3}[ \t]*(?P<op>Update|Add|Delete)[ \t]+File:[ \t]*)"
         r"(?P<path>[^\r\n]+?)[ \t]*(?P<cr>\r?)$",
         re.MULTILINE,
     )
@@ -165,22 +169,26 @@ def _rewrite_v4a_patch_with_resolved_targets(
     )
     seen: set[str] = set()
 
-    def backend_path(raw_path: str) -> str:
+    def backend_path(raw_path: str, *, entry: bool = False) -> str:
         display_path = raw_path.strip()
         target = resolved_targets.get(display_path)
         if target is None:
             raise ValueError("No captured resolved identity for a V4A target")
         seen.add(display_path)
+        if entry:
+            if target.entry_path is None:
+                raise ValueError("No captured directory-entry identity for a V4A target")
+            return target.entry_path
         return target.backend_path
 
     rewritten = file_re.sub(
-        lambda m: f"{m.group('prefix')}{backend_path(m.group('path'))}{m.group('cr')}",
+        lambda m: f"{m.group('prefix')}{backend_path(m.group('path'), entry=m.group('op') == 'Delete')}{m.group('cr')}",
         patch_content,
     )
     rewritten = move_re.sub(
         lambda m: (
-            f"{m.group('prefix')}{backend_path(m.group('src'))} -> "
-            f"{backend_path(m.group('dst'))}{m.group('cr')}"
+            f"{m.group('prefix')}{backend_path(m.group('src'), entry=True)} -> "
+            f"{backend_path(m.group('dst'), entry=True)}{m.group('cr')}"
         ),
         rewritten,
     )
@@ -285,9 +293,9 @@ _file_ops_cache: dict = {}
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
     so a file tool that runs before any terminal command still gets the configured backend."""
-    from tools.terminal_tool_config import _is_container_backend
+    from tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
     from tools.terminal_tool import (
-        _create_configured_env, _get_env_config, _is_unusable_container_cwd,
+        _create_configured_env, _get_env_config, _is_mounted_host_cwd, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
 
     config = _get_env_config()
@@ -297,7 +305,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         recorded_cwd = get_session_cwd(raw_task_id)
     except Exception:
         recorded_cwd = None
-    cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
+    cwd = coerce_ssh_remote_cwd(overrides.get("cwd") or recorded_cwd or config["cwd"], env_type)
     # Re-apply the container cwd guard: a gateway/TUI/ACP override is a raw HOST
     # path and ``docker run -w <host-path>`` makes search_files & co silently
     # return nothing. Valid in-container overrides (/workspace, /root) pass.
@@ -307,18 +315,20 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     # reaches ``docker run -w <host-path>`` and the container starts in a directory that doesn't exist
     # inside the sandbox, so search_files and friends silently return empty results (#54447). Sanitize it
     # back to the already-validated config["cwd"] so the override can't bypass the guard.
-    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
-        if cwd != config["cwd"]:
+    host_cwd = _resolve_task_host_cwd(config, raw_task_id)
+    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
+        fallback = "/workspace" if _is_mounted_host_cwd(cwd, host_cwd) else config["cwd"]
+        if cwd != fallback:
             logger.info(
                 "Ignoring host/relative cwd override %r for %s backend "
                 "(won't exist in sandbox). Using %r instead.",
-                cwd, env_type, config["cwd"])
-        cwd = config["cwd"]
+                cwd, env_type, fallback)
+        cwd = fallback
     logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
     terminal_env = _create_configured_env(
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
-        host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+        host_cwd=host_cwd,
         local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
     )
     return env_type, terminal_env
@@ -478,6 +488,9 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     total_lines = len(lines)
     end_line = offset + limit - 1
     page_text = "\n".join(lines[offset - 1:end_line])
+    from tools.tool_output_limits import get_max_line_length
+    max_line_length = get_max_line_length()
+    truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
         "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
         "total_lines": total_lines,
@@ -499,7 +512,8 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         redacted = result_dict["content"] != rendered
     else:
         redacted = False
-    if offset == 1 and not result_dict["truncated"] and not redacted:
+    if (offset == 1 and not result_dict["truncated"] and not redacted
+            and not truncated_lines and not result_dict.get("truncated_lines")):
         # The whole document was shown, so a text-authorable format (.ipynb)
         # may later be overwritten by write_file; the binary-container guard
         # keeps refusing .docx/.xlsx/.pdf regardless of this baseline.
@@ -527,7 +541,11 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
             "still current. Proceed with your task using "
             "the information you already have.",
             path=path,
-            already_read=hits + 1)
+            already_read=hits + 1,
+            # A REFUSAL the harness chose, not a failure the tool hit: without the
+            # marker the failure classifiers count the block and a repeated read
+            # escalates to `repeated_exact_failure_block` over calls that never failed.
+            **{GUARDRAIL_REFUSAL_KEY: True})
 
     return json.dumps({
         "status": "unchanged",
@@ -541,7 +559,7 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -554,7 +572,9 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     background-review read-mark (a FULL read of a skill file counts like
     skill_view so a follow-up skill_manage(patch) is accepted).
     """
-    complete = not partial
+    version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
+    stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
+    complete = False
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
         task_data["dedup_generation_reads"].add(dedup_key)
@@ -562,15 +582,28 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
             _mtime_now = os.path.getmtime(resolved_str)
-            task_data["dedup"][dedup_key] = _mtime_now
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            if partial and end_line is not None:
-                complete, redacted = _note_read_coverage(
-                    task_data, resolved_str, _mtime_now, offset, end_line, total_lines, redacted)
         except OSError:
             pass
-        if complete and not redacted:
-            task_data.setdefault("full_write_baselines", set()).add(resolved_str)
+        baselines = task_data["full_write_baselines"]
+        if stable and version is not None and count < 4:
+            task_data["dedup"][dedup_key] = version_before
+            # A narrower view does not undo knowledge of these same bytes. Do
+            # not revive a baseline after a partial read of a different version.
+            complete = baselines.get(resolved_str) == version
+            if not complete:
+                complete = not partial
+                if partial and end_line is not None:
+                    complete, redacted = _note_read_coverage(
+                        task_data, resolved_str, version, offset, end_line, total_lines, redacted)
+                complete = complete and not redacted
+            if complete:
+                baselines[resolved_str] = version
+        if not complete:
+            baselines.pop(resolved_str, None)
+        if not stable or count >= 4:
+            task_data["dedup"].pop(dedup_key, None)
+            task_data["dedup_generation_reads"].discard(dedup_key)
         _cap_read_tracker_data(task_data)
 
     try:
@@ -598,7 +631,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
     device-path blocklist (no I/O) → stat-based special-file guard (host only)
-    → document extraction → binary-extension guard → Hermes internal denylist
+    → Hermes internal denylist → document extraction → binary-extension guard
     → negative-result cache → dedup stub → real read.
     """
     try:
@@ -632,6 +665,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                         "attempted. Use terminal utilities if you need to "
                         "interact with it.")})
 
+        # Hermes internal denylist (prompt injection via catalog metadata,
+        # credential stores). Runs BEFORE document extraction so a
+        # protected SQLite store (state.db) cannot be read through the extractor. Pass the RESOLVED path: the denylist's own
+        # resolve() uses the process cwd and would miss a relative "auth.json".
+        block_error = get_read_block_error(str(_resolved))
+        if block_error:
+            return tool_error(block_error)
+
         extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
         if extracted is not None:
             return extracted
@@ -643,13 +684,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 f"Cannot read binary file '{path}' ({_resolved.suffix.lower()}). "
                 "Use vision_analyze for images, or terminal to inspect binary files.")
 
-        # Hermes internal denylist (prompt injection via catalog metadata,
-        # credential stores). Pass the RESOLVED path: the denylist's own
-        # resolve() uses the process cwd and would miss a relative "auth.json".
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
-
         resolved_str = str(_resolved)
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)
         if cached_not_found is not None:
@@ -660,25 +694,27 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
             task_data = _task_data(task_id)
-            cached_mtime = task_data["dedup"].get(dedup_key)
+            cached_version = task_data["dedup"].get(dedup_key)
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
-        if cached_mtime is not None:
-            try:
-                if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
-                    return _dedup_stub_or_block(task_data, dedup_key, path)
-            except OSError:
-                pass  # stat failed — fall through to full read
+        # Same rule as skill_view: the review fork shares the parent's task_id and its
+        # read-before-write guard needs a real read, which the stub path never records (#95976).
+        file_ops = _get_file_ops(task_id)
+        version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
+        if (cached_version is not None and not is_background_review()
+                and version_before == cached_version and content_served_in_generation):
+            return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = _get_file_ops(task_id).read_file(path, offset, limit)
+        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
         result_dict = result.to_dict()
 
-        # Cache a not-found result for retries. Deliberately NO early return:
-        # error results still flow through the tracking below unchanged.
+        # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
             _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
+        if _err or result_dict.get("is_binary"):
+            return json.dumps(result_dict, ensure_ascii=False)
 
         # Char budget on the FORMATTED content (what enters context), BEFORE
         # redaction (skip the regex pass on huge content); truncate gracefully
@@ -697,6 +733,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             redacted = result.content != unredacted
             result_dict["content"] = result.content
 
+        if result.content:
+            conflicts = count_conflict_blocks(result.content)
+            if conflicts:
+                result_dict["conflict_blocks"] = conflicts
+                result_dict["_hint"] = (
+                    f"{conflicts} unresolved git merge-conflict block(s) (<<<<<<< / ======= / >>>>>>>) in this "
+                    "range. Resolve them (keep one side or combine, delete the markers) before editing around them.")
+
         if (file_size and file_size > _LARGE_FILE_HINT_BYTES
                 and limit > 200 and result_dict.get("truncated")):
             result_dict.setdefault("_hint", (
@@ -713,14 +757,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 end_line = min(end_line, total_lines)
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        redacted=redacted, end_line=end_line, total_lines=total_lines)
+                                        redacted=redacted or bool(result_dict.get("truncated_lines")),
+                                        end_line=end_line, total_lines=total_lines,
+                                        version_before=version_before,
+                                        snapshot=getattr(result, "_snapshot", None))
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
                 "The content has NOT changed. You already have this information. "
                 "STOP re-reading and proceed with your task.",
                 path=path,
-                already_read=count)
+                already_read=count,
+                **{GUARDRAIL_REFUSAL_KEY: True})
         if count >= 3:
             result_dict["_warning"] = (
                 f"You have read this exact file region {count} times consecutively. "
@@ -733,10 +781,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
 
-def _resolve_or_none(filepath: str, task_id: str) -> str | None:
-    """Task-resolved path string, or None when resolution fails for any reason."""
+def _resolve_or_none(filepath: str, task_id: str, *, entry: bool = False) -> str | None:
+    """Task-resolved path string, or None when resolution fails for any reason.
+    ``entry``: keep a symlink in the last component (``_resolve_entry_for_task``)."""
     try:
-        return str(_resolve_path_for_task(filepath, task_id))
+        return str((_resolve_entry_for_task if entry else _resolve_path_for_task)(filepath, task_id))
     except Exception:
         return None
 
@@ -756,14 +805,16 @@ def _capture_mutation_targets(
     display_paths: list[str],
     task_id: str,
     initialized_file_ops: ShellFileOperations | None = None,
+    entry_paths: list[str] | None = None,
 ) -> dict[str, ResolvedMutationTarget]:
-    """Resolve each distinct mutation target exactly once."""
+    """Capture content and, when needed, directory-entry identities once each."""
     backend_cwd = _authoritative_workspace_root(task_id)
     if backend_cwd is None and initialized_file_ops is not None:
         backend_cwd = (
             getattr(getattr(initialized_file_ops, "env", None), "cwd", None)
             or getattr(initialized_file_ops, "cwd", None)
         )
+    entries = set(entry_paths or [])
     targets = {}
     for display_path in dict.fromkeys(display_paths):
         resolved = (
@@ -771,7 +822,17 @@ def _capture_mutation_targets(
             if backend_cwd
             else _resolve_path_for_task(display_path, task_id)
         )
-        targets[display_path] = ResolvedMutationTarget(display_path, str(resolved))
+        if _terminal_env_type_for_task(task_id) == "ssh" and not posixpath.isabs(str(resolved)):
+            raise ValueError("Unable to capture an absolute SSH mutation identity")
+        entry = None
+        if display_path in entries:
+            entry = (
+                _resolve_entry_for_task(display_path, task_id, backend_cwd=backend_cwd)
+                if backend_cwd else _resolve_entry_for_task(display_path, task_id)
+            )
+        targets[display_path] = ResolvedMutationTarget(
+            display_path, str(resolved), str(entry) if entry is not None else None
+        )
     return targets
 
 
@@ -909,7 +970,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             warnings = _edit_warnings([path], resolved_paths, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, target.backend_path, content)
             file_ops = initialized_file_ops or _get_file_ops(task_id)
-            result_dict = file_ops.write_file(target.backend_path, content).to_dict()
+            result = file_ops.write_file(target.backend_path, content)
+            result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
             if rewrite_hint and not result_dict.get("error"):
@@ -923,7 +985,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 result_dict["files_modified"] = [target.backend_path]
                 # Own write = current whole-file content: consecutive
                 # same-task writes stay unblocked. patch never does this.
-                _mark_full_write_baseline(target.backend_path, task_id)
+                _mark_full_write_baseline(
+                    target.backend_path, task_id, getattr(result, "_content_sha256", None)
+                )
                 _note_edited(task_id, [path], resolved_paths, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -934,13 +998,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         return tool_error(str(e))
 
 
-def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
+def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[str]] | str:
     """Extract every path named in V4A headers, rejecting ``..`` traversal.
 
-    Returns ``(all_paths, content_write_paths)`` or a tool_error string. Header
-    paths come from patch CONTENT (more attacker-influenceable than ``path=``,
-    which keeps its legitimate ``..`` use). Move headers check BOTH endpoints;
-    only Update/Add write text and feed the binary-document guard.
+    Returns ``(all_paths, content_write_paths, entry_paths)`` or a tool_error
+    string. Header paths come from patch CONTENT (more attacker-influenceable
+    than ``path=``, which keeps its legitimate ``..`` use). Move headers check
+    BOTH endpoints; only Update/Add write text and feed the binary-document
+    guard; Delete and Move act on the directory entry (``entry_paths``).
     """
     from tools.path_security import has_traversal_component
 
@@ -948,6 +1013,7 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
     headers += [(g, False) for m in _V4A_MOVE_HEADER_RE.finditer(patch) for g in (m.group(2), m.group(3))]
     paths: list[str] = []
     content_paths: list[str] = []
+    entry_paths: list[str] = []
     for raw, writes_text in headers:
         v4a_path = raw.strip()
         if has_traversal_component(v4a_path):
@@ -957,9 +1023,8 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
                 "path in '*** Update File:' / '*** Add File:' / "
                 "'*** Delete File:' / '*** Move File:' headers.")
         paths.append(v4a_path)
-        if writes_text:
-            content_paths.append(v4a_path)
-    return paths, content_paths
+        (content_paths if writes_text else entry_paths).append(v4a_path)
+    return paths, content_paths, entry_paths
 
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
@@ -973,26 +1038,37 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     """
     _paths_to_check = [path] if path else []
     _content_write_paths = list(_paths_to_check)
+    _entry_paths: list[str] = []
     if mode == "patch" and patch:
         collected = _collect_v4a_header_paths(patch)
         if isinstance(collected, str):
             return collected
         _paths_to_check += collected[0]
         _content_write_paths += collected[1]
+        _entry_paths = collected[2]
     try:
         initialized_file_ops = _initialize_mutation_backend_if_needed(_paths_to_check, task_id)
-        targets = _capture_mutation_targets(_paths_to_check, task_id, initialized_file_ops)
+        targets = _capture_mutation_targets(
+            _paths_to_check, task_id, initialized_file_ops, _entry_paths
+        )
     except Exception as exc:
         logger.debug("patch target resolution failed: %s", exc)
         return tool_error("Unable to resolve file mutation target")
     if mode == "patch":
         backend_owners: dict[str, str] = {}
         for display_path, target in targets.items():
-            prior = backend_owners.setdefault(target.backend_path, display_path)
-            if prior != display_path:
+            mutation_identities = set()
+            if display_path in _content_write_paths:
+                mutation_identities.add(target.backend_path)
+            if target.entry_path is not None:
+                mutation_identities.add(target.entry_path)
+            for identity in mutation_identities:
+                prior = backend_owners.setdefault(identity, display_path)
+                if prior == display_path:
+                    continue
                 return tool_error(
                     "V4A patch resolves multiple display paths to the same backend target: "
-                    f"{prior!r} and {display_path!r} -> {target.backend_path!r}. "
+                    f"{prior!r} and {display_path!r} -> {identity!r}. "
                     "Refusing before validation to preserve all-or-nothing patch semantics."
                 )
     resolved_paths = {display: target.backend_path for display, target in targets.items()}
@@ -1003,7 +1079,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return tool_error(precheck_err)
     try:
         with ExitStack() as _locks:
-            for _r in sorted(set(resolved_paths.values())):
+            lock_paths = set(resolved_paths.values()) | {
+                target.entry_path for target in targets.values() if target.entry_path is not None
+            }
+            for _r in sorted(lock_paths):
                 _locks.enter_context(file_state.lock_path(_r))
             stale_warnings = _edit_warnings(_paths_to_check, resolved_paths, task_id)
             file_ops = initialized_file_ops or _get_file_ops(task_id)
@@ -1034,25 +1113,37 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             result_dict = result.to_dict()
             if stale_warnings:
                 result_dict["_warning"] = " | ".join(stale_warnings)
-            def _map_result_path(label: str) -> str:
+            def _map_result_path(label: str, *, entry: bool = False) -> str:
                 target = targets.get(label)
                 if target is not None:
-                    return target.backend_path
+                    return (target.entry_path or target.backend_path) if entry else target.backend_path
                 if " -> " in label:
                     src, dst = label.split(" -> ", 1)
                     if src in targets and dst in targets:
-                        return f"{targets[src].backend_path} -> {targets[dst].backend_path}"
+                        src_path = targets[src].entry_path or targets[src].backend_path
+                        dst_path = targets[dst].entry_path or targets[dst].backend_path
+                        return f"{src_path} -> {dst_path}"
                 return label
             for result_key in ("files_modified", "files_created", "files_deleted"):
                 values = result_dict.get(result_key)
                 if isinstance(values, list):
-                    result_dict[result_key] = [_map_result_path(str(value)) for value in values]
+                    result_dict[result_key] = [
+                        _map_result_path(str(value), entry=result_key == "files_deleted")
+                        for value in values
+                    ]
             if isinstance(result_dict.get("lint"), dict):
                 result_dict["lint"] = {
                     _map_result_path(str(key)): value for key, value in result_dict["lint"].items()
                 }
             if not result_dict.get("error"):
-                _resolved_touched = sorted(set(resolved_paths.values()))
+                _resolved_touched = sorted({
+                    target.entry_path or target.backend_path for target in targets.values()
+                })
+                # Preserve the successful-patch touched-path contract, including
+                # directory entries removed or moved by V4A.
+                result_dict["files_modified"] = [
+                    targets[p].entry_path or targets[p].backend_path for p in _paths_to_check
+                ]
                 if len(_resolved_touched) == 1:
                     result_dict["resolved_path"] = _resolved_touched[0]
                 _note_edited(task_id, _paths_to_check, resolved_paths, session_id)
@@ -1106,7 +1197,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "The results have NOT changed. You already have this information. "
                 "STOP re-searching and proceed with your task.",
                 pattern=pattern,
-                already_searched=count)
+                already_searched=count,
+                **{GUARDRAIL_REFUSAL_KEY: True})
 
         # Raw string before _resolve_path_for_task: resolving is the NTLM-leak
         # trigger and the task-base join would hide the prefix (see read_file_tool).
@@ -1186,12 +1278,12 @@ READ_FILE_SCHEMA = {
     # Document formats are stated unconditionally: firecrawl-anydoc is a
     # core dependency (bundled), so its absence is a broken install, not a
     # configuration — the teaching error in read_extract handles that rare
-    # case with the pip-install fix. The ONE dynamic word: "PDF (text
+    # case with the PM repair hint. The ONE dynamic word: "PDF (text
     # layer)" upgrades to "PDF (scanned or text)" when hosted OCR has a
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning
     # (read_extract.py); the schema doesn't pre-teach it.
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB. Cannot read images/binary — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1364,22 +1456,27 @@ def _handle_write_file(args, **kw):
             f"write_file: 'content' must be a string, got "
             f"{type(args['content']).__name__}."
         )
-    return write_file_tool(
+    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+
+    return record_file_edit("write_file", "whole_file", lambda: write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
-    )
+    ))
 
 
 def _handle_patch(args, **kw):
+    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+
     tid = kw.get("task_id") or "default"
-    return patch_tool(
-        mode=args.get("mode", "replace"), path=args.get("path"),
+    mode = args.get("mode", "replace")
+    return record_file_edit("patch", mode, lambda: patch_tool(
+        mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
-    )
+    ))
 
 
 def _handle_search_files(args, **kw):
@@ -1387,8 +1484,13 @@ def _handle_search_files(args, **kw):
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
+    # The schema documents path='.'; a present-but-blank (or JSON null) value
+    # is not a missing key for dict.get, so apply the default here (#112424).
+    path = args.get("path", ".")
+    if path is None or (isinstance(path, str) and not path.strip()):
+        path = "."
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
+        pattern=args.get("pattern", ""), target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
         order=args.get("order", "discovery"), task_id=tid)
@@ -1441,31 +1543,3 @@ def _patch_schema_overrides():
 
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, dynamic_schema_overrides=_patch_schema_overrides)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import PurePosixPath  # noqa: F401,E402
-import posixpath  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'has_opaque_document_extension': ('tools.binary_extensions', 'has_opaque_document_extension'),
-    'is_pdf_path': ('tools.binary_extensions', 'is_pdf_path'),
-    'notify_other_tool_call': ('tools.file_tools_read_tracking', 'notify_other_tool_call'),
-    'reset_file_dedup': ('tools.file_tools_read_tracking', 'reset_file_dedup'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

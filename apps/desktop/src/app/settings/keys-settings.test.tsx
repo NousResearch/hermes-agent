@@ -18,6 +18,11 @@ vi.mock('@/hermes', () => ({
   setEnvVar: vi.fn()
 }))
 
+// Load once at module scope so no test's 15s budget pays the heavy transform
+// + import (the first-test timeout flake under CI load).
+const { KeysSettings } = await import('./keys-settings')
+const { $settingsScopeOverride } = await import('@/store/settings-scope')
+
 beforeEach(() => {
   getEnvVars.mockResolvedValue({})
   Object.defineProperty(Element.prototype, 'scrollIntoView', {
@@ -32,8 +37,6 @@ afterEach(() => {
 })
 
 async function renderKeysSettings(view: 'settings' | 'tools', route = '/settings') {
-  const { KeysSettings } = await import('./keys-settings')
-
   await act(async () => {
     render(
       <MemoryRouter initialEntries={[route]}>
@@ -54,13 +57,16 @@ function DeepLinkButton({ target }: { target: string }) {
 }
 
 describe('KeysSettings', () => {
-  it('fetches env vars for the active profile (undefined, never null) when unscoped', async () => {
+  it('fetches env vars for the displayed profile (the concrete key, never null) when unscoped', async () => {
     // #90549 class: getEnvVars(null) targets the primary profile's env store,
     // so a non-default profile's Keys page would read (and edit) the wrong
-    // profile. Unscoped must send undefined so the active profile applies.
+    // profile. #118432: `undefined` is equally wrong — profileScoped() then
+    // drops `?profile=` entirely and the backend falls back to the home it was
+    // LAUNCHED under, which need not be the profile this page displays. Send
+    // the concrete key the page names.
     await renderKeysSettings('tools')
 
-    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith(undefined))
+    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('default'))
   })
 
   it('lists tools and excludes settings / channel-managed credentials', async () => {
@@ -108,8 +114,6 @@ describe('KeysSettings', () => {
       FIRECRAWL_API_KEY: envVar('tool', { description: 'Crawl and extract websites.' })
     })
 
-    const { KeysSettings } = await import('./keys-settings')
-
     render(
       <MemoryRouter initialEntries={['/settings?tab=keys']}>
         <KeysSettings view="tools" />
@@ -132,16 +136,12 @@ describe('KeysSettings', () => {
     // changes, but the in-flight edit map was not reset with it. A value typed
     // while targeting profile-b survived the switch to profile-c, where the
     // still-live Save would persist it into the WRONG profile.
-    const { $settingsScopeOverride } = await import('@/store/settings-scope')
-
     $settingsScopeOverride.set('profile-b')
     getEnvVars.mockResolvedValue({
       WIDGET_API_KEY: envVar('tool', { description: 'Widget key.', is_set: true, redacted_value: '••••••' })
     })
 
     try {
-      const { KeysSettings } = await import('./keys-settings')
-
       const { container } = render(
         <MemoryRouter initialEntries={['/settings']}>
           <KeysSettings view="tools" />

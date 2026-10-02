@@ -17,13 +17,14 @@ from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error
 from tools import file_state
-from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
-from tools.file_tools_paths import (
-    _expand_tilde,
-    _resolve_path_for_task,
-    _terminal_env_type_for_task,
-    _uses_container_paths,
+from tools.binary_extensions import (
+    has_binary_extension,
+    has_opaque_document_extension,
+    is_pdf_path,
+    is_sqlite_sidecar,
 )
+from tools.file_tools_paths import (
+    _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
 from tools.file_tools_read_tracking import _has_full_write_baseline, _read_mtime_drifted
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
@@ -163,6 +164,10 @@ def _check_sensitive_path(
     else:
         normalized = os.path.normpath(_expand_tilde(filepath))
     candidates = (resolved, normalized)
+    if _ssh_path_escapes_home(candidates[0]) and _terminal_env_type_for_task(task_id) == "ssh":
+        return (
+            f"Refusing to write to {filepath}: it climbs above the SSH home and the remote "
+            "home could not be detected, so its target cannot be checked. Pass an absolute path.")
     if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"
@@ -230,7 +235,9 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
 
     normalized = os.path.normpath(_expand_tilde(filepath))
     if resolved_path is not None:
-        resolved = os.path.realpath(resolved_path)
+        # The caller already captured this backend identity. A host realpath
+        # would re-resolve it, including paths belonging to a remote namespace.
+        resolved = resolved_path
     else:
         try:
             resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
@@ -448,12 +455,61 @@ def _check_cross_profile_path(
     return get_container_mirror_warning(resolved, mirror_prefix=_get_container_mirror_prefix_for_task(task_id))
 
 
+def _target_regular_file_state(
+    filepath: str, task_id: str = "default", resolved_path: str | None = None
+) -> str:
+    """Is a REGULAR file at *filepath* present where the write will execute
+    (the task's backend, not the controller's disk — #122662)?
+
+    Returns ``"exists"``, ``"absent"`` or ``"unavailable"``. Host-backed envs
+    keep ``Path.is_file`` semantics; anything not proven absent is
+    ``"unavailable"`` and callers must fail closed.
+    """
+    from tools.file_tools import _file_ops_uses_host_paths, _get_file_ops
+    resolved = resolved_path
+    if resolved is None:
+        try:
+            resolved = str(_resolve_path_for_task(filepath, task_id))
+        except Exception:
+            resolved = None
+    try:
+        file_ops = _get_file_ops(task_id)
+    except Exception:
+        return "unavailable"
+    if _file_ops_uses_host_paths(file_ops):
+        # Host writes land on the resolved path, else today's HOST
+        # ``_expand_tilde`` fallback — probe exactly that string.
+        probe = _expand_tilde(filepath) if resolved is None else resolved
+        try:
+            return "exists" if Path(probe).is_file() else "absent"
+        except OSError:
+            return "absent"
+    try:
+        # Backend writes land on ``_expand_path(_resolved or path)``: the
+        # backend's own home for a tilde fallback, never the host's.
+        _size, status = file_ops._probe_regular_file(file_ops._expand_path(resolved or filepath))
+    except Exception:
+        return "unavailable"
+    if status in ("ok", "bad_size"):
+        # bad_size: ``[ -f ]`` succeeded, only ``wc`` was unparseable.
+        return "exists"
+    if status in ("missing", "not_regular"):
+        # not_regular: no REGULAR file at the path (dir/FIFO/dangling link) —
+        # the same answer Path.is_file gives on the host.
+        return "absent"
+    return "unavailable"
+
+
 def _check_binary_document_write(
     filepath: str, task_id: str = "default", resolved_path: str | None = None
 ) -> str | None:
     """Reject text-tool writes that would corrupt a binary document (read_file showed
-    EXTRACTED text, so the model may write it back). Opaque formats are always rejected;
-    .pdf only when OVERWRITING an existing file (raw PDF syntax is text-authorable).
+    EXTRACTED text, so the model may write it back). Opaque document formats and
+    SQLite sidecars (-wal/-shm/-journal) are always rejected; .pdf and every other
+    BINARY_EXTENSIONS suffix only when OVERWRITING an existing file (raw PDF syntax
+    is text-authorable and text fixtures named ``*.db`` exist). "Existing" is asked
+    of the filesystem the write will hit — the task's backend, via
+    ``_target_regular_file_state`` — never the controller's disk alone (#122662).
 
     ``read_file`` auto-extracts .docx/.xlsx/.pptx (and PDF, via anydoc) to readable text, so the model
     plausibly believes it holds the file's contents and tries to write the edited text back with
@@ -462,8 +518,8 @@ def _check_binary_document_write(
     """
     backend_path = resolved_path or filepath
     opaque_path = filepath if has_opaque_document_extension(filepath) else backend_path
+    ext = os.path.splitext(opaque_path)[1].lower()
     if has_opaque_document_extension(opaque_path):
-        ext = opaque_path[opaque_path.rfind("."):].lower()
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
@@ -471,37 +527,47 @@ def _check_binary_document_write(
             "bytes). Use the docx/xlsx/powerpoint skills or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
-    if is_pdf_path(filepath) or is_pdf_path(backend_path):
-        if _uses_container_paths(task_id):
-            try:
-                from tools.file_tools import _get_file_ops
-                probe = getattr(_get_file_ops(task_id), "is_regular_file", None)
-                if not callable(probe):
-                    raise RuntimeError("backend has no regular-file probe")
-                pdf_exists = bool(probe(backend_path))
-            except Exception:
-                return (
-                    f"Refusing to write PDF '{filepath}' because Hermes could not safely determine "
-                    "whether the backend target already exists. Retry after the SSH/container backend is healthy."
-                )
-        else:
-            try:
-                resolved = Path(resolved_path) if resolved_path is not None else Path(
-                    _resolve_path_for_task(filepath, task_id)
-                )
-            except Exception:
-                resolved = Path(_expand_tilde(filepath))
-            try:
-                pdf_exists = resolved.is_file()
-            except OSError:
-                pdf_exists = False
-        if pdf_exists:
+    # A -wal/-shm/-journal path is never a legitimate text target, even when
+    # no sidecar exists yet: a checkpointed db has none on disk, and a garbage
+    # WAL dropped next to a live database is picked up on the next open.
+    if is_sqlite_sidecar(filepath) or is_sqlite_sidecar(backend_path):
+        return (
+            f"Refusing to write plain text to binary SQLite sidecar '{filepath}' ({ext}). "
+            "A -wal/-shm/-journal file holds raw database pages that SQLite "
+            "reads on the next open; text there corrupts the database. Use the "
+            "sqlite3 CLI or a SQLite library via the terminal to modify the "
+            "database instead.")
+    # Overwriting an existing binary (PDF, image, archive, SQLite db, ...)
+    # with text destroys it — the model only ever saw extracted or mojibake
+    # text. Creating a NEW file with such an extension stays allowed: raw PDF
+    # syntax is text-authorable and text fixtures named ``*.db`` exist.
+    pdf = is_pdf_path(filepath) or is_pdf_path(backend_path)
+    if pdf or has_binary_extension(filepath) or has_binary_extension(backend_path):
+        state = _target_regular_file_state(filepath, task_id, resolved_path)
+        if state == "exists":
+            if pdf:
                 return (
                     f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
                     "read_file showed you EXTRACTED text, not the real bytes — writing "
                     "text back would destroy the document. Use the pdf skill or a PDF "
                     "library via the terminal to modify it. (Creating a NEW .pdf file "
                     "is allowed.)")
+            return (
+                f"Refusing to overwrite existing binary file '{filepath}' ({ext}) "
+                "with plain text — read_file showed you extracted or mojibake "
+                "text, not the real bytes, and writing text back would destroy "
+                "the file. Use a binary-aware tool via the terminal to modify it "
+                "(for SQLite databases, the sqlite3 CLI or a SQLite library). "
+                "(Creating a NEW file with this extension is allowed.)")
+        if state == "unavailable":
+            # Fail closed: absence not proven on the filesystem the write would
+            # hit, so proceeding could destroy a binary the guard never saw.
+            return (
+                f"Refusing to write to '{filepath}': could not establish whether "
+                "the target file already exists where this write would execute "
+                "(the terminal environment may be starting, unreachable, or was "
+                "removed). The file was NOT modified — retry once the environment "
+                "is reachable.")
     return None
 
 

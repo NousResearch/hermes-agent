@@ -14,8 +14,12 @@ import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import {
+  adoptGoneSessionDraft,
+  adoptNewSessionDraft,
   type ComposerAttachment,
   type ComposerDraftSyncMode,
+  freshDraftScope,
+  isFreshDraftScope,
   onComposerDraftSyncRequest,
   reloadPersistedDrafts,
   stashSessionDraft,
@@ -32,10 +36,12 @@ import {
   type QueueEditState
 } from '../composer-utils'
 import {
+  ackComposerInsert,
   type ComposerInsertMode,
   focusComposerInput,
   getActiveComposer,
   markActiveComposer,
+  onComposerDraftRequests,
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
   onComposerInsertRequest,
@@ -179,11 +185,11 @@ export function useComposerDraft({
   )
 
   const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode) => {
+    (text: string, mode: ComposerInsertMode): boolean => {
       const value = text.trim()
 
       if (!value) {
-        return
+        return false
       }
 
       // 'prefix' puts the value at the START of the draft — slash commands
@@ -193,13 +199,15 @@ export function useComposerDraft({
 
         paintDraft(`${value} ${rest}`.trimEnd())
 
-        return
+        return true
       }
 
       const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
       const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
 
       paintDraft(`${base}${sep}${value}`)
+
+      return true
     },
     [paintDraft]
   )
@@ -258,9 +266,11 @@ export function useComposerDraft({
       setFocusRequestId(id => id + 1)
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target: requested, text }) => {
+    const offInsert = onComposerInsertRequest(({ mode, target: requested, text, token }) => {
       if (requested === target) {
-        appendExternalText(text, mode)
+        // A tokened insert came from the plugin SDK — echo whether the text
+        // actually landed, so its promise never settles on a silent no-op.
+        ackComposerInsert(token, appendExternalText(text, mode))
       }
     })
 
@@ -272,6 +282,54 @@ export function useComposerDraft({
 
   const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
     stashSessionDraft(scope, text, attachments)
+
+  // Draft read/write bus (plugin SDK `host.composer`): answer for the sessions
+  // this composer owns — the runtime id, the queue/stored key (tiles run with
+  // sessionId = their stored id; the primary's queue key is the resolved
+  // stored id), so a plugin addressing either identity reaches this surface.
+  // Reads answer the live DOM text (the stash lags by the persist debounce);
+  // writes go through paintDraft — the app's own programmatic-draft path, so
+  // `@`-ref / `/` tokens hydrate as chips like official paste.
+  useEffect(() => {
+    if (inputDisabled) {
+      return undefined
+    }
+
+    return onComposerDraftRequests(
+      {
+        getIds: () => {
+          const ids = [sessionIdRef.current, activeQueueSessionKeyRef.current].filter((id): id is string => Boolean(id))
+
+          // A surface with no session yet IS the new-chat draft (the stash keys
+          // it by the fresh-draft key); once one opens, the new-chat draft
+          // belongs elsewhere.
+          return ids.length ? ids : [freshDraftScope()]
+        },
+        isActive: () => getActiveComposer() === target
+      },
+      {
+        read: () => {
+          const editor = editorRef.current
+
+          return editor ? composerPlainText(editor) : draftRef.current
+        },
+        write: text => {
+          const editor = editorRef.current
+
+          // Hidden keep-alive panes still answer: multi-session plugins route
+          // to a specific session's composer, and paintDraft never steals the
+          // caret of a non-visible surface.
+          if (!editor || !editor.isConnected) {
+            return false
+          }
+
+          paintDraft(text)
+
+          return true
+        }
+      }
+    )
+  }, [inputDisabled, paintDraft, target])
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     // Diagnostic breadcrumb for #59305-class reports: identifies WHAT kind of
@@ -453,6 +511,26 @@ export function useComposerDraft({
     // fire later would just clobber with an older snapshot.
     window.clearTimeout(draftPersistTimerRef.current)
     pendingDraftPersistRef.current = null
+
+    // A new chat writes to its own pre-session bucket (the per-lifecycle fresh
+    // key) until its stored id arrives; the assigning site announces that id
+    // (store/composer.ts). Move the bucket at this handoff — after the outgoing
+    // cleanup stashed the live editor text under it, before the incoming scope
+    // is restored — so the text the user kept typing follows the chat instead
+    // of vanishing. Keyed on the scope alone: the runtime id can land a resume
+    // later than the route flips the scope, so it is not a usable signal here.
+    if ((isFreshDraftScope(draftScopeRef.current) || !draftScopeRef.current) && activeQueueSessionKey) {
+      adoptNewSessionDraft(activeQueueSessionKey)
+    } else if (!activeQueueSessionKey) {
+      // The reverse handoff: a session the user was typing into turned out
+      // to be gone and the window dropped to a fresh draft (#111868). The
+      // outgoing composer's cleanup has already stashed the live text under
+      // the dead key — whether that was this instance's previous scope or an
+      // unmounted one's — so move it into the fresh draft when the gone
+      // verdict announced it. No announcement, no-op.
+      adoptGoneSessionDraft()
+    }
+
     draftScopeRef.current = activeQueueSessionKey
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
@@ -536,6 +614,7 @@ export function useComposerDraft({
   return {
     activeQueueSessionKeyRef,
     clearDraft,
+    draftScopeRef,
     draftRef,
     editorRef,
     focusInput,

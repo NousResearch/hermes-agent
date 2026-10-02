@@ -21,7 +21,8 @@ class RecordingOperations:
         self.env = type(
             "SyntheticEnvironment",
             (),
-            {"cwd": cwd, "_remote_home": remote_home},
+            {"cwd": cwd, "_remote_home": remote_home,
+             "_remote_home_detected": remote_home is not None},
         )()
         self.cwd = cwd
         self.writes: list[str] = []
@@ -68,6 +69,10 @@ class MetadataPatchOperations(RecordingOperations):
 @pytest.fixture
 def mutation_harness(monkeypatch):
     monkeypatch.setattr(file_tools, "_terminal_env_type_for_task", lambda _task: "local")
+    monkeypatch.setattr(
+        file_tools, "_resolve_entry_for_task",
+        lambda path, _task: f"/backend/{path}",
+    )
     monkeypatch.setattr(file_tools, "_check_cross_profile_path", lambda *args: None)
     monkeypatch.setattr(file_tools, "_path_resolution_warning", lambda *args: None)
     monkeypatch.setattr(file_tools, "_mark_verification_stale", lambda *args, **kwargs: None)
@@ -370,9 +375,10 @@ def test_v4a_result_metadata_uses_backend_identities(
 
     payload = json.loads(file_tools.patch_tool(mode="patch", patch=patch))
 
-    assert payload["files_modified"] == [
-        "/backend/old.txt -> /backend/moved.txt"
-    ]
+    assert payload["files_modified"] == (
+        ["/backend/old.txt -> /backend/moved.txt"] if partial_failure else
+        ["/backend/add.txt", "/backend/delete.txt", "/backend/old.txt", "/backend/moved.txt"]
+    )
     assert payload["files_created"] == ["/backend/add.txt"]
     assert payload["files_deleted"] == ["/backend/delete.txt"]
     assert list(payload["lint"]) == ["/backend/add.txt"]
@@ -387,8 +393,8 @@ def test_legacy_v4a_move_rewrite_accepts_parser_whitespace(separator):
         "*** End Patch\r\n"
     )
     targets = {
-        "old.txt": ResolvedMutationTarget("old.txt", "/backend/old.txt"),
-        "moved.txt": ResolvedMutationTarget("moved.txt", "/backend/moved.txt"),
+        "old.txt": ResolvedMutationTarget("old.txt", "/backend/old.txt", "/backend/old.txt"),
+        "moved.txt": ResolvedMutationTarget("moved.txt", "/backend/moved.txt", "/backend/moved.txt"),
     }
 
     rewritten = file_tools._rewrite_v4a_patch_with_resolved_targets(
@@ -402,6 +408,13 @@ def test_v4a_captures_each_distinct_target_once(monkeypatch, mutation_harness):
     operations = RecordingOperations()
     resolver_calls: list[str] = []
     policy_targets: list[str] = []
+    entry_calls: list[str] = []
+
+    def entry(path: str, task_id: str):
+        entry_calls.append(path)
+        return f"/backend/{path}"
+
+    monkeypatch.setattr(file_tools, "_resolve_entry_for_task", entry)
 
     def resolve(path: str, task_id: str):
         resolver_calls.append(path)
@@ -436,9 +449,12 @@ def test_v4a_captures_each_distinct_target_once(monkeypatch, mutation_harness):
         "moved.txt",
     ]
     assert operations.v4a_targets == {
-        path: ResolvedMutationTarget(path, f"/backend/{path}")
+        path: ResolvedMutationTarget(
+            path, f"/backend/{path}", f"/backend/{path}" if path in entry_calls else None
+        )
         for path in resolver_calls
     }
+    assert entry_calls == ["delete.txt", "old.txt", "moved.txt"]
     assert policy_targets == [f"/backend/{path}" for path in resolver_calls]
 
 
@@ -520,3 +536,133 @@ def test_historical_patch_v4a_one_argument_interface_still_works():
     assert operations.reads == ["display.txt", "display.txt"]
     assert operations.writes == ["display.txt"]
     assert operations.pre_contents == ["old\n"]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("operation", ["delete", "move"])
+def test_v4a_captured_entry_survives_parent_symlink_retarget(
+    tmp_path, monkeypatch, mutation_harness, operation
+):
+    from tools.environments.local import LocalEnvironment
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "note.txt").write_text("first", encoding="utf-8")
+    (second / "note.txt").write_text("second", encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(first, target_is_directory=True)
+    monkeypatch.setattr(file_tools, "_resolve_entry_for_task", file_tools_paths._resolve_entry_for_task)
+    monkeypatch.setattr(file_tools, "_authoritative_workspace_root", lambda _task: str(tmp_path))
+    operations = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: operations)
+    changed = False
+
+    def policy(*args):
+        nonlocal changed
+        if not changed:
+            alias.unlink()
+            alias.symlink_to(second, target_is_directory=True)
+            changed = True
+        return None
+
+    monkeypatch.setattr(file_tools, "_check_sensitive_path", policy)
+    header = ("*** Delete File: alias/note.txt" if operation == "delete" else
+              "*** Move File: alias/note.txt -> alias/moved.txt")
+    payload = json.loads(file_tools.patch_tool(
+        mode="patch", patch=f"*** Begin Patch\n{header}\n*** End Patch\n"
+    ))
+
+    assert payload.get("success"), payload
+    assert not (first / "note.txt").exists()
+    assert (second / "note.txt").read_text(encoding="utf-8") == "second"
+    assert str(first / "note.txt") in payload["files_modified"]
+    if operation == "move":
+        assert (first / "moved.txt").read_text(encoding="utf-8") == "first"
+        assert not (second / "moved.txt").exists()
+
+
+@pytest.mark.parametrize("path", ["~/note.txt", "~other/note.txt"])
+def test_unresolved_ssh_home_refuses_mutation(monkeypatch, mutation_harness, path):
+    operations = RecordingOperations()
+    monkeypatch.setattr(file_tools, "_terminal_env_type_for_task", lambda _task: "ssh")
+    monkeypatch.setattr(file_tools_paths, "_terminal_env_type_for_task", lambda _task: "ssh")
+    monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: operations)
+    monkeypatch.setattr(file_tools_paths, "_ssh_remote_home", lambda _task: None)
+
+    payload = json.loads(file_tools.write_file_tool(path, "must not write"))
+
+    assert payload["error"] == "Unable to resolve file mutation target"
+    assert operations.writes == []
+
+
+def test_partial_update_and_move_reports_content_and_entry_identities(
+    monkeypatch, mutation_harness
+):
+    operations = MetadataPatchOperations(PatchResult(
+        error="synthetic partial failure",
+        files_modified=["same.txt", "same.txt -> moved.txt"],
+        lint={"same.txt": {"status": "passed"}},
+    ))
+    monkeypatch.setattr(file_tools, "_resolve_path_for_task", lambda path, _task: f"/content/{path}")
+    monkeypatch.setattr(file_tools, "_resolve_entry_for_task", lambda path, _task: f"/entries/{path}")
+    monkeypatch.setattr(file_tools, "_check_sensitive_path", lambda *args: None)
+    monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: operations)
+    patch = """*** Begin Patch
+*** Update File: same.txt
+@@
+-old
++new
+*** Move File: same.txt -> moved.txt
+*** End Patch"""
+
+    payload = json.loads(file_tools.patch_tool(mode="patch", patch=patch))
+
+    assert payload["error"] == "synthetic partial failure"
+    assert payload["files_modified"] == [
+        "/content/same.txt", "/entries/same.txt -> /entries/moved.txt"
+    ]
+    assert list(payload["lint"]) == ["/content/same.txt"]
+
+
+@pytest.mark.parametrize("name,expected", [("AGENTS.md", "AGENTS.md"), ("ordinary.txt", None)])
+def test_protected_guard_never_resolves_an_explicit_identity(monkeypatch, name, expected):
+    monkeypatch.setattr(file_tools_write_guards, "_hermes_exempt_homes", lambda: ())
+
+    def resolve_again(*args, **kwargs):
+        pytest.fail("an explicit backend identity must not be resolved again")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(file_tools_write_guards.os.path, "realpath", resolve_again)
+        scoped.setattr(file_tools_write_guards, "_resolve_path_for_task", resolve_again)
+        actual = file_tools_write_guards._protected_instruction_reason(
+            "display.txt", task_id="remote-task", enabled=True, extra_patterns=[],
+            resolved_path=f"/remote/work/{name}",
+        )
+
+    assert actual == expected
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("name,expected", [("AGENTS.md", "AGENTS.md"), ("ordinary.txt", None)])
+def test_remote_protected_identity_ignores_a_controller_symlink(
+    tmp_path, monkeypatch, name, expected
+):
+    # A remote path's spelling can happen to exist on the controller with a
+    # symlink whose target has the opposite protection classification.
+    target_name = "ordinary.txt" if name == "AGENTS.md" else "AGENTS.md"
+    target = tmp_path / "controller" / target_name
+    target.parent.mkdir()
+    target.write_text("controller-only content", encoding="utf-8")
+    captured = tmp_path / "remote" / name
+    captured.parent.mkdir()
+    captured.symlink_to(target)
+    monkeypatch.setattr(file_tools_write_guards, "_hermes_exempt_homes", lambda: ())
+
+    actual = file_tools_write_guards._protected_instruction_reason(
+        "display.txt", task_id="remote-task", enabled=True, extra_patterns=[],
+        resolved_path=str(captured),
+    )
+
+    assert actual == expected
+    assert target.read_text(encoding="utf-8") == "controller-only content"

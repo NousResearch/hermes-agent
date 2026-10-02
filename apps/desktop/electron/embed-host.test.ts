@@ -32,7 +32,16 @@ test('wraps the player with an origin YouTube can match', () => {
 })
 
 test('serves nothing but a well-formed video id', () => {
-  for (const path of ['/', '/youtube/', '/youtube/short', '/youtube/M7lc1UVf-VE/x', '/youtube/"><script>x', '/other']) {
+  for (const path of [
+    '/',
+    '/youtube/',
+    '/youtube/short',
+    '/youtube/M7lc1UVf-VE/x',
+    '/youtube/"><script>x',
+    '/other',
+    '//',
+    '//['
+  ]) {
     assert.equal(youtubeWrapperFor(path, ORIGIN), null, path)
   }
 })
@@ -62,4 +71,5 @@ test('the live host serves the wrapper locked down, and only to its own Host', a
 
   assert.equal((await get(host.origin, '/youtube/nope')).status, 404)
   assert.equal((await get(host.origin, '/youtube/M7lc1UVf-VE', 'evil.test')).status, 404)
+  assert.equal((await get(host.origin, '//[')).status, 404)
 })

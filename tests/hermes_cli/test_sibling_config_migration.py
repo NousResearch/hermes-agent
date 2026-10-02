@@ -117,7 +117,30 @@ def test_one_broken_profile_warns_and_does_not_block_others(monkeypatch, tmp_pat
     assert [m[0] for m in migrated] == ["healthy"]
     output = capsys.readouterr().out
     assert "Profile 'broken'" in output
-    assert "hermes -p broken config migrate" in output
+    # A parse error fails the same way on `config migrate`; the hint must be one that works.
+    assert "hermes -p broken config edit" in output
+
+
+def test_sibling_migration_names_the_keys_it_removed(monkeypatch, tmp_path):
+    """An unattended update must not remove a sibling's settings silently: every step that drops
+    or moves a key leaves a note for that profile's update output."""
+    active = _write_profile(tmp_path / "profiles", "active", _latest_version())
+    work = _write_profile(tmp_path / "profiles", "work", 13)
+    (work / "config.yaml").write_text(yaml.safe_dump({
+        "_config_version": 13,
+        "stt": {"model": "whisper-1"},  # 13 -> 14 removes it
+        "compression": {"summary_model": "gpt-4o-mini"},  # 16 -> 17 removes it
+        "delegation": {"max_concurrent_children": 8, "max_async_children": 2},  # 32 -> 33
+    }), encoding="utf-8")
+    _setup(monkeypatch, tmp_path, active)
+
+    notes: dict[str, list[str]] = {}
+    update_cmd._migrate_sibling_profile_configs(notes=notes)
+
+    printed = "\n".join(notes.get("work", []))
+    assert "stt.model" in printed
+    assert "compression.summary_" in printed
+    assert "delegation.max_async_children" in printed
 
 
 def test_override_is_reset_after_run(monkeypatch, tmp_path):

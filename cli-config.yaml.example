@@ -642,7 +642,7 @@ tool_loop_guardrails:
   loop_caps:
     max_web_searches: 50
     max_subagents: 50
-    # Optional per-turn cap for file discovery. 0 keeps it disabled.
+    # Optional per-turn cap for clear discovery calls (file reads/searches and narrow read-only HTTP probes). 0 disables it.
     max_discovery_calls: 0
 
 # =============================================================================

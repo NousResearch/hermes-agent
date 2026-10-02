@@ -167,11 +167,18 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
     network = [(args, kwargs) for args, kwargs in calls if git_subcommand(args) in {"fetch", "pull", "push", "merge"}]
     assert [git_subcommand(args) for args, _ in network] == ["fetch", "fetch", "merge", "push"]
     assert network[2][0][-1] == upstream  # the counted commit, not a name a local branch can shadow
-    for args, kwargs in network:
+    for index, (args, kwargs) in enumerate(network):
         assert kwargs["stdin"] is subprocess.DEVNULL, args
         env = kwargs["env"]
         assert env["GIT_TERMINAL_PROMPT"] == "0", args
         assert env["GCM_INTERACTIVE"] == "Never", args
         assert env["GIT_ASKPASS"] == "fixture-askpass", args
-        assert env["GIT_CONFIG_COUNT"] == "1", args
+        if index in (0, 3):
+            assert env["GIT_CONFIG_COUNT"] == "3", args
+            assert env["GIT_CONFIG_KEY_1"] == "http.lowSpeedLimit", args
+            assert env["GIT_CONFIG_VALUE_1"] == "1", args
+            assert env["GIT_CONFIG_KEY_2"] == "http.lowSpeedTime", args
+            assert env["GIT_CONFIG_VALUE_2"] == "60", args
+        else:
+            assert env["GIT_CONFIG_COUNT"] == "1", args
         assert env["GIT_CONFIG_VALUE_0"] == "fixture-helper", args

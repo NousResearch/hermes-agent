@@ -8,6 +8,14 @@ import pytest
 import agent.skill_utils as su
 
 
+@pytest.fixture(autouse=True)
+def _legacy_flat_skills_index(monkeypatch):
+    """The flat skills index is retired by default (card t_cc3c6951). These tests cover the
+    renderer/snapshot path the legacy index uses, which now renders only behind the escape hatch;
+    the dark default is guarded by tests/agent/test_skills_index_deprecated.py."""
+    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
+
+
 @pytest.fixture
 def project_env(tmp_path, monkeypatch):
     """A temp HERMES_HOME + a git-marked project with skills in both subdirs."""

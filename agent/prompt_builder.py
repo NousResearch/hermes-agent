@@ -1364,13 +1364,84 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
         skills_by_category.setdefault(category, []).append((fm, desc))
 
 
+# --------------------------------------------------------------------------------------------- #
+# DEPRECATED 2026-09-30 (card t_cc3c6951, operator ruling): the FLAT SKILLS INDEX is RETIRED.
+#
+# What it was: every visible skill rendered as one `- name: one-line description` line, under a
+# heading that told the agent to SCAN the list and load whatever looked relevant. It was a
+# keyword/description- and search-shaped routing surface.
+#
+# Why it went: it duplicated the curated hierarchical surface every lane's SOUL already carries
+# (`## Skills — your curated surface`, grouped yoyodine / domain / role, loaded by name), it routed
+# lanes to skills their own shelf does not carry, and it charged every call on every lane for a
+# list most lanes never searched. The curated shelf is the routing surface now.
+#
+# What did NOT go: nothing is disabled. `skills_list()` still enumerates the same tree on demand
+# (a tool call the lane chooses to pay for, instead of a per-call prompt tax), `skill_view(name)`
+# still loads any skill by name, and a profile with no curated surface can restore the legacy
+# index with `skills.index: flat` in its config.yaml or `HERMES_SKILLS_INDEX=flat`.
+#
+# ENFORCEMENT: tests/agent/test_skills_index_deprecated.py fails if an index line is rendered
+# again. Do not restore the index by editing this file back — the guard is the point of the change.
+SKILLS_INDEX_DEPRECATED_ON = "2026-09-30"
+SKILLS_INDEX_REPLACEMENT = "## Skills — your curated surface"
+
+SKILLS_INDEX_DEPRECATION_BANNER = (
+    "## Skills\n"
+    f"DEPRECATED {SKILLS_INDEX_DEPRECATED_ON} — the flat skills index is RETIRED. It listed every "
+    "visible skill as `name: description`; that list is gone. Your routing surface is the curated "
+    f"hierarchical shelf this profile's SOUL carries (`{SKILLS_INDEX_REPLACEMENT}`, grouped "
+    "yoyodine / domain / role): load those skills BY NAME with skill_view(name). A skill that is "
+    "not named there is not on your shelf — route the need to the majordomo rather than searching a "
+    "list. `skills_list()` still enumerates the tree if you explicitly need to look."
+)
+
+
+def skills_index_dark() -> bool:
+    """True when the flat skills index is suppressed (the DEFAULT).
+
+    The operator ruling is that the curated hierarchy wins, so dark is the default and re-enabling
+    the index is an explicit, per-profile act:
+
+      * ``HERMES_SKILLS_INDEX=flat`` (env override, wins over config), or
+      * ``skills.index: flat`` in the active profile's ``config.yaml``.
+
+    Anything else — unset, unreadable config, ``dark``/``off``/``false`` — is dark. A profile with
+    no curated SOUL surface is the only legitimate caller of the hatch: every lane carries one.
+    """
+    env = (os.environ.get("HERMES_SKILLS_INDEX") or "").strip().lower()
+    if env in ("flat", "legacy", "on", "1", "true"):
+        return False
+    if env in ("dark", "deprecated", "off", "0", "false"):
+        return True
+    node: Any = None
+    try:
+        node = _config_readonly("skills.index")
+        for part in ("skills", "index"):
+            node = node.get(part) if isinstance(node, dict) else None
+            if node is None:
+                break
+    except Exception:
+        node = None
+    if node is True or (isinstance(node, str) and node.strip().lower() in ("flat", "legacy", "on", "true")):
+        return False
+    return True
+
+
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
 ) -> str:
-    """Render the ## Skills block; "" when there is nothing to list."""
+    """Render the ## Skills block; "" when there is nothing to list.
+
+    DEPRECATED 2026-09-30: the flat index is retired by default and this function returns the
+    deprecation banner instead of the per-skill index lines (see the block above). The index-line
+    rendering below stays reachable only through the explicit escape hatch.
+    """
     if not skills_by_category:
         return ""
+    if skills_index_dark():
+        return SKILLS_INDEX_DEPRECATION_BANNER
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
     demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))

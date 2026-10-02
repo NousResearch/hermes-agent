@@ -11,9 +11,18 @@ Covers the design agreed 2026-07-23 (bare-name first-class org skills):
 
 import json
 
+import pytest
 
 from agent import skill_utils as sku
 from agent.prompt_builder import _build_snapshot_entry
+
+
+@pytest.fixture(autouse=True)
+def _legacy_flat_skills_index(monkeypatch):
+    """The flat skills index is retired by default (card t_cc3c6951); its listing/provenance
+    renderer now runs only behind the escape hatch. The dark default is guarded by
+    tests/agent/test_skills_index_deprecated.py."""
+    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
 
 
 def _mk_skill(root, rel, name=None, body="# body\n"):

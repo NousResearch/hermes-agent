@@ -761,7 +761,16 @@ def resolve_skill_config_values(config_vars: List[Dict[str, Any]]) -> Dict[str, 
     return resolved
 
 
-SKILL_PROMPT_DESC_LIMIT = 60
+# DEPRECATED 2026-09-30 — the flat skills index is RETIRED (card t_cc3c6951, operator ruling).
+# This constant is the budget the PROMPT INDEX truncated an index line at. The index itself no
+# longer renders (agent/prompt_builder.py::_render_skills_index is dark by default), so nothing
+# here gates ROUTING any more. It is kept because the same one-line description is still what
+# `skills_list()` and `skill_view()` return and what the create path (tools/skill_manager_tool.py)
+# and tools/skill_linter.py measure — a description is still the skill's own summary, it is just
+# no longer the thing a lane scans to pick a skill.
+# Replacement for routing: the curated hierarchical surface each lane's SOUL carries
+# (`## Skills — your curated surface`, grouped yoyodine / domain / role), loaded BY NAME.
+SKILL_PROMPT_DESC_LIMIT = 60  # legacy index-line budget; no longer a routing gate
 
 
 def _normalize_skill_description(frontmatter: Dict[str, Any]) -> str:

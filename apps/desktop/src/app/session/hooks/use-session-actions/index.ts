@@ -35,6 +35,7 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
+import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
   $gateway,
@@ -45,6 +46,7 @@ import {
   retainGatewayForAgent
 } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { clearSessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import {
@@ -3290,8 +3292,6 @@ export function useSessionActions({
         // back, and a rolled-back row must keep its watermark/marker.
         forgetSessionUnread(removedIds, profile)
         clearQueuedPrompts(storedSessionId)
-        clearSessionSubagents(storedSessionId)
-        clearSessionTodos(storedSessionId)
         // The journaled in-flight tail holds this session's prompt and tool
         // calls in localStorage; a deleted session must not leave that copy
         // behind to age out on its own. Purge after the RPC lands (same
@@ -3303,8 +3303,6 @@ export function useSessionActions({
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
           clearSessionControl(closingRuntimeId)
-          clearSessionSubagents(closingRuntimeId)
-          clearSessionTodos(closingRuntimeId)
         }
 
         // A tiled copy of this session must not outlive it: collapse the pane
@@ -3317,12 +3315,18 @@ export function useSessionActions({
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
-          // Subagent/todo stores key on the gateway event's session_id, i.e.
-          // the runtime id. When the deleted row is selected, closingRuntimeId
-          // is the foreground runtime, which can differ from the stored→runtime
-          // mapping (cached/tiled runtime), so clear the mapped id as well.
-          clearSessionSubagents(tiledRuntimeId)
-          clearSessionTodos(tiledRuntimeId)
+        }
+
+        // Live per-session stores (the same four the stop paths clear) key on
+        // the gateway event's session_id, i.e. the runtime id. When the deleted
+        // row is selected, closingRuntimeId is the foreground runtime, which can
+        // differ from the stored→runtime mapping (cached/tiled runtime), so
+        // clear the stored id and both runtime ids — once per distinct id.
+        for (const sid of new Set([storedSessionId, closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
+          clearSessionSubagents(sid)
+          clearSessionTodos(sid)
+          clearSessionGoal(sid)
+          resetSessionBackground(sid)
         }
       } catch (err) {
         if (listed?.session) {

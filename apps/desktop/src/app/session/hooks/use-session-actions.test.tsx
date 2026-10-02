@@ -24,12 +24,14 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { $backgroundStatusBySession, type ComposerStatusItem } from '@/store/composer-status'
 import {
   activeGatewayConnectionId,
   requestGatewayForAgent,
   requestGatewayForProfile,
   retainGatewayForAgent
 } from '@/store/gateway'
+import { $goalsBySession, type SessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $notifications, dismissNotification } from '@/store/notifications'
 import {
@@ -554,22 +556,29 @@ describe('connection-qualified session deletion', () => {
     expect($sessions.get().some(session => session.id === 'background-session')).toBe(true)
   })
 
-  describe('subagent and todo cleanup', () => {
+  describe('subagent, todo, goal, and background cleanup', () => {
     // Stored id, foreground runtime, and the stored→runtime mapping are all
-    // distinct: subagent/todo stores key on the event's runtime session_id.
+    // distinct: these live stores key on the event's runtime session_id.
     const doomedIds = ['stored-doomed', 'runtime-active', 'runtime-mapped']
 
     const seedLiveState = () => {
       const subagents: Record<string, SubagentProgress[]> = {}
       const todos: Record<string, { content: string; id: string; status: 'pending' }[]> = {}
+      const goals: Record<string, SessionGoal> = {}
+      const background: Record<string, ComposerStatusItem[]> = {}
 
       for (const sid of [...doomedIds, 'runtime-other']) {
         subagents[sid] = [{ id: `sub-${sid}` } as SubagentProgress]
         todos[sid] = [{ content: 'todo', id: `todo-${sid}`, status: 'pending' }]
+        goals[sid] = { status: 'active', title: 'goal', updatedAt: 1 }
+        // Finished (not running) so resetSessionBackground has nothing to kill.
+        background[sid] = [{ id: `proc-${sid}`, state: 'done', title: 'proc', type: 'background' }]
       }
 
       $subagentsBySession.set(subagents)
       $todosBySession.set(todos)
+      $goalsBySession.set(goals)
+      $backgroundStatusBySession.set(background)
     }
 
     const renderDeleting = async () => {
@@ -597,9 +606,11 @@ describe('connection-qualified session deletion', () => {
     afterEach(() => {
       $subagentsBySession.set({})
       $todosBySession.set({})
+      $goalsBySession.set({})
+      $backgroundStatusBySession.set({})
     })
 
-    it('clears subagents and todos under the stored and every runtime id once the delete lands', async () => {
+    it('clears subagents, todos, goals, and background status under the stored and every runtime id once the delete lands', async () => {
       seedLiveState()
       vi.mocked(deleteSession).mockResolvedValue({ ok: true })
 
@@ -607,9 +618,11 @@ describe('connection-qualified session deletion', () => {
 
       expect(Object.keys($subagentsBySession.get())).toEqual(['runtime-other'])
       expect(Object.keys($todosBySession.get())).toEqual(['runtime-other'])
+      expect(Object.keys($goalsBySession.get())).toEqual(['runtime-other'])
+      expect(Object.keys($backgroundStatusBySession.get())).toEqual(['runtime-other'])
     })
 
-    it('keeps subagents and todos when the delete RPC fails and the row is restored', async () => {
+    it('keeps subagents, todos, goals, and background status when the delete RPC fails and the row is restored', async () => {
       seedLiveState()
       vi.mocked(deleteSession).mockRejectedValue(new Error('delete failed'))
 
@@ -618,6 +631,8 @@ describe('connection-qualified session deletion', () => {
       expect($sessions.get().some(session => session.id === 'stored-doomed')).toBe(true)
       expect(Object.keys($subagentsBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
       expect(Object.keys($todosBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+      expect(Object.keys($goalsBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+      expect(Object.keys($backgroundStatusBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
     })
   })
 })

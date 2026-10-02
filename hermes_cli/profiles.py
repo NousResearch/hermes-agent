@@ -1171,8 +1171,9 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
 
 # Files a clone edits in place after copying. A ``--clone-all`` copy preserves symlinks
 # (``symlinks=True``), so a symlinked source ``.env`` would otherwise be edited THROUGH the link and
-# the channel stripping would mutate the SOURCE profile. These are materialized as real files first.
-_CLONE_MATERIALIZE = (".env", "config.yaml", "auth.json", "SOUL.md")
+# the channel stripping would mutate the SOURCE profile (likewise ``profile.yaml``: the role drop and
+# ``--description``). These are materialized as real files first.
+_CLONE_MATERIALIZE = (".env", "config.yaml", "auth.json", "SOUL.md", "profile.yaml")
 
 
 def _materialize_symlinked_files(profile_dir: Path) -> List[str]:
@@ -1238,11 +1239,11 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files,
     the backend-assigned role, and cloned single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
-    drop_profile_role(profile_dir)
     materialized = _materialize_symlinked_files(profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
                     canon, materialized, source_dir)
+    drop_profile_role(profile_dir)
     # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -2179,6 +2180,32 @@ def _default_export_ignore(root_dir: Path):
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
 _EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
 
+
+# Credential stores the file tools never reach but an archive would, as their owners lay them out.
+# ``platforms/`` is the adapters' runtime root (never in the default-profile allow-list): pairing
+# approvals (``gateway/pairing.py::_default_pairing_dir``), the WhatsApp session, the Matrix E2EE
+# store; the pre-``platforms/`` legacy locations are still read when populated (``get_hermes_dir``).
+_EXPORT_CREDENTIAL_STORES = (
+    "platforms", "pairing", "whatsapp/session", "matrix/store",
+    # Chromium user-data dirs holding Cookies / Login Data: the ``hermes browser connect`` CDP
+    # profile (``browser_connect.chrome_debug_data_dir``), the live CDP profiles and Browser Use
+    # CLI dir that ``hermes_cli/backup.py`` keeps out of archives.
+    "chrome-debug", "browser-profiles", "browser_profiles",
+    # Byte-exact config.yaml copies whose timestamp suffix escapes the redact pass (inline keys ship
+    # verbatim), and the 1Password bootstrap token.
+    "backups", ".op.env",
+)
+
+
+def _export_credential_root_paths() -> frozenset[str]:
+    """Profile-root-relative POSIX paths of credential stores a named-profile export drops: all the
+    file tools read-deny as credentials (``agent.file_safety``) plus ``_EXPORT_CREDENTIAL_STORES``.
+    Root-scoped: a skill's own ``backups/`` is user data."""
+    from agent.file_safety import _CREDENTIAL_FILE_NAMES, _READ_DENIED_DIRS
+    return frozenset({*(Path(name).as_posix() for name in _CREDENTIAL_FILE_NAMES),
+                      *(subdir for subdir, *_ in _READ_DENIED_DIRS),
+                      *_EXPORT_CREDENTIAL_STORES})
+
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
     ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
@@ -2234,9 +2261,13 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     # The default profile IS ~/.hermes (dir name ".hermes"), so both paths stage a filtered
     # copy under a temp dir named after the canonical id: root allow-list for default,
     # credential exclusion for named profiles.
+    credential_root_paths = _export_credential_root_paths()
+
     def _ignore_credentials(directory: str, contents: list) -> set:
         ignored = _non_exportable_entries(directory, contents)
         ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        rel = Path(directory).relative_to(profile_dir)
+        ignored.update(entry for entry in contents if (rel / entry).as_posix() in credential_root_paths)
         if Path(directory) == profile_dir:
             ignored |= PM_RUNTIME_ROOT_DIRS & set(contents)
         return ignored
@@ -2246,7 +2277,16 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         staged = Path(tmpdir) / canon
         shutil.copytree(profile_dir, staged, symlinks=True, ignore=ignore)
         for rel, content in (extra_files or {}).items():
-            target = staged.joinpath(*normalize_archive_parts(rel))
+            parts = normalize_archive_parts(rel)
+            # The staged copy keeps the profile's symlinks: writing through a staged link (the file
+            # itself or a parent dir) would mutate its target — the source profile, or wherever the
+            # link points. Replace the link so the extra file lands in staging only.
+            for depth in range(1, len(parts) + 1):
+                node = staged.joinpath(*parts[:depth])
+                if node.is_symlink():
+                    node.unlink()
+                    break
+            target = staged.joinpath(*parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         _scrub_export_secrets(staged)

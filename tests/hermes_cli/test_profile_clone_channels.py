@@ -162,6 +162,22 @@ def test_clone_all_never_writes_through_a_symlinked_source_env(home, tmp_path):
     assert "TELEGRAM_BOT_TOKEN" not in (profile_dir / ".env").read_text(encoding="utf-8")
 
 
+def test_clone_all_never_writes_profile_meta_through_a_symlinked_source_profile_yaml(home, tmp_path):
+    """The clone's own ``profile.yaml`` edits (dropping the backend-assigned role, ``--description``)
+    land in the clone only: a symlinked source ``profile.yaml`` keeps its role and description."""
+    from hermes_cli.profiles import read_profile_meta
+    shared_text = "description: the source\nrole: setup\n"
+    shared = tmp_path / "shared-profile.yaml"
+    shared.write_text(shared_text, encoding="utf-8")
+    (home / "profile.yaml").symlink_to(shared)
+
+    profile_dir = create_profile("full", clone_all=True, no_alias=True, description="the clone")
+
+    assert shared.read_text(encoding="utf-8") == shared_text
+    clone_meta = read_profile_meta(profile_dir)
+    assert (clone_meta["role"], clone_meta["description"]) == (None, "the clone")
+
+
 def test_clone_is_published_atomically_after_stripping(home, monkeypatch):
     """The multiplexer enumerates ``profiles/`` while a clone is built; the final directory must not
     exist (and no listable profile may appear) until the channel strip has run."""

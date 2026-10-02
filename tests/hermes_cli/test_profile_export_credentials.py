@@ -83,12 +83,13 @@ class TestCredentialExclusion:
         assert not any("auth.json" in n for n in names), "auth.json must NOT be in export"
         assert not any(".env" in n for n in names), ".env must NOT be in export"
 
-    def test_named_export_ships_no_credential_store_or_copy_of_one(self, tmp_path, monkeypatch):
+    def test_export_ships_no_credential_store_or_copy_of_one(self, tmp_path, monkeypatch):
         """No credential store (any case spelling) and no copy Hermes' own writers leave of one
         (pre-update zip, update snapshot, config backup, migration .bak, corrupt auth.json) reaches a
         named-profile export. .op.env, npmrc, home/ CLI stores and the .bak copies have no suffix the
         scrub edits, so exclusion is their only guard; a hand-named config copy is the user's and
-        ships scrubbed."""
+        ships scrubbed. A dotenv file nested in skills/ is dropped by the named AND the default
+        export (the default one walks its allow-listed roots whole)."""
         from hermes_cli.auth import _load_auth_store
         from hermes_cli.backup import create_pre_update_backup, create_quick_snapshot
         from hermes_cli.config_backups import backup_config
@@ -102,6 +103,11 @@ class TestCredentialExclusion:
         (profile_dir / "config.yaml.bak-my-note").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS").mkdir(exist_ok=True)
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS" / "upper.json").write_text("fake-credential")
+        skill = profile_dir / "skills" / "demo"
+        skill.mkdir(parents=True)
+        nested_env = {f"skills/demo/{n}" for n in (".env", ".ENV.local", ".env.production", ".envrc")}
+        for rel in nested_env | {"skills/demo/.env.example", "skills/demo/SKILL.md"}:
+            (profile_dir / rel).write_text("API_KEY=fake-credential\n")
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         copies = [
             create_pre_update_backup(hermes_home=profile_dir),
@@ -118,14 +124,21 @@ class TestCredentialExclusion:
             members = {m.name: m for m in tf.getmembers()}
             note = tf.extractfile("testprofile/config.yaml.bak-my-note").read().decode()
 
-        assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= set(members)
+        assert {"testprofile/config.yaml", "testprofile/platforms/keep.json",
+                "testprofile/skills/demo/.env.example"} <= set(members)
         assert _LEAKED_KEY not in note
-        rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json",
+        rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json", *nested_env,
                 *(c.relative_to(profile_dir).as_posix() for c in copies)}
         folded = {n.casefold() for n in members}
         leaked = sorted(r for r in rels if any(
             n == f"testprofile/{r}".casefold() or n.startswith(f"testprofile/{r}/".casefold()) for n in folded))
         assert not leaked, leaked
+
+        monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: profile_dir)
+        with tarfile.open(export_profile("default", str(tmp_path / "default.tar.gz")), "r:gz") as tf:
+            default_names = set(tf.getnames())
+        assert {"default/skills/demo/SKILL.md", "default/skills/demo/.env.example"} <= default_names
+        assert not {f"default/{r}" for r in nested_env} & default_names
 
     @pytest.mark.parametrize("declare_owned", [False, True])
     def test_distribution_can_neither_plant_nor_replace_a_store(self, tmp_path, monkeypatch, declare_owned):

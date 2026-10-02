@@ -2175,6 +2175,9 @@ def _default_export_ignore(root_dir: Path):
         # Universal exclusions (any depth) plus npm lockfiles that can appear at root.
         ignored = _non_exportable_entries(directory, contents)
         ignored.update({"package.json", "package-lock.json"} & set(contents))
+        # The allow-listed roots (skills/, plugins/, ...) are walked whole, so a credential file
+        # nested in one needs the same any-depth drop as a named export.
+        ignored.update(e for e in contents if _is_export_credential_name(e))
         if Path(directory) == root_dir:
             ignored.update(entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT)
         return ignored
@@ -2185,7 +2188,15 @@ def _default_export_ignore(root_dir: Path):
 # Credential names dropped at ANY depth of a named-profile export, on top of the root-relative
 # PROFILE_CREDENTIAL_PATHS. ``bot-desktop`` is the screen's runtime state:
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
-_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
+_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", ".envrc", "bot-desktop"})
+
+
+def _is_export_credential_name(name: str) -> bool:
+    """Any-depth export drop, case-folded. A dotenv file by another name (``.env.local``,
+    ``.env.production``) holds the same keys and has no suffix the scrub edits; ``.env.example`` is the
+    one shape template that ships, and it is scrubbed."""
+    folded = name.casefold()
+    return folded in _EXPORT_CREDENTIAL_FILES or (folded.startswith(".env.") and folded != ".env.example")
 
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
@@ -2246,7 +2257,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     # credential exclusion for named profiles.
     def _ignore_credentials(directory: str, contents: list) -> set:
         ignored = _non_exportable_entries(directory, contents)
-        ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        ignored.update(e for e in contents if _is_export_credential_name(e))
         rel = Path(directory).relative_to(profile_dir).parts
         ignored.update(e for e in contents if profile_path_is_private((*rel, e)))
         if Path(directory) == profile_dir:

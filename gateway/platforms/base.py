@@ -664,6 +664,9 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> st
     platforms where POSIX mode bits are advisory (Windows): falls back to a
     plain write rather than failing the media write.
     """
+    if any(character in ext for character in ("/", "\\", ":", "\x00")):
+        raise ValueError("Media cache extension must not contain path separators, a colon or NUL")
+
     filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
     try:
         fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

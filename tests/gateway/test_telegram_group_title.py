@@ -1248,3 +1248,37 @@ def test_notify_without_a_loop_is_silent():
         asyncio.get_running_loop()
     runner._notify_telegram_group_title_of_switch(source, "agent:main:telegram:group:-101")
     assert adapter._bot.renames == []
+
+
+@pytest.mark.asyncio
+async def test_resolvable_effort_reaches_the_transport_as_an_ordinal_tag():
+    """A resolvable reasoning effort must reach Telegram as an ``r<N>`` segment (criterion 1).
+
+    Every other lane assertion composes with ``None``, so nothing in this file proved the lane
+    hands its resolved effort to the composer at all — dropping that argument at the
+    run_topics seam would leave the whole suite green while the tag silently vanished. The
+    expected string is spelled out rather than rebuilt through ``compose_group_title``: a
+    round-trip would recompute the very function under test and prove nothing at the seam.
+
+    ``high`` is the 4th of :data:`VALID_REASONING_EFFORTS`, hence ``r4``.
+    """
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    resolved = []
+    # The resolver's own config-file read is exercised for real by
+    # test_reasoning_resolution_does_not_block_the_event_loop; here only the effort it
+    # returns is injected, so the assertion is about the lane -> composer -> transport seam.
+    runner._load_reasoning_config = lambda *_a, **_k: (
+        resolved.append("high") or {"enabled": True, "effort": "high"})
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-effort", title="Fix login", model="openrouter/gpt-x",
+                       started_at=time.time())
+        await _run_lane(runner, source, "session-effort", "Fix login")
+
+        assert resolved, "the reasoning resolver never ran, so this test proves nothing"
+        assert [text for _chat, text, _home in _recorder(adapter).renames] == [
+            "Fix login · gpt-x · r4"]
+    finally:
+        db.close()

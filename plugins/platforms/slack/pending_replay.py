@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -259,6 +260,13 @@ class SlackPendingReplayMixin(BasePlatformAdapter):
         if native is None:
             return None
         snapshot = SlackThreadContext.from_payload(native.content.get("thread_context"))
+        files = []
+        for file in snapshot.files:
+            path = native.attachment_path(file.path)
+            if path is None:
+                return None
+            files.append(replace(file, path=path))
+        snapshot = replace(snapshot, files=tuple(files))
         current_messages = []
         unchanged = True
         for dependency in snapshot.messages:

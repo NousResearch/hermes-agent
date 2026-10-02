@@ -53,6 +53,8 @@ def rehome_inbound_media(event: MessageEvent) -> None:
         rewritten[i] = str(dest)
         if event.text and raw in event.text:  # note an adapter already baked in (observed/replied media)
             event.text = event.text.replace(raw, to_agent_visible_cache_path(str(dest)))
+    transfers = {raw: rewritten[index] for index, raw in enumerate(event.media_urls) if index not in failed}
+    _rehome_pending_provenance(event, transfers)
     if not failed:
         event.media_urls = rewritten
         return
@@ -73,6 +75,19 @@ def rehome_inbound_media(event: MessageEvent) -> None:
         for dependency in event._quoted_media_dependencies
         if dependency.media_index in positions
     )
+
+
+def _rehome_pending_provenance(event: MessageEvent, paths: dict[str, str]) -> None:
+    from tools.credential_files import to_agent_visible_cache_path
+
+    if event._pending_native_input is not None:
+        event._pending_native_input = event._pending_native_input.rehome_attachments(paths)
+    for part, _merge in event._merged_parts:
+        for original in part.media_urls:
+            if original in paths and original in part.text:
+                part.text = part.text.replace(original, to_agent_visible_cache_path(paths[original]))
+        part.media_urls = [paths.get(path, path) for path in part.media_urls]
+        _rehome_pending_provenance(part, paths)
 
 
 def rehomed_media_path(raw: str) -> str:

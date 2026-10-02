@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import re
 from typing import Any, TYPE_CHECKING
@@ -19,6 +19,7 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 class PendingAttachment:
     path: str
     digest: str | None
+    origin_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,16 @@ class PendingNativeInput:
             "platform": self.platform.value,
             "content": self.content,
             "attachments": [
-                {"path": item.path, "digest": item.digest} for item in self.attachments
+                {
+                    "path": item.path,
+                    "digest": item.digest,
+                    **(
+                        {"origin_path": item.origin_path}
+                        if item.origin_path is not None
+                        else {}
+                    ),
+                }
+                for item in self.attachments
             ],
         }
 
@@ -64,8 +74,13 @@ class PendingNativeInput:
         for item in value["attachments"]:
             if (
                 not isinstance(item, dict)
-                or set(item) != {"path", "digest"}
+                or set(item)
+                not in ({"path", "digest"}, {"path", "digest", "origin_path"})
                 or not isinstance(item["path"], str)
+                or "origin_path" in item
+                and (
+                    not isinstance(item["origin_path"], str) or not item["origin_path"]
+                )
                 or item["digest"] is not None
                 and (
                     not isinstance(item["digest"], str)
@@ -73,10 +88,37 @@ class PendingNativeInput:
                 )
             ):
                 raise ValueError("pending native attachment fingerprint is invalid")
-            attachments.append(PendingAttachment(item["path"], item["digest"]))
+            attachments.append(
+                PendingAttachment(item["path"], item["digest"], item.get("origin_path"))
+            )
         if [item.path for item in attachments] != event.media_urls:
             raise ValueError("pending native attachment paths differ from their event")
         return cls(event.source.platform, value["content"], tuple(attachments))
+
+    def rehome_attachments(self, paths: dict[str, str]) -> PendingNativeInput:
+        return replace(
+            self,
+            attachments=tuple(
+                replace(
+                    item,
+                    path=paths[item.path],
+                    origin_path=item.origin_path or item.path,
+                )
+                if item.path in paths and paths[item.path] != item.path
+                else item
+                for item in self.attachments
+            ),
+        )
+
+    def attachment_path(self, original_path: str) -> str | None:
+        return next(
+            (
+                item.path
+                for item in self.attachments
+                if original_path in (item.path, item.origin_path)
+            ),
+            None,
+        )
 
     def attachments_available(self, paths: list[str]) -> bool:
         from gateway.shutdown_pending_codec import _file_digest

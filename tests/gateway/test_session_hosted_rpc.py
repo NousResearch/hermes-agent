@@ -219,7 +219,8 @@ def test_controls_are_exact_current_admission_and_loop_safe(owner):
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
         rpc.interrupt(**coords, session_id=sid, expected_task_id='other', expected_execution_generation=1)
     assert not agent.interrupted
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1)['interrupted']
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task', expected_execution_generation=1) == {
+        'interrupted': False, 'status': 'running'}
     assert agent.interrupted
     with pytest.raises(RuntimeStoreError):
         rpc.approve(session_id=sid, request_id='missing', choice='once',
@@ -420,10 +421,12 @@ def test_old_producer_stop_does_not_target_a_later_explicit_retry(owner, monkeyp
     rows = list_session_admissions(authority.db,session_id=coords['session_id'],pending_only=False)
     current = next(row for row in rows if row['admission_id']==second['admission_id'])
     assert current['status']==new_state and not agent.interrupted, 'old Stop targeted the later hosted generation'
-    assert rpc.interrupt(**{**old_stop, 'expected_execution_generation':2})['interrupted']
+    stopped = rpc.interrupt(**{**old_stop, 'expected_execution_generation':2})
     current = next(row for row in list_session_admissions(authority.db,session_id=coords['session_id'],pending_only=False)
                    if row['admission_id']==second['admission_id'])
     if new_state == 'queued':
+        assert stopped == {'interrupted': True, 'status': 'interrupted'}
         assert (current['status'], current['outcome']) == ('terminal', 'cancelled')
     else:
+        assert stopped == {'interrupted': False, 'status': 'running'}
         assert current['status'] == 'started' and agent.interrupted

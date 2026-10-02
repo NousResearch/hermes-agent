@@ -882,59 +882,59 @@ class TestDefaultInteractionDispatch:
 
 
     @pytest.mark.asyncio
-    async def test_approval_click_once_maps_to_once(self):
+    async def test_approval_click_once_maps_to_once(self, monkeypatch):
         """'allow-once' button → resolve_gateway_approval(session, 'once')."""
         adapter = self._make_adapter()
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+        def fake_resolve(
+            session_key: str, choice: str, resolve_all: bool = False,
+            reason: str | None = None, request_id: str | None = None,
+            approval_id: str | None = None,
+        ) -> int:
             resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         # Patch the *module-level* function that _default_interaction_dispatch
         # imports lazily.
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
-        try:
-            from gateway.platforms.qqbot.keyboards import parse_interaction_event
-            event = parse_interaction_event({
-                "id": "i",
-                "chat_type": 2,
-                "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once:req-42"}},
-            })
-            await adapter._default_interaction_dispatch(event)
-        finally:
-            tools.approval.resolve_gateway_approval = orig
+        monkeypatch.setattr(tools.approval, "resolve_gateway_approval", fake_resolve)
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        event = parse_interaction_event({
+            "id": "i",
+            "chat_type": 2,
+            "user_openid": "u-42",
+            "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once:req-42"}},
+        })
+        await adapter._default_interaction_dispatch(event)
 
         assert resolve_calls == [("agent:main:qqbot:dm:u-42", "once", False, "req-42")]
 
 
     @pytest.mark.asyncio
-    async def test_approval_click_rejects_unauthorized_operator(self):
+    async def test_approval_click_rejects_unauthorized_operator(self, monkeypatch):
         adapter = self._make_adapter()
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(
+            session_key: str, choice: str, resolve_all: bool = False,
+            reason: str | None = None, request_id: str | None = None,
+            approval_id: str | None = None,
+        ) -> int:
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
-        try:
-            from gateway.platforms.qqbot.keyboards import parse_interaction_event
-            event = parse_interaction_event({
-                "id": "i", "chat_type": 1,
-                "group_openid": "g-1",
-                "group_member_openid": "attacker",
-                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:group:g-1:owner:allow-once"}},
-            })
-            await adapter._default_interaction_dispatch(event)
-        finally:
-            tools.approval.resolve_gateway_approval = orig
+        monkeypatch.setattr(tools.approval, "resolve_gateway_approval", fake_resolve)
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        event = parse_interaction_event({
+            "id": "i", "chat_type": 1,
+            "group_openid": "g-1",
+            "group_member_openid": "attacker",
+            "data": {"resolved": {"button_data": "approve:agent:main:qqbot:group:g-1:owner:allow-once"}},
+        })
+        await adapter._default_interaction_dispatch(event)
 
         assert resolve_calls == []
 
@@ -1003,86 +1003,86 @@ class TestProfileNamespaceApprovalAuthz:
         assert self._parse("") is None
 
     @pytest.mark.asyncio
-    async def test_c2c_click_on_named_profile_key_resolves(self):
+    async def test_c2c_click_on_named_profile_key_resolves(self, monkeypatch):
         """Approval click carrying a named-profile c2c key resolves (was rejected)."""
         adapter = self._make_adapter()
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+        def fake_resolve(
+            session_key: str, choice: str, resolve_all: bool = False,
+            reason: str | None = None, request_id: str | None = None,
+            approval_id: str | None = None,
+        ) -> int:
             resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
-        try:
-            from gateway.platforms.qqbot.keyboards import parse_interaction_event
-            event = parse_interaction_event({
-                "id": "i",
-                "chat_type": 2,
-                "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:c2c:u-42:allow-once:req-profile"}},
-            })
-            await adapter._default_interaction_dispatch(event)
-        finally:
-            tools.approval.resolve_gateway_approval = orig
+        monkeypatch.setattr(tools.approval, "resolve_gateway_approval", fake_resolve)
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        event = parse_interaction_event({
+            "id": "i",
+            "chat_type": 2,
+            "user_openid": "u-42",
+            "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:c2c:u-42:allow-once:req-profile"}},
+        })
+        await adapter._default_interaction_dispatch(event)
 
         assert resolve_calls == [("agent:coder:qqbot:c2c:u-42", "once", False, "req-profile")]
 
     @pytest.mark.asyncio
-    async def test_group_click_on_named_profile_key_authorizes_session_owner(self):
+    async def test_group_click_on_named_profile_key_authorizes_session_owner(self, monkeypatch):
         """Group approval click under a named profile authorizes the session owner."""
         adapter = self._make_adapter()
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+        def fake_resolve(
+            session_key: str, choice: str, resolve_all: bool = False,
+            reason: str | None = None, request_id: str | None = None,
+            approval_id: str | None = None,
+        ) -> int:
             resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
-        try:
-            from gateway.platforms.qqbot.keyboards import parse_interaction_event
-            event = parse_interaction_event({
-                "id": "i", "chat_type": 1,
-                "group_openid": "g-1",
-                "group_member_openid": "owner",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-profile"}},
-            })
-            await adapter._default_interaction_dispatch(event)
-        finally:
-            tools.approval.resolve_gateway_approval = orig
+        monkeypatch.setattr(tools.approval, "resolve_gateway_approval", fake_resolve)
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        event = parse_interaction_event({
+            "id": "i", "chat_type": 1,
+            "group_openid": "g-1",
+            "group_member_openid": "owner",
+            "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-profile"}},
+        })
+        await adapter._default_interaction_dispatch(event)
 
         assert resolve_calls == [("agent:coder:qqbot:group:g-1:owner", "once", False, "req-profile")]
 
     @pytest.mark.asyncio
-    async def test_named_profile_key_still_rejects_wrong_operator(self):
+    async def test_named_profile_key_still_rejects_wrong_operator(self, monkeypatch):
         """The namespace relaxation must not weaken the operator check."""
         adapter = self._make_adapter()
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+        def fake_resolve(
+            session_key: str, choice: str, resolve_all: bool = False,
+            reason: str | None = None, request_id: str | None = None,
+            approval_id: str | None = None,
+        ) -> int:
             resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
-        try:
-            from gateway.platforms.qqbot.keyboards import parse_interaction_event
-            event = parse_interaction_event({
-                "id": "i", "chat_type": 1,
-                "group_openid": "g-1",
-                "group_member_openid": "attacker",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-profile"}},
-            })
-            await adapter._default_interaction_dispatch(event)
-        finally:
-            tools.approval.resolve_gateway_approval = orig
+        monkeypatch.setattr(tools.approval, "resolve_gateway_approval", fake_resolve)
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        event = parse_interaction_event({
+            "id": "i", "chat_type": 1,
+            "group_openid": "g-1",
+            "group_member_openid": "attacker",
+            "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-profile"}},
+        })
+        await adapter._default_interaction_dispatch(event)
 
         assert resolve_calls == []
 

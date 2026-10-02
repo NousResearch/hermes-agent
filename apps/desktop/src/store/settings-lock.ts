@@ -2,7 +2,7 @@
  * Operator settings lock — the client half of `config.lock.status` / `config.unlock` /
  * `config.relock`.
  *
- * The lock is enforced on the gateway inside `save_config`, so nothing here can protect a
+ * The lock is enforced on the gateway where config.yaml is written, so nothing here can protect a
  * setting; this store only knows whether the lock is on, what it covers, and whether an unlock
  * window is currently open, so the UI can say so and offer to open one.
  */
@@ -46,17 +46,37 @@ function normalize(raw: unknown): SettingsLockStatus {
   }
 }
 
-export async function syncSettingsLock(requestGateway: SettingsLockRequester): Promise<SettingsLockStatus> {
-  try {
-    const status = normalize(await requestGateway('config.lock.status'))
-    $settingsLock.set(status)
+// The backend the atom describes, and the newest read against it. A read answers for the backend
+// and moment it was asked about; once either has moved on, its answer (or its failure) is stale.
+let boundRequester: SettingsLockRequester | null = null
+let generation = 0
 
-    return status
-  } catch {
-    $settingsLock.set(SETTINGS_LOCK_UNKNOWN)
-
-    return SETTINGS_LOCK_UNKNOWN
+/** Point the store at a (new) backend: forget the previous one's lock, and its reads in flight. */
+export function bindSettingsLockBackend(requestGateway: SettingsLockRequester): void {
+  if (requestGateway === boundRequester) {
+    return
   }
+
+  boundRequester = requestGateway
+  generation += 1
+  $settingsLock.set(SETTINGS_LOCK_UNKNOWN)
+}
+
+export async function syncSettingsLock(requestGateway: SettingsLockRequester): Promise<SettingsLockStatus> {
+  const mine = ++generation
+  let status: SettingsLockStatus
+
+  try {
+    status = normalize(await requestGateway('config.lock.status'))
+  } catch {
+    status = SETTINGS_LOCK_UNKNOWN
+  }
+
+  if (mine === generation && (boundRequester === null || requestGateway === boundRequester)) {
+    $settingsLock.set(status)
+  }
+
+  return status
 }
 
 /**

@@ -1,7 +1,7 @@
 /**
  * The settings-lock pill, next to the approval-mode pill it most often protects.
  *
- * The lock is enforced on the gateway inside `save_config`, so this is a window onto it, not the
+ * The lock is enforced on the gateway where config.yaml is written, so this is a window onto it, not the
  * mechanism: the pill says whether locked settings can currently be changed, and offers to open
  * a time-boxed unlock window (with the operator password when one is set).
  */
@@ -17,14 +17,19 @@ import { useI18n } from '@/i18n'
 import { Lock } from '@/lib/icons'
 import {
   $settingsLock,
+  bindSettingsLockBackend,
   relockSettings,
   type SettingsLockRequester,
   syncSettingsLock,
   unlockSettings
 } from '@/store/settings-lock'
 
-function remainingLabel(until: number | null): string {
-  const seconds = Math.max(0, Math.round((until ?? 0) - Date.now() / 1000))
+// Re-read while locked too: an unlock opened from a terminal must show up here, and one failed
+// read must not hide the pill until the next reconnect.
+const POLL_MS = { locked: 60_000, unlocked: 15_000 }
+
+export function remainingLabel(until: number | null, nowMs: number): string {
+  const seconds = Math.max(0, Math.round((until ?? 0) - nowMs / 1000))
 
   return seconds >= 60 ? `${Math.floor(seconds / 60)}m` : `${seconds}s`
 }
@@ -38,6 +43,9 @@ export function useSettingsLockStatusbarItem(
   const status = useStore($settingsLock)
   const [password, setPassword] = useState('')
   const [failed, setFailed] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => bindSettingsLockBackend(requestGateway), [requestGateway])
 
   // Gated on readiness, not just mount: a fetch fired before the gateway opens fails, and with
   // no other trigger the pill would stay hidden on an install that IS locked.
@@ -45,8 +53,16 @@ export function useSettingsLockStatusbarItem(
     if (!gatewayReady) {
       return
     }
+
     void syncSettingsLock(requestGateway)
-  }, [gatewayReady, requestGateway])
+
+    const timer = setInterval(
+      () => void syncSettingsLock(requestGateway),
+      status.unlocked ? POLL_MS.unlocked : POLL_MS.locked
+    )
+
+    return () => clearInterval(timer)
+  }, [gatewayReady, requestGateway, status.unlocked])
 
   // While a window is open the pill counts down, so "unlocked" is never a state you forget you left on.
   useEffect(() => {
@@ -54,10 +70,10 @@ export function useSettingsLockStatusbarItem(
       return
     }
 
-    const timer = setInterval(() => void syncSettingsLock(requestGateway), 15_000)
+    const tick = setInterval(() => setNowMs(Date.now()), 1_000)
 
-    return () => clearInterval(timer)
-  }, [requestGateway, status.unlocked])
+    return () => clearInterval(tick)
+  }, [status.unlocked])
 
   const submit = useCallback(async () => {
     const ok = await unlockSettings(requestGateway, password)
@@ -73,8 +89,8 @@ export function useSettingsLockStatusbarItem(
       return copy.title
     }
 
-    return status.unlocked ? copy.remaining(remainingLabel(status.unlockedUntil)) : copy.locked
-  }, [copy, status.enabled, status.unlocked, status.unlockedUntil])
+    return status.unlocked ? copy.remaining(remainingLabel(status.unlockedUntil, nowMs)) : copy.locked
+  }, [copy, nowMs, status.enabled, status.unlocked, status.unlockedUntil])
 
   return {
     // Hidden entirely on an install with no lock: an inert padlock in everyone's status bar is noise.

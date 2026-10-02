@@ -2,7 +2,7 @@
 
 What a process launched under ``scripts/run-in-hermes-env`` sees is covered in
 tests/scripts/test_run_in_hermes_env.py; how the environment is composed, in
-test_environment_script.py.
+test_environment_script.py; the fish port, in test_activate_fish.py.
 """
 
 from __future__ import annotations

@@ -3,8 +3,8 @@
 # process, one-way) both build on it; neither owns any of it.
 #
 #   hermes_sync REPO [FLAG]         bring the install up to date (setup-hermes.sh)
-#   hermes_compose_env REPO         print the composed environment as an `sh` script
-#   hermes_apply_env SCRIPT         evaluate that script into this shell
+#   hermes_compose_env REPO DIALECT print the composed environment, `sh` or `fish`
+#   hermes_apply_env SCRIPT         evaluate a composed `sh` script into this shell
 #   hermes_activation_current REPO  is the inherited environment still REPO's?
 #   hermes_ensure_env REPO          sync, compose and apply unless it is current
 #
@@ -48,15 +48,15 @@ hermes_bootstrap_python() {
     return 1
 }
 
-# hermes_compose_env REPO: print the environment of the installed state as an
-# `sh` script.
+# hermes_compose_env REPO DIALECT: print the environment of the installed state
+# as a script for a shell of DIALECT (`sh` or `fish`).
 hermes_compose_env() {
-    local repo="$1" python script
+    local repo="$1" dialect="$2" python script
     python="$(hermes_bootstrap_python "$repo")" || {
         echo "no bootstrap Python found; run setup-hermes.sh" >&2
         return 1
     }
-    script="$(PYTHONHOME= PYTHONPATH="$repo" "$python" -m pm.environments --format sh)" &&
+    script="$(PYTHONHOME= PYTHONPATH="$repo" "$python" -m pm.environments --format "$dialect")" &&
         [ -n "$script" ] || {
         echo "could not read pm env (run ./setup-hermes.sh first)" >&2
         return 1
@@ -64,7 +64,7 @@ hermes_compose_env() {
     printf '%s\n' "$script"
 }
 
-# hermes_apply_env SCRIPT: evaluate a script from `hermes_compose_env REPO`.
+# hermes_apply_env SCRIPT: evaluate a script from `hermes_compose_env REPO sh`.
 hermes_apply_env() {
     # Resolved before the eval replaces PATH.
     local cygpath name
@@ -121,6 +121,6 @@ hermes_ensure_env() {
         echo "setup failed" >&2
         return 1
     }
-    script="$(hermes_compose_env "$repo")" || return 1
+    script="$(hermes_compose_env "$repo" sh)" || return 1
     hermes_apply_env "$script"
 }

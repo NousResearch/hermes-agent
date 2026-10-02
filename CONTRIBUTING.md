@@ -136,6 +136,13 @@ source ./activate
 hermes --version
 ```
 
+fish:
+
+```fish
+source ./activate.fish
+hermes --version
+```
+
 PowerShell:
 
 ```powershell

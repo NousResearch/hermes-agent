@@ -21,6 +21,7 @@ from pm.store import current_target
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTIVATE = REPO_ROOT / "activate"
+ACTIVATE_FISH = REPO_ROOT / "activate.fish"
 ACTIVATE_PS1 = REPO_ROOT / "activate.ps1"
 SETUP_HERMES_SH = REPO_ROOT / "setup-hermes.sh"
 SETUP_HERMES_PS1 = REPO_ROOT / "setup-hermes.ps1"
@@ -160,7 +161,7 @@ def isolated_checkout(tmp_path: Path) -> Path:
     shutil.copytree(REPO_ROOT / "pm", root / "pm", ignore=shutil.ignore_patterns("__pycache__"))
     (root / "hermes_cli").mkdir()
     (root / "scripts").mkdir()
-    for relative in ("activate", "activate.ps1", "scripts/_activation.sh",
+    for relative in ("activate", "activate.fish", "activate.ps1", "scripts/_activation.sh",
                      "hermes_constants.py", "hermes_cli/__init__.py",
                      "pm/environments.py", "hermes_cli/runtime_state.py"):
         shutil.copy2(REPO_ROOT / relative, root / relative)

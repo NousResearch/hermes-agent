@@ -395,25 +395,45 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     return env
 
 
+def _fish_quote(value: str) -> str:
+    """Inside fish single quotes only backslash and the quote itself are special."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+# fish refuses to assign these, and each is either inherited unchanged from the
+# invoking shell (PWD, SHLVL, _) or fish's own state, so skipping loses nothing.
+_FISH_READ_ONLY = frozenset({
+    "PWD", "SHLVL", "_", "status", "version", "hostname", "fish_pid", "history",
+    "pipestatus", "status_generation", "umask", "FISH_VERSION",
+})
+
+# dialect -> (export statement, names the shell cannot assign). fish splits
+# values of variables named *PATH on colons when they are set from a single
+# word, so PATH stays a list.
+_SHELL_DIALECTS = {
+    "sh": (lambda name, value: f"export {name}={shlex.quote(value)}", frozenset()),
+    "fish": (lambda name, value: f"set -gx {name} {_fish_quote(value)}", _FISH_READ_ONLY),
+}
 _SHELL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def shell_exports(env: dict[str, str]) -> str:
-    """The composed environment as a POSIX shell script.
+def shell_exports(env: dict[str, str], dialect: str) -> str:
+    """The composed environment as a script a shell of ``dialect`` can evaluate.
 
     Windows carries names like ``ProgramFiles(ARM)`` that no shell can assign;
     they pass through untouched instead of failing the whole script.
     """
-    return "\n".join(f"export {name}={shlex.quote(str(value))}" for name, value in env.items()
-                     if _SHELL_IDENTIFIER.fullmatch(name))
+    statement, read_only = _SHELL_DIALECTS[dialect]
+    return "\n".join(statement(name, str(value)) for name, value in env.items()
+                     if _SHELL_IDENTIFIER.fullmatch(name) and name not in read_only)
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Print the composed activation environment.")
-    parser.add_argument("--format", choices=["json", "sh"], default="json")
+    parser.add_argument("--format", choices=["json", *_SHELL_DIALECTS], default="json")
     options = parser.parse_args(argv)
     env = activation_environment(Path(__file__).resolve().parents[1])
-    print(json.dumps(env) if options.format == "json" else shell_exports(env))
+    print(json.dumps(env) if options.format == "json" else shell_exports(env, options.format))
 
 
 if __name__ == "__main__":

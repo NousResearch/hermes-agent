@@ -2,8 +2,9 @@
 # ============================================================================
 # venv-style activation of the Hermes dev environment for an interactive shell.
 #
-#   source ./activate      (bash / zsh, repo root)
-#   .\activate.ps1         (PowerShell)
+#   source ./activate       (bash / zsh, repo root)
+#   source ./activate.fish  (fish)
+#   .\activate.ps1          (PowerShell)
 #
 # Applies the composed pm env (PATH + tool vars) to the CURRENT shell, with
 # save/restore: `deactivate` undoes exactly what activation changed.
@@ -65,7 +66,7 @@ if [ "$(type -t deactivate 2>/dev/null)" = "function" ]; then
     deactivate
 fi
 
-_hermes_script="$(hermes_compose_env "$_HERMES_REPO")" || {
+_hermes_script="$(hermes_compose_env "$_HERMES_REPO" sh)" || {
     echo "activate: could not compose the environment (see above)" >&2
     unset _hermes_script
     return 1 2>/dev/null || exit 1

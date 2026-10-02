@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, MutableMapping, Optional
+from typing import Any, Hashable, MutableMapping, Optional, TypeVar
 from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
@@ -102,7 +102,11 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
             await task
 
 
-def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:
+_K = TypeVar("_K", bound=Hashable)
+_V = TypeVar("_V")
+
+
+def bounded_put(store: MutableMapping[_K, _V], key: _K, value: _V, cap: int) -> None:
     """Insert into an insertion-ordered mapping with a hard size bound, evicting the oldest keys. A
     re-put moves the key to the newest position so live entries outlast stale ones."""
     store.pop(key, None)

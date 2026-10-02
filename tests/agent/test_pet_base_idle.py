@@ -4,6 +4,8 @@ import pytest
 
 from agent.pet.generate import orchestrate, atlas
 from agent.pet.generate.imagegen import GenerationError
+from agent.pet import store
+from hermes_constants import get_hermes_home
 
 
 @pytest.fixture
@@ -45,6 +47,14 @@ def test_hatch_uses_approved_base_without_paid_idle(hatch_fixture):
     assert result.spritesheet.is_file()
     assert result.validation["ok"]
     assert {"idle", "running-right", "running-left", "waving"} <= set(result.states)
+    restored = store.load_pet(result.slug)
+    assert restored is not None and restored.spritesheet == result.spritesheet
+    assert restored.directory.is_relative_to(get_hermes_home())
+    with Image.open(restored.spritesheet) as saved:
+        idle_row = saved.crop((0, 0, atlas.ATLAS_WIDTH, atlas.CELL_HEIGHT))
+        assert idle_row.getbbox() is not None
+        # Static idle contains the base frame, not an expensive generated strip.
+        assert idle_row.crop((atlas.CELL_WIDTH, 0, atlas.ATLAS_WIDTH, atlas.CELL_HEIGHT)).getbbox() is None
 
 
 def test_cancelled_hatch_does_not_generate_or_save(hatch_fixture):
@@ -75,6 +85,7 @@ def test_paid_row_failure_does_not_install_idle_only_pet(hatch_fixture, monkeypa
     monkeypatch.setattr(orchestrate.imagegen, "generate", fail)
     with pytest.raises(GenerationError):
         orchestrate.hatch_pet(base_image=base, slug="failed-rows", provider=provider)
+    assert store.load_pet("failed-rows") is None
     assert calls
     assert "pet_row_idle" not in [prefix for prefix, _ in calls]
 

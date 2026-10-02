@@ -733,6 +733,334 @@ function Stage-Prerequisites {
     Write-Ok "prerequisites ok (git)"
 }
 
+# ============================================================================
+# Live-process tree-swap gate
+# ============================================================================
+# Renaming or deleting the install tree while the desktop App, its Electron
+# children or the venv backend are executing out of it is what left the
+# desktop UI blank with "Failed to fetch dynamically imported module": the
+# running App keeps resolving the old paths, and the new tree answers for
+# none of them. Every tree-replacing command in Stage-Repository (the
+# broken-.git move-aside, the stale-directory delete, the staging-tree
+# publish) runs Assert-NoTreeHolders first, so the three cannot drift apart.
+#
+# The probes are additive and read-only: nothing here moves, deletes or
+# writes anything, and a successful sweep is silent on stdout (-Json /
+# -Manifest hand the caller a single line of JSON).
+
+function Test-InstallEnvFlag {
+    # Truthy-env-var reader. Env vars rather than new switches: install.ps1 is
+    # delivered via `irm | iex` and driven by several callers (Tauri bootstrap,
+    # desktop bootstrap-runner, hermes update), so a new parameter would have to
+    # be threaded through every one of them to be usable.
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $value = [Environment]::GetEnvironmentVariable($Name)
+
+    if (-not $value) { return $false }
+
+    return @('1', 'true', 'yes', 'on') -contains $value.Trim().ToLowerInvariant()
+}
+
+function ConvertTo-TreePathPattern {
+    # Regex for "does this text mention a path inside $Path". Used on strings
+    # that are NOT paths we can hand to a resolver: a process command line,
+    # and an image path no resolver could expand.
+    #
+    # ConvertTo-LongPath cannot help here -- it needs a filesystem lookup --
+    # so the pattern accepts, per component of the tree path, either the real
+    # name or the 8.3 alias it may appear as (NAME~1, NAME~1.EXT). Without
+    # this, a tree given as C:\Users\Administrator\... and a command line
+    # naming C:\Users\ADMINI~1\... compare unequal and the holder is missed.
+    #
+    # Eager matching is the SAFE direction: a false positive refuses the swap
+    # (recoverable, and overridable with HERMES_INSTALL_ALLOW_RUNNING_APP),
+    # while a miss is the rename-under-a-live-app this guard exists to stop.
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # DOS 8.3 shape: 1-8 name chars, '~', a serial digit, optional extension.
+    # Deliberately not a general wildcard -- '[^\\]' keeps it inside one
+    # component, so it can never swallow a directory boundary.
+    $alias = '[^\\]{1,6}~\d+(?:\.[^\\\.]{0,3})?'
+
+    $pattern = ''
+    $first = $true
+
+    foreach ($part in ($Path.TrimEnd('\') -split '\\')) {
+        if (-not $first) { $pattern += '\\' }
+        $first = $false
+
+        # A UNC path splits to leading empties; they are the '\\' start.
+        if ($part -eq '') { continue }
+
+        $pattern += '(?:' + [regex]::Escape($part) + '|' + $alias + ')'
+    }
+
+    # Trailing separator: the text must name something INSIDE the tree.
+    # Unanchored on purpose -- in a command line the path is mid-string.
+    return $pattern + '\\'
+}
+
+function Get-HermesTreeHolder {
+    # Live processes executing out of $InstallDir -- the desktop App itself,
+    # its Electron children (renderer/GPU/utility all run the same exe under
+    # apps\desktop\release\win-unpacked\), and the Python backend under venv\.
+    # Renaming the tree under any of them is what made the chunks vanish.
+    #
+    # Matched by executable path first, then by process name when the image
+    # path is unreadable, then by command line -- the last never applied to
+    # the installer's own ancestor chain, because the PowerShell running
+    # install.ps1 carries the tree path in its own command line and would
+    # otherwise refuse itself.
+    #
+    # Returns $null when the sweep itself fails (WMI unavailable, access
+    # denied). The caller MUST treat $null as "could not prove the tree is
+    # free" and refuse: an empty array would report a broken probe as "no
+    # holders alive", which is the fail-OPEN direction this guard exists to
+    # close.
+    #
+    # The installer's own ancestor chain is exempt (a `hermes update` CLI or
+    # the desktop bootstrap's PowerShell legitimately sits in that chain). The
+    # desktop app and the venv backend are exempt ONLY when they are not the
+    # blocker -- and they always are, because their exe lives under
+    # apps\desktop\ or venv\, which is checked before the exemption. Swapping
+    # the tree while the App drives the install is exactly the bug.
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    # Long form on both sides of the compare. $InstallDir arrives normalized
+    # by ConvertTo-LongPath at script scope, but re-resolve defensively so a
+    # caller handing us a short path cannot make the prefix compare below
+    # fail OPEN.
+    $root = [System.IO.Path]::GetFullPath((ConvertTo-LongPath $InstallDir)).TrimEnd('\')
+    $treePrefix = $root + '\'
+    $desktopPrefix = $root + '\apps\desktop\'
+    $venvPrefix = $root + '\venv\'
+
+    # 8.3-tolerant matcher for the strings no resolver can reach: the raw
+    # image path and the command line.
+    $treePattern = ConvertTo-TreePathPattern $treePrefix
+
+    $exempt = New-Object 'System.Collections.Generic.HashSet[int]'
+    [void]$exempt.Add($PID)
+    $cursor = $PID
+
+    for ($hop = 0; $hop -lt 12; $hop++) {
+        $parent = 0
+
+        try {
+            $probe = Get-CimInstance Win32_Process -Filter "ProcessId = $cursor" -ErrorAction Stop
+            if ($probe) { $parent = [int]$probe.ParentProcessId }
+        } catch { break }
+
+        if ($parent -le 0) { break }
+        if (-not $exempt.Add($parent)) { break }
+
+        $cursor = $parent
+    }
+
+    try {
+        $cmp = [System.StringComparison]::OrdinalIgnoreCase
+
+        # The leading comma is NOT style -- it is the return contract. A
+        # returned array is enumerated into the pipeline, and an EMPTY array
+        # enumerates to nothing: `return @()` hands the caller $null, which is
+        # this function's "the sweep itself failed" sentinel. A successful
+        # sweep that finds no holders -- the ordinary case on a machine with
+        # nothing running out of the tree -- would then read as a broken probe
+        # and refuse every tree swap. `,@(...)` returns the array as a single
+        # object instead, so an empty sweep stays an empty array and ONLY the
+        # catch below can produce $null. Do not "clean this up".
+        return ,@(
+            Get-CimInstance Win32_Process -ErrorAction Stop |
+                Where-Object {
+                    $procId = [int]$_.ProcessId
+                    $isExempt = $exempt.Contains($procId)
+
+                    # Win32_Process reports the 8.3 SHORT form when the profile
+                    # path needs one (C:\Users\jdoe~1\...). [IO.Path]::GetFullPath
+                    # does NOT expand 8.3 -- it is lexical only -- so comparing
+                    # that against the long $treePrefix never matches and this
+                    # guard fails OPEN, silently allowing the exact rename the
+                    # incident was. Resolve the image path with the same
+                    # resolver the install dir went through.
+                    $rawExe = $_.ExecutablePath
+                    $exe = $rawExe
+                    if ($exe) {
+                        try { $exe = [System.IO.Path]::GetFullPath((ConvertTo-LongPath $exe)) } catch { }
+                    }
+
+                    # $false = we could not establish where this process lives.
+                    $placed = [bool]($exe) -and ($exe -notmatch '~\d')
+
+                    if ($placed -and $exe.StartsWith($treePrefix, $cmp)) {
+                        # apps\desktop\ and venv\ are hard blockers even for an
+                        # exempt PID: the App or its backend driving the install
+                        # is exactly the bug.
+                        if ($exe.StartsWith($desktopPrefix, $cmp) -or $exe.StartsWith($venvPrefix, $cmp)) { return $true }
+
+                        return -not $isExempt
+                    }
+
+                    if ($isExempt) { return $false }
+
+                    # No usable image path (unreadable: elevated / another
+                    # session; or still aliased after every resolver). Skipping
+                    # these was the fail-OPEN hole -- the process holding the
+                    # tree is often the elevated one. Go by name, then by the
+                    # unresolved image path itself.
+                    #
+                    # The name list is every runtime the tree ships: hermes*.exe
+                    # / electron.exe (the desktop App), node.exe (managed Node),
+                    # python.exe (venv backend), uv.exe and pip.exe (also under
+                    # venv\Scripts). Anything the INSTALLER spawns is already
+                    # exempt above through the ancestor chain, so widening this
+                    # cannot make the installer refuse its own helpers.
+                    if (-not $placed) {
+                        if ($_.Name -match '^(hermes|electron|node|python|uv|pip)') { return $true }
+                        if ($rawExe -match $treePattern) { return $true }
+                    }
+
+                    # Exe lives elsewhere but the process can still be holding
+                    # the tree: a system node.exe / python.exe interpreting
+                    # in-tree code, or anything started with an in-tree path.
+                    # Not applied to the installer's own chain, whose command
+                    # line legitimately names $InstallDir.
+                    #
+                    # cwd-only holders are not enumerable here -- Win32_Process
+                    # exposes no working directory. Those keep their handle on
+                    # the directory and make the rename itself fail below, so
+                    # they cannot produce the half-moved tree, only a refusal.
+                    $cmdLine = $_.CommandLine
+                    if ($cmdLine -and $cmdLine -match $treePattern) { return $true }
+
+                    # Every channel came back unknown: no image path we can
+                    # place, no runtime name, no command line. That is the
+                    # fail-OPEN residue this guard exists to close, so it gets
+                    # one more question -- can we even attribute the process to
+                    # a session? If not, nothing about it is knowable and the
+                    # sweep cannot defend letting it through.
+                    #
+                    # It does NOT refuse merely for being unknown, and that
+                    # limit is deliberate and measured: on a stock Windows 11
+                    # box, with the installer running unelevated the way users
+                    # run it, 216 processes report neither an image path nor a
+                    # command line -- ctfmon.exe, conhost.exe, taskhostw.exe,
+                    # vendor helpers. They are higher integrity than the
+                    # installer, which is exactly why WMI hides them, and none
+                    # of them runs a Hermes runtime. Refusing every unknown
+                    # process, or every unknown process outside session 0
+                    # (those helpers run in the user's session, not session 0),
+                    # would make this guard refuse on every machine, always --
+                    # worse than the bug it closes.
+                    #
+                    # Known ceiling: a holder that is neither runtime-named nor
+                    # command-line-readable -- a renamed binary, an elevated
+                    # cmd.exe wrapper with everything hidden -- still passes
+                    # this gate. Its image is inside the tree, so the paths the
+                    # App resolves at runtime stop resolving right after the
+                    # swap; that surfaces as the app failing to start, not as
+                    # this refusal. Narrowing it further needs a channel
+                    # Win32_Process does not expose.
+                    if (-not $placed -and -not $cmdLine) {
+                        if ($null -eq $_.SessionId) { return $true }
+
+                        return $false
+                    }
+
+                    return $false
+                } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        ProcessId = $_.ProcessId
+                        Name      = $_.Name
+                        Path      = $_.ExecutablePath
+                    }
+                }
+        )
+    } catch {
+        Write-Warn "Could not enumerate processes holding ${InstallDir}: $($_.Exception.Message)"
+        # Fail-closed sentinel -- NOT an empty array. The caller refuses on
+        # $null; an empty array here would read as "nothing is holding the
+        # tree" and let the swap through on a broken WMI / denied handle.
+        return $null
+    }
+}
+
+function Assert-NoTreeHolders {
+    # The single refusal path for the tree-swap preflight: all three call
+    # sites in Stage-Repository land here so they cannot drift apart.
+    #
+    # Fail, never exit. A function-scope `exit` under `iex` closes the user's
+    # PowerShell window, and in -Stage mode it would skip the dispatcher's
+    # catch -- the one that emits the {"ok":false,...} frame the desktop
+    # bootstrap reads. Fail throws instead, and every entry point already owns
+    # reporting and the exit code: -File exits 1, iex sets $global:LASTEXITCODE
+    # to 1 without closing the window, -Stage emits the frame and then exits 1.
+    # Mirroring the rest of this file: failure is a non-zero exit code, and no
+    # caller anywhere hardcodes a particular one.
+    #
+    # Two refusals, and the escape hatch lifts only one of them:
+    #   * the sweep itself failed ($null) -- nothing about the tree is proven,
+    #     so it cannot be called free. HERMES_INSTALL_ALLOW_RUNNING_APP does
+    #     NOT override this: the flag says "I know the App is running", which
+    #     is not a statement about an unusable probe.
+    #   * live holders were found -- overridable with
+    #     HERMES_INSTALL_ALLOW_RUNNING_APP=1 (the same escape-hatch style the
+    #     rest of this file uses for env-configured behavior).
+    #
+    # Silent and side-effect-free on the ordinary path (no holders): a note on
+    # stdout would corrupt the single-line JSON of -Json / -Manifest.
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    $holders = Get-HermesTreeHolder -InstallDir $InstallDir
+
+    if ($null -eq $holders) {
+        Write-Err "Could not list the processes running out of $InstallDir -- refusing to replace the tree."
+        Write-Host ""
+        Write-Host "  The process sweep failed (WMI unavailable or access denied), so there is no"
+        Write-Host "  way to tell whether the desktop app or its backend is live in this tree."
+        Write-Host "  Renaming the tree under a running app is what left the desktop UI blank with"
+        Write-Host "  'Failed to fetch dynamically imported module'. Nothing was moved or deleted"
+        Write-Host "  -- this directory is untouched."
+        Write-Host ""
+        Write-Host "  HERMES_INSTALL_ALLOW_RUNNING_APP does not override this one: a failed"
+        Write-Host "  sweep proves nothing about the tree, so the swap cannot go ahead."
+        Fail "Could not list the processes running out of $InstallDir; refusing to replace the tree"
+    }
+
+    $live = @($holders | Where-Object { $null -ne $_ })
+
+    if ($live.Count -gt 0) {
+        if (Test-InstallEnvFlag -Name 'HERMES_INSTALL_ALLOW_RUNNING_APP') {
+            Write-Warn "HERMES_INSTALL_ALLOW_RUNNING_APP is set; replacing $InstallDir with $($live.Count) live process(es) running out of it"
+            return
+        }
+
+        # U+8BF7 U+5148 U+9000 U+51FA U+684C U+9762 + " App" reads
+        # "please quit the desktop App" in Chinese.
+        # Built from code points because this file must stay PURE ASCII:
+        # PowerShell 5.1 parses a BOM-less .ps1 as ANSI, so a literal
+        # UTF-8 CJK string would be mis-decoded into stray quotes and
+        # braces and break the parser.
+        $quitAppZh = (-join @([char]0x8BF7, [char]0x5148, [char]0x9000, [char]0x51FA, [char]0x684C, [char]0x9762)) + " App"
+
+        Write-Err "Hermes is still running out of $InstallDir -- refusing to replace the tree."
+        Write-Host ""
+        Write-Host ("  {0} -- quit the desktop app (and its backend / Electron children), then re-run." -f $quitAppZh)
+        Write-Host ""
+        foreach ($holder in $live) {
+            Write-Host ("  - PID {0}  {1}" -f $holder.ProcessId, $holder.Path)
+        }
+        Write-Host ""
+        Write-Host "  Renaming the tree under a live app is what leaves the desktop UI blank"
+        Write-Host "  with 'Failed to fetch dynamically imported module'. Nothing was moved or"
+        Write-Host "  deleted -- this directory is untouched."
+        Write-Host ""
+        Write-Host "  Set HERMES_INSTALL_ALLOW_RUNNING_APP=1 to override."
+        Fail "Hermes processes are still running from $InstallDir; refusing to replace the tree"
+    }
+}
+
 function Stage-Repository {
     # Refuse an occupied non-checkout before provisioning Git. This check
     # needs no tool download and must not overwrite a user's existing files.
@@ -753,6 +1081,9 @@ function Stage-Repository {
         if ($LASTEXITCODE) {
             $broken = "$InstallDir.broken-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
             Write-Warn "$InstallDir has no commits (interrupted clone); moving it aside to $broken"
+            # Gate before the move-aside: a live App in the tree would keep
+            # running against the renamed directory.
+            Assert-NoTreeHolders -InstallDir $InstallDir
             Move-Item -LiteralPath $InstallDir -Destination $broken
         }
     }
@@ -845,6 +1176,9 @@ function Stage-Repository {
         # Moving a clone onto an existing directory would nest it. The
         # preflight above already refused nonempty or linked destinations.
         if (Test-Path -LiteralPath $InstallDir) {
+            # Gate before the delete: a live holder keeps a handle on this
+            # path and the tree stops existing out from under it.
+            Assert-NoTreeHolders -InstallDir $InstallDir
             Remove-Item -LiteralPath $InstallDir -Force
         }
         $parent = Split-Path $InstallDir
@@ -887,6 +1221,9 @@ function Stage-Repository {
                 }
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published" }
+            # Gate before the publish: this rename onto $InstallDir is the
+            # exact move that emptied the running App.
+            Assert-NoTreeHolders -InstallDir $InstallDir
             Move-Item -LiteralPath $tree -Destination $InstallDir
             Write-Ok "Hermes Agent cloned"
         } finally {

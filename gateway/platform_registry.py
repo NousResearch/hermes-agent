@@ -13,6 +13,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
+from gateway.config import _getenv
 from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
@@ -383,8 +384,20 @@ class PlatformRegistry:
             logger.info("Platform '%s' dependencies missing — attempting install...", entry.label)
             deps_ok = _probe(entry.ensure_deps_fn, "Platform '%s' dependency install raised: %s")
         if not deps_ok:
-            hint = f" ({entry.install_hint})" if entry.install_hint else ""
-            logger.warning("Platform '%s' requirements not met%s", entry.label, hint)
+            # check_fn mostly gates on required env, so name the unset variables instead of a
+            # dependency-flavoured install_hint that answers a different question (#122877).
+            # _getenv, not bare os.environ: gates read the active profile secret scope
+            # (multiplexed profile .env never mutates os.environ), so a bare os.environ
+            # probe would name every scoped credential as "not set".
+            missing_env = [name for name in entry.required_env if not (_getenv(name) or "").strip()]
+            if missing_env:
+                logger.warning(
+                    "Platform '%s' requirements not met (required env not set: %s)",
+                    entry.label, ", ".join(missing_env),
+                )
+            else:
+                hint = f" ({entry.install_hint})" if entry.install_hint else ""
+                logger.warning("Platform '%s' requirements not met%s", entry.label, hint)
             return None
         if entry.validate_config is not None:
             try:

@@ -29,6 +29,8 @@ from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
 
+from gateway.platforms import base_media_limits
+
 logger = logging.getLogger(__name__)
 
 
@@ -562,18 +564,13 @@ IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
 DEFAULT_INBOUND_MEDIA_MAX_BYTES = 128 * 1024 * 1024
 
 
-def get_inbound_media_max_bytes() -> int:
-    """Max inbound media bytes held in memory (``gateway.max_inbound_media_bytes``);
-    ``0`` / negative / unparseable disables the cap; unreadable config → default."""
-    return _or_default(lambda: int(_config_section("gateway")["max_inbound_media_bytes"]),
-                       DEFAULT_INBOUND_MEDIA_MAX_BYTES, (KeyError, TypeError, ValueError))
 
 
 def validate_inbound_media_size(
     size: int, *, media_type: str = "media", max_bytes: Optional[int] = None) -> None:
     """Raise ``ValueError`` if an inbound payload exceeds the cap (``max_bytes`` of ``0``
     disables it; pass it explicitly to resolve the limit once across an incremental read)."""
-    limit = get_inbound_media_max_bytes() if max_bytes is None else max_bytes
+    limit = base_media_limits.get_inbound_media_max_bytes() if max_bytes is None else max_bytes
     if limit and size > limit:
         raise ValueError(f"Inbound {media_type} payload is too large ({size} bytes > {limit} bytes)")
 
@@ -581,7 +578,7 @@ def validate_inbound_media_size(
 async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
     """Read an httpx streaming body under the media cap: reject an oversized ``Content-Length``
     early, then re-check the running total per chunk (a lying/absent header can't smuggle more)."""
-    max_bytes = get_inbound_media_max_bytes()
+    max_bytes = base_media_limits.get_inbound_media_max_bytes()
     content_length = response.headers.get("content-length")
     if content_length:
         try:

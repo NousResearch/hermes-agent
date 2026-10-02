@@ -1,0 +1,57 @@
+"""A local Stop request is not evidence that its canonical producer ended."""
+from pathlib import Path
+import time
+
+import pytest
+
+from gateway import hosted_room_driver as tasks, hosted_rooms as rooms
+from gateway.session_hosted_service import CanonicalHostedRoomService
+from hermes_state_runtime import claim_session_input, get_session_admission, settle_session_input
+from tests.gateway.test_session_hosted_rpc import owner  # noqa: F401
+
+
+@pytest.mark.parametrize('producer_state', ['queued', 'started'])
+def test_acknowledged_room_stop_waits_for_the_producer_terminal(owner, monkeypatch, producer_state):
+    authority, loop, _, agent = owner
+    service = CanonicalHostedRoomService(authority, loop)
+    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
+    service.authorize_room('alice', 'room', create=True)
+    gateway = rooms.local_authority_gateway_id()
+    rooms.create_room(authority.db.db_path, room_id='room', name='Room', authority_gateway_id=gateway,
+        members=[{'member_id': 'one', 'profile': 'default', 'handle': 'one'}])
+    event = rooms.append_event(authority.db.db_path, room_id='room', event_id='input', kind='message.user',
+        actor={'kind': 'user', 'id': 'alice'}, payload={'text': 'input', 'thread_id': 'thread'},
+        authority_gateway_id=gateway, authority_epoch=1)
+    identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
+    tasks.admit_task(authority.db.db_path, identity, payload={'target_profile': 'default',
+        'target_member_id': 'one', 'source_event_seq': event['seq'], 'prompt': 'input'}, clock=time.time)
+    binding = service.bindings()[0]
+    lease = service.runtime._ensure_lease(binding)
+    tasks.start_task(authority.db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
+    member = service._resolve_member_transport(binding, tasks.get_task(authority.db.db_path, identity))
+    coords = dict(profile='default', source='bot_room')
+    sid = member.create(**coords, title='Group: room')['session_id']
+    receipt = member.submit(**coords, session_id=sid, prompt='input', task=identity,
+        execution_generation=1, on_terminal=lambda _: None)
+    if producer_state == 'started':
+        claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+    refusal = None
+    try:
+        service.stop_room('room', cancel_id='stop', require_acknowledged=True)
+    except RuntimeError as exc:
+        refusal = str(exc)
+    canonical = get_session_admission(authority.db, admission_id=receipt['admission_id'])
+    hosted = tasks.get_task(authority.db.db_path, identity)
+    if producer_state == 'queued':
+        assert refusal is None and hosted['status'] == 'cancelled'
+        assert (canonical['status'], canonical['outcome']) == ('terminal', 'cancelled')
+        assert not agent.interrupted
+        return
+    assert agent.interrupted and canonical['status'] == 'started'
+    assert hosted['status'] == 'stopping' and refusal is not None, {
+        'hosted_status': hosted['status'], 'canonical_status': canonical['status'], 'refusal': refusal}
+    settle_session_input(authority.db, epoch=authority.epoch, admission_id=canonical['admission_id'],
+        generation=canonical['generation'], outcome='interrupted',
+        result={'result': {'interrupted': True, 'final_response': ''}, 'usage': {}})
+    service.stop_room('room', cancel_id='stop', require_acknowledged=True)
+    assert tasks.get_task(authority.db.db_path, identity)['status'] == 'cancelled'

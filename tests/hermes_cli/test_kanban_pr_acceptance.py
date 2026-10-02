@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_pr_acceptance as acceptance
 from hermes_cli.kanban_db_connect import connect
 
 
@@ -60,9 +61,10 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+    gh.write_text(f"#!{sys.executable}\nimport json,sys,urllib.request\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "value=json.load(urllib.request.urlopen(u))\n"
+                  "print('\\n'.join(json.dumps(page) for page in value) if '--paginate' in sys.argv else json.dumps(value))\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -129,3 +131,121 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+def test_paginated_api_works_with_gh_without_slurp(monkeypatch):
+    from subprocess import CompletedProcess
+
+    def run(command, **kwargs):
+        assert "--paginate" in command
+        assert "--slurp" not in command
+        return CompletedProcess(command, 0, '{"check_runs":[{"id":1}]}\n{"check_runs":[{"id":2}]}\n')
+
+    monkeypatch.setattr(acceptance.subprocess, "run", run)
+    assert acceptance._api("repos/acme/repo/commits/abc/check-runs", paginate=True) == [
+        {"check_runs": [{"id": 1}]}, {"check_runs": [{"id": 2}]}
+    ]
+
+
+def test_open_pr_accepts_exact_head_passing_checks_when_rules_api_is_paywalled(monkeypatch):
+    from subprocess import CalledProcessError
+
+    sha = "a" * 40
+
+    def api(endpoint, *, query=None, paginate=False):
+        if endpoint == "graphql":
+            return {"data": {"repository": {"pullRequest": {
+                "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                "baseRef": {"branchProtectionRule": None}
+            }}}}
+        if "/rules/branches/" in endpoint:
+            raise CalledProcessError(
+                1, "gh api",
+                stderr="Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)",
+            )
+        if "/check-runs" in endpoint:
+            return [{"total_count": 1, "check_runs": [{
+                "id": 42, "name": "Lint, typecheck, migrations, tests", "head_sha": sha,
+                "app": {"id": 1}, "status": "completed", "conclusion": "success",
+            }]}]
+        if "/statuses" in endpoint:
+            return [[]]
+        if "/pulls/" in endpoint:
+            return {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open", "merged": False}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(acceptance, "_api", api)
+    url = "https://github.com/acme/repo/pull/7"
+    receipt = acceptance.collect_acceptance(url, url)
+    assert receipt["ok"] is True
+    assert receipt["classification"] == "success"
+    assert receipt["head_sha"] == sha
+    assert receipt["checks"] == [{
+        "name": "Lint, typecheck, migrations, tests", "id": 42,
+        "url": None, "head_sha": sha, "classification": "success", "conclusion": "success",
+    }]
+
+
+def test_open_pr_rejects_stale_head_success_when_rules_api_is_paywalled(monkeypatch):
+    from subprocess import CalledProcessError
+
+    current_sha = "a" * 40
+    stale_sha = "b" * 40
+
+    def api(endpoint, *, query=None, paginate=False):
+        if endpoint == "graphql":
+            return {"data": {"repository": {"pullRequest": {
+                "headRefOid": current_sha, "baseRefName": "main", "state": "OPEN",
+                "baseRef": {"branchProtectionRule": None}
+            }}}}
+        if "/rules/branches/" in endpoint:
+            raise CalledProcessError(
+                1, "gh api",
+                stderr="Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)",
+            )
+        if "/check-runs" in endpoint:
+            return [{"total_count": 1, "check_runs": [{
+                "id": 42, "name": "Lint, typecheck, migrations, tests", "head_sha": stale_sha,
+                "app": {"id": 1}, "status": "completed", "conclusion": "success",
+            }]}]
+        if "/statuses" in endpoint:
+            return [[]]
+        if "/pulls/" in endpoint:
+            return {"head": {"sha": current_sha}, "base": {"ref": "main"}, "state": "open", "merged": False}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(acceptance, "_api", api)
+    url = "https://github.com/acme/repo/pull/7"
+    receipt = acceptance.collect_acceptance(url, url)
+    assert receipt["ok"] is False
+    assert receipt["classification"] == "stale"
+    assert receipt["checks"][0]["head_sha"] == stale_sha
+
+
+def test_merged_pr_accepts_passing_checks_when_rules_api_is_paywalled(monkeypatch):
+    from subprocess import CalledProcessError
+
+    sha = "a" * 40
+    def api(endpoint, *, query=None, paginate=False):
+        if endpoint == "graphql":
+            return {"data": {"repository": {"pullRequest": {
+                "headRefOid": sha, "baseRefName": "main", "state": "MERGED",
+                "baseRef": {"branchProtectionRule": None}
+            }}}}
+        if "/rules/branches/" in endpoint:
+            raise CalledProcessError(1, "gh api", stderr="Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)")
+        if "/check-runs" in endpoint:
+            return [{"total_count": 1, "check_runs": [{"id": 42, "name": "test", "head_sha": sha,
+                     "app": {"id": 1}, "status": "completed", "conclusion": "success"}]}]
+        if "/statuses" in endpoint:
+            return [[]]
+        if "/pulls/" in endpoint:
+            return {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "closed", "merged": True}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(acceptance, "_api", api)
+    url = "https://github.com/acme/repo/pull/7"
+    receipt = acceptance.collect_acceptance(url, url)
+    assert receipt["ok"] is True
+    assert receipt["classification"] == "success"
+    assert receipt["checks"][0]["name"] == "test"

@@ -19,7 +19,7 @@ def _server(home):
     return GatewayControlServer(home, verb_handlers={'identify': lambda: descriptor})
 
 
-def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, tmp_path):
+def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, tmp_path, monkeypatch):
     from gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
         owner_request,
@@ -37,7 +37,7 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, t
     def attest(selector, operation, params):
         if not allowed[0] or selector != dict(room_id='room', member_id='member', profile='default'):
             raise RuntimeStoreError('permission_denied')
-        if operation in {'submit', 'execute'}:
+        if operation in {'submit', 'execute', 'approve'}:
             assert params['task'] == asdict(task)
             assert params['execution_generation'] == 1
             if operation == 'submit' and params['prompt'] != 'input':
@@ -63,6 +63,36 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, t
         # Recreate server routing to lose all process-local producer caches.
         install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)
         assert check_remote_hosted_admission(authority, ref, rows[0]) is True
+        # A queued target-side approval must re-attest after it reaches the
+        # responder, with the task derived from its actual started admission.
+        from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+        from hermes_state_runtime import claim_session_input
+        claimed = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+        live, answers = authority.sessions[sid], []
+        authority.register_approval(sid, claimed['generation'], live.route,
+            {'request_id': 'transport-approval', 'command': 'owned operation'})
+        live.controls.remote_responders['transport-approval'] = lambda *answer: answers.append(answer)
+        original_approve = HostedRoomAuthorityRPC._approve
+
+        async def revoke_before_response(self, params):
+            allowed[0] = False
+            return await original_approve(self, params)
+
+        monkeypatch.setattr(HostedRoomAuthorityRPC, '_approve', revoke_before_response)
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            rpc.approve(session_id=sid, request_id='transport-approval', choice='once',
+                expected_task_id='task', expected_execution_generation=1)
+        assert not answers
+        allowed[0] = True
+        monkeypatch.setattr(HostedRoomAuthorityRPC, '_approve', original_approve)
+        with pytest.raises(RuntimeStoreError, match='stale_generation'):
+            rpc.approve(session_id=sid, request_id='transport-approval', choice='once',
+                expected_task_id='other', expected_execution_generation=1)
+        assert not answers
+        assert rpc.approve(session_id=sid, request_id='transport-approval', choice='once',
+            expected_task_id='task', expected_execution_generation=1)['status'] == 'resolved'
+        assert answers == [('approval', 'transport-approval', 'once')]
+        rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
             rpc.submit(**{**args, 'prompt': 'forged'})
         raw = json.dumps({'protocol': 1, 'verb': 'hosted-producer', 'params': {}}).encode()

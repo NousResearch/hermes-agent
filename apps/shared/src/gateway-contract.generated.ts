@@ -2707,6 +2707,8 @@ export interface ApprovalRespondParams {
   choice?: string | null
   all?: boolean | null
   request_id?: string | null
+  expected_hosted_task_id?: string | null
+  expected_hosted_execution_generation?: number | null
 }
 export interface ApprovalRespondResult {
   resolved: number

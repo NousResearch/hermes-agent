@@ -7,7 +7,7 @@ and voice / wake-word control (``methods_voice.py``).
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, StrictInt
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, PendingApproval, SessionParams
@@ -320,6 +320,8 @@ class ApprovalRespondParams(SessionParams):
     choice: str | None = None  # default "deny"
     all: bool | None = None
     request_id: str | None = None
+    expected_hosted_task_id: str | None = None
+    expected_hosted_execution_generation: StrictInt | None = None
 
 
 class ApprovalRespondResult(Result):

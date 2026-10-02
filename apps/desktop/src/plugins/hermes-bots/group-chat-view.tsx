@@ -627,8 +627,8 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     {mode !== 'canonical' && !existingClassicRoom && <h2>{props.group}</h2>}
     <p>{mode === 'canonical' ? b.canonical.legacyRoom : mode === 'unavailable' ? b.canonical.driverUnavailable : b.canonical.checkingDriver}</p>
     {error && <p role="alert">{error}</p>}
-    {mode === 'unavailable' && <Button onClick={() => setRefresh(value => value + 1)}>{b.roster.retryNow}</Button>}
-    <Button disabled={mode !== 'canonical' || busy} onClick={() => {
+    {mode === 'unavailable' && <Button className="justify-self-start" onClick={() => setRefresh(value => value + 1)} size="sm" variant="secondary">{b.roster.retryNow}</Button>}
+    <Button className="justify-self-start" disabled={mode !== 'canonical' || busy} onClick={() => {
       const route = { connectionId: connectionId ?? '', profile }
       const activationEpoch = gatewayActivationEpoch()
       const creationSocketGeneration = socketGenerationRef.current
@@ -672,7 +672,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
             setError(canonicalGroupCreateErrorMessage(e, b.canonical))
           }
         }).finally(() => setBusy(false))
-    }}>{b.canonical.startGatewayGroup}</Button>
+    }} size="sm" variant="secondary">{b.canonical.startGatewayGroup}</Button>
     </div>
   </div>
 }

@@ -10,16 +10,22 @@ isolation via `scripts/run_tests_parallel.py` (no xdist; workers scale with CPU 
 module-level dicts/ContextVars cannot leak between files. Direct `pytest` on a big machine
 with API keys set has caused repeated "works locally, fails in CI" incidents (and the reverse).
 
-Prepare a test interpreter with the checkout's bootstrapped Python:
+Activation prepares the managed test environment, which the runner selects
+automatically. To run under an independent interpreter instead, build one with
+the checkout's bootstrapped Python (a checkout-local `.venv` or a fresh absolute
+path outside it):
 
 ```bash
 python -m pm.build_env --source . --out .venv --group dev --group test
 ```
 
 This is a fresh build, not an in-place sync. If the disposable output exists,
-stop its processes and intentionally remove it before regeneration. The runner
-clears `PYTHONPATH`, so PM shell activation alone does not supply pytest. For a
-fresh output outside the checkout, set `HERMES_PYTHON` to its interpreter.
+stop its processes and intentionally remove it before regeneration. Select the
+independent interpreter explicitly via `HERMES_PYTHON` in an unactivated shell
+(`deactivate` or a fresh shell first — an activated shell keeps the managed test
+environment). The runner clears `PYTHONPATH`, so pytest must live in the
+selected interpreter itself; one without pytest is ignored in favor of the
+managed environment.
 
 ```bash
 scripts/run_tests.sh                                    # full suite

@@ -253,6 +253,7 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     assert calls == ["limit", "server"]
 
 
+@pytest.mark.platforms("linux")
 def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_path):
     """The launcher profile must not leak its limit across machine re-exec."""
     from hermes_cli import main as cli_main
@@ -331,8 +332,8 @@ def test_dashboard_lifecycle_flags_skip_limit_adjustment(monkeypatch, lifecycle_
         lambda: calls.append("limit"),
     )
     monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", lambda: [])
-    monkeypatch.setattr(cli_main, "_find_stale_dashboard_pids", lambda: [])
-    monkeypatch.setattr(hermes_cli_main_dashboard, "_find_stale_dashboard_pids", lambda: [])
+    monkeypatch.setattr(cli_main, "_find_stale_dashboard_pids", lambda **_: [])
+    monkeypatch.setattr(hermes_cli_main_dashboard, "_find_stale_dashboard_pids", lambda **_: [])
 
     args = SimpleNamespace(
         status=lifecycle_flag == "status",

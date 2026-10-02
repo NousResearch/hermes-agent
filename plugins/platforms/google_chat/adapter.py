@@ -24,6 +24,7 @@ from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from agent.i18n import t
 from agent.secret_scope import is_multiplex_active
 from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
@@ -193,17 +194,25 @@ def check_google_chat_requirements() -> bool:
 def ensure_google_chat_deps() -> bool:
     """ACTIVE installer (registry ``ensure_deps_fn``).
 
-    Routes through ``tools.lazy_deps`` so sealed hosted/Docker images write
-    ``HERMES_LAZY_INSTALL_TARGET`` instead of the read-only venv. Resets the
-    failed-import cache so ``create_adapter()`` can load modules after install.
-    ``FeatureUnavailable`` propagates: the registry logs its ``reason`` (quarantine
-    404, no writable target, network), which is exactly what a hosted operator needs.
+    PM owns the install; a refusal (lazy installs off, unsupported platform,
+    network) propagates so the registry logs the reason. Resets the failed-import
+    cache so ``create_adapter()`` can load modules after install.
     """
     global _google_modules_loaded, GOOGLE_CHAT_AVAILABLE
     if GOOGLE_CHAT_AVAILABLE:
         return True
-    from tools.lazy_deps import ensure as _lazy_ensure
-    _lazy_ensure("platform.google_chat", prompt=False)
+    from pm import InstallError, ensure_import
+    # Request BOTH extras before surfacing a failure: a successful install raises
+    # InstallError("restart Hermes to activate…") for the first extra, and aborting
+    # there would leave the second uninstalled — the restart would land back here.
+    failures: list[InstallError] = []
+    for extra in ("google", "google-chat"):
+        try:
+            ensure_import(extra)
+        except InstallError as exc:
+            failures.append(exc)
+    if failures:
+        raise failures[0]
     _google_modules_loaded = False
     return _load_google_modules()
 
@@ -259,7 +268,7 @@ def _load_sa_credentials_from(sa_value: Optional[str]) -> Any:
             raise _SACredentialError("not_found")
         else:
             try:
-                with open(sa_value, "r", encoding="utf-8") as fh:
+                with open(sa_value, "r", encoding="utf-8-sig") as fh:
                     info = json.load(fh)
             except json.JSONDecodeError as exc:
                 raise _SACredentialError("file_invalid", exc) from exc
@@ -295,7 +304,7 @@ class _ThreadCountStore:
         if not self._path.exists():
             return
         try:
-            raw = self._path.read_text(encoding="utf-8")
+            raw = self._path.read_text(encoding="utf-8-sig")
             data = json.loads(raw) if raw.strip() else {}
         except (json.JSONDecodeError, OSError) as exc:
             fmt = ("[GoogleChat] thread-count store at %s is corrupt; starting fresh: %s" if isinstance(exc, ValueError)
@@ -525,7 +534,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     def _load_cached_bot_id(self) -> Optional[str]:
         try:
-            return json.loads(self._bot_id_cache_path().read_text(encoding="utf-8")).get("bot_user_id") or None
+            return json.loads(self._bot_id_cache_path().read_text(encoding="utf-8-sig")).get("bot_user_id") or None
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -682,7 +691,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """Run streaming_pull with exponential backoff + full jitter; fatal after N attempts.
         ``subscribe()`` returns a Future that resolves when the stream dies."""
         pubsub_fatals = {
-            gax_exceptions.Unauthenticated: ("pubsub_auth", "Pub/Sub authentication failed (SA key invalid/revoked)"),
+            gax_exceptions.Unauthenticated: (
+                "pubsub_auth",
+                "Pub/Sub authentication failed; check service-account credentials and gateway logs",
+            ),
             gax_exceptions.PermissionDenied: ("pubsub_permission", "SA lacks pubsub.subscriber on the subscription"),
         }
         attempt = 0
@@ -1113,10 +1125,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
             choice_text = str(choice).strip()
             if choice_text:
                 buttons.append(_button(choice_text if len(choice_text) <= 80 else choice_text[:77] + "...", choice_text))
-        buttons.append(_button("Other / type answer", "__other__"))
+        buttons.append(_button(t("platform.google_chat.clarify.other_button"), "__other__"))
         card = card_spec_to_cards_v2({
-            "card_id": f"clarify-{clarify_id}", "header": {"title": "Question"},
-            "sections": [{"widgets": [{"type": "text", "text": f"❓ {question}"}, {"type": "buttons", "buttons": buttons}]}],
+            "card_id": f"clarify-{clarify_id}", "header": {"title": t("platform.google_chat.clarify.header")},
+            "sections": [{"widgets": [{"type": "text", "text": t("platform.google_chat.clarify.question", question=question)},
+                                      {"type": "buttons", "buttons": buttons}]}],
         })
         result = await self.send_card(chat_id, card, metadata=metadata)
         if result.success:
@@ -1270,7 +1283,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 await asyncio.wait_for(self._typing_card_inflight[chat_id].wait(), timeout=5.0)
             return
         thread_id = self._resolve_thread_id(reply_to=None, metadata=metadata, chat_id=chat_id)
-        body = _thread_body(getattr(self.config, "typing_status_text", None) or "Hermes is thinking…", thread_id)
+        body = _thread_body(getattr(self.config, "typing_status_text", None) or t("platform.google_chat.typing.thinking"), thread_id)
         self._typing_card_inflight[chat_id] = completed = asyncio.Event()
 
         async def _create_and_record() -> None:
@@ -1315,7 +1328,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         try:
             current = self._typing_messages.pop(chat_id, None)
             if current and current != _TYPING_CONSUMED_SENTINEL:
-                label = "(interrupted)" if outcome == ProcessingOutcome.CANCELLED else "(no reply)"
+                label = t("platform.google_chat.typing.interrupted" if outcome == ProcessingOutcome.CANCELLED
+                          else "platform.google_chat.typing.no_reply")
                 await self._patch_quietly(current, label, "[GoogleChat] on_processing_complete patch fallback failed")
             for orphan_id in self._orphan_typing_messages.pop(chat_id, []):
                 await self._patch_quietly(orphan_id, "·", "[GoogleChat] orphan typing-card patch failed: %s", orphan_id)
@@ -1509,16 +1523,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
                                         thread_id: Optional[str]) -> SendResult:
         """Post the ``/setup-files`` notice (plus host path) when native delivery is
         unavailable. Always returns ``success=False``."""
-        lines = [caption] if caption else []
-        lines.extend([
-            f"⚠️ No he podido adjuntar **{filename}**.",
-            "Google Chat sólo permite adjuntar archivos cuando el bot tiene permiso explícito tuyo (OAuth de usuario). "
-            "Es un consentimiento único que se hace desde este chat.",
-            "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
-            f"Mientras tanto el archivo está en el host: `{path}`",
+        notice = "\n".join([
+            t("platform.google_chat.attachment_fallback.header", filename=filename),
+            t("platform.google_chat.attachment_fallback.explain"),
+            t("platform.google_chat.attachment_fallback.activate"),
+            t("platform.google_chat.attachment_fallback.host_path", path=path),
         ])
+        body = self.warning_text(f"{caption}\n{notice}" if caption else notice, caption or "")
         try:
-            await self._create_message(chat_id, _thread_body("\n".join(lines), thread_id))
+            if body:
+                await self._create_message(chat_id, _thread_body(body, thread_id))
         except Exception:
             logger.debug("[GoogleChat] attachment fallback notice send failed", exc_info=True)
         return SendResult(

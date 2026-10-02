@@ -15,67 +15,127 @@ from .method_ctx import bind_module
 # Child-session live mirror: a delegated child's activity reaches the gateway only as
 # relayed ``subagent.*`` events on the PARENT sid; translate them into native stream
 # events on the CHILD sid (write_json routes by sid) so its own window is not silent.
-_child_mirrors: dict[str, dict] = {}
+# Both dicts are keyed on (profile_home, child key): stored ids are timestamps that exist in
+# several profiles' stores, and a child runs under its PARENT's profile — a bare-key hit let
+# profile B's lazy resume bind to A's in-flight run and receive its mirror (#120212).
+_child_mirrors: dict[tuple[str | None, str], dict] = {}
 _child_mirrors_lock = threading.Lock()
 # Child sids with a run in flight (refreshed per relayed event, popped on complete) so a
 # lazy watch resume reports running=true during a silent long tool.
-_active_child_runs: dict[str, float] = {}
+_active_child_runs: dict[tuple[str | None, str], float] = {}
 # Anything quiet this long lost its completion event — don't pin "running".
 _CHILD_RUN_STALE_S = 3600.0
 _CHILD_DELTA_EVENTS = {"subagent.thinking": "reasoning.delta", "subagent.text": "message.delta",
                        "subagent.start": "message.delta"}
 
 
-def _child_run_active(child_key: str) -> bool:
-    ts = _active_child_runs.get(child_key)
+def _child_run_active(child_key: str, profile_home) -> bool:
+    """``profile_home`` is the caller's resolved home (Path / str / None = launch profile), never omitted."""
+    ts = _active_child_runs.get((str(profile_home) if profile_home else None, child_key))
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
-def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
+def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
+    key = (str(profile_home) if profile_home else None, child_key)
     # Liveness registry first: accurate with no window open (one opened mid-run knows busy).
     if event_type == "subagent.complete":
-        _active_child_runs.pop(child_key, None)
+        _active_child_runs.pop(key, None)
     else:
-        _active_child_runs[child_key] = time.time()
-    # Mirror only into a live watch session NOT upgraded to a full agent (an upgraded one owns
-    # a real native stream). Either way drop state so a reopened window starts fresh.
-    live = _find_live_session_by_key(child_key)
+        _active_child_runs[key] = time.time()
+    # Mirror only into a live watch session of the OWNING profile that is NOT upgraded to a full
+    # agent (an upgraded one owns a real native stream). Either way drop state so a reopened
+    # window starts fresh.
+    live = _find_live_session_by_key(child_key, key[0])
     if live is None or live[1].get("agent") is not None:
         with _child_mirrors_lock:
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop(key, None)
         return
     csid = live[0]
     text = str(payload.get("text") or "")
     with _child_mirrors_lock:
-        st = _child_mirrors.setdefault(child_key, {"seq": 0, "open_tool": None, "started": False})
+        st = _child_mirrors.setdefault(key, {"seq": 0, "open_tool": None, "started": False})
         if not st["started"]:
             st["started"] = True
             _emit("message.start", csid)
         # thinking/text/start (the child's goal, as a one-time header) are plain deltas.
         if event_type in _CHILD_DELTA_EVENTS:
             if text:
-                _emit(_CHILD_DELTA_EVENTS[event_type], csid,
-                      {"text": f"{text}\n" if event_type == "subagent.start" else text})
+                mapped = _CHILD_DELTA_EVENTS[event_type]
+                if mapped == "reasoning.delta" and not _session_show_reasoning(csid):
+                    return
+                _emit(mapped, csid, {"text": f"{text}\n" if event_type == "subagent.start" else text})
             return
         if event_type not in ("subagent.tool", "subagent.complete"):
             return
         if st["open_tool"]:
-            _emit("tool.complete", csid, st["open_tool"])
+            open_tool = st["open_tool"]
+            st["open_tool"] = None
+            if _tool_progress_enabled(csid) or _tool_lifecycle_required_for_ui(str(open_tool.get("name") or "")):
+                _emit("tool.complete", csid, open_tool)
         if event_type == "subagent.tool":
             st["seq"] += 1
-            tool = {"name": str(payload.get("tool_name") or "tool"),
+            tool_name = str(payload.get("tool_name") or "tool")
+            tool = {"name": tool_name,
                     "tool_id": f"submirror:{child_key}:{st['seq']}", "args": {}}
             if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
                 tool["preview"] = preview
+            if not _tool_progress_enabled(csid) and not _tool_lifecycle_required_for_ui(tool_name):
+                return
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
         else:
             summary = str(payload.get("summary") or payload.get("text") or "")
             _emit("message.complete", csid, {"text": summary})
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop(key, None)
+
+
+def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
+    from gateway.warning_notifications import warning_notifications_enabled
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    # Callback workers do not necessarily inherit the turn's ContextVars. The
+    # existing agent latch follows the same serialized turn across those threads.
+    if getattr((session or {}).get("agent"), "_mute_notification_reply", False):
+        return False
+    if not diagnostic:
+        return True
+    with _session_profile_runtime_scope(session or {}):
+        # Sole TUI policy read for agent callbacks; sinks below call this instead of re-deriving it.
+        return warning_notifications_enabled("tui", getattr((session or {}).get("agent"), "_notification_config", None))
+
+
+def _agent_status_update(sid: str, kind: str, text: str | None = None) -> None:
+    from gateway.warning_notifications import is_warning_status
+    if not _agent_presentation_enabled(sid, diagnostic=is_warning_status(kind, text if text is not None else kind)):
+        return
+    _status_update(sid, str(kind), None if text is None else str(text))
+
+
+def _agent_thinking_update(sid: str, text: str) -> None:
+    from gateway.warning_notifications import DiagnosticText
+    # Wait notices and the quiet spinner share this callback with diagnostics.
+    # They are not reasoning blocks; display.show_reasoning must not swallow them.
+    if not _agent_presentation_enabled(sid, diagnostic=isinstance(text, DiagnosticText)):
+        return
+    _emit("thinking.delta", sid, {"text": text})
+
+
+def _agent_notice_update(sid: str, notice) -> None:
+    from gateway.warning_notifications import is_diagnostic_notice
+    if not _agent_presentation_enabled(sid, diagnostic=is_diagnostic_notice(notice)):
+        return
+    _emit("notification.show", sid,
+          {"text": notice.text, "level": notice.level, "kind": notice.kind,
+           "ttl_ms": notice.ttl_ms, "key": notice.key, "id": notice.id})
+
+
+def _emit_reasoning_delta(sid: str, text: str) -> None:
+    if not _session_show_reasoning(sid):
+        return
+    _emit("reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})})
 
 
 def _agent_cbs(sid: str) -> dict:
@@ -89,26 +149,26 @@ def _agent_cbs(sid: str) -> dict:
     callbacks = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(sid, tc_id, name, args),
         "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(sid, tc_id, name, args, result),
+        "tool_result_metadata_callback": lambda tc_id, name, args, result: _prepare_tool_result_metadata(
+            sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "thinking_callback": lambda text: _agent_thinking_update(sid, text),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
-        "reasoning_callback": lambda text: _emit(
-            "reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})}),
-        "status_callback": lambda kind, text=None: _status_update(sid, str(kind), None if text is None else str(text)),
+        "reasoning_callback": lambda text: _emit_reasoning_delta(sid, text),
+        "status_callback": lambda kind, text=None: _agent_status_update(sid, kind, text),
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
-        "notice_callback": lambda n: _emit(
-            "notification.show", sid,
-            {"text": n.text, "level": n.level, "kind": n.kind, "ttl_ms": n.ttl_ms, "key": n.key, "id": n.id}),
+        "notice_callback": lambda n: _agent_notice_update(sid, n),
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
-        "clarify_callback": lambda q, c, multi_select=False, questions=None: (
-            _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
+        "clarify_callback": lambda questions: _clarify_block(sid, questions),
         "read_terminal_callback": _read_block("terminal.read", 30),
         "read_preview_callback": _read_block("preview.read", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
-        "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
+        # The probe ladder lives in server.py (_preview_action_request) so an
+        # absent renderer fails fast instead of burning 45s per action (#94272).
+        "drive_preview_callback": lambda payload: _preview_action_request(sid, dict(payload)),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
         # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
@@ -148,7 +208,8 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         agent = session.get("agent")
         info = _session_info(agent, session) if agent is not None else {
             "cwd": resolved, "branch": git_probe.branch(resolved),
-            "project": _project_info_for_cwd(resolved), "lazy": True}
+            "project": _project_info_for_cwd(resolved), "lazy": True,
+            "desktop_contract": DESKTOP_BACKEND_CONTRACT}
         _emit("session.info", sid, info)
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
@@ -163,7 +224,24 @@ def _wire_callbacks(sid: str):
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
-        val = _ask("secret", sid, pl)
+        # One process-global callback, so the closure sid is just the last session wired,
+        # not the owner. Ask the UI session bound by _set_session_context: the same
+        # record whose profile scope the value is saved into. No bound owner: skip.
+        from gateway.session_context import get_session_env
+
+        owner_sid = get_session_env("HERMES_UI_SESSION_ID")
+        # Credential admission is fenced to a live runtime. owner_sid is a ContextVar copied onto
+        # the worker's thread at spawn: a background/btw/preview worker outlives its session, and
+        # the close path's `_clear_pending` cancels only requests ALREADY open — it cannot fence
+        # one created afterward. Without a session here the request would register, wait 300s for
+        # a client that never reconnects, and any late answer would settle into the saver with no
+        # owner to revalidate (andrexibiza P2, #121471). A parked reconnectable record also keeps
+        # `write_json` off the stdio fallback — there is no `session.resume` for a closed sid.
+        if owner_sid and _sessions.get(owner_sid) is None:
+            logger.info("secret prompt for %s refused: its UI session is closed", owner_sid)
+            val = ""
+        else:
+            val = _ask("secret", owner_sid, pl) if owner_sid else ""
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
         from hermes_cli.config import save_env_value_secure
@@ -274,6 +352,39 @@ def _load_fallback_model():
     return get_fallback_chain(_load_cfg())
 
 
+def _load_prefill_messages() -> list:
+    """Configured prefill messages, resolved like the CLI (env > ``prefill_messages_file`` > legacy
+    ``agent.*``). Desktop/TUI agents never run the CLI bootstrap, so without this the setting was
+    ignored there (#60456). Relative paths resolve against the active profile home, per call."""
+    from hermes_cli.cli_config_load import _load_prefill_messages as _load, _resolve_prefill_messages_file
+    from hermes_constants import get_hermes_home
+    return _load(_resolve_prefill_messages_file(_load_cfg()), get_hermes_home())
+
+
+def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
+    """Adopt ``fallback_providers`` edits into the cached agent at turn start.
+
+    Desktop/TUI chats keep one agent across turns, and ``_make_agent`` reads the chain once: a chat
+    opened before ``hermes fallback add`` kept an empty chain forever and a provider-quota 429 ended in
+    a provider error with a healthy fallback configured (#95066). Same per-turn contract the messaging
+    gateway applies to its cached agents (``GatewayRunner._refresh_fallback_model``): the config is
+    read fail-closed, so a torn/invalid config.yaml keeps the agent's last known-good chain instead of
+    ``_load_cfg()``'s fail-open ``{}`` reading as "chain removed" and wiping it. Never blocks the turn.
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return
+    try:
+        from gateway.run import GatewayRunner
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_cli.fallback_config import get_fallback_chain
+        chain = get_fallback_chain(load_user_config_effective(_active_config_path(), fail_closed=True))
+    except Exception as e:
+        logger.warning("fallback chain sync skipped for %s (keeping current chain): %s", sid, e)
+        return
+    GatewayRunner._apply_fallback_chain_to_agent(agent, chain)
+
+
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
 
@@ -295,6 +406,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
                              "provider_data_collection", "openrouter_min_coding_score")},
         "model": g("model") or _resolve_model(), "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": g("enabled_toolsets") or _load_enabled_toolsets("tui"),
+        "disabled_toolsets": g("disabled_toolsets") or _load_disabled_toolsets(),
         "quiet_mode": True, "verbose_logging": False,
         "provider_require_parameters": g("provider_require_parameters", False), "session_id": task_id,
         "reasoning_config": g("reasoning_config") or _load_reasoning_config(str(g("model", "") or "")),
@@ -302,7 +414,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(g("request_overrides", {}) or {}),
         # The side agent persists into the PARENT's store: a named-profile chat's ``bg_*`` rows
         # belong to that profile's state.db, not the launch handle.
-        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback}
+        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback,
+        "side_agent": True}
 
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:
@@ -395,11 +508,23 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
         if preview or name:
             progress(str(preview) if preview else f"{event_type.replace('.', ' ')}: {name}")
 
+    _restart_status = _restart_status_factory(parent, progress)
     return {
         "tool_start_callback": tool_start, "tool_complete_callback": tool_complete,
         "tool_progress_callback": tool_progress,
         "tool_gen_callback": lambda name: progress(f"Preparing {name}"),
-        "status_callback": lambda kind, text=None: progress(text if text is not None else kind)}
+        "status_callback": _restart_status}
+
+
+def _restart_status_factory(parent: str, progress):
+    """Restart-panel status rows: automatic warnings honor the TUI policy like the main agent's sink."""
+    def _restart_status(kind, text=None):
+        from gateway.warning_notifications import is_warning_status
+        message = text if text is not None else kind
+        if is_warning_status(kind, message) and not _agent_presentation_enabled(parent, diagnostic=True):
+            return
+        progress(message)
+    return _restart_status
 
 
 def _rebuild_session_agent(sid: str, session: dict, **kwargs):
@@ -420,6 +545,15 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         config_model_seen = _config_model_target()
         if opened:
             session_db = _open_profile_session_db(profile_home)
+        # A rebuild is not a conversation boundary (/new pops the pins before calling us): carry the
+        # session's /model, /reasoning and /fast picks, else config_model_seen below hides the
+        # reversion from the per-turn sync.
+        if "model_override" not in kwargs and isinstance(session.get("model_override"), dict):
+            kwargs["model_override"] = session["model_override"]
+        for pin, kwarg in (("create_reasoning_override", "reasoning_config_override"),
+                           ("create_service_tier_override", "service_tier_override")):
+            if kwarg not in kwargs and session.get(pin) is not None:
+                kwargs[kwarg] = session[pin]
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:

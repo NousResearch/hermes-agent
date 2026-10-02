@@ -69,9 +69,76 @@ export function currentGroupActivity(group: string) {
   return ($groupActivity.get()[group] || {}).events?.filter(event => (event.epoch || 0) === epoch) || []
 }
 
+/** Normalized cause for a pool-slot wait timeout — the local backend pool
+ *  had no free slot, so the member never started. Stored as the activity
+ *  event's `reason` so the feed can tell it apart from a bot crash.
+ *  The string deliberately contains "timeout": `attentionReasonFromError`
+ *  must keep classifying it as transient (never a roster badge). */
+export const GROUP_SLOT_WAIT_REASON = 'slot_wait_timeout'
+
+/** Stable coordinator phrase (`pool-spawn-coordinator.ts`), the
+ *  cross-process discriminator — same shape as `isLocalBackendSlotWaitTimeout`
+ *  in `store/pool-limits.ts`, kept local because the plugin fence cannot
+ *  import the store. Match narrowly so other backend failures keep their path. */
+export function isGroupSlotWaitTimeoutText(text: unknown): boolean {
+  return typeof text === 'string' && text.includes('timed out while waiting for a free slot')
+}
+
+/** Typed failure cause for a member-turn error: the gateway's
+ *  `data.reason` when present, else the normalized slot-wait cause when the
+ *  message carries the coordinator phrase, else the error's own first line.
+ *  Single home for the classification so the turn catch and the stranded
+ *  harvest cannot drift. #117366: a bare "X hit an error" row gave the user
+ *  nothing to act on (a stopped backend, a dead IPC bridge and a provider
+ *  refusal all read the same), so an unclassified failure keeps its message. */
+export function groupFailureReason(error: unknown): string {
+  const typed =
+    typeof (error as { data?: { reason?: unknown } })?.data?.reason === 'string'
+      ? String((error as { data: { reason: string } }).data.reason).trim()
+      : ''
+
+  if (typed) {
+    return typed
+  }
+
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+
+  return isGroupSlotWaitTimeoutText(message) ? GROUP_SLOT_WAIT_REASON : groupFailureDetail(message)
+}
+
+const GROUP_FAILURE_DETAIL_LIMIT = 200
+
+// Secret-shaped spans an error line can carry (a bearer header, a `?token=`
+// URL, a vendor API key, `user@host:password`). The plugin fence keeps the
+// Electron-side `redactSecrets` out of reach, so the same shapes live here.
+const GROUP_FAILURE_REDACTIONS: Array<[RegExp, string]> = [
+  [/(authorization["']?\s*[:=]\s*["']?bearer\s+)(\S+)/gi, '$1<redacted>'],
+  [/([?&](?:token|ticket|api_?key|key|access_token|secret)=)([^\s&"']+)/gi, '$1<redacted>'],
+  [/\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{8,}|xox[abprs]-[A-Za-z0-9-]{8,})\b/g, '<redacted>'],
+  [/(\S+@[^\s:/]+):(?!\d+\b)[^\s:/]+/g, '$1:<redacted>']
+]
+
+/** The first non-empty line of a raw error message, trimmed, secret spans
+ *  redacted, capped — the room row is a summary, the log keeps the rest. */
+export function groupFailureDetail(message: unknown): string {
+  const line =
+    String(message || '')
+      .split(/\r?\n/)
+      .map(part => part.trim())
+      .find(Boolean) || ''
+
+  const redacted = GROUP_FAILURE_REDACTIONS.reduce((text, [re, repl]) => text.replace(re, repl), line)
+
+  return redacted.length > GROUP_FAILURE_DETAIL_LIMIT
+    ? `${redacted.slice(0, GROUP_FAILURE_DETAIL_LIMIT - 1)}…`
+    : redacted
+}
+
 /** Human label for one activity event, used by the collapsed summary and
- *  the expanded rows. */
-export function groupActivityLabel(event: GroupActivityEntry) {
+ *  the expanded rows. `group` scopes the same-name disambiguation to the
+ *  room's seats. A slot-wait failure renders distinctly from a bot crash so
+ *  pool saturation is not misread as a broken bot. */
+export function groupActivityLabel(event: GroupActivityEntry, group?: null | string) {
   const kind = event?.kind
   const base = GROUP_ACTIVITY_LABELS[kind] || kind || 'did something'
 
@@ -79,9 +146,14 @@ export function groupActivityLabel(event: GroupActivityEntry) {
     return base
   }
 
-  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot')
+  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot', group)
+  const reason = kind === 'failed' ? String(event?.reason || '').trim() : ''
 
-  return `${who} ${base}`
+  if (kind === 'failed' && reason === GROUP_SLOT_WAIT_REASON) {
+    return `${who} couldn't start — too many bots running`
+  }
+
+  return `${who} ${base}${reason ? ` — ${reason}` : ''}`
 }
 
 const GROUP_ACTIVITY_LABELS: Record<GroupActivityKind, string> = {

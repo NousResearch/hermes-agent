@@ -179,29 +179,46 @@ class TestConfigDefault:
 class TestCapReachesTheWire:
     """The resolved cap is what the transports put in the outgoing request."""
 
+    def _wire(self, profile, model, cap):
+        from agent.transports import get_transport
+
+        return get_transport("chat_completions").build_kwargs(
+            model, [{"role": "user", "content": "hi"}], None,
+            max_tokens=cap, reasoning_config=None,
+            max_tokens_param_fn=lambda v: {"max_tokens": v}, provider_profile=profile)
+
     @pytest.mark.parametrize("cap,expected", [(None, 65536), (32768, 32768), (131072, 65536)])
     def test_qwen_oauth_route(self, cap, expected):
-        from agent.transports import get_transport
+        """The real qwen-oauth profile, so the row with no cap proves the PROFILE default (65536)
+        still ships — that is the value a job cap has to stay under."""
+        from providers import get_provider_profile
+
         from cron.scheduler import _resolve_job_max_tokens
 
-        resolved = _resolve_job_max_tokens(
-            {"id": "j1", "max_tokens": cap}, {}, CAPPED_RUNTIME, "qwen3-max")
-        kwargs = get_transport("chat_completions").build_kwargs(
-            "qwen3-max", [{"role": "user", "content": "hi"}], None,
-            max_tokens=resolved, reasoning_config=None,
-            max_tokens_param_fn=lambda v: {"max_tokens": v}, provider_profile=None)
-        assert kwargs.get("max_tokens", expected) == expected
+        resolved = _resolve_job_max_tokens({"id": "j1", "max_tokens": cap}, {}, CAPPED_RUNTIME, "qwen3-max")
+        kwargs = self._wire(get_provider_profile("qwen-oauth"), "qwen3-max", resolved)
+        # Not .get(k, expected): a missing key must FAIL, not default to the expectation.
+        assert kwargs.get("max_tokens") == expected
+
+    def test_uncapped_route_still_sends_nothing(self):
+        """openrouter's default_max_tokens is None, so an unset cap leaves the key ABSENT —
+        the pre-feature wire shape, asserted as absence rather than as a value."""
+        from providers import get_provider_profile
+
+        from cron.scheduler import _resolve_job_max_tokens
+
+        resolved = _resolve_job_max_tokens({"id": "j1"}, {}, UNCAPPED_RUNTIME, "qwen3-max")
+        assert resolved is None
+        kwargs = self._wire(get_provider_profile("openrouter"), "qwen/qwen3-max", resolved)
+        assert "max_tokens" not in kwargs
 
     def test_anthropic_route_receives_the_cap(self):
-        from agent.transports import get_transport
         from cron.scheduler import _resolve_job_max_tokens
 
         resolved = _resolve_job_max_tokens(
             {"id": "j1", "max_tokens": 16384}, {}, {"provider": "anthropic"}, "claude-sonnet-4.6")
-        kwargs = get_transport("anthropic_messages").build_kwargs(
-            model="claude-sonnet-4.6", messages=[{"role": "user", "content": "hi"}], tools=None,
-            max_tokens=resolved, reasoning_config=None)
-        assert kwargs["max_tokens"] == 16384
+        kwargs = self._wire(None, "claude-sonnet-4.6", resolved)
+        assert kwargs.get("max_tokens") == 16384
 
 
 class TestAgentConstructionWiring:

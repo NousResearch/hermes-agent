@@ -159,7 +159,8 @@ This works with plain `git` — no `gh` needed:
 git fetch origin pull/123/head:pr-123
 git checkout pr-123
 
-# Now you can use read_file, search_files, run tests, etc.
+# Now you can use read_file and search_files on it. Run its code (tests, builds,
+# installs) only through `hermes sandbox run --pr 123 -- <command>`, never on the host.
 
 # View diff against the base branch
 git diff main...pr-123
@@ -352,7 +353,7 @@ curl -s -H "Authorization: token $GITHUB_TOKEN" \
 
 ### Step 3: Check out the PR locally
 
-This gives you full access to `read_file`, `search_files`, and the ability to run tests.
+This gives you `read_file` and `search_files` over the PR's files. Reading is safe; running is not: tests, builds, installs and scripts from someone else's PR run with your account and can read your SSH keys, tokens and `~/.hermes/.env`. Run them only through `hermes sandbox run` (Step 5).
 
 ```bash
 git fetch origin pull/$PR_NUMBER/head:pr-$PR_NUMBER
@@ -373,17 +374,21 @@ git diff main...HEAD -- path/to/file.py
 
 For each changed file, use `read_file` to see full context around the changes — diffs alone can miss issues visible only with surrounding code.
 
-### Step 5: Run automated checks locally (if applicable)
+### Step 5: Run automated checks in the sandbox (if applicable)
+
+Run the PR's code only inside `hermes sandbox run`. It copies the PR without executing anything from it (no checkout, no hooks), then runs your command in a throwaway container with no network, no credentials or host environment, a read-only root and no access to your files. Put dependency installs in `--setup`: that step has network but still no credentials.
 
 ```bash
-# Run tests if there's a test suite
-python -m pytest 2>&1 | tail -20
-# or: npm test, cargo test, go test ./..., etc.
-
-# Run linter if configured
-ruff check . 2>&1 | head -30
-# or: eslint, clippy, etc.
+# Python
+hermes sandbox run --pr $PR_NUMBER --setup 'pip install --user -e .' -- python -m pytest -q 2>&1 | tail -20
+# Node
+hermes sandbox run --pr $PR_NUMBER --setup 'npm ci' -- npm test 2>&1 | tail -20
+# or: cargo test, go test ./..., the same way
 ```
+
+The exit status is the command's (124 = timed out). If `hermes sandbox run` reports that Docker or Podman is missing, do not fall back to running the PR on the host: review the diff statically and say in the review that the tests were not run.
+
+Linters that only parse code (`ruff check`) can run on the checkout. Tools that load project config or build scripts as code (eslint, tsc plugins, clippy, anything that compiles) go through the sandbox too.
 
 ### Step 6: Apply the review checklist (Section 3)
 

@@ -487,7 +487,7 @@ class PeerRunsHTTPClient:
         return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
 
     def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
-        """Recover one exact admission by receipt or idempotent POST replay."""
+        """Observe output-enabled attempts; legacy text retains its idempotent replay."""
         accepted = self.recover_accepted_dispatch(dispatch=dispatch, grant=grant)
         if accepted is not None:
             return accepted
@@ -498,7 +498,12 @@ class PeerRunsHTTPClient:
             raise PeerRunsHTTPError(
                 "peer admission recovery is backing off", retryable=True, ambiguous=True)
         try:
-            recovered = self._admit_dispatch(checked, grant=grant)
+            if checked.document_output is not None:
+                receipt = self._recover_output_receipt(checked, grant=grant)
+                recovered = self._accepted(checked, run_id=receipt['run_id'],
+                                           session_id=receipt['session_id'], replayed=True)
+            else:
+                recovered = self._admit_dispatch(checked, grant=grant)
         except PeerRunsHTTPError as exc:
             failure = exc
             if (checked.document_inputs or checked.document_output) and exc.not_admitted:

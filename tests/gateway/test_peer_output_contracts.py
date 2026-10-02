@@ -188,3 +188,39 @@ def test_empty_output_evidence_cannot_override_file_or_scope_evidence(tmp_path, 
     evidence[conflict] = terminal_artifact_manifest([artifact]) if conflict == "artifacts" else scope.as_mapping()
     assert terminal_output_fields(evidence) == {}
     assert outbox.read(scope, artifact["artifact_id"])[1] == b"retained"
+
+@pytest.mark.parametrize('accepted', [True, False])
+def test_output_recovery_with_durable_consent_never_submits_work(tmp_path, monkeypatch, accepted):
+    from hermes_state import SessionDB
+    from gateway.hosted_room_peer_output import dispatch_digest
+    from tui_gateway.hosted_room_peer_output import consent_key
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+
+    dispatch = HostedMemberDispatch.from_mapping(_dispatch(document_output=dict(OUTPUT_CAPABILITY)))
+    db = SessionDB(tmp_path / 'home.db')
+    target = {key: getattr(dispatch, key) for key in ('target_install_id', 'target_profile', 'home_install_id',
+        'capability_digest', 'execution_policy_digest', 'cancellation_scope_id', 'trace_id')}
+    saved = {'target': target, 'contract': dict(OUTPUT_CAPABILITY), 'dispatched': True, 'dispatch': dispatch.as_mapping()}
+    db._execute_write(lambda conn: conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
+        (consent_key(dispatch.as_mapping()), json.dumps(saved))))
+    client = PeerRunsHTTPClient(base_url='http://127.0.0.1:12345', api_key='', receipt_db_path=db.db_path,
+                               proof_install_id=dispatch.target_install_id)
+    requests = []
+    def request(path, **kwargs):
+        requests.append((kwargs.get('method', 'GET'), path))
+        assert kwargs.get('method', 'GET') == 'GET', 'Recovery must not create a Run, even with durable consent'
+        if not accepted:
+            raise PeerRunsHTTPError('receipt unavailable', status_code=404)
+        return {'run_id': path.rsplit('/', 1)[1], 'status': 'completed',
+                'peer_output_dispatch_digest': dispatch_digest(dispatch)}
+    monkeypatch.setattr(client, '_request', request)
+    try:
+        if accepted:
+            assert client.recover_dispatch(dispatch=dispatch.as_mapping(), grant='signed.room.grant')['replayed']
+        else:
+            with pytest.raises(PeerRunsHTTPError) as error:
+                client.recover_dispatch(dispatch=dispatch.as_mapping(), grant='signed.room.grant')
+            assert error.value.ambiguous and not error.value.not_admitted
+        assert len(requests) == 1
+    finally:
+        db.close()

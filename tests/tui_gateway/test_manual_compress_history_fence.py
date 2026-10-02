@@ -6,8 +6,13 @@ import pytest
 
 
 @pytest.mark.parametrize("in_place", [False, True])
-@pytest.mark.parametrize("stale", [False, True, "validation_error", "empty_summary"])
-def test_manual_compress_rejects_history_rewritten_before_admission(tmp_path, monkeypatch, stale, in_place):
+@pytest.mark.parametrize("compress_args,stale", [
+    ("", False), ("", True), ("", "validation_error"), ("", "empty_summary"),
+    ("here 2", True), ("here 2", "validation_error"),
+])
+def test_manual_compress_rejects_history_rewritten_before_admission(
+    tmp_path, monkeypatch, stale, in_place, compress_args,
+):
     from hermes_state import SessionDB
     from run_agent import AIAgent
     from agent.context_compressor import SUMMARY_PREFIX
@@ -62,14 +67,16 @@ def test_manual_compress_rejects_history_rewritten_before_admission(tmp_path, mo
                 raise RuntimeError("validation failed")
 
             with pytest.raises(RuntimeError, match="validation failed"):
-                compress_now(agent, before, parse_compress_args(""), snapshot_is_current=fail_validation)
+                compress_now(agent, before, parse_compress_args(compress_args), snapshot_is_current=fail_validation)
             assert db.get_compression_lock_holder(parent) is None
             assert agent.session_id == parent
             assert db.get_messages_as_conversation(parent) == before
             return
         if stale == "empty_summary":
             compressor.compress.return_value = []
-        removed, _ = server._compress_session_history(session, before_messages=before, history_version=1)
+        removed, _ = server._compress_session_history(
+            session, focus_topic=compress_args, before_messages=before, history_version=1,
+        )
         assert db.get_compression_lock_holder(parent) is None
         if stale is True:
             assert removed == 0

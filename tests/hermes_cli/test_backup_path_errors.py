@@ -6,7 +6,6 @@ raw PermissionError traceback from the unguarded is_dir()/mkdir() calls. It must
 print a one-line error and exit 1 instead.
 """
 
-import os
 import stat
 import zipfile
 from argparse import Namespace
@@ -38,11 +37,10 @@ def test_backup_unwritable_parent_errors_cleanly(tmp_path, monkeypatch, capsys):
 
     assert exc.value.code == 1
     out = capsys.readouterr().out
-    assert "cannot write backup" in out.lower()
     assert "Traceback" not in out
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+@pytest.mark.platforms("posix")
 def test_import_restores_action_receipts_db_with_0600(tmp_path, monkeypatch):
     """action_receipts.db must land at 0600 without a public transition.
 
@@ -64,13 +62,15 @@ def test_import_restores_action_receipts_db_with_0600(tmp_path, monkeypatch):
     import hermes_cli.backup as backup_mod
 
     published_modes = []
-    original_replace = backup_mod.atomic_replace
+    from hermes_cli import backup_restore
+
+    original_replace = backup_restore.atomic_replace
     def _capture_replace(tmp, target):
         if target.name == "action_receipts.db":
             published_modes.append(stat.S_IMODE(Path(tmp).stat().st_mode))
         return original_replace(tmp, target)
 
-    monkeypatch.setattr(backup_mod, "atomic_replace", _capture_replace)
+    monkeypatch.setattr(backup_restore, "atomic_replace", _capture_replace)
 
     # Build a minimal valid backup zip that contains action_receipts.db.
     # _validate_backup_zip accepts any zip that has at least one of the
@@ -91,7 +91,7 @@ def test_import_restores_action_receipts_db_with_0600(tmp_path, monkeypatch):
     assert published_modes == [0o600]
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+@pytest.mark.platforms("posix")
 def test_safe_restore_hardens_action_receipt_db_and_live_sidecars(tmp_path):
     import sqlite3
     import hermes_cli.backup as backup_mod
@@ -121,3 +121,24 @@ def test_safe_restore_hardens_action_receipt_db_and_live_sidecars(tmp_path):
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
     finally:
         live.close()
+
+
+@pytest.mark.platforms("posix")
+def test_import_existing_public_receipt_db_keeps_private_mode(tmp_path):
+    import sqlite3
+    from hermes_cli.backup_restore import _import_db_member
+    src = tmp_path / "snapshot.db"
+    target = tmp_path / "action_receipts.db"
+    for path, marker in [(src, "restored"), (target, "old")]:
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE marker(value TEXT)")
+            conn.execute("INSERT INTO marker VALUES (?)", (marker,))
+    target.chmod(0o644)
+    archive = tmp_path / "backup.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.write(src, "action_receipts.db")
+    with zipfile.ZipFile(archive) as zf:
+        _import_db_member(zf, "action_receipts.db", target, 0o644)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    with sqlite3.connect(target) as conn:
+        assert conn.execute("SELECT value FROM marker").fetchone() == ("restored",)

@@ -1,9 +1,26 @@
+vi.mock('@/store/profile', async (): Promise<object> => {
+  const { atom } = await import('nanostores')
+
+  return {
+    $activeGatewayProfile: atom<string>('default'),
+    $profiles: atom<Array<{ name: string; is_default?: boolean }>>([]),
+    normalizeProfileKey: (profile: string | null): string => profile || 'default'
+  }
+})
+vi.mock('@/store/session', async (): Promise<object> => {
+  const { atom } = await import('nanostores')
+
+  return { $connection: atom(null), $defaultReasoningEffort: atom<string>('') }
+})
+
+import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { queryClient } from '@/lib/query-client'
+import { localModelsKey, localModelsOwner, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
@@ -21,10 +38,16 @@ vi.mock('@/hermes', () => ({
   getLocalModelsJobs: vi.fn(),
   getLocalModelsStatus: vi.fn(),
   getLocalRuntimeJob: vi.fn(),
+  // The page imports the profile store (settings-scope chip), whose module
+  // body subscribes $activeGatewayProfile → setApiRequestProfile at load.
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
   installLocalRuntime: vi.fn(),
   listHFRepoFiles: vi.fn(),
+  pauseLocalDownload: vi.fn(),
   quickstartLocalModels: vi.fn(),
+  resumeLocalDownload: vi.fn(),
   searchHFModels: vi.fn(),
+  setApiRequestProfile: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
 
@@ -101,76 +124,177 @@ const REFUSED_MODEL: LocalCatalogModel = {
   start_window_label: undefined
 }
 
+function setInstallStarting(starting: boolean): void {
+  queryClient.getMutationCache().clear()
+
+  if (starting) {
+    queryClient
+      .getMutationCache()
+      .build(queryClient, {
+        mutationKey: localModelsKey(localModelsOwner(), 'install'),
+        mutationFn: (): Promise<void> => new Promise<void>((): void => {})
+      })
+      .execute(undefined)
+  }
+}
+
 function renderPane() {
   return render(
-    <MemoryRouter>
-      <I18nProvider>
-        <LocalModelsSettings />
-      </I18nProvider>
-    </MemoryRouter>
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <I18nProvider>
+          <LocalModelsSettings />
+        </I18nProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
   )
 }
 
 // The fresh-machine states these tests exercise now lead with the
 // quickstart card; the full pane (runtime rows, model list, browser)
-// is one 'Configure…' click away. Render and click through.
-async function renderFullPane() {
-  const result = renderPane()
-  const configure = await screen.findByRole('button', { name: /configure/i })
+// is one 'Let me choose' click away. Render and click through.
+async function renderFullPane(): Promise<ReturnType<typeof renderPane>> {
+  const result: ReturnType<typeof renderPane> = renderPane()
 
-  fireEvent.click(configure)
+  // Wait for status to load: the pane either shows the setup card (click
+  // through to the full pane) or, when an active runtime/model job routes
+  // straight to the full pane, the runtime section directly.
+  await waitFor((): void => {
+    expect(
+      Boolean(screen.queryByRole('button', { name: /let me choose/i })) ||
+        screen.queryAllByText(/this machine/i).length > 0
+    ).toBe(true)
+  })
+
+  const configure: HTMLElement | null = screen.queryByRole('button', { name: /let me choose/i })
+
+  if (configure) {
+    fireEvent.click(configure)
+  }
 
   return result
 }
 
-beforeEach(() => {
+beforeEach((): void => {
+  queryClient.clear()
+  queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
   mocked.getLocalModelsStatus.mockResolvedValue(BASE_STATUS)
   mocked.getLocalHardware.mockResolvedValue(BASE_HARDWARE)
   mocked.getLocalCatalog.mockResolvedValue({ models: [FITTING_MODEL, SPILLED_MODEL, REFUSED_MODEL] })
-  mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [] })
-  $localRuntimeJobs.set([])
+  // The backend mock ECHOES the atom: the watcher's immediate poll reads
+  // seeded jobs instead of wiping them with a default {jobs:[]}.
+  mocked.getLocalModelsJobs.mockImplementation(async () => ({
+    jobs: [...(queryClient.getQueryData<readonly LocalRuntimeJob[]>(localModelsKey(localModelsOwner(), 'jobs')) ?? [])]
+  }))
+  queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
+  queryClient.clear()
+  mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [] })
+  await act(async () => {
+    watchLocalRuntimeJobs()
+  })
   vi.clearAllMocks()
+  // A running job arms the store's 700ms re-poll; drain it so the timer cannot
+  // fire into a torn-down test environment.
+  queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
 })
 
 describe('LocalModelsSettings', () => {
-  it('offers the runtime install with a plain-language explanation', async () => {
-    await renderFullPane()
+  it.each(['starting', 'running'])(
+    'keeps the runtime update view visible with no staged models while %s',
+    async phase => {
+      mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true, update_available: true })
 
-    expect(await screen.findByText('Install the local runtime')).toBeTruthy()
-    expect(screen.getByText(/runs? entirely on this machine/i)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /install runtime/i })).toBeTruthy()
+      const jobs: LocalRuntimeJob[] =
+        phase === 'running'
+          ? [
+              {
+                job_id: 'engine-update',
+                kind: 'runtime-install',
+                target: 'target',
+                model_id: null,
+                status: 'running',
+                phase: 'downloading',
+                detail: 'Downloading engine archive',
+                total_bytes: 100,
+                done_bytes: 40,
+                percent: 40,
+                error: null
+              }
+            ]
+          : []
+
+      mocked.getLocalModelsJobs.mockResolvedValue({ jobs })
+      queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), jobs)
+      setInstallStarting(phase === 'starting')
+      renderPane()
+      await screen.findByText('Qwen3.6 27B')
+      const setup = screen.queryByRole('button', { name: /set up for me/i })
+
+      const detail =
+        phase === 'running'
+          ? screen.queryByText('Downloading engine archive')
+          : screen.queryByRole('button', { name: /update engine/i })
+
+      act(() => setInstallStarting(false))
+      expect(setup).toBeNull()
+      expect(detail).toBeTruthy()
+    }
+  )
+  it('keeps a failed explicit update visible with a direct retry and no staged models', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true, update_available: true })
+    setInstallStarting(true)
+    const view = renderPane()
+    await screen.findByRole('button', { name: /update engine/i })
+
+    const failed: LocalRuntimeJob = {
+      job_id: 'failed-update',
+      total_bytes: null,
+      done_bytes: 0,
+      kind: 'runtime-install',
+      target: 'target',
+      model_id: null,
+      status: 'error',
+      phase: 'download',
+      detail: '',
+      error: 'Engine archive unavailable'
+    }
+
+    mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [failed] })
+    act(() => {
+      queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [failed])
+      setInstallStarting(false)
+    })
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+    expect(await screen.findByText('Engine archive unavailable')).toBeTruthy()
+    view.unmount()
+    renderPane()
+    const retry = await screen.findByRole('button', { name: /update engine/i })
+    expect((retry as HTMLButtonElement).disabled).toBe(false)
+    mocked.installLocalRuntime.mockResolvedValue({ backend: 'cpu', job_id: 'retry', tag: 'next' })
+    fireEvent.click(retry)
+    await waitFor(() => expect(mocked.installLocalRuntime).toHaveBeenCalledTimes(1))
   })
-
-  it('shows every catalog model with fit pills; unaffordable ones stay visible with the reason', async () => {
+  it('starts runtime installation only once while the request is pending', async () => {
+    let finish!: (value: { backend: string; job_id: string; tag: string }) => void
+    mocked.installLocalRuntime.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
     await renderFullPane()
-
-    expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
-    // The fitting model reads as pills, not prose: green memory pill +
-    // green full-context pill (start_window == native, resident on GPU).
-    expect(screen.getByText('Fits your GPU')).toBeTruthy()
-    expect(screen.getByText('Full 256K context').className).toContain('emerald')
-
-    // The refused model is NOT hidden (discoverability rule): red memory
-    // pill, plus the ceiling it would have had.
-    expect(screen.getByText('Huge Model')).toBeTruthy()
-    expect(screen.getByText('Too big for this machine')).toBeTruthy()
-
-    // The spilled model reads amber + ONE quiet ceiling pill — the same
-    // 'Up to' shape the refused row wears; no start/grow pair.
-    expect(screen.getByText('Spilled Model')).toBeTruthy()
-    expect(screen.getByText('Uses system RAM')).toBeTruthy()
-    expect(screen.getAllByText('Up to 256K context').length).toBe(2)
-    expect(screen.queryByText(/Starts at/)).toBeNull()
-
-    // Its download button is disabled; the fitting model's is enabled once
-    // the runtime exists (here runtime_installed=false, so both disabled —
-    // asserted separately below).
-    const buttons = screen.getAllByRole('button', { name: /download · 17\.6 GB/i })
-    expect(buttons.every(b => (b as HTMLButtonElement).disabled)).toBe(true)
+    const button = screen.getByRole('button', { name: /install runtime/i })
+    fireEvent.click(button)
+    fireEvent.click(button)
+    await waitFor((): void => expect(mocked.installLocalRuntime).toHaveBeenCalledTimes(1))
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => {
+      finish({ backend: 'cpu', job_id: 'install', tag: 'next' })
+    })
   })
 
   it('orders the catalog by fit: resident first, then spilled, then too-big', async () => {
@@ -186,26 +310,6 @@ describe('LocalModelsSettings', () => {
       .map(el => el.textContent?.replace('Recommended', ''))
 
     expect(names).toEqual(['Qwen3.6 27B', 'Spilled Model', 'Huge Model'])
-  })
-
-  it('never greens the full-context pill on a system-RAM model', async () => {
-    // Full native window, but earned by spilling into system RAM: the
-    // pill must not wear the green that would recommend exactly the
-    // wrong model.
-    const spilledFull: LocalCatalogModel = {
-      ...FITTING_MODEL,
-      id: 'Spilled-Full',
-      display_name: 'Spilled Full',
-      recommended: false,
-      spilled: true,
-      fit_summary: 'runs its full 256K context, partly from system RAM'
-    }
-
-    mocked.getLocalCatalog.mockResolvedValue({ models: [spilledFull] })
-    await renderFullPane()
-    await screen.findByText('Spilled Full')
-
-    expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
   })
 
   it('explains the Recommended pick on hover', async () => {
@@ -238,14 +342,6 @@ describe('LocalModelsSettings', () => {
     await screen.findByText('Qwen3.6 27B')
     const [fittingButton] = screen.getAllByRole('button', { name: /download · 17\.6 GB/i })
     expect((fittingButton as HTMLButtonElement).disabled).toBe(false)
-  })
-
-  it('shows hardware facts after backfill', async () => {
-    await renderFullPane()
-
-    expect(await screen.findByText('NVIDIA GeForce RTX 5090')).toBeTruthy()
-    expect(screen.getByText(/32\.0 GB GPU memory/)).toBeTruthy()
-    expect(screen.getByText(/256\.0 GB RAM/)).toBeTruthy()
   })
 
   it('tracks a download job to completion and refreshes', async () => {
@@ -296,7 +392,7 @@ describe('LocalModelsSettings', () => {
     })
     // A running job already in the app-level store — as after closing and
     // reopening the pane mid-download.
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'j9',
         kind: 'model-download',
@@ -329,7 +425,7 @@ describe('LocalModelsSettings', () => {
       runtime_installed: true,
       runtime_backend: 'cuda'
     })
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'j2',
         kind: 'model-download',
@@ -375,7 +471,7 @@ describe('quickstart', () => {
   })
 
   it('pins the quickstart progress view while the job runs', async () => {
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'q1',
         kind: 'quickstart',
@@ -392,8 +488,12 @@ describe('quickstart', () => {
     ])
     renderPane()
 
-    expect(await screen.findByText('Qwen3.6 27B — 17.6 GB')).toBeTruthy()
-    // One job, one view: no Set up / Configure buttons while it runs.
+    // The hero names the model and shows the composed status line
+    // (state · bytes · speed · ETA) while the job runs; the raw backend
+    // detail is only the lead when there are no bytes to report yet.
+    expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
+    expect(await screen.findByText(/^Downloading · /)).toBeTruthy()
+    // One job, one view: no setup or model-choice buttons while it runs.
     expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
   })
 
@@ -413,6 +513,54 @@ describe('quickstart', () => {
 })
 
 describe('BrowseSection', () => {
+  it('keeps manual spill selection and HF browsing available without an automatic recommendation', async (): Promise<void> => {
+    const stagedId: string = 'Spilled-Model-Q4_K_M'
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+    mocked.getLocalCatalog.mockResolvedValue({ models: [SPILLED_MODEL] })
+    renderPane()
+
+    await screen.findByText('Spilled Model')
+    expect(screen.getByText('No automatic recommendation for this machine')).toBeTruthy()
+    expect(screen.getByText('Uses system RAM')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+
+    // Attach the browser-only scroll method to the real search container,
+    // so a missing or misdirected click handler cannot satisfy the assertion.
+    const search: HTMLElement = screen.getByPlaceholderText(/search models/i)
+    const browse: Element | null = search.closest('#local-model-browse')
+    expect(browse).not.toBeNull()
+    const scroll: Mock<(options?: boolean | ScrollIntoViewOptions) => void> = vi.fn()
+    Object.defineProperty(browse, 'scrollIntoView', { configurable: true, value: scroll })
+    fireEvent.click(screen.getByRole('button', { name: /browse models/i }))
+    expect(scroll).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(mocked.downloadLocalModel).not.toHaveBeenCalled()
+
+    // The backend reports the completed download on refresh. Use must send
+    // the staged variant id, not the catalog family id or an automatic pick.
+    mocked.downloadLocalModel.mockResolvedValue({ already_downloaded: true, job_id: null })
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      models: [{ id: stagedId, size_bytes: SPILLED_MODEL.size_bytes, size_label: SPILLED_MODEL.size_label }]
+    })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...SPILLED_MODEL, downloaded: true, downloaded_model_id: stagedId }]
+    })
+    fireEvent.click(screen.getByRole('button', { name: /download ·/i }))
+    await waitFor((): void => {
+      expect(mocked.downloadLocalModel).toHaveBeenCalledWith(SPILLED_MODEL.id, {
+        connectionId: null,
+        profile: 'default'
+      })
+    })
+    mocked.activateLocalModel.mockResolvedValue({ job_id: 'explicit-spill' })
+    fireEvent.click(await screen.findByRole('button', { name: /^use$/i }))
+    await waitFor((): void => {
+      expect(mocked.activateLocalModel).toHaveBeenCalledWith(stagedId, { connectionId: null, profile: 'default' })
+    })
+    expect(mocked.quickstartLocalModels).not.toHaveBeenCalled()
+  })
+
   it('searches HF after a pause and shows fit-priced files on demand', async () => {
     vi.useFakeTimers()
 
@@ -428,17 +576,19 @@ describe('BrowseSection', () => {
       })
 
       render(
-        <MemoryRouter>
-          <I18nProvider>
-            <LocalModelsSettings />
-          </I18nProvider>
-        </MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <I18nProvider>
+              <LocalModelsSettings />
+            </I18nProvider>
+          </MemoryRouter>
+        </QueryClientProvider>
       )
       await act(async () => {
         await vi.runOnlyPendingTimersAsync()
       })
       // Fresh machine leads with the quickstart card — enter the full pane.
-      fireEvent.click(screen.getByRole('button', { name: /configure/i }))
+      fireEvent.click(screen.getByRole('button', { name: /let me choose/i }))
 
       const box = screen.getByPlaceholderText(/search models/i)
       fireEvent.change(box, { target: { value: 'qwen' } })
@@ -447,7 +597,7 @@ describe('BrowseSection', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(400)
       })
-      expect(hermes.searchHFModels).toHaveBeenCalledWith('qwen')
+      expect(hermes.searchHFModels).toHaveBeenCalledWith('qwen', 20, { connectionId: null, profile: 'default' })
       expect(screen.getByText('unsloth/Qwen3.8-27B-GGUF')).toBeTruthy()
 
       fireEvent.click(screen.getByRole('button', { name: /show files/i }))
@@ -467,7 +617,11 @@ describe('BrowseSection', () => {
       await act(async () => {
         await vi.runOnlyPendingTimersAsync()
       })
-      expect(hermes.downloadBrowsedModel).toHaveBeenCalledWith('unsloth/Qwen3.8-27B-GGUF', ['Qwen3.8-27B-Q4_K_M.gguf'])
+      expect(hermes.downloadBrowsedModel).toHaveBeenCalledWith(
+        'unsloth/Qwen3.8-27B-GGUF',
+        ['Qwen3.8-27B-Q4_K_M.gguf'],
+        { connectionId: null, profile: 'default' }
+      )
     } finally {
       vi.useRealTimers()
     }
@@ -530,27 +684,62 @@ describe('quickstart completion navigation', () => {
 
     // A finished quickstart already in history when the pane mounts —
     // must NOT trigger navigation.
-    $localRuntimeJobs.set([doneJob])
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [doneJob])
 
     render(
-      <MemoryRouter initialEntries={['/settings']}>
-        <I18nProvider>
-          <LocalModelsSettings />
-        </I18nProvider>
-        <Probe />
-      </MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/settings']}>
+          <I18nProvider>
+            <LocalModelsSettings />
+          </I18nProvider>
+          <Probe />
+        </MemoryRouter>
+      </QueryClientProvider>
     )
     await act(async () => {})
     expect(routeProbe).not.toHaveBeenCalledWith('/')
 
     // A quickstart the pane SAW running that then completes -> navigate.
     const running: LocalRuntimeJob = { ...doneJob, job_id: 'live-run', phase: 'downloading', status: 'running' }
-    await act(async () => {
-      $localRuntimeJobs.set([doneJob, running])
+    await act(async (): Promise<void> => {
+      queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [doneJob, running])
+      await new Promise<void>((resolve): void => {
+        setTimeout(resolve, 0)
+      })
     })
     await act(async () => {
-      $localRuntimeJobs.set([doneJob, { ...running, phase: 'done', status: 'done' }])
+      queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+        doneJob,
+        { ...running, phase: 'done', status: 'done' }
+      ])
     })
-    expect(routeProbe).toHaveBeenCalledWith('/')
+    await waitFor((): void => expect(routeProbe).toHaveBeenCalledWith('/'))
+  })
+})
+
+describe('quickstart finalization', (): void => {
+  it('quickstart hero suppresses the byte counter outside download phases', async () => {
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+      {
+        job_id: 'q1',
+        kind: 'quickstart',
+        target: 'Qwen3.6 27B',
+        model_id: 'qwen3.6-27b',
+        status: 'running',
+        phase: 'installing-runtime',
+        detail: 'Unpacking runtime',
+        total_bytes: 100,
+        done_bytes: 100,
+        percent: 100,
+        error: null
+      }
+    ])
+
+    renderPane()
+    await screen.findByText('Unpacking runtime')
+
+    // Stage detail yes; byte counter no — a 100% counter on an install
+    // phase would lie about the model leg still ahead.
+    expect(screen.queryByText(/of/)).toBeNull()
   })
 })

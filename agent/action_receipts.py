@@ -72,6 +72,7 @@ Hermes: WAL mode, ``BEGIN IMMEDIATE``, a module lock, and a schema table.
 from __future__ import annotations
 
 import hashlib
+import logging
 import hmac
 import os
 import re
@@ -92,6 +93,8 @@ from agent.task_envelope import (
     envelope_hash,
 )
 from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 
 RECEIPT_SCHEMA_VERSION = 1
@@ -198,6 +201,8 @@ def _retention_config() -> tuple[Optional[int], Optional[int], Optional[int]]:
     def _pos_int(key: str) -> Optional[int]:
         val = section.get(key)
         try:
+            if val is None:
+                return None
             n = int(val)
             return n if n > 0 else None
         except (TypeError, ValueError):
@@ -480,7 +485,8 @@ class ActionReceiptLedger:
         sqlite_path: str | Path = _descriptor_path(fd) if fd is not None else self.db_path
         try:
             conn = sqlite3.connect(
-                sqlite_path,
+                Path(sqlite_path).absolute().as_uri() + "?mode=ro",
+                uri=True,
                 isolation_level=None,
                 factory=_ReceiptConnection,
             )
@@ -595,6 +601,7 @@ class ActionReceiptLedger:
         if max_rows is None and max_age_days is None and max_size_mb is None:
             return
 
+        conn.execute("SAVEPOINT receipt_retention")
         try:
             # Temporarily disable the no-delete trigger for pruning.
             conn.execute("DROP TRIGGER IF EXISTS action_receipts_no_delete")
@@ -689,7 +696,10 @@ class ActionReceiptLedger:
                     """
                 )
         except Exception:
-            pass
+            conn.execute("ROLLBACK TO receipt_retention")
+            logger.debug("Receipt retention rolled back", exc_info=True)
+        finally:
+            conn.execute("RELEASE receipt_retention")
 
     # ── hashing ────────────────────────────────────────────────────────
     @staticmethod
@@ -886,8 +896,8 @@ class ActionReceiptLedger:
                 ).fetchall()
             finally:
                 conn.close()
-        except Exception:
-            return problems
+        except Exception as exc:
+            return [f"verification failed: {type(exc).__name__}"]
 
         rows = [dict(r) for r in raw_rows]
         previous: Optional[str] = None

@@ -65,7 +65,7 @@ class TestIsEnabled:
     def test_enabled_string_true_is_false(self, monkeypatch):
         """Must be exactly the boolean True, not a truthy string."""
         import agent.action_receipts as ar
-        monkeypatch.setattr(ar, "_load_config", lambda: _cfg(enabled="true"))
+        monkeypatch.setattr(ar, "_load_config", lambda: _cfg(enabled="true"))  # type: ignore[arg-type]
         assert ar.is_enabled() is False
 
     def test_enabled_true_is_true(self, monkeypatch):
@@ -1400,3 +1400,66 @@ class TestVerifyChainSingleSnapshot:
             "mutation; this indicates the receipts SELECT saw a different "
             "snapshot than the meta SELECT"
         )
+
+
+@pytest.mark.parametrize("failure", ["corrupt", "schema", "unreadable"])
+def test_chain_verification_reports_read_failures(tmp_path, monkeypatch, failure):
+    import sqlite3
+    ledger, db = _make_ledger(tmp_path, monkeypatch)
+    if failure == "corrupt":
+        db.write_bytes(b"not a sqlite database")
+    elif failure == "schema":
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE unrelated(value)")
+    else:
+        ledger.record_receipt(tool_name="test")
+        def refuse():
+            raise PermissionError("unreadable")
+        monkeypatch.setattr(ledger, "_connect_readonly", refuse)
+    assert ledger.verify_chain() == ["verification failed: " + {
+        "corrupt": "DatabaseError", "schema": "OperationalError", "unreadable": "PermissionError"
+    }[failure]]
+
+
+def test_reader_is_sqlite_readonly_even_without_query_only(tmp_path, monkeypatch):
+    import sqlite3
+    ledger, _ = _make_ledger(tmp_path, monkeypatch)
+    ledger.record_receipt(tool_name="test")
+    conn = ledger._connect_readonly()
+    try:
+        conn.execute("PRAGMA query_only=OFF")
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("CREATE TABLE must_not_exist(value)")
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("failure", ["trigger", "boundary"])
+def test_retention_failure_rolls_back_rows_boundary_and_trigger(tmp_path, monkeypatch, failure):
+    import sqlite3
+    import agent.action_receipts as ar
+    ledger, _ = _make_ledger(tmp_path, monkeypatch)
+    ledger.record_receipt(tool_name="first")
+    ledger.record_receipt(tool_name="second")
+    monkeypatch.setattr(ar, "_retention_config", lambda: (1, None, None))
+    connect = ledger._connect
+    def rejecting_connection():
+        conn = connect()
+        def authorize(action, arg1, arg2, _db, _source):
+            if failure == "trigger" and action == sqlite3.SQLITE_CREATE_TRIGGER:
+                return sqlite3.SQLITE_DENY
+            if failure == "boundary" and action == sqlite3.SQLITE_INSERT and arg1 == "meta":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+        conn.set_authorizer(authorize)
+        return conn
+    monkeypatch.setattr(ledger, "_connect", rejecting_connection)
+    ledger.record_receipt(tool_name="third")
+    assert [row["tool_name"] for row in ledger.read_all()] == ["first", "second", "third"]
+    assert ledger.verify_chain() == []
+    conn = connect()
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute("DELETE FROM action_receipts")
+    finally:
+        conn.close()

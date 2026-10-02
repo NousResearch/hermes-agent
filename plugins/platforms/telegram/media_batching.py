@@ -7,6 +7,8 @@ import logging
 from typing import TYPE_CHECKING
 
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.base_pending import can_join_pending_event, merge_recorded, ingress_order
+from gateway.platforms.base_pending_merge import _absorb_pending_media
 
 if TYPE_CHECKING:
     from telegram import Message
@@ -30,6 +32,7 @@ class TelegramMediaBatchingMixin:
 
     def _enqueue_photo_event(self: TelegramAdapter, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
+        ingress_order(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="photo-enqueue")
             return
@@ -53,6 +56,7 @@ class TelegramMediaBatchingMixin:
     async def _queue_media_group_event(self: TelegramAdapter, media_group_id: str, event: MessageEvent) -> None:
         """Debounce album items (shared media_group_id) into one MessageEvent so the second image isn't
         treated as a new message interrupting the first."""
+        ingress_order(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="media-group-enqueue")
             return
@@ -73,7 +77,8 @@ class TelegramMediaBatchingMixin:
         if existing is None:
             pending[key] = event
             return
-        existing.absorb_media(event)
-        if event.text:
-            existing.text = self._merge_caption(existing.text, event.text)
-        existing.absorb_channel_context(event)
+        if not can_join_pending_event(existing, event):
+            pending[key] = event
+            self._hold_inbound_event(existing, where="media-reply-context-boundary")
+            return
+        merge_recorded(existing, event, _absorb_pending_media)

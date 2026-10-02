@@ -18,8 +18,9 @@ No imports from ``gateway.platforms.base``: it imports this module.
 from __future__ import annotations
 
 import asyncio
-import logging
 import copy
+import itertools
+import logging
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
@@ -42,6 +43,14 @@ _SECURITY_METADATA_KEYS = (
     "gateway_session_strict",
     "notification_category",
 )
+
+_INGRESS_SEQUENCE = itertools.count()
+
+
+def ingress_order(event: MessageEvent) -> int:
+    if event._ingress_order is None:
+        event._ingress_order = next(_INGRESS_SEQUENCE)
+    return event._ingress_order
 
 
 def _sender_identity(event: MessageEvent) -> tuple[str, ...] | None:

@@ -154,6 +154,8 @@ class MessageEvent:
         default=(), kw_only=True, repr=False, compare=False,
     )
 
+    _ingress_order: Optional[int] = field(default=None, init=False, repr=False, compare=False)
+
     # Process-local: the events merged into this one, in arrival order, each paired with the
     # function that merged it (None for the first). Empty until something is merged in.
     # ``withdraw_pending_message`` replays the list without a withdrawn message.

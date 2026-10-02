@@ -14,6 +14,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionSource
+from gateway.turn_context import TurnContext
 from gateway.session_identity import replace_source
 from gateway.session_context import (
     clear_session_vars,

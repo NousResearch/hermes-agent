@@ -1,4 +1,3 @@
-import { useStore } from '@nanostores/react'
 /**
  * Group node renderer — a ZONE: header strip (tabs when stacked, minimize
  * chevron) + the active pane's content, resolved from the contribution
@@ -9,6 +8,8 @@ import { useStore } from '@nanostores/react'
  * every zone lights up as a whole-region drop target. Right-click opens the
  * contextual zone menu (tab close verbs + header/minimize toggles).
  */
+
+import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
 import { ShellMenuItems } from '@/app/context-menu/shell-menu-items'

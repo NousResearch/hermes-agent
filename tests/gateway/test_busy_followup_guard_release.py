@@ -263,3 +263,52 @@ async def test_followup_stored_before_the_busy_handler_raised_runs_once(
         adapter.release_reply.set()
         held.release()
         await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_guard_release_recovers_pending_event_from_replacement_delivery_adapter():
+    """A reconnect handoff must drain the delivery adapter's slot, not the intake adapter twice."""
+    intake = _Adapter()
+    replacement = _Adapter()
+    pending = _event("M2")
+    incoming = _event("M1")
+    session_key = intake._event_session_key(incoming)
+    started = []
+    get_calls = []
+
+    class _Runner:
+        def _delivery_adapter_for(self, source):
+            return replacement
+
+    intake.gateway_runner = _Runner()
+    original_get = replacement.get_pending_message
+
+    def _get_pending(key):
+        get_calls.append(key)
+        return original_get(key)
+
+    replacement.get_pending_message = _get_pending
+
+    def _start(event, key):
+        started.append((event, key))
+        return True
+
+    intake._start_session_processing = _start
+    intake._active_sessions[session_key] = asyncio.Event()
+
+    async def _busy_handler(event, key):
+        replacement._pending_messages[key] = pending
+        intake._active_sessions.pop(key, None)
+        return True
+
+    async def _message_handler(event):
+        return ""
+
+    intake.set_busy_session_handler(_busy_handler)
+    intake.set_message_handler(_message_handler)
+    await intake.handle_message(incoming)
+
+    assert started == [(pending, session_key)]
+    assert get_calls == [session_key]
+    assert session_key not in replacement._pending_messages
+    assert session_key not in intake._pending_messages

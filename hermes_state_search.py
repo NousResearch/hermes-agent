@@ -97,12 +97,14 @@ def _quote_fts_tokens(raw_query: str) -> str:
 def _like_any_column(term: str, *, coalesce: bool = False) -> Tuple[str, List[str]]:
     """``%term%`` on content, tool_name or tool_calls -> (predicate, one bind per column).
 
-    SQLite's LIKE folds ASCII case only, so a term with a non-ASCII cased letter ("Ошибка",
-    "Straße") compares both sides casefolded (``casefold_sql``). Other terms (ASCII, CJK) keep
-    the plain LIKE: no per-row Python call on these full-table scans."""
+    SQLite's LIKE folds ASCII case only, so both the columns and the needle compare
+    casefolded (``casefold_sql``). The fold is unconditional: an ASCII needle must also
+    find its casefold-equal non-ASCII spelling ("ss" vs the "ß" in "Straße"), or these
+    message scans disagree with the prune/archive title/model/branch filters
+    (_contains in hermes_state_maintenance), which fold the same corpus unconditionally."""
     columns = [f"COALESCE({col}, '')" if coalesce else col for col in _LIKE_COLUMNS]
-    if any(not ch.isascii() and ch.lower() != ch.upper() for ch in term):
-        columns, term = [casefold_sql(col) for col in columns], term.casefold()
+    columns = [casefold_sql(col) for col in columns]
+    term = term.casefold()
     predicate = " OR ".join(f"{col} LIKE ? ESCAPE '\\'" for col in columns)
     return f"({predicate})", [f"%{_escape_like(term)}%"] * len(columns)
 

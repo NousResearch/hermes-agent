@@ -82,3 +82,28 @@ def test_like_message_scan_matches_non_ascii_words_in_any_case(db):
         != _expected(needle, tool_rows)
     ]
     assert misses == []
+
+
+def test_ascii_needle_reaches_its_casefold_spelling_on_both_paths(db):
+    """An ASCII needle must also find its casefold-equal non-ASCII spelling.
+
+    "ss" only exists in the corpus as "ß" (casefold("ß") == "ss"). The prune
+    title filter folds unconditionally, so the LIKE message scan must fold
+    unconditionally too — gated on the needle's script it missed "ss"/"SS"
+    while the title filter hit, and the two consumers of the same corpus
+    disagreed (follow-up review on #129682)."""
+    corpus = "das ß ist hier"  # sharp-s only: no ASCII "ss" anywhere
+    db.create_session(session_id="s1", source="cli")
+    db.set_session_title("s1", corpus)
+    call = db.append_message("s1", role="assistant", content="", tool_calls=[
+        {"id": "call1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}])
+    db.append_message("s1", role="tool", content=corpus, tool_call_id=call, tool_name="terminal")
+    db.end_session("s1", "user_exit")
+
+    for needle in ("ss", "SS", "das", "DAS"):
+        assert {row["id"] for row in db.list_prune_candidates(title_like=needle)} == {"s1"}, needle
+        assert {hit["id"] for hit in db.search_messages(needle, role_filter=["tool"], limit=50)}, needle
+
+    # Absent even after casefolding -> both paths still miss.
+    assert {row["id"] for row in db.list_prune_candidates(title_like="k8s")} == set()
+    assert {hit["id"] for hit in db.search_messages("k8s", role_filter=["tool"], limit=50)} == set()

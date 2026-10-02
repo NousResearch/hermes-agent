@@ -179,6 +179,22 @@ construct a new system prompt, must never call any context/toolset-mutating API,
 per-turn note must ride only the `text`/`voice_context` params of `prompt.submit` — exactly the
 same call shape gpt-live already uses successfully in production.
 
+### 5.1 Approval parity for voice-initiated turns (review ask, 2026-10-02)
+
+Voice-initiated turns go through the **same approval gates as typed turns — identical, not
+parallel**. A grok-live delegation enters through the renderer's `prompt.submit` — the single
+submission path (§5 step 3), submitting the exact wire shape a typed message uses
+(`text`, `session_id`, `surface="voice-live"`, `voice_context`, `queued`); it carries no
+toolset/model/system_prompt keys that could bypass or widen scoping. Approval scoping happens
+per-turn in `prompt_turn.py` via `set_current_session_key(session["session_key"])` for every
+turn regardless of surface — there is no voice-specific branch. Consequences for the no-look
+voice surface: any tool call requiring approval surfaces the identical approval prompt a typed
+turn gets; it is not auto-approved by virtue of arriving via voice, and `voice_context` only
+enriches model input — the persisted user row stays the user's words. The same holds for the
+superseded backend-submits variant: its call shape (also `session_id`/`text`/`surface`/
+`voice_context`/`queued`) carried no bypass keys either, so approval parity is a property of the
+delegation design, not of which side submits.
+
 ## 6. Mic lease / wake-word interaction
 
 Reuse the existing pattern (`wake.pause` / `wake.resume`, `WakePauseResult`/`WakeResumeResult` in

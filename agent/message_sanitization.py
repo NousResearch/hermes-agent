@@ -580,8 +580,9 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
     """
     if len(tool_calls or []) < 2:
         return tool_calls
-    ids = [(_tc_field(tc, "call_id") or _tc_field(tc, "id") or "") for tc in tool_calls]
-    if not all(isinstance(raw, str) and raw.split("|", 1)[0].startswith(_PROVIDER_TOOL_ID_PREFIXES) for raw in ids):
+    # Gate on the effective id serialization and result pairing use (stripped, blank call_id
+    # falls back to id), not on raw fields.
+    if not all(coalesce_tool_call_id(tc).startswith(_PROVIDER_TOOL_ID_PREFIXES) for tc in tool_calls):
         return tool_calls
     logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
     for tc in tool_calls:
@@ -591,7 +592,8 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
             value = _tc_field(tc, key)
             if not isinstance(value, str):
                 continue
-            primary, sep, item = value.partition("|")
+            primary, sep, item = value.strip().partition("|")
+            primary = primary.strip()
             if not primary.startswith(_PROVIDER_TOOL_ID_PREFIXES):
                 continue
             # surrogatepass: provider JSON can carry lone surrogates; strict utf-8 would raise,

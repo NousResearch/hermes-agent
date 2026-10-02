@@ -82,6 +82,60 @@ def test_response_item_half_survives_when_only_id_is_composite(keys):
     assert len({row["id"] for row in stored}) == 2
 
 
+def _padded(calls):
+    calls[0].id = " chatcmpl-tool-a"
+
+
+def _blank_call_id(calls):
+    calls[0].call_id = " "
+
+
+def _mixed_until_dedup(calls):
+    # Mixed at validation; dedup then drops call_c, leaving an all-provider batch.
+    calls.append(_tool_call("call_c", "a"))
+
+
+@pytest.mark.parametrize("shape", [None, _padded, _blank_call_id, _mixed_until_dedup],
+                         ids=["plain", "padded", "blank_call_id", "mixed_until_dedup"])
+def test_final_staged_batch_never_reaches_wire_all_provider_prefixed(shape, monkeypatch):
+    import agent.turn_tool_round as round_module
+    from agent.transports.chat_completions import ChatCompletionsTransport
+
+    class _Staged(Exception):
+        pass
+
+    staged = []
+
+    def _capture(agent, *, assistant_message, **kwargs):
+        staged.extend(assistant_message.tool_calls)
+        raise _Staged
+
+    monkeypatch.setattr(round_module, "stage_tool_call_message", _capture)
+    agent = _agent()
+    agent.quiet_mode, agent.verbose_logging = True, False
+    calls = [_tool_call("chatcmpl-tool-a", "a"), _tool_call("chatcmpl-tool-b", "b")]
+    if shape:
+        shape(calls)
+    with pytest.raises(_Staged):
+        round_module.run_tool_round(
+            agent, assistant_message=SimpleNamespace(content="", tool_calls=calls), finish_reason="tool_calls",
+            messages=[], conversation_history=[], api_call_count=1, effective_task_id="t", user_message="read",
+            system_message="", active_system_prompt="", compression_attempts=0, max_compression_attempts=1,
+            final_response=None, failed=False, _turn_exit_reason=None, truncated_tool_call_retries=0,
+            current_turn_user_idx=0,
+        )
+    rows = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(staged)]
+    wire = ChatCompletionsTransport().convert_messages([
+        {"role": "assistant", "content": "", "tool_calls": rows},
+        *[{"role": "tool", "tool_call_id": AIAgent._get_tool_call_id_static(tc), "content": "ok"} for tc in staged],
+    ])
+    ids = [c["id"] for c in wire[0]["tool_calls"]]
+
+    assert len(ids) == 2
+    assert ids == [m["tool_call_id"] for m in wire[1:]]
+    assert not any(i.startswith("chatcmpl-tool-") for i in ids), ids
+
+
 def test_unencodable_provider_ids_do_not_crash_and_stay_distinct():
     raw = ["chatcmpl-tool-\ud800", "chatcmpl-tool-?"]
     ids = [row["id"] for row in _mint([_tool_call(i, n) for n, i in enumerate(raw)])]

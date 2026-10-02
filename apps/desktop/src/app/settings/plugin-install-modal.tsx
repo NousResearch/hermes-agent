@@ -136,9 +136,23 @@ export function PluginInstallModal() {
         return
       }
 
-      const result = await probeFn({ identifier: payload.repo })
+      // A catalog pick is reviewed at its pin; the repo's default branch may not even contain the plugin.
+      const result = await probeFn({ identifier: payload.repo, ref: payload.sha })
 
       if (token !== probeToken.current) {
+        return
+      }
+
+      // The install fetches the commit the probe inspected. A probe that cannot name it (or names a
+      // different commit than the pin it was asked for) would leave the install to resolve the
+      // mutable branch tip again, so it fails closed instead.
+      if (
+        result.ok &&
+        (!result.sha || !COMMIT_SHA_RE.test(result.sha) || (payload.sha && result.sha !== payload.sha.toLowerCase()))
+      ) {
+        setProbe({ ...result, ok: false, error: m.probeUnavailable })
+        setPhase('error')
+
         return
       }
 
@@ -233,6 +247,9 @@ export function PluginInstallModal() {
           enable: enableAgent,
           catalogName: request.catalogName,
           ref: pinRefTrimmed || undefined,
+          // An unpinned custom install must still be the reviewed tree: the backend refuses a clone
+          // that no longer resolves to the probed commit, without pinning the plugin to it.
+          expectedRevision: request.catalogName || pinRefTrimmed ? undefined : probe.sha,
           profile: targetProfile
         })
 
@@ -304,7 +321,14 @@ export function PluginInstallModal() {
           if (!installFn) {
             errors.push(m.desktopUnavailable)
           } else {
-            const result = await installFn({ identifier: request.repo, force: forceReinstall })
+            const result = await installFn({
+              identifier: request.repo,
+              force: forceReinstall,
+              // A typed pin is an explicit immutable choice; otherwise install the commit the probe
+              // inspected (the catalog pin for catalog picks), never the branch tip at click time.
+              ref: pinRefTrimmed || probe.sha,
+              catalogName: request.catalogName
+            })
 
             if (result.ok) {
               successes.push(m.desktopSuccess(result.pluginName ?? request.repo))

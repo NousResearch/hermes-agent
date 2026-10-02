@@ -302,6 +302,55 @@ def test_unpinned_install_and_force_reinstall_keep_tracking_head(monkeypatch, tm
     assert _metadata(home)["demo"]["pinned"] is False
 
 
+def test_expected_revision_installs_the_reviewed_head_without_pinning(monkeypatch, tmp_path):
+    from hermes_cli.plugins_cmd import _install_plugin_core
+
+    repo, _old_sha, reviewed = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    target, _manifest, _name = _install_plugin_core(
+        repo.as_uri(), force=False, expected_revision=reviewed.upper()
+    )
+
+    assert _git(target, "rev-parse", "HEAD") == reviewed
+    # Unlike --ref, a reviewed install keeps tracking its branch for updates.
+    assert _metadata(home) == {
+        "demo": {"pinned": False, "revision": reviewed, "source": repo.as_uri()}
+    }
+
+
+def test_expected_revision_refuses_a_source_that_moved_after_review(monkeypatch, tmp_path):
+    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+
+    repo, _old_sha, reviewed = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _commit(repo, "pushed after review", "unreviewed")
+
+    with pytest.raises(PluginOperationError, match="not the reviewed commit"):
+        _install_plugin_core(repo.as_uri(), force=False, expected_revision=reviewed)
+
+    assert not (home / "plugins" / "demo").exists()
+    assert not (home / "plugins" / ".install-metadata.json").exists()
+
+
+@pytest.mark.parametrize("expected", ["main", "a" * 39, "g" * 40])
+def test_invalid_expected_revision_is_rejected_before_any_install_state(
+    monkeypatch, tmp_path, expected
+):
+    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+
+    repo, _old_sha, _new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with pytest.raises(PluginOperationError, match="40-character commit SHA"):
+        _install_plugin_core(repo.as_uri(), force=False, expected_revision=expected)
+
+    assert not (home / "plugins" / "demo").exists()
+
+
 def test_metadata_is_profile_local_and_read_from_disk_each_time(monkeypatch, tmp_path):
     from hermes_cli.plugins_cmd import _install_plugin_core, _read_install_metadata
 

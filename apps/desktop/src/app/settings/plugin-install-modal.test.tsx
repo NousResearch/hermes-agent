@@ -31,8 +31,18 @@ import { PluginActions } from '../capabilities/plugins/plugins-tab'
 
 import { PluginInstallModal } from './plugin-install-modal'
 
+vi.mock('@/contrib/runtime-loader', () => ({ discoverRuntimePlugins: vi.fn(async () => []) }))
+
 const probePluginRepo = vi.fn()
 const installDesktopPlugin = vi.fn()
+const TIP_SHA = 'c'.repeat(40)
+
+// The probe names the commit it inspected: the pin it was asked for, else the branch tip it resolved.
+const mockProbe = (result: Record<string, unknown>) =>
+  probePluginRepo.mockImplementation(async ({ ref }: { ref?: string } = {}) => ({
+    sha: ref?.toLowerCase() ?? TIP_SHA,
+    ...result
+  }))
 
 const renderFlow = () =>
   render(
@@ -72,7 +82,7 @@ beforeEach(() => {
       skill_count: 0
     }
   ])
-  probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: true, warnings: [] })
+  mockProbe({ ok: true, agent: true, desktop: true, warnings: [] })
   vi.stubGlobal('hermesDesktop', { probePluginRepo, installDesktopPlugin })
 })
 afterEach(() => {
@@ -132,7 +142,7 @@ describe('Install from Git entry flow', () => {
   })
 
   it('installs a deep-linked agent plugin into the selected profile', async () => {
-    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    mockProbe({ ok: true, agent: true, desktop: false, warnings: [] })
     requestGateway.mockImplementation(async method =>
       method === 'plugins.manage' ? { ok: true, plugin_name: 'plugin', plugins: [] } : { plugins: [] }
     )
@@ -154,8 +164,25 @@ describe('Install from Git entry flow', () => {
     )
   })
 
+  it('probes a catalog pick at its reviewed pin, not the default branch tip', async () => {
+    renderFlow()
+    act(() =>
+      openPluginInstallRequest({
+        catalogName: 'plugin',
+        repo: 'https://github.com/example/plugin',
+        sha: 'b'.repeat(40)
+      })
+    )
+
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    expect(probePluginRepo).toHaveBeenCalledWith({
+      identifier: 'https://github.com/example/plugin',
+      ref: 'b'.repeat(40)
+    })
+  })
+
   it('pins a custom install to a full commit SHA and refuses anything shorter', async () => {
-    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    mockProbe({ ok: true, agent: true, desktop: false, warnings: [] })
     requestGateway.mockImplementation(async method =>
       method === 'plugins.manage' ? { ok: true, plugin_name: 'plugin', plugins: [] } : { plugins: [] }
     )
@@ -176,6 +203,59 @@ describe('Install from Git entry flow', () => {
         expect.any(Number)
       )
     )
+    const call = requestGateway.mock.calls.find(([, params]) => params?.action === 'install')
+    expect(call?.[1]).not.toHaveProperty('expected_revision')
+  })
+  it('installs a manual Git plugin at the commit the probe inspected, not the tip at click time', async () => {
+    $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
+    mockProbe({ ok: true, agent: false, desktop: true, warnings: [] })
+    installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'plugin' })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    expect(probePluginRepo).toHaveBeenCalledWith({ identifier: 'https://github.com/example/plugin' })
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() =>
+      expect(installDesktopPlugin).toHaveBeenCalledWith({
+        identifier: 'https://github.com/example/plugin',
+        force: false,
+        ref: TIP_SHA,
+        catalogName: undefined
+      })
+    )
+  })
+
+  it('asks the backend for the reviewed commit on an unpinned custom agent install, without pinning it', async () => {
+    requestGateway.mockImplementation(async method =>
+      method === 'plugins.manage' ? { ok: true, plugin_name: 'plugin', plugins: [] } : { plugins: [] }
+    )
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'install', expected_revision: TIP_SHA }),
+        expect.any(Number)
+      )
+    )
+    const install = requestGateway.mock.calls.find(([, params]) => params?.action === 'install')
+    expect(install?.[1]).not.toHaveProperty('ref')
+  })
+
+  it('refuses to install when the probe cannot name the commit it inspected', async () => {
+    probePluginRepo.mockResolvedValue({ ok: true, agent: false, desktop: true, warnings: [] })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+
+    expect(await screen.findByText('Plugin inspection is unavailable in this environment.')).toBeTruthy()
+    const install = screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement
+    expect(install.disabled).toBe(true)
+    fireEvent.click(install)
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
   })
 })
 
@@ -185,7 +265,7 @@ describe('Unified package desktop half on a local backend', () => {
 
   const installHybrid = async (mode: 'local' | 'remote') => {
     $connection.set({ mode } as NonNullable<ReturnType<typeof $connection.get>>)
-    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    mockProbe({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
     requestGateway.mockImplementation(async (method, params) =>
       method === 'plugins.manage' && params?.action === 'install'
         ? { ok: false, error: alreadyExists }
@@ -194,7 +274,9 @@ describe('Unified package desktop half on a local backend', () => {
     installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'pkg' })
     vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
     renderFlow()
-    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    act(() =>
+      openPluginInstallRequest({ repo: 'https://github.com/example/pkg', catalogName: 'pkg', sha: 'a'.repeat(40) })
+    )
     expect(await screen.findByText('This package includes')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Install' }))
     await waitFor(() =>
@@ -223,7 +305,12 @@ describe('Unified package desktop half on a local backend', () => {
     // the separate clone remains the only door for its desktop half.
     await installHybrid('remote')
 
-    expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false })
+    expect(installDesktopPlugin).toHaveBeenCalledWith({
+      identifier: 'https://github.com/example/pkg',
+      force: false,
+      ref: 'a'.repeat(40),
+      catalogName: 'pkg'
+    })
     expect(reconcileDesktopPlugins).not.toHaveBeenCalled()
   })
 

@@ -281,6 +281,9 @@ export async function installAgentPlugin(
     catalogName?: string
     /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
     ref?: string
+    /** Commit the install modal reviewed for an unpinned custom source: the backend installs it
+     *  only if the source still resolves to exactly this commit, and does not pin it. */
+    expectedRevision?: string
     /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
     profile?: string | null
   }
@@ -308,7 +311,8 @@ export async function installAgentPlugin(
           force: Boolean(opts.force),
           enable: opts.enable ?? true,
           ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
-          ...(opts.ref ? { ref: opts.ref } : {})
+          ...(opts.ref ? { ref: opts.ref } : {}),
+          ...(opts.expectedRevision ? { expected_revision: opts.expectedRevision } : {})
         },
         opts.profile
       ),

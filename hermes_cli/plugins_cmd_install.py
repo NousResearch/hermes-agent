@@ -282,6 +282,7 @@ def _install_plugin_core(
     *,
     force: bool,
     ref: Optional[str] = None,
+    expected_revision: Optional[str] = None,
     scan_decision_cb=None,
     reviewed_pin: Optional[str] = None,
     python_deps: bool = True,
@@ -299,11 +300,15 @@ def _install_plugin_core(
     checked-out sha — provenance lives OUTSIDE the plugin tree, so a repo cannot forge it;
     its ``pin`` is kept only when the checkout satisfies it (a ``--ref`` install is off-pin).
     *allow_removed* records that the user knowingly bypassed the kill list.
+    *expected_revision* is the commit a client reviewed before asking for an unpinned install: the
+    clone must resolve to exactly that commit or nothing is installed, and the install stays
+    unpinned (it keeps tracking its branch for updates).
     *before_swap(manifest, tree)* runs on the manifest-checked clone BEFORE the security scan, so
     the single scan and portable-package check admit the merged tree (file-count/size limits
     included). It may return the relative paths it merged in, which a scan block then attributes,
     and may raise :class:`PluginOperationError` to abort (re-pin consent)."""
     requested_revision = _pc()._normalize_exact_revision(ref) if ref is not None else None
+    expected = _pc()._normalize_exact_revision(expected_revision) if expected_revision is not None else None
     try:
         git_url, subdir = _pc()._resolve_git_url(identifier)
     except ValueError as e:
@@ -323,6 +328,10 @@ def _install_plugin_core(
     with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp:
         tmp_clone = Path(tmp) / "plugin"
         installed_revision = _pc()._clone_plugin_repo(tmp_clone, git_url, requested_revision, subdir)
+        if expected is not None and installed_revision != expected:
+            raise _pc().PluginOperationError(
+                f"Plugin source resolved to commit {installed_revision[:12]}, not the reviewed commit "
+                f"{expected[:12]}; review the repository again before installing.")
         git_exe = _pc()._resolve_git_executable()
         at_reviewed_pin = bool(reviewed_pin) and installed_revision == (
             _pc()._git_resolve_commit(tmp_clone, git_exe, reviewed_pin) if git_exe and reviewed_pin else reviewed_pin)
@@ -559,11 +568,13 @@ def cmd_install(
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None,
+    ref: Optional[str] = None, expected_revision: Optional[str] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
-    contract as ``--ref``); every path enforces the kill list (no GUI bypass)."""
+    contract as ``--ref``); *expected_revision* installs a custom source only if it still resolves to
+    the commit the client reviewed, without pinning it; every path enforces the kill list (no GUI
+    bypass)."""
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None
@@ -587,7 +598,8 @@ def dashboard_install_plugin(
     def _install() -> tuple:
         if entry is not None:
             return catalog.install_catalog_entry(entry, force=force, allow_removed=False)
-        return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None)
+        return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None,
+                                          expected_revision=(expected_revision or "").strip() or None)
 
     try:
         target, installed_manifest, installed_name = recorded_install(

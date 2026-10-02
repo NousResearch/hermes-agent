@@ -564,12 +564,14 @@ declare global {
         callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
       ) => () => void
       signalDeepLinkReady?: () => Promise<{ ok: boolean }>
-      probePluginRepo?: (payload: { identifier?: string; repo?: string }) => Promise<{
+      probePluginRepo?: (payload: { identifier?: string; repo?: string; ref?: string }) => Promise<{
         ok: boolean
         agent: boolean
         desktop: boolean
         agentName?: string | null
         desktopName?: string | null
+        /** Commit the probe inspected; the install must use exactly this commit. */
+        sha?: string
         warnings?: string[]
         insecure?: boolean
         error?: string
@@ -578,6 +580,8 @@ declare global {
         identifier?: string
         repo?: string
         force?: boolean
+        ref?: string
+        catalogName?: string
       }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
       /** Delete a STANDALONE desktop plugin folder (`<desktop-plugins root>/<name>`);
        *  Electron re-checks containment and refuses unified-package halves. */

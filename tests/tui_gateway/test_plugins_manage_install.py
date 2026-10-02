@@ -34,6 +34,27 @@ def test_plugins_manage_install_failure():
     assert "error" in resp
     assert "Git clone failed" in resp["error"]["message"]
 
+def test_plugins_manage_install_passes_the_reviewed_revision():
+    with patch(
+        "hermes_cli.plugins_cmd.dashboard_install_plugin",
+        return_value={"ok": False, "error": "not the reviewed commit"},
+    ) as install:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "plugins.manage",
+                "params": {
+                    "action": "install",
+                    "identifier": "owner/repo",
+                    "expected_revision": "a" * 40,
+                },
+            }
+        )
+
+    assert "not the reviewed commit" in resp["error"]["message"]
+    assert install.call_args.kwargs["expected_revision"] == "a" * 40
+    assert install.call_args.kwargs["ref"] is None
+
 def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
     """Non-catalog installs are refused — their update flows stay CLI-owned."""
     import hermes_cli.plugins_cmd as plugins_cmd

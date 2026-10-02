@@ -593,7 +593,7 @@ class PluginsAction(WireEnum):
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
-    (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
+    (+ ``force``, ``enable``, ``ref``, ``expected_revision``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
     that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);
     ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only)."""
 
@@ -606,6 +606,9 @@ class PluginsManageParams(ProfileParams):
     catalog_name: str | None = None
     force: bool | None = None
     ref: str | None = None
+    # The commit the client reviewed for an unpinned custom install; a clone that resolves elsewhere
+    # installs nothing. Unlike ``ref`` it does not pin the plugin.
+    expected_revision: str | None = None
     accept_capabilities: bool | None = None
     values: dict[str, JsonValue] | None = None
 

@@ -81,6 +81,26 @@ describe('mergePluginPackages', () => {
     expect(rows[0].agent?.name).toBe('hermes-talk')
   })
 
+  it('pairs a catalog alias install with its manifest-named agent half', () => {
+    // A catalog install stamps the desktop half with the MANIFEST package name
+    // — the folder the backend installs the agent half under — never the
+    // catalog alias (provenance only). The Electron side of this pin lives in
+    // desktop-plugin-install.test.ts ('pairs a catalog alias with its
+    // manifest-named agent half'), which publishes the marker this joins on.
+    const rows = mergePluginPackages(
+      [desktop({ id: 'widget', name: 'Widget', kind: 'disk', packageName: 'manifest-name' })],
+      [agent({ name: 'manifest-name', has_desktop_half: true })]
+    )
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      key: 'manifest-name',
+      kind: 'both',
+      desktopMissing: false,
+      agentMissingInProfile: false
+    })
+  })
+
   it('keeps an unmarked app-root copy its own row rather than guessing from the folder name', () => {
     const rows = mergePluginPackages(
       [

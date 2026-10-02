@@ -10,6 +10,8 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
+import { load as parse } from 'js-yaml'
+
 import { publishDesktopTree, writeDesktopHalfMarker } from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
 
@@ -34,6 +36,9 @@ export interface PluginProbeResult {
   desktop: boolean
   agentName?: string | null
   desktopName?: string | null
+  /** Commit whose tree was inspected. Installing exactly this commit (as `ref`) keeps a branch
+   *  that moves after the review from changing what gets installed. */
+  sha?: string
   warnings: string[]
   insecure: boolean
   error?: string
@@ -208,34 +213,17 @@ export async function detectPluginComponents(pluginRoot: string): Promise<Plugin
   let agentName: string | null = null
 
   if (agent) {
-    agentName = path.basename(pluginRoot)
-
-    if (hasYaml) {
-      try {
-        const yamlPath = pathExistsSync(path.join(pluginRoot, 'plugin.yaml'))
-          ? path.join(pluginRoot, 'plugin.yaml')
-          : path.join(pluginRoot, 'plugin.yml')
-
-        const text = await fsp.readFile(yamlPath, 'utf8')
-        const match = text.match(/^name:\s*['"]?([^'"\n]+)['"]?\s*$/m)
-
-        if (match?.[1]) {
-          agentName = match[1].trim()
-        }
-      } catch {
-        // Fall back to directory name.
-      }
-    } else if (hasPortable) {
-      try {
-        const raw = await fsp.readFile(path.join(pluginRoot, 'plugin.json'), 'utf8')
-        const parsed = JSON.parse(raw) as { name?: string }
-
-        if (parsed.name) {
-          agentName = parsed.name
-        }
-      } catch {
-        // Fall back to directory name.
-      }
+    const manifestPath = hasYaml
+      ? path.join(pluginRoot, pathExistsSync(path.join(pluginRoot, 'plugin.yaml')) ? 'plugin.yaml' : 'plugin.yml')
+      : path.join(pluginRoot, 'plugin.json')
+    const text = await fsp.readFile(manifestPath, 'utf8')
+    const manifest = hasYaml ? parse(text) : JSON.parse(text)
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+      throw new Error('Plugin manifest must be a mapping.')
+    }
+    if (manifest.name != null && manifest.name !== '') {
+      assertSafePluginName(manifest.name, 'Manifest')
+      agentName = manifest.name
     }
   }
 
@@ -265,6 +253,16 @@ function noninteractiveGitEnv(): NodeJS.ProcessEnv {
 
 // Matches the backend's default `plugins.clone_timeout_seconds`.
 const GIT_TIMEOUT_MS = 300_000
+
+// Test seam: every git process this module starts goes through here so a test
+// can count invocations (`setGitRunnerForTests`) instead of inferring them
+// from a missing binary's failure.
+let gitRunner: (gitBin: string, args: string[], cwd?: string) => Promise<{ code: number; stderr: string }> = runGit
+
+/** Swap the low-level git process runner (tests only; pass null to restore). */
+export function setGitRunnerForTests(runner: null | ((gitBin: string, args: string[], cwd?: string) => Promise<{ code: number; stderr: string }>)) {
+  gitRunner = runner ?? runGit
+}
 
 function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -300,7 +298,7 @@ function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: n
 }
 
 async function runGitOrThrow(gitBin: string, args: string[], cwd?: string): Promise<void> {
-  const { code, stderr } = await runGit(gitBin, args, cwd)
+  const { code, stderr } = await gitRunner(gitBin, args, cwd)
 
   if (code !== 0) {
     throw new Error(`Git ${args[0]} failed:\n${stderr.trim()}`)
@@ -315,23 +313,63 @@ function sparseCheckoutPattern(subdir: string): string {
 // A subdirectory install is a blobless clone with a sparse checkout of that folder: a plugin inside
 // a monorepo (Hindsight: 170 MB at depth 1, 2 MB for its plugin folder) otherwise downloads every
 // file in the repository and times out on slow connections.
-async function cloneToTemp(gitBin: string, gitUrl: string, subdir: string | null): Promise<string> {
+async function cloneToTemp(
+  gitBin: string,
+  gitUrl: string,
+  subdir: string | null,
+  ref?: string
+): Promise<{ cloneRoot: string; sha: string }> {
   const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'hermes-plugin-'))
 
   try {
-    if (!subdir) {
-      await runGitOrThrow(gitBin, ['clone', '--depth', '1', gitUrl, tmpRoot])
-
-      return tmpRoot
+    await runGitOrThrow(gitBin, [
+      'clone',
+      '--depth',
+      '1',
+      ...(subdir ? ['--filter=blob:none'] : []),
+      ...(subdir || ref ? ['--no-checkout'] : []),
+      gitUrl,
+      tmpRoot
+    ])
+    if (subdir) {
+      await runGitOrThrow(gitBin, ['config', 'core.sparseCheckout', 'true'], tmpRoot)
+      await fsp.mkdir(path.join(tmpRoot, '.git', 'info'), { recursive: true })
+      await fsp.writeFile(path.join(tmpRoot, '.git', 'info', 'sparse-checkout'), sparseCheckoutPattern(subdir), 'utf8')
+    }
+    if (ref) {
+      await runGitOrThrow(gitBin, ['fetch', '--depth', '1', 'origin', ref], tmpRoot)
+      await runGitOrThrow(gitBin, ['checkout', '--detach', ref], tmpRoot)
+    } else if (subdir) {
+      await runGitOrThrow(gitBin, ['checkout', 'HEAD'], tmpRoot)
     }
 
-    await runGitOrThrow(gitBin, ['clone', '--depth', '1', '--filter=blob:none', '--no-checkout', gitUrl, tmpRoot])
-    await runGitOrThrow(gitBin, ['config', 'core.sparseCheckout', 'true'], tmpRoot)
-    await fsp.mkdir(path.join(tmpRoot, '.git', 'info'), { recursive: true })
-    await fsp.writeFile(path.join(tmpRoot, '.git', 'info', 'sparse-checkout'), sparseCheckoutPattern(subdir), 'utf8')
-    await runGitOrThrow(gitBin, ['checkout', 'HEAD'], tmpRoot)
+    // Always report the checked-out commit: a probe without a ref resolved the mutable branch tip,
+    // and the install must fetch that same commit rather than resolve the tip a second time.
+    const head = await execGit(gitBin, ['rev-parse', 'HEAD'], {
+      cwd: tmpRoot,
+      env: noninteractiveGitEnv(),
+      timeoutMs: GIT_TIMEOUT_MS
+    })
 
-    return tmpRoot
+    const sha = head.stdout.trim().toLowerCase()
+
+    if (head.code !== 0 || !/^[0-9a-f]{40}$/.test(sha)) {
+      throw new Error('Git checkout did not resolve to a commit.')
+    }
+
+    if (ref) {
+      const commit = await execGit(gitBin, ['rev-parse', '--verify', `${ref}^{commit}`], {
+        cwd: tmpRoot,
+        env: noninteractiveGitEnv(),
+        timeoutMs: GIT_TIMEOUT_MS
+      })
+
+      if (commit.code !== 0 || sha !== commit.stdout.trim().toLowerCase()) {
+        throw new Error(`Git checkout did not resolve to requested commit ${ref}.`)
+      }
+    }
+
+    return { cloneRoot: tmpRoot, sha }
   } catch (err) {
     await fsp.rm(tmpRoot, { recursive: true, force: true }).catch(() => undefined)
     throw err
@@ -363,16 +401,39 @@ function insecureSchemeWarnings(gitUrl: string): { warnings: string[]; insecure:
   return { warnings: [], insecure: false }
 }
 
-export async function probePluginRepo(gitBin: string, identifier: string): Promise<PluginProbeResult> {
+function agentPackageFallback(gitUrl: string, subdir: string | null): string {
+  return subdir ? subdir.split('/').pop()! : repoNameFromUrl(gitUrl)
+}
+
+/** Match the backend's exact-revision contract; reject before invoking Git. */
+function assertFullCommitSha(ref: unknown): asserts ref is string {
+  if (typeof ref !== 'string' || !/^[a-fA-F0-9]{40}$/.test(ref)) {
+    throw new Error('--ref must be a full 40-character commit SHA.')
+  }
+}
+
+// A catalog pick is probed at its reviewed pin, like the install: the default branch tip may have
+// moved or dropped the plugin folder, or not share history with the pin at all.
+export async function probePluginRepo(
+  gitBin: string,
+  identifier: string,
+  options: { ref?: string } = {}
+): Promise<PluginProbeResult> {
   try {
+    const { ref } = options
+
+    if (ref !== undefined) {
+      assertFullCommitSha(ref)
+    }
+
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
     const { warnings, insecure } = insecureSchemeWarnings(gitUrl)
-    const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
+    const { cloneRoot, sha } = await cloneToTemp(gitBin, gitUrl, subdir, ref?.toLowerCase())
 
     try {
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
       const detected = await detectPluginComponents(pluginRoot)
-      const repoFallback = repoNameFromUrl(gitUrl)
+      const repoFallback = agentPackageFallback(gitUrl, subdir)
 
       if (!detected.agent && !detected.desktop) {
         return {
@@ -391,6 +452,7 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
         desktop: detected.desktop,
         agentName: detected.agentName ?? (detected.agent ? repoFallback : null),
         desktopName: detected.desktop ? desktopPluginFolderName(gitUrl, subdir) : null,
+        sha,
         warnings,
         insecure
       }
@@ -409,15 +471,51 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
   }
 }
 
+/**
+ * The backend's single rule for a plugin folder name (`_sanitize_plugin_name`,
+ * hermes_cli/plugins_cmd.py): one non-empty path segment with no `/`, `\` or
+ * `..`, never `.`/`..`. Anything it accepts, the agent half installs under —
+ * so this side must accept the same set or a paired install fails here while
+ * the backend half lands normally. Windows-reserved and trailing-dot/space
+ * restrictions are NOT part of that contract and used to reject names the
+ * backend accepts verbatim (`spaced name`, `Mixed Case`, `héllo`, `NUL`).
+ */
+function isBackendPluginName(name: string): boolean {
+  return (
+    name !== '' &&
+    name !== '.' &&
+    name !== '..' &&
+    !name.includes('/') &&
+    !name.includes('\\') &&
+    !name.includes('..')
+  )
+}
+
+function assertSafePluginName(name: unknown, source: string): asserts name is string {
+  if (typeof name !== 'string' || !isBackendPluginName(name)) {
+    throw new Error(`${source} name must be a single safe path segment (no '/', '\\' or '..').`)
+  }
+}
+
 export async function installDesktopPluginFromGit(
   gitBin: string,
   identifier: string,
   desktopPluginsRoot: string,
-  force = false
+  force = false,
+  options: { ref?: string; catalogName?: string } = {}
 ): Promise<DesktopPluginInstallResult> {
   try {
+    const { ref, catalogName } = options
+
+    if (ref !== undefined || catalogName !== undefined) {
+      assertFullCommitSha(ref)
+    }
+    if (catalogName !== undefined) {
+      assertSafePluginName(catalogName, 'Catalog')
+    }
+    const sha = ref?.toLowerCase()
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
-    const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
+    const { cloneRoot, sha: installedSha } = await cloneToTemp(gitBin, gitUrl, subdir, sha)
 
     try {
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
@@ -433,11 +531,23 @@ export async function installDesktopPluginFromGit(
       // A repo carrying BOTH halves is one package: land its desktop half under
       // the AGENT package name, so the copy this app makes and the one
       // `reconcileUnifiedDesktopHalves` would make are the same folder (#100412)
-      // and the Plugins page pairs them into one row. A desktop-only repo keeps
-      // the git-derived folder name and stays a standalone plugin.
-      const packageName = detected.agent ? (detected.agentName ?? desktopPluginFolderName(gitUrl, subdir)) : null
-      const pluginName = packageName ?? desktopPluginFolderName(gitUrl, subdir)
+      // and the Plugins page pairs them into one row. Catalog name is provenance,
+      // not the backend's installed identity. Match its source-name fallback too.
+      const packageName = detected.agent ? (detected.agentName ?? agentPackageFallback(gitUrl, subdir)) : null
+      const pluginName = packageName ?? catalogName ?? desktopPluginFolderName(gitUrl, subdir)
+      assertSafePluginName(pluginName, 'Plugin')
       const targetDir = path.join(desktopPluginsRoot, pluginName)
+
+      // Same containment the backend proves with `(plugins_dir / name).resolve()`:
+      // a name that passes the segment rule must still land inside the plugins
+      // root after symlink resolution (e.g. /tmp → /private/tmp), or the
+      // publish is a write outside it.
+      const resolvedRoot = await fsp.realpath(path.resolve(desktopPluginsRoot)).catch(() => path.resolve(desktopPluginsRoot))
+      const resolvedTarget = path.resolve(resolvedRoot, pluginName)
+
+      if (resolvedTarget !== resolvedRoot && !resolvedTarget.startsWith(resolvedRoot + path.sep)) {
+        throw new Error(`Plugin name '${pluginName}' resolves outside the plugins directory.`)
+      }
       const targetPlugin = path.join(targetDir, 'plugin.js')
 
       if ((await pathIsDirectory(targetDir)) || (await pathIsFile(targetPlugin))) {
@@ -464,7 +574,9 @@ export async function installDesktopPluginFromGit(
 
         await writeDesktopHalfMarker(staged, {
           package: packageName,
-          repo: gitUrl,
+          repo: subdir ? `${gitUrl}#${subdir}` : gitUrl,
+          sha: installedSha,
+          catalogName,
           // The published folder, not the temp clone. The clone is deleted
           // below; a source that disappears is ghost-pruned on the next
           // reconcile when no local `plugins/<name>/desktop` exists to

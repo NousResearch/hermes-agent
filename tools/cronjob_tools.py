@@ -1137,11 +1137,6 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "boolean",
                 "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
             },
-            "max_tokens": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Optional maximum output tokens per agent turn. The scheduler clamps this to the model's context/output ceiling; omit to use the model default."
-            },
         },
         "required": ["action"]
     }

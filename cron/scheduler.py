@@ -2468,35 +2468,19 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 
     setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
     setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
-    # Providers commonly use the model context window as the implicit output cap. Make that
-    # reservation explicit so cron jobs do not request a larger budget than the selected model
-    # can support, while still allowing a smaller per-job/global cap.
-    try:
-        from agent.model_metadata import get_model_context_length
-        _model_cfg = _cfg.get("model") if isinstance(_cfg, dict) else {}
-        _config_context_length = _model_cfg.get("context_length") if isinstance(_model_cfg, dict) else None
-        _model_default_max_tokens = get_model_context_length(
-            setup.model,
-            base_url=str(setup.runtime.get("base_url") or ""),
-            api_key=str(setup.runtime.get("api_key") or ""),
-            provider=str(setup.runtime.get("provider") or ""),
-            config_context_length=_config_context_length,
-        )
-    except Exception:
-        _model_default_max_tokens = None
-    _requested_max_tokens = setup.max_tokens
-    try:
-        _requested_max_tokens = int(_requested_max_tokens) if _requested_max_tokens is not None else None
-    except (TypeError, ValueError):
-        _requested_max_tokens = None
-    if isinstance(_model_default_max_tokens, int) and _model_default_max_tokens > 0:
-        setup.max_tokens = min(
-            _model_default_max_tokens,
-            _requested_max_tokens if isinstance(_requested_max_tokens, int) and _requested_max_tokens > 0
-            else _model_default_max_tokens,
-        )
-    else:
-        setup.max_tokens = _requested_max_tokens
+    # Match the provider transport's existing default-cap semantics. An unset job cap must
+    # stay unset for providers that delegate the choice to the upstream service; the model
+    # context window is not an output-token default.
+    if setup.max_tokens is not None:
+        try:
+            setup.max_tokens = int(setup.max_tokens)
+        except (TypeError, ValueError):
+            setup.max_tokens = None
+    if setup.max_tokens is None:
+        from providers import get_provider_profile
+        _profile = get_provider_profile(str(setup.runtime.get("provider") or ""))
+        if _profile is not None:
+            setup.max_tokens = _profile.get_max_tokens(setup.model)
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )

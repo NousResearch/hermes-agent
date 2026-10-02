@@ -974,7 +974,8 @@ class TestCmdUpdateCheckBranchFlag:
 class TestCmdUpdateCheckJson:
     """P3: ``hermes update --check --json`` is machine-readable with a distinct exit code.
 
-    The verdict fields mirror the fleet guard (scripts/update_needed_guard.py): head,
+    The verdict fields mirror the fleet guard's verdict contract (the guard script lives in the
+    fleet home, ~/.hermes/scripts/update_needed_guard.py — not a file in this repo tree): head,
     remote_head, new_commits, ahead_commits, dependency_files, verdict. rc=0 when current,
     rc=10 when an update is available — so a cron hop can branch on rc without parsing prose.
     """
@@ -1046,6 +1047,41 @@ class TestCmdUpdateCheckJson:
         assert verdict["remote_head"] == "b" * 40
         # Only pyproject.toml is a dependency file; the source change is not.
         assert verdict["dependency_files"] == ["pyproject.toml"]
+
+    def test_json_without_check_fails_fast(self, capsys):
+        """Minor finding: ``hermes update --json`` without --check must fail fast instead of
+        silently passing as a no-op while a real update (or --plan) proceeds."""
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(SimpleNamespace(check=False, json=True))
+        assert exc_info.value.code == 2
+        assert "--json requires --check" in capsys.readouterr().err
+
+
+def test_check_dependency_patterns_cover_real_manifests():
+    """Finding 3: the dependency-file filter must match the repo's ACTUAL production manifests
+    (npm workspace globs: apps/*, ui-tui, ui-tui/packages/*, web, tests-js) plus the Python
+    install-defining files — and must NOT match the old nonexistent desktop-app/* paths."""
+    from hermes_cli.update_cmd import _is_check_dependency_file
+
+    # Reviewer's named false negatives — all real production manifests in the tree.
+    assert _is_check_dependency_file("apps/desktop/package.json")
+    assert _is_check_dependency_file("apps/shared/package.json")
+    assert _is_check_dependency_file("apps/bootstrap-installer/package.json")
+    assert _is_check_dependency_file("ui-tui/package.json")
+    assert _is_check_dependency_file("ui-tui/packages/hermes-ink/package.json")
+    assert _is_check_dependency_file("web/package.json")
+    assert _is_check_dependency_file("tests-js/package.json")
+    # Python install-defining files (update_cmd_deps._INSTALL_DEFINING_FILES).
+    assert _is_check_dependency_file("pyproject.toml")
+    assert _is_check_dependency_file("setup.cfg")
+    assert _is_check_dependency_file("MANIFEST.in")
+    assert _is_check_dependency_file("uv.lock")
+    # Lockfiles at the root graph.
+    assert _is_check_dependency_file("package-lock.json")
+    # The old bogus pattern was dropped: desktop-app/ does not exist in the tree.
+    assert not _is_check_dependency_file("desktop-app/package.json")
+    # A pure code refresh is not a dependency change; web package-lock stays covered.
+    assert not _is_check_dependency_file("hermes_cli/update_cmd.py")
 
 
 class TestCmdUpdateZipBranchRefusal:

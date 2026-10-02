@@ -122,8 +122,8 @@ def _m():
 
 
 # Distinct ``stop_reason`` for a no-op ``hermes update``: lets an automated consumer tell
-# \"installed N commits\" from \"nothing to do\" without diffing pre/post SHAs. Mirrors the
-# fleet guard's SKIP verdict (scripts/update_needed_guard.py).
+# "installed N commits" from "nothing to do" without diffing pre/post SHAs. Mirrors the
+# fleet guard's SKIP verdict (scripts/update_needed_guard.py lives in the fleet home, not here).
 _ALREADY_CURRENT_STOP_REASON = "already_current"
 
 
@@ -694,8 +694,8 @@ def _print_check_json(verdict: dict) -> None:
     print(_json.dumps(verdict, indent=2))
 
 
-# Verdict constants and exit codes mirror the fleet guard (scripts/update_needed_guard.py):
-# 0 current, 10 update available, 2 unknown.
+# Verdict constants and exit codes mirror the fleet guard (scripts/update_needed_guard.py lives
+# in the fleet home, not in this repo tree): 0 current, 10 update available, 2 unknown.
 VERDICT_CURRENT = "current"
 VERDICT_UPDATE = "update_needed"
 VERDICT_UNKNOWN = "unknown"
@@ -705,18 +705,29 @@ EXIT_UPDATE = 10
 
 def _is_check_dependency_file(path: str) -> bool:
     """Dependency manifests whose change between HEAD and the remote is a reason the update
-    is not a pure code refresh. Same set the fleet guard reports (DEP_PATTERNS)."""
+    is not a pure code refresh. Mirrors the updater's own dependency inventory — the
+    Python install-defining files (``update_cmd_deps._INSTALL_DEFINING_FILES``) plus every
+    npm workspace ``package.json`` walked by ``update_cmd_deps._npm_manifest_paths()`` (root
+    ``package.json`` ``workspaces`` globs: apps/*, ui-tui, ui-tui/packages/*, web, tests-js).
+    The fleet guard's DEP_PATTERNS (``~/.hermes/scripts/update_needed_guard.py``, fleet home —
+    not a file in this repo tree) is kept in lockstep with this set."""
     import fnmatch
     return any(fnmatch.fnmatch(path, pat) for pat in _CHECK_DEPENDENCY_PATTERNS)
 
 
 _CHECK_DEPENDENCY_PATTERNS = (
-    "pyproject.toml", "setup.py", "setup.cfg", "uv.lock", "poetry.lock",
+    # Python install-defining files (update_cmd_deps._INSTALL_DEFINING_FILES)
+    "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "uv.lock", "poetry.lock",
     "requirements.txt", "requirements/*.txt",
+    # Root npm graph
     "package.json", "package-lock.json", "npm-shrinkwrap.json",
     "yarn.lock", "pnpm-lock.yaml",
+    # npm workspaces (root package.json "workspaces": apps/*, ui-tui, ui-tui/packages/*, web, tests-js)
+    "apps/*/package.json", "apps/*/package-lock.json",
+    "ui-tui/package.json", "ui-tui/package-lock.json",
+    "ui-tui/packages/*/package.json", "ui-tui/packages/*/package-lock.json",
     "web/package.json", "web/package-lock.json", "web/yarn.lock", "web/pnpm-lock.yaml",
-    "desktop-app/package.json", "desktop-app/package-lock.json",
+    "tests-js/package.json", "tests-js/package-lock.json",
 )
 
 
@@ -1444,6 +1455,14 @@ def _finish_already_up_to_date(
     _resume_windows_gateways_and_merge_outcome(resume_outcome, _windows_gateway_resume, gateway_mode)
     if resume_outcome.incomplete:
         current_checkout_complete = False
+
+    if no_fleet_restart_owed and current_checkout_complete:
+        head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
+        print(f"✓ Already current (HEAD == {branch} @ {head_sha[:10] or 'unknown'}) — nothing to do.")
+        with suppress(Exception):
+            from hermes_cli.update_receipt import finalize_update_receipt
+            finalize_update_receipt("success", stop_reason=_ALREADY_CURRENT_STOP_REASON)
+        return
     # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
     # gate so a partial outcome can't strand the fleet on stale code.
     # Catch up even on the "Already up to date" path — that early return is what left the gateway on stale

@@ -2416,6 +2416,12 @@ def _update_preflight_handled(args) -> bool:
 
 def cmd_update(args):
     """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
+    if getattr(args, "json", False) and not getattr(args, "check", False):
+        # --json is only meaningful with --check (its verdict is emitted there). Accepted
+        # without --check it would silently pass as a no-op while a REAL update (or --plan)
+        # proceeds — fail fast instead of guessing (review #121280, minor finding).
+        print("error: --json requires --check (see `hermes update --help`)", file=sys.stderr)
+        sys.exit(2)
     if _update_preflight_handled(args):
         return
     gateway_mode = getattr(args, "gateway", False)

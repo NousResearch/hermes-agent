@@ -17,10 +17,15 @@ from plugins.config_backends.remote.values import secret_literal_path
 VENDOR = Path(__file__).resolve().parents[3] / "plugins" / "config_backends" / "remote" / "vendor"
 MANIFEST = VENDOR / "conformance" / "config-fixtures.sha256"
 # contract.md §13.4: a LITERAL pin (an imported constant would make the check a tautology). This
-# is the digest P1 shipped and review approved (gateway-gateway 9151149d7f); a fixture change in gg
-# is a reviewed bump here.
-APPROVED_FIXTURE_DIGEST = "e7e92b9b356c509b58b3e64f859922aff1c9cdd97924d53b756e4113de06c0af"
+# is the manifest at gateway-gateway 36dff9281f: P1's v1 set (e7e92b9b…, gg 9151149d7f) plus the
+# twelve portal-groups fixtureVersion 2 multi-group cases (portal-groups contract §7.2, gg #328).
+# A fixture change in gg is a reviewed bump here.
+APPROVED_FIXTURE_DIGEST = "3fdf70682367f81a455daa8e3894efb5a979064087e6394174206373053fafc4"
 RESOLUTION = sorted((VENDOR / "conformance" / "config-resolution").glob("*.json"))
+# Fixture formats this runner was reviewed against. v2 (portal-groups §7.1) adds several group
+# levels, groupProvenance, locks[].groupId and lockedByGroupId; the agent reads none of them (it
+# runs profile writes against expect.locks[path, level] and defaultsMerge, contract §13.2).
+KNOWN_FIXTURE_VERSIONS = {1, 2}
 
 
 def _load(name: str):
@@ -41,6 +46,12 @@ def test_vendored_fixtures_match_manifest_and_source():
     on_disk = {str(p.relative_to(VENDOR)) for p in (VENDOR / "conformance").rglob("*.json")}
     assert on_disk == set(listed), "every vendored fixture is in the manifest and vice versa"
     assert len(RESOLUTION) > 0
+
+
+@pytest.mark.parametrize("fixture", RESOLUTION, ids=lambda f: f.stem)
+def test_fixture_version_is_one_this_runner_reads(fixture):
+    """A new format must be reviewed here, not silently half-read."""
+    assert json.loads(fixture.read_text(encoding="utf-8"))["fixtureVersion"] in KNOWN_FIXTURE_VERSIONS
 
 
 @pytest.mark.parametrize("vector", _load("config-paths.json")["valid"], ids=lambda v: v["encoded"])

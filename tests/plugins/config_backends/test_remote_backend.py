@@ -850,6 +850,71 @@ def test_plane_refusals_map_to_http(status, error, expected):
     assert exc.code == error
 
 
+# --- portal-groups (multi-group plane, contract fixtureVersion 2 / ETag v2) ------------------
+
+def _multi_group_plane(plane):
+    plane.upper = {"terminal": {"backend": "docker"}, "model": {"default": "hermes-4"}}
+    plane.upper_locks = [{"path": "terminal.backend", "level": "group", "groupId": "g-sec"}]
+    plane.groups = [{"groupId": "g-sec", "priority": 10, "version": 3},
+                    {"groupId": "g-eng", "priority": 5, "version": 1}]
+    plane.group_provenance = {"terminal": {"backend": "g-sec"}}
+
+
+def test_multi_group_response_fields_are_ignored_and_group_lock_refuses_client_side(plane):
+    """portal-groups §7.5: several group levels, locks[].groupId and groupProvenance are ignorable;
+    a group lock is just an upper lock (lockedBy "group"), refused before anything is sent."""
+    from hermes_cli.config import read_raw_config
+    _multi_group_plane(plane)
+
+    doc = read_raw_config()
+
+    assert doc["terminal"]["backend"] == "docker" and doc["model"]["default"] == "hermes-4"
+    assert get_config_backend().locked(plane.home, "terminal.backend") == "group"
+    with pytest.raises(ConfigLockedError) as exc:
+        write_config_key(plane.home / "config.yaml", "terminal.backend", "local")
+    assert (exc.value.path, exc.value.locked_by) == ("terminal.backend", "group")
+    assert plane.patches() == []
+    write_config_key(plane.home / "config.yaml", "model.default", "hermes-5")  # unlocked: written
+    (p,) = plane.patches()
+    assert p["body"]["set"] == {"model.default": "hermes-5"}
+
+
+def test_plane_group_lock_refusal_maps_to_locked_error_and_403():
+    """A server-side config_key_locked from a group lock carries lockedByGroupId (portal-groups
+    §6.6); the agent still maps it to ConfigLockedError(path, "group") and the dashboard's 403."""
+    from hermes_cli.web_routers._common import config_refusal_http
+    from plugins.config_backends.remote import client
+    exc = backend_mod.RemoteBackend._write_error(client.Response(
+        status=403, body={"error": "config_key_locked", "path": "terminal.backend", "lockedBy": "group",
+                          "lockedByGroupId": "g-sec", "message": "terminal.backend is locked by group g-sec"},
+        etag=None, retry_after=None))
+    assert isinstance(exc, ConfigLockedError)
+    assert (exc.path, exc.locked_by) == ("terminal.backend", "group")
+    http = config_refusal_http(exc)
+    assert http is not None and http.status_code == 403 and "locked by group" in http.detail
+
+
+def test_etag_is_opaque_and_echoed_verbatim(plane, monkeypatch):
+    """The plane's ETag (hermes-config-etag/2 since portal-groups §6.8) is never parsed: whatever
+    bytes it sends come back unchanged in If-None-Match."""
+    from hermes_cli.config import read_raw_config
+    _multi_group_plane(plane)
+    real_effective = plane.effective
+    opaque = 'W/"v2:any-bytes/at all"'
+
+    def effective(name):
+        body = real_effective(name)
+        body["etag"] = opaque
+        return body
+
+    monkeypatch.setattr(plane, "effective", effective)
+    read_raw_config()
+    backend = get_config_backend()
+    st = backend._state(plane.home)
+    assert backend.poll_one(st) is False and not st.last_error  # 304: nothing changed
+    assert _gets(plane)[-1]["if_none_match"] == opaque
+
+
 def test_stub_plane_deep_merge_follows_contract_6_2():
     """The test double resolves like the plane: null over a mapping is ignored (contract §6.2)."""
     from .stub_plane import deep_merge

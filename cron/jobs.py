@@ -2074,7 +2074,16 @@ def _rederive_repeat_for_schedule_change(
     updates["repeat"] = repeat
 
 
-def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job_id: str) -> None:
+def _schedule_identity(schedule: Any) -> Any:
+    """The fields that decide when a schedule fires (``display`` is presentation only)."""
+    if not isinstance(schedule, dict):
+        return schedule
+    return {k: v for k, v in schedule.items() if k != "display"}
+
+
+def _apply_schedule_update(
+    updated: Dict[str, Any], updates: Dict[str, Any], job_id: str, previous_schedule: Any,
+) -> None:
     """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
     updated_schedule = updated["schedule"]
     if isinstance(updated_schedule, str):
@@ -2085,6 +2094,11 @@ def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job
     if updated.get("state") != "paused":
         updated["next_run_at"] = _next_run_or_reject_past_oneshot(
             updated_schedule, updated.get("name", job_id), updated_schedule, "update ")
+    elif _schedule_identity(updated_schedule) != _schedule_identity(previous_schedule):
+        # The stored instant is an occurrence of the schedule this edit replaced. resume_job
+        # keeps a past instant due (#113603), so leaving it would fire the old cadence's slot
+        # on resume; with none stored, resume computes the next run from the new schedule.
+        updated["next_run_at"] = None
 
 
 def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
@@ -2128,7 +2142,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
             raise ValueError(EMPTY_PAYLOAD_ERROR)
         if "schedule" in updates:
-            _apply_schedule_update(updated, updates, job_id)
+            _apply_schedule_update(updated, updates, job_id, job.get("schedule"))
             # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
             # the record from the stale-error re-arm while no longer describing where it is
             # parked. The next fire re-parks (with a fresh notice) if the window is still closed.

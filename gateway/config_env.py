@@ -165,9 +165,11 @@ def _env_home_channel(config: GatewayConfig, platform: Platform, env_base: str, 
 
 
 def _env_reply_mode(config: GatewayConfig, platform: Platform, env: str) -> None:
-    mode = getenv(env).lower()
+    mode = getenv(env).strip().lower()
     if mode in {"off", "first", "all"}:
         config.platforms.setdefault(platform, PlatformConfig()).reply_to_mode = mode
+    elif mode:
+        logger.warning("Ignoring invalid %s=%r (expected off|first|all)", env, mode)
 
 
 def _loading_secondary_under_multiplexer() -> bool:
@@ -554,6 +556,7 @@ _ENV_STEPS: tuple = (
         optional=(("user_id", "MATRIX_USER_ID"), ("password", "MATRIX_PASSWORD")),
         then=_matrix_e2ee,
     ),
+    _ReplyMode(Platform.MATRIX, "MATRIX_REPLY_TO_MODE"),
     _Home(Platform.MATRIX, "MATRIX_HOME_ROOM"),
     _Cred(Platform.HOMEASSISTANT, ("HASS_TOKEN",), token="HASS_TOKEN", optional=(("url", "HASS_URL"),)),
     _Cred(

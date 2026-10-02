@@ -59,3 +59,35 @@ async def test_older_peer_keeps_text_wire_and_never_receives_document_bytes(gate
     finally:
         await target.close()
         await server.close()
+
+@pytest.mark.asyncio
+async def test_document_proof_budget_does_not_raise_or_lower_ordinary_api_limit(gateway, monkeypatch):
+    from aiohttp import ClientSession
+    from gateway import hosted_room_proof as proof
+    from gateway.hosted_room_documents import DOCUMENT_HTTP_MAX_BYTES
+    from gateway.platforms.api_server import MAX_REQUEST_BYTES
+
+    server, _, _, catalog, grant = await joined(gateway, monkeypatch)
+    async def consume(request):
+        return web.json_response({'bytes': len(await request.read())})
+    app = web.Application(client_max_size=MAX_REQUEST_BYTES)
+    app.router.add_post('/v1/runs', wrap(gateway.adapter, consume, max_bytes=DOCUMENT_HTTP_MAX_BYTES))
+    target = TestServer(app)
+    await target.start_server()
+    try:
+        async with ClientSession() as client:
+            # This body fits the unchanged ordinary API ceiling but not the smaller proof budget.
+            body = b'x' * (DOCUMENT_HTTP_MAX_BYTES + 1)
+            async with client.post(target.make_url('/v1/runs'), data=body) as response:
+                assert response.status == 200
+                assert (await response.json())['bytes'] == len(body)
+            async with client.post(target.make_url('/v1/runs'), data=b'x' * (MAX_REQUEST_BYTES + 1)) as response:
+                assert response.status == 413
+            authorization, _, _, wire = proof.request_proof(grant,
+                installation_id=catalog['installation_id'], method='POST', path='/v1/runs', body=body)
+            async with client.post(target.make_url('/v1/runs'), data=wire,
+                                   headers={'Authorization': authorization}) as response:
+                assert response.status == 413
+    finally:
+        await target.close()
+        await server.close()

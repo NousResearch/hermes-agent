@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
+from agent.i18n import t
 from gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")
@@ -34,8 +35,12 @@ VOICE_SUPPORTED_MIMES = {"audio/amr"}
 
 _IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"), ((b"GIF87a", b"GIF89a"), ".gif"))
 _MIME_PREFIX_KINDS = (("image/", "image"), ("video/", "video"), ("audio/", "voice"))
-# type -> (max bytes, Chinese label, human cap) for the "downgrade to file" notice
-_TYPE_LIMITS = {"image": (IMAGE_MAX_BYTES, "图片", "10MB"), "video": (VIDEO_MAX_BYTES, "视频", "10MB"), "voice": (VOICE_MAX_BYTES, "语音", "2MB")}
+# type -> (max bytes, catalog key of the kind label, human cap) for the "downgrade to file" notice;
+# the label resolves through ``t()`` at verdict time. Notices shipped in Chinese before i18n
+# (zh.yaml keeps that text).
+_TYPE_LIMITS = {"image": (IMAGE_MAX_BYTES, "platform.wecom.media.kind_image", "10MB"),
+                "video": (VIDEO_MAX_BYTES, "platform.wecom.media.kind_video", "10MB"),
+                "voice": (VOICE_MAX_BYTES, "platform.wecom.media.kind_voice", "2MB")}
 
 
 def _size_verdict(final_type: str, *, reject: Optional[str] = None, downgrade: Optional[str] = None) -> Dict[str, Any]:
@@ -94,7 +99,8 @@ class WeComMediaMixin:
         url = str(media.get("url") or "").strip()
         if not url:
             return None
-        aes_key = str(media.get("aeskey") or "").strip()
+        # The key arrives URL-encoded in some payloads (%2F, %3D); base64-decode the real value.
+        aes_key = unquote(str(media.get("aeskey") or "").strip())
         try:
             step = "download"
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
@@ -105,7 +111,10 @@ class WeComMediaMixin:
             return None
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
-        return await self._store_media(kind, raw, ext, content_type, self._guess_filename(url, headers.get("content-disposition"), content_type), content_type, f" from {url}")
+        # Images: never forward the CDN's generic octet-stream label — downstream classifiers
+        # reject non-image MIMEs; derive it from the resolved extension instead.
+        image_mime = content_type if content_type.startswith("image/") else ""
+        return await self._store_media(kind, raw, ext, image_mime, self._guess_filename(url, headers.get("content-disposition"), content_type), content_type, f" from {url}")
 
     async def _store_media(self, kind, raw, ext, image_mime, filename, doc_mime, origin) -> Optional[Tuple[str, str]]:
         """Cache bytes as an image (``kind == "image"``) or a document; returns (path, mime)."""
@@ -132,7 +141,11 @@ class WeComMediaMixin:
 
     @staticmethod
     def _guess_extension(url: str, content_type: str, fallback: str) -> str:
+        # WeCom's CDN labels images application/octet-stream; mimetypes maps that to ".bin",
+        # which is truthy and used to win over the magic-byte fallback (#10085).
         ext = mimetypes.guess_extension(content_type) if content_type else None
+        if ext == ".bin":
+            ext = None
         return ext or Path(urlparse(url).path).suffix or fallback
 
     @staticmethod
@@ -211,12 +224,13 @@ class WeComMediaMixin:
         normalized_type = str(detected_type or "file").lower()
         normalized_content_type = str(content_type or "").strip().lower()
         if file_size > ABSOLUTE_MAX_BYTES:
-            return _size_verdict(normalized_type, reject=(f"文件大小 {file_size_mb:.2f}MB 超过了企业微信允许的最大限制 20MB，无法发送。" "请尝试压缩文件或减小文件大小。"))
+            return _size_verdict(normalized_type, reject=t("platform.wecom.media.file_too_large", size_mb=f"{file_size_mb:.2f}"))
         if normalized_type == "voice" and normalized_content_type and normalized_content_type not in VOICE_SUPPORTED_MIMES:
-            return _size_verdict("file", downgrade=f"语音格式 {normalized_content_type} 不支持，企微仅支持 AMR 格式，已转为文件格式发送")
-        max_bytes, label, cap = _TYPE_LIMITS.get(normalized_type, (None, "", ""))
+            return _size_verdict("file", downgrade=t("platform.wecom.media.voice_format_downgraded", content_type=normalized_content_type))
+        max_bytes, label_key, cap = _TYPE_LIMITS.get(normalized_type, (None, "", ""))
         if max_bytes is not None and file_size > max_bytes:
-            return _size_verdict("file", downgrade=f"{label}大小 {file_size_mb:.2f}MB 超过 {cap} 限制，已转为文件格式发送")
+            return _size_verdict("file", downgrade=t("platform.wecom.media.size_downgraded",
+                                                     label=t(label_key), size_mb=f"{file_size_mb:.2f}", cap=cap))
         return _size_verdict(normalized_type)
 
     @staticmethod
@@ -292,7 +306,9 @@ class WeComMediaMixin:
                 logger.error("[%s] Failed to prepare outbound media %s: %s", self.name, media_source, exc)
             return SendResult(success=False, error=str(exc))
         if prepared["rejected"]:
-            await self._send_followup_markdown(chat_id, f"⚠️ {prepared['reject_reason']}", reply_to=reply_to)
+            text = self.warning_text(f"⚠️ {prepared['reject_reason']}", caption or "")
+            if text:
+                await self._send_followup_markdown(chat_id, text, reply_to=reply_to)
             return SendResult(success=False, error=prepared["reject_reason"])
         reply_req_id = self._cached_reply_req_id(chat_id, reply_to)
         # Active/expired stream owns the req_id (passive replyMedia is never acked): go proactive.
@@ -314,7 +330,8 @@ class WeComMediaMixin:
             logger.error("[%s] Failed to send media %s: %s", self.name, media_source, exc)
             return SendResult(success=False, error=str(exc))
         raw: Dict[str, Any] = {"upload": upload_result, "media": media_response}
-        for key, text in (("caption", caption), ("downgrade", f"ℹ️ {prepared['downgrade_note']}" if prepared["downgraded"] and prepared["downgrade_note"] else None)):
+        downgrade = self.warning_text(f"ℹ️ {prepared['downgrade_note']}") if prepared["downgraded"] and prepared["downgrade_note"] else None
+        for key, text in (("caption", caption), ("downgrade", downgrade or None)):
             followup = await self._send_followup_markdown(chat_id, text, reply_to=reply_to) if text else None
             raw[key] = followup.raw_response if followup else None
             raw[f"{key}_error"] = followup.error if followup and not followup.success else None

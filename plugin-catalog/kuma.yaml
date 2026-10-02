@@ -1,0 +1,14 @@
+name: kuma
+repo: https://github.com/nitishagar/hermes-kuma
+sha: e4a6c9db8d4e49c4827cc07632e46b8ec92f56df
+description: 'Uptime-Kuma monitoring for agents: the community MCP server for Uptime Kuma v2 (pinned @0.11.18 over npx stdio) with workflow skills for incident review, status digests, and confirmation-gated maintenance. Credentials stay in host-native MCP config (portable Agent Plugins v1 package, mcp.json + skills/; needs Node.js >= 22 on PATH and a Uptime Kuma v2 instance). Disclosure — first run has npx fetch @davidfuchs/mcp-uptime-kuma@0.11.18 (single-maintainer community package) from npm; that server exposes 31 read/WRITE tools against your Uptime Kuma instance, including permanent delete tools the bundled skills never call.'
+maintainer: nitishagar
+tier: community
+category: tools
+docs_url: https://github.com/nitishagar/hermes-kuma
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

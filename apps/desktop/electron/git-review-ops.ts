@@ -11,12 +11,24 @@ import path from 'node:path'
 import simpleGit from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
+import { execGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
 const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
+
+// simple-git 3.x validates a custom binary path against an ASCII whitelist —
+// `isBadArgument` in node_modules/simple-git/dist/cjs/index.js accepts only
+// `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`. Everything outside it is "restricted": a
+// space in the default `C:\Program Files\Git\...`, the parentheses in
+// `Program Files (x86)`, the accented user name in `C:\Users\João\...`. Without
+// the escape hatch simple-git THROWS on such a path; with it, it console.warns
+// this exact message — the flag only downgrades the throw. Exported so gitFor
+// and its tests share one source of truth.
+export const SIMPLE_GIT_UNSAFE_BINARY_WARN =
+  'Invalid value supplied for custom binary, restricted characters must be removed or supply the unsafe.allowUnsafeCustomBinary option'
 
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
@@ -30,34 +42,74 @@ function ghEnv(ghBin) {
   return { ...process.env, PATH: [...extra, process.env.PATH].filter(Boolean).join(path.delimiter) }
 }
 
-// Run the `gh` CLI in a repo. Resolves { ok, stdout } so callers branch on
-// availability/auth without a throw. gh missing/unauthed → ok:false.
-function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
+// Run the `gh` CLI in a repo. Resolves { ok, stdout, stderr } so callers branch
+// on availability/auth without a throw. gh missing/unauthed → ok:false.
+function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise(resolve => {
     execFile(
       ghBin || 'gh',
       args,
       { cwd, env: ghEnv(ghBin), windowsHide: true, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout) => resolve({ ok: !err, stdout: String(stdout || '') })
+      (err, stdout, stderr) =>
+        resolve({ ok: !err, stdout: String(stdout || ''), stderr: String(err?.stderr ?? stderr ?? '') })
     )
   })
 }
 
 function gitFor(cwd, gitBin) {
   // `gitBin` is resolved inside the Electron main process from known install
-  // locations or PATH — never renderer/user input. simple-git's custom-binary
-  // validation rejects paths containing spaces (the default Windows install is
-  // `C:\Program Files\Git\cmd\git.exe`), which silently broke the Review pane.
-  // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
-  // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
-  // could resolve a repo-local git.exe).
-  return simpleGit({
-    baseDir: cwd,
-    binary: gitBin || 'git',
-    maxConcurrentProcesses: 4,
-    trimmed: false,
-    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
-  })
+  // locations or PATH — never renderer/user input, and the Windows tuple below is
+  // built there too: `gitBin` is the resolved install/path and the python host is
+  // this process's own interpreter. simple-git's ASCII whitelist accepts
+  // backslashes but rejects every character outside it — the space in the default
+  // `C:\Program Files\Git\cmd\git.exe`, the parentheses in `Program Files (x86)`,
+  // the accent in `C:\Users\João\...` — and without the escape hatch it THROWS
+  // inside the factory, silently breaking the Review pane. Key the hatch on "we
+  // resolved this binary ourselves", not on a `/\s/` guess, which still throws for
+  // every other restricted character. Falling back to PATH instead is not an
+  // option (often absent in GUI-launched apps, and a PATH lookup could resolve a
+  // repo-local git.exe).
+  // On Windows the binary tuple is [python.exe, host script]. simple-git has no
+  // creationFlags slot; the script spawns the real git with CREATE_NO_WINDOW and
+  // forwards argv unchanged.
+  const host = windowsGitHost()
+  const binary = simpleGitBinary(gitBin, host)
+  const unsafe = Boolean(gitBin) || Array.isArray(binary)
+
+  const makeGit = () =>
+    simpleGit({
+      baseDir: cwd,
+      binary,
+      maxConcurrentProcesses: 4,
+      trimmed: false,
+      ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    })
+
+  if (!unsafe) {
+    return makeGit()
+  }
+
+  // With the escape hatch set, simple-git still console.warns that same message on
+  // every factory call — the flag only downgrades the throw to a warning. The
+  // binary was resolved by this process, never supplied by the renderer, so on
+  // Windows (where the standard git lives under a spaced "Program Files") that
+  // warning is pure console spam. Filter exactly that message, for the
+  // synchronous factory call only.
+  const originalWarn = console.warn
+
+  console.warn = (message?: unknown, ...rest: unknown[]) => {
+    if (typeof message !== 'string' || !message.startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARN)) {
+      originalWarn(message, ...rest)
+    }
+  }
+
+  try {
+    const git = makeGit()
+
+    return Array.isArray(binary) ? git.env(noConsoleGitEnv(process.env, gitBin || 'git')) : git
+  } finally {
+    console.warn = originalWarn
+  }
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -360,14 +412,13 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   // Untracked file: no worktree diff exists, so synthesize an all-add diff via
   // --no-index (exits non-zero by design when files differ, so go around
   // simple-git's reject-on-nonzero with a raw execFile).
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
+    cwd,
+    timeoutMs: 30_000
+  }).then(
+    result => result.stdout,
+    () => ''
+  )
 }
 
 // Working-tree-vs-HEAD diff for ONE file — the "what changed since the last
@@ -398,14 +449,13 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
     return ''
   }
 
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
+    cwd,
+    timeoutMs: 30_000
+  }).then(
+    result => result.stdout,
+    () => ''
+  )
 }
 
 async function reviewStage(repoPath, filePath, gitBin) {
@@ -618,77 +668,6 @@ const prPayload = pr => ({
   url: String(pr.url || '')
 })
 
-// A GitHub review-comment / issue-comment URL, as pasted from the browser.
-// Captures owner, repo, PR number, and the comment kind + id. Review threads
-// deep-link as `#discussion_r<id>`; conversation-tab comments as
-// `#issuecomment-<id>`.
-const PR_COMMENT_URL_RE =
-  /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:\/[^#\s]*)?#(discussion_r|issuecomment-)(\d+)$/
-
-function parsePrCommentUrl(url) {
-  const match = PR_COMMENT_URL_RE.exec(String(url || '').trim())
-
-  if (!match) {
-    return null
-  }
-
-  const [, owner, repo, prNumber, kind, id] = match
-
-  return { id, kind: kind === 'discussion_r' ? 'review' : 'issue', owner, prNumber: Number(prNumber), repo }
-}
-
-// Resolve a pasted PR comment URL into the structured context the composer
-// attaches: author, body, and — for review comments — the file, line range,
-// and the diff hunk the comment anchors to. Reads only; any failure (gh
-// missing, unauthenticated, private repo, deleted comment) yields null and the
-// paste falls back to being a plain URL.
-async function reviewFetchPrComment(repoPath, ghBin, url) {
-  const parsed = parsePrCommentUrl(url)
-
-  if (!parsed) {
-    return null
-  }
-
-  let cwd
-
-  try {
-    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review comment fetch' })
-  } catch {
-    return null
-  }
-
-  const endpoint =
-    parsed.kind === 'review'
-      ? `repos/${parsed.owner}/${parsed.repo}/pulls/comments/${parsed.id}`
-      : `repos/${parsed.owner}/${parsed.repo}/issues/comments/${parsed.id}`
-
-  const res = await runGh(['api', endpoint], cwd, ghBin)
-
-  if (!res.ok) {
-    return null
-  }
-
-  try {
-    const data = JSON.parse(res.stdout)
-
-    return {
-      author: String(data?.user?.login || ''),
-      body: String(data?.body || ''),
-      diffHunk: parsed.kind === 'review' ? String(data?.diff_hunk || '') : '',
-      kind: parsed.kind,
-      // `line` is the comment's anchor in the current diff; null once the code
-      // moved on (outdated comment) — `original_line` still says where it was.
-      line: data?.line ?? data?.original_line ?? null,
-      path: parsed.kind === 'review' ? String(data?.path || '') : '',
-      prNumber: parsed.prNumber,
-      startLine: data?.start_line ?? data?.original_start_line ?? null,
-      url: String(data?.html_url || url)
-    }
-  } catch {
-    return null
-  }
-}
-
 // The PR for each of the given branches, keyed by branch. Asks GitHub about the
 // branches we actually have sessions on rather than listing the repo's newest
 // PRs and hoping ours are in the page — on a busy repo they are not. One
@@ -770,7 +749,12 @@ async function reviewCreatePr(repoPath, gitBin, ghBin) {
   const created = await runGh(['pr', 'create', '--fill'], cwd, ghBin)
 
   if (!created.ok) {
-    throw new Error('gh pr create failed (is gh installed and authenticated?)')
+    // gh's own stderr says why the create failed (e.g. "no commits between
+    // main and feature", missing auth, a repo in an uncreatable state). Surface
+    // it instead of the generic fallback, which lied whenever gh was fine.
+    const reason = created.stderr.trim() || 'is gh installed and authenticated?'
+
+    throw new Error(`gh pr create failed: ${reason}`)
   }
 
   const url = created.stdout.trim().split('\n').filter(Boolean).pop() || ''
@@ -891,7 +875,6 @@ export {
   reviewCommitContext,
   reviewCreatePr,
   reviewDiff,
-  reviewFetchPrComment,
   reviewList,
   reviewPrList,
   reviewPush,

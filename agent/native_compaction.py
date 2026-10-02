@@ -1,9 +1,9 @@
-"""Native OpenAI Responses server-side compaction — gpt-5.6 on direct OpenAI routes only.
+"""Native OpenAI Responses server-side compaction on supported OpenAI routes.
 
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
 summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
-Deliberately narrow (live-verified): gpt-5.6 only (5.1/5.2 fail server-side with no
-structured rejection) on api.openai.com or the ChatGPT Codex backend. The local compressor
+Deliberately narrow: gpt-5.6 on api.openai.com or the ChatGPT Codex backend, plus gpt-6-astra
+(and its ``-900k`` picker alias) on official Codex OAuth. The local compressor
 stays armed as fallback (native threshold clamped below the local trigger); compaction items
 ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
 """
@@ -14,8 +14,10 @@ import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
+from agent.codex_headers import is_official_codex_base_url
 from agent.context_compressor import is_compaction_summary_message
 from agent.message_content import flatten_message_text
+from agent.reasoning_effort import is_astra_model
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +29,16 @@ DEFAULT_COMPACT_THRESHOLD = 200_000
 _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
 
 
-def is_native_compaction_model(model: Optional[str]) -> bool:
-    """True when the model is in the gpt-5.6 family."""
-    return _ELIGIBLE_MODEL_MARKER in (model or "").lower()
+def is_native_compaction_model(
+    model: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
+) -> bool:
+    """Preserve gpt-5.6 eligibility; Astra (``-900k`` is a picker alias of the same wire slug)
+    additionally requires official Codex OAuth."""
+    return _ELIGIBLE_MODEL_MARKER in (model or "").lower() or (
+        is_astra_model(model)
+        and (provider or "").strip().lower() == "openai-codex"
+        and is_official_codex_base_url(base_url or "")
+    )
 
 
 def resolve_native_compaction_capabilities(
@@ -38,7 +47,7 @@ def resolve_native_compaction_capabilities(
     """Resolve the native-compaction capability for a runtime destination (a resolved ``False``
     is distinct from "unresolved" and must survive model switches unchanged)."""
     direct_default = (provider or "").strip().lower() == "openai" and not base_url
-    return {"native_compaction": is_native_compaction_model(model) and (
+    return {"native_compaction": is_native_compaction_model(model, provider=provider, base_url=base_url) and (
         direct_default or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend))}
 
 
@@ -116,7 +125,10 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     if getattr(agent, "compression_checkpoint_required", False) is True:
         _warn_native_compaction_suppressed_by_checkpoint_gate()
         return None
-    if is_xai_responses or is_github_responses or not is_native_compaction_model(getattr(agent, "model", None)):
+    if is_xai_responses or is_github_responses or not is_native_compaction_model(
+        getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+        base_url=getattr(agent, "base_url", None),
+    ):
         return None
     trusted_proxy = bool(getattr(agent, "capabilities", {}).get("openai_native_compaction", False))
     if not trusted_proxy and not is_direct_openai_route(getattr(agent, "base_url", None), is_codex_backend=is_codex_backend):
@@ -135,8 +147,9 @@ RETAINED_SUMMARY_TOKEN_BUDGET = 32_000
 
 
 def _approx_tokens(text: str) -> int:
-    """Cheap chars//4 token estimate — same shape Codex uses for retention."""
-    return max(1, len(text) // 4)
+    """Retention cost of one carried-over text; never 0 so an empty item still consumes budget."""
+    from agent.model_metadata import estimate_tokens_rough
+    return max(1, estimate_tokens_rough(text))
 
 
 def _extract_item_text(item: Any) -> Optional[str]:
@@ -260,7 +273,8 @@ def prune_pre_checkpoint_items(
             text = flatten_message_text(source.get("content"))
             _src_role = source.get("role")
             _retain_summary(text if text.strip() else None,
-                            {"role": _src_role if _src_role in ("user", "assistant") else "assistant", "content": text})
+                            {"type": "message", "role": _src_role if _src_role in ("user", "assistant") else "assistant",
+                             "content": text})
             continue
         # Typed non-message items never carry role=user or a summary flag.
         if "type" in item and item.get("type") != "message":
@@ -328,7 +342,12 @@ def is_native_compaction_rejection(error: Any, status_code: Any = None) -> bool:
 def has_compaction_checkpoint(items: Any) -> bool:
     """Does this ``codex_reasoning_items`` sidecar carry a compaction checkpoint? A checkpoint is
     cumulative context living in exactly one place: rewrite/discard the sidecar only after asking."""
-    return isinstance(items, list) and any(_is_compaction_item(item) for item in items)
+    return isinstance(items, list) and any(
+        _is_compaction_item(item)
+        and isinstance(item.get("encrypted_content"), str)
+        and bool(item["encrypted_content"].strip())
+        for item in items
+    )
 
 
 def merge_interim_reasoning_items(prior_items: Any, new_items: Any) -> List[Dict[str, Any]]:

@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 from functools import partial
 from typing import Any, Literal
 
+from agent.prompt_builder import CONTROL_FRAME_OPENERS
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway import hosted_rooms_common as common
@@ -35,6 +36,16 @@ DecisionStatus = Literal["idle", "task", "settled", "bounded"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
+# Openers of Hermes' own control frames (agent.prompt_builder.CONTROL_FRAME_OPENERS: the steer marker, the
+# compaction handoff, runtime/system notes, background-process and prior-context frames). A member reply is
+# republished to every peer inside a role=user prompt, so a reply reproducing one of these reads as harness
+# input to the peers; the opener is relabelled visibly (the words stay, the exact trusted shape does not).
+# Genuine user lines are never touched. Keep in sync with apps/desktop hermes-bots/group-round-prompt.ts.
+_MEMBER_CONTROL_FRAME_RE = re.compile(
+    r"\[(?=" + "|".join(opener.replace("]", r"\]") for opener in CONTROL_FRAME_OPENERS) + ")",
+    re.IGNORECASE,
+)
+_MEMBER_CONTROL_FRAME_RELABEL = "[member-quoted "
 _TURN_ID_RE = re.compile(
     r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-2])\."
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
@@ -492,7 +503,8 @@ def _rotate(members: Sequence[DiscussionMember], round_index: int) -> tuple[Disc
 def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
     if event.kind == "message.user":
         return f"User (user): {event.payload['text']}"
-    return f"@{_member_by_id(room, event.payload['member_id']).handle}: {event.payload['text']}"
+    text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
+    return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"
 
 
 def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
@@ -782,11 +794,3 @@ def plan_publication(
         payload={**_turn_coordinates(task), "seen_through_seq": task.seen_through_seq, **extra},
         authority_gateway_id=room.gateway_id, authority_epoch=room.authority_epoch))
     return PublicationPlan(task_id=task.identity.task_id, terminal_kind=terminal_kind, events=tuple(effects))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

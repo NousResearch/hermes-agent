@@ -1,16 +1,23 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { reasoningEffortPending } from '@/app/chat/session-view'
+import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $notifications } from '@/store/notifications'
+import { $cronRunReadOnlyVerdicts, recordCronRunVerdict } from '@/store/read-only-transcript'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
-import { sessionTileDelegate } from '@/store/session-states'
+import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
-  getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' }))
+  getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' })),
+  getSession: vi.fn()
 }))
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
@@ -18,7 +25,7 @@ vi.mock('@/store/gateway', async importActual => ({
   requestGatewayForProfile: vi.fn()
 }))
 
-const { getLatestSessionMessages } = await import('@/hermes')
+const { getLatestSessionMessages, getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
@@ -41,22 +48,24 @@ const row = (over: Partial<SessionInfo>): SessionInfo =>
 
 function renderTile(
   requestGateway: ReturnType<typeof vi.fn>,
-  refs?: {
+  options: {
+    branchLoadedSession?: ReturnType<typeof vi.fn>
     runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
     sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
     updateSessionState?: ReturnType<typeof vi.fn>
-  }
+  } = {}
 ) {
   renderHook(() =>
     useSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
+      branchLoadedSession: (options.branchLoadedSession ?? vi.fn(async () => false)) as never,
       branchStoredSession: vi.fn(async () => undefined),
       executeSlashCommand: vi.fn(async () => undefined) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
-      runtimeIdByStoredSessionIdRef: (refs?.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
-      sessionStateByRuntimeIdRef: (refs?.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
-      updateSessionState: (refs?.updateSessionState ?? vi.fn()) as never
+      runtimeIdByStoredSessionIdRef: (options.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
+      sessionStateByRuntimeIdRef: (options.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
+      updateSessionState: (options.updateSessionState ?? vi.fn()) as never
     })
   )
 }
@@ -232,6 +241,246 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(texts.some(text => text.includes('cron delivery'))).toBe(true)
   })
 
+  it('keeps a completed tool card when a Bot Chat tile refreshes its final reply', async () => {
+    const state = {
+      busy: false,
+      storedSessionId: 'stored-bot',
+      streamId: null,
+      messages: [
+        { id: 'prompt', rowId: 10, role: 'user', parts: [{ type: 'text', text: 'Find the answer' }] },
+        {
+          id: 'tool-stream',
+          role: 'assistant',
+          interim: true,
+          pending: false,
+          parts: [
+            {
+              type: 'tool-call',
+              toolCallId: 'search-1',
+              toolName: 'web_search',
+              args: { query: 'answer' },
+              result: 'Found it',
+              completedAt: 2
+            }
+          ]
+        },
+        {
+          id: 'reply',
+          rowId: 13,
+          role: 'assistant',
+          pending: false,
+          parts: [{ type: 'text', text: 'The answer is here.' }]
+        }
+      ]
+    } as ClientSessionState
+
+    const states = { current: new Map([['runtime-bot', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    setSessions([row({ id: 'stored-bot', profile: 'bot', title: 'Bot Chat' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-bot',
+      messages: [
+        { role: 'user', row_id: 10, content: 'Find the answer', timestamp: 1 },
+        { role: 'assistant', row_id: 13, content: 'The answer is here.', timestamp: 3 }
+      ]
+    } as never)
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-bot', 'runtime-bot']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    await sessionTileDelegate()!.resumeTile('stored-bot', { refreshTranscript: true })
+
+    expect(
+      states.current
+        .get('runtime-bot')!
+        .messages.flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call')
+    ).toMatchObject([{ toolCallId: 'search-1', result: 'Found it' }])
+
+    // The same reply text on another durable row must not inherit this tool.
+    states.current.set('runtime-bot', state)
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-bot',
+      messages: [
+        { role: 'user', row_id: 10, content: 'Find the answer', timestamp: 1 },
+        { role: 'assistant', row_id: 14, content: 'The answer is here.', timestamp: 4 }
+      ]
+    } as never)
+
+    await sessionTileDelegate()!.resumeTile('stored-bot', { refreshTranscript: true })
+
+    expect(
+      states.current
+        .get('runtime-bot')!
+        .messages.flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call')
+    ).toEqual([])
+  })
+
+  it('refreshes a retained live tile even when the reverse lookup is absent', async () => {
+    const state = {
+      busy: true,
+      streamId: 'assistant-stream-live',
+      storedSessionId: 'stored-retained',
+      messages: [
+        { id: 'old-user', role: 'user', parts: [{ type: 'text', text: 'earlier prompt' }] },
+        { id: 'old-assistant', role: 'assistant', parts: [{ type: 'text', text: 'Hello earlier answer' }] },
+        { id: 'user-live', role: 'user', parts: [{ type: 'text', text: 'prompt' }] },
+        { id: 'assistant-stream-live', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'Hello' }] }
+      ]
+    }
+
+    const states = { current: new Map([['runtime-retained', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    setSessions([row({ id: 'stored-retained', profile: 'default' })])
+    $sessionTiles.set([{ storedSessionId: 'stored-retained', runtimeId: 'runtime-retained' }] as never)
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-retained',
+      messages: [
+        { role: 'user', content: 'earlier prompt', timestamp: 0.5 },
+        { role: 'assistant', content: 'Hello earlier answer', timestamp: 0.6 },
+        { role: 'user', content: 'prompt', timestamp: 1 },
+        { role: 'system', content: 'external notice', timestamp: 2 }
+      ]
+    } as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      session_id: 'runtime-retained',
+      info: { running: true }
+    } as never)
+    const request = vi.fn()
+    renderTile(request, { sessionStateByRuntimeIdRef: states, updateSessionState: update })
+
+    try {
+      expect(await sessionTileDelegate()!.resumeTile('stored-retained', { refreshTranscript: true })).toBe(
+        'runtime-retained'
+      )
+      const refreshed = states.current.get('runtime-retained')!
+      expect(JSON.stringify(refreshed.messages)).toContain('external notice')
+      expect(refreshed.messages.find(message => message.id === state.streamId)).toEqual(state.messages[3])
+      expect(refreshed.busy).toBe(true)
+
+      // REST may finish before the next WS delta; keep one, fuller answer.
+      states.current.set('runtime-retained', state)
+      vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+        session_id: 'stored-retained',
+        messages: [
+          { role: 'user', content: 'earlier prompt', timestamp: 0.5 },
+          { role: 'assistant', content: 'Hello earlier answer', timestamp: 0.6 },
+          { role: 'user', content: 'prompt', timestamp: 1 },
+          { role: 'assistant', content: 'Hello world', timestamp: 2 }
+        ]
+      } as never)
+      await sessionTileDelegate()!.resumeTile('stored-retained', { refreshTranscript: true })
+      const answers = states.current.get('runtime-retained')!.messages.filter(message => message.role === 'assistant')
+      expect(answers.map(message => message.parts.map(part => part.text).join(''))).toEqual([
+        'Hello earlier answer',
+        'Hello world'
+      ])
+    } finally {
+      vi.mocked(requestGatewayForProfile).mockReset()
+      $sessionTiles.set([])
+    }
+  })
+
+  it('merges delayed refreshes against the latest streaming and completed state', async () => {
+    const initial = {
+      busy: true,
+      streamId: 'assistant-stream-live',
+      storedSessionId: 'stored-delay',
+      messages: [
+        { id: 'user-live', role: 'user', parts: [{ type: 'text', text: 'prompt' }] },
+        { id: 'assistant-stream-live', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'Hello' }] }
+      ]
+    }
+
+    const states = { current: new Map([['runtime-delay', initial]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-delay', 'runtime-delay']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    for (const scenario of ['streaming', 'completed', 'compacted']) {
+      const pending = scenario === 'streaming'
+      states.current.set('runtime-delay', initial)
+      let release!: (value: never) => void
+      let started!: () => void
+
+      const fetching = new Promise<void>(resolve => {
+        started = resolve
+      })
+
+      vi.mocked(getLatestSessionMessages).mockImplementationOnce(() => {
+        started()
+
+        return new Promise(resolve => {
+          release = resolve
+        })
+      })
+      const refreshing = sessionTileDelegate()!.resumeTile('stored-delay', { refreshTranscript: true })
+      await fetching
+
+      const current = {
+        ...initial,
+        busy: pending,
+        streamId: pending ? initial.streamId : null,
+        messages: [
+          ...(scenario === 'compacted'
+            ? [{ id: 'old-answer', role: 'assistant', parts: [{ type: 'text', text: 'Hello earlier answer' }] }]
+            : []),
+          initial.messages[0],
+          {
+            ...initial.messages[1],
+            pending,
+            parts: [{ type: 'text', text: pending ? 'Hello newer delta' : 'Hello completed' }]
+          }
+        ]
+      }
+
+      states.current.set('runtime-delay', current as never)
+      release({
+        session_id: 'stored-delay',
+        messages: [
+          { role: 'user', content: 'prompt', timestamp: 1 },
+          { role: 'system', content: 'external notice', timestamp: 2 },
+          ...(scenario === 'compacted' ? [{ role: 'assistant', content: 'Hello completed', timestamp: 3 }] : [])
+        ]
+      } as never)
+      await refreshing
+      const refreshed = states.current.get('runtime-delay')!
+      expect(refreshed.busy).toBe(pending)
+      expect(refreshed.streamId).toBe(current.streamId)
+      expect(refreshed.messages.filter(message => message.role === 'assistant')).toEqual([
+        current.messages[current.messages.length - 1]
+      ])
+      expect(JSON.stringify(refreshed.messages)).toContain('external notice')
+    }
+  })
+
   it('falls through to a real resume when the warm binding has no transcript (post-wake empty tile)', async () => {
     // Sleep/wake regression: a released/stale cached state (messages: []) must
     // NOT satisfy the warm path — reusing it re-bound the tile to a dead
@@ -286,7 +535,27 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(next.model).toBe('gpt-5')
     expect(next.provider).toBe('openai')
     expect(next.reasoningEffort).toBe('high')
+    expect(next.reasoningEffortPending).toBe(false)
     expect(next.fast).toBe(true)
+  })
+
+  it("keeps the tile's effort pending when the deferred-build resume has not reported it (#79807)", async () => {
+    setSessions([row({ id: 'stored-lazy', profile: 'default' })])
+
+    const updateSessionState = vi.fn()
+
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      info: { lazy: true, model: 'gpt-5', running: false },
+      session_id: 'runtime-lazy'
+    } as never)
+
+    renderTile(vi.fn(), { updateSessionState })
+    await sessionTileDelegate()!.resumeTile('stored-lazy')
+
+    const updater = updateSessionState.mock.calls[0][1] as (state: ClientSessionState) => ClientSessionState
+    const next = updater(createClientSessionState('stored-lazy'))
+
+    expect(reasoningEffortPending(next)).toBe(true)
   })
 
   it('invalidateRuntimeBindings clears the stored→runtime map so tiles re-resume after reconnect', async () => {
@@ -310,11 +579,54 @@ describe('useSessionTileDelegate resumeTile', () => {
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')
     expect(runtimeId).toBe('runtime-fresh')
   })
+
+  it('branches a tile from the live message array that rendered the clicked action', async () => {
+    const messages = [
+      { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
+      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
+      { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] }
+    ]
+
+    const state = { ...createClientSessionState('stored-x', messages), cwd: '/repo' }
+    const branchLoadedSession = vi.fn(async () => true)
+
+    renderTile(vi.fn(), {
+      branchLoadedSession,
+      sessionStateByRuntimeIdRef: { current: new Map([['runtime-x', state]]) }
+    })
+
+    await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-x', 'a1')).resolves.toBe(true)
+    expect(branchLoadedSession).toHaveBeenCalledWith({
+      busy: false,
+      cwd: '/repo',
+      messageId: 'a1',
+      messages,
+      runtimeId: 'runtime-x',
+      storedSessionId: 'stored-x'
+    })
+  })
+
+  it('does not branch when the clicked tile no longer has live state', async () => {
+    const branchLoadedSession = vi.fn(async () => true)
+
+    renderTile(vi.fn(), { branchLoadedSession })
+
+    await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-gone', 'a1')).resolves.toBe(false)
+    expect(branchLoadedSession).not.toHaveBeenCalled()
+  })
 })
 
 describe('useSessionTileDelegate retireBusyClaim', () => {
   it('retires a stale busy claim through the session-state write path (#93059)', () => {
-    const busyState = { awaitingResponse: true, busy: true, messages: [{ id: 'm1' }], storedSessionId: 'stored-d' }
+    const busyState = {
+      awaitingResponse: true,
+      busy: true,
+      messages: [{ id: 'm1', pending: true }],
+      storedSessionId: 'stored-d',
+      turnLive: true,
+      turnStartedAt: 1_000
+    }
+
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', busyState]]) }
     const updateSessionState = vi.fn()
 
@@ -326,10 +638,17 @@ describe('useSessionTileDelegate retireBusyClaim', () => {
     expect(sessionTileDelegate()!.retireBusyClaim!('runtime-dead')).toBe(true)
     expect(updateSessionState).toHaveBeenCalledWith('runtime-dead', expect.any(Function))
 
-    // The updater is the downgrade: busy/awaiting off, everything else intact.
+    // Retire the running claim and its clock; a pending bubble can remain
+    // until the transcript is rehydrated from the recovered backend.
     const updater = updateSessionState.mock.calls[0][1] as (state: typeof busyState) => typeof busyState
 
-    expect(updater(busyState)).toEqual({ ...busyState, awaitingResponse: false, busy: false })
+    expect(updater(busyState)).toEqual({
+      ...busyState,
+      awaitingResponse: false,
+      busy: false,
+      turnLive: false,
+      turnStartedAt: null
+    })
   })
 
   it('reports a miss instead of minting a cache entry for a runtime it never held', () => {
@@ -374,5 +693,322 @@ describe('useSessionTileDelegate interruptSession', () => {
     // Same 3s cooldown the primary chat's Stop sets: busy reads false while the
     // gateway winds down, so the rewind path must still interrupt-first.
     expect(isSessionRecentlyInterrupted('runtime-tile-1')).toBe(true)
+  })
+})
+
+describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
+  const storedId = 'stored-tile-peer'
+  const runtimeId = 'rt-tile-peer'
+
+  beforeEach(() => {
+    setSessions([])
+    $notifications.set([])
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: storedId }))
+  })
+
+  afterEach(() => {
+    setSessions([])
+    $notifications.set([])
+  })
+
+  it('refuses submitToSession when a peer window advanced the transcript', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: storedId,
+      messages: [
+        { content: 'a', role: 'user', timestamp: 1 },
+        { content: 'b', role: 'assistant', timestamp: 2 },
+        { content: 'c', role: 'user', timestamp: 3 },
+        { content: 'd', role: 'assistant', timestamp: 4 }
+      ]
+    })
+
+    const stale = createClientSessionState(storedId, [
+      { id: 'u1', role: 'user', parts: [textPart('a')] },
+      { id: 'a1', role: 'assistant', parts: [textPart('b')] }
+    ])
+
+    const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, stale]]) }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([[storedId, runtimeId]]) }
+    const seeds: unknown[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef,
+      updateSessionState: vi.fn((id, updater, stored) => {
+        const prev = sessionStateByRuntimeIdRef.current.get(id) ?? createClientSessionState(stored)
+        const next = updater(prev)
+        sessionStateByRuntimeIdRef.current.set(id, next)
+        seeds.push(next)
+
+        return next
+      })
+    })
+
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'stale tile send')
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, 'work-vps')
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    expect(requestGatewayForProfile).not.toHaveBeenCalledWith(
+      'work-vps',
+      'prompt.submit',
+      expect.anything(),
+      expect.anything(),
+      expect.anything()
+    )
+    expect(seeds.at(-1)).toEqual(expect.objectContaining({ busy: false, messages: expect.any(Array) }))
+    expect((seeds.at(-1) as { messages: unknown[] }).messages).toHaveLength(4)
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
+  })
+
+  it('grafts same-window residue and still submits the Quick Entry prompt', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: storedId,
+      messages: [
+        { content: 'a', id: 1, role: 'user', timestamp: 1 },
+        { content: 'server-side turn residue', id: 2, role: 'assistant', timestamp: 2 }
+      ]
+    })
+
+    const stale = createClientSessionState(storedId, [{ id: 'u1', role: 'user', rowId: 1, parts: [textPart('a')] }])
+
+    const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, stale]]) }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([[storedId, runtimeId]]) }
+    const seeds: unknown[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef,
+      updateSessionState: vi.fn((id, updater, stored) => {
+        const prev = sessionStateByRuntimeIdRef.current.get(id) ?? createClientSessionState(stored)
+        const next = updater(prev)
+        sessionStateByRuntimeIdRef.current.set(id, next)
+        seeds.push(next)
+
+        return next
+      })
+    })
+
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'follow up')
+
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'work-vps',
+      'prompt.submit',
+      { session_id: runtimeId, text: 'follow up' },
+      1_800_000,
+      undefined
+    )
+    expect((seeds.at(-1) as { messages: ChatMessage[] }).messages.map(message => message.rowId)).toEqual([1, 2])
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
+  })
+
+  it('allows submitToSession when the authoritative transcript is not ahead', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: storedId,
+      messages: [
+        { content: 'a', role: 'user', timestamp: 1 },
+        { content: 'b', role: 'assistant', timestamp: 2 }
+      ]
+    })
+
+    const fresh = createClientSessionState(storedId, [
+      { id: 'u1', role: 'user', parts: [textPart('a')] },
+      { id: 'a1', role: 'assistant', parts: [textPart('b')] }
+    ])
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, {
+      runtimeIdByStoredSessionIdRef: { current: new Map([[storedId, runtimeId]]) },
+      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, fresh]]) }
+    })
+
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'fresh tile send')
+
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'work-vps',
+      'prompt.submit',
+      { session_id: runtimeId, text: 'fresh tile send' },
+      1_800_000,
+      undefined
+    )
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
+  })
+})
+
+describe('useSessionTileDelegate submitToSession', () => {
+  beforeEach(() => {
+    setSessions([])
+    // A leftover mockResolvedValueOnce on getLatestSessionMessages from an
+    // earlier describe leaks into this suite's full-file run, so reset the
+    // mock and restore its default empty-transcript implementation (same
+    // pattern as the #65047 describe above).
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: '' }))
+  })
+
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('returns the accepted runtime and its stored binding', async () => {
+    setSessions([row({ id: 'stored-submit', profile: 'default' })])
+
+    const state = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-submit' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-submit', 'runtime-dead']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', state]]) }
+    // #92961: a known owner always routes through the profile router, even
+    // 'default', never the ambient socket — so the routed seam carries the
+    // failed submit, the recovery resume, and the retry.
+    const routed = vi.mocked(requestGatewayForProfile)
+    routed.mockReset()
+    routed.mockImplementation(async (_profile: string, method: string) => {
+      if (method === 'prompt.submit') {
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-recovered' } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    })
+
+    let promptAttempts = 0
+    routed.mockImplementationOnce(async () => {
+      promptAttempts += 1
+      throw new Error('session not found')
+    })
+
+    renderTile(vi.fn(), { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+    const delegate = sessionTileDelegate()!
+
+    const recovered = await delegate.submitToSession('runtime-dead', 'Send from Quick Entry')
+    expect(recovered).toEqual({
+      runtimeSessionId: 'runtime-recovered',
+      storedSessionId: 'stored-submit'
+    })
+
+    const accepted = await delegate.submitToSession('runtime-recovered', 'Send again')
+    expect(accepted).toEqual({
+      runtimeSessionId: 'runtime-recovered',
+      storedSessionId: 'stored-submit'
+    })
+    expect(promptAttempts).toBe(1)
+    expect(runtimeIdByStoredSessionIdRef.current.get('stored-submit')).toBe('runtime-recovered')
+    expect(routed).toHaveBeenNthCalledWith(
+      1,
+      'default',
+      'prompt.submit',
+      { session_id: 'runtime-dead', text: 'Send from Quick Entry' },
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+      undefined
+    )
+    expect(routed).toHaveBeenNthCalledWith(
+      2,
+      'default',
+      'session.resume',
+      {
+        session_id: 'stored-submit',
+        source: 'desktop',
+        omit_messages: true,
+        profile: 'default'
+      },
+      undefined,
+      undefined
+    )
+    expect(routed).toHaveBeenNthCalledWith(
+      3,
+      'default',
+      'prompt.submit',
+      { session_id: 'runtime-recovered', text: 'Send from Quick Entry' },
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+      undefined
+    )
+    expect(routed).toHaveBeenNthCalledWith(
+      4,
+      'default',
+      'prompt.submit',
+      { session_id: 'runtime-recovered', text: 'Send again' },
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+      undefined
+    )
+  })
+})
+
+describe('useSessionTileDelegate read-only cron run (#88443)', () => {
+  const storedId = 'cron_job-1_20260929_120000'
+  const runtimeId = 'rt-cron-run'
+
+  beforeEach(() => {
+    setSessions([])
+    $notifications.set([])
+    $cronRunReadOnlyVerdicts.set(new Map())
+    vi.mocked(requestGatewayForProfile).mockClear()
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: storedId }))
+    vi.mocked(getSession).mockReset()
+  })
+
+  afterEach(() => {
+    setSessions([])
+    $notifications.set([])
+    $cronRunReadOnlyVerdicts.set(new Map())
+  })
+
+  const submitIntoRun = async (text: string) => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, {
+      runtimeIdByStoredSessionIdRef: { current: new Map([[storedId, runtimeId]]) },
+      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, createClientSessionState(storedId, [])]]) }
+    })
+
+    await sessionTileDelegate()!.submitToSession(runtimeId, text)
+
+    return requestGateway
+  }
+
+  const promptSubmitted = (text: string) =>
+    vi
+      .mocked(requestGatewayForProfile)
+      .mock.calls.some(call => call[1] === 'prompt.submit' && (call[2] as { text?: string })?.text === text)
+
+  // A tile holding a run the scheduler no longer owns (never closed) must
+  // honour the same gate as the primary chat's `submit` — including a tile
+  // restored after a restart, which no Cron surface ever evaluated.
+  it('refuses a send into a never-closed run the scheduler does not own', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps', source: 'cron' })])
+    vi.mocked(getSession).mockResolvedValue(
+      row({ ended_at: null, id: storedId, scheduler_owned: false, source: 'cron' })
+    )
+
+    const requestGateway = await submitIntoRun('into the dead cron session')
+
+    expect(getSession).toHaveBeenCalledWith(storedId, expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    expect(promptSubmitted('into the dead cron session')).toBe(false)
+    expect($notifications.get().some(note => note.kind === 'info')).toBe(true)
+  })
+
+  // The review's blocker: a run marked read-only while it looked idle (a long
+  // tool call) must not stay locked once the authoritative row says the
+  // scheduler still owns it.
+  it('re-evaluates a stale read-only verdict and sends once the run is owned', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps', source: 'cron' })])
+    recordCronRunVerdict(storedId, true)
+    vi.mocked(getSession).mockResolvedValue(
+      row({ ended_at: null, id: storedId, scheduler_owned: true, source: 'cron' })
+    )
+
+    await submitIntoRun('still running, send it')
+
+    expect(promptSubmitted('still running, send it')).toBe(true)
+    expect($notifications.get().some(note => note.kind === 'info')).toBe(false)
   })
 })

@@ -9,6 +9,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
+from hermes_cli.kanban_pr_acceptance import collect_acceptance
 
 
 @pytest.fixture
@@ -25,6 +26,13 @@ def github(tmp_path, monkeypatch):
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
+                if state.get("rules_error"):
+                    # Free-plan private repos return HTTP 403 here; the gh shim
+                    # exits non-zero (check=True) -> subprocess.CalledProcessError.
+                    self.send_response(403)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 value = [[]]
             elif "/check-runs/" in self.path and self.path.endswith("/annotations"):
                 message = (
@@ -84,6 +92,25 @@ def github(tmp_path, monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_rules_api_called_process_error_proceeds_with_empty_rules(github):
+    """A 403 (or any http error) on the branch-rules API raises
+    subprocess.CalledProcessError; acceptance collection must continue with
+    rules=[] instead of returning an empty infrastructure result."""
+    github.update(conclusion="success", head="a" * 40, rules_error=True)
+    receipt = collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7")
+    assert any("/rules/branches/" in request for request in github["requests"])
+    assert receipt["ok"] is True
+    assert receipt["classification"] == "success"
+    assert receipt["head_sha"] == "a" * 40
+    assert receipt["base_branch"] == "main"
+    # Branch-protection required checks (graphql) are still enforced; only the
+    # rules-API-derived subset is dropped, and no empty-infra result is produced.
+    assert receipt["required"] == [{"context": "required", "app_id": 1}]
+    assert receipt["checks"][0]["name"] == "required"
+    assert receipt["checks"][0]["classification"] == "success"
 
 
 @pytest.mark.platforms("linux")

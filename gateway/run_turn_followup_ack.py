@@ -50,6 +50,24 @@ def _followup_cancel_outcome(adapter) -> ProcessingOutcome:
         return ProcessingOutcome.FAILURE
 
 
+def _turn_result_outcome(result) -> ProcessingOutcome:
+    """Classify a returned agent result for the completion hook before its reply is delivered.
+
+    Only an interrupted result that a gateway control interrupt produced (``/stop``, ``/new``,
+    shutdown) is CANCELLED. A turn interrupted by new user input was superseded: the gateway answers
+    that input in a follow-up turn, so the interrupted message completes like any other. An
+    inactivity timeout usually returns a synthetic failed result without ``interrupted``, so that
+    turn completes with the delivery outcome of its timeout notice."""
+    if not isinstance(result, dict) or not result.get("interrupted"):
+        return ProcessingOutcome.SUCCESS
+    from gateway.run import _is_control_interrupt_message
+
+    message = result.get("interrupt_message")
+    if not message or _is_control_interrupt_message(message):
+        return ProcessingOutcome.CANCELLED
+    return ProcessingOutcome.SUCCESS
+
+
 async def _run_followup_processing_hook(adapter, event: MessageEvent | None, hook_name: str, *args) -> None:
     """Fire one lifecycle hook for a runner-drained follow-up; no-op per ``_followup_processing_hooks_apply``."""
     if not _followup_processing_hooks_apply(adapter, event):
@@ -58,3 +76,12 @@ async def _run_followup_processing_hook(adapter, event: MessageEvent | None, hoo
     if not callable(run_hook):
         return
     await run_hook(hook_name, event, *args)
+
+
+async def _run_inline_processing_hook(adapter, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+    """Acknowledge a message that the runner consumed inline, such as a plain-text approval, on an
+    adapter that implements ``on_inline_processing_complete``."""
+    hook = getattr(type(adapter), "on_inline_processing_complete", None)
+    if hook is None or hook is BasePlatformAdapter.on_inline_processing_complete:
+        return
+    await adapter._run_processing_hook("on_inline_processing_complete", event, outcome)

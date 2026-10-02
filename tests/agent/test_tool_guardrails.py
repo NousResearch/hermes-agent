@@ -507,6 +507,8 @@ def test_discovery_loop_cap_counts_builtin_file_discovery_calls():
     "rg needle .",
     "grep -R needle .",
     r'C:\\Tools\\rg.exe needle .',
+    "curl.exe -sS 'https://data.alpaca.markets/v2/stocks/bars?symbols=AAPL%2CMSFT'",
+    "curl --silent --show-error https://example.test/evidence",
     """python -c "print(open('clue.txt').read())" """.strip(),
     """python -c "from pathlib import Path; print(Path('clue.txt').read_text())" """.strip(),
     r'''"C:\\Python314\\python.exe" -c "print(open('clue.txt').read())"''',
@@ -531,6 +533,15 @@ def test_discovery_loop_cap_counts_clear_terminal_reads_and_searches(command):
     "echo changed > out.txt",
     "rm clue.txt",
     "cat clue.txt && echo changed > out.txt",
+    "curl.exe -X POST https://example.test/evidence",
+    "curl.exe -X PUT https://example.test/evidence",
+    "curl.exe -X PATCH https://example.test/evidence",
+    "curl.exe -X DELETE https://example.test/evidence",
+    "curl.exe -T evidence.txt https://example.test/evidence",
+    "curl.exe --form file=@evidence.txt https://example.test/evidence",
+    "curl.exe --data value https://example.test/evidence",
+    "curl.exe -sS https://example.test/evidence -o evidence.txt",
+    "curl.exe -sS https://example.test/evidence && pytest -q",
 ])
 def test_discovery_loop_cap_does_not_meter_effectful_or_ambiguous_terminal_commands(command):
     controller = ToolCallGuardrailController(

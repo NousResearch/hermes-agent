@@ -1,6 +1,8 @@
 import { applyDocumentLocale, LOCALE_ENDONYMS } from "@hermes/shared/i18n";
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
+import { SUPPORTED_LOCALES, resolveLocale } from "./resolve-locale";
+import { fetchServerLocale, persistServerLocale } from "./locale-preference";
 import { en } from "./en";
 import { zh } from "./zh";
 import { zhHant } from "./zh-hant";
@@ -39,8 +41,6 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   ar,
 };
 
-const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
-
 // Display metadata for the language picker — endonyms from @hermes/shared so the
 // desktop and web pickers can never disagree on a language's native name.
 export const LOCALE_META: Record<Locale, { name: string }> = Object.fromEntries(
@@ -49,18 +49,28 @@ export const LOCALE_META: Record<Locale, { name: string }> = Object.fromEntries(
 
 const STORAGE_KEY = "hermes-locale";
 
-function isLocale(value: string): value is Locale {
-  return (SUPPORTED_LOCALES as string[]).includes(value);
-}
-
-function getInitialLocale(): Locale {
+function readStoredLocale(): string | null {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && isLocale(stored)) return stored;
+    return localStorage.getItem(STORAGE_KEY);
   } catch {
     // SSR or privacy mode
+    return null;
   }
-  return "zh";
+}
+
+function readBrowserLocale(): string | null {
+  if (typeof navigator === "undefined") return null;
+  return navigator.language ?? null;
+}
+
+/**
+ * First-paint locale: localStorage → browser language → English. The saved
+ * server preference is applied asynchronously afterwards (see `I18nProvider`)
+ * so a slow preference fetch can never blank or stall the UI. `resolveLocale`
+ * owns the precedence rule and both call sites share it.
+ */
+export function getInitialLocale(): Locale {
+  return resolveLocale({ stored: readStoredLocale(), browser: readBrowserLocale() });
 }
 
 interface I18nContextValue {
@@ -77,14 +87,43 @@ const I18nContext = createContext<I18nContextValue>({
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+  // Once the user picks a language, a late server response must not yank it
+  // back — the newest explicit intent wins.
+  const userPickedRef = useRef(false);
 
   const setLocale = useCallback((l: Locale) => {
+    userPickedRef.current = true;
     setLocaleState(l);
     try {
       localStorage.setItem(STORAGE_KEY, l);
     } catch {
       // ignore
     }
+    // Persist server-side so the choice follows the user to any browser.
+    // Best-effort: localStorage already carries it for the next first paint.
+    void persistServerLocale(l);
+  }, []);
+
+  // Apply the server-saved preference over the locally resolved locale. Runs
+  // after first paint so the local chain (storage → browser → en) shows
+  // immediately; the swap only happens when the server genuinely disagrees.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchServerLocale().then((serverLocale) => {
+      if (cancelled || !serverLocale || userPickedRef.current) return;
+      setLocaleState((current) => {
+        if (current === serverLocale) return current;
+        try {
+          localStorage.setItem(STORAGE_KEY, serverLocale);
+        } catch {
+          // ignore
+        }
+        return serverLocale;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {

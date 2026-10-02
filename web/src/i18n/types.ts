@@ -386,6 +386,42 @@ export interface Translations {
   };
 
   // ── Logs page ──  /** Optional — Files page copy. */
+  /** Optional — Webhooks page copy. */
+  webhooksPage?: {
+    copy: string;
+    deleteWebhook: string;
+    deleteBodyNamed: string;
+    deleteBody: string;
+    close: string;
+    createdNotice: string;
+    webhookUrl: string;
+    secretShownOnce: string;
+    name: string;
+    namePlaceholder: string;
+    description: string;
+    descriptionPlaceholder: string;
+    events: string;
+    eventsPlaceholder: string;
+    deliverTo: string;
+    deliverLog: string;
+    deliverTelegram: string;
+    deliverDiscord: string;
+    deliverSlack: string;
+    deliverEmail: string;
+    deliverGithubComment: string;
+    deliverOnly: string;
+    deliverOnlyHint: string;
+    prompt: string;
+    promptPlaceholder: string;
+    receiverDisabled: string;
+    receiverDisabledBody: string;
+    badgeDeliverOnly: string;
+    badgeDisabled: string;
+    enable: string;
+    disable: string;
+    done: string;
+  };
+
   /** Optional — Channels page + onboarding panels copy. */
   channelsPage?: {
     botTokenHint: string;

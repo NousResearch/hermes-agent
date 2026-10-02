@@ -382,7 +382,46 @@ export const en: Translations = {
     reload: "Reload",
     reloadDescription:
       "Switching to {model} starts a fresh chat. Your current chat stays in your Sessions list and the agent's memory is kept. Reload now to apply it?",
-  },  channelsPage: {
+  },  webhooksPage: {
+    copy: "Copy",
+    deleteWebhook: "Delete webhook",
+    deleteBodyNamed:
+      '"{name}" — this will permanently remove this webhook subscription.',
+    deleteBody: "This will permanently remove this webhook subscription.",
+    close: "Close",
+    createdNotice:
+      "Subscription created. Copy the secret now — it is only shown once.",
+    webhookUrl: "Webhook URL",
+    secretShownOnce: "Secret (shown once)",
+    name: "Name",
+    namePlaceholder: "e.g. github-push",
+    description: "Description",
+    descriptionPlaceholder: "What this webhook does (optional)",
+    events: "Events",
+    eventsPlaceholder: "comma-separated, leave empty for all",
+    deliverTo: "Deliver to",
+    deliverLog: "Log",
+    deliverTelegram: "Telegram",
+    deliverDiscord: "Discord",
+    deliverSlack: "Slack",
+    deliverEmail: "Email",
+    deliverGithubComment: "GitHub comment",
+    deliverOnly: "Deliver only",
+    deliverOnlyHint: "Skip the agent, deliver payload directly",
+    prompt: "Prompt",
+    promptPlaceholder:
+      "Instructions for the agent when this webhook fires (optional)",
+    receiverDisabled: "Webhook receiver disabled",
+    receiverDisabledBody:
+      "Webhooks are their own gateway platform. Enable them here to accept incoming HTTP events; chat channels are only needed when a subscription delivers to Telegram, Discord, Slack, or another channel.",
+    badgeDeliverOnly: "deliver only",
+    badgeDisabled: "disabled",
+    enable: "Enable",
+    disable: "Disable",
+    done: "Done",
+  },
+
+  channelsPage: {
     botTokenHint: "Copy the complete bot token BotFather gives you.",
     allowedWhatsappNumbers: "Allowed WhatsApp numbers",
     connected: "Connected",

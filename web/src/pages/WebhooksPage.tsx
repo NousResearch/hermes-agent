@@ -18,6 +18,7 @@ import { api } from "@/lib/api";
 import type { WebhookRoute, WebhooksResponse } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { useI18n } from "@/i18n";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
@@ -35,6 +36,8 @@ interface CreatedWebhook {
 }
 
 function CopyButton({ value }: { value: string }) {
+  const { t } = useI18n();
+  const W = t.webhooksPage;
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
     void copyTextToClipboard(value).then((copied) => {
@@ -47,8 +50,8 @@ function CopyButton({ value }: { value: string }) {
     <Button
       ghost
       size="icon"
-      title="Copy"
-      aria-label="Copy"
+      title={W.copy}
+      aria-label={W.copy}
       onClick={handleCopy}
       className="text-muted-foreground hover:text-foreground"
     >
@@ -58,6 +61,8 @@ function CopyButton({ value }: { value: string }) {
 }
 
 export default function WebhooksPage() {
+  const { t } = useI18n();
+  const W = t.webhooksPage;
   const [data, setData] = useState<WebhooksResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [enabling, setEnabling] = useState(false);
@@ -290,11 +295,11 @@ export default function WebhooksPage() {
         open={webhookDelete.isOpen}
         onCancel={webhookDelete.cancel}
         onConfirm={webhookDelete.confirm}
-        title="Delete webhook"
+        title={W.deleteWebhook}
         description={
           pendingName
-            ? `"${pendingName}" — this will permanently remove this webhook subscription.`
-            : "This will permanently remove this webhook subscription."
+            ? W.deleteBodyNamed.replace("{name}", pendingName)
+            : W.deleteBody
         }
         loading={webhookDelete.isDeleting}
       />
@@ -315,7 +320,7 @@ export default function WebhooksPage() {
               size="icon"
               onClick={closeCreateModal}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={W.close}
             >
               <X />
             </Button>
@@ -332,12 +337,11 @@ export default function WebhooksPage() {
             {created ? (
               <div className="p-5 grid gap-4">
                 <p className="text-sm text-muted-foreground">
-                  Subscription created. Copy the secret now — it is only shown
-                  once.
+                  {W.createdNotice}
                 </p>
 
                 <div className="grid gap-2">
-                  <Label>Webhook URL</Label>
+                  <Label>{W.webhookUrl}</Label>
                   <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
                     <span className="flex-1 min-w-0 truncate font-mono text-xs">
                       {created.url}
@@ -347,7 +351,7 @@ export default function WebhooksPage() {
                 </div>
 
                 <div className="grid gap-2">
-                  <Label>Secret (shown once)</Label>
+                  <Label>{W.secretShownOnce}</Label>
                   <div className="flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
                     <span className="flex-1 min-w-0 truncate font-mono text-xs">
                       {created.secret}
@@ -362,38 +366,38 @@ export default function WebhooksPage() {
                     size="sm"
                     onClick={closeCreateModal}
                   >
-                    Done
+                    {W.done}
                   </Button>
                 </div>
               </div>
             ) : (
               <div className="p-5 grid gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="webhook-name">Name</Label>
+                  <Label htmlFor="webhook-name">{W.name}</Label>
                   <Input
                     id="webhook-name"
                     autoFocus
-                    placeholder="e.g. github-push"
+                    placeholder={W.namePlaceholder}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                   />
                 </div>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="webhook-description">Description</Label>
+                  <Label htmlFor="webhook-description">{W.description}</Label>
                   <Input
                     id="webhook-description"
-                    placeholder="What this webhook does (optional)"
+                    placeholder={W.descriptionPlaceholder}
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                   />
                 </div>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="webhook-events">Events</Label>
+                  <Label htmlFor="webhook-events">{W.events}</Label>
                   <Input
                     id="webhook-events"
-                    placeholder="comma-separated, leave empty for all"
+                    placeholder={W.eventsPlaceholder}
                     value={events}
                     onChange={(e) => setEvents(e.target.value)}
                   />
@@ -401,25 +405,25 @@ export default function WebhooksPage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="grid gap-2">
-                    <Label htmlFor="webhook-deliver">Deliver to</Label>
+                    <Label htmlFor="webhook-deliver">{W.deliverTo}</Label>
                     <Select
                       id="webhook-deliver"
                       value={deliver}
                       onValueChange={(v) => setDeliver(v)}
                     >
-                      <SelectOption value="log">Log</SelectOption>
-                      <SelectOption value="telegram">Telegram</SelectOption>
-                      <SelectOption value="discord">Discord</SelectOption>
-                      <SelectOption value="slack">Slack</SelectOption>
-                      <SelectOption value="email">Email</SelectOption>
+                      <SelectOption value="log">{W.deliverLog}</SelectOption>
+                      <SelectOption value="telegram">{W.deliverTelegram}</SelectOption>
+                      <SelectOption value="discord">{W.deliverDiscord}</SelectOption>
+                      <SelectOption value="slack">{W.deliverSlack}</SelectOption>
+                      <SelectOption value="email">{W.deliverEmail}</SelectOption>
                       <SelectOption value="github_comment">
-                        GitHub comment
+                        {W.deliverGithubComment}
                       </SelectOption>
                     </Select>
                   </div>
 
                   <div className="grid gap-2">
-                    <Label htmlFor="webhook-deliver-only">Deliver only</Label>
+                    <Label htmlFor="webhook-deliver-only">{W.deliverOnly}</Label>
                     <label className="flex items-center gap-2 text-sm text-muted-foreground h-9">
                       <input
                         id="webhook-deliver-only"
@@ -427,17 +431,17 @@ export default function WebhooksPage() {
                         checked={deliverOnly}
                         onChange={(e) => setDeliverOnly(e.target.checked)}
                       />
-                      Skip the agent, deliver payload directly
+                      {W.deliverOnlyHint}
                     </label>
                   </div>
                 </div>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="webhook-prompt">Prompt</Label>
+                  <Label htmlFor="webhook-prompt">{W.prompt}</Label>
                   <textarea
                     id="webhook-prompt"
                     className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-                    placeholder="Instructions for the agent when this webhook fires (optional)"
+                    placeholder={W.promptPlaceholder}
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                   />
@@ -466,12 +470,9 @@ export default function WebhooksPage() {
             <div className="flex items-start gap-3">
               <Webhook className="h-5 w-5 shrink-0 text-warning" />
               <div className="flex flex-col gap-1">
-                <span className="font-medium">Webhook receiver disabled</span>
+                <span className="font-medium">{W.receiverDisabled}</span>
                 <span className="text-muted-foreground">
-                  Webhooks are their own gateway platform. Enable them here to
-                  accept incoming HTTP events; chat channels are only needed
-                  when a subscription delivers to Telegram, Discord, Slack, or
-                  another channel.
+                  {W.receiverDisabledBody}
                 </span>
               </div>
             </div>
@@ -552,9 +553,9 @@ export default function WebhooksPage() {
                   </span>
                   <Badge tone="outline">{sub.deliver}</Badge>
                   {sub.deliver_only && (
-                    <Badge tone="secondary">deliver only</Badge>
+                    <Badge tone="secondary">{W.badgeDeliverOnly}</Badge>
                   )}
-                  {!sub.enabled && <Badge tone="warning">disabled</Badge>}
+                  {!sub.enabled && <Badge tone="warning">{W.badgeDisabled}</Badge>}
                 </div>
 
                 {sub.description && (
@@ -591,14 +592,14 @@ export default function WebhooksPage() {
                   disabled={togglingName === sub.name}
                   onClick={() => handleToggleEnabled(sub.name, !sub.enabled)}
                 >
-                  {sub.enabled ? "Disable" : "Enable"}
+                  {sub.enabled ? W.disable : W.enable}
                 </Button>
                 <Button
                   ghost
                   destructive
                   size="icon"
-                  title="Delete"
-                  aria-label="Delete"
+                  title={t.common.delete}
+                  aria-label={t.common.delete}
                   onClick={() => webhookDelete.requestDelete(sub.name)}
                 >
                   <Trash2 />

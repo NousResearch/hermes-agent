@@ -1,6 +1,7 @@
 """Tests for the top-level `./hermes` launcher script."""
 
 import json
+import os
 import runpy
 import sys
 import types
@@ -118,18 +119,19 @@ def test_installation_command_workspace_without_facts_resolves_owner_entry(monke
 
     monkeypatch.setattr(_launchers, "_facts_owner_root", lambda root: checkout)
 
+    stable = checkout / ".hermes" / "bin" / "hermes"
+    stable.parent.mkdir(parents=True)
+    stable.write_text("#!/bin/sh\n", encoding="utf-8")
+    stable.chmod(0o755)
+
     command = _launchers.installation_command(workspace, ["gateway", "run"])
-    assert command[0] == str(script), "the recorded venv's console script, not the dead shim"
+    assert command[0] == str(stable), "the stable owner launcher, not a generation executable"
     assert command[-2:] == ["gateway", "run"]
     assert str(shim) not in command
 
-    # Module form: the console script cannot carry a non-default module
-    # (its entry point is hermes_cli.main:main, and --run-module is a
-    # shim-only switch it would parse as a subcommand) — the module rides
-    # the environment's own interpreter instead.
+    # Module form remains on the shim-only carrier.
     module_cmd = _launchers.installation_command(workspace, module="gateway.cgroup_cleanup")
-    assert module_cmd == [str(venv / "bin" / "python"), "-I", "-m",
-                          "gateway.cgroup_cleanup"]
+    assert module_cmd == [str(stable), "--run-module", "gateway.cgroup_cleanup"]
 
     # With facts of its own, the workspace keeps its published launcher.
     runtime_facts_path(workspace).parent.mkdir(parents=True, exist_ok=True)
@@ -181,22 +183,26 @@ def test_installation_command_generation_workspace_last_resort_uses_sibling_venv
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/usr/bin/python3"))
     monkeypatch.setattr(_launchers, "_facts_owner_root", lambda root: tmp_path / "nowhere")
 
+    stable_root = tmp_path / "checkout"
+    stable_launcher = stable_root / ".hermes" / "bin" / "hermes"
+    stable_launcher.parent.mkdir(parents=True)
+    stable_launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    stable_launcher.chmod(0o755)
+    (generation.parent.parent / "inputs").mkdir(parents=True)
+    (generation.parent.parent / "inputs" / ".project-root").write_text(str(stable_root), encoding="utf-8")
+
     command = _launchers.installation_command(workspace, ["gateway", "run"])
-    assert command[0] == str(script), "sibling venv console script, not a workspace-bound interpreter form"
+    assert command[0] == str(stable_launcher), "stable launcher, not a generation executable"
     assert command[-2:] == ["gateway", "run"]
 
-    # Module form: sibling console script + interpreter -m carrier (never
-    # --run-module on a console script — only the repo shim implements it).
+    # The previously fixed module-carrier behavior remains unchanged.
     module_cmd = _launchers.installation_command(workspace, module="gateway.cgroup_cleanup")
-    assert module_cmd == [str(venv / "bin" / "python"), "-I", "-m",
-                          "gateway.cgroup_cleanup"]
+    assert module_cmd == [str(stable_launcher), "--run-module", "gateway.cgroup_cleanup"]
 
-    # A script-less sibling venv cannot carry a non-default module at all:
-    # fall through to the interpreter bootstrap form (actionable activation
-    # error), not a command that fails differently per artifact.
+    # A script-less sibling venv does not change the stable command.
     (venv / "bin" / "hermes").unlink()
     no_script_cmd = _launchers.installation_command(workspace, module="gateway.cgroup_cleanup")
-    assert no_script_cmd[0] == "/usr/bin/python3" and no_script_cmd[1:3] == ["-I", "-c"]
+    assert no_script_cmd == [str(stable_launcher), "--run-module", "gateway.cgroup_cleanup"]
 
     # A plain directory named "workspace" without the generation layout (no
     # sibling venv/pyvenv.cfg) must NOT resolve a bogus entry — the
@@ -205,3 +211,50 @@ def test_installation_command_generation_workspace_last_resort_uses_sibling_venv
     plain.mkdir(parents=True)
     plain_command = _launchers.installation_command(plain, ["gateway", "run"])
     assert plain_command[0] == "/usr/bin/python3" and plain_command[1:3] == ["-I", "-c"]
+
+
+def test_persisted_workspace_command_survives_generation_gc(monkeypatch, tmp_path):
+    """A service command resolved from A must not point into A after B wins GC."""
+    from hermes_cli import _launchers
+    from hermes_cli.runtime_state import collect_generations
+    from pm.environments import install_state_dir, runtime_facts_path
+
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/usr/bin/python3"))
+    monkeypatch.setattr(_launchers, "_facts_owner_root", lambda root: tmp_path / "no-owner")
+    monkeypatch.setattr("pm.environments.installs_root", lambda: tmp_path / "installs")
+
+    stable = repo / ".hermes" / "bin" / "hermes"
+    stable.parent.mkdir(parents=True)
+    stable.write_text("#!/bin/sh\n", encoding="utf-8")
+    stable.chmod(0o755)
+
+    state = install_state_dir(repo)
+    generations = state / "environments"
+    for name in ("A", "B"):
+        venv = generations / name / "venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("version = 3.11", encoding="utf-8")
+        script = venv / "bin" / "hermes"
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
+        script.chmod(0o755)
+        (venv.parent / ".lease-managed").touch()
+
+    workspace = generations / "A" / "workspace"
+    workspace.mkdir()
+    (state / "inputs").mkdir(parents=True)
+    (state / "inputs" / ".project-root").write_text(str(repo), encoding="utf-8")
+    runtime_facts_path(repo).parent.mkdir(parents=True, exist_ok=True)
+    runtime_facts_path(repo).write_text(json.dumps({"packages": {"venv": {
+        "environment": str(generations / "A" / "venv")}}}), encoding="utf-8")
+
+    persisted = _launchers.installation_command(workspace, ["gateway", "run"])
+    assert persisted[0] == str(stable)
+
+    runtime_facts_path(repo).write_text(json.dumps({"packages": {"venv": {
+        "environment": str(generations / "B" / "venv")}}}), encoding="utf-8")
+    removed = collect_generations(repo, min_age_seconds=0)
+    assert removed == [generations / "A"]
+    assert not (generations / "A").exists()
+    assert Path(persisted[0]).is_file() and os.access(persisted[0], os.X_OK)

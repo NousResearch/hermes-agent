@@ -87,31 +87,41 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
         # "no dependency environment is committed" (#125375). Resolve the
         # entry point from the environment that actually owns it — the
         # recorded owner first, then this root's own generation sibling.
-        entry = (_committed_environment_command(_facts_owner_root(root))
-                 or _committed_environment_command(root)
-                 or _sibling_generation_entry(root))
-        if entry is not None:
-            if module == "hermes_cli.main":
-                return [str(entry), *args]
-            # Only the minted repo shim implements ``--run-module`` (its body
-            # in _launcher_script); a venv console script parses the flag's
-            # VALUE as a subcommand (exit 2) and a bare interpreter rejects
-            # the flag outright — so a non-default module rides the
-            # environment's own interpreter via ``-m`` instead (#125051
-            # review).
-            carrier = _module_carrier_command(entry, module, args)
-            if carrier is not None:
-                return carrier
-            # Script-only environment layout: fall through to the bootstrap
-            # form below, which carries any module and fails at activation
-            # with the actionable ``pm repair`` message rather than a
-            # deferred, silent exec failure.
+        # The owner/sibling entries are useful for resolving activation, but
+        # they live inside a generation and may be collected immediately after
+        # this command is persisted. Resolve the command from a stable install
+        # root instead; only its published shim (or store interpreter bootstrap)
+        # may cross the service-definition boundary.
+        stable_root = _stable_runtime_root(root)
+        stable_launcher = _published_launcher(stable_root)
+        if stable_root != root.resolve() and stable_launcher is not None:
+            prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
+            return [str(stable_launcher), *prefix, *args]
+        return runtime_command(stable_root, args, module=module, python=python, home=home)
     # No published launcher (#125043), or one whose tree cannot activate and
     # no owner record resolves: the interpreter bootstrap form — the same
     # shape the launcher itself wraps. Where the tree genuinely has no
     # committed environment this fails at activation with the actionable
     # ``pm repair`` message instead of a deferred, silent exec failure.
     return runtime_command(root, args, module=module, python=python, home=home)
+
+
+def _stable_runtime_root(root: Path) -> Path:
+    """Find the non-generation project root that owns a PM generation."""
+    owner = _facts_owner_root(root)
+    if _recorded_venv_for_root(owner) is not None:
+        return owner.resolve()
+    workspace = Path(root).resolve()
+    if workspace.name == "workspace":
+        marker = workspace.parent.parent.parent / "inputs" / ".project-root"
+        try:
+            candidate = Path(marker.read_text(encoding="utf-8").strip()).resolve()
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+        else:
+            if candidate.is_dir():
+                return candidate
+    return workspace
 
 
 def _module_carrier_command(entry: Path, module: str, args) -> list[str] | None:

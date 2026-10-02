@@ -174,6 +174,8 @@ class TestResetCommandWithTitle:
         runner._pending_messages = {}
         runner._pending_approvals = {}
         runner._session_db = AsyncMock()
+        runner._session_db._db = MagicMock()
+        runner._session_db._db.is_telegram_topic_mode_enabled.return_value = False
         runner._session_db.set_session_title.side_effect = ValueError(
             "Title 'Dup' is already in use by session abc-123"
         )

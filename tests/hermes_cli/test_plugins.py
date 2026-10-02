@@ -2718,3 +2718,50 @@ class TestAsyncHookOnCallerLoop:
             results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"))
         assert results == [{"seen": "e"}, {"seen_async": "e"}]
         assert "async plugin blew up" in caplog.text
+
+
+def test_evict_modules_tolerates_concurrent_sys_modules_mutation():
+    """``_evict_modules`` must snapshot ``sys.modules`` before filtering (#131817).
+
+    Plugins load on concurrent worker threads, so another loader thread's
+    ``import`` can insert into ``sys.modules`` while this helper iterates it.
+    Iterating the live dict raises ``RuntimeError: dictionary changed size
+    during iteration``, which propagates out of the loader and marks the whole
+    plugin as failed to load. ``list(sys.modules)`` completes the iteration in
+    one C-level call, so concurrent inserts cannot invalidate it.
+    """
+    from hermes_cli.plugins_loader import _evict_modules
+
+    probe = "_evict_probe_pkg"
+    child = f"{probe}.child"
+
+    stop = threading.Event()
+
+    def churn():
+        i = 0
+        while not stop.is_set():
+            key = f"_evict_churn_{i}"
+            sys.modules[key] = types.ModuleType(key)
+            del sys.modules[key]
+            i += 1
+
+    # Force frequent GIL handoffs so the churning thread can interleave with
+    # the helper's iteration, as it does under real concurrent plugin loads.
+    switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    worker = threading.Thread(target=churn)
+    worker.start()
+    try:
+        for _ in range(400):
+            # Re-arm the target each round so every eviction has real work.
+            sys.modules[probe] = types.ModuleType(probe)
+            sys.modules[child] = types.ModuleType(child)
+            _evict_modules(probe)
+            assert probe not in sys.modules
+            assert child not in sys.modules
+    finally:
+        stop.set()
+        worker.join()
+        sys.setswitchinterval(switch_interval)
+        sys.modules.pop(probe, None)
+        sys.modules.pop(child, None)

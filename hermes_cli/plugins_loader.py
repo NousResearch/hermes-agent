@@ -137,7 +137,7 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
 def _evict_modules(module_name: str) -> None:
     """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
+    for name in [n for n in list(sys.modules) if n == module_name or n.startswith(prefix)]:
         del sys.modules[name]
 
 

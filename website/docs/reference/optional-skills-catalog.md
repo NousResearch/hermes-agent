@@ -266,6 +266,11 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**reddit-reading**](../user-guide/skills/optional/social-media/social-media-reddit-reading.md) | Read Reddit: subreddits, search, threads, users. No browser. |
+| [**socialrobot-analytics**](../user-guide/skills/optional/social-media/social-media-socialrobot-analytics.md) | Report SocialRobot post, account, and audience analytics. |
+| [**socialrobot-calendar-review**](../user-guide/skills/optional/social-media/social-media-socialrobot-calendar-review.md) | Audit the upcoming social queue and fix gaps or overlaps. |
+| [**socialrobot-campaign-report**](../user-guide/skills/optional/social-media/social-media-socialrobot-campaign-report.md) | Compare campaign performance across platforms and recap. |
+| [**socialrobot-content-repurposing**](../user-guide/skills/optional/social-media/social-media-socialrobot-content-repurposing.md) | Repurpose long-form content into multi-platform posts. |
+| [**socialrobot-scheduling**](../user-guide/skills/optional/social-media/social-media-socialrobot-scheduling.md) | Schedule multi-platform social posts via SocialRobot MCP. |
 
 ## software-development
 

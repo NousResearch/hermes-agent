@@ -327,54 +327,62 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     r = json.loads(memory_tool("add", "memory", None, store=store))
     assert r["success"] is False
     assert wa.pending_count("memory") == 0
+def _assert_memory_bg_policy_when_off(text):
+    """Effective unattended background-review policy must be visible beside the
+    general write_approval setting (#106918)."""
+    from tools.memory_tool import _BG_DELETE_ACTIONS
+    assert "memory.write_approval = off" in text
+    lowered = text.lower()
+    assert " or ".join(_BG_DELETE_ACTIONS) in lowered
+    assert "refine" in lowered
+    assert "add" in lowered or "addition" in lowered
+    assert "pending" in lowered
+    assert "batch" in lowered
 
 
-# ---------------------------------------------------------------------------
-# Staged-write review hint is surface-aware (#98330)
-# ---------------------------------------------------------------------------
-
-def _stage_one_memory_write():
-    from tools.memory_tool import memory_tool, MemoryStore
-    store = MemoryStore(); store.load_from_disk()
-    r = json.loads(memory_tool("add", "memory", "surface hint fact", store=store))
-    assert r.get("staged") is True, r
-    return r
-
-
-def test_staged_hint_names_the_review_command_on_slash_surfaces(hermes_home):
+def test_memory_status_explains_bg_policy_when_approval_off(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa
-    _set_approval("memory", True)
-    r = _stage_one_memory_write()
-    # No headless markers bound (plain foreground turn) → the slash hint stands.
-    assert "/memory pending" in r["message"], r["message"]
-    assert wa.pending_count("memory") == 1
+
+    # Default / missing config keeps write_approval off; still show the
+    # unattended background-review restriction so /memory matches the
+    # staging notification.
+    text = handle_pending_subcommand(wa.MEMORY, [])
+    _assert_memory_bg_policy_when_off(text)
 
 
-def test_staged_hint_names_the_pending_dir_on_headless_surfaces(hermes_home, monkeypatch):
+def test_memory_approval_status_explains_bg_policy_when_off(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa
+
+    text = handle_pending_subcommand(wa.MEMORY, ["approval"])
+    _assert_memory_bg_policy_when_off(text)
+    assert "Set with:" in text
+
+
+def test_memory_status_explains_bg_policy_when_approval_on(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import _BG_DELETE_ACTIONS
+
     _set_approval("memory", True)
-    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
-    r = _stage_one_memory_write()
-    assert "review with /memory pending" not in r["message"], r["message"]
-    assert "pending records live in" in r["message"]
-    assert str(wa._pending_path(wa.MEMORY, "").parent) in r["message"]
-    monkeypatch.delenv("HERMES_CRON_SESSION")
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-7")
-    r = _stage_one_memory_write()
-    assert "review with /memory pending" not in r["message"], r["message"]
-    monkeypatch.delenv("HERMES_KANBAN_TASK")
-
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
-    r = _stage_one_memory_write()
-    assert "review with /memory pending" not in r["message"], r["message"]
-    assert "pending records live in" in r["message"]
-    monkeypatch.delenv("HERMES_SESSION_PLATFORM")
-    assert wa.pending_count("memory") == 3
+    text = handle_pending_subcommand(wa.MEMORY, [])
+    assert "memory.write_approval = on" in text
+    lowered = text.lower()
+    # General gate already covers all writes; still mention the
+    # background replace/remove protection.
+    assert " or ".join(_BG_DELETE_ACTIONS) in lowered
+    assert "background" in lowered
 
 
-def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkeypatch):
-    _set_approval("memory", True)
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
-    r = _stage_one_memory_write()
-    assert "/memory pending" in r["message"], r["message"]
+def test_skills_status_omits_memory_bg_policy(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    text = handle_pending_subcommand(wa.SKILLS, [])
+    assert "skills.write_approval = off" in text
+    lowered = text.lower()
+    assert "refine" not in lowered
+    assert "replace or remove" not in lowered
+
+

@@ -659,7 +659,11 @@ def _sandbox_wrap(cmd_parts: List[str], browser_env: Dict[str, str], task_socket
     remote_env = {k: v for k, v in browser_env.items() if k in _SANDBOX_ENV_KEYS}
     remote_env.update(published)
     remote_env["AGENT_BROWSER_SOCKET_DIR"] = _sandbox_socket_dir(env)
-    remote_env.pop("AGENT_BROWSER_EXECUTABLE_PATH", None)  # the sandbox image's Playwright Chromium, not a host path
+    sandbox_executable = sandbox_host.chromium_executable(env)
+    if sandbox_executable:
+        remote_env["AGENT_BROWSER_EXECUTABLE_PATH"] = sandbox_executable
+    else:
+        remote_env.pop("AGENT_BROWSER_EXECUTABLE_PATH", None)
     remote_env["AGENT_BROWSER_PROFILE"] = sandbox_host.browser_profile_dir(env)  # persists with the container, not its tmpfs
     remote_env["TMPDIR"] = env.get_temp_dir()
     if not getattr(env, "_bd_browser_dirs_ready", False):

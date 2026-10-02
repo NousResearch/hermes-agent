@@ -26,7 +26,7 @@ class TestProbeMcpServerTools:
 
     def test_returns_empty_when_mcp_not_available(self):
         with patch("tools.mcp_tool._MCP_AVAILABLE", False):
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp_tool_discovery import probe_mcp_server_tools
             result = probe_mcp_server_tools()
         assert result == {}
 
@@ -48,11 +48,11 @@ class TestProbeMcpServerTools:
             return mock_server
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
-             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
-             patch("tools.mcp_tool._stop_mcp_loop"):
+             patch("tools.mcp_tool_config._load_mcp_config", return_value=config), \
+             patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run, \
+             patch("tools.mcp_tool_loop._stop_mcp_loop"):
 
             def run_coro(coro_or_factory, timeout=120):
                 coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
@@ -64,7 +64,7 @@ class TestProbeMcpServerTools:
 
             mock_run.side_effect = run_coro
 
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp_tool_discovery import probe_mcp_server_tools
             result = probe_mcp_server_tools()
 
         assert "github" in result
@@ -89,11 +89,11 @@ class TestProbeMcpServerTools:
             return mock_server
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
-             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
-             patch("tools.mcp_tool._stop_mcp_loop"):
+             patch("tools.mcp_tool_config._load_mcp_config", return_value=config), \
+             patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run, \
+             patch("tools.mcp_tool_loop._stop_mcp_loop"):
 
             def run_coro(coro_or_factory, timeout=120):
                 coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
@@ -105,7 +105,7 @@ class TestProbeMcpServerTools:
 
             mock_run.side_effect = run_coro
 
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp_tool_discovery import probe_mcp_server_tools
             result = probe_mcp_server_tools()
 
         assert "github" in result

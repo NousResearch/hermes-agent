@@ -35,11 +35,7 @@ interface PreviewAnnotateCardProps extends AnnotateCardPlacement {
   title: string
 }
 
-export function placeAnnotateCard({
-  paneHeight,
-  paneWidth,
-  rect
-}: PlaceAnnotateCardInput): AnnotateCardPlacement {
+export function placeAnnotateCard({ paneHeight, paneWidth, rect }: PlaceAnnotateCardInput): AnnotateCardPlacement {
   const width = Math.min(ANNOTATE_CARD_WIDTH, Math.max(0, paneWidth - PAD * 2))
   const maxLeft = Math.max(PAD, paneWidth - width - PAD)
   const maxTop = Math.max(PAD, paneHeight - ANNOTATE_CARD_HEIGHT - PAD)

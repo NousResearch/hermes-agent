@@ -324,11 +324,22 @@ def _served_profile_tag() -> str:
     return "" if get_hermes_home_override() is None else hermes_home_key()
 
 
+_NAMED_KEY_PREFIX = "bu-named-"
+
+
 def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
     """Session-cache key for a backend browser: named sessions get their own; served profiles get their own."""
-    key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+    key = f"{_NAMED_KEY_PREFIX}{session_name}" if session_name else (task_id or "browser-exec-default")
     tag = _served_profile_tag()
     return f"{key}@{tag}" if tag else key
+
+
+def _session_name_from_key(cache_key: str) -> str:
+    """``_SESSION_RE`` keeps ``@`` out of names, so the first ``@`` ends the name even when the
+    profile tag contains one."""
+    if not cache_key.startswith(_NAMED_KEY_PREFIX):
+        return ""
+    return cache_key[len(_NAMED_KEY_PREFIX):].split("@", 1)[0]
 
 
 def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
@@ -588,6 +599,28 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
             proc.communicate(timeout=_POST_KILL_DRAIN_S)
         raise
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+# restart_daemon's worst case is about 37 s: 5 s IPC timeouts per step plus 15 s waiting for the exit.
+_DAEMON_STOP_TIMEOUT_S = 60
+
+
+def stop_named_session_daemon(cache_key: str, tracked_keys: List[str]) -> None:
+    """The harness detaches one daemon per BU_NAME (``start_new_session``) with no idle exit, so it
+    outlives the browser Hermes tore down. ``--reload`` stops it after an IPC identity check and
+    never restarts it. A name another tracked key still maps to keeps its daemon: served profiles
+    share BU_NAME."""
+    name = _session_name_from_key(cache_key)
+    if not _SESSION_RE.match(name) or any(_session_name_from_key(key) == name for key in tracked_keys):
+        return
+    cmd = _find_cli()
+    if not cmd:
+        return
+    proc = _run_cli_killing_process_group([*cmd, "--reload"], "", {**_base_subprocess_env(), "BU_NAME": name},
+                                          _DAEMON_STOP_TIMEOUT_S)
+    if proc.returncode:
+        logger.debug("browser-harness --reload for %s exited %s: %s", name, proc.returncode,
+                     proc.stderr.strip()[-_STDERR_CAP_CHARS:])
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,

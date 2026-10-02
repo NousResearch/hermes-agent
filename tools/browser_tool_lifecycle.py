@@ -623,8 +623,15 @@ def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
         return False
 
 
+def _stop_harness_daemon(task_id: str) -> None:
+    from tools.browser_use_cli import stop_named_session_daemon
+    with _bt._cleanup_lock:
+        tracked_keys = list(_bt._active_sessions)
+    stop_named_session_daemon(task_id, tracked_keys)
+
+
 def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> None:
-    """Untrack ``task_id``, close its cloud provider session, kill its daemon — the
+    """Untrack ``task_id``, close its cloud provider session, stop its daemons — the
     unconditional tail of a teardown, and the whole of the janitor's force-reap path.
 
     The unconditional tail of ``_cleanup_single_browser_session``; also the whole of the janitor's
@@ -648,6 +655,7 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
         if os.path.exists(socket_dir):
             _kill_verified_daemon(socket_dir, session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)
+    _best_effort(f"Harness daemon stop for {task_id}", lambda: _stop_harness_daemon(task_id))
 
 
 def _force_reap_browser_session(task_id: str) -> None:

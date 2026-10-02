@@ -357,3 +357,39 @@ it.each(['fallback', 'stream', 'tool-interim'] as const)(
     h.dispose()
   }
 )
+
+it('settles the active occurrence before a durable queue and then completes that queued occurrence separately', async () => {
+  const h = mount()
+  await h.submit()
+  await h.send('message.start')
+  await h.send('message.delta', { text: ANSWER })
+  await flush()
+  const activeAssistant = h.state().streamId
+  const queued: ChatMessage = {
+    id: 'durable-queued-row',
+    role: 'user',
+    rowId: 74,
+    queuedPrompt: true,
+    parts: [{ type: 'text', text: 'Next' }]
+  }
+  h.update(state => ({ ...state, messages: [...state.messages, queued] }))
+  await h.send('message.complete', { text: ANSWER })
+  expect(h.state().messages.find(row => row.id === activeAssistant)?.pending).toBe(false)
+  expect(timeline(h.state().messages)).toEqual([
+    ['user', 'Give the answer.'],
+    ['assistant', ANSWER],
+    ['user', 'Next']
+  ])
+  await h.send('message.start')
+  await h.send('message.delta', { text: ANSWER })
+  await flush()
+  await h.send('message.complete', { text: ANSWER })
+  expect(timeline(h.state().messages)).toEqual([
+    ['user', 'Give the answer.'],
+    ['assistant', ANSWER],
+    ['user', 'Next'],
+    ['assistant', ANSWER]
+  ])
+  expect(new Set(h.state().messages.map(row => row.id)).size).toBe(4)
+  h.dispose()
+})

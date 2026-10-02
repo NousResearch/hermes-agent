@@ -1751,8 +1751,11 @@ export function runningProjectionStreamId(messages: ChatMessage[], running: bool
   const visible = messages.filter(message => !message.hidden)
   const tail = visible.at(-1)
 
-  const candidate =
-    tail?.role === 'user' && tail.id.startsWith('user-queued-')
+  const durableQueue = tail?.role === 'user' && tail.queuedPrompt === true &&
+    typeof tail.rowId === 'number' && Number.isSafeInteger(tail.rowId) && tail.rowId > 0
+  const candidate = durableQueue
+    ? visible.at(-2)
+    : tail?.role === 'user' && tail.id.startsWith('user-queued-')
       ? visible.at(-2)?.id === `assistant-stream-${tail.id.slice('user-queued-'.length)}`
         ? visible.at(-2)
         : undefined

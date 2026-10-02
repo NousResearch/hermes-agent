@@ -652,6 +652,7 @@ export interface SessionInfo {
 }
 
 export type TimelineDisplayMetadata =
+  | { _queued_prompt: boolean }
   | { model: string; provider?: string }
   | {
       delegation_id: string

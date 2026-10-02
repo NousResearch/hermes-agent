@@ -2762,3 +2762,22 @@ describe('applyStoredSessionPreviewRuntimeInfo does not persist the preview', ()
     expect(localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
   })
 })
+
+it('adopts the running assistant before a durable accepted queue without treating an ordinary user as queued', () => {
+  const active = {
+    id: 'assistant-stream-runtime',
+    role: 'assistant' as const,
+    pending: true,
+    parts: [{ type: 'text' as const, text: 'Current reply' }]
+  }
+  const queued = {
+    id: 'durable-user-7',
+    role: 'user' as const,
+    rowId: 7,
+    queuedPrompt: true as const,
+    parts: [{ type: 'text' as const, text: 'Next' }]
+  }
+  expect(runningProjectionStreamId([active, queued], true)).toBe(active.id)
+  expect(runningProjectionStreamId([active, { ...queued, queuedPrompt: undefined }], true)).toBeNull()
+  expect(runningProjectionStreamId([active, queued], false)).toBeNull()
+})

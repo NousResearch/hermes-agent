@@ -5535,7 +5535,25 @@ export const en: Translations = {
     vaultCodeConfirm: 'Enter code'
   },
 
+  memoryReview: {
+    title: 'Memory review',
+    description: 'Review and decide each atomic pending batch. Changes apply to future sessions.',
+    gateOn: 'Approval gate: on. Pending writes still require a decision.',
+    gateOff: 'Approval gate: off. Pending writes still require a decision.',
+    loading: 'Loading memory writes…',
+    refresh: 'Refresh',
+    empty: 'No pending memory writes.',
+    approve: 'Approve',
+    reject: 'Reject',
+    noChange: '(no textual change)',
+    raw: 'Raw unified diff',
+    formatted: 'Formatted diff',
+    operations: (count: number) => `${count} operations`,
+    foreground: 'Foreground',
+    background: 'Background review'
+  },
   desktop: {
+    memoryReviewLoadFailed: 'Could not load memory review',
     audioReadFailed: 'Could not read recorded audio',
     sessionUnavailable: 'Session unavailable',
     createSessionFailed: 'Could not create a new session',

@@ -254,8 +254,12 @@ class MemoryStore:
         returns is passed through verbatim and nothing is persisted: error dicts, or the
         success payload of a read-only closure (``resolve_entry``, ``resolve_batch_entries``)."""
         path = self._path_for(target)
-        with self._file_lock(path):
+        from contextlib import nullcontext
+        preview = getattr(self, "_preview", False)
+        with nullcontext() if preview else self._file_lock(path):
             raw, read_ok = self._read_raw_checked(path)
+            if hasattr(self, "_expected_raw") and raw != self._expected_raw:
+                return _error("Memory changed since review; refresh before approving.")
             if not read_ok:
                 return _read_failed_error(path)
             bak = None if skip_drift else self._detect_external_drift(target, raw)
@@ -268,7 +272,8 @@ class MemoryStore:
             self._set_entries(target, result[0])
             from hermes_constants import mkdir_under_hermes_home
 
-            mkdir_under_hermes_home(path.parent)
+            if not preview:
+                mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
             extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)

@@ -106,6 +106,7 @@ import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useKeybinds } from '../hooks/use-keybinds'
 import { useHudHandoff } from '../hud/handoff'
+import { MemoryReviewDialog } from '../memory-review-dialog'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
 import { mainChatOccupied, openSession, openSessionFromPicker } from '../open-session'
@@ -1388,6 +1389,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           the statusbar chip, the first-launch intro). It owns the flow; the
           entry points only record the intent. */}
       {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
+      <MemoryReviewDialog />
       <ModelPickerOverlay
         gateway={gateway || undefined}
         onSelect={selectModel}

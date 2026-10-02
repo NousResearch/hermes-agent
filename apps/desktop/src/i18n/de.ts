@@ -6011,7 +6011,26 @@ export const deOverrides = {
     vaultCodeSkip: 'Überspringen',
     vaultCodeConfirm: 'Code eingeben'
   },
+  memoryReview: {
+    title: 'Speicherprüfung',
+    description:
+      'Prüfe und entscheide über jedes ausstehende atomare Paket. Änderungen gelten für zukünftige Sitzungen.',
+    gateOn: 'Freigabe aktiviert. Ausstehende Schreibvorgänge erfordern weiterhin eine Entscheidung.',
+    gateOff: 'Freigabe deaktiviert. Ausstehende Schreibvorgänge erfordern weiterhin eine Entscheidung.',
+    loading: 'Speichervorgänge werden geladen…',
+    refresh: 'Aktualisieren',
+    empty: 'Keine ausstehenden Speichervorgänge.',
+    approve: 'Genehmigen',
+    reject: 'Ablehnen',
+    noChange: '(keine Textänderung)',
+    raw: 'Unveränderter Unified-Diff',
+    formatted: 'Formatierter Diff',
+    operations: (count: number) => `${count} Vorgänge`,
+    foreground: 'Vordergrund',
+    background: 'Hintergrundprüfung'
+  },
   desktop: {
+    memoryReviewLoadFailed: 'Speicherprüfung konnte nicht geladen werden',
     audioReadFailed: 'Aufgenommenes Audio konnte nicht gelesen werden',
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',

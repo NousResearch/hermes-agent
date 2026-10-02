@@ -4128,7 +4128,25 @@ export const ja = defineLocale({
     vaultCodeConfirm: 'コードを入力'
   },
 
+  memoryReview: {
+    title: 'メモリの確認',
+    description: '保留中の各アトミックなバッチを確認して判断します。変更は今後のセッションに適用されます。',
+    gateOn: '承認ゲート：オン。保留中の書き込みには判断が必要です。',
+    gateOff: '承認ゲート：オフ。保留中の書き込みには判断が必要です。',
+    loading: 'メモリの書き込みを読み込み中…',
+    refresh: '更新',
+    empty: '保留中のメモリ書き込みはありません。',
+    approve: '承認',
+    reject: '拒否',
+    noChange: '（テキストの変更なし）',
+    raw: '生の統一差分',
+    formatted: '整形済み差分',
+    operations: (count: number) => `${count} 操作`,
+    foreground: 'フォアグラウンド',
+    background: 'バックグラウンド確認'
+  },
   desktop: {
+    memoryReviewLoadFailed: 'メモリの確認を読み込めませんでした',
     audioReadFailed: '録音した音声を読み取れませんでした',
     sessionUnavailable: 'セッションが利用できません',
     createSessionFailed: '新しいセッションを作成できませんでした',

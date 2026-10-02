@@ -5081,7 +5081,25 @@ export const zh = defineLocale({
     vaultCodeConfirm: '输入验证码'
   },
 
+  memoryReview: {
+    title: '记忆审核',
+    description: '审核并决定每个待处理的原子批次。更改将在未来的会话中生效。',
+    gateOn: '审批开关：开启。待处理的写入仍需决定。',
+    gateOff: '审批开关：关闭。待处理的写入仍需决定。',
+    loading: '正在加载记忆写入…',
+    refresh: '刷新',
+    empty: '没有待处理的记忆写入。',
+    approve: '批准',
+    reject: '拒绝',
+    noChange: '（无文本变化）',
+    raw: '原始统一差异',
+    formatted: '格式化差异',
+    operations: (count: number) => `${count} 项操作`,
+    foreground: '前台',
+    background: '后台审核'
+  },
   desktop: {
+    memoryReviewLoadFailed: '无法加载记忆审核',
     audioReadFailed: '无法读取录制的音频',
     sessionUnavailable: '会话不可用',
     createSessionFailed: '无法创建新会话',

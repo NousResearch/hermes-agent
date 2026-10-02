@@ -292,6 +292,36 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
   expect(native.trays[0].destroyed).toBe(true)
 })
 
+test('linux reuses one tray when minimize-to-tray is toggled off and on (#126353)', async () => {
+  setPlatform('linux')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+    expect(native.trays).toHaveLength(1)
+    main.minimize()
+    await flushDeferredHide()
+    expect(main.visible).toBe(false)
+
+    await controller.setEnabled(false)
+    expect(main.visible).toBe(true)
+    expect(native.trays).toHaveLength(1)
+    expect(native.trays[0].destroyed).toBe(false)
+
+    await controller.setEnabled(true)
+    expect(native.trays).toHaveLength(1)
+    expect(native.trays[0].destroyed).toBe(false)
+    main.minimize()
+    await flushDeferredHide()
+    expect(main.visible).toBe(false)
+    native.trays[0].menu[0].click()
+    expect(main.visible).toBe(true)
+  } finally {
+    restorePlatform()
+  }
+})
+
 test('persistence, disabling, failed tray creation, and handoff never strand hidden windows', async () => {
   const first = setup()
   await first.controller.start()
@@ -299,7 +329,8 @@ test('persistence, disabling, failed tray creation, and handoff never strand hid
   first.main.minimize()
   await first.controller.setEnabled(false)
   expect(first.main.visible).toBe(true)
-  expect(native.trays[0].destroyed).toBe(true)
+  // Linux parks the tray so a later enable can reuse it (#126353).
+  expect(native.trays[0].destroyed).toBe(process.platform !== 'linux')
   await first.controller.setEnabled(true)
   const restarted = setup()
   expect(await restarted.controller.start()).toEqual({ enabled: true, available: true })

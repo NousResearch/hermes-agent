@@ -1930,6 +1930,22 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return [Event.from_row(r) for r in _task_rows(conn, "task_events", task_id, "created_at ASC, id ASC")]
 
 
+def list_events_for_tasks(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, list[Event]]:
+    """Batch-fetch ordered event histories without an N+1 query."""
+    ordered_ids = list(dict.fromkeys(task_ids))
+    result: dict[str, list[Event]] = {task_id: [] for task_id in ordered_ids}
+    if not ordered_ids:
+        return result
+    placeholders = ",".join("?" for _ in ordered_ids)
+    rows = conn.execute(
+        f"SELECT * FROM task_events WHERE task_id IN ({placeholders}) ORDER BY created_at ASC, id ASC",
+        tuple(ordered_ids),
+    )
+    for row in rows:
+        result[row["task_id"]].append(Event.from_row(row))
+    return result
+
+
 def _insert_comment(
     conn: sqlite3.Connection, task_id: str, author: str, body: str, created_at: int,
 ) -> None:

@@ -16,6 +16,7 @@ import weakref
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
+from hermes_cli.kanban_block_action import build_block_action, render_block_action
 
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
 from gateway.wake import session_owned_by_profile
@@ -556,6 +557,15 @@ class _KanbanNotification:
             self.wake_handoff = handoff
         if review_detail is not None:
             self.wake_review_detail = review_detail
+        if (
+            msg
+            and ev.kind in {"blocked", "gave_up", "block_loop_detected", "timed_out"}
+            and self.task is not None
+            and getattr(self.task, "status", None) == "blocked"
+        ):
+            reason = _payload(ev, "reason") or _payload(ev, "error")
+            contract = build_block_action(self.task, reason=str(reason or ""))
+            msg += "\n" + "\n".join(render_block_action(contract, indent=""))
         return msg
 
     def build_wake_text(self) -> None:

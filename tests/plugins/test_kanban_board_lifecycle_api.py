@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 def _load_plugin_router():
@@ -85,3 +86,36 @@ def test_delete_default_board_is_refused(client):
     r = client.delete("/api/plugins/kanban/boards/default")
     assert r.status_code == 400
     assert "default" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("board", ["default", "secondary"])
+def test_block_contract_uses_current_reason_and_clears_after_repair(client, board):
+    if board != "default":
+        kb.create_board(board)
+    with kbc.connect_closing(board=board) as conn:
+        task_id = kb.create_task(conn, title="approval", assignee="publisher")
+        kb.block_task(
+            conn,
+            task_id,
+            kind="needs_input",
+            reason="Choose staging or production",
+        )
+
+    params = {"board": board}
+    detail = client.get(f"/api/plugins/kanban/tasks/{task_id}", params=params).json()["task"]
+    assert detail["block_action"]["disposition"] == "Matt action required"
+    assert detail["block_action"]["action"] == "Choose staging or production"
+    assert detail["block_action"]["owner"] == "Matt"
+
+    board_payload = client.get("/api/plugins/kanban/board", params=params).json()
+    blocked = next(
+        card for column in board_payload["columns"] for card in column["tasks"] if card["id"] == task_id
+    )
+    assert blocked["block_action"]["action"] == "Choose staging or production"
+
+    with kbc.connect_closing(board=board) as conn:
+        assert kb.unblock_task(conn, task_id)
+
+    repaired = client.get(f"/api/plugins/kanban/tasks/{task_id}", params=params).json()["task"]
+    assert repaired["status"] == "ready"
+    assert repaired["block_action"] is None

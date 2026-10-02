@@ -72,6 +72,28 @@ def test_kanban_show_json_includes_runtime_limit(kanban_home):
     assert uncapped["task"]["max_runtime_seconds"] is None
 
 
+def test_kanban_show_exposes_actionable_block_contract(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="approval", assignee="publisher")
+        kb.block_task(
+            conn,
+            task_id,
+            kind="needs_input",
+            reason="Choose staging or production",
+        )
+
+    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+    action = payload["task"]["block_action"]
+    assert action["disposition"] == "Matt action required"
+    assert action["owner"] == "Matt"
+    assert action["action"] == "Choose staging or production"
+    assert action["reply_format"] == "Reply with the requested decision or input in plain text."
+
+    text = kc.run_slash(f"show {task_id}")
+    assert "Required action: Choose staging or production" in text
+    assert "Owner: Matt" in text
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

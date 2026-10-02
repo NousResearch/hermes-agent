@@ -22,6 +22,7 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
+from hermes_cli.kanban_block_action import build_block_action, reason_from_events, render_block_action
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
@@ -427,7 +428,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
             include_archived=args.archived, order_by=getattr(args, "sort", None),
             workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
         )
-    if _json_out(args, [_task_to_dict(t) for t in tasks]):
+        block_events = kb.list_events_for_tasks(
+            conn, (t.id for t in tasks if t.status == "blocked"))
+    if _json_out(args, [_task_to_dict(t, events=block_events.get(t.id, ())) for t in tasks]):
         return 0
     # Passive discoverability: only multi-board users see which board this is.
     try:
@@ -443,6 +446,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return 0
     for t in tasks:
         print(_fmt_task_line(t))
+        if t.status == "blocked":
+            contract = build_block_action(t, reason=reason_from_events(block_events[t.id]))
+            print(f"    {contract.disposition}: {contract.action} (owner: {contract.owner})")
     return 0
 
 
@@ -492,7 +498,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     if want_json:
         _print_json({
-            "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
+            "task": _task_to_dict(task, events=events), "latest_summary": latest_summary, "parents": parents, "children": children,
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
             "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
@@ -526,6 +532,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     field("created", f"{_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
+    if task.status == "blocked":
+        contract = build_block_action(task, reason=reason_from_events(events))
+        _print_section("Required action:", render_block_action(contract))
+
     # Diagnostics up top so CLI users see distress signals before scrolling.
     from hermes_cli import kanban_diagnostics as kd
     diags = kd.compute_task_diagnostics(task, events, runs, graph=graph)
@@ -551,7 +561,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
                        (f"  [{_fmt_ts(c.created_at)}] {c.author}: {c.body}" for c in comments))
     if events:
         _print_section(f"Events ({len(events)}):", (
-            f"  [{_fmt_ts(e.created_at)}]{f' [run {e.run_id}]' if e.run_id else ''} {e.kind}"
+            f"  [{_fmt_ts(e.created_at)}]{f' [run {e.run_id}]' if e.run_id else ''} "
+            f"{'[historical] ' if task.status != 'blocked' and e.kind in {'blocked', 'gave_up', 'block_loop_detected'} else ''}{e.kind}"
             f"{f' {e.payload}' if e.payload else ''}" for e in events[-20:]))
     if runs:
         print()
@@ -561,6 +572,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
             elapsed = max(0, r.ended_at - r.started_at) if r.ended_at else None
             el = f"{elapsed}s" if elapsed is not None else "active"
             outcome = r.outcome or r.status or "active"
+            if task.status != "blocked" and outcome in {"blocked", "gave_up"}:
+                outcome = f"{outcome} (historical)"
             print(f"  #{r.id:<3} {outcome:<12} @{r.profile or '-'}  {el}  {_fmt_ts(r.started_at)}")
             if r.summary:
                 print(f"        → {r.summary.splitlines()[0][:160]}")

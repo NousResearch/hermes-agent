@@ -1,0 +1,16 @@
+name: hermes-tag
+repo: https://github.com/DanielLi202/hermes-tag
+sha: 250785b9c7485918f142e961e15ac084063a37e2
+description: Feishu platform override with per-chat Tier-0/Tier-1 context, standing work, and privacy
+  lifecycle controls.
+maintainer: DanielLi202
+tier: community
+category: platform
+docs_url: https://github.com/DanielLi202/hermes-tag#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - FEISHU_APP_ID
+  - FEISHU_APP_SECRET

@@ -113,7 +113,8 @@ async def test_send_with_retry_uses_structured_retryable_flag(
     assert result.success is True
     assert result.message_id == "m-2"
     assert calls == 2
-    assert sleeps == [0.25]
+    # base backoff: base_delay * 2**0 plus up to 1s of jitter
+    assert len(sleeps) == 1 and 0.25 <= sleeps[0] <= 1.25
 
 
 # -- Gap 2: typing-indicator cooldown ---------------------------------------
@@ -235,6 +236,34 @@ async def test_clean_shutdown_does_not_raise_fatal(
 
     assert adapter.has_fatal_error is False
     assert notified == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner_stopping", [True, False], ids=["gateway-stopping", "gateway-running"])
+async def test_sidecar_sigterm_is_fatal_only_while_gateway_keeps_running(
+    monkeypatch: pytest.MonkeyPatch, runner_stopping: bool
+) -> None:
+    """#127047: a supervisor stop SIGTERMs the sidecar before disconnect() clears
+    ``_inbound_running``. The runner's signal flag marks that window as intentional; the
+    same -15 while the gateway keeps running must still queue the reconnect."""
+    from types import SimpleNamespace
+
+    adapter = _make_adapter(monkeypatch)
+    adapter._inbound_running = True  # disconnect() has NOT run yet
+    adapter.gateway_runner = SimpleNamespace(_stop_requested_by_signal=runner_stopping)  # type: ignore[assignment]
+
+    notified: list[bool] = []
+
+    async def _fake_notify() -> None:
+        notified.append(True)
+
+    monkeypatch.setattr(adapter, "_notify_fatal_error", _fake_notify)
+
+    await adapter._supervise_sidecar(_DeadProc(exit_code=-15))  # type: ignore[arg-type]
+    await _drain_pending_tasks()
+
+    assert adapter.has_fatal_error is (not runner_stopping)
+    assert notified == ([] if runner_stopping else [True])
 
 
 @pytest.mark.asyncio

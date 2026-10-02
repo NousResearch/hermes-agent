@@ -386,12 +386,14 @@ def _reap_orphaned_browser_sessions():
         reap_orphaned_lightpanda()
     _best_effort("Lightpanda orphan reap", _reap_lp)
 
-    tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []
     # The shared real-profile attach daemon is named, not ``<prefix>_<hex>``; list it explicitly.
-    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
-                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
-        socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
+    # Sessions whose socket path overflows the AF_UNIX budget on the scratch root live on the
+    # /tmp fallback, so scan every root a session dir can occupy.
+    for tmpdir in _session._session_socket_roots():
+        for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
+                       f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
+            socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
     if not socket_dirs:
         return
 
@@ -644,7 +646,7 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
 
     session_name = session_info.get("session_name", "")
     if session_name:
-        socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
+        socket_dir = _session._session_socket_dir(session_name)
         if os.path.exists(socket_dir):
             _kill_verified_daemon(socket_dir, session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)

@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -143,11 +144,45 @@ def _unwrap_batch_result(result: Any, command: str) -> Dict[str, Any]:
     return {"success": bool(entry.get("success")), "data": entry.get("result"), "error": entry.get("error")}
 
 
+# agent-browser rejects a daemon socket path beyond the AF_UNIX budget ("Session name ...
+# is too long. Socket path would be N bytes (max 103)"). The dir name and the socket
+# filename each repeat the session name, so the full path must fit:
+# len(root) + "/agent-browser-<name>" + "/<name>.sock" = len(root) + 2*len(name) + 21.
+_AGENT_BROWSER_SOCKET_PATH_MAX = 103
+
+_IS_WINDOWS = sys.platform == "win32"
+
+
+def _session_socket_roots() -> tuple:
+    """Socket roots in preference order: the scratch tmpdir, then the OS short root as
+    fallback for sessions whose full socket path overflows the budget on the scratch root.
+    Cleanup and the orphan reaper must scan every root listed here.
+    Windows has no short ``/tmp`` — a bare ``/tmp/...`` path resolves onto the cwd's drive
+    (outside %TEMP%), and the AF_UNIX budget is a POSIX constraint that never binds there —
+    so the scratch root is the only root (mirrors ``gateway/control_socket._fallback_socket_path``)."""
+    root = _bt._socket_safe_tmpdir()
+    if root != "/tmp" and not _IS_WINDOWS:
+        return (root, "/tmp")
+    return (root,)
+
+
+def _session_socket_dir(session_name: str) -> str:
+    """Socket dir for one session on the first root whose FULL socket path (this dir plus
+    ``<name>.sock``) fits agent-browser's 103-byte AF_UNIX budget (#131231) — the scratch
+    root only when it actually fits, else the short root (or the scratch root itself when
+    there is no short root, i.e. on Windows)."""
+    roots = _session_socket_roots()
+    for root in roots:
+        if len(root) + 2 * len(session_name) + 21 <= _AGENT_BROWSER_SOCKET_PATH_MAX:
+            return os.path.join(root, f"agent-browser-{session_name}")
+    return os.path.join(roots[0], f"agent-browser-{session_name}")
+
+
 def _prepare_session_socket_dir(session_name: str) -> str:
     """Create the per-session socket dir (parallel workers must not share one) and claim it
     with our PID BEFORE first use — another hermes process's orphan reaper rmtree's any
     ownerless agent-browser-* dir in the shared tmpdir."""
-    socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
+    socket_dir = _session_socket_dir(session_name)
     os.makedirs(socket_dir, mode=0o700, exist_ok=True)
     _lifecycle._write_owner_pid(socket_dir, session_name)
     return socket_dir

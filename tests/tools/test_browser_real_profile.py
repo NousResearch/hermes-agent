@@ -235,7 +235,8 @@ class TestRealProfileCdpLaunch:
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", side_effect=fake_run), \
-             patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch.object(bt_session, "_session_socket_dir",
+                          side_effect=lambda name: os.path.join(str(tmp_path), f"agent-browser-{name}")), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             bt_real_profile._real_profile_cdp()
         # The chrome launch itself is headless (no window, no focus steal).

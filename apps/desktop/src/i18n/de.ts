@@ -5247,6 +5247,8 @@ export const deOverrides = {
   },
   preview: {
     tab: 'Vorschau',
+    pin: 'An Arbeitsbereich anheften',
+    unpin: 'Vom Arbeitsbereich lösen',
     closePane: 'Vorschau-Fenster schließen',
     loading: 'Vorschau wird geladen',
     unavailable: 'Vorschau nicht verfügbar',

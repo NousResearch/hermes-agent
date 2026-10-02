@@ -35,6 +35,7 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
+import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
   $gateway,
@@ -45,8 +46,10 @@ import {
   retainGatewayForAgent
 } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { clearSessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
+import { adoptDraftPreviewTabs, prunePreviewTabsForSession } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -109,6 +112,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { clearSessionControl } from '@/store/session-control'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   beginSessionMutation,
@@ -125,7 +129,6 @@ import {
   type SessionProfileRoute
 } from '@/store/session-request-router'
 import {
-  $focusedStoredSessionId,
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
@@ -142,7 +145,8 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { restoreSessionTodosFromSnapshot } from '@/store/todos'
+import { clearSessionSubagents } from '@/store/subagents'
+import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type {
@@ -919,6 +923,8 @@ export function useSessionActions({
           // Anything still parked under the pre-session draft bucket belongs
           // to this chat now (#114122); the composer moves it on scope swap.
           announceNewSessionDraftKey(stored)
+          // The draft's preview tabs follow it the same way (#73890).
+          adoptDraftPreviewTabs(stored)
           createOverrides?.onComposerScopeAssigned?.(stored)
           // Hold creatingSessionRef until the route lands on `stored` (release
           // effect above). setTimeout(0) raced use-route-resume back onto the
@@ -3297,6 +3303,14 @@ export function useSessionActions({
         // the closing runtime id — the journal keys on the stored id.
         purgeInFlightTurnJournals([...removedIds, closingRuntimeId])
 
+        // Preview tabs are session-owned: drop them with the session (pinned
+        // tabs survive — they belong to the workspace, not the session).
+        for (const id of removedIds) {
+          if (id) {
+            prunePreviewTabsForSession(id)
+          }
+        }
+
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
           clearSessionControl(closingRuntimeId)
@@ -3312,6 +3326,18 @@ export function useSessionActions({
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
+        }
+
+        // Live per-session stores (the same four the stop paths clear) key on
+        // the gateway event's session_id, i.e. the runtime id. When the deleted
+        // row is selected, closingRuntimeId is the foreground runtime, which can
+        // differ from the stored→runtime mapping (cached/tiled runtime), so
+        // clear the stored id and both runtime ids — once per distinct id.
+        for (const sid of new Set([storedSessionId, closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
+          clearSessionSubagents(sid)
+          clearSessionTodos(sid)
+          clearSessionGoal(sid)
+          resetSessionBackground(sid)
         }
       } catch (err) {
         if (listed?.session) {

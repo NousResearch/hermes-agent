@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: sigrex
+description: 'Trading automation infrastructure for AI agents. Build, run and manage strategies, AI trading agents and bots in plain language.'
+source: https://docs.sigrex.io/more/mcp-server
+
+# Sigrex ships a remote MCP server over Streamable HTTP with OAuth 2.1
+# (PKCE, Client ID Metadata Document). Nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.sigrex.io
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    keywords:
+      - trading bot
+      - trading automation
+      - trading strategy
+      - algo trading
+      - trading signals
+  hosts:
+    - sigrex.io
+  examples:
+    - Show my active strategies and when each last triggered
+    - Create a code strategy and keep it inactive for review
+    - Pause all bots in a folder
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Sigrex
+  (or run `hermes mcp login sigrex`). Approve access, then restart the
+  session so tools load.
+  The connection has full access to your Sigrex account, including
+  actions that can place live trades. The companion `sigrex` plugin adds
+  a workflow skill that makes the agent confirm before any such action.

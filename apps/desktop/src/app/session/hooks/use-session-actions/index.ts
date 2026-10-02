@@ -991,7 +991,7 @@ export function useSessionActions({
       const startingRouteToken = getRouteToken()
       const startingSelectedStoredId = selectedStoredSessionIdRef.current
       const params = await desktopSessionCreateParams(resolveNewSessionCwd())
-      const created = await requestGateway<SessionCreateResponse>('session.create', params)
+      const created = await createGatewaySession(null, params, requestGateway)
       const stored = created.stored_session_id
 
       if (!stored) {

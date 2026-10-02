@@ -1,4 +1,4 @@
-import { registryBackendScopeKey } from '@hermes/shared'
+import { JsonRpcGatewayError, registryBackendScopeKey } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
@@ -48,6 +48,7 @@ import {
   $activeSessionStoredIdRotation,
   $cronSessions,
   $currentCwd,
+  $currentCwdExplicit,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -1064,6 +1065,76 @@ describe('startFreshSessionDraft', () => {
 
     expect(revealTreePane).toHaveBeenCalledWith('workspace')
     expect($terminalTakeover.get()).toBe(true)
+  })
+})
+
+describe('Quick Entry gateway compatibility', () => {
+  afterEach(() => {
+    cleanup()
+    $newChatProfile.set(null)
+    $newChatRoute.set(null)
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+    $currentCwdExplicit.set(false)
+    setSessions([])
+    vi.clearAllMocks()
+  })
+
+  it.each([true, false])('creates one Quick Entry session and submits once (older gateway: %s)', async older => {
+    const cwd = '/work/project'
+    $newChatProfile.set('docker')
+    $newChatRoute.set(null)
+    $projectScope.set('quick-project')
+    $projectTree.set([{ id: 'quick-project', label: 'Project', path: cwd, repos: [], sessionCount: 0 }])
+    $currentCwdExplicit.set(true)
+
+    const acceptedCreates: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        // Older strict contracts reject at admission, before any session exists.
+        if (older && params && 'cwd_explicit' in params) {
+          throw new JsonRpcGatewayError(
+            'invalid params for session.create: cwd_explicit: Extra inputs are not permitted',
+            { code: 4000 }
+          )
+        }
+
+        acceptedCreates.push(params ?? {})
+
+        return { session_id: 'runtime-quick', stored_session_id: 'stored-quick' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+
+    await act(async () => {
+      await expect(handle!.submitTextToNewSession('quick entry text')).resolves.toEqual({
+        runtimeSessionId: 'runtime-quick',
+        sessionId: 'stored-quick'
+      })
+    })
+
+    expect(acceptedCreates).toHaveLength(1)
+    expect(acceptedCreates[0]).toMatchObject({ cwd, profile: 'docker' })
+    const attempts = requestGateway.mock.calls.filter(([method]) => method === 'session.create')
+    expect(attempts[0][1]).toMatchObject({ cwd_explicit: true })
+
+    if (older) {
+      const { cwd_explicit: _flag, ...compatible } = attempts[0][1]!
+      expect(attempts.map(([, params]) => params)).toEqual([attempts[0][1], compatible])
+    } else {
+      expect(attempts).toHaveLength(1)
+      expect(acceptedCreates[0]).toHaveProperty('cwd_explicit', true)
+    }
+
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'prompt.submit')).toEqual([
+      ['prompt.submit', { session_id: 'runtime-quick', text: 'quick entry text' }]
+    ])
+    expect(pinnedOwnerCount()).toBe(0)
   })
 })
 

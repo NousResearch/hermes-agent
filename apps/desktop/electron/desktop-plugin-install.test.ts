@@ -44,6 +44,15 @@ describe('resolvePluginGitUrl', () => {
       subdir: 'nested/plugin'
     })
   })
+
+  it('converts file URLs to native git paths while preserving subdirectories', () => {
+    const repo = path.join('C:', 'Users', 'tester', 'plugin repo')
+
+    expect(resolvePluginGitUrl(`${pathToFileURL(repo).href}#nested/plugin`)).toEqual({
+      gitUrl: fileURLToPath(pathToFileURL(repo)),
+      subdir: 'nested/plugin'
+    })
+  })
 })
 
 describe('desktopPluginFolderName', () => {

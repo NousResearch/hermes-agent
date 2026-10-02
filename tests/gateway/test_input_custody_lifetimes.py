@@ -247,3 +247,50 @@ async def test_consumed_native_image_rejects_live_or_foreign_admission(tmp_path,
         assert image.read_bytes() == bound[-1][1]
     finally:
         close(db, tmp_path)
+
+@pytest.mark.asyncio
+async def test_recreated_document_generation_can_replay_terminal_metadata_but_cannot_restart_it(tmp_path, monkeypatch):
+    db, owner = owned(tmp_path, monkeypatch)
+    try:
+        rpc, bound = rpc_files(tmp_path, owner, named=True)
+        params = dict(task=TaskIdentity('room', 'task', 'thread', 'turn'), execution_generation=1,
+            prompt='read', attachments=[item for item, _ in bound], on_terminal=lambda value: None)
+        first = await rpc._submit(params)
+        executions = []
+        async def execute(authority, ref, admission):
+            executions.append(admission['admission_id'])
+            return 'completed original turn'
+        monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+        await owner._drain(rpc.ref)
+        await asyncio.sleep(0)
+        original = get_session_admission(db, admission_id=first['admission_id'])
+        from types import SimpleNamespace
+        path = v3_path(SimpleNamespace(payload=original['payload']))
+        retire_metadata(db, original['admission_id'])
+        from hermes_state_mutation_retirement import RETIRED_PREFIX
+        db._execute_write(lambda conn: conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
+            (RETIRED_PREFIX + rpc.ref.session_id, '{}')))
+        assert collect_working_copies(db, epoch=owner.epoch)['removed'] == 1
+        assert not path.exists()
+        # Another request prepares the same name/digest as a new private generation.
+        prepare_hosted_input(rpc, request_id='hosted:other', prompt='other', attachments=params['attachments'])
+        with db._read_ctx() as conn:
+            ref = conn.execute('SELECT generation FROM input_custody_refs WHERE admission_id=?',
+                               (original['admission_id'],)).fetchone()
+            copy = conn.execute("SELECT generation FROM input_custody_copies WHERE namespace='v3'").fetchone()
+            assert copy['generation'] > ref['generation']
+        assert path.read_bytes() == bound[0][1]
+        # Terminal replay uses metadata only; it may not read the replacement bytes.
+        def no_read(*args, **kwargs):
+            pytest.fail('terminal replay must not consume a newer private generation')
+        monkeypatch.setattr('gateway.hosted_room_input_preparation.verified_identity', no_read)
+        rebuilt = reconstruct_attested_payload(db, 'read', params['attachments'],
+            [hashlib.sha256(data).hexdigest() for _, data in bound], original)
+        assert rebuilt == original['payload']
+        replay = await owner.submit(rpc.principal, Submission(original['request_id'], rpc.ref, rebuilt, 'queue'))
+        assert replay.admission_id == original['admission_id'] and replay.status == 'terminal'
+        await owner._drain(rpc.ref)
+        assert executions == [original['admission_id']]
+        assert claim_session_input(db, epoch=owner.epoch, session_id=rpc.ref.session_id) is None
+    finally:
+        close(db, tmp_path)

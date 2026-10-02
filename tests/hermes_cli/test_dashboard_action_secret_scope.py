@@ -11,7 +11,7 @@ from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
-from tools import terminal_scope
+from tools import env_passthrough, terminal_scope
 from tui_gateway import launch_profile_policy
 
 
@@ -42,13 +42,20 @@ def action_homes(tmp_path, monkeypatch):
     (["skills", "update"], "skills-update"),
 ])
 @pytest.mark.parametrize("routed", [False, True], ids=["unscoped", "routed"])
+@pytest.mark.parametrize("env_only", [False, True], ids=["dotenv", "service-environment"])
 def test_multiplexed_actions_spawn_isolated_children_and_restore_caller_scope(
-    action_homes, monkeypatch, argv, name, routed,
+    action_homes, monkeypatch, argv, name, routed, env_only,
 ):
     from hermes_cli import web_server_gateway
     from hermes_cli.web_routers._common import spawn_profile_action
     from tools.environments.local import build_subprocess_env
 
+    if env_only:
+        for home in action_homes.values():
+            (home / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv("ACTION_OPAQUE_VALUE", "launch-only-value")
+    allowed_token = env_passthrough._allowed_env_vars_var.set(set())
+    env_passthrough.register_env_passthrough(["ACTION_OPAQUE_VALUE", "LANG"])
     launch_profile_policy.activate_multi_profile_hosting()
     caller_secrets = {"GRAFANA_SERVICE_ACCOUNT_TOKEN": "beta-token"} if routed else None
     caller_terminal = {"TERMINAL_ENV": "local"} if routed else None
@@ -76,7 +83,14 @@ def test_multiplexed_actions_spawn_isolated_children_and_restore_caller_scope(
             env = popen.call_args.kwargs["env"]
             assert env["HERMES_HOME"] == str(action_homes[target])
             assert env["HERMES_NONINTERACTIVE"] == "1"
-            assert "GRAFANA_SERVICE_ACCOUNT_TOKEN" not in env
+            own_env_only = target == "default" and env_only
+            assert env.get("GRAFANA_SERVICE_ACCOUNT_TOKEN") == (
+                "default-token" if own_env_only else None
+            )
+            assert env.get("ACTION_OPAQUE_VALUE") == (
+                "launch-only-value" if target == "default" else None
+            )
+            assert env["LANG"] == web_server_gateway.os.environ["LANG"]
             assert "OPENAI_API_KEY" not in env
             assert "_HERMES_GATEWAY" not in env
             assert get_hermes_home_override() == home
@@ -89,6 +103,7 @@ def test_multiplexed_actions_spawn_isolated_children_and_restore_caller_scope(
         terminal_scope.reset_terminal_scope(terminal_token)
         secret_scope.reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
+        env_passthrough._allowed_env_vars_var.reset(allowed_token)
 
 
 def test_single_profile_action_keeps_ambient_scrubbing_and_caller_overrides(action_homes):

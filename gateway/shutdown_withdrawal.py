@@ -23,13 +23,20 @@ logger = logging.getLogger("gateway.run")
 
 
 def bind_spooled_event(
-    runner: Any, adapter: Any, event: MessageEvent, home: Path, session_key: str
+    runner: Any,
+    adapter: Any,
+    event: MessageEvent,
+    home: Path,
+    session_key: str,
+    *,
+    reset_authorization: bool = True,
 ) -> bool:
     owner = gateway_input_owner(event, event.source)
     if event.internal or event.source.delivered_via_upstream_relay:
         return False
     clear_identity(event.source)
-    event.source.role_authorized = False
+    if reset_authorization:
+        event.source.role_authorized = False
     current = canonical_identity(event.source, runner=runner, adapter=adapter)
     if (
         current is None
@@ -40,7 +47,14 @@ def bind_spooled_event(
     ):
         return False
     return all(
-        bind_spooled_event(runner, adapter, part, home, session_key)
+        bind_spooled_event(
+            runner,
+            adapter,
+            part,
+            home,
+            session_key,
+            reset_authorization=reset_authorization,
+        )
         for part, _merge in event._merged_parts
     )
 

@@ -6,12 +6,13 @@ from gateway.platforms.event import attributed_context
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from plugins.platforms.discord.adapter import DiscordMessage
 
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource
 from gateway.platforms.base_pending import can_join_pending_event
 
 if TYPE_CHECKING:
@@ -129,6 +130,8 @@ class DiscordInboundContextMixin:
 
     async def _prepare_inbound_event(
         self: DiscordAdapter, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
+        cached: MessageEvent | None = None, restored_channel: Any = None,
+        authorize: Callable[[SessionSource], bool] | None = None,
     ) -> DiscordPreparedInput | None:
         """Prepare native input under current channel and mention policy."""
         from plugins.platforms.discord.adapter import MessageEvent, MessageType, discord, t
@@ -201,7 +204,11 @@ class DiscordInboundContextMixin:
                 ):
                     return None
         # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
-        auto_threaded_channel = None
+        auto_threaded_channel = restored_channel
+        if restored_channel is not None:
+            parent_channel_id = str(message.channel.id)
+            is_thread = True
+            thread_id = str(restored_channel.id)
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
             # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
@@ -211,6 +218,8 @@ class DiscordInboundContextMixin:
             auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+                if cached is not None:
+                    return None
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
@@ -287,16 +296,25 @@ class DiscordInboundContextMixin:
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
+        if authorize is not None:
+            if self._canonicalize(source) is None or not authorize(source):
+                return None
         # Forwarded and replied-to attachments are other people's files, so their inlined text
         # goes with the forward or the reply, never into the sender's text.
         media_urls, media_types, media_text_inlined = [], [], []
         injections = []
-        for attachments in (list(message.attachments), snapshot_attachments, referenced_attachments):
-            urls, types, inlined, injection = await self._collect_attachment_media(attachments)
-            media_urls += urls
-            media_types += types
-            media_text_inlined += inlined
-            injections.append(injection)
+        if cached is None:
+            for attachments in (list(message.attachments), snapshot_attachments, referenced_attachments):
+                urls, types, inlined, injection = await self._collect_attachment_media(attachments)
+                media_urls += urls
+                media_types += types
+                media_text_inlined += inlined
+                injections.append(injection)
+        else:
+            media_urls = list(cached.media_urls)
+            media_types = list(cached.media_types)
+            media_text_inlined = list(cached.media_text_inlined)
+            injections = [None, None, None]
         pending_text_injection, snapshot_injection, referenced_injection = injections
         event_text = normalized_content
         if pending_text_injection:
@@ -362,6 +380,8 @@ class DiscordInboundContextMixin:
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             await self._threads.mark_async(thread_id)
+        if cached is None:
+            event._pending_native_input = self.pending_native_input(event)
         return DiscordPreparedInput(event, forwarded_text)
 
 

@@ -66,13 +66,17 @@ class DiscordAccessPolicyMixin:
             if dm_guild is None:
                 return False
             return self._guild_member_has_role(dm_guild, user_id, allowed_roles)
-        # Guild path: scoped to THIS guild. 1) Prefer the passed Member (correct guild by construction).
         direct_roles = getattr(author, "roles", None) if author is not None else None
         author_guild = getattr(author, "guild", None)
-        if direct_roles and (author_guild is None or author_guild.id == guild.id):
+        if (
+            direct_roles is not None
+            and author_guild is not None
+            and author_guild.id == guild.id
+        ):
+            return any(getattr(r, "id", None) in allowed_roles for r in direct_roles)
+        if direct_roles and author_guild is None:
             if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
                 return True
-        # 2) Fallback: resolve Member in this guild only — NEVER scan other mutual guilds.
         return self._guild_member_has_role(guild, user_id, allowed_roles)
 
     @staticmethod

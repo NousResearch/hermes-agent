@@ -6,7 +6,7 @@ import json
 import logging
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from gateway.input_owner import gateway_input_owner
 from gateway.pending_execution import PendingExecutionOwner, PendingExecutionRunner
@@ -150,8 +150,6 @@ async def _replay_record(
         return 0
     if not bind_spooled_event(runner, adapter, event, home, snapshot.session_key):
         return 0
-    if not runner._is_user_authorized_for_source(event.source):
-        return 0
     owner = gateway_input_owner(event, event.source)
     if owner != record["input_owner"]["owner"] or runner.session_store.has_input_owner(
         session_id, owner
@@ -163,7 +161,9 @@ async def _replay_record(
     revision = reserved.revision
     try:
         with pending_dispatch_scope(adapter, snapshot.session_key, event):
-            verified = await _revalidate_event(adapter, event)
+            verified = await _revalidate_event(
+                adapter, event, runner._is_user_authorized_for_source
+            )
             if (
                 verified is None
                 or reserved.withdrawn
@@ -177,7 +177,12 @@ async def _replay_record(
                 return 0
             if (
                 not bind_spooled_event(
-                    runner, adapter, verified, home, snapshot.session_key
+                    runner,
+                    adapter,
+                    verified,
+                    home,
+                    snapshot.session_key,
+                    reset_authorization=False,
                 )
                 or not runner._is_user_authorized_for_source(verified.source)
                 or runner.session_store.resolve_session_id_for_key(
@@ -205,13 +210,17 @@ async def _replay_record(
 
 
 async def _revalidate_event(
-    adapter: BasePlatformAdapter, event: MessageEvent
+    adapter: BasePlatformAdapter,
+    event: MessageEvent,
+    authorize: Callable[[SessionSource], bool],
 ) -> MessageEvent | None:
     if not event._merged_parts:
-        return await adapter.revalidate_pending_event(pending_part(event))
+        return await adapter.revalidate_pending_event(
+            pending_part(event), authorize=authorize
+        )
     rebuilt = None
     for part, merge in list(event._merged_parts):
-        current = await _revalidate_event(adapter, part)
+        current = await _revalidate_event(adapter, part, authorize)
         if current is None:
             return None
         if rebuilt is None:

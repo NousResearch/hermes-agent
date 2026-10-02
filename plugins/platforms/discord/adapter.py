@@ -1266,12 +1266,13 @@ from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 from plugins.platforms.discord.platform_events import DiscordPlatformEventsMixin
 
+from plugins.platforms.discord.pending_replay import DiscordPendingReplayMixin
 from plugins.platforms.discord.access_policy import DiscordAccessPolicyMixin
 
 from plugins.platforms.discord.approval import DiscordApprovalMixin
 
 
-class DiscordAdapter(DiscordAccessPolicyMixin, DiscordApprovalMixin, DiscordPlatformEventsMixin, DiscordInboundContextMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
+class DiscordAdapter(DiscordPendingReplayMixin, DiscordAccessPolicyMixin, DiscordApprovalMixin, DiscordPlatformEventsMixin, DiscordInboundContextMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
                      BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 

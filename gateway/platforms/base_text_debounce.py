@@ -12,7 +12,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.base_pending_merge import (
     merge_pending_message_event,
 )
-from gateway.platforms.base_pending import can_join_pending_event, merge_recorded
+from gateway.platforms.base_pending import can_join_pending_event, ingress_order, merge_recorded
 from gateway.platforms.base_pending_merge import _absorb_pending_media, _append_debounced_text
 
 if TYPE_CHECKING:
@@ -86,6 +86,7 @@ class BaseTextDebounceMixin:
         self: BasePlatformAdapter, session_key: str, event: MessageEvent
     ) -> bool:
         """Buffer a busy burst and schedule a bounded flush."""
+        ingress_order(event)
         store = self._text_debounce_store()
         state = store.get(session_key)
         if state is None or not self._can_merge_text_debounce_events(

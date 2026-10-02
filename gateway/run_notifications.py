@@ -1229,7 +1229,7 @@ class GatewayNotificationsMixin:
         served profile (structured key / persisted origin) must be owned by that profile or it
         raises ``LookupError`` — never a wake in the default profile's store.
         """
-        if not getattr(self.config, "multiplex_profiles", False):
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return None
         from gateway.run import _multiplex_profile_homes
         from gateway.wake import session_owned_by_profile
@@ -1543,7 +1543,8 @@ class GatewayNotificationsMixin:
             claim.proceed, claim.early_result = False, False
         return claim
 
-    def _completion_event_scope(self, evt: dict):
+    @contextlib.asynccontextmanager
+    async def _completion_event_scope(self, evt: dict):
         """Profile runtime scope of the session a completion event targets (a no-op context when the
         event is the default profile's or the scope is already installed).
 
@@ -1551,7 +1552,8 @@ class GatewayNotificationsMixin:
         (``tools.async_delegation`` → ``get_hermes_home()/state.db``) resolve from the ambient scope.
         The supervised ``_async_delegation_watcher`` and startup-recovered process watchers run under
         the ROOT scope, so a secondary profile's completion was looked up in the DEFAULT profile's
-        state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever."""
+        state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever.
+        """
         from gateway.run import _async_profile_runtime_scope
         from hermes_constants import get_hermes_home_override
         source = self._build_process_event_source(evt)
@@ -1560,7 +1562,7 @@ class GatewayNotificationsMixin:
             # prove ownership from the served profile's own state.db before falling back to launch scope.
             raw_sid = _raw_process_event_session_id(evt)
             if raw_sid:
-                served = self._served_api_server_wake_profile(evt, raw_sid)
+                served = await asyncio.to_thread(self._served_api_server_wake_profile, evt, raw_sid)
                 if served:
                     source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)
         if source is None or not getattr(source, "profile", None):
@@ -1568,17 +1570,21 @@ class GatewayNotificationsMixin:
             # process multiplexes — unscoped, a fail-closed ledger read raises on a legitimate
             # launch-profile event (no-op while single-profile).
             from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
-            return async_launch_profile_scope_if_multiplexed()
-        if getattr(self.config, "multiplex_profiles", False) and getattr(source, "profile", None):
-            from gateway.run import _multiplex_profile_homes
-            profile_home = dict(_multiplex_profile_homes(self.config)).get(source.profile)
-            if profile_home is None:
-                profile_home = self._resolve_profile_home_for_source(source)
+            scope = async_launch_profile_scope_if_multiplexed()
         else:
-            profile_home = self._resolve_profile_home_for_source(source)
-        if get_hermes_home_override() == str(profile_home):
-            return contextlib.nullcontext()  # already inside this profile's scope
-        return _async_profile_runtime_scope(profile_home)
+            if getattr(self.config, "multiplex_profiles", False) and getattr(source, "profile", None):
+                from gateway.run import _multiplex_profile_homes
+                profile_home = dict(_multiplex_profile_homes(self.config)).get(source.profile)
+                if profile_home is None:
+                    profile_home = self._resolve_profile_home_for_source(source)
+            else:
+                profile_home = self._resolve_profile_home_for_source(source)
+            if get_hermes_home_override() == str(profile_home):
+                scope = contextlib.nullcontext()  # already inside this profile's scope
+            else:
+                scope = _async_profile_runtime_scope(profile_home)
+        async with scope:
+            yield
 
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict, *, sibling_claims=(),

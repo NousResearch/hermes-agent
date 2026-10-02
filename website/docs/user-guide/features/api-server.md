@@ -648,6 +648,15 @@ cannot use this operation.
 Stop.** Other participants, other groups and ordinary API conversations are not
 stopped. There is no unfreeze or takeover endpoint.
 
+Future group-host recovery is a separate [Layer 7 proposal in #104601](https://github.com/NousResearch/hermes-agent/pull/104601),
+documented there in `website/docs/developer-guide/group-chat-host-loss.md`.
+A successor would need independently verified exclusive authority and scoped
+participant-owner permission while preserving the original Run identities and
+permanent freezes. This endpoint supplies neither that proof nor permission to
+retry unknown work. The [manual recovery procedure](../bot-mode.md#transferring-hosted-room-authority)
+still requires fencing the old writer wherever those methods are enabled;
+the proposed design does not open the Layer 7 takeover gate.
+
 To find the participant, send `GET /v1/group-participants` with the same owner
 credentials. It lists the default-profile group scopes this gateway's Runs store
 holds, most recently admitted first:

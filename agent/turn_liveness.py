@@ -4,8 +4,8 @@ A turn can wedge mid-flight with no error and its durable lease still renewing, 
 ever frees the session. This module owns config resolution (``agent.turn_liveness``,
 validated — a typo, NaN or Inf warns and falls back), the sampling state machine, and the
 watcher thread. Race safety: the abort decision is bound to the observed
-``(generation, timestamp)``; the commit callback revalidates it under the same lock
-``_touch_activity`` stamps with, so a turn that resumed is never hard-cancelled.
+progress ``(generation, timestamp)``; the commit callback revalidates it under the same lock
+``_touch_activity`` stamps with, so a turn that made progress is never hard-cancelled.
 """
 
 from __future__ import annotations
@@ -26,12 +26,12 @@ _CONFIG_TIMEOUT_KEY = "agent.turn_liveness.timeout_s"
 _CONFIG_POLL_KEY = "agent.turn_liveness.poll_s"
 
 
-class ActivitySnapshot(NamedTuple):
-    """One activity-clock observation; ``(generation, activity_ts)`` must be
+class ProgressSnapshot(NamedTuple):
+    """One progress-clock observation; ``(generation, progress_ts)`` must be
     revalidated by the commit callback under the shared lock."""
 
-    generation: int
-    activity_ts: Optional[float]
+    progress_generation: int
+    progress_ts: Optional[float]
     idle_seconds: float
 
 
@@ -90,13 +90,13 @@ class TurnLivenessWatchdog:
     periodic scheduler; timer thread orders, body runs on its own worker).
 
     ``activity_lock`` must be the SAME lock ``AIAgent._touch_activity`` stamps
-    the activity clock with; run_agent owns the lease state and callbacks.
+    the activity and progress clocks with; run_agent owns the lease state and callbacks.
     """
 
     def __init__(
         self, agent: Any, *, session_id: str, timeout_s: float, poll_s: float,
         stop_event: threading.Event, activity_lock: threading.Lock,
-        is_turn_active: Callable[[], bool], commit_abort: Callable[[ActivitySnapshot, str], bool],
+        is_turn_active: Callable[[], bool], commit_abort: Callable[[ProgressSnapshot, str], bool],
         deactivate_turn: Callable[[], None],
     ) -> None:
         self._agent = agent
@@ -143,14 +143,14 @@ class TurnLivenessWatchdog:
         record_watchdog_turn_abort(self._agent)
         return False
 
-    def _sample(self) -> Optional[ActivitySnapshot]:
+    def _sample(self) -> Optional[ProgressSnapshot]:
         with self._activity_lock:
             if not self._is_turn_active():
                 return None
-            generation = getattr(self._agent, "_turn_liveness_activity_generation", 0)
-            activity_ts = getattr(self._agent, "_last_activity_ts", None)
+            generation = getattr(self._agent, "_turn_liveness_progress_generation", 0)
+            activity_ts = getattr(self._agent, "_last_progress_ts", None)
         idle_seconds = 0.0 if activity_ts is None else max(0.0, time.time() - activity_ts)
-        return ActivitySnapshot(generation, activity_ts, idle_seconds)
+        return ProgressSnapshot(generation, activity_ts, idle_seconds)
 
     def _emit_warning(self, text: str, debug_msg: str) -> None:
         emit_warning = getattr(self._agent, "_emit_warning", None)
@@ -161,10 +161,10 @@ class TurnLivenessWatchdog:
         except Exception:
             logger.debug(debug_msg, exc_info=True)
 
-    def _surface_stall(self, snapshot: ActivitySnapshot) -> None:
+    def _surface_stall(self, snapshot: ProgressSnapshot) -> None:
         """Log + UI-warn that recovery is beginning (not that it committed). Rate-limited per
         activity generation so repeatedly declined aborts do not re-log every poll."""
-        generation = snapshot.generation
+        generation = snapshot.progress_generation
         if getattr(self, "_last_surfaced_generation", None) == generation:
             return
         self._last_surfaced_generation = generation
@@ -179,12 +179,12 @@ class TurnLivenessWatchdog:
         )
         self._emit_warning(
             "⚠️ This turn stopped making progress "
-            f"({int(snapshot.idle_seconds)}s without activity); "
+            f"({int(snapshot.idle_seconds)}s without progress); "
             "attempting recovery so the session can continue.",
             "Failed to emit turn liveness warning",
         )
 
-    def _surface_committed_abort(self, snapshot: ActivitySnapshot) -> None:
+    def _surface_committed_abort(self, snapshot: ProgressSnapshot) -> None:
         """Publish the definitive settlement once the abort has authority.
 
         Runs only once ``_commit_abort`` succeeded (the interrupt was published) and the turn lease was
@@ -201,7 +201,7 @@ class TurnLivenessWatchdog:
         )
         self._emit_warning(
             "⚠️ Turn aborted by the liveness watchdog "
-            f"({int(snapshot.idle_seconds)}s without activity); "
+            f"({int(snapshot.idle_seconds)}s without progress); "
             "lease renewal stopped so the session can be reclaimed. "
             "You can retry your message.",
             "Failed to emit committed-abort warning",

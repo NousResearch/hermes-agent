@@ -255,10 +255,13 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
     if blocked := check_website_access(url):
         logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
         return _error_entry(url, blocked["message"], blocked=blocked)
+    client_config = None
     try:
         logger.info("Firecrawl scraping: %s", url)
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            client = _get_firecrawl_client()
+            client_config = getattr(_wt(), "_firecrawl_client_config", None)
+            scrape_result = await asyncio.wait_for(asyncio.to_thread(client.scrape, url=url, formats=formats), timeout=60)
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)
@@ -279,6 +282,21 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
         return {"url": final_url, "title": title, "content": content, "raw_content": content, "metadata": metadata}
     except Exception as scrape_err:  # noqa: BLE001
         logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
+        # Recover static public articles only when the self-hosted transport is
+        # unavailable. HTTP refusals, credentials, policy and cloud errors keep
+        # their original semantics; this never starts or reconfigures a service.
+        from requests.exceptions import ConnectionError as RequestsConnectionError
+        from requests.exceptions import SSLError
+        from urllib.parse import urlsplit
+        self_hosted = (isinstance(client_config, tuple) and len(client_config) >= 2
+                       and client_config[0] == "direct" and client_config[1]
+                       and urlsplit(client_config[1]).hostname != "api.firecrawl.dev")
+        if (self_hosted and isinstance(scrape_err, RequestsConnectionError)
+                and not isinstance(scrape_err, SSLError)):
+            from plugins.web.firecrawl.direct_fetch import recover_html
+            recovered = await recover_html(url, format, str(scrape_err))
+            if recovered is not None:
+                return recovered
         return _error_entry(url, str(scrape_err), raw=True)
 
 

@@ -182,12 +182,16 @@ def _truncate_results(results: List[dict], char_limit: int, debug_call_data: dic
 
 
 def _trim_results(results: List[dict]) -> List[dict]:
-    """Keep only url/title/content/error per entry (+ blocked_by_policy when present)."""
+    """Keep page fields, policy refusals and bounded recovery provenance."""
     return [
         {
             "url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""),
             "error": r.get("error"),
             **({"blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
+            **({"metadata": {k: r["metadata"][k] for k in
+                             ("sourceURL", "rescued_from", "backend_error", "extraction_method")
+                             if k in r["metadata"]}}
+               if isinstance(r.get("metadata"), dict) and r["metadata"].get("rescued_from") else {}),
         }
         for r in results
     ]

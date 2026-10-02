@@ -14,7 +14,7 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Iterator, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
@@ -63,6 +63,27 @@ def take_speech_interrupted() -> bool:
 
 # Sentence boundary: after .!? followed by whitespace, or a blank line.
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
+# Fenced code blocks are silence for speech (whole-reply prepare_spoken_text strips
+# them): the streaming chunker must not cut inside one, or the code's periods would
+# emit speakable sentences before the closing fence arrives (#131091). A trailing
+# unclosed fence runs to end-of-buffer - the close may arrive in a later delta.
+_FENCE_MARK_RE = re.compile(r"```")
+_FENCED_CODE_STREAM_RE = re.compile(r"```[\s\S]*?(?:```|$)")
+
+
+def _fenced_spans(text: str) -> List[Tuple[int, int]]:
+    """(start, end) spans of fenced code blocks; an unclosed fence runs to end-of-text."""
+    marks = [m.start() for m in _FENCE_MARK_RE.finditer(text)]
+    spans = [(marks[i], marks[i + 1] + 3) for i in range(0, len(marks) - 1, 2)]
+    if len(marks) % 2 == 1:
+        spans.append((marks[-1], len(text)))
+    return spans
+
+
+def _in_fenced_span(pos: int, spans: List[Tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
 # Reasoning tags come from the one canonical list (agent.think_scrubber), matched case-insensitively,
 # so feed() and flush() strip/cut exactly the tags every other reasoning-hiding surface does.
 _THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
@@ -90,13 +111,21 @@ class SentenceChunker:
             return cls()
 
     def feed(self, delta: str) -> List[str]:
-        """Absorb *delta*; return every complete sentence now ready to speak."""
+        """Absorb *delta*; return every complete sentence now ready to speak.
+
+        Boundaries inside fenced code blocks are held, not cut (#131091): the code's
+        periods would otherwise emit speakable sentences before the closing fence
+        arrives and the per-sentence markdown strip can silence them.
+        """
         self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
         if _THINK_OPEN_RE.search(self.buf):
             return []  # open think tag — the closing tag may arrive next delta
         out: List[str] = []
         start = 0  # skip boundaries that would leave the head too short
         while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
+            if _in_fenced_span(m.start(), _fenced_spans(self.buf)):
+                start = m.end()  # inside a code fence — wait for the fence to close
+                continue
             head = self.buf[: m.end()]
             if len(head.strip()) < self.min_len:
                 start = m.end()
@@ -111,6 +140,9 @@ class SentenceChunker:
         tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
         if m := _THINK_OPEN_RE.search(tail):
             tail = tail[: m.start()]  # unterminated reasoning block: never speak it
+        # Mirror the whole-reply markdown strip: fenced code is silence, including a
+        # trailing fence the reply never closed (#131091).
+        tail = _FENCED_CODE_STREAM_RE.sub(" ", tail)
         tail = tail.strip()
         return [tail] if tail else []
 

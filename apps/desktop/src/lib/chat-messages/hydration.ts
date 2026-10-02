@@ -302,6 +302,40 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
 }
 
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
+  // Accepted next-turn rows are persisted before the current reply. They do
+  // not break its tool/result chain or precede its eventual final in the view.
+  const ordered: SessionMessage[] = []
+  const accepted: SessionMessage[] = []
+  let unansweredUser = false
+  for (const message of messages) {
+    const sourceId = message.row_id ?? message.id
+    const isAccepted =
+      message.role === 'user' &&
+      unansweredUser &&
+      parseDisplayMetadata(message.display_metadata)?._queued_prompt === true &&
+      typeof sourceId === 'number' &&
+      Number.isSafeInteger(sourceId) &&
+      sourceId > 0
+    if (isAccepted) {
+      accepted.push(message)
+      continue
+    }
+    if (message.role === 'user' && message.display_kind !== 'steer') {
+      ordered.push(...accepted.splice(0))
+      unansweredUser = true
+    } else if (
+      message.role === 'assistant' &&
+      typeof message.content === 'string' &&
+      message.content.trim() &&
+      (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) &&
+      !isTodoSnapshotMetadata(message.display_metadata)
+    ) {
+      unansweredUser = false
+    }
+    ordered.push(message)
+  }
+  ordered.push(...accepted)
+  messages = ordered
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
   let pendingToolTimestamp: number | undefined

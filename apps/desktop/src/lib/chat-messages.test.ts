@@ -1948,3 +1948,47 @@ describe('toChatMessages backend-row accounting', () => {
     expect(messages[0].serverRowSpan).toBe(3)
   })
 })
+
+it('hydrates a marked accepted queue after the active reply without reordering ordinary or answered history', () => {
+  const active = { id: 6, role: 'user' as const, content: 'Active', timestamp: 6 }
+  const queued = {
+    id: 7,
+    role: 'user' as const,
+    content: 'Next',
+    timestamp: 7,
+    display_metadata: JSON.stringify({ _queued_prompt: true }),
+    display_kind: null
+  }
+  const final = { id: 8, role: 'assistant' as const, content: 'Finished active', timestamp: 8 }
+  const input = [active, queued, final]
+  const hydrated = toChatMessages(input)
+  expect(hydrated.map(row => [row.role, chatMessageText(row), row.rowId])).toEqual([
+    ['user', 'Active', 6],
+    ['assistant', 'Finished active', 8],
+    ['user', 'Next', 7]
+  ])
+  expect(hydrated.at(-1)?.queuedPrompt).toBe(true)
+  expect(input.map(row => row.id)).toEqual([6, 7, 8])
+  expect(toChatMessages([active, { ...queued, display_metadata: null }, final]).map(row => row.rowId)).toEqual([
+    6, 7, 8
+  ])
+  expect(toChatMessages([queued, final, active]).map(row => row.rowId)).toEqual([7, 8, 6])
+  const structured = toChatMessages([
+    active,
+    {
+      id: 10,
+      role: 'assistant',
+      content: 'Working',
+      tool_calls: [{ id: 'call-active', function: { name: 'read_file', arguments: '{}' } }]
+    },
+    queued,
+    { id: 11, role: 'tool', tool_call_id: 'call-active', content: 'read result' },
+    final
+  ])
+  expect(structured.at(-1)).toMatchObject({ role: 'user', rowId: 7, queuedPrompt: true })
+  expect(structured.flatMap(row => row.parts)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: 'tool-call', toolCallId: 'call-active', result: 'read result' })
+    ])
+  )
+})

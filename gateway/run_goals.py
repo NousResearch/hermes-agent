@@ -14,6 +14,7 @@ import time
 from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
+from gateway.delivery import prime_revived_egress
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -170,6 +171,7 @@ class GatewayGoalsMixin:
         # A pinned route skips topic recovery: no await between the idle
         # check and adapter claim. FIFO alone never wakes an idle session.
         try:
+            prime_revived_egress(adapter, event)
             await adapter.handle_message(event)
         finally:
             task = getattr(adapter, "_session_tasks", {}).get(quick_key)

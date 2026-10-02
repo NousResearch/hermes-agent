@@ -290,14 +290,18 @@ class GatewayAuthorizationMixin:
         with a bot of its own). With no live provenance the unique owner of ``(platform,
         runtime_profile)`` delivers — ``_adapters_for_profile`` holds one adapter per platform per
         profile, a shared-bot satellite drains through the primary, and a disconnected secondary
-        fails closed to ``{}`` rather than borrowing the default bot. Restored sessions, cron,
-        kanban and completion notices all rely on this row. Matrix: gateway/AGENTS.md § Profile scope.
+        fails closed to ``{}`` rather than borrowing the default bot. When that profile has no native
+        adapter for the platform, the Relay that fronts it delivers (:meth:`_fronting_relay`).
+        Restored sessions, cron, kanban and completion notices all rely on this row. Matrix:
+        gateway/AGENTS.md § Profile scope.
         """
         if source is None:
             return None
         adapter = self._intake_adapter_for(source)
         if adapter is not None:
             return adapter
+        # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
+        platform, profile = getattr(source, "platform", None), getattr(source, "profile", None)
         # A pinned identity NAMES the receiving bot (live or restored from ``transport_profile``).
         # If that bot has no adapter right now it is offline: fail closed rather than fall through to
         # the runtime profile's bot — that fallthrough is the "restored lane answers from the wrong
@@ -306,11 +310,27 @@ class GatewayAuthorizationMixin:
         from gateway.session_identity import identity_of
         identity = identity_of(source)
         if identity is not None and identity.multiplexed and not identity.transport_inferred:
-            return None
+            return self._fronting_relay(platform, identity.transport_profile)
         # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
         # the unique owner of ``(platform, runtime_profile)`` delivers.
-        # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
-        return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+        adapter = self._authorization_adapter(platform, profile)
+        return adapter if adapter is not None else self._fronting_relay(platform, profile)
+
+    def _fronting_relay(self, platform: Optional[Platform], profile: Optional[str]):
+        """The Relay in *profile*'s adapter map that fronts *platform*, else None.
+
+        A relayed source loses its wire-invisible relay marker when it is restored from durable state,
+        and the Relay is registered under ``Platform.RELAY``, not the logical platform it fronts, so the
+        native lookups miss it. Same rule as ``resolve_delivery_transport`` (native wins; Relay only
+        when its transport advertises the platform). Only the primary's map holds the Relay, so a
+        secondary that owns its bots still fails closed."""
+        adapters = self._adapters_for_profile(profile)
+        config = getattr(self, "config", None)
+        if platform is None or config is None or Platform.RELAY not in adapters:
+            return None
+        from gateway.delivery import resolve_delivery_transport
+        transport = resolve_delivery_transport(platform, config, adapters)
+        return transport.adapter if transport is not None else None
 
     def _owning_profile(self, adapter, platform):
         """Return (registered, profile) for a live adapter: profile is None for primary."""

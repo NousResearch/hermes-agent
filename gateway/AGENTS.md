@@ -163,7 +163,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   | shared credential → satellite (`profile_routes`) | routed | receiving adapter | receiving adapter (`_is_shared_bot_satellite` after restart) |
   | shared bot → profile that owns its own bot | routed | receiving adapter | receiving adapter (conversation continuity; #70625's "routed bot" reading was not adopted) |
   | secondary-owned bot → `default` (`bot_profile`) | default (`agent:main`) | receiving adapter | receiving adapter |
-  | restored / hand-built, no live provenance | stored `source.profile` | **`None`** | unique owner of `(platform, runtime)`; a disconnected secondary → `None`, never the default bot |
+  | restored / hand-built, no live provenance | stored `source.profile` | **`None`** | unique owner of `(platform, runtime)`, else that map's Relay when it `fronts_platform` (`_fronting_relay`, the `resolve_delivery_transport` rule); a disconnected secondary → `None`, never the default bot |
 - **Identity survives the process.** `SessionEntry.transport_profile` (routing index +
   `sessions.transport_profile`, nullable, reconciled by `SCHEMA_SQL`) persists the receiving bot
   next to the key namespace; the namespace says where a lane RUNS, the column says which bot may
@@ -171,7 +171,9 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   plugin injection, background-process events) reads `entry.origin` through
   `authz_mixin.py::_restored_source`, which re-pins a `RoutingIdentity(transport=None)` via
   `session_identity.restore_identity`; `_delivery_adapter_for` then delivers through that bot's
-  adapter or nothing (never the default bot by heuristic). Rows without the column (pre-PR-5)
+  adapter or nothing (never the default bot by heuristic). The relay marker is never persisted, so a
+  restored relayed lane reaches the primary's Relay through `_fronting_relay`; revival paths call
+  `delivery.prime_revived_egress` before `handle_message` (the Relay's egress caches fill only on inbound). Rows without the column (pre-PR-5)
   keep the `_is_shared_bot_satellite` fallback. Deferred callbacks capture the identity/home at
   command time (`/model` picker); `_run_in_executor_with_context` carries the scope over thread
   hops. Relay: `_with_scope` echoes the routed `profile` on every outbound frame and `follow_up`

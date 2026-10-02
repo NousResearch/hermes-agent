@@ -1363,19 +1363,20 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
 
 
 def do_snapshot_import(input_path: str, force: bool = False,
-                       console: Optional[Console] = None) -> None:
-    """Re-install skills from a snapshot file."""
+                       console: Optional[Console] = None) -> Optional[bool]:
+    """Re-install skills from a snapshot file. Returns False when the file is unreadable or any
+    entry failed to install (e.g. refused by the scan gate), else None — as ``do_update`` does."""
     from tools.skills_hub import TapsManager
     c = console or _console
     inp = Path(input_path)
     if not inp.exists():
         _print_error(c, f"File not found: {inp}")
-        return
+        return False
     try:
         snapshot = json.loads(inp.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         _print_error(c, f"Invalid JSON in {inp}")
-        return
+        return False
 
     taps = snapshot.get("taps", [])
     if taps:
@@ -1390,26 +1391,34 @@ def do_snapshot_import(input_path: str, force: bool = False,
         c.print("[dim]No skills in snapshot to install.[/]\n")
         return
     c.print(f"[bold]Importing {len(skills)} skill(s) from snapshot...[/]\n")
+    failed: list[str] = []
     for entry in skills:
         identifier = entry.get("identifier", "")
         if not identifier:
             c.print(f"[yellow]Skipping entry with no identifier: {entry.get('name', '?')}[/]")
             continue
         c.print(f"[bold]--- {entry.get('name', identifier)} ---[/]")
-        do_install(identifier, category=entry.get("category", ""), force=force, console=c)
+        if do_install(identifier, category=entry.get("category", ""), force=force, console=c) is False:
+            failed.append(entry.get("name", identifier))
+    if failed:
+        c.print(f"[bold red]Snapshot import incomplete.[/] Not installed: {', '.join(failed)} "
+                "(see the messages above).\n")
+        return False
     c.print("[bold green]Snapshot import complete.[/]\n")
+    return None
 
 
 # --- CLI argparse entry point ---
 
-def _snapshot_cli(args) -> None:
+def _snapshot_cli(args) -> Optional[bool]:
     snap_action = getattr(args, "snapshot_action", None)
     if snap_action == "export":
         do_snapshot_export(args.output)
     elif snap_action == "import":
-        do_snapshot_import(args.input, force=getattr(args, "force", False))
+        return do_snapshot_import(args.input, force=getattr(args, "force", False))
     else:
         _console.print("Usage: hermes skills snapshot [export|import]\n")
+    return None
 
 
 def _tap_cli(args) -> None:

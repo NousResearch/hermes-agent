@@ -4139,6 +4139,14 @@ class BasePlatformAdapter(ABC):
             # queued, start this event.
             if session_key not in self._active_sessions:
                 orphan = self._pending_messages.pop(session_key, None)
+                if orphan is None:
+                    # The runner may have accepted the event into the delivery adapter's
+                    # pending slot while the turn released its guard.  That slot is normally
+                    # drained by the finishing task, but the task can finish between the
+                    # handler's await and this ownership check.  Start it here rather than
+                    # acknowledging an event with no owner (notably background wakes and
+                    # steer fallbacks).
+                    orphan = self.get_pending_message(session_key)
                 if orphan is not None:
                     self._start_session_processing(orphan, session_key)
                 elif not handled:

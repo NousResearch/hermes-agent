@@ -16,6 +16,7 @@ const run = (
     is_active: boolean
     last_active: number
     scheduler_owned: boolean
+    cron_finalized: boolean
   }> = {}
 ) => ({
   ended_at: null as null | number,
@@ -44,6 +45,11 @@ describe('isResumableCronRun', () => {
 
   it('treats a properly closed run as resumable', () => {
     expect(isResumableCronRun(run({ ended_at: NOW_S - 60, scheduler_owned: false }), NOW_MS)).toBe(true)
+  })
+
+  it('treats a resumed scheduler-finalized run as resumable', () => {
+    expect(isResumableCronRun(run({ cron_finalized: true, scheduler_owned: false }), NOW_MS)).toBe(true)
+    expect(isResumableCronRun(run({ cron_finalized: false, scheduler_owned: false }), NOW_MS)).toBe(false)
   })
 
   it('falls back to the activity window against a backend without scheduler_owned', () => {

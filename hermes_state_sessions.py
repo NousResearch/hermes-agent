@@ -483,10 +483,22 @@ class SessionSessionsMixin:
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session ended; the first end_reason wins (a compression split must keep
         ``'compression'`` even if a stale end_session() lands later); reopen_session() to re-end."""
-        self._execute_write(lambda conn: self._end_and_bump(
-            conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
-            (time.time(), end_reason, session_id), session_id, end_reason,
-        ))
+        def _do(conn):
+            stamp = time.time()
+            if end_reason in {"cron_complete", "cron_incomplete_no_output"}:
+                sql = ("UPDATE sessions SET ended_at = ?, end_reason = ?, "
+                       "model_config = json_set(COALESCE(model_config, '{}'), '$._cron_finalized', ?) "
+                       "WHERE id = ? AND ended_at IS NULL AND source = 'cron'")
+                changed = self._end_and_bump(
+                    conn, sql, (stamp, end_reason, end_reason, session_id), session_id, end_reason,
+                )
+                if changed:
+                    return
+            self._end_and_bump(
+                conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+                (stamp, end_reason, session_id), session_id, end_reason,
+            )
+        self._execute_write(_do)
 
     def _end_and_bump(self, conn, sql: str, params: tuple, session_id: str, reason: str) -> int:
         """Run an end-stamp UPDATE; only a boundary this call actually wrote advances the
@@ -525,12 +537,8 @@ class SessionSessionsMixin:
                 f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
                 (session_id, *_RESET_END_REASONS),
             )
-            # A completed scheduler run remains writable without becoming a live run.
-            # Clearing its completion stamp makes the desktop write gate reject the next
-            # message because scheduler ownership is no longer visible.
             conn.execute(
-                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
-                "WHERE id = ? AND COALESCE(source, '') != 'cron'", (session_id,),
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (session_id,),
             )
             # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
             self._unarchive_auto_archived_lineage(conn, session_id)

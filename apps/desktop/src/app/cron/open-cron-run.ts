@@ -1,7 +1,7 @@
 import { hasCronRunVerdict, isCronRunReadOnly, recordCronRunVerdict } from '@/store/read-only-transcript'
 import type { SessionInfo } from '@/types/hermes'
 
-type CronRunLiveness = Pick<SessionInfo, 'ended_at' | 'last_active' | 'scheduler_owned'> &
+type CronRunLiveness = Pick<SessionInfo, 'ended_at' | 'last_active' | 'scheduler_owned' | 'cron_finalized'> &
   Partial<Pick<SessionInfo, 'is_active'>>
 
 type CronRunRow = CronRunLiveness & Pick<SessionInfo, 'id'>
@@ -34,6 +34,10 @@ const CRON_RUN_SESSION_ID = /^cron_.+_\d{8}_\d{6}$/
  */
 export function isResumableCronRun(run: CronRunLiveness, nowMs = Date.now()): boolean {
   if (run.ended_at != null) {
+    return true
+  }
+
+  if (run.cron_finalized === true) {
     return true
   }
 

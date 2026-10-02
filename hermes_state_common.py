@@ -1320,3 +1320,20 @@ def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
     except (json.JSONDecodeError, TypeError):
         logger.warning(warning)
         return fallback
+
+CRON_FINALIZED_END_REASONS = frozenset(("cron_complete", "cron_incomplete_no_output"))
+
+
+def is_scheduler_finalized_cron(row) -> bool:
+    """Return true only for a cron row with a durable scheduler finalization."""
+    if not row or row.get("source") != "cron":
+        return False
+    if row.get("end_reason") in CRON_FINALIZED_END_REASONS:
+        return True
+    raw = row.get("model_config")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = None
+    return isinstance(raw, dict) and raw.get("_cron_finalized") in CRON_FINALIZED_END_REASONS

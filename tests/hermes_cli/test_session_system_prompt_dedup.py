@@ -25,6 +25,26 @@ def _prompt_count(db: SessionDB) -> int:
     )
 
 
+def test_finalized_cron_resume_can_publish_compression_child(db):
+    session_id = "cron_job_20261002_010000"
+    db.create_session(session_id, "cron", model="test-model")
+    db.end_session(session_id, "cron_incomplete_no_output")
+    db.reopen_session(session_id)
+    assert db.get_session(session_id)["cron_finalized"] is True
+    assert db.try_acquire_compression_lock(session_id, "holder", ttl_seconds=60)
+
+    db.publish_compression_child(
+        parent_session_id=session_id,
+        child_session_id="cron_child",
+        source="cron",
+        model="test-model",
+        messages=[{"role": "assistant", "content": "continuation"}],
+        compression_lock_holder="holder",
+    )
+    assert db.get_session(session_id)["end_reason"] == "compression"
+    assert db.get_session("cron_child") is not None
+
+
 def test_prompt_snapshots_are_deduplicated_and_hydrated_for_readers(db):
     prompt = "You are Hermes.\n" + ("Follow the profile policy.\n" * 5)
     db.create_session(

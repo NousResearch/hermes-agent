@@ -465,10 +465,14 @@ When the bot joins a voice channel, it:
 
 ### Text Channel Integration
 
+Joining keeps the text channel’s current reply mode. A channel without a saved mode
+starts in `all`. With `voice_only`, spoken input gets a spoken reply and typed input
+gets a text reply. With `off`, the bot listens but replies as text.
+
 When the bot is in a voice channel:
 
 - Transcripts appear in the text channel: `[Voice] @user: what you said`
-- Agent responses are sent as text in the channel AND spoken in the VC
+- Agent responses appear in the text channel. The current voice mode decides which replies are spoken in the voice channel
 - The text channel is the one where `/voice join` was issued
 - Running `/voice join` from another text channel moves the binding there; speech captured before the move, whether still being transcribed or not yet finished, is dropped, not posted to the new channel
 - When the call ends, the text channel's voice mode returns to `off`. A call ends on `/voice leave`, after the inactivity timeout, and when the gateway stops, restarts or crashes
@@ -528,6 +532,10 @@ Run these in the room that the call belongs to:
 You must be in the call before running `/voice join`. Hermes reads the room's call
 membership state to find the call that you are in.
 :::
+
+Joining keeps the room’s current reply mode, with `all` as the default for a room
+without a saved mode. `voice_only` speaks replies only to spoken input, and `off`
+keeps replies as text. The mode returns to `off` when the call ends.
 
 ### How It Works
 

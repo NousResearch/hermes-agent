@@ -483,7 +483,7 @@ import {
   type SecretStoragePolicy,
   writeSecretStoragePolicy
 } from './secret-storage-policy'
-import { changeSecretStorageEncryption, recoverSecretStorageTransition, recoverSecretStorageAtStartup } from './secret-storage-transition'
+import { changeSecretStorageEncryption, recoverSecretStorageAtStartup, recoverSecretStorageTransition } from './secret-storage-transition'
 import { selectPathsDialogProperties } from './select-paths-dialog'
 import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
 import {

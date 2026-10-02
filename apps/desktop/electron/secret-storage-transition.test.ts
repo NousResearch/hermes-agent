@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { buildSync } from 'esbuild'
 import { test, vi } from 'vitest'
 
-import { requireRoomSetupEncryption, SECRET_STORAGE_POLICY_FILE } from './secret-storage-policy'
-import { changeSecretStorageEncryption, recoverSecretStorageTransition, recoverSecretStorageAtStartup, SECRET_STORAGE_RECOVERY_FILE } from './secret-storage-transition'
 import { roomSetupCoordinator } from './room-setup'
 import { roomSetupStore } from './room-setup-store'
+import { requireRoomSetupEncryption, SECRET_STORAGE_POLICY_FILE } from './secret-storage-policy'
+import { changeSecretStorageEncryption, recoverSecretStorageAtStartup, recoverSecretStorageTransition, SECRET_STORAGE_RECOVERY_FILE } from './secret-storage-transition'
 
 const ROOM = 'room-setup/01234567-89ab-cdef-0123-456789abcdef.json'
 const TARGETS = ['connection.json', 'connections.json', 'native-oauth-tokens.json', ROOM, SECRET_STORAGE_POLICY_FILE]

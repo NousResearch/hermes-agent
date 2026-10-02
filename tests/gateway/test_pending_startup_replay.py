@@ -189,8 +189,9 @@ async def test_startup_replays_only_current_native_input_and_retains_its_record(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("authorization", ["current", "revoked"])
+@pytest.mark.parametrize("media_kind", ["m.image", "m.sticker"])
 async def test_restoration_validates_media_and_receipts_in_the_routed_profile_home(
-    tmp_path, monkeypatch, authorization
+    tmp_path, monkeypatch, authorization, media_kind
 ):
     from pathlib import Path
 
@@ -302,19 +303,19 @@ async def test_restoration_validates_media_and_receipts_in_the_routed_profile_ho
             (launch / ".env").write_text("GATEWAY_ALLOWED_USERS=@alice:example.org\n")
             event_id = f"$input-{index}"
             content = {
-                "msgtype": "m.image",
+                "msgtype": media_kind,
                 "body": f"image-{index}",
                 "url": f"mxc://example.org/{index}",
             }
             current[event_id] = {
-                "type": "m.room.message",
+                "type": "m.sticker" if media_kind == "m.sticker" else "m.room.message",
                 "room_id": profile,
                 "event_id": event_id,
                 "sender": "@alice:example.org",
                 "content": content,
             }
-            with _profile_runtime_scope(homes[profile]):
-                cache = homes[profile] / "cache" / "same-name.png"
+            with _profile_runtime_scope(launch):
+                cache = launch / "cache" / "same-name.png"
                 cache.parent.mkdir(exist_ok=True)
                 cache.write_bytes(f"native-{index}".encode())
                 source = adapter.build_source(
@@ -329,11 +330,15 @@ async def test_restoration_validates_media_and_receipts_in_the_routed_profile_ho
                     content,
                     {},
                     ctx=(content["body"], False, "group", None, "Alice", False, source),
-                    media_msgtype="m.image",
+                    media_msgtype=media_kind,
                     media_urls=[str(cache)],
                     media_types=["image/png"],
                 )
                 assert event is not None
+            with _profile_runtime_scope(homes[profile]):
+                from gateway.run_inbound_media import rehome_inbound_media
+
+                rehome_inbound_media(event)
                 entry = runner.session_store.get_or_create_session(source)
                 snapshot = PendingQueueSnapshot.capture(entry.session_key, [event])
                 path = homes[profile] / "pending_messages" / f"pending-{index}.json"

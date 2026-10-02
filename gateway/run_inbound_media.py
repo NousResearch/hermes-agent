@@ -25,6 +25,7 @@ def rehome_inbound_media(event: MessageEvent) -> None:
     if not event.media_urls:
         return
     from tools.credential_files import to_agent_visible_cache_path
+    _capture_native_before_transfer(event)
     rewritten = list(event.media_urls)
     failed: set[int] = set()
     quoted = {dependency.media_index for dependency in event._quoted_media_dependencies}
@@ -76,6 +77,14 @@ def rehome_inbound_media(event: MessageEvent) -> None:
         for dependency in event._quoted_media_dependencies
         if dependency.media_index in positions
     )
+
+
+def _capture_native_before_transfer(event: MessageEvent) -> None:
+    from gateway.shutdown_pending_codec import capture_pending_native
+
+    capture_pending_native(event)
+    for part, _merge in event._merged_parts:
+        _capture_native_before_transfer(part)
 
 
 def _rehome_pending_provenance(event: MessageEvent, paths: dict[str, str]) -> None:

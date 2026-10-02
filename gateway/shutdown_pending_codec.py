@@ -42,12 +42,7 @@ def _file_digest(path: str) -> str | None:
         return None
 
 
-def capture_pending_provenance(event: MessageEvent) -> dict[str, Any]:
-    from gateway.shutdown_pending import _capture_event
-
-    from gateway.input_owner import capture_gateway_input_owner
-
-    recorded: dict[str, Any] = {"input_owner": capture_gateway_input_owner(event)}
+def capture_pending_native(event: MessageEvent) -> PendingNativeInput | None:
     native = event._pending_native_input
     if native is None:
         from gateway.session_identity import identity_of
@@ -56,6 +51,17 @@ def capture_pending_provenance(event: MessageEvent) -> dict[str, Any]:
         adapter = identity.adapter() if identity is not None else None
         capture = getattr(adapter, "pending_native_input", None)
         native = capture(event) if callable(capture) else None
+    event._pending_native_input = native
+    return native
+
+
+def capture_pending_provenance(event: MessageEvent) -> dict[str, Any]:
+    from gateway.shutdown_pending import _capture_event
+
+    from gateway.input_owner import capture_gateway_input_owner
+
+    recorded: dict[str, Any] = {"input_owner": capture_gateway_input_owner(event)}
+    native = capture_pending_native(event)
     if native is not None:
         recorded["native"] = native.to_payload()
     if event._merged_parts:

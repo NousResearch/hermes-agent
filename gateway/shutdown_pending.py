@@ -130,7 +130,7 @@ def _capture_event(event: MessageEvent) -> dict[str, Any]:
                 asdict(dependency) for dependency in event._quoted_media_dependencies
             ],
             "snapshots": [
-                snapshot.pending_state()
+                snapshot.pending_state(event)
                 for snapshot in event._inbound_context_dependencies
             ],
         }

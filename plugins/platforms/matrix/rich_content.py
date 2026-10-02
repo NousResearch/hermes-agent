@@ -74,6 +74,20 @@ class _MatrixAuthoredContent:
         )
 
 
+def _pending_media_path(event: MessageEvent, event_id: str | None, original_path: str) -> str:
+    if event_id is None:
+        return original_path
+    if event.message_id == event_id and event._pending_native_input is not None:
+        current = event._pending_native_input.attachment_path(original_path)
+        if current is not None and current in event.media_urls:
+            return current
+    for part, _merge in event._merged_parts:
+        current = _pending_media_path(part, event_id, original_path)
+        if current != original_path:
+            return current
+    return original_path
+
+
 @dataclass
 class MatrixRichContentSnapshot:
     context: MatrixTurnContext
@@ -101,7 +115,7 @@ class MatrixRichContentSnapshot:
         )
         return cls(MatrixTurnContext.capture(adapter, event), contributions)
 
-    def pending_state(self) -> dict[str, Any]:
+    def pending_state(self, event: MessageEvent | None = None) -> dict[str, Any]:
         return {
             "kind": "matrix_rich_content",
             "context": self.context.pending_state(),
@@ -112,7 +126,8 @@ class MatrixRichContentSnapshot:
                     "original_text": contribution.original_text,
                     "original_content_text": contribution.original_content_text,
                     "original_media_identity": contribution.original_media_identity,
-                    "media_paths": list(contribution.media_paths),
+                    "media_paths": [_pending_media_path(event, contribution.authored.event_id, path)
+                                    if event is not None else path for path in contribution.media_paths],
                 }
                 for contribution in self.contributions
             ],

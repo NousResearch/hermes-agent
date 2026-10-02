@@ -236,32 +236,81 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
 
 
+# No time limit: the approval stays answerable until a human answers it, however long that takes.
+# Spelled as words only — ``0`` already means "expires at once" and that meaning is load-bearing
+# (``tests/gateway/test_approve_deny_commands.py`` relies on it to expire the poll loop immediately),
+# so it keeps it.
+# YAML caveat: a bare ``off`` / ``no`` / ``false`` arrives as boolean ``False`` and ``none`` as null,
+# so those are handled below rather than by the token set alone.
+_UNLIMITED_TIMEOUT_TOKENS = frozenset({"unlimited", "infinite", "inf", "never", "off", "none", "no"})
+
+
+def _parse_approval_timeout(raw: "int | float | str | bool | None") -> "int | None":
+    """``approvals.timeout`` → seconds (``0`` = expires at once), or ``None`` for no time limit.
+    Unparseable, and an unset/null value, keep the 300s default; ``False`` (from YAML ``off``/``no``)
+    means no limit."""
+    if isinstance(raw, bool):
+        return None if raw is False else 300
+    if isinstance(raw, str) and raw.strip().lower() in _UNLIMITED_TIMEOUT_TOKENS:
+        return None
+    if raw is None:
+        return 300
+    try:
+        return int(float(raw))  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        return 300
+
+
+def _approval_timeout_safe_cap() -> int:
+    """``agent.deadline.MAX_SAFE_TIMEOUT_S``, or the 300s default when that import fails."""
+    try:
+        from agent.deadline import MAX_SAFE_TIMEOUT_S
+        return int(MAX_SAFE_TIMEOUT_S)
+    except Exception:
+        return 300  # dependency failure must keep the safe default
+
+
+def approval_timeout_is_unlimited() -> bool:
+    """True when ``approvals.timeout`` asks for no limit, so the copy says "no time limit" instead
+    of quoting a window nobody is racing."""
+    try:
+        raw = _get_approval_config().get("timeout", 300)
+    except Exception:
+        return False
+    return _parse_approval_timeout(raw) is None
+
+
 def _get_approval_timeout() -> int:
     """Read ``approvals.timeout`` (default 300s: gateway push notifications may
     not be seen for minutes; 60s failed closed before Telegram taps landed).
-    Clamped to ``agent.deadline.MAX_SAFE_TIMEOUT_S`` (~1 year): a larger value
-    overflows ``time_t`` inside ``Thread.join`` / ``Lock.acquire`` on macOS and
-    crashed every parallel tool batch; clamping at the single config-read site
-    keeps every consumer platform-safe at once."""
+
+    ``unlimited`` / ``never`` / ``off`` / ``none`` → no time limit: callers get the platform-safe
+    ceiling (``agent.deadline.MAX_SAFE_TIMEOUT_S``, ~1 year) rather than infinity, because one
+    process may hand this value to ``Thread.join`` / ``Lock.acquire``, where a larger number
+    overflows ``time_t`` on macOS and crashed every parallel tool batch; clamping at this single
+    config-read site keeps every consumer platform-safe at once. ``0`` still means "expires at
+    once", never "no limit" — see :func:`approval_timeout_is_unlimited` for the copy."""
     try:
-        raw = int(_get_approval_config().get("timeout", 300))
-    except (ValueError, TypeError):
-        return 300
-    try:
-        from agent.deadline import MAX_SAFE_TIMEOUT_S
-        safe_cap = int(MAX_SAFE_TIMEOUT_S)
+        raw = _get_approval_config().get("timeout", 300)
     except Exception:
-        safe_cap = 300  # dependency failure must keep the safe default
-    if raw > safe_cap:
-        logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", raw, safe_cap)
-    return min(raw, safe_cap)
+        return 300
+    safe_cap = _approval_timeout_safe_cap()
+    seconds = _parse_approval_timeout(raw)
+    if seconds is None:
+        return safe_cap
+    if seconds > safe_cap:
+        logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", seconds, safe_cap)
+    return min(seconds, safe_cap)
 
 
 def format_approval_window(seconds: int) -> str:
     """The ONE human wording for an approval timeout window, shared by the CLI timeout notice,
     the tool result's ``user_summary`` and the gateway card copy so every surface agrees:
-    300 → "5 minutes", 90 → "90 seconds", 7200 → "2 hours"."""
+    300 → "5 minutes", 90 → "90 seconds", 7200 → "2 hours". At or above the platform-safe ceiling
+    (``approvals.timeout: 0``) it reads "no time limit" — nobody is racing a clock."""
     seconds = max(int(seconds or 0), 0)
+    if seconds >= _approval_timeout_safe_cap():
+        return "no time limit"
     if seconds and seconds % 3600 == 0:
         count, unit = seconds // 3600, "hour"
     elif seconds and seconds % 60 == 0:
@@ -273,9 +322,11 @@ def format_approval_window(seconds: int) -> str:
 
 def approval_timeout_notice_kwargs() -> dict:
     """``{waited, suggested}`` for the ``approval.timeout`` copy: how long we waited (``5 minutes`` /
-    ``90 seconds``) and a tripled ``approvals.timeout`` value the user can paste into ``hermes config set``."""
+    ``90 seconds``) and a tripled ``approvals.timeout`` value the user can paste into ``hermes config set``.
+    An unlimited window has nothing to suggest — the notice cannot render, since nothing times out."""
     seconds = _get_approval_timeout()
-    return {"waited": format_approval_window(seconds), "suggested": seconds * 3}
+    suggested = seconds if approval_timeout_is_unlimited() else seconds * 3
+    return {"waited": format_approval_window(seconds), "suggested": suggested}
 
 
 def _binary_approval_mode(key: str) -> str:

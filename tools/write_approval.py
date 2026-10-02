@@ -65,6 +65,18 @@ def _pending_path(subsystem: str, pending_id: str) -> Path:
     return get_hermes_home() / "pending" / subsystem / f"{pending_id}.json"
 
 
+def pending_path_display(subsystem: str, pending_id: str) -> str:
+    """User-facing path of one pending write, resolved for the ACTIVE profile.
+
+    Chat replies must name the file the user can actually open. A hardcoded
+    ``~/.hermes/pending/...`` points at the default profile's queue even when a named profile
+    is the one serving the session, so the reader is sent to a file that does not exist.
+    """
+    from hermes_constants import display_hermes_home
+
+    return f"{display_hermes_home()}/pending/{subsystem}/{pending_id}.json"
+
+
 def _pending_files(subsystem: str) -> list:
     d = _pending_path(subsystem, "").parent
     return list(d.glob("*.json")) if d.exists() else []

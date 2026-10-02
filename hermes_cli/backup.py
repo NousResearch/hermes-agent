@@ -36,6 +36,7 @@ from hermes_cli.backup_restore import (
     _detect_prefix,
     _extract_member_atomically,
     _import_db_member,
+    _restore_auth_json,
     _safe_restore_db,
     _validate_backup_zip,
 )
@@ -1479,6 +1480,17 @@ def list_quick_snapshots(
     return results
 
 
+def _is_trusted_root_auth_alias(path: Path, home: Path) -> bool:
+    """True only for a file symlink resolving to this restore home's default-root auth store."""
+    if not path.is_symlink():
+        return False
+    try:
+        trusted = (get_default_hermes_root(home=home) / "auth.json").resolve(strict=False)
+        return path.resolve(strict=False) == trusted
+    except (OSError, RuntimeError):
+        return False
+
+
 def restore_quick_snapshot(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
@@ -1530,8 +1542,12 @@ def restore_quick_snapshot(
         try:
             dst.resolve().relative_to(home.resolve())
         except ValueError:
-            logger.error("Manifest path traversal blocked: %s", rel)
-            continue
+            # Named profiles may deliberately share the machine-root auth store via an
+            # auth.json symlink. Let only that exact trusted alias reach _restore_auth_json;
+            # every other manifest destination outside the profile remains a traversal.
+            if rel != "auth.json" or not _is_trusted_root_auth_alias(dst, home):
+                logger.error("Manifest path traversal blocked: %s", rel)
+                continue
 
         if not src.exists():
             continue
@@ -1548,6 +1564,14 @@ def restore_quick_snapshot(
                     # Refused, failed, or source failed its integrity check:
                     # dst left as it was. Count as a failure, not a restore.
                     logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
+                    continue
+            elif rel == "auth.json":
+                # Refresh tokens for these OAuth providers rotate on use. A historical
+                # snapshot can therefore contain a spent pair even though the current
+                # auth.json has the live successor. Restore the historical auth state
+                # while retaining that live single-use grant under the auth-store lock.
+                if not _restore_auth_json(src, dst):
+                    logger.error("Failed to restore %s safely", rel)
                     continue
             else:
                 shutil.copy2(src, dst)

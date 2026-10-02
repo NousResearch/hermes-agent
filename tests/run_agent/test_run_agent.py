@@ -448,6 +448,38 @@ class TestStripThinkBlocks:
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 
+    def test_list_content_text_blocks_flattened(self, agent):
+        """Regression: OpenAI-compatible providers (seen via abacus/RouteLLM
+        and Ollama's OpenAI-compatible endpoint) can return assistant content
+        as a list of multimodal blocks instead of a flat string, even for
+        plain text replies. Previously this crashed re.sub() with
+        `TypeError: expected string or bytes-like object, got 'list'`,
+        surfaced to the user as "Error during OpenAI-compatible API call #N".
+        """
+        content = [{"type": "text", "text": "hello"}, {"type": "text", "text": " world"}]
+        assert agent._strip_think_blocks(content) == "hello world"
+
+    def test_list_content_with_think_block_stripped(self, agent):
+        content = [{"type": "text", "text": "<think>reasoning</think> answer"}]
+        result = agent._strip_think_blocks(content)
+        assert "reasoning" not in result
+        assert "answer" in result
+
+    def test_list_content_mixed_non_text_blocks_ignored(self, agent):
+        content = [
+            {"type": "text", "text": "visible"},
+            {"type": "image_url", "image_url": {"url": "http://example.com/x.png"}},
+        ]
+        result = agent._strip_think_blocks(content)
+        assert result == "visible"
+
+    def test_list_content_empty_returns_empty(self, agent):
+        assert agent._strip_think_blocks([]) == ""
+
+    def test_non_string_non_list_content_coerced(self, agent):
+        # Defensive: anything else (e.g. an int) must not crash re.sub().
+        assert agent._strip_think_blocks(123) == "123"
+
     def test_single_block_removed(self, agent):
         result = agent._strip_think_blocks("<think>reasoning</think> answer")
         assert "reasoning" not in result

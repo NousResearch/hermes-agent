@@ -672,6 +672,26 @@ def strip_think_blocks(agent, content: str) -> str:
     """
     if not content:
         return ""
+    # Guard: some OpenAI-compatible providers (seen via abacus/RouteLLM and
+    # Ollama's OpenAI-compatible endpoint) return assistant content as a list
+    # of multimodal blocks (e.g. [{"type": "text", "text": "..."}]) instead
+    # of a flat string, even for plain text replies. re.sub() below requires
+    # a str/bytes subject and raises `TypeError: expected string or
+    # bytes-like object, got 'list'` otherwise, which previously surfaced to
+    # the user as a generic "Error during OpenAI-compatible API call #N".
+    # Flatten defensively before any regex touches it.
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        content = "".join(parts)
+    if not isinstance(content, str):
+        content = str(content)
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.

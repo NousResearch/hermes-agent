@@ -25,8 +25,8 @@ from pathlib import Path
 
 from tests.e2e.core.upgrade import _helpers as H
 
-OFFICIAL_HTTPS = "https://github.com/NousResearch/hermes-agent.git"
-OFFICIAL_SSH = "git@github.com:NousResearch/hermes-agent.git"
+OFFICIAL_HTTPS = "https://github.com/intelli-verse-x/IVX-desktop.git"
+OFFICIAL_SSH = "git@github.com:intelli-verse-x/IVX-desktop.git"
 TRACEBACK = "Traceback (most recent call last)"
 FAKE_KEY = "sk-fake-e2e-install-update"
 

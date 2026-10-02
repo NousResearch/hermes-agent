@@ -284,8 +284,8 @@ assert_redirect_is_transport_only() {
   # Either official form is valid: the installer clones over SSH or HTTPS
   # depending on the environment, and both are "the official URL" as far as
   # channel resolution is concerned.
-  local official_https='https://github.com/NousResearch/hermes-agent.git'
-  local official_ssh='git@github.com:NousResearch/hermes-agent.git'
+  local official_https='https://github.com/intelli-verse-x/IVX-desktop.git'
+  local official_ssh='git@github.com:intelli-verse-x/IVX-desktop.git'
   local configured observed
   configured="$(git -C "$INSTALL_DIR" config --get remote.origin.url)"
   case "$configured" in

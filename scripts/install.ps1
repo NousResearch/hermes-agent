@@ -71,7 +71,20 @@ $script:BoundParams = $PSBoundParameters
 # Under iex, script scope is the caller's session and outlives a run; start
 # each run without the previous run's answer (see Set-LauncherUserPath).
 $script:BinDirOnCallerPath = $null
-$RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/NousResearch/hermes-agent.git" }
+$RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/intelli-verse-x/IVX-desktop.git" }
+
+function Test-StockHermesOrigin([string]$Url) {
+    # Checkouts made before this product tracked the org repo still have the
+    # Nous Research origin. Re-running the installer must retarget those.
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
+    $n = $Url.Trim().TrimEnd('/')
+    if ($n.EndsWith('.git')) { $n = $n.Substring(0, $n.Length - 4) }
+    return $n -in @(
+        'https://github.com/NousResearch/hermes-agent',
+        'git@github.com:NousResearch/hermes-agent',
+        'ssh://git@github.com/NousResearch/hermes-agent'
+    )
+}
 
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
 # Derived from pm/lock.json. DO NOT EDIT BY HAND:
@@ -758,9 +771,11 @@ function Stage-Repository {
     }
     if (Test-Path (Join-Path $InstallDir ".git")) {
         Log "Updating $InstallDir ($Branch)"
-        # An explicit HERMES_REPO_URL names the source for reruns too, not
-        # just the first clone.
-        if ($env:HERMES_REPO_URL) {
+        # HERMES_REPO_URL overrides the source. A checkout that still points at
+        # Nous Research is retargeted too, so an older installer does not keep
+        # updating from that repo.
+        $originUrl = (Invoke-Native { git -C $InstallDir remote get-url origin } | Out-String).Trim()
+        if ($env:HERMES_REPO_URL -or (Test-StockHermesOrigin $originUrl)) {
             Invoke-Native { git -C $InstallDir remote set-url origin $RepoUrl }
             if ($LASTEXITCODE) { Fail "cannot point origin at $RepoUrl" }
         }

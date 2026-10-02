@@ -66,8 +66,11 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   reply (task store, audit, push) instead of dropping it with the HTTP thread.
   `configuration.returnImmediately=true` (v1.0) / `configuration.blocking=false`
   (v0.2) parks right after dispatch: accept-then-poll. Parked tasks are exempt
-  from the orphan sweep — `A2A_JOB_TIMEOUT` (default 3600s) is what bounds them —
-  and inline profile forwards take that same job budget as their subprocess timeout.
+  from the orphan sweep — `A2A_JOB_TIMEOUT` (default 3600s) is what bounds them, and
+  that sweep tears the task down completely (`_drop_swept_pending`): a pending entry
+  left behind would sit at the head of `_pending_order[context]` and, because
+  `send()` resolves replies oldest-first, eat the *next* real reply on that context.
+  Inline profile forwards take that same job budget as their subprocess timeout.
 - **input-required:** the platform hint tells the agent to start a reply with
   `[INPUT_REQUIRED]` when it needs clarification; the adapter maps that to
   `TASK_STATE_INPUT_REQUIRED` with the question in `status.message`.

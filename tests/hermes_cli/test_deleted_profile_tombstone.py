@@ -317,3 +317,37 @@ class TestNamedProfileHome:
         (profiles_dir / ".deleted").mkdir(parents=True)
         worker = profiles_dir / "worker"
         assert named_profile_home(worker / "logs") == worker
+
+
+@pytest.mark.parametrize("archive_has_tombstone", [False, True])
+def test_restored_profile_is_live_unless_the_backup_had_it_deleted(tmp_path, monkeypatch, archive_has_tombstone):
+    """Restoring a backup taken before ``profile delete`` brings the profile back: the delete's
+    tombstone must not hide the restored tree. A tombstone the archive itself carries (the
+    profile was already deleted at backup time) is kept."""
+    import zipfile
+    from argparse import Namespace
+
+    from hermes_cli.backup import run_import
+    from hermes_cli.profiles import delete_profile, list_profile_names, profile_exists
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (hermes_home / "config.yaml").write_text("model: test\n")
+    create_profile("work", no_alias=True)
+    delete_profile("work", yes=True)
+
+    files = {"config.yaml": "model: test\n", "profiles/work/SOUL.md": "restored soul\n"}
+    if archive_has_tombstone:
+        files["profiles/.deleted/work"] = "deleted\n"
+    zip_path = tmp_path / "backup.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+
+    run_import(Namespace(zipfile=str(zip_path), force=True))
+
+    assert (hermes_home / "profiles" / "work" / "SOUL.md").read_text() == "restored soul\n"
+    assert profile_exists("work") is not archive_has_tombstone
+    assert ("work" in list_profile_names()) is not archive_has_tombstone

@@ -40,9 +40,11 @@ from hermes_cli.backup_restore import (
     _extract_member_atomically,
     _get_config_path_value,
     _import_db_member,
+    _import_external_member,
     _restore_auth_json,
     _restore_destination_epoch,
     _restore_snapshot_entry,
+    _revive_restored_profiles,
     _safe_restore_db,
     _set_config_path_value,
     _validate_backup_zip,
@@ -782,7 +784,7 @@ def run_import(args) -> Optional[int]:
         from hermes_cli.backup_keep_host import KeepHostRefused, keep_host_import
         try:
             with keep_host_import(args, zf, members, prefix, hermes_root) as keep_host:
-                restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
+                restored, restored_external, errors, skipped_runtime, db_shrunk, restored_parts = _import_members(
                     zf, members, prefix, hermes_root, file_count, keep_host)
         except (OwnershipConflict, KeepHostRefused) as exc:
             print(f"\nImport refused; no files restored: {exc}")
@@ -827,6 +829,8 @@ def run_import(args) -> Optional[int]:
                 print(f"    {rel}")
             if len(skipped_runtime) > 10:
                 print(f"    ... and {len(skipped_runtime) - 10} more")
+
+        _revive_restored_profiles(hermes_root, restored_parts)
 
         # Post-import: restore profile wrapper scripts
         profiles_dir = hermes_root / "profiles"
@@ -892,7 +896,7 @@ def run_import(args) -> Optional[int]:
 
 def _import_members(
     zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int, keep_host=None,
-) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
+) -> tuple:
     """Reserve all affected profiles before publishing even the first config file."""
     from gateway.runtime_ownership import exclusive_maintenance
     root_res = hermes_root.resolve()
@@ -915,37 +919,11 @@ def _import_members(
         return restore(zf, members, prefix, hermes_root, file_count)
 
 
-def _import_external_member(
-    zf: zipfile.ZipFile, member: str, home_dir: Path, new_file_mode: int, errors: list[str]
-) -> bool:
-    """Publish one ``_external/`` member under the user's home; False (with ``errors`` appended)
-    when it is a traversal or cannot be written."""
-    target = home_dir / member[len(_EXTERNAL_PREFIX):]
-    # Security: the resolved target must stay under the home dir.
-    try:
-        target.resolve().relative_to(home_dir)
-    except ValueError:
-        errors.append(f"  {member}: path traversal blocked")
-        return False
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _extract_member_atomically(zf, member, target, new_file_mode)
-        # External provider configs commonly hold credentials.
-        if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
-            try:
-                os.chmod(target, 0o600)
-            except OSError:
-                pass
-        return True
-    except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
-        errors.append(f"  {member}: {exc}")
-        return False
-
-
 def _import_members_exclusive(
     zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int, keep_host=None,
-) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
-    """Publish every member; return ``(restored, restored_external, errors, skipped_runtime, db_shrunk)``.
+) -> tuple:
+    """Publish every member; return ``(restored, restored_external, errors, skipped_runtime, db_shrunk,
+    restored_parts)`` (``restored_parts``: the archive-relative parts of every file written).
 
     ``db_shrunk`` holds ``(rel, live_counts, imported_counts)`` for every session database the
     import replaced with one holding fewer rows — allowed, but never silently (#100960).
@@ -954,6 +932,7 @@ def _import_members_exclusive(
     restored = 0
     restored_external = 0
     skipped_runtime: list[str] = []
+    restored_parts: list[tuple[str, ...]] = []
     db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
     home_dir = Path.home().resolve()
     # Resolved once: every member is published via a temp file, and mkstemp
@@ -1041,13 +1020,14 @@ def _import_members_exclusive(
             if target.name in _SECRET_FILE_NAMES:
                 os.chmod(target, 0o600)
             restored += 1
+            restored_parts.append(parts)
         except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
             errors.append(f"  {rel}: {exc}")
 
         if restored % 500 == 0:
             print(f"  {restored}/{file_count} files ...")
 
-    return restored, restored_external, errors, skipped_runtime, db_shrunk
+    return restored, restored_external, errors, skipped_runtime, db_shrunk, restored_parts
 
 
 def _revive_gateway_after_import(hermes_root: Path) -> None:

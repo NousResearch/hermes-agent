@@ -748,3 +748,55 @@ def _count_cron_jobs(path: Path) -> Optional[int]:
     if isinstance(data, list):
         return len(data)
     return None
+
+
+def _revive_restored_profiles(hermes_root: Path, restored: list[tuple[str, ...]]) -> list[str]:
+    """Clear the ``profile delete`` tombstone of every named profile the import restored.
+
+    The tombstone lives beside the profile dir (``profiles/.deleted/<name>``), so it outlives the
+    delete and hides any later tree under that name from listing, ``-p`` and serving. Restoring a
+    backup is the user bringing the profile back; only the archive's own tombstone (the profile was
+    already deleted when the backup was taken) keeps it deleted. Prints and returns the revived names.
+    """
+    from hermes_constants import (
+        PROFILE_ID_RE, clear_named_profile_deleted, named_profile_has_identity, named_profile_is_deleted,
+    )
+    archived_tombstones = {p[2] for p in restored if len(p) == 3 and p[:2] == ("profiles", ".deleted")}
+    names = {p[1] for p in restored if len(p) >= 3 and p[0] == "profiles" and PROFILE_ID_RE.match(p[1])}
+    revived = []
+    for name in sorted(names - archived_tombstones):
+        profile_dir = hermes_root / "profiles" / name
+        if named_profile_is_deleted(profile_dir) and named_profile_has_identity(profile_dir):
+            clear_named_profile_deleted(profile_dir)
+            revived.append(name)
+    if revived:
+        print(f"\n  Restored previously deleted profile(s): {', '.join(revived)}")
+    return revived
+
+
+def _import_external_member(
+    zf: zipfile.ZipFile, member: str, home_dir: Path, new_file_mode: int, errors: list[str]
+) -> bool:
+    """Publish one ``_external/`` member under the user's home; False (with ``errors`` appended)
+    when it is a traversal or cannot be written."""
+    from hermes_cli.backup import _EXTERNAL_PREFIX, _SECRET_FILE_NAMES, _ZIP_MEMBER_READ_ERRORS
+    target = home_dir / member[len(_EXTERNAL_PREFIX):]
+    # Security: the resolved target must stay under the home dir.
+    try:
+        target.resolve().relative_to(home_dir)
+    except ValueError:
+        errors.append(f"  {member}: path traversal blocked")
+        return False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _extract_member_atomically(zf, member, target, new_file_mode)
+        # External provider configs commonly hold credentials.
+        if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
+        return True
+    except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+        errors.append(f"  {member}: {exc}")
+        return False

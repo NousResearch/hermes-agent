@@ -671,6 +671,8 @@ def _int_at_least(value: Any, default: int, minimum: int) -> int:
 
 _FILE_DISCOVERY_TOOLS = frozenset({"read_file", "search_files"})
 _TERMINAL_DISCOVERY_COMMANDS = frozenset({"cat", "head", "tail", "get-content", "rg", "grep"})
+_TERMINAL_CURL_DISPLAY_FLAGS = frozenset({"-s", "-S", "-sS", "--silent", "--show-error"})
+_HTTP_DISCOVERY_URL_RE = re.compile(r"""^https?://[^\s'"$\`|;<>\r\n]+$""", re.IGNORECASE)
 _PYTHON_COMMAND_RE = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$", re.IGNORECASE)
 _PYTHON_FILE_READ_RE = re.compile(
     r"(?:open\s*\([^)]*\)\s*\.\s*(?:read|readlines)\s*\("
@@ -712,6 +714,14 @@ def _terminal_is_clear_file_discovery(command: Any) -> bool:
     executable = _command_basename(tokens[0])
     if executable in _TERMINAL_DISCOVERY_COMMANDS:
         return True
+    if executable == "curl":
+        operands = []
+        for token in tokens[1:]:
+            value = _strip_shell_quotes(token)
+            if value in _TERMINAL_CURL_DISPLAY_FLAGS:
+                continue
+            operands.append(value)
+        return len(operands) == 1 and bool(_HTTP_DISCOVERY_URL_RE.fullmatch(operands[0]))
     if not _PYTHON_COMMAND_RE.fullmatch(executable):
         return False
     try:

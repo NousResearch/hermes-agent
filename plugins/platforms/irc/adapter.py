@@ -109,7 +109,7 @@ def _split_lines(paragraphs, limit: int) -> List[str]:
 
 
 def _encode_line(line: str) -> bytes:
-    return (line + "\r\n").encode("utf-8")
+    return (_strip_irc_control_chars(line) + "\r\n").encode("utf-8")
 
 
 def _ssl_ctx(use_tls: bool) -> Optional[ssl.SSLContext]:
@@ -210,6 +210,8 @@ class IRCAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None):
+        if not chat_id or any(ch in chat_id for ch in ("\r", "\n", "\x00", " ")):
+            return SendResult(success=False, error="chat_id contains illegal IRC characters")
         if not self._writer or self._writer.is_closing():
             return SendResult(success=False, error="Not connected")
         for line in self._split_message(content, chat_id):
@@ -228,7 +230,7 @@ class IRCAdapter(BasePlatformAdapter):
 
     def _split_message(self, content: str, target: str) -> List[str]:
         """Split a long message into IRC-safe chunks (510-byte line limit minus PRIVMSG overhead)."""
-        paragraphs = [p for p in self._strip_markdown(content).split("\n") if p.strip()]
+        paragraphs = _message_paragraphs(self._strip_markdown(content))
         return _split_lines(paragraphs, min(self.max_message_length, _privmsg_budget(target))) or [""]
 
     @staticmethod
@@ -437,6 +439,12 @@ def _strip_irc_control_chars(text: str) -> str:
     return text.replace("\r", " ").replace("\n", " ").replace("\x00", "")
 
 
+def _message_paragraphs(text: str) -> List[str]:
+    """Split only IRC line delimiters; retain other Unicode separators as text."""
+    return [clean for paragraph in re.split(r"\r\n|\r|\n", text)
+            if (clean := _strip_irc_control_chars(paragraph)).strip()]
+
+
 def _is_irc_channel(target: str) -> bool:
     return bool(target) and target[0] in "#&+!"
 
@@ -562,7 +570,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
             return error
         # Bytes-aware per-line splitting (same algorithm as IRCAdapter._split_message),
         # with control-character stripping per line to block CRLF injection from content.
-        paragraphs = [q for q in (_strip_irc_control_chars(p).rstrip() for p in plain.split("\n")) if q]
+        paragraphs = _message_paragraphs(plain)
         lines = _split_lines(paragraphs, _privmsg_budget(target))
         for line in lines:
             await conn.raw(f"PRIVMSG {target} :{line}")

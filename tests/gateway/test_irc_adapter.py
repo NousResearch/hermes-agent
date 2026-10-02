@@ -484,3 +484,123 @@ class TestMultiplexProfileScope:
         assert _env_enablement() is None
         assert is_connected(PlatformConfig(enabled=True, extra={})) is False
 
+
+class TestIRCOutboundSafety:
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        from gateway.config import PlatformConfig
+        for key in ('IRC_SERVER', 'IRC_CHANNEL', 'IRC_NICKNAME', 'IRC_SERVER_PASSWORD', 'IRC_NICKSERV_PASSWORD'):
+            monkeypatch.delenv(key, raising=False)
+        obj = IRCAdapter(PlatformConfig(enabled=True, extra={'server': 'irc.test', 'channel': '#c', 'nickname': 'bot', 'use_tls': False}))
+        obj._writer = _FakeIRCConnection([])
+        monkeypatch.setattr(_irc_mod.asyncio, 'sleep', AsyncMock())
+        return obj
+
+    @staticmethod
+    def assert_frames(writes):
+        for wire in writes:
+            assert wire.endswith(b'\r\n')
+            assert not any(ch in wire[:-2] for ch in (b'\r', b'\n', b'\x00'))
+            assert len(wire) <= 512
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('content', ['hi\rQUIT :bye', 'hi\r\nQUIT :bye', 'hi\nQUIT :bye', 'hi\x00there', 'a\r\nb\rc\nd\x00e'])
+    async def test_content_cannot_inject_commands(self, adapter, content):
+        assert (await adapter.send('#c', content)).success
+        self.assert_frames(adapter._writer.writes)
+        assert all(w.startswith(b'PRIVMSG #c :') for w in adapter._writer.writes)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('target', ['', '#c\rQUIT :bye', '#c\nQUIT :bye', '#c\x00', '#c other'])
+    async def test_hostile_target_is_rejected_without_write(self, adapter, target):
+        assert not (await adapter.send(target, 'hello')).success
+        assert adapter._writer.writes == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('target', ['#channel', '&channel', 'Nick'])
+    async def test_normal_targets_and_unicode_separators_unchanged(self, adapter, target):
+        content = 'hello\u2028world\u0085again'
+        assert (await adapter.send(target, content)).success
+        assert adapter._writer.writes == [f'PRIVMSG {target} :{content}\r\n'.encode()]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('content', ['', '   ', '\r', '\x00'])
+    async def test_empty_content_still_sends_one_empty_payload(self, adapter, content):
+        assert (await adapter.send('#c', content)).success
+        assert adapter._writer.writes == [b'PRIVMSG #c :\r\n']
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('command', ['PASS pw', 'NICK nick', 'USER nick 0 * :Hermes Agent', 'JOIN #chan', 'PRIVMSG NickServ :IDENTIFY pw', 'PONG :server'])
+    async def test_raw_registration_and_control_lines_are_framed_once(self, adapter, command):
+        await adapter._send_raw(command)
+        await adapter._send_raw(command + '\r\nQUIT :injected\x00')
+        assert adapter._writer.writes[0] == (command + '\r\n').encode()
+        self.assert_frames(adapter._writer.writes)
+        assert adapter._writer.writes[1] == (command + '  QUIT :injected\r\n').encode()
+
+    @pytest.mark.asyncio
+    async def test_utf8_chunks_and_clean_content_budgets_unchanged(self, adapter):
+        content = '你好 ' * 400
+        expected = _irc_mod._split_lines([content], min(adapter.max_message_length, _irc_mod._privmsg_budget('#c')))
+        assert adapter._split_message(content, '#c') == expected
+        assert (await adapter.send('#c', content + '\x00')).success
+        self.assert_frames(adapter._writer.writes)
+        assert len(adapter._writer.writes) == len(expected)
+        assert b''.join(adapter._writer.writes).decode('utf-8')
+
+    @pytest.mark.asyncio
+    async def test_standalone_matches_live_sanitization(self, adapter, monkeypatch):
+        from gateway.config import PlatformConfig
+        monkeypatch.setenv('IRC_SERVER', 'irc.test')
+        monkeypatch.setenv('IRC_CHANNEL', '#c')
+        monkeypatch.setenv('IRC_NICKNAME', 'bot')
+        monkeypatch.setenv('IRC_USE_TLS', 'false')
+        conn = _FakeIRCConnection([b':server 001 bot-cron :Welcome'])
+        monkeypatch.setattr(_irc_mod.asyncio, 'open_connection', AsyncMock(return_value=(conn, conn)))
+        content = 'hello\rQUIT :bye\r\nnext\nlast\x00\u2028end'
+        assert (await adapter.send('#c', content)).success
+        result = await _standalone_send(PlatformConfig(enabled=True, extra={}), '#c', content)
+        assert result['success']
+        assert [w for w in conn.writes if w.startswith(b'PRIVMSG #c :')] == adapter._writer.writes
+        self.assert_frames(conn.writes)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('hostile', [False, True])
+    async def test_connect_sanitizes_every_registration_field(self, adapter, monkeypatch, hostile):
+        suffix = '\r\nQUIT :bad\x00' if hostile else ''
+        adapter.nickname = 'bot' + suffix
+        adapter.channel = '#c' + suffix
+        adapter.server_password = 'serverpw' + suffix
+        adapter.nickserv_password = 'nickpw' + suffix
+        monkeypatch.setattr(adapter, '_acquire_platform_lock', lambda *args: True)
+        monkeypatch.setattr(adapter, '_wire_plugin_handlers', lambda *args: None)
+        monkeypatch.setattr(adapter, '_mark_connected', lambda: None)
+        async def receive():
+            adapter._registration_event.set()
+        monkeypatch.setattr(adapter, '_receive_loop', receive)
+        conn = _FakeIRCConnection([])
+        monkeypatch.setattr(_irc_mod.asyncio, 'open_connection', AsyncMock(return_value=(conn, conn)))
+        assert await adapter.connect()
+        clean = _irc_mod._strip_irc_control_chars
+        assert conn.writes == [
+            f'PASS {clean(adapter.server_password)}\r\n'.encode(),
+            f'NICK {clean(adapter.nickname)}\r\n'.encode(),
+            f'USER {clean(adapter.nickname)} 0 * :Hermes Agent\r\n'.encode(),
+            f'PRIVMSG NickServ :IDENTIFY {clean(adapter.nickserv_password)}\r\n'.encode(),
+            f'JOIN {clean(adapter.channel)}\r\n'.encode(),
+        ]
+        self.assert_frames(conn.writes)
+
+    @pytest.mark.asyncio
+    async def test_send_reports_write_failure_and_stops(self, adapter):
+        adapter._writer.write = MagicMock(side_effect=OSError('connection closed'))
+        result = await adapter.send('#c', 'first\nsecond')
+        assert not result.success
+        assert result.error == 'connection closed'
+        adapter._writer.write.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_when_disconnected_has_no_writes(self, adapter):
+        adapter._writer.close()
+        assert not (await adapter.send('#c', 'hello')).success
+        assert adapter._writer.writes == []

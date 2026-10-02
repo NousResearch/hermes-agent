@@ -75,10 +75,6 @@ class CustomProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "none"
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
                     extra_body["think"] = False
-            elif effort and base_url_host_matches(str(ctx.get("base_url") or ""), "api.groq.com"):
-                # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as
-                # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
-                top_level["reasoning_effort"] = "default"
             elif effort:
                 top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
         return extra_body, top_level

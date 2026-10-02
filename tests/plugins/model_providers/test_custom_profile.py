@@ -171,12 +171,12 @@ class TestCustomReasoningWireShape:
 
     @pytest.mark.parametrize(
         "reasoning_config, expected",
-        [({"enabled": True, "effort": "high"}, "default"), ({"enabled": False, "effort": "medium"}, "none")],
+        [({"enabled": True, "effort": "high"}, "high"), ({"enabled": False, "effort": "medium"}, "none")],
     )
-    def test_groq_host_clamps_effort_to_groq_vocabulary(self, custom_profile, reasoning_config, expected):
-        """api.groq.com accepts top-level reasoning_effort only as 'none' / 'default' (#75089).
+    def test_groq_host_preserves_supported_reasoning_effort(self, custom_profile, reasoning_config, expected):
+        """Groq reasoning models accept the standard low/medium/high effort ladder.
 
-        Drives the main transport so the clamp is proven where production reads it.
+        Drives the main transport so the wire value is proven where production reads it.
         """
         from agent.transports.chat_completions import ChatCompletionsTransport
 

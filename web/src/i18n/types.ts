@@ -386,6 +386,14 @@ export interface Translations {
   };
 
   // ── Logs page ──  /** Optional — Files page copy. */
+  /** Optional — Pairing page copy. */
+  pairingPage?: {
+    revokeAccess: string;
+    revokeBodyNamed: string;
+    revokeBody: string;
+    revoke: string;
+  };
+
   /** Optional — Webhooks page copy. */
   webhooksPage?: {
     copy: string;

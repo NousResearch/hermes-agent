@@ -382,7 +382,14 @@ export const en: Translations = {
     reload: "Reload",
     reloadDescription:
       "Switching to {model} starts a fresh chat. Your current chat stays in your Sessions list and the agent's memory is kept. Reload now to apply it?",
-  },  webhooksPage: {
+  },  pairingPage: {
+    revokeAccess: "Revoke access",
+    revokeBodyNamed: '"{name}" will lose access. This cannot be undone.',
+    revokeBody: "This user will lose access. This cannot be undone.",
+    revoke: "Revoke",
+  },
+
+  webhooksPage: {
     copy: "Copy",
     deleteWebhook: "Delete webhook",
     deleteBodyNamed:

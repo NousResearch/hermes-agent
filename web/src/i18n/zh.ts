@@ -367,7 +367,14 @@ export const zh: Translations = {
     reload: "重新加载",
     reloadDescription:
       "切换到 {model} 会开启一个新的会话。当前会话仍保留在「会话」列表中，智能体的记忆也会保留。现在重新加载以应用？",
-  },  webhooksPage: {
+  },  pairingPage: {
+    revokeAccess: "撤销访问权限",
+    revokeBodyNamed: "「{name}」将失去访问权限。此操作无法撤销。",
+    revokeBody: "该用户将失去访问权限。此操作无法撤销。",
+    revoke: "撤销",
+  },
+
+  webhooksPage: {
     copy: "复制",
     deleteWebhook: "删除 Webhook",
     deleteBodyNamed: "「{name}」— 这将永久移除此 Webhook 订阅。",

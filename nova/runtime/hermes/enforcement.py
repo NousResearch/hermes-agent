@@ -514,16 +514,16 @@ def _hold_message(rid: str, held: bool) -> str:
 def _ask_typesafe(state: Dict[str, Any], questions: list, timeout: float):
     if _triage_wire is None:
         raise RuntimeError("the provider client is not installed")
-    normalized, version, _usage, latency = _triage_wire.request_answers(
+    normalized, version, usage, latency = _triage_wire.request_answers(
         os.environ.get(_triage_wire.API_KEY_ENV, ""), state, questions, timeout=timeout)
-    return normalized, version, latency
+    return normalized, version, latency, usage
 
 
 def _ask_fake(state: Dict[str, Any], questions: list, timeout: float):
     return _triage_rule.safe_answers(questions), "fake-1", 0
 
 
-#: Provider name -> ``ask(state, questions, timeout) -> (answers, model_version, latency_ms)``.
+#: Provider name -> ``ask(state, questions, timeout) -> (answers, model_version, latency_ms[, usage])``.
 #: Tests replace an entry to script answers; nothing else does.
 _PROVIDERS: Dict[str, Any] = {"typesafe": _ask_typesafe, "fake": _ask_fake}
 
@@ -563,7 +563,8 @@ def _triage(policy: Dict[str, Any], decision: Decision, tool_name: str, args: Di
                 return None
 
         answered = _triage_rule.within_deadline(run, timeout) if ask else None
-        normalized, version, latency = answered if answered else (None, "", int((time.monotonic() - started) * 1000))
+        normalized, version, latency = answered[:3] if answered else (None, "", int((time.monotonic() - started) * 1000))
+        usage = answered[3] if answered and len(answered) > 3 and isinstance(answered[3], dict) else {}
         result = _triage_rule.combine(questions, normalized)
         if answered is None:
             result["failed"] = [{"id": "", "why": "provider_unavailable" + (
@@ -586,6 +587,8 @@ def _triage(policy: Dict[str, Any], decision: Decision, tool_name: str, args: Di
         detail.update({
             "verdict": result["verdict"], "failed": result["failed"], "proceed": proceed,
             "answers": normalized or {}, "model_version": version, "latency_ms": latency,
+            # Tokens the provider reports, for the cost line of the autonomy report.
+            "usage": {k: int(v) for k, v in usage.items() if isinstance(v, int) and not isinstance(v, bool)},
             # Fingerprints, never content: what was sent and what was asked about.
             "state_digest": _triage_rule.digest(state), "args_digest": _triage_rule.digest(args),
         })

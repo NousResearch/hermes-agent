@@ -343,6 +343,24 @@ def _build_parser() -> argparse.ArgumentParser:
     template_new.add_argument("--model", default="", help="model id (default eu.anthropic.claude-sonnet-4-6)")
     template_new.add_argument("--budget", default="", help="monthly budget in USD for the whole deployment (default 150)")
 
+    autonomy_cmd = sub.add_parser("autonomy", help="earned autonomy: report on it, and review it")
+    autonomy_sub = autonomy_cmd.add_subparsers(dest="autonomy_command", required=True)
+    autonomy_report = autonomy_sub.add_parser(
+        "report", help="what earned autonomy did for this tenant, as JSON and Markdown")
+    autonomy_report.add_argument("bundle", type=Path)
+    autonomy_report.add_argument("--out", type=Path, default=Path("."),
+                                 help="directory to write the report files into (default: here)")
+    autonomy_report.add_argument("--minutes-per-approval", type=float, default=3.0,
+                                 help="assumed minutes of a person's time per approval, for the "
+                                      "hours-saved estimate (default 3)")
+    autonomy_report.add_argument("--price-input-per-mtok", type=float, default=None,
+                                 help="provider price per million input tokens, USD, to estimate cost")
+    autonomy_report.add_argument("--price-output-per-mtok", type=float, default=None,
+                                 help="provider price per million output tokens, USD")
+    autonomy_review = autonomy_sub.add_parser(
+        "review", help="record due promotion proposals and apply due demotions (schedule this)")
+    autonomy_review.add_argument("bundle", type=Path)
+
     token = sub.add_parser("token", help="manage control-plane access")
     token_sub = token.add_subparsers(dest="token_command", required=True)
     token_new = token_sub.add_parser("new", help="mint a token and print the entry to add")
@@ -777,6 +795,63 @@ def _index_knowledge(bundle, runtime, audit) -> None:
               f"Run `nova knowledge ingest` to retry.")
 
 
+def _autonomy(args) -> int:
+    """``nova autonomy report|review`` — the record earned autonomy keeps, read two ways."""
+    import json as _json
+    from dataclasses import asdict
+
+    from nova.audit import AuditLog
+    from nova.autonomy.report import build_report, to_markdown
+    from nova.autonomy.state import load_states
+
+    bundle = load_bundle(args.bundle)
+    runtime = get_runtime(args.runtime, home=args.home)
+    audit = AuditLog.for_home(runtime.state_location, tenant_id=bundle.tenant_id, actor="nova-autonomy")
+
+    if args.autonomy_command == "review":
+        # The same review the Control Centre runs when its Autonomy screen is read: due
+        # proposals are recorded and due demotions applied, without anyone opening a page.
+        from nova.control import ControlAPI
+        from nova.control import autonomy as autonomy_routes
+
+        body = autonomy_routes.read(ControlAPI(bundle, runtime, audit=audit)).body
+        if not body.get("configured"):
+            print("autonomy is not configured in this bundle's policy")
+            return 0
+        for row in body["actions"]:
+            line = f"{row['action']:28} {row['state']}"
+            if row.get("proposal"):
+                line += f"  (promotion proposed on {row['proposal']['model_version']}; confirm it in the Control Centre)"
+            print(line)
+        return 0
+
+    events = []
+    try:
+        events = [_json.loads(_json.dumps(asdict(e), default=str)) for e in audit.read()]
+    except Exception:  # noqa: BLE001 — no log yet is an empty report, not a failure
+        events = []
+    outcomes = getattr(runtime, "approval_outcomes", None)
+    policy = bundle.policy.autonomy if bundle.policy is not None else None
+    report = build_report(
+        events, outcomes() if callable(outcomes) else [],
+        tenant_id=bundle.tenant_id,
+        company=getattr(bundle.organization, "legal_name", "") or "",
+        window=policy.promotion.window if policy is not None else 100,
+        minutes_per_approval=args.minutes_per_approval,
+        price_input_per_mtok=args.price_input_per_mtok,
+        price_output_per_mtok=args.price_output_per_mtok,
+        states=load_states(bundle.root),
+    )
+    markdown = to_markdown(report)
+    args.out.mkdir(parents=True, exist_ok=True)
+    stem = args.out / f"autonomy-report-{bundle.tenant_id}"
+    stem.with_suffix(".json").write_text(_json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    stem.with_suffix(".md").write_text(markdown, encoding="utf-8")
+    print(markdown)
+    print(f"Written: {stem.with_suffix('.json')} and {stem.with_suffix('.md')}")
+    return 0
+
+
 def _template(args) -> int:
     """``nova template ...`` — start a client from a ready-made business template."""
     from nova import templates
@@ -1185,6 +1260,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  {agent.agent_id:22} {owner}")
             return 0
 
+        if args.command == "autonomy":
+            return _autonomy(args)
         if args.command == "template":
             return _template(args)
 

@@ -15,17 +15,57 @@ _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
+def _account_info(force_fresh: bool = False):
+    """The profile's normalized Portal account snapshot, or None when the read itself failed.
+
+    The ``force_fresh`` branch is deliberate, not stylistic: callers stub this reader with a
+    zero-argument lambda, so the falsy path must invoke it without keyword arguments."""
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+        return (get_nous_portal_account_info(force_fresh=True) if force_fresh
+                else get_nous_portal_account_info())
+    except Exception:
+        return None
+
+
 def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     """Coarse gate: entitled to the Nous Tool Gateway (paid Portal access OR a live free
     pool). Fails closed on unknown/error — never blocks startup. Callers narrow per category
     via ``tool_gateway_entitled_for``; ``force_fresh`` is for flows needing a just-bought grant."""
-    try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
-        account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
-                        else get_nous_portal_account_info())
-        return bool(account_info.logged_in) and account_info.tool_gateway_entitled
-    except Exception:
-        return False
+    account_info = _account_info(force_fresh)
+    return bool(account_info is not None and account_info.logged_in and account_info.tool_gateway_entitled)
+
+
+def fast_search_entitled() -> bool:
+    """Eligibility for the managed Perplexity ``search_type: "fast"`` route: a registered Portal
+    identity of ANY tier, with no credit or tool-pool requirement — that route is served without
+    funding checks. The anonymous guest tier is excluded: it has no Portal account behind it, so
+    it keeps the keyless ring.
+
+    Unlike :func:`managed_nous_tools_enabled` this deliberately ignores ``tool_gateway_entitled``
+    (no credit requirement) and so must reject an error snapshot itself: a failed lookup is still
+    stamped ``logged_in=True``, and only ``error`` distinguishes it from a real account."""
+    account_info = _account_info()
+    # ``error`` is load-bearing, not belt-and-braces: a failed lookup is still stamped
+    # ``logged_in=True``, and the error paths that cannot recover the tier from stored state would
+    # otherwise read as a registered identity.
+    return bool(account_info is not None and account_info.logged_in
+                and account_info.error is None and not account_info.is_anonymous_tier)
+
+
+def fast_search_unavailable_message() -> str:
+    """Why the managed Perplexity search route did not resolve, phrased as a clause for
+    :func:`selection_error`'s "but …" template and kept beside :func:`fast_search_entitled` so the
+    predicate and its explanation cannot drift.
+
+    ``FREE_TIER_NEEDS_ACCOUNT`` and ``_CHAT`` are standalone sentences, so the guest case is phrased
+    as the matching clause rather than embedded verbatim."""
+    account_info = _account_info()
+    if account_info is not None and account_info.is_anonymous_tier:
+        return "it needs a Nous account (sign in with `/login`)"
+    if account_info is None or account_info.error is not None or not account_info.logged_in:
+        return "there is no usable Nous identity (sign in with `/login`)"
+    return "the Nous Tool Gateway is unreachable"
 
 
 def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gateway", *,
@@ -110,19 +150,36 @@ def _dotenv_value(env_var: str) -> str:
         return ""
 
 
+def _env_source_suppressed(provider_id: str, env_var: str) -> bool:
+    """``hermes auth remove <provider>`` records ``env:<VAR>`` in ``suppressed_sources`` and promises
+    the variable is ignored until ``hermes auth add``; a value still living in a long-running
+    gateway's process environment (inherited across update restarts) must honor that too."""
+    if not provider_id:
+        return False
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        return is_source_suppressed(provider_id, f"env:{env_var}")
+    except Exception:  # pragma: no cover — auth store unreadable: keep prior behavior
+        return False
+
+
 def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = "",
                             env_getter=None) -> str:
     """Resolve a voice-provider API key (single owner for STT/TTS lookup). Order: explicit
     ``config_value`` -> profile secret scope / env -> ``.env`` via ``env_getter`` (or
     ``hermes_cli.config.get_env_value``) -> credential pool for ``provider_id``. Under an
     active multiplex turn the profile scope is authoritative: a miss returns ``""`` rather
-    than borrowing another profile's env or pool. Never raises.
+    than borrowing another profile's env or pool. Never raises. The env/.env tier is skipped
+    entirely while ``env:<env_var>`` is suppressed for ``provider_id`` (#116155).
 
     Resolution order (fixes #68003 — keys added via ``hermes auth add <provider>`` were invisible to the
     voice tools, which only consulted env/.env):
     """
-    key = str(config_value or "").strip() or _scoped_credential(env_var)
+    key = str(config_value or "").strip()
     if key:
+        return key
+    env_suppressed = _env_source_suppressed(provider_id, env_var)
+    if not env_suppressed and (key := _scoped_credential(env_var)):
         return key
     try:
         from agent.secret_scope import is_multiplex_active
@@ -130,7 +187,8 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
             return ""
     except Exception:  # pragma: no cover — secret_scope is in-repo
         pass
-    key = str(env_getter(env_var) or "").strip() if env_getter else _dotenv_value(env_var)
+    if not env_suppressed:
+        key = str(env_getter(env_var) or "").strip() if env_getter else _dotenv_value(env_var)
     if key or not provider_id:
         return key
     try:

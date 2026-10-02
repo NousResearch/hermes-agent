@@ -30,6 +30,9 @@ def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
         "find_gateway_pids",
         lambda all_profiles=False: [] if all_profiles else surviving_pids,
     )
+    # This fixture exercises a standalone cold start, not Desktop ownership.
+    # A live Desktop for this install must not short-circuit the liveness poll.
+    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: 4242)
     # Avoid the real 6s/0.4s poll loop in _report_gateway_start.
     monkeypatch.setattr(

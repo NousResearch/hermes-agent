@@ -224,4 +224,4 @@ hermes skills list                  # 确认已安装的 skill
 
 ---
 
-*完整的 cron 参考文档，请参阅 [用 Cron 自动化一切](/guides/automate-with-cron) 和 [定时任务（Cron）](/user-guide/features/cron)。*
+*完整的 cron 参考文档，请参阅 [用 Cron 自动化一切](./automate-with-cron.md) 和 [定时任务（Cron）](../user-guide/features/cron.md)。*

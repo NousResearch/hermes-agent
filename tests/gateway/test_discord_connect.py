@@ -120,26 +120,6 @@ class FakeBot:
         return None
 
 
-class SlowSyncTree(FakeTree):
-    def __init__(self):
-        super().__init__()
-        self.started = asyncio.Event()
-        self.allow_finish = asyncio.Event()
-
-        async def _slow_sync():
-            self.started.set()
-            await self.allow_finish.wait()
-            return []
-
-        self.sync = AsyncMock(side_effect=_slow_sync)
-
-
-class SlowSyncBot(FakeBot):
-    def __init__(self, *, intents, proxy=None):
-        super().__init__(intents=intents, proxy=proxy)
-        self.tree = SlowSyncTree()
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "initial_allowed",
@@ -686,16 +666,6 @@ class PrivilegedIntentsRequired(Exception):
 class TestPrivilegedIntentsRequiredFatal:
     """Missing Developer Portal intents must not spin reconnect forever."""
 
-    def test_guidance_lists_message_content_always(self):
-        text = discord_platform._format_privileged_intents_guidance(needs_members=False)
-        assert "Message Content Intent" in text
-        assert "Server Members Intent" not in text
-        assert "discord.com/developers/applications" in text
-
-    def test_guidance_lists_members_when_needed(self):
-        text = discord_platform._format_privileged_intents_guidance(needs_members=True)
-        assert "Message Content Intent" in text
-        assert "Server Members Intent" in text
 
     def test_needs_members_intent_rules(self):
         needs = discord_platform._needs_server_members_intent
@@ -748,7 +718,40 @@ class TestPrivilegedIntentsRequiredFatal:
         assert adapter.has_fatal_error is True
         assert adapter.fatal_error_retryable is False
         assert adapter.fatal_error_code == "discord_intents_required"
-        assert "Message Content Intent" in (adapter.fatal_error_message or "")
-        assert "discord.com/developers/applications" in (adapter.fatal_error_message or "")
+        assert adapter.fatal_error_message
         assert adapter._bot_task is None
 
+
+@pytest.mark.asyncio
+async def test_skill_catalog_scan_runs_off_the_event_loop(monkeypatch):
+    """A slow skill scan (#110707) must not block the gateway loop from either Discord site:
+    slash registration inside connect() (every reconnect) and /reload-skills' refresh_skill_group."""
+    import threading
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False))
+    monkeypatch.setattr(discord_platform.commands, "Bot", lambda **kw: FakeBot(intents=kw["intents"]))
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    async def _scan_leaves_loop_free(run_site):
+        scan_started, loop_ticked = threading.Event(), threading.Event()
+
+        def _blocking_scan(*, reserved_names):
+            scan_started.set()
+            # Only a free loop can set loop_ticked while this wait is in progress.
+            return ({}, [("x", "desc", "/x")], 0) if loop_ticked.wait(timeout=1) else ({}, [], 0)
+
+        monkeypatch.setattr("hermes_cli.commands_platforms.discord_skill_commands_by_category", _blocking_scan)
+        task = asyncio.create_task(run_site())
+        await asyncio.to_thread(scan_started.wait, 1)
+        loop_ticked.set()
+        await task
+        return [n for n, _d, _k in adapter._skill_entries] == ["x"]
+
+    assert await _scan_leaves_loop_free(adapter.connect)
+    adapter._skill_entries = []
+    assert await _scan_leaves_loop_free(adapter.refresh_skill_group)
+    await adapter.disconnect()

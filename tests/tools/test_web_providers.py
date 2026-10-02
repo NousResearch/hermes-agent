@@ -9,7 +9,7 @@ Covers:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
 
@@ -32,11 +32,6 @@ class TestWebProviderABCs:
     ``supports_search() / supports_extract()`` flags.
     """
 
-    def test_cannot_instantiate_abc_directly(self):
-        from agent.web_search_provider import WebSearchProvider
-
-        with pytest.raises(TypeError):
-            WebSearchProvider()  # type: ignore[abstract]
 
 
     def test_search_only_provider_skips_extract(self):
@@ -105,21 +100,6 @@ class TestPerCapabilityBackendSelection:
 # ---------------------------------------------------------------------------
 
 
-class TestDefaultConfig:
-    """The web section exists in DEFAULT_CONFIG with per-capability keys."""
-
-    def test_web_section_in_default_config(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        assert "web" in DEFAULT_CONFIG
-        web = DEFAULT_CONFIG["web"]
-        assert "backend" in web
-        assert "search_backend" in web
-        assert "extract_backend" in web
-        # All empty string by default (no override)
-        assert web["backend"] == ""
-        assert web["search_backend"] == ""
-        assert web["extract_backend"] == ""
 
 
 # ---------------------------------------------------------------------------

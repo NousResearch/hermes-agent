@@ -1,10 +1,13 @@
 // User-facing wording for gateway/transport failures in the TUI. Pure functions
 // so the copy — and the "what happened / what to do" shape — is unit-testable
-// without rendering. Every slash command cited here exists in
-// ui-tui/src/app/slash/commands (/logs, /retry, /model, /update, /resume,
-// /sessions, /quit) and `hermes doctor` is a real subcommand.
+// without rendering. The English copy lives in i18n/en/userMessages.ts
+// (namespace `userMessages`); every exported message is a function so it is
+// resolved against the active locale at call time, never at import time.
 
 import type { ErrorSurface } from '@hermes/shared/gateway-events'
+
+import { messages, t } from '../i18n/runtime.js'
+import type { Translations } from '../i18n/types.js'
 
 /** JSON-RPC error codes the gateway answers with. */
 export const RPC_INVALID_PARAMS = 4000
@@ -29,31 +32,35 @@ const detailLine = (raw: string | undefined): string | null => {
     return null
   }
 
-  return `Details: ${text.length > DETAIL_LIMIT ? `${text.slice(0, DETAIL_LIMIT - 1)}…` : text}`
+  return t('userMessages.details', text.length > DETAIL_LIMIT ? `${text.slice(0, DETAIL_LIMIT - 1)}…` : text)
 }
 
 // ── Backend process lifecycle ─────────────────────────────────────────────
 
-export const BACKEND_RESTARTING =
-  'Hermes stopped unexpectedly — restarting and reopening your chat (the reply in progress was lost).'
+export const backendRestarting = (): string => t('userMessages.backend.restarting')
 
-export const BACKEND_RESTARTING_ACTIVITY = 'Hermes stopped unexpectedly · restarting…'
+export const backendRestartingActivity = (): string => t('userMessages.backend.restartingActivity')
+
+// Attached (dashboard / embedded) mode: only the socket dropped; Hermes and any
+// reply in progress are still alive on the backend and come back on reconnect.
+export const connectionLost = (): string => t('userMessages.backend.connectionLost')
+
+export const connectionLostActivity = (): string => t('userMessages.backend.connectionLostActivity')
 
 export const backendGaveUp = (code: null | number, lastLine?: string): string => {
-  const exit = code === null ? '' : ` (exit code ${code})`
   const detail = detailLine(lastLine)
 
   return [
-    `Hermes stopped${exit} and could not be restarted. Your chat is saved.`,
+    code === null ? t('userMessages.backend.gaveUpTitle') : t('userMessages.backend.gaveUpTitleWithCode', String(code)),
     detail,
-    'Hermes keeps trying to reconnect in the background and reopens this chat when it succeeds; if it does not, type /resume.',
-    'Type /logs for the full log, or /quit and run `hermes doctor` to check the install.'
+    t('userMessages.backend.gaveUpReconnect'),
+    t('userMessages.backend.gaveUpLogs')
   ]
     .filter(Boolean)
     .join('\n')
 }
 
-export const BACKEND_GAVE_UP_ACTIVITY = 'Hermes stopped · /logs for details'
+export const backendGaveUpActivity = (): string => t('userMessages.backend.gaveUpActivity')
 
 /** Last line of the backend log tail that is not our own [lifecycle]/[startup] bookkeeping. */
 export const lastStderrLine = (tail: string): string | undefined =>
@@ -65,15 +72,15 @@ export const lastStderrLine = (tail: string): string | undefined =>
 
 export const backendReconnecting = (attempt: number | undefined, delayMs: number | undefined): string => {
   const secs = Math.max(1, Math.round((delayMs ?? 1000) / 1000))
-  const n = attempt && attempt > 0 ? ` (attempt ${attempt})` : ''
 
-  return `retrying in ${secs}s${n}`
+  return attempt && attempt > 0
+    ? t('userMessages.backend.reconnectingAttempt', String(secs), String(attempt))
+    : t('userMessages.backend.reconnecting', String(secs))
 }
 
-export const BACKEND_SLOW_START =
-  'Hermes is taking longer than usual to start. Still waiting… If it never connects: /logs shows the last backend output; /quit and run `hermes doctor`.'
+export const backendSlowStart = (): string => t('userMessages.backend.slowStart')
 
-export const BACKEND_SLOW_START_STATUS = 'still starting…'
+export const backendSlowStartStatus = (): string => t('userMessages.backend.slowStartStatus')
 
 // ── stderr noise ──────────────────────────────────────────────────────────
 
@@ -87,9 +94,8 @@ export const stderrLooksLikeProblem = (line: string): boolean => STDERR_PROBLEM_
 
 export const stderrProblemActivity = (line: string): string => {
   const m = /([A-Z][A-Za-z]*(?:Error|Exception)):/.exec(line)
-  const what = m ? ` (${m[1]})` : ''
 
-  return `Something went wrong inside Hermes${what} · /logs for details`
+  return m ? t('userMessages.backend.stderrProblemNamed', m[1]) : t('userMessages.backend.stderrProblem')
 }
 
 // ── RPC errors ────────────────────────────────────────────────────────────
@@ -107,14 +113,16 @@ export const isVersionSkewError = (err: unknown): boolean => {
   )
 }
 
-export const VERSION_SKEW_MESSAGE =
-  'The terminal UI and the Hermes backend are out of sync (different versions). Run /update, or exit and run `hermes update`, then start the TUI again.'
+export const versionSkewMessage = (): string => t('userMessages.rpc.versionSkew')
 
 const SESSION_NOT_FOUND_RE = /session not found/i
 const NOT_CONNECTED_RE = /^gateway not (?:connected|running)\b/
 const TIMED_OUT_RE = /^request timed out after (\d+)s/
 
-type RpcErrorRow = [matcher: (code: number | undefined, text: string) => RegExpExecArray | boolean | null, render: (m: RegExpExecArray | null) => string]
+type RpcErrorRow = [
+  matcher: (code: number | undefined, text: string) => RegExpExecArray | boolean | null,
+  render: (m: RegExpExecArray | null) => string
+]
 
 // Ordered: first matching row wins. 4001 is reused by the backend for unrelated
 // refusals ("no active session", "slug is required", NOT_OWNER), so the code
@@ -122,18 +130,10 @@ type RpcErrorRow = [matcher: (code: number | undefined, text: string) => RegExpE
 const RPC_ERROR_ROWS: RpcErrorRow[] = [
   [
     (code, text) => (code === RPC_SESSION_NOT_FOUND || code === undefined) && SESSION_NOT_FOUND_RE.test(text),
-    () =>
-      'This chat is no longer attached to the backend (it was idle or the backend restarted). Your history is saved: type /resume to reopen it.'
+    () => t('userMessages.rpc.sessionNotFound')
   ],
-  [
-    (_code, text) => NOT_CONNECTED_RE.test(text),
-    () =>
-      'Hermes is not connected right now, so that was not sent. It reconnects automatically; wait a moment and try again, or type /logs if this persists.'
-  ],
-  [
-    (_code, text) => TIMED_OUT_RE.exec(text),
-    m => `Hermes did not answer within ${m?.[1] ?? '?'}s. Try again; if it keeps happening, type /logs and report the last lines.`
-  ]
+  [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
+  [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]
 ]
 
 let rpcErrorLogSink: ((line: string) => void) | null = null
@@ -150,12 +150,12 @@ const logReplacedWireText = (code: number | undefined, text: string): void => {
 /** Rewrite transport/session errors into plain words; other errors pass through. */
 export const describeRpcError = (err: unknown): string => {
   const { code, message } = rpcShape(err)
-  const text = message ?? (typeof err === 'string' && err.trim() ? err : 'request failed')
+  const text = message ?? (typeof err === 'string' && err.trim() ? err : t('rpc.requestFailed'))
 
   if (isVersionSkewError(err)) {
     logReplacedWireText(code, text)
 
-    return VERSION_SKEW_MESSAGE
+    return versionSkewMessage()
   }
 
   for (const [matcher, render] of RPC_ERROR_ROWS) {
@@ -177,15 +177,13 @@ export const describeSlashExecError = (command: string, err: unknown): string =>
   const text = message ?? ''
 
   if (/slash worker timed out/.test(text)) {
-    return `/${command} did not finish: the command helper timed out. Try again; if it keeps happening, type /logs and report the last lines.`
+    return t('userMessages.rpc.slashTimedOut', command)
   }
 
   if (/slash worker (?:exited|closed pipe|start failed)/.test(text)) {
     const detail = detailLine(text.replace(/^slash worker (?:exited|closed pipe:?|start failed:?)\s*/, ''))
 
-    return [`/${command} did not finish: the command helper crashed. Try again; type /logs for the trace.`, detail]
-      .filter(Boolean)
-      .join('\n')
+    return [t('userMessages.rpc.slashCrashed', command), detail].filter(Boolean).join('\n')
   }
 
   return describeRpcError(err)
@@ -216,39 +214,37 @@ export const shouldFallbackToDispatch = (err: unknown): boolean => {
 
 // ── Turn failures (message.complete status=error) ─────────────────────────
 
-const TURN_CODE_COPY: Record<string, [string, string]> = {
-  auth: ['The model provider rejected the API key', 'Fix the key with /model, then /retry.'],
-  auth_permanent: ['The model provider rejected the API key', 'Fix the key with /model, then /retry.'],
-  billing: ['The model provider reports no credit left', 'Top up the account or switch with /model.'],
-  billing_unverified: ['The model provider reports no credit left', 'Top up the account or switch with /model.'],
-  content_policy_blocked: ['The model provider refused this request (content policy)', 'Rephrase and send again.'],
-  context_overflow: ['The conversation is too long for this model', 'Run /compress, then /retry.'],
-  format_error: ['The model provider rejected the request format', 'Try /retry; if it persists, switch with /model.'],
-  model_not_found: ['The model provider does not know this model', 'Pick another model with /model.'],
-  overloaded: ['The model provider is overloaded', 'Wait a moment, then /retry.'],
-  payload_too_large: ['The request was too large for this model', 'Run /compress, then /retry.'],
-  provider_policy_blocked: ['The model provider refused this request (account policy)', 'Switch with /model.'],
-  rate_limit: ['The model provider is rate-limiting requests', 'Wait a moment, then /retry.'],
-  server_error: ['The model provider had an internal error', 'Wait a moment, then /retry.'],
-  ssl_cert_verification: [
-    'The connection to the model provider could not be verified (TLS)',
-    "Check the endpoint's certificate, then /retry."
-  ],
-  timeout: ['The model provider did not answer in time', 'Try /retry; if it keeps happening, switch with /model.'],
-  upstream_rate_limit: ['The model provider is rate-limiting requests', 'Wait a moment, then /retry.']
+type TurnCopy = { hint: string; hintNoRetry?: string; title: string }
+type TurnCopyTable = Record<string, TurnCopy | undefined>
+
+// error_surface.code (snake_case wire values) → catalog leaf under userMessages.turn.code.
+const TURN_CODE_KEY: Record<string, keyof Translations['userMessages']['turn']['code']> = {
+  auth: 'auth',
+  auth_permanent: 'authPermanent',
+  billing: 'billing',
+  billing_unverified: 'billingUnverified',
+  content_policy_blocked: 'contentPolicyBlocked',
+  context_overflow: 'contextOverflow',
+  format_error: 'formatError',
+  model_not_found: 'modelNotFound',
+  overloaded: 'overloaded',
+  payload_too_large: 'payloadTooLarge',
+  provider_policy_blocked: 'providerPolicyBlocked',
+  rate_limit: 'rateLimit',
+  server_error: 'serverError',
+  ssl_cert_verification: 'sslCertVerification',
+  timeout: 'timeout',
+  upstream_blocked: 'upstreamBlocked',
+  upstream_rate_limit: 'upstreamRateLimit'
 }
 
-const TURN_LAYER_COPY: Record<string, [string, string]> = {
-  auth: ['The model provider rejected the credentials', 'Fix them with /model, then /retry.'],
-  billing: ['The model provider reports no credit left', 'Top up the account or switch with /model.'],
-  disk: ['The disk is full, so Hermes could not save the turn', 'Free some space, then /retry.'],
-  endpoint: ['Your custom model endpoint did not answer', 'Check the endpoint is running, then /retry.'],
-  gateway: ['Hermes hit an internal error while running this turn', 'Send /retry; type /logs for the trace.'],
-  provider: ['The model provider returned an error', 'Send /retry, or switch with /model.'],
-  streaming: ['The connection to the model provider dropped mid-reply', 'Send /retry.']
-}
+const turnCopyFor = (code: string, layer: string): TurnCopy => {
+  const turn = messages().userMessages.turn
+  const codeKey = TURN_CODE_KEY[code]
+  const byCode = codeKey ? (turn.code as TurnCopyTable)[codeKey] : undefined
 
-const TURN_DEFAULT_COPY: [string, string] = ['The request failed', 'Send /retry, or switch with /model.']
+  return byCode ?? (turn.layer as TurnCopyTable)[layer] ?? turn.fallback
+}
 
 export interface TurnFailure {
   error?: null | string
@@ -261,15 +257,20 @@ export const describeTurnFailure = (payload: TurnFailure): string => {
   const surface = (payload.error_surface ?? {}) as { code?: unknown; layer?: unknown; provider?: unknown }
   const code = typeof surface.code === 'string' ? surface.code : ''
   const layer = typeof surface.layer === 'string' ? surface.layer : ''
-  const provider = typeof surface.provider === 'string' && surface.provider ? ` (${surface.provider})` : ''
-  const [title, hint] = TURN_CODE_COPY[code] ?? TURN_LAYER_COPY[layer] ?? TURN_DEFAULT_COPY
+  const copy = turnCopyFor(code, layer)
+
+  const title =
+    typeof surface.provider === 'string' && surface.provider
+      ? t('userMessages.turn.withProvider', copy.title, surface.provider)
+      : copy.title
+
   // The backend always sets recoverable=true on a turn error; error_surface.retryable
   // is the signal that actually says whether /retry can help.
   const retryable = (surface as { retryable?: unknown }).retryable !== false && payload.recoverable !== false
-  const nextStep = retryable ? hint : hint.replace(/(?:Send|Try) \/retry/, 'Pick another model with /model')
+  const nextStep = retryable ? copy.hint : (copy.hintNoRetry ?? copy.hint)
   const raw = (payload.error ?? '').replace(/^Error:\s*/, '')
 
-  return [`${title}${provider}. Your message was not answered.`, detailLine(raw), nextStep].filter(Boolean).join('\n')
+  return [t('userMessages.turn.notAnswered', title), detailLine(raw), nextStep].filter(Boolean).join('\n')
 }
 
 /** True when the assistant slot carries nothing but the backend's "Error: …" fallback text. */
@@ -281,20 +282,20 @@ export const isBareErrorText = (text: string, error: null | string | undefined):
 
 // ── Withdrawn password / secret prompts ───────────────────────────────────
 
-const PROMPT_TIMEOUT_COPY: Record<string, string> = {
-  secret:
-    'Secret prompt closed: no answer in time, so the step that needed it was skipped. Send your request again when you are ready to enter it.',
-  sudo: 'Password prompt closed: no answer in time, so the command was skipped. Send your request again when you are ready to enter it.',
-  'vault.code':
-    'Verification-code prompt closed: no answer in time, so the sign-in was skipped. Send your request again when you have the code.',
-  'vault.save_login':
-    'Save-login prompt closed: no answer in time, so nothing was saved. Send your request again when you are ready.',
-  'vault.unlock_prompt':
-    'Unlock prompt closed: no answer in time, so the password manager stayed locked. Send your request again when you are ready to unlock it.'
+// server-request method → catalog leaf under userMessages.promptTimeout.
+const PROMPT_TIMEOUT_KEY: Record<string, keyof Translations['userMessages']['promptTimeout']> = {
+  secret: 'secret',
+  sudo: 'sudo',
+  'vault.code': 'vaultCode',
+  'vault.save_login': 'vaultSaveLogin',
+  'vault.unlock_prompt': 'vaultUnlockPrompt'
 }
 
-export const promptTimeoutNotice = (method: string | undefined, reason: string | undefined): null | string =>
-  reason === 'timeout' && method ? (PROMPT_TIMEOUT_COPY[method] ?? null) : null
+export const promptTimeoutNotice = (method: string | undefined, reason: string | undefined): null | string => {
+  const key = reason === 'timeout' && method ? PROMPT_TIMEOUT_KEY[method] : undefined
+
+  return key ? messages().userMessages.promptTimeout[key] : null
+}
 
 // ── session.info warnings ─────────────────────────────────────────────────
 
@@ -308,12 +309,9 @@ export const describeCredentialWarning = (warning: string): string => {
     return warning
   }
 
-  const provider = m[1] || 'the current provider'
-
-  return `No API key is set for ${provider}, so messages will fail. Type /model, pick ${provider}, and paste a key (or run /setup).`
+  return t('userMessages.credential.missingKey', m[1] || t('userMessages.credential.currentProvider'))
 }
 
 // ── Empty states ──────────────────────────────────────────────────────────
 
-export const NO_SKILLS_INSTALLED =
-  'No skills installed yet. Type /skills browse to see the catalog, or /skills install <name>.'
+export const noSkillsInstalled = (): string => t('userMessages.skills.noneInstalled')

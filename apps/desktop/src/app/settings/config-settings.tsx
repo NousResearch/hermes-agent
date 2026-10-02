@@ -23,6 +23,7 @@ import {
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
+import { $openLinksExternally, setOpenLinksExternally } from '@/store/open-links-externally'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import { $settingsRequestProfile } from '@/store/settings-scope'
@@ -99,6 +100,7 @@ function ConfigSettingsInner({
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
   const disableF12 = useStore($disableF12)
+  const openLinksExternally = useStore($openLinksExternally)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -446,6 +448,12 @@ function ConfigSettingsInner({
             description={c.disableF12Desc}
             label={c.disableF12Title}
             onChange={setDisableF12}
+          />
+          <ToggleRow
+            checked={openLinksExternally}
+            description={c.openLinksExternallyDesc}
+            label={c.openLinksExternallyTitle}
+            onChange={setOpenLinksExternally}
           />
           <PoolLimitsSetting />
           <QuickEntrySettings />

@@ -989,7 +989,10 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
+      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      openLinksExternallyTitle: 'リンクは常に外部ブラウザーで開く',
+      openLinksExternallyDesc:
+        'すべてのウェブリンクを、アプリ内ブラウザーの代わりにシステムのブラウザーで開きます。⌘/Ctrl クリックでいずれにしても外部ブラウザーで開きます。'
     },
     hudModifier: {
       title: 'キーをタップして HUD を呼び出す',

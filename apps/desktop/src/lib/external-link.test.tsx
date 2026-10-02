@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { setOpenLinksExternally } from '@/store/open-links-externally'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import {
@@ -41,6 +42,7 @@ function installTitleBridge(title: string) {
 afterEach(() => {
   __resetLinkTitleCache()
   closeRightRail()
+  setOpenLinksExternally(false)
   vi.restoreAllMocks()
   cleanup()
 
@@ -119,6 +121,38 @@ describe('external link helpers', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
 
     expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
+  })
+
+  // With the "always open links externally" pref on, a plain click goes to the
+  // system browser instead of the in-app pane.
+  it('opens every web link in the system browser when the pref is on', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setOpenLinksExternally(true)
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  // The pref is a live toggle: turning it back off restores the in-app pane
+  // for the very next click.
+  it('returns to the in-app browser once the pref is off again', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setOpenLinksExternally(true)
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+    expect(openExternal).toHaveBeenCalledTimes(1)
+
+    setOpenLinksExternally(false)
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+    expect(openExternal).toHaveBeenCalledTimes(1)
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
   })
 

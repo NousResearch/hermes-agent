@@ -1025,6 +1025,9 @@ export const zhHant = defineLocale({
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      openLinksExternallyTitle: '一律以外部瀏覽器開啟連結',
+      openLinksExternallyDesc:
+        '一律以系統瀏覽器開啟每個網頁連結，而非內建瀏覽器面板。無論如何，⌘/Ctrl 點擊仍會在系統瀏覽器中開啟。',
       showOptions: '顯示選項'
     },
     hudModifier: {

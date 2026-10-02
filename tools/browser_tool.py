@@ -311,21 +311,31 @@ def _url_is_private(url: str) -> bool:
         return False
 
 
-def _navigation_session_key(task_id: str, url: str) -> str:
-    """Session key that should handle ``url`` for ``task_id``: ``f"{task_id}::local"`` (hybrid
-    local sidecar while the cloud session keeps serving public URLs) only when ALL hold —
-    cloud provider configured, ``browser.auto_local_for_private_urls`` on, private URL, no
-    CDP override (it owns the whole session), Camofox off (already local-only)."""
-    if task_id is None:
-        task_id = "default"
-    hybrid = (
+def _hybrid_routes_locally(url: str) -> bool:
+    """True when ``url`` must be served by the hybrid LOCAL sidecar rather than the configured
+    cloud provider. The single source of truth for that predicate — ``_navigation_session_key``
+    (the navigate path) and the ``browser_exec`` pre-flight + backend routing both read it, so
+    the two verdicts cannot drift apart.
+
+    Hybrid routing needs ALL of: a cloud provider configured,
+    ``browser.auto_local_for_private_urls`` on, a private URL, no CDP override (it owns the whole
+    session), Camofox off (already local-only)."""
+    return (
         not _cdp._get_cdp_override_raw()
         and not _is_camofox_mode()
         and _cloud._get_cloud_provider() is not None
         and _cloud._auto_local_for_private_urls()
         and _url_is_private(url)
     )
-    return f"{task_id}{_LOCAL_SUFFIX}" if hybrid else task_id
+
+
+def _navigation_session_key(task_id: str, url: str) -> str:
+    """Session key that should handle ``url`` for ``task_id``: ``f"{task_id}::local"`` (hybrid
+    local sidecar while the cloud session keeps serving public URLs) when
+    ``_hybrid_routes_locally`` holds for ``url``."""
+    if task_id is None:
+        task_id = "default"
+    return f"{task_id}{_LOCAL_SUFFIX}" if _hybrid_routes_locally(url) else task_id
 
 
 def _is_local_sidecar_key(session_key: str) -> bool:
@@ -672,10 +682,14 @@ def _secret_url_error_normalized(url: str) -> tuple[str, Optional[dict]]:
     return url, err
 
 
-def evaluate_url_safety(url: str) -> Optional[dict]:
-    """Run URL safety checks; None if safe, else an error dict"""
+def evaluate_url_safety(url: str, *, auto_local: bool = False) -> Optional[dict]:
+    """Run URL safety checks; None if safe, else an error dict.
+
+    ``auto_local`` relaxes the private-address floor for a URL hybrid routing will serve from a
+    LOCAL sidecar — the cloud provider never sees it, which is the verdict the navigation path
+    reaches for itself. The cloud-metadata floor is never relaxable."""
     url, err = _secret_url_error_normalized(url)
-    return err or _url_policy_error(url)
+    return err or _url_policy_error(url, auto_local=auto_local)
 
 
 _BOT_DETECTION_TITLE_PATTERNS = (

@@ -208,12 +208,18 @@ def check_systemd_timing_alignment(
     """
     if not os.environ.get("INVOCATION_ID"):
         return None  # Not running under systemd (or at least not directly)
-    # /proc/self/cgroup: "0::/user.slice/.../hermes-gateway.service"
+    # /proc/self/cgroup may place the process below a delegated service
+    # subgroup. Walk upward to the nearest service, but stop at a scope so
+    # a transient worker cannot be misattributed to parent user@N.service.
     unit_name: Optional[str] = None
     with contextlib.suppress(OSError), open("/proc/self/cgroup", encoding="utf-8") as fh:
         for line in fh:
-            parts = reversed(line.strip().split("/"))
-            unit_name = next((p for p in parts if p.endswith(".service")), None)
+            for part in reversed(line.strip().split("/")):
+                if part.endswith(".scope"):
+                    break
+                if part.endswith(".service"):
+                    unit_name = part
+                    break
             if unit_name:
                 break
     if (timeout_us := _systemd_timeout_stop_us(unit_name) if unit_name else None) is None:

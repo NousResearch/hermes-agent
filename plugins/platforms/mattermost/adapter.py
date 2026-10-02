@@ -34,6 +34,18 @@ logger = logging.getLogger(__name__)
 
 _Metadata = Optional[Dict[str, Any]]
 
+_MATTERMOST_TARGET_RE = re.compile(r"([a-z0-9]{26})(?::([a-z0-9]{26}))?")
+
+
+def _parse_target_ref(target_ref: str) -> Optional[Tuple[str, Optional[str]]]:
+    """Keep Mattermost thread roots separate from their channel IDs."""
+    match = _MATTERMOST_TARGET_RE.fullmatch(target_ref)
+    return (match.group(1), match.group(2)) if match else None
+
+
+def _validate_target_ref(chat_id: str) -> bool:
+    return re.fullmatch(r"[a-z0-9]{26}", chat_id) is not None
+
 # Server default is 16383, but 4000 is the practical limit for readable messages.
 MAX_POST_LENGTH = 4000
 
@@ -725,5 +737,6 @@ def register(ctx) -> None:
         apply_yaml_config_fn=_apply_yaml_config,  # YAML→env bridge (see _YAML_BRIDGE)
         allowed_users_env="MATTERMOST_ALLOWED_USERS", allow_all_env="MATTERMOST_ALLOW_ALL_USERS",
         cron_deliver_env_var="MATTERMOST_HOME_CHANNEL",
+        parse_target_ref_fn=_parse_target_ref, validate_target_ref_fn=_validate_target_ref,
         standalone_sender_fn=_standalone_send,  # out-of-process cron; without it `deliver=mattermost` fails
         max_message_length=MAX_POST_LENGTH, emoji="💬", allow_update_command=True)

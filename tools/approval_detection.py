@@ -1494,30 +1494,41 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
 
 
 # Documented read-only forms of ``hermes update``. The dangerous-command detector matches the
-# command word (``\\bhermes\\s+update\\b``), so the read-only question is refused exactly like the
+# command word (``\bhermes\s+update\b``), so the read-only question is refused exactly like the
 # destructive spelling — and a stored approval keyed to the pattern description cannot distinguish
 # them. Exempt ONLY these exact argv shapes, fail-closed on anything else (an unrecognised shape
 # keeps the refusal: ``hermes update --yes``, ``hermes update --check && <anything>``, ...).
+# At least one read-only question flag must be present; ``--json`` is an accompanying modifier
+# that only makes sense with a question (never sufficient alone — ``hermes update --json`` stays
+# refused), and ``--check``/``--plan`` may be combined with it the same way cron calls them.
 _READONLY_UPDATE_FLAGS = ("--check", "--plan", "--list-venv-holders")
+_READONLY_UPDATE_ACCOMPANYING_FLAGS = ("--json",)
 
 
 def _is_readonly_hermes_update(command: str) -> bool:
-    """Return whether *command* is exactly ``hermes update <one read-only flag>``.
+    """Return whether *command* is ``hermes update`` with only read-only flags.
 
     Same defensive argv-parsed shape as ``_is_verification_artifact_cleanup``: parse with shlex,
-    require exactly the documented tokens, refuse any extra command word or flag so a compound
-    ``hermes update --check && git push`` can never slip through as the read-only question.
+    require ``hermes update`` plus a set of flags drawn ONLY from the read-only spellings
+    (question flag required, ``--json`` allowed alongside it), refuse any non-flag token or
+    unknown flag so a compound ``hermes update --check && git push`` or a value-carrying
+    ``--check --branch main`` can never slip through as the read-only question.
     """
     try:
         argv = shlex.split(command, posix=True)
     except ValueError:
         return False
-    if len(argv) != 3:
+    if len(argv) < 3:
         return False
     if argv[0] != "hermes" or argv[1] != "update":
         return False
-    flag = argv[2]
-    return flag in _READONLY_UPDATE_FLAGS
+    flags = argv[2:]
+    if any(not token.startswith("-") for token in flags):
+        return False
+    allowed = _READONLY_UPDATE_FLAGS + _READONLY_UPDATE_ACCOMPANYING_FLAGS
+    if not any(flag in _READONLY_UPDATE_FLAGS for flag in flags):
+        return False
+    return all(flag in allowed for flag in flags)
 
 
 def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:

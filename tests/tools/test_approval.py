@@ -839,7 +839,12 @@ class TestReadonlyHermesUpdateExemption:
     distinguish them). Exempt ONLY the exact argv shapes, fail-closed on everything else.
     """
 
-    @pytest.mark.parametrize("flag", ["--check", "--plan", "--list-venv-holders"])
+    @pytest.mark.parametrize("flag", [
+        "--check", "--plan", "--list-venv-holders",
+        # The PR's own --json flag must ride along with the read-only questions (the guard
+        # table lagged the parser and refused every --check --json / --plan --json cron call).
+        "--check --json", "--plan --json", "--list-venv-holders --json",
+    ])
     def test_readonly_flags_allowed(self, flag):
         dangerous, key, desc = detect_dangerous_command(f"hermes update {flag}")
         assert dangerous is False, f"{flag} should be allowed"
@@ -849,6 +854,7 @@ class TestReadonlyHermesUpdateExemption:
         "command",
         [
             "hermes update",
+            "hermes update --json",
             "hermes update --yes",
             "hermes update --yes --branch main",
             "hermes update --check && git push",
@@ -856,6 +862,8 @@ class TestReadonlyHermesUpdateExemption:
             "hermes update --branch main",
             "hermes update --check --branch main",
             "hermes update --check --yes",
+            "hermes update --json --yes",
+            "hermes update --check --json --branch main",
             "sudo hermes update --check",
             "hermes update --check; hermes gateway restart",
             "hermes update --unknown-flag",

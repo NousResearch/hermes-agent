@@ -13,9 +13,9 @@ import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
-import { $activeSessionId, $selectedStoredSessionId } from './session'
-import { $focusedStoredSessionId } from './session-focus'
-import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow } from './windows'
+import { $activeSessionId } from './session'
+import { $focusedSessionIsTile, $focusedStoredSessionId } from './session-focus'
+import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow, windowBrowserTabId } from './windows'
 
 /**
  * PREVIEW RAIL — one list of tabs, one way in.
@@ -256,6 +256,13 @@ export const $previewTabs = atom<PreviewTab[]>([])
 // its `default` bucket the same way.
 let adoptingStoredTabs = true
 
+// An ownerless tab opened while a live chat was on screen whose stored id had
+// not arrived yet (the agent's open_preview right after the first send): the
+// runtime it was opened under. Memory-only — runtime ids do not survive a
+// relaunch. A draft opened before any send has no runtime, so its tabs carry
+// no stamp and only adoptDraftPreviewTabs can take them.
+const $pendingRuntimeByTab = atom<ReadonlyMap<string, string>>(new Map())
+
 $previewTabs.subscribe(tabs => {
   if (adoptingStoredTabs) {
     return
@@ -264,6 +271,7 @@ $previewTabs.subscribe(tabs => {
   // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
   tabsByProfile[viewKey] = [...tabs]
   persistTabs()
+  forgetGonePendingTabs()
 })
 
 // Seed the view with this renderer's own bucket. Without it the primary
@@ -313,6 +321,8 @@ export function dropPreviewTabsForProfile(profile: string) {
 
   if (key === viewKey) {
     $previewTabs.set([])
+  } else {
+    forgetGonePendingTabs()
   }
 }
 
@@ -367,9 +377,9 @@ const $rotatedSessionIds = atom<ReadonlyMap<string, string>>(new Map())
 function latestSessionId(sessionId: null | string | undefined, rotated: ReadonlyMap<string, string>): null | string {
   let id = sessionId ?? null
 
-  // Acyclic by construction: `rekeyPreviewTabsSession` only links one tip to
-  // a different tip.
-  while (id && rotated.has(id)) {
+  // Acyclic by construction (`rekeyPreviewTabsSession` only links one tip to
+  // a different tip), so no chain is longer than the map.
+  for (let hops = 0; id && rotated.has(id) && hops < rotated.size; hops++) {
     id = rotated.get(id)!
   }
 
@@ -395,17 +405,44 @@ function tabsVisibleTo(tabs: readonly PreviewTab[], sessionId: null | string): P
 
 /** The tabs an agent tool acting for `sessionId` (default: the focused
  *  session) may read or drive: never another session's hidden tab. A
- *  popped-out Browser renderer holds only the tab it shows, so there every
- *  tab is its own. */
+ *  popped-out Browser renderer answers only for the one tab it shows (the
+ *  chat window decided the requester may see it — `previewTabIdsVisibleTo`). */
 export function previewTabsFor(sessionId: null | string = $focusedStoredSessionId.get()): PreviewTab[] {
-  return isBrowserWindow() ? $previewTabs.get() : tabsVisibleTo($previewTabs.get(), sessionId)
+  if (isBrowserWindow()) {
+    const own = windowBrowserTabId()
+
+    return $previewTabs.get().filter(tab => tab.id === own)
+  }
+
+  return tabsVisibleTo($previewTabs.get(), sessionId)
+}
+
+/** Ids of the tabs `sessionId`'s drawer holds, for scoping a request to a
+ *  popped-out Browser window. */
+export function previewTabIdsVisibleTo(sessionId: null | string): string[] {
+  return tabsVisibleTo($previewTabs.get(), sessionId).map(tab => tab.id)
 }
 
 /** Tabs the FOCUSED session sees. The layout-tree mirror renders only these,
- *  so a session switch swaps the drawer; hidden tabs stay in `$previewTabs`. */
+ *  so a session switch swaps the drawer; hidden tabs stay in `$previewTabs`.
+ *  The primary also shows the tabs its runtime opened before its stored id
+ *  arrived: the selection can name that id a beat before the runtime binds it,
+ *  and a Browser hidden in that gap would lose its page. */
 export const $visiblePreviewTabs = computed(
-  [$previewTabs, $focusedStoredSessionId, $rotatedSessionIds],
-  (tabs, sessionId, rotated) => tabs.filter(tab => tabVisibleTo(tab, sessionId, rotated))
+  [
+    $previewTabs,
+    $focusedStoredSessionId,
+    $rotatedSessionIds,
+    $pendingRuntimeByTab,
+    $activeSessionId,
+    $focusedSessionIsTile
+  ],
+  (tabs, sessionId, rotated, pending, activeRuntime, focusedIsTile) =>
+    tabs.filter(
+      tab =>
+        tabVisibleTo(tab, sessionId, rotated) ||
+        (!focusedIsTile && tab.sessionId == null && activeRuntime !== null && pending.get(tab.id) === activeRuntime)
+    )
 )
 
 // The tab each session last had in front, so switching back to a session
@@ -501,47 +538,93 @@ export function preferredVisibleTabId(): RightRailTabId | null {
  *  tabs follow it into the conversation. Never on a focus change: clicking an
  *  existing session or a side tile must leave the draft's tabs in the draft. */
 export function adoptDraftPreviewTabs(storedSessionId: string): void {
+  const pending = $pendingRuntimeByTab.get()
+  // A tab a live runtime opened before its stored id is that runtime's, not
+  // the draft's.
+  const draftOwned = (tab: PreviewTab) => tab.sessionId == null && !tab.pinned && !pending.has(tab.id)
   const tabs = $previewTabs.get()
 
-  if (tabs.some(tab => tab.sessionId == null && !tab.pinned)) {
-    $previewTabs.set(
-      tabs.map(tab => (tab.sessionId == null && !tab.pinned ? { ...tab, sessionId: storedSessionId } : tab))
-    )
+  if (tabs.some(draftOwned)) {
+    $previewTabs.set(tabs.map(tab => (draftOwned(tab) ? { ...tab, sessionId: storedSessionId } : tab)))
   }
 }
 
-// An ownerless tab opened while a live chat was on screen whose stored id had
-// not arrived yet (the agent's open_preview right after the first send): the
-// runtime it was opened under. Memory-only — runtime ids do not survive a
-// relaunch. A draft opened before any send has no runtime, so its tabs carry
-// no stamp and only adoptDraftPreviewTabs can take them.
-const pendingRuntimeByTab = new Map<string, string>()
+function setPendingRuntime(tabId: string, runtimeId: null | string): void {
+  const current = $pendingRuntimeByTab.get()
 
-function adoptPendingRuntimeTabs(runtimeId: null | string, storedSessionId: null | string): void {
-  if (!runtimeId || !storedSessionId || pendingRuntimeByTab.size === 0) {
+  if ((current.get(tabId) ?? null) === runtimeId) {
     return
   }
 
-  const ids = new Set([...pendingRuntimeByTab].filter(([, runtime]) => runtime === runtimeId).map(([id]) => id))
+  const next = new Map(current)
+
+  if (runtimeId) {
+    next.set(tabId, runtimeId)
+  } else {
+    next.delete(tabId)
+  }
+
+  $pendingRuntimeByTab.set(next)
+}
+
+/** Drop the runtime notes of tabs no profile bucket holds any more (closed,
+ *  pruned, or their profile dropped). */
+function forgetGonePendingTabs(): void {
+  const pending = $pendingRuntimeByTab.get()
+
+  if (pending.size === 0) {
+    return
+  }
+
+  const alive = new Set<string>(Object.values(tabsByProfile).flatMap(tabs => tabs.map(tab => tab.id)))
+
+  if ([...pending.keys()].some(id => !alive.has(id))) {
+    $pendingRuntimeByTab.set(new Map([...pending].filter(([id]) => alive.has(id))))
+  }
+}
+
+/** `runtimeId`'s stored id was just bound (its session state went from no
+ *  stored id to `storedSessionId`): the tabs it opened before then are that
+ *  session's. Called by the session-state layer at that transition — never on
+ *  a selection change, which is also what resuming another session looks
+ *  like. Every profile bucket: the runtime may not be the one in view. */
+export function adoptPendingRuntimeTabs(runtimeId: string, storedSessionId: string): void {
+  const ids = new Set([...$pendingRuntimeByTab.get()].filter(([, runtime]) => runtime === runtimeId).map(([id]) => id))
 
   if (ids.size === 0) {
     return
   }
 
-  ids.forEach(id => pendingRuntimeByTab.delete(id))
-  const tabs = $previewTabs.get()
+  const adopt = (tabs: PreviewTab[]) =>
+    tabs.some(tab => ids.has(tab.id) && tab.sessionId == null)
+      ? tabs.map(tab => (ids.has(tab.id) && tab.sessionId == null ? { ...tab, sessionId: storedSessionId } : tab))
+      : null
 
-  if (tabs.some(tab => ids.has(tab.id) && tab.sessionId == null)) {
-    $previewTabs.set(
-      tabs.map(tab => (ids.has(tab.id) && tab.sessionId == null ? { ...tab, sessionId: storedSessionId } : tab))
-    )
+  let backgroundChanged = false
+
+  for (const [key, tabs] of Object.entries(tabsByProfile)) {
+    const next = key === viewKey ? null : adopt(tabs)
+
+    if (next) {
+      tabsByProfile[key] = next
+      backgroundChanged = true
+    }
   }
-}
 
-// The stored id arriving for the SAME runtime that opened the tab — not any
-// focus change — is what hands it over.
-$selectedStoredSessionId.listen(storedSessionId => adoptPendingRuntimeTabs($activeSessionId.get(), storedSessionId))
-$activeSessionId.listen(runtimeId => adoptPendingRuntimeTabs(runtimeId, $selectedStoredSessionId.get()))
+  if (backgroundChanged) {
+    persistTabs()
+  }
+
+  const view = adopt($previewTabs.get())
+
+  // Owner first, then the note: the other order leaves a beat where the tab
+  // is neither owned nor pending and drops out of the drawer.
+  if (view) {
+    $previewTabs.set(view)
+  }
+
+  $pendingRuntimeByTab.set(new Map([...$pendingRuntimeByTab.get()].filter(([id]) => !ids.has(id))))
+}
 
 /** The tab the rail actually shows. A stale or missing selection falls back to
  *  the first tab, so the strip, `⌘W`, and the pane never disagree about which
@@ -873,7 +956,14 @@ export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMod
  *  session's tab; a reused tab keeps its owner and pin. Opening for a session
  *  that is not focused does not touch the focused drawer's selection — the
  *  tab is fronted when that session's drawer shows. */
-export function openPreview(target: PreviewTarget, requestedOwner: null | string = $focusedStoredSessionId.get()) {
+export function openPreview(
+  target: PreviewTarget,
+  requestedOwner: null | string = $focusedStoredSessionId.get(),
+  /** The runtime asking: an ownerless tab is handed to it once its stored id
+   *  binds. An agent event passes its own session id; anything else is the
+   *  primary's runtime. */
+  runtimeId: null | string = $activeSessionId.get()
+) {
   // Stamp the tip, not an alias: the alias map is memory-only, so a tab
   // stamped with a rotated-away id would be orphaned by the next relaunch.
   const owner = currentSessionId(requestedOwner)
@@ -901,15 +991,9 @@ export function openPreview(target: PreviewTarget, requestedOwner: null | string
 
   $previewTabs.set(existing ? current.map(item => (item === existing ? tab : item)) : [...current, tab])
 
-  const pendingRuntime = tab.sessionId == null && !tab.pinned ? $activeSessionId.get() : null
+  setPendingRuntime(id, tab.sessionId == null && !tab.pinned ? runtimeId : null)
 
-  if (pendingRuntime) {
-    pendingRuntimeByTab.set(id, pendingRuntime)
-  } else {
-    pendingRuntimeByTab.delete(id)
-  }
-
-  if (!tabVisibleTo(tab, $focusedStoredSessionId.get(), $rotatedSessionIds.get())) {
+  if (!$visiblePreviewTabs.get().some(item => item.id === id)) {
     rememberActiveTab(owner, id)
 
     return

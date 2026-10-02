@@ -7,7 +7,7 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { migrateInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { rekeyPreviewTabsSession } from '@/store/preview'
+import { adoptPendingRuntimeTabs, rekeyPreviewTabsSession } from '@/store/preview'
 import {
   $activeSessionId,
   $messages,
@@ -229,6 +229,12 @@ export function useSessionStateCache({
 
           if (storedSessionId) {
             runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+
+            // The runtime's stored id binding (null → id). Mirrors
+            // handleTransition's hand-over, which a no-op updater skips.
+            if (!existing.storedSessionId) {
+              adoptPendingRuntimeTabs(sessionId, storedSessionId)
+            }
           }
 
           sessionStateCache.set(sessionId, updated)

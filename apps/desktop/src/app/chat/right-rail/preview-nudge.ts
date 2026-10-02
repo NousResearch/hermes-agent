@@ -18,9 +18,10 @@ import type { WatchStage } from '@/lib/preview-act/watch-in-page'
 
 import { activePreviewScriptRunner } from './preview-script-runner'
 
-/** Run one stage against the active pane's overlay, if it has one. */
-export function nudgeOverlay(stage: WatchStage): void {
-  const run = activePreviewScriptRunner()
+/** Run one stage against the overlay of the active pane `owner` (omitted =
+ *  the focused session) sees, if it has one. */
+export function nudgeOverlay(stage: WatchStage, owner?: null | string): void {
+  const run = activePreviewScriptRunner(owner)
 
   if (!run) {
     return

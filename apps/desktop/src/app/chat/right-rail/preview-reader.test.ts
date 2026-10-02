@@ -8,14 +8,11 @@ import { $selectedStoredSessionId } from '@/store/session'
 
 import { watchPreviewTiles } from '../preview-tile'
 
+import { resolveActivePreviewTab } from './preview-active-tab'
 import { activePreviewInput, registerPreviewInput } from './preview-input'
 import { activePreviewNav, registerPreviewNav } from './preview-nav'
-import {
-  PREVIEW_READ_MAX_CHARS,
-  readActivePreview,
-  registerPreviewPageReader,
-  resolveActivePreviewTab
-} from './preview-reader'
+import { PREVIEW_READ_MAX_CHARS, readActivePreview, registerPreviewPageReader } from './preview-reader'
+import { activePreviewScriptRunner, registerPreviewScriptRunner } from './preview-script-runner'
 
 function urlTarget(url: string): PreviewTarget {
   return { kind: 'url', label: 'Browser', source: url, url }
@@ -221,8 +218,12 @@ describe('agent preview reads stay inside the session (#73890)', () => {
     $selectedStoredSessionId.set('sess-a')
     openPreview(fileTarget('/work/secret-a.txt'))
     const hidden = $previewTabs.get()[0]!.id
-    const unbindNav = registerPreviewNav(hidden, { back: () => {}, forward: () => {}, reload: () => {} })
-    const unbindInput = registerPreviewInput(hidden, { focus: () => {}, send: () => {} })
+    const navA = { back: () => {}, forward: () => {}, reload: () => {} }
+    const inputA = { focus: () => {}, send: () => {} }
+    const runA = async () => 'a'
+    const unbindNav = registerPreviewNav(hidden, navA)
+    const unbindInput = registerPreviewInput(hidden, inputA)
+    const unbindRun = registerPreviewScriptRunner(hidden, runA)
 
     try {
       $selectedStoredSessionId.set('sess-b')
@@ -234,14 +235,23 @@ describe('agent preview reads stay inside the session (#73890)', () => {
       expect(resolveActivePreviewTab()?.target.path).toMatch(/^\/work\/b/)
       expect(activePreviewNav()).toBeNull()
       expect(activePreviewInput()).toBeNull()
+      expect(activePreviewScriptRunner()).toBeNull()
 
       const read = await readActivePreview()
 
       expect(read?.path).toMatch(/^\/work\/b/)
       expect(JSON.stringify(read)).not.toContain('secret-a')
+
+      // sess-a's own agent, while sess-b holds focus, drives sess-a's page.
+      expect(activePreviewNav('sess-a')).toBe(navA)
+      expect(activePreviewInput('sess-a')).toBe(inputA)
+      expect(activePreviewScriptRunner('sess-a')).toBe(runA)
+      // A requester with no resolved session sees no session's tabs.
+      expect(activePreviewScriptRunner(null)).toBeNull()
     } finally {
       unbindNav()
       unbindInput()
+      unbindRun()
     }
   })
 })

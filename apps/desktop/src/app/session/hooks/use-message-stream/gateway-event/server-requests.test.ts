@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registerPreviewNav } from '@/app/chat/right-rail/preview-nav'
+import { group } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { runTour } from '@/lib/tour'
+import { $previewTabs, closeRightRail, openPreview } from '@/store/preview'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
@@ -374,6 +379,90 @@ describe('preview pop-out forwarding', () => {
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
     expect(requestPopoutPreviewRead).toHaveBeenCalled()
+    expect(respond.mock.calls[0][0].value).toBe('')
+  })
+})
+
+describe('preview requests act for the session that asked (#73890)', () => {
+  beforeEach(() => {
+    hasLivePreviewSurface.mockReturnValue(true)
+    closeRightRail()
+    setActiveSessionId('rt-a')
+    setSelectedStoredSessionId('stored-a')
+    $sessionTiles.set([{ dir: 'right', runtimeId: 'rt-b', storedSessionId: 'stored-b' } as never])
+  })
+
+  afterEach(() => {
+    noteActiveTreeGroup(null)
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    closeRightRail()
+    hasLivePreviewSurface.mockReturnValue(false)
+  })
+
+  // Tile B holds focus while the primary session A's agent is the one asking.
+  const focusTileB = () => {
+    $layoutTree.set(group(['session-tile:stored-b'], { active: 'session-tile:stored-b', id: 'grp-b' }))
+    noteActiveTreeGroup('grp-b')
+  }
+
+  it("drives the requesting session's page, not the focused tile's", async () => {
+    openPreview({ kind: 'url', label: 'a', source: 'https://a.example', url: 'https://a.example' }, 'stored-a')
+    openPreview({ kind: 'url', label: 'b', source: 'https://b.example', url: 'https://b.example' }, 'stored-b')
+    const [a, b] = $previewTabs.get()
+    const backA = vi.fn()
+    const backB = vi.fn()
+
+    const unbind = [
+      registerPreviewNav(a!.id, { back: backA, forward: () => {}, reload: () => {} }),
+      registerPreviewNav(b!.id, { back: backB, forward: () => {}, reload: () => {} })
+    ]
+
+    focusTileB()
+
+    try {
+      const { respond } = deliver('preview.act', { action: 'back', session_id: 'rt-a' }, 'rt-a')
+
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'back', success: true })
+      expect(backA).toHaveBeenCalledTimes(1)
+      expect(backB).not.toHaveBeenCalled()
+    } finally {
+      unbind.forEach(stop => stop())
+    }
+  })
+
+  it("runs a preview tour against the requesting session's tabs", async () => {
+    focusTileB()
+    vi.mocked(runTour).mockClear()
+
+    const { respond } = deliver('tour', { action: 'discover', session_id: 'rt-a', surface: 'preview' }, 'rt-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(runTour).toHaveBeenCalledWith(expect.anything(), 'preview', 'stored-a')
+  })
+
+  it('reads no tab for a requester whose stored id is not bound yet, never the focused one', async () => {
+    // A fresh primary runtime whose stored id has not arrived; tile B focused.
+    setActiveSessionId('rt-new')
+    setSelectedStoredSessionId(null)
+    openPreview(
+      {
+        kind: 'file',
+        label: 'b',
+        path: '/work/b-secret.txt',
+        source: '/work/b-secret.txt',
+        url: 'file:///work/b-secret.txt'
+      },
+      'stored-b'
+    )
+    focusTileB()
+
+    const { respond } = deliver('preview.read', { session_id: 'rt-new' }, 'rt-new')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
     expect(respond.mock.calls[0][0].value).toBe('')
   })
 })

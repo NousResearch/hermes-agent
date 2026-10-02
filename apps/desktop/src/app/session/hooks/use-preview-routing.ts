@@ -110,7 +110,9 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
 
               openPreview(
                 renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached),
-                previewOwnerForEvent(event.session_id)
+                previewOwnerForEvent(event.session_id),
+                // The runtime that ran the tool, should its stored id lag.
+                event.session_id || undefined
               )
             }
           )

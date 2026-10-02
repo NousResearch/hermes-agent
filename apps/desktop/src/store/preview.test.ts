@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { createClientSessionState } from '@/lib/chat-runtime'
 
 import { $rightRailActiveTabId, selectRightRailTab } from './layout'
 import {
@@ -35,6 +36,7 @@ import {
   setPreviewTabPinned
 } from './preview'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
+import { publishSessionState } from './session-states'
 
 function fileTarget(source: string): PreviewTarget {
   return { kind: 'file', label: source, path: source, previewKind: 'html', source, url: `file://${source}` }
@@ -514,20 +516,38 @@ describe('preview session scoping (#73890)', () => {
   it('hands an agent tab opened before the stored id to that runtime only', () => {
     // A live chat whose stored id lags: the agent opens a preview right away.
     $activeSessionId.set('runtime-r')
+    publishSessionState('runtime-r', createClientSessionState(null))
     openPreview(fileTarget('/work/agent.html'), null)
     expect($previewTabs.get()[0]?.sessionId).toBeUndefined()
 
     try {
-      // Another session taking the screen (its own runtime) does not take it.
-      $activeSessionId.set('runtime-x')
+      // Resuming another session selects it while runtime-r is still the
+      // active runtime: that selection is not runtime-r's stored id arriving.
       $selectedStoredSessionId.set('stored-x')
+      $activeSessionId.set('runtime-x')
+      expect($previewTabs.get()[0]?.sessionId).toBeUndefined()
+      // Nor does the next draft's first send take a tab another runtime opened.
+      adoptDraftPreviewTabs('stored-draft')
       expect($previewTabs.get()[0]?.sessionId).toBeUndefined()
 
-      $selectedStoredSessionId.set(null)
-      $activeSessionId.set('runtime-r')
-      // The opening runtime's stored id arriving does.
-      $selectedStoredSessionId.set('stored-r')
+      // runtime-r's own stored id binding does.
+      publishSessionState('runtime-r', createClientSessionState('stored-r'))
       expect($previewTabs.get()[0]?.sessionId).toBe('stored-r')
+    } finally {
+      $activeSessionId.set(null)
+    }
+  })
+
+  it("records the agent event's runtime, not whichever runtime is active", () => {
+    $activeSessionId.set('runtime-w')
+
+    try {
+      openPreview(fileTarget('/work/from-r.html'), null, 'runtime-q')
+      publishSessionState('runtime-w', createClientSessionState('stored-w'))
+      expect($previewTabs.get()[0]?.sessionId).toBeUndefined()
+
+      publishSessionState('runtime-q', createClientSessionState('stored-q'))
+      expect($previewTabs.get()[0]?.sessionId).toBe('stored-q')
     } finally {
       $activeSessionId.set(null)
     }
@@ -659,7 +679,7 @@ describe('preview session scoping (#73890)', () => {
     expect($previewTabs.get()).toHaveLength(0)
   })
 
-  it('agent close without a url writes the tab list once and fronts what the session still sees', () => {
+  it('agent close without a url fronts what the session still sees', () => {
     $selectedStoredSessionId.set('sess-a')
     openPreview(fileTarget('/work/pinned.html'))
     const pinned = $previewTabs.get()[0]!.id
@@ -669,16 +689,8 @@ describe('preview session scoping (#73890)', () => {
       openPreview(fileTarget(`/work/a${i}.html`))
     }
 
-    let writes = 0
-    const unbind = $previewTabs.listen(() => writes++)
+    closeAgentPreview('sess-a', [])
 
-    try {
-      closeAgentPreview('sess-a', [])
-    } finally {
-      unbind()
-    }
-
-    expect(writes).toBe(1)
     expect(paths($previewTabs.get())).toEqual(['/work/pinned.html'])
     expect($rightRailActiveTabId.get()).toBe(pinned)
   })

@@ -45,6 +45,7 @@ import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
 import {
+  adoptPendingRuntimeTabs,
   dropPreviewTabsForProfile,
   migratePreviewTabsForProfile,
   rekeyPreviewTabsSession,
@@ -826,6 +827,12 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 
     clearSettled(previous.storedSessionId)
     setSessionStalled(previous.storedSessionId, false)
+  }
+
+  // THIS runtime's stored id binding: the preview tabs it opened before then
+  // are now its session's (#73890).
+  if (!previous?.storedSessionId && next.storedSessionId) {
+    adoptPendingRuntimeTabs(runtimeId, next.storedSessionId)
   }
 
   // Every busy publish is stream activity: clear the quiet hint and restart

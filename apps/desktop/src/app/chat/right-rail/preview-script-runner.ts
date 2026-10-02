@@ -4,14 +4,13 @@
  * registry.
  *
  * A live browser pane registers its webview's `executeJavaScript` here, keyed
- * by tab id; `activePreviewScriptRunner` resolves the ACTIVE tab from the
- * store. Both guest-page features ride it — the tour tool (preview-tour.ts)
+ * by tab id; `activePreviewScriptRunner` resolves the ACTIVE tab among the
+ * requesting session's tabs. Both guest-page features ride it — the tour tool (preview-tour.ts)
  * and the interaction tool (preview-act.ts) — so their heavy payloads stay out
  * of the pane component's static import graph and only load when used.
  */
 
-import { $rightRailActiveTabId } from '@/store/layout'
-import { $previewTabs } from '@/store/preview'
+import { activePreviewTabFor } from './preview-active-tab'
 
 /** Runs JS source in the pane's guest page, resolving its completion value. */
 export type PreviewScriptRunner = (code: string) => Promise<unknown>
@@ -29,10 +28,11 @@ export function registerPreviewScriptRunner(tabId: string, runner: PreviewScript
   }
 }
 
-/** The ACTIVE preview tab's script runner. Null = no live page behind it. */
-export function activePreviewScriptRunner(): PreviewScriptRunner | null {
-  const tabs = $previewTabs.get()
-  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
+/** The script runner of the ACTIVE tab among those `owner` (the requesting
+ *  session's stored id; omitted = the focused session) may see. Null = no live
+ *  page behind it. */
+export function activePreviewScriptRunner(owner?: null | string): PreviewScriptRunner | null {
+  const tab = activePreviewTabFor(owner)
 
   return (tab && runners.get(tab.id)) || null
 }

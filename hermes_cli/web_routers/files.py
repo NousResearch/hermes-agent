@@ -376,7 +376,10 @@ async def proxy_remote_media(url: str, request: Request):
     (#74564), returning the same ``data_url`` shape as ``/api/media``. Only
     allowlisted image CDNs; the bytes stay behind the size cap."""
     _require_token(request)
-    parsed = urllib.parse.urlparse((url or "").strip())
+    try:
+        parsed = urllib.parse.urlparse((url or "").strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="A remote image URL is required") from exc
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=400, detail="A remote image URL is required")
     if not _media_proxy_host_allowed(parsed.hostname):

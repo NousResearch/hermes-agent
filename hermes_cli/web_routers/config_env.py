@@ -579,7 +579,10 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         raise HTTPException(status_code=400, detail="name required")
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url required")
-    parsed = urllib.parse.urlparse(base_url)
+    try:
+        parsed = urllib.parse.urlparse(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="base_url must include scheme and host") from exc
     if not parsed.scheme or not parsed.netloc:
         raise HTTPException(status_code=400, detail="base_url must include scheme and host")
     if not model:

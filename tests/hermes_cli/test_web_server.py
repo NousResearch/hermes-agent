@@ -1112,15 +1112,18 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert resp.status_code == 401
 
     def test_media_proxy_rejects_disallowed_hosts_and_schemes(self):
-        for bad in (
-            "https://evil.example.com/img.png",
-            "https://sub.fal.media.evil.com/img.png",
-            "file:///etc/passwd",
-            "not a url",
-            "",
+        for bad, expected_status in (
+            ("https://evil.example.com/img.png", 403),
+            ("https://sub.fal.media.evil.com/img.png", 403),
+            ("file:///etc/passwd", 400),
+            ("not a url", 400),
+            ("", 400),
+            ("https://[::1/img.png", 400),
+            ("https://[::1].evil.test:80/img.png", 400),
+            ("https://[not-an-ip]:80/img.png", 400),
         ):
             resp = self.client.get("/api/media/proxy", params={"url": bad})
-            assert resp.status_code in (400, 403), (bad, resp.status_code)
+            assert resp.status_code == expected_status, (bad, resp.status_code)
 
     def test_media_proxy_fetches_allowlisted_image_and_returns_data_url(self, monkeypatch):
         png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 8
@@ -1973,6 +1976,28 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         default_list = self.client.get("/api/providers/custom-endpoints").json()
         assert not any(e["id"] == "worker-proxy" for e in default_list["endpoints"])
 
+
+    def test_custom_endpoint_rejects_malformed_url_without_changing_saved_state(self):
+        from hermes_cli.config import get_config_path, get_env_path
+
+        assert self.client.post("/api/providers/custom-endpoints", json={
+            "id": "proxy", "name": "Proxy", "base_url": "https://llm.example.com/v1",
+            "model": "m", "api_key": "sk-original-fixture", "make_default": True,
+        }).status_code == 200
+        saved = {path: path.read_bytes() for path in (get_config_path(), get_env_path())}
+
+        for base_url in (
+            "https://[::1/v1",
+            "https://[::1].evil.test:80/v1",
+            "https://[not-an-ip]:80/v1",
+        ):
+            response = self.client.post("/api/providers/custom-endpoints", json={
+                "id": "proxy", "name": "Changed Proxy", "base_url": base_url,
+                "model": "replacement", "api_key": "sk-replacement-fixture", "make_default": True,
+            })
+            assert response.status_code == 400, (base_url, response.text)
+            for path, data in saved.items():
+                assert path.read_bytes() == data
 
     def test_custom_endpoint_save_keeps_the_api_key_out_of_config(self):
         """The key belongs in .env behind key_env, never in config.yaml (#69449)."""

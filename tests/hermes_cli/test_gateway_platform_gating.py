@@ -6,10 +6,10 @@ gateway-config menu, and any future picker all see the same filtered
 list.
 
 Currently:
-- Matrix is hidden on Windows. The ``[matrix]`` extra pulls
-  ``mautrix[encryption]`` -> ``python-olm``, which has no Windows wheel
-  and needs ``make`` + libolm to build from sdist. There's no native
-  Windows path that works.
+- Matrix is hidden wherever pm's ``matrix`` gate
+  (``[tool.hermes.extras-platforms]``) refuses the extra, which today means
+  native Windows: asyncpg has no win_arm64 wheel and plaintext Matrix is
+  unverified there.
 """
 
 import pytest

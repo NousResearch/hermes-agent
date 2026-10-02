@@ -150,7 +150,7 @@ def _mask_reference_diagnostic(message: str, references: Dict[str, str]) -> str:
 
     pattern = "|".join(r"(?<!\w)" + escaped_pattern(value) + r"(?!\w)"
                        for value in sorted(spellings, key=len, reverse=True))
-    return re.sub(pattern, "[reference redacted]", message)
+    return re.sub(pattern, "[reference redacted]", _scrub(unquote(message)))
 
 
 def _op_child_env(token_value: str) -> Dict[str, str]:

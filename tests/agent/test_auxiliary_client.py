@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -5252,3 +5253,24 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+class TestCodexStreamGuardCancellationOwnership:
+    def test_stranger_timeout_does_not_close_cancelled_attempt_stream(self):
+        """A watchdog must not close an attempt stream after the owner won cancellation."""
+        import agent.auxiliary_client as ac
+
+        class _CancelDecision:
+            def begin_timeout_cleanup(self):
+                return False
+
+        guard = ac._CodexStreamGuard(SimpleNamespace(), total_timeout=1.0)
+        guard._protected_cancel_check = _CancelDecision()
+        guard.close_attempt_stream = MagicMock()
+
+        timer_thread = threading.Thread(target=guard._close_client_on_timeout)
+        timer_thread.start()
+        timer_thread.join()
+
+        guard.close_attempt_stream.assert_not_called()
+        assert guard.timed_out.is_set()

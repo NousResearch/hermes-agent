@@ -1290,9 +1290,9 @@ class _CodexStreamGuard:
         self.timed_out.set()
         if not timeout_won:
             # Owner already hard-cancelled. The OpenAI client is process-shared, so never
-            # close/evict it here; wake only this attempt's stream if responses.create()
-            # returned one, else rely on the bounded SDK timeout.
-            self.close_attempt_stream("cancelled attempt stream close during timeout failed")
+            # close/evict it here; only the request owner may close the attempt stream.
+            if threading.get_ident() == self._owner_tid:
+                self.close_attempt_stream("cancelled attempt stream close during timeout failed")
             return
         # FD-ownership contract: only the thread driving the request may ``close()`` this
         # client's FDs. From a stranger thread (the watchdog Timer) only ``shutdown()`` is

@@ -1898,6 +1898,9 @@ class _BlockingSendAdapter:
         except asyncio.CancelledError:
             self.outcome.append("cancelled")
             raise
+        if self.final_outcome == "cancelled":
+            self.outcome.append("cancelled")
+            raise asyncio.CancelledError
         self.outcome.append("sent")
         if self.final_outcome == "error":
             raise RuntimeError("late transport failure")
@@ -1933,6 +1936,7 @@ class TestDeliverResultLiveConfirmationTimeout:
             pytest.param(False, "sent", (["sent"], 0, None, ["telegram:123"], False), id="started-send-completes-once"),
             pytest.param(False, "error", (["sent"], 0, None, ["telegram:123"], True), id="started-send-later-fails"),
             pytest.param(False, "unconfirmed", (["sent"], 0, None, ["telegram:123"], True), id="started-send-later-unconfirmed"),
+            pytest.param(False, "cancelled", (["cancelled"], 0, None, ["telegram:123"], True), id="started-send-later-cancelled"),
             pytest.param(True, "sent", ([], 1, None, [], False), id="unstarted-send-goes-standalone-only"),
         ],
     )
@@ -1954,6 +1958,16 @@ class TestDeliverResultLiveConfirmationTimeout:
         if loop_wedged:
             loop.call_soon_threadsafe(wedge_loop)
         scheduled = []
+        observed = threading.Event()
+        from cron import scheduler_delivery
+        real_observe = scheduler_delivery._observe_late_live_send
+
+        def observe(*args):
+            try:
+                real_observe(*args)
+            finally:
+                observed.set()
+
         real_schedule = asyncio.run_coroutine_threadsafe
 
         def schedule(coro, target_loop):
@@ -1974,13 +1988,16 @@ class TestDeliverResultLiveConfirmationTimeout:
             with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
                  patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
                  patch("asyncio.run_coroutine_threadsafe", side_effect=schedule), \
-                 patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+                 patch("tools.send_message_tool._send_to_platform", new=standalone_send), \
+                 patch("cron.scheduler_delivery._observe_late_live_send", side_effect=observe):
                 result = _deliver_result(
                     job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
-            unwedge.set()
-            loop.call_soon_threadsafe(adapter.release.set)
-            with contextlib.suppress(CancelledError, RuntimeError):
-                scheduled[0].result(timeout=5)
+                unwedge.set()
+                loop.call_soon_threadsafe(adapter.release.set)
+                with contextlib.suppress(CancelledError, RuntimeError):
+                    scheduled[0].result(timeout=5)
+                if not loop_wedged:
+                    assert observed.wait(5), "the late-result observer did not complete"
         finally:
             unwedge.set()
             loop.call_soon_threadsafe(adapter.release.set)

@@ -241,6 +241,14 @@ def check_whatsapp_requirements() -> bool:
         return False
 
 
+def _aiohttp_available() -> bool:
+    try:
+        import aiohttp  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 # Env vars bridge.js consumes; injected because a multiplexed subprocess's os.environ lacks the secondary profile's .env.
 _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_FROM", "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY",
@@ -479,12 +487,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     def _preflight(self) -> bool:
-        """Node + bridge script + creds.json present, else a non-retryable fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
+        """Node + aiohttp + bridge script + creds.json present, else a non-retryable fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
         bridge_path = Path(self._bridge_script)
         creds_path = self._session_path / "creds.json"
         checks = (
             (check_whatsapp_requirements, ("[%s] Node.js not found. WhatsApp requires Node.js.", self.name),
              "whatsapp_node_missing", "Node.js is not installed — install Node.js and re-run `hermes gateway`."),
+            # Every bridge health poll imports aiohttp; a sealed env that shipped a partial messaging extra
+            # used to swallow the ModuleNotFoundError and loop forever on "did not start in 15s" (#126358).
+            (_aiohttp_available, ("[%s] aiohttp not installed — the WhatsApp bridge health probe needs it.", self.name),
+             "whatsapp_aiohttp_missing",
+             "aiohttp is not installed — the WhatsApp bridge health probe needs it. "
+             "Run `hermes update` (or `uv pip install \"aiohttp==3.14.3\"`), then restart `hermes gateway`."),
             (bridge_path.exists, ("[%s] Bridge script not found: %s", self.name, bridge_path),
              "whatsapp_bridge_missing", f"WhatsApp bridge script missing at {bridge_path}."),
             (creds_path.exists, ("[%s] WhatsApp is enabled but not paired (no creds.json at %s). Pair from the dashboard or run "

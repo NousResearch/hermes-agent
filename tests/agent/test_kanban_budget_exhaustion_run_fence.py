@@ -86,3 +86,55 @@ def test_worker_exhausting_its_live_run_still_records_the_failure(board):
     assert (status, current, claim, failures) == ("ready", None, None, 1)
     assert runs[-1][:3] == (run_id, "timed_out", "timed_out") and runs[-1][3] is not None
     assert events[-1] == "timed_out"
+
+
+@pytest.mark.parametrize("run_id_env", [None, "", "not-an-int"], ids=["missing", "empty", "non-int"])
+def test_worker_without_a_resolvable_run_id_records_nothing(board, run_id_env):
+    """No parseable run id -> fail closed; an unfenced write would hit whatever run is current."""
+    conn, mp = board
+    tid = kb.create_task(conn, title="live", assignee="default")
+    kb.claim_task(conn, tid)
+    before = _snapshot(conn, tid)
+    assert before[0][0] == "running"
+
+    mp.setenv("HERMES_KANBAN_TASK", tid)
+    if run_id_env is None:
+        mp.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    else:
+        mp.setenv("HERMES_KANBAN_RUN_ID", run_id_env)
+    _record_kanban_budget_exhausted(tid, 90, 90, _LOG)
+
+    assert _snapshot(conn, tid) == before
+
+
+def test_worker_on_a_blocked_card_records_nothing(board):
+    """Block-then-exhaust: the card is no longer running, so nothing is booked."""
+    conn, mp = board
+    tid = kb.create_task(conn, title="blocked", assignee="default")
+    run_id = kb.claim_task(conn, tid).current_run_id
+    assert kb.block_task(conn, tid, reason="needs input", expected_run_id=run_id)
+    before = _snapshot(conn, tid)
+    assert before[0][0] == "blocked"
+
+    _as_worker(mp, tid, run_id)
+
+    assert _snapshot(conn, tid) == before
+
+
+def test_status_clause_fences_even_when_run_id_still_matches(board):
+    """Pin ``status == 'running'`` independently of the run-id compare.
+
+    No production transition leaves ``current_run_id`` set on a non-running card, so force the
+    state directly; the status clause must still refuse the write.
+    """
+    conn, mp = board
+    tid = kb.create_task(conn, title="odd", assignee="default")
+    run_id = kb.claim_task(conn, tid).current_run_id
+    conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (tid,))
+    conn.commit()
+    before = _snapshot(conn, tid)
+    assert before[0][:2] == ("blocked", run_id)
+
+    _as_worker(mp, tid, run_id)
+
+    assert _snapshot(conn, tid) == before

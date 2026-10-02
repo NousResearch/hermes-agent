@@ -155,8 +155,6 @@ def flush_adapter_pending(adapter: Any, reservations: dict[str, list[_PendingDis
             ingress.setdefault(adapter._event_session_key(event), []).append(event)
     for event in getattr(adapter, "_held_inbound_events", ()):
         ingress.setdefault(adapter._event_session_key(event), []).append(event)
-    for events in ingress.values():
-        events.sort(key=ingress_order)
     keys = set(pending) | set(buffered) | set(reservations) | set(ingress)
     delivery = getattr(runner, "_delivery_adapter_for", None)
     for key, tail in getattr(runner, "_queued_events", {}).items():
@@ -175,6 +173,7 @@ def flush_adapter_pending(adapter: Any, reservations: dict[str, list[_PendingDis
         if state is not None:
             events.extend([*state.earlier_events, state.event])
         events = list({id(event): event for event in events}.values())
+        events.sort(key=ingress_order)
         if not events:
             written.add(key)
             continue

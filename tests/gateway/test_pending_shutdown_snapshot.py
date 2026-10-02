@@ -51,13 +51,13 @@ async def test_shutdown_preserves_the_complete_ordered_pending_session(tmp_path,
     events[1].message_type, events[1].text = MessageType.PHOTO, ""
     events[1].media_urls, events[1].media_types, events[1].media_text_inlined = [str(tmp_path / "image.jpg")], ["image/jpeg"], [False]
     events[2].internal, events[2].allow_gateway_control = True, False
+    if reservation != "absent":
+        reserve_pending_dispatch(adapter, "shared", events[0])
+        adapter._pending_dispatch_reservations["shared"].claimed = reservation == "claimed"
     for event in events[1:3]:
         runner._enqueue_fifo("shared", event, adapter)
     for event in events[3:]:
         assert await adapter._queue_text_debounce("shared", event)
-    if reservation != "absent":
-        reserve_pending_dispatch(adapter, "shared", events[0])
-        adapter._pending_dispatch_reservations["shared"].claimed = reservation == "claimed"
     if reservation in {"cancel-before", "claim-during", "late-provisional"}:
         entered = asyncio.Event()
         async def handler(event):
@@ -203,7 +203,6 @@ async def test_snapshot_projection_keeps_records_in_the_owning_profile(tmp_path,
             db.close()
         set_multiplex_active(active)
 
-
 @pytest.mark.asyncio
 async def test_shutdown_recovers_queued_input_cancelled_in_post_admission_hook(tmp_path, monkeypatch):
     from gateway.session import SessionStore
@@ -253,7 +252,6 @@ async def test_shutdown_recovers_queued_input_cancelled_in_post_admission_hook(t
         [_wire_event(first), _wire_event(later)]
     ]
     runner._handle_message_with_agent.assert_not_awaited()
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["shutdown", "stop", "withdraw"])

@@ -11,6 +11,7 @@ material is fingerprinted, never stored).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -137,12 +138,17 @@ def _mask_reference_diagnostic(message: str, references: Dict[str, str]) -> str:
         for part in [ref, *ref.removeprefix("op://").split("/")]:
             for variant in (part, unquote(part), quote(unquote(part), safe="/:" if part == ref else "")):
                 if variant:
-                    spellings.update((variant, repr(variant)[1:-1]))
+                    spellings.update((variant, repr(variant)[1:-1],
+                                      json.dumps(variant, ensure_ascii=False)[1:-1]))
     if not spellings:
         return message
     # One substitution avoids redacting text inside our own replacement marker.
     # Word boundaries retain useful diagnostics for short names like "a".
-    pattern = "|".join(r"(?<!\w)" + re.escape(value) + r"(?!\w)"
+    # Percent-escape hex digits are case-insensitive; literal names are not.
+    def escaped_pattern(value: str) -> str:
+        return re.sub(r"%[0-9a-fA-F]{2}", lambda m: "(?i:" + m.group() + ")", re.escape(value))
+
+    pattern = "|".join(r"(?<!\w)" + escaped_pattern(value) + r"(?!\w)"
                        for value in sorted(spellings, key=len, reverse=True))
     return re.sub(pattern, "[reference redacted]", message)
 

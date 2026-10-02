@@ -68,6 +68,21 @@ def test_fetch_masks_reference_components_and_url_spellings(monkeypatch, tmp_pat
     assert ("no item named" if shape == "components" else "not signed in") in warnings[0]
 
 
+@pytest.mark.parametrize("reference, diagnostic, leaked", [
+    ('op://vault/client "prod"/field', r'no item named "client \"prod\""', r'client \"prod\"'),
+    ('op://vault/café/field', 'no item named caf%c3%a9', 'caf%c3%a9'),
+])
+def test_fetch_masks_escaped_quotes_and_lowercase_url_escapes(monkeypatch, tmp_path, reference, diagnostic, leaked):
+    monkeypatch.setattr(op.subprocess, "run", lambda cmd, **kw:
+                        subprocess.CompletedProcess(cmd, 1, "", diagnostic))
+    _, warnings = op.fetch_onepassword_secrets(
+        references={"TARGET_KEY": reference}, binary=tmp_path / "op",
+        use_cache=False, home_path=tmp_path,
+    )
+    assert leaked not in warnings[0]
+    assert "no item named" in warnings[0]
+
+
 def test_short_components_preserve_diagnostics_and_redaction_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(op.subprocess, "run", lambda cmd, **kw:
                         subprocess.CompletedProcess(cmd, 1, "", 'not signed in: op://a/b/reference; vault "a"'))

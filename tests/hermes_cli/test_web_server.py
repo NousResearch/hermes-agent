@@ -4506,6 +4506,25 @@ class TestDeleteEmptySessionsEndpoint:
         finally:
             db.close()
 
+    def test_delete_removes_on_disk_files_of_deleted_sessions_only(self):
+        """Deleting an empty session also removes its files in ``sessions/``.
+        A kept session's files stay."""
+        from hermes_constants import get_hermes_home
+
+        self._seed()
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        deleted_files = [sessions_dir / "session_empty1.json", sessions_dir / "request_dump_empty2_1.json"]
+        kept_file = sessions_dir / "session_hasmsg.json"
+        for path in (*deleted_files, kept_file):
+            path.write_text("{}", encoding="utf-8")
+
+        resp = self.auth_client.delete("/api/sessions/empty")
+
+        assert resp.json() == {"ok": True, "deleted": 2}
+        assert [p for p in deleted_files if p.exists()] == []
+        assert kept_file.exists()
+
 
 class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""

@@ -9,6 +9,8 @@ import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILL
 import { notify } from '@/store/notifications'
 import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
 
+import { catalogSourceFor } from '../skills/skill-provenance'
+
 import { CatalogAlert } from './catalog-alert'
 import { CatalogBrowser } from './catalog-browser'
 import { type CatalogEntry, parseCatalog } from './catalog-data'
@@ -104,7 +106,7 @@ function ScopedSkillCatalog({
         name: skill.name,
         description: skill.description,
         category: skill.category,
-        source: skill.provenance === 'bundled' ? 'built-in' : skill.provenance === 'hub' ? 'hub' : 'local'
+        source: catalogSourceFor(skill.provenance)
       }))
     ).map(entry => {
       const skill = skillsByName.get(entry.name)!

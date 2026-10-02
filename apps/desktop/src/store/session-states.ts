@@ -33,12 +33,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
-import {
-  type ChatMessage,
-  chatMessageText,
-  finalizeInterruptedMessages,
-  sealOpenToolParts
-} from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
@@ -49,16 +44,25 @@ import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './c
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
-import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
+import {
+  adoptPendingRuntimeTabs,
+  dropPreviewTabsForProfile,
+  migratePreviewTabsForProfile,
+  rekeyPreviewTabsSession,
+  setPreviewScope
+} from './preview'
+import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
   $connection,
+  $currentCwd,
   $lastReadAtBySessionId,
   $selectedStoredSessionId,
   $sessions,
+  $workspaceCwdOwner,
   clearReadBaseline,
   getSessionOwnerHint,
   knownSessionOwner,
@@ -76,7 +80,7 @@ import {
   setTurnStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
-import { $focusedTreePaneId } from './session-focus'
+import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -157,6 +161,19 @@ export function runtimeSessionOwner(sessionId: null | string | undefined): Sessi
   const id = String(sessionId ?? '').trim()
 
   return id ? sessionOwnerByRuntimeId.get(id) : undefined
+}
+
+/** The composite source scope (connection + profile) a runtime's own events
+ *  proved — `registryBackendScopeKey` of the socket that delivered them.
+ *  Undefined for a runtime whose events arrived untagged (the local legacy
+ *  primary), whose source is then whatever gateway is actively serving this
+ *  window. Reaction-overlay reads key the displayed session's scope with
+ *  this, so an overlay recorded on one source never paints another
+ *  source's same-numbered row. */
+export function sessionEventScopeFor(runtimeId: null | string | undefined): string | undefined {
+  const id = String(runtimeId ?? '').trim()
+
+  return id ? sessionScopeByRuntimeId.get(id) : undefined
 }
 
 /** Forget only profile-pool runtime owners during permanent LOCAL profile
@@ -451,7 +468,7 @@ function clearEventSilence(runtimeId: string) {
   }
 }
 
-function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolean {
+export function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolean {
   return Boolean(state && (state.busy || state.awaitingResponse || state.turnLive) && !state.needsInput)
 }
 
@@ -464,7 +481,10 @@ interface LiveTurnStatusResponse {
 /** What one `session.active_list` snapshot says about `runtimeId`'s turn. A
  *  runtime missing from a well-formed list has been reaped: its turn is over.
  *  `starting` is an agent build for a turn the backend accepted. */
-export function liveTurnVerdict(response: LiveTurnStatusResponse | null | undefined, runtimeId: string): LiveTurnVerdict {
+export function liveTurnVerdict(
+  response: LiveTurnStatusResponse | null | undefined,
+  runtimeId: string
+): LiveTurnVerdict {
   if (!Array.isArray(response?.sessions)) {
     return 'unknown'
   }
@@ -803,9 +823,17 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // a background tile's conversation rotates too, and its pane would
     // otherwise keep the stale id forever (duplicate/differently-titled tabs).
     rekeySessionTile(previous.storedSessionId, next.storedSessionId, runtimeId)
+    // The conversation's preview tabs follow it onto the new tip (#73890).
+    rekeyPreviewTabsSession(previous.storedSessionId, next.storedSessionId)
 
     clearSettled(previous.storedSessionId)
     setSessionStalled(previous.storedSessionId, false)
+  }
+
+  // THIS runtime's stored id binding: the preview tabs it opened before then
+  // are now its session's (#73890).
+  if (!previous?.storedSessionId && next.storedSessionId) {
+    adoptPendingRuntimeTabs(runtimeId, next.storedSessionId)
   }
 
   // Every busy publish is stream activity: clear the quiet hint and restart
@@ -1020,6 +1048,8 @@ export function dropSessionState(runtimeId: string) {
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
+  // A runtime that never bound a stored id never will now (#73890).
+  forgetPendingRuntimeTabs(runtimeId)
 
   const current = $sessionStates.get()
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
@@ -1055,6 +1085,7 @@ export function clearAllSessionStates() {
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
+  forgetPendingRuntimeTabs()
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }
@@ -1298,7 +1329,6 @@ export interface SessionTileWorkspaceScope {
 // set, with runtime bindings dropped so tiles re-resume on their own gateway.
 const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
-const TILE_PANE_PREFIX = 'session-tile:'
 const BOTS_TILE_BUCKET = '__bots_workspace__'
 
 /** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a
@@ -1895,7 +1925,14 @@ setSessionOwnerResolver(knownOwnerForSession)
  *  showed one agent's previews in every agent's chat. `bot-row.tsx` documents
  *  the same trap for the roster highlight and resolves it the same way. */
 function railScopeForActiveSession(): string {
-  const owner = knownOwnerForSession($activeSessionId.get() ?? undefined)
+  return previewScopeForRuntime($activeSessionId.get() ?? undefined)
+}
+
+/** The preview-rail profile a runtime's chat belongs to — the bucket whose
+ *  pins its agent may use. Same resolution as the rail's own scope, so the
+ *  primary's runtime always lands on the bucket in view. */
+export function previewScopeForRuntime(runtimeId: string | undefined): string {
+  const owner = knownOwnerForSession(runtimeId)
   const profile = typeof owner === 'string' ? owner : owner?.profile
 
   return normalizeProfileKey(profile || $activeGatewayProfile.get())
@@ -2270,6 +2307,8 @@ export interface SessionTileDelegate {
   archiveSession(storedSessionId: string): Promise<void>
   /** Branch a stored session into a new chat (the sidebar's branch). */
   branchSession(storedSessionId: string): Promise<void>
+  /** Branch a tile's live transcript through the clicked message. */
+  branchSessionAtMessage(storedSessionId: string, runtimeId: string, messageId: string): Promise<boolean>
   /** Delete a stored session (the sidebar's delete, incl. tile cleanup). */
   deleteSession(storedSessionId: string): Promise<void>
   /** Run a slash command against a tile's session (app-level effects — e.g.
@@ -2305,11 +2344,23 @@ export interface SessionTileDelegate {
    *  without writing when the cache never held it (no phantom entries); the
    *  caller writes the mirror itself. */
   updateHeldSession?(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): boolean
-  /** Submit a prompt to a tile's live session. */
-  submitToSession(runtimeId: string, text: string): Promise<void>
+  /**
+   * Resolves with the EXACT identity that ACCEPTED the prompt. A
+   * session-not-found recovery can rebind the runtime, so the accepted runtime
+   * id may differ from the input id; `storedSessionId` is the durable session
+   * the accepted runtime is bound to, or null when that binding is unknown. A
+   * caller that reports delivery must prove the requested target from this.
+   */
+  submitToSession(runtimeId: string, text: string): Promise<AcceptedSessionIdentity>
   /** THE session-state write path — routes through the wiring cache so the
    *  cache, the primary view (when active), and every tile mirror agree. */
   updateSession(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): ClientSessionState
+}
+
+/** Exact identity a prompt was accepted into: live runtime id + durable stored id. */
+export interface AcceptedSessionIdentity {
+  runtimeSessionId: string
+  storedSessionId: null | string
 }
 
 let delegate: SessionTileDelegate | null = null
@@ -2551,14 +2602,37 @@ export function focusOpenSession(
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
-    revealTreePane('workspace')
-    noteActiveTreeGroup(null)
-
+  // Bot scopes never claim main here — a Bot tab for the same stored id must
+  // stay mintable — they front through frontMainIfSelected at their own door.
+  if (workspaceScope.workspaceMode === 'sessions' && frontMainIfSelected(storedSessionId)) {
     return 'main'
   }
 
   return null
+}
+
+/** Front the workspace pane when `storedSessionId` names the chat MAIN already
+ *  holds (through any compression-lineage alias). False when main holds
+ *  another chat or nothing — the caller then owns the open.
+ *
+ *  The door for a Bot Mode roster click whose owner lost its tile: closing the
+ *  main tab promotes a neighbouring tile INTO the workspace pane (dropping its
+ *  tile, close-tab.ts), so the canonical Bot Chat lives in main with no tile
+ *  left. The route already points at that session, so navigating is a no-op,
+ *  and focusOpenSession won't claim the 'main' hit for a Bot scope — a Bot tab
+ *  for the same stored id must stay mintable. Without this front, a zone
+ *  parked on another bot's tile left the row click looking dead (#125899). */
+export function frontMainIfSelected(storedSessionId: string): boolean {
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+
+  if (!aliases.includes($selectedStoredSessionId.get() ?? '')) {
+    return false
+  }
+
+  revealTreePane('workspace')
+  noteActiveTreeGroup(null)
+
+  return true
 }
 
 /** Front the tab a Bot Mode owner already has open and report its stored id:
@@ -2988,21 +3062,11 @@ export function reopenLastClosedTile(): void {
 
 // ---------------------------------------------------------------------------
 // The FOCUSED session — one derivation, not another hand-maintained
-// "$activeSession" sibling. session-focus resolves the interacted content zone,
-// retaining it while the Sessions sidebar owns keyboard focus. Its active
-// pane names the session: a `session-tile:<storedId>` pane IS that session,
-// anything else falls back to the route-driven primary. Chrome that should
-// follow the user between tiles (titlebar session title, statusbar context /
-// timer / model) reads these instead of the primary-only atoms.
+// "$activeSession" sibling: `$focusedStoredSessionId` (session-focus.ts).
+// Chrome that should follow the user between tiles (titlebar session title,
+// statusbar context / timer / model) reads it and the derivations below
+// instead of the primary-only atoms.
 // ---------------------------------------------------------------------------
-
-export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
-  Boolean(active?.startsWith(TILE_PANE_PREFIX))
-)
-
-export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
-  active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
-)
 
 /** Every session currently OPEN as a surface: the primary's selection plus
  *  every tile's stored id. The sidebar highlights all of them (the focused one
@@ -3029,6 +3093,52 @@ export const $focusedRuntimeId = computed(
 /** The focused session's state slice (undefined while unresolved/unbound). */
 export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates], (runtimeId, states) =>
   runtimeId ? states[runtimeId] : undefined
+)
+
+/** The workspace CWD of the currently focused session (the focused tile's cwd,
+ *  else the primary session's confirmed workspace cwd, with fallback to historical session cwd). */
+export const $focusedWorkspaceCwd = computed(
+  [$focusedStoredSessionId, $selectedStoredSessionId, $focusedSessionState, $sessions, $currentCwd, $workspaceCwdOwner],
+  (
+    focusedStoredId,
+    selectedStoredId,
+    focusedSessionState,
+    sessions: readonly SessionInfo[],
+    currentCwd,
+    workspaceCwdOwner
+  ) => {
+    const isTile = Boolean(focusedStoredId && focusedStoredId !== selectedStoredId)
+
+    if (isTile && focusedStoredId) {
+      const tileCwd = (
+        focusedSessionState?.cwd ||
+        sessions.find(s => sessionMatchesStoredId(s, focusedStoredId))?.cwd ||
+        ''
+      ).trim()
+
+      return tileCwd
+    }
+
+    const hasPrimaryWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredId ?? null)
+
+    if (hasPrimaryWorkspace) {
+      return currentCwd.trim()
+    }
+
+    if (selectedStoredId) {
+      const fallbackCwd = (
+        focusedSessionState?.cwd ||
+        sessions.find(s => sessionMatchesStoredId(s, selectedStoredId))?.cwd ||
+        ''
+      ).trim()
+
+      if (fallbackCwd) {
+        return fallbackCwd
+      }
+    }
+
+    return ''
+  }
 )
 
 /** A PRIMARY navigation (sidebar resume, route change, new chat) homes focus to

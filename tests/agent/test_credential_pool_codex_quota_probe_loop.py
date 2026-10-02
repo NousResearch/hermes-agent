@@ -150,7 +150,13 @@ def test_marker_clears_once_the_real_cooldown_elapses(tmp_path, monkeypatch, alw
         pool.mark_exhausted_and_rotate(
             status_code=429,
             credential_id="455eb2",
-            error_context={"reason": "usage_limit_reached"},
+            error_context={
+                "reason": "usage_limit_reached",
+                "message": "The usage limit has been reached",
+                # Same window: the re-bench must NOT earn another probe, so
+                # the entry stays benched until the cooldown really elapses.
+                "reset_at": now + RESET_AT_FAR_FUTURE_SECONDS,
+            },
         )
         is None
     )
@@ -172,3 +178,42 @@ def test_marker_clears_once_the_real_cooldown_elapses(tmp_path, monkeypatch, alw
     assert entry is not None
     assert entry.last_status == "ok"
     assert not pool._codex_probe_honored_at, "marker should not survive a real recovery"
+
+
+def test_a_later_quota_window_gets_its_own_probe(tmp_path, monkeypatch, always_restored):
+    """The marker discredits its quota window, not the entry forever.
+
+    Window A: the probe was RIGHT — the entry was adopted and served fine.
+    Window B: a fresh 429 stamps a new ``reset_at``.  That window's early
+    reopen must be probed again instead of staying benched for days behind
+    window A's marker (``last_status_at`` only moves forward, so a bare
+    wall-clock comparison never clears once the entry re-benches).
+    """
+    now = time.time()
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        last_status_at=now - 5,
+        reset_at=now + RESET_AT_FAR_FUTURE_SECONDS,
+    )
+    assert pool.select() is not None  # window A: probe honored, and correct
+    assert len(always_restored) == 1
+
+    # Window B: a brand-new 429 stamps a fresh, far-future reset_at.
+    assert (
+        pool.mark_exhausted_and_rotate(
+            status_code=429,
+            credential_id="455eb2",
+            error_context={
+                "reason": "usage_limit_reached",
+                "message": "The usage limit has been reached",
+                "reset_at": now + 2 * RESET_AT_FAR_FUTURE_SECONDS,
+            },
+        )
+        is None
+    )
+
+    entry = pool.select()
+    assert entry is not None, "a new quota window must get its own early-reopen probe"
+    assert entry.last_status == "ok"
+    assert len(always_restored) == 2

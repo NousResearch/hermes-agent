@@ -1030,11 +1030,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # entries" and the caller's 401 retry loop runs unbounded. Reset when a
         # real entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
-        # entry.id -> wall-clock time at which a positive Codex quota-restored
-        # probe was last acted on by lifting that entry's cooldown.  Guards the
-        # probe against its own false positives; see
-        # ``_codex_quota_restored_upstream``.
-        self._codex_probe_honored_at: Dict[str, float] = {}
+        # entry.id -> (wall-clock time at which a positive Codex quota-restored
+        # probe was last acted on by lifting that entry's cooldown, the quota
+        # window ``reset_at`` it vouched for).  Guards the probe against its
+        # own false positives; see ``_codex_quota_restored_upstream``.
+        self._codex_probe_honored_at: Dict[str, Tuple[float, Optional[float]]] = {}
 
     # ---- read accessors ---------------------------------------------------
 
@@ -1963,13 +1963,15 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         reaches "no available entries", ``rotate()`` never returns None, and
         the provider fallback chain (``fallback_providers``) is never reached.
 
-        So a positive probe buys exactly ONE optimistic retry per entry.  If
-        the account 429s again after we acted on the probe, the probe is
-        demonstrably wrong about this account and we keep the bench, letting
-        the pool empty and provider fallback take over.  The marker is dropped
-        when the entry legitimately returns to ``OK`` (see
-        ``_available_entries``), so a genuine early reopen in a later quota
-        window is still detected.
+        So a positive probe buys exactly ONE optimistic retry per entry per
+        quota window.  If the account 429s again after we acted on the probe
+        while still inside that window, the probe is demonstrably wrong about
+        this account and we keep the bench, letting the pool empty and
+        provider fallback take over.  The marker is keyed to the window it
+        discredited and is dropped when the entry legitimately returns to
+        ``OK`` (see ``_available_entries``), so a genuine early reopen in a
+        later quota window — one whose 429 stamped a fresh ``reset_at`` — is
+        still detected.
         """
         if self.provider != "openai-codex" or entry.last_status != STATUS_EXHAUSTED:
             return False
@@ -1980,11 +1982,17 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         token = entry.access_token or ""
         if not token:
             return False
-        honored_at = self._codex_probe_honored_at.get(entry.id)
-        if honored_at is not None and (entry.last_status_at or 0.0) >= honored_at:
-            # We already lifted this entry's cooldown on a positive probe and
-            # it was re-benched by a later failure.  Do not spend another live
-            # request on the same wrong answer.
+        honored = self._codex_probe_honored_at.get(entry.id)
+        if (
+            honored is not None
+            and (entry.last_status_at or 0.0) >= honored[0]
+            and honored[1] == _parse_absolute_timestamp(entry.last_error_reset_at)
+        ):
+            # We already lifted this entry's cooldown on a positive probe for
+            # this quota window and it was re-benched by a later failure in
+            # the same window.  Do not spend another live request on the same
+            # wrong answer.  A fresh 429 stamps a new ``reset_at`` — that
+            # window keeps its own early-reopen detection.
             return False
         try:
             # An exhausted entry is skipped by the refresh chain, so its stored token is usually
@@ -2009,7 +2017,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             logger.debug("Codex quota-restored probe failed", exc_info=True)
             return False
         if restored:
-            self._codex_probe_honored_at[entry.id] = time.time()
+            self._codex_probe_honored_at[entry.id] = (
+                time.time(), _parse_absolute_timestamp(entry.last_error_reset_at)
+            )
         return restored
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:

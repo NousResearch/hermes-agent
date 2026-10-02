@@ -115,7 +115,7 @@ def _capture_event(event: MessageEvent) -> dict[str, Any]:
     if event._quoted_media_dependencies or event._inbound_context_dependencies:
         record["context"] = {
             "quoted_media": [asdict(dependency) for dependency in event._quoted_media_dependencies],
-            "snapshots": [snapshot.pending_state() for snapshot in event._inbound_context_dependencies],
+            "snapshots": [snapshot.pending_state(event) for snapshot in event._inbound_context_dependencies],
         }
     from gateway.shutdown_pending_codec import capture_pending_provenance
     record.update(capture_pending_provenance(event))

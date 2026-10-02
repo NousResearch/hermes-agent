@@ -385,7 +385,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
         self._drop_turn_slot(_quick_key, run_generation=_generation_at_interrupt)
 
     def _hm_merge_pending_for_source(
-        self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
+        self: "GatewayRunner", source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
     ) -> None:
         """Coalesce compatible busy input or queue it behind earlier events."""
         from gateway.platforms.base_pending_merge import merge_pending_message_event
@@ -411,7 +411,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
         event._gateway_accepted = True
 
     async def _hm_busy_slash_or_photo(
-        self, event: "MessageEvent", source: SessionSource, _quick_key: str
+        self: "GatewayRunner", event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Tuple[bool, Optional[str]]:
         """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``. Each
         command's mid-run behavior is declared on its CommandDef (busy_policy / busy_handler)."""
@@ -443,7 +443,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
         return False, None
 
     def _hm_busy_telegram_grace_queue(
-        self, event: "MessageEvent", source: SessionSource, _quick_key: str, effective_busy_input_mode: str
+        self: "GatewayRunner", event: "MessageEvent", source: SessionSource, _quick_key: str, effective_busy_input_mode: str
     ) -> bool:
         """Queue a Telegram text follow-up that lands within the post-start grace window."""
         _grace = float(os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0"))
@@ -470,7 +470,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
     def _hm_text_only(event: "MessageEvent") -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
 
-    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> bool:
+    def _hm_busy_steer(self: "GatewayRunner", event: "MessageEvent", running_agent: Any, _quick_key: str) -> bool:
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
         steered = False
@@ -493,7 +493,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
         return self._queue_or_replace_pending_event(_quick_key, event)
 
     async def _hm_busy_interrupt(
-        self, event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
+        self: "GatewayRunner", event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
     ) -> None:
         """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
         from gateway.run_inbound_media import _build_media_placeholder

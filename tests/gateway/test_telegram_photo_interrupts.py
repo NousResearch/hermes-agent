@@ -51,10 +51,60 @@ async def test_handle_message_does_not_priority_interrupt_photo_followup():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["photo", "startup", "grace"])
-@pytest.mark.parametrize("boundary", ["same", "sender", "plugin", "control", "reply", "queued", "orphaned", "voice"])
-async def test_busy_coalescing_preserves_independent_pending_events(path, boundary, monkeypatch):
+@pytest.mark.parametrize("path,boundary,kind", [
+    *[pytest.param(path, boundary, MessageType.PHOTO if path == "photo" else MessageType.TEXT,
+                   id=f"{boundary}-{path}")
+      for boundary in ("same", "sender", "plugin", "control", "reply", "queued", "orphaned", "voice")
+      for path in ("photo", "startup", "grace")],
+    pytest.param("fifo", "sender", MessageType.TEXT, id="text"),
+    pytest.param("fifo", "sender", MessageType.PHOTO, id="photo"),
+    pytest.param("debounce-slot", "sender", MessageType.TEXT, id="other-sender-text"),
+    pytest.param("debounce-slot", "empty", MessageType.TEXT, id="empty-slot"),
+])
+async def test_busy_coalescing_preserves_independent_pending_events(path, boundary, kind, monkeypatch):
     import time
+
+    if path == "fifo":
+        from tests.gateway.test_queue_consumption import TestBusyInputModeQueueFifo
+
+        fixture = TestBusyInputModeQueueFifo()
+        runner, adapter = fixture._make_runner_and_adapter()
+        session_key = "telegram:group:shared"
+        runner._queue_or_replace_pending_event(
+            session_key, fixture._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO, text="look at this"))
+        followup = (fixture._text_event("unrelated question", user_id="u2") if kind == MessageType.TEXT
+                    else fixture._media_event("/tmp/b.jpg", "image/jpeg", MessageType.PHOTO, text="mine", user_id="u2"))
+        runner._queue_or_replace_pending_event(session_key, followup)
+        head = adapter._pending_messages[session_key]
+        assert ((head.text, head.media_urls, head.source.user_id), runner._queued_events.get(session_key, [])) == (
+            ("look at this", ["/tmp/a.jpg"], "u1"), [followup],
+        )
+        return
+
+    if path == "debounce-slot":
+        import asyncio
+        import types
+        from tests.gateway.test_active_session_text_merge import _make_adapter, _make_event
+
+        pending_sender = "u1" if boundary == "sender" else None
+        adapter = _make_adapter()
+        monkeypatch.setattr(adapter, "_event_session_key", lambda event: "shared")
+        queued_text_calls: list[tuple[str, str]] = []
+        adapter.gateway_runner = types.SimpleNamespace(
+            _queue_or_replace_pending_event=lambda session_key, event: queued_text_calls.append((session_key, event.text)),
+        )
+        adapter._active_sessions["shared"] = asyncio.Event()
+        if pending_sender is not None:
+            adapter._pending_messages["shared"] = _make_event("one", chat_type="group", user_id=pending_sender)
+        for text, sender in [("two", "u2"), ("three", "u3")]:
+            await adapter.handle_message(_make_event(text, chat_type="group", user_id=sender))
+        await adapter._flush_text_debounce_now("shared")
+        pending = adapter._pending_messages.get("shared")
+        assert (pending.text if pending else None, queued_text_calls, adapter._text_debounce) == (
+            ("one", [("shared", "two"), ("shared", "three")], {}) if pending_sender is not None
+            else (None, [("shared", "two"), ("shared", "three")], {})
+        )
+        return
 
     runner = _make_runner()
     source = SessionSource(

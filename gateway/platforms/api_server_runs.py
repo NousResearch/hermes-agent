@@ -240,7 +240,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
     from gateway.platforms.api_server_room_proof import wrap
     from gateway.hosted_room_documents import DOCUMENT_HTTP_MAX_BYTES
     from gateway.platforms.api_server_peer_output import http_routes as output_routes
-    return [(method, path, wrap(self, handler, max_bytes=DOCUMENT_HTTP_MAX_BYTES if path == "/v1/runs" else None)) for method, path, handler in [
+    return [(method, path, wrap(self, _run_state_errors(handler), max_bytes=DOCUMENT_HTTP_MAX_BYTES if path == "/v1/runs" else None)) for method, path, handler in [
         ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
@@ -248,6 +248,20 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]] + output_routes(self)
+
+
+def _run_state_errors(handler):
+    """Translate canonical read failures before the proof transport seals the reply."""
+    from gateway.platforms.api_server_authority_runs import RunStateUnavailable
+    from gateway.session_peer_output import PeerOutputStateUnavailable
+    async def handle(request):
+        try:
+            return await handler(request)
+        except PeerOutputStateUnavailable:
+            return web.json_response({'error': {'code': 'peer_output_state_unavailable'}}, status=503)
+        except RunStateUnavailable:
+            return web.json_response({'error': {'code': 'run_state_unavailable'}}, status=503)
+    return handle
 
 
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
@@ -1190,7 +1204,8 @@ def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
     return owns_api_run(self, run_id, scope)
 
 
-def _load_owned_run(self, request, *, _api_server, permission: Optional[str], active_fallback: bool):
+def _load_owned_run(self, request, *, _api_server, permission: Optional[str], active_fallback: bool,
+                    core_control: bool = False):
     """Authenticate (*permission* -> room-grant aware; ``None`` -> API key only) and resolve
     ``(run_id, status, agent, task, error)``; *active_fallback* reports a live in-process run
     without pollable status as ``running`` instead of 404."""
@@ -1203,7 +1218,18 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
         return run_id, None, None, None, _run_not_found(_openai_error, run_id)
     agent = self._active_run_agents.get(run_id)
     task = self._active_run_tasks.get(run_id)
-    status = self._durable_run_status(request, run_id)
+    status = None
+    if core_control:
+        from gateway.platforms.api_server_authority_runs import run_control_status
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            status = run_control_status(self, run_id, self._run_idempotency_scope(request))
+        except RuntimeStoreError as exc:
+            error = (_run_not_found(_openai_error, run_id) if exc.reason == 'not_found' else
+                     _json_error(_openai_error, exc.reason, code=exc.reason, status=409))
+            return run_id, None, agent, task, error
+    if status is None:
+        status = self._durable_run_status(request, run_id)
     if status is None and active_fallback and (agent is not None or task is not None):
         status = self._set_run_status(run_id, "running")
     if status is None:
@@ -1462,7 +1488,7 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
     """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
     _openai_error = _api_server._openai_error
     run_id, status, agent, task, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission="stop", active_fallback=True)
+        self, request, _api_server=_api_server, permission="stop", active_fallback=True, core_control=True)
     if err is not None:
         return err
     # A run whose turn a live Bot Chat owns (``_execute_run_via_live_owner``) is not an API
@@ -1497,7 +1523,7 @@ async def _handle_resolve_unknown_run(
 ) -> "web.Response":
     """POST /v1/runs/{run_id}/resolve-unknown — acknowledge one lost owner epoch."""
     run_id, _, _, _, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission="stop", active_fallback=False)
+        self, request, _api_server=_api_server, permission="stop", active_fallback=False, core_control=True)
     if err is not None:
         return err
     try:

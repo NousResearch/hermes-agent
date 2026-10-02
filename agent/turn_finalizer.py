@@ -482,9 +482,9 @@ def apply_llm_output_transform(
     if logger is None:
         from agent.conversation_loop import logger
     recorded = getattr(agent, "_llm_output_transform", None)
-    if isinstance(recorded, tuple) and len(recorded) == 3 and recorded[0] == turn_id:
-        _, transformed, pre_transform = recorded
-        return final_response, transformed, pre_transform
+    if isinstance(recorded, tuple) and len(recorded) == 4 and recorded[0] == turn_id:
+        _, transformed_response, transformed, pre_transform = recorded
+        return transformed_response, transformed, pre_transform
     if not final_response:
         return final_response, False, None
     if platform is None:
@@ -502,7 +502,7 @@ def apply_llm_output_transform(
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True
             break
-    agent._llm_output_transform = (turn_id, transformed, pre_transform)
+    agent._llm_output_transform = (turn_id, final_response, transformed, pre_transform)
     return final_response, transformed, pre_transform
 
 

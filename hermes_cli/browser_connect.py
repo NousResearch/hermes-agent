@@ -311,6 +311,30 @@ def detect_default_chromium(system: str | None = None) -> str | None:
     return detect.get(system or platform.system(), _detect_default_linux)()
 
 
+def resolve_pinned_chromium(pin: str, system: str | None = None) -> tuple[str | None, str | None]:
+    """Resolve a pinned profile to exactly one installed stable Chromium browser.
+
+    A pin identifies a profile directory, not an OS-wide default browser. Refuse both
+    missing and ambiguous matches rather than guessing which browser owns the identity.
+    """
+    matches = []
+    for browser in _BROWSERS:
+        data_dir = real_profile_data_dir(browser.key, system)
+        if (data_dir and os.path.isdir(data_dir)
+                and os.path.isdir(os.path.join(data_dir, pin))
+                and chromium_executable(browser.key, system)):
+            matches.append(browser.key)
+    if len(matches) == 1:
+        return matches[0], None
+    if not matches:
+        return None, (
+            f"browser.real_profile_pin is set to '{pin}', but no installed stable Chromium "
+            "browser has that profile directory. Fix the pin or install/open the intended browser.")
+    return None, (
+        f"browser.real_profile_pin '{pin}' matches multiple installed Chromium browsers "
+        f"({', '.join(matches)}); refusing to guess. Use a pin unique to one browser.")
+
+
 # --- Real-profile SNAPSHOT launch -------------------------------------------------------
 # Never drive the live default user-data-dir: Chromium ≥136 (Google builds) refuses remote
 # debugging on it, and the user's running browser holds it (SingletonLock). Instead snapshot

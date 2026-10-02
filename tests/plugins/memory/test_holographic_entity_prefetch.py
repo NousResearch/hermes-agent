@@ -58,6 +58,48 @@ def test_full_lexical_result_is_preserved(store):
     assert [r["fact_id"] for r in FactRetriever(store).search("briefing", limit=1)] == [fid]
 
 
+@pytest.mark.parametrize("query", ["morning briefing", "daily digest"])
+@pytest.mark.parametrize("noise_count", [0, 4, 5, 12, 20])
+def test_entity_recall_survives_lexical_noise(store, query, noise_count):
+    content = "Rebuild indexes before opening the app."
+    target = store.add_fact(content)
+    link(store, target, "Morning Briefing", "daily digest,nightly summary")
+    for index in range(noise_count):
+        store.add_fact(f"{query.split()[0]} unrelated weather report number {index}")
+    retriever = FactRetriever(store)
+    assert target in {row["fact_id"] for row in retriever.search(query, limit=5)}
+    provider = HolographicMemoryProvider(config={"min_trust_threshold": 0.3})
+    provider._store, provider._retriever = store, retriever
+    assert content in provider.prefetch(query)
+
+
+@pytest.mark.parametrize("no_numpy", [False, True])
+def test_entity_ranking_preserves_filters_and_lexical_weights(store, monkeypatch, no_numpy):
+    from plugins.memory.holographic import holographic as hrr
+    for index in range(8):
+        fid = store.add_fact(f"unrelated note {index}", category="project")
+        link(store, fid, f"Morning routine {index}")
+    target = store.add_fact("Rebuild indexes at dawn.", category="project")
+    link(store, target, "Morning Briefing", "daily digest,nightly summary")
+    link(store, target, "Briefing Morning")
+    hidden = store.add_fact("private instructions", category="general")
+    link(store, hidden, "Morning Briefing")
+    low = store.add_fact("untrusted instructions", category="project")
+    link(store, low, "Morning Briefing")
+    store.update_fact(low, trust_delta=-0.5)
+    if no_numpy:
+        monkeypatch.setattr(hrr, "_HAS_NUMPY", False)
+    retriever = FactRetriever(store, hrr_weight=0)
+    results = retriever.search("morning briefing", category="project", limit=1)
+    assert [row["fact_id"] for row in results] == [target]
+    assert "entity_rank" not in results[0]
+    assert retriever.search("morning briefing", min_trust=0.9) == []
+    # The bridge is not a new unconditional score: disabling lexical weights
+    # disables its contribution too, including in the no-numpy configuration.
+    disabled = FactRetriever(store, fts_weight=0, jaccard_weight=0, hrr_weight=0)
+    assert all(row["score"] == 0 for row in disabled.search("morning briefing"))
+
+
 def test_entity_index_failure_preserves_lexical_results(store):
     fid = store.add_fact("briefing keyword match")
     store._write("DROP TABLE entities")

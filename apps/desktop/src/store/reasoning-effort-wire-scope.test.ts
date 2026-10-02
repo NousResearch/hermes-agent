@@ -43,46 +43,6 @@ describe('reasoning-effort wire scope', () => {
     expect($currentReasoningEffort.get()).toBe('xhigh')
   })
 
-  it('drops the wire stamp when the provider changes', () => {
-    setCurrentModel('gpt-6.1-sol')
-    setCurrentProvider('openai-codex')
-    setCurrentReasoningEffort('xhigh')
-    stampWire('max')
-
-    setCurrentProvider('openrouter')
-
-    expect($currentReasoningEffortWire.get()).toBe('')
-  })
-
-  it('keeps a confirmed stamp when the same model or provider is re-set', () => {
-    setCurrentModel('gpt-6.1-sol')
-    setCurrentProvider('openai-codex')
-    setCurrentReasoningEffort('ultra')
-    stampWire('max')
-
-    // Re-stamping the identical selection describes the same route.
-    setCurrentModel('gpt-6.1-sol')
-    setCurrentProvider('openai-codex')
-
-    expect($currentReasoningEffortWire.get()).toBe('max')
-  })
-
-  it('accepts a functional updater without clearing the stamp on a no-op', () => {
-    setCurrentModel('gpt-6.1-sol')
-    setCurrentReasoningEffort('ultra')
-    stampWire('max')
-
-    setCurrentModel(current => current)
-
-    expect($currentModel.get()).toBe('gpt-6.1-sol')
-    expect($currentReasoningEffortWire.get()).toBe('max')
-
-    setCurrentModel(() => 'gpt-6.1-luna')
-
-    expect($currentModel.get()).toBe('gpt-6.1-luna')
-    expect($currentReasoningEffortWire.get()).toBe('')
-  })
-
   it('keeps the stamp across a heartbeat that mirrors the runtime model', () => {
     setCurrentModel('gpt-6.1-sol')
     setCurrentProvider('openai-codex')

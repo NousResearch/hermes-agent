@@ -15,6 +15,7 @@
  * drift on the next page.
  */
 
+import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
@@ -254,6 +255,165 @@ function sharesDurableRow(first: ChatMessage[], second: ChatMessage[]): boolean 
   return second.some(message => message.rowId !== undefined && rowIds.has(message.rowId))
 }
 
+/**
+ * Logical identity of a stored row for compaction re-id detection: role, the
+ * normalized visible text, and the occurrence's tool-call ids. A compaction
+ * handoff re-inserts the carried tail under FRESH row ids but keeps the
+ * content byte-identical — tool calls included, since the clone copies
+ * `tool_calls` — so this key is stable across the re-id while a DIFFERENT
+ * turn with the same prose (a repeated prompt) keeps its own tool-call ids
+ * and never matches.
+ */
+function storedRowLogicalKey(message: ChatMessage): string {
+  const toolIds = message.parts
+    .flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+    .filter((id): id is string => Boolean(id))
+    .sort()
+    .join('\u0000')
+
+  return JSON.stringify([message.role, textWithoutReferenceLines(chatMessageText(message)).trim(), toolIds])
+}
+
+/**
+ * #126229: a compaction handoff chain (each parent ends `compression`, the
+ * child re-inserts the carried tail under fresh row ids) makes the refreshed
+ * page re-address rows the window already holds — the store's display dedupe
+ * prefers the fresh clone as the representative, so the page carries id 12
+ * where the window holds id 8 for the same logical row. The stored-id merge
+ * below would then keep BOTH generations and the id sort interleaves them:
+ * the older copy paints mid-conversation, the live tail stays pinned below,
+ * and the newest turn's answer renders between earlier turns.
+ *
+ * Retire a window row when the page carries the SAME logical row (same key)
+ * under a NEWER row id: the fresh page's copy is the authoritative
+ * generation. Candidates are consumed first-match-wins in order — the same
+ * donor discipline the store's `_carry_parent_timestamps` uses — so two
+ * identical turns pair up 1:1 instead of collapsing into one.
+ *
+ * Only rows INSIDE the overlap region (at or after the smallest row id both
+ * sides share) may retire: an older backfilled prefix row absent from the
+ * latest page is real history, not a stale generation, and its id predates
+ * every shared anchor.
+ */
+function reidRetiredRowIds(previous: ChatMessage[], refreshedTail: ChatMessage[]): Set<number> {
+  const previousRowIds = durableRowIds(previous)
+  const shared = refreshedTail.filter(message => message.rowId !== undefined && previousRowIds.has(message.rowId))
+
+  const overlapFrom = shared.length
+    ? Math.min(...shared.map(message => message.rowId as number))
+    : Number.POSITIVE_INFINITY
+
+  if (!Number.isFinite(overlapFrom)) {
+    return new Set()
+  }
+
+  const pageCandidates = new Map<string, ChatMessage[]>()
+
+  for (const message of refreshedTail) {
+    if (message.rowId === undefined || previousRowIds.has(message.rowId)) {
+      continue
+    }
+
+    const key = storedRowLogicalKey(message)
+    const queue = pageCandidates.get(key)
+    queue ? queue.push(message) : pageCandidates.set(key, [message])
+  }
+
+  const retired = new Set<number>()
+
+  for (const message of previous) {
+    if (message.rowId === undefined || message.rowId < overlapFrom) {
+      continue
+    }
+
+    // A window row the page still addresses keeps its slot — the merge's
+    // fresh-copy-wins rule already replaces its content.
+    if (refreshedTail.some(candidate => candidate.rowId === message.rowId)) {
+      continue
+    }
+
+    const queue = pageCandidates.get(storedRowLogicalKey(message))
+
+    if (!queue?.length) {
+      continue
+    }
+
+    const candidate = queue.shift()
+
+    // Compaction only re-ids UPWARD: the fresh generation always carries a
+    // higher stored id than the generation it replaces.
+    if (candidate && candidate.rowId !== undefined && candidate.rowId > message.rowId) {
+      retired.add(message.rowId)
+    }
+  }
+
+  return retired
+}
+
+/**
+ * True when `next` is a pure forward extension of `previous` — the same
+ * discipline `isStrictAnswerTextExtension` encodes for the resume reconcilers
+ * (duplicated here because importing the session-actions module would drag its
+ * store dependencies into every backfill test harness). A committed final can
+ * only be LONGER than the streamed prefix this window last saw.
+ */
+function isStrictTextExtension(next: string, previous: string): boolean {
+  const n = next.trim()
+  const p = previous.trim()
+
+  return Boolean(p) && n.startsWith(p)
+}
+
+/**
+ * Whether the page's committed rows already carry a live window row's turn.
+ * A WebSocket drop can strand the optimistic prompt and the streamed reply in
+ * the window while the backend commits the very same turn (#126229: the stale
+ * live copies then paint BELOW the page's committed rows — the pinned tail).
+ *
+ * Same-turn evidence, never prose alone: the live row must be unstored, and the
+ * page must carry a SETTLED committed row of the same role whose text equals
+ * the live row's (or, for a still-streaming reply, completes it — the final
+ * can only be longer than the last delta this window saw). A tool-bearing
+ * page row (`durableComplete === false`) is a partial commit: the turn may
+ * still be running, so the live copy stays.
+ */
+function pageCoversLiveRow(live: ChatMessage, committedRows: ChatMessage[]): boolean {
+  if (live.rowId !== undefined || transcriptRowIdsOf(live).length > 0) {
+    return false
+  }
+
+  const liveText = textWithoutReferenceLines(chatMessageText(live)).trim()
+
+  if (!liveText) {
+    return false
+  }
+
+  return committedRows.some(row => {
+    if (row.role !== live.role || row.rowId === undefined || row.durableComplete === false) {
+      return false
+    }
+
+    const committedText = textWithoutReferenceLines(chatMessageText(row)).trim()
+
+    if (committedText === liveText) {
+      return true
+    }
+
+    // A streaming reply's committed final can be strictly longer than the
+    // streamed prefix this window last saw.
+    return live.pending === true && isStrictTextExtension(committedText, liveText)
+  })
+}
+
+/** Every durable row address an unmerged bubble may still own (#125975). */
+function transcriptRowIdsOf(message: ChatMessage): number[] {
+  const ids = message.parts.flatMap(part =>
+    part.type === 'text' && typeof part.sourceRowId === 'number' ? [part.sourceRowId] : []
+  )
+
+  return message.rowId === undefined ? ids : [message.rowId, ...ids]
+}
+
 interface StoredRowSlot {
   message: ChatMessage
   /** Rows without a stored id (e.g. a page-local tool fold) that precede this row. */
@@ -273,6 +433,10 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
     return refreshedTail
   }
 
+  // Rows whose logical content the page re-addressed under a fresh id (a
+  // compaction handoff clone) must not survive beside their replacement.
+  const retiredRowIds = reidRetiredRowIds(previous, refreshedTail)
+
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
   const byRowId = new Map<number, StoredRowSlot>()
 
@@ -285,6 +449,14 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
         if (fresh || !refreshedIds.has(message.id)) {
           pending.push(message)
         }
+
+        continue
+      }
+
+      if (!fresh && retiredRowIds.has(message.rowId)) {
+        // The page carries this logical row under a newer id; keeping the
+        // stale generation paints the turn twice, out of stored order.
+        pending = []
 
         continue
       }
@@ -310,11 +482,20 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   const previousTrailing = place(previous, false)
   const refreshedTrailing = place(refreshedTail, true)
 
+  // Live window rows (optimistic prompt, streamed reply) whose turn the page
+  // already committed must not paint below their own committed rows — the
+  // pinned tail of #126229. Uncovered live rows keep their trailing slot.
+  const coveredLiveRows = new Set(previousTrailing.filter(row => pageCoversLiveRow(row, refreshedTail)))
+
+  const previousLiveRows = coveredLiveRows.size
+    ? previousTrailing.filter(row => !coveredLiveRows.has(row))
+    : previousTrailing
+
   const stored = [...byRowId.entries()]
     .sort((left, right) => left[0] - right[0])
     .flatMap(([, { leading, message }]) => [...leading, message])
 
-  return [...stored, ...refreshedTrailing, ...previousTrailing]
+  return [...stored, ...refreshedTrailing, ...previousLiveRows]
 }
 
 export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {

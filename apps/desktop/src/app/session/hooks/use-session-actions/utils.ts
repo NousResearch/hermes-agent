@@ -771,11 +771,17 @@ const foldCarriesText = (fold: ChatMessage, text: string) =>
  * holds with a partial or missing completion receipt, where full-bubble
  * equality sees neither.
  */
-function durableFoldCoversLiveResponse(folds: ChatMessage[], live: ChatMessage): boolean {
+function durableFoldCoversLiveResponse(folds: ChatMessage[], live: ChatMessage, reinserted = false): boolean {
   const liveToolIds = toolCallIdsOf(live)
   const sealed = live.pending !== true || live.interim === true
 
-  if (!folds.length || (liveToolIds.length && (!sealed || liveToolIds.some(id => !id)))) {
+  // A still-pending bubble that ran tools is normally never covered: it may be
+  // further along than the fold. `reinserted` (see the caller) says the fold is
+  // the NEWER, compaction-rewritten copy of this very occurrence, so the stale
+  // live copy may be retired there — under the stricter arms below.
+  const unsealedToolBubble = Boolean(liveToolIds.length) && !sealed
+
+  if (!folds.length || liveToolIds.some(id => !id) || (unsealedToolBubble && !reinserted)) {
     return false
   }
 
@@ -795,18 +801,29 @@ function durableFoldCoversLiveResponse(folds: ChatMessage[], live: ChatMessage):
     return false
   }
 
-  if (sealed && liveTexts.every(text => folds.some(fold => foldCarriesText(fold, text)))) {
-    return true
-  }
+  const carriesEveryText = liveTexts.every(text => folds.some(fold => foldCarriesText(fold, text)))
 
-  return (
+  const answerNotBehind =
     Boolean(answer) &&
     folds.some(fold => {
       const folded = lastFoldedResponseText(fold)
 
       return folded === answer || isStrictAnswerTextExtension(folded, answer)
     })
-  )
+
+  if (sealed && carriesEveryText) {
+    return true
+  }
+
+  // #117867: compaction re-inserted this occurrence under newer row ids, so the
+  // pending live copy is the stale one. Retire it only when the fold carries
+  // EVERY text it still holds and the folded answer is not behind — a live
+  // bubble that grew past the fold fails both and stays.
+  if (unsealedToolBubble) {
+    return carriesEveryText && answerNotBehind
+  }
+
+  return answerNotBehind
 }
 
 export function preserveLocalPendingTurnMessages(
@@ -815,6 +832,114 @@ export function preserveLocalPendingTurnMessages(
 ): ChatMessage[] {
   if (!previousMessages.length) {
     return nextMessages
+  }
+
+  /**
+   * Content evidence that the refreshed transcript already spells this live
+   * bubble's turn out — independent of row ids (compaction re-keys the page) and
+   * of the acknowledged boundary, both of which the arms below depend on.
+   *
+   * `liveList` is the list the bubble was found in: the previous store (a
+   * bubble the loop is deciding whether to preserve) or the refresh's own base
+   * (one `graftRefreshedTailOntoBackfill` carried forward, which refusing to
+   * preserve cannot remove). The bubble's own prompt is matched by TEXT, so a
+   * later turn whose history the page has not stored yet keeps its own prompt
+   * and its equal reply is never swallowed (#122079). A bubble that outgrew the
+   * fold, still streams, or holds a completion receipt of its own stays.
+   */
+  const commitCoversLiveBubble = (message: ChatMessage, liveList: ChatMessage[]): boolean => {
+    if (!isLiveTailRow(message) || transcriptRowIds(message).length > 0) {
+      return false
+    }
+
+    if (message.pending === true || message.persistedTurn?.complete === true) {
+      return false
+    }
+
+    const liveAt = liveList.indexOf(message)
+
+    if (liveAt < 0) {
+      return false
+    }
+
+    const liveTexts = textPartsOf(message)
+    const liveToolIds = toolCallIdsOf(message).filter(Boolean)
+
+    if (!liveTexts.length && !liveToolIds.length) {
+      return false
+    }
+
+    const promptTextAt = (list: ChatMessage[], at: number) => {
+      const promptAt = list.findLastIndex((row, pos) => pos < at && isPrompt(row))
+
+      return promptAt >= 0 ? textWithoutReferenceLines(chatMessageText(list[promptAt])).trim() : ''
+    }
+
+    const localPrompt = promptTextAt(liveList, liveAt)
+
+    if (!localPrompt) {
+      return false
+    }
+
+    const twinRows = nextMessages.filter(row => {
+      if (row.role !== 'assistant' || isLiveTailRow(row)) {
+        return false
+      }
+
+      const rowAt = nextMessages.indexOf(row)
+
+      if (rowAt < 0 || promptTextAt(nextMessages, rowAt) !== localPrompt) {
+        return false
+      }
+
+      // When the bubble itself came from the refresh's base, both rows live in
+      // the same list, so "same turn" also means "same prompt-delimited
+      // segment". That rules out the repeat-prompt case: the user sending the
+      // same words twice puts a NEW prompt between the twin and the current
+      // turn's live bubble, which must keep its reply.
+      if (liveList === nextMessages) {
+        const from = Math.min(liveAt, rowAt)
+        const to = Math.max(liveAt, rowAt)
+
+        if (nextMessages.slice(from + 1, to).some(row => isPrompt(row))) {
+          return false
+        }
+      }
+
+      return true
+    })
+
+    if (!twinRows.length) {
+      return false
+    }
+
+    // The twin spells the turn out as ONE body (its segments joined), so the
+    // bubble's texts are matched in order inside that body — not part-by-part,
+    // which is why the prefix-only arms below miss every segment but the first.
+    const carried = twinRows.some(row => {
+      const body = textWithoutReferenceLines(chatMessageText(row))
+      let cursor = 0
+
+      for (const text of liveTexts) {
+        const found = body.indexOf(text, cursor)
+
+        if (found < 0) {
+          return false
+        }
+
+        cursor = found + text.length
+      }
+
+      return true
+    })
+
+    if (!carried) {
+      return false
+    }
+
+    const twinToolIds = new Set(twinRows.flatMap(toolCallIdsOf).filter(Boolean))
+
+    return liveToolIds.every(id => twinToolIds.has(id))
   }
 
   const acknowledged = acknowledgedTranscriptBoundary(nextMessages, previousMessages)
@@ -908,9 +1033,9 @@ export function preserveLocalPendingTurnMessages(
     // A second segment of the acknowledged turn can still be folded into its
     // final row. A new prompt closes that ownership; identical later replies
     // must not be consumed by the already-acknowledged prefix.
-    const candidates = (crossedUserBoundary ? remainingNext : acknowledgedTurn).filter(
-      candidate => !conflictingTranscriptIdentity(message, candidate)
-    )
+    const turnCandidates = crossedUserBoundary ? remainingNext : acknowledgedTurn
+
+    const candidates = turnCandidates.filter(candidate => !conflictingTranscriptIdentity(message, candidate))
 
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
@@ -1116,23 +1241,66 @@ export function preserveLocalPendingTurnMessages(
       }
     }
 
-    if (
-      isPendingAssistant &&
-      durableFoldCoversLiveResponse(committedFoldsOfLocalTurn(candidates, previousMessages, index), message)
-    ) {
+    if (isPendingAssistant) {
+      // Compaction re-inserts a committed turn under NEWER row ids (#117867), so
+      // the identity gate above reports the turn's own committed rows as a
+      // CONFLICT for a local bubble that still carries its pre-compaction id.
+      // Every other same-turn guard then misses and the bubble falls through to
+      // `preserved.push`, so the whole turn renders twice in long sessions.
+      //
+      // The re-inserted occurrence is recognizable without trusting row ids to
+      // agree: either every id the live bubble carries PREDATES every id of the
+      // fold (the rewritten copy is the newer one), or — for a tool-carrying
+      // bubble — every tool call it ran appears in the fold (tool-call ids are
+      // unique per occurrence). Those two reads use the UNFILTERED turn
+      // candidates; a genuinely newer equal reply keeps its higher ids and no
+      // shared tool calls, so it stays on the identity-gated candidates and is
+      // still preserved until its own occurrence is persisted (#122079).
+      const turnFolds = committedFoldsOfLocalTurn(turnCandidates, previousMessages, index)
+      const liveRowIds = transcriptRowIds(message)
+      const foldRowIds = turnFolds.flatMap(transcriptRowIds)
+      const liveToolIds = toolCallIdsOf(message).filter(Boolean)
+      const foldToolIds = new Set(turnFolds.flatMap(toolCallIdsOf))
+
+      const occursAsReinsertion =
+        (liveRowIds.length > 0 &&
+          foldRowIds.length > 0 &&
+          liveRowIds.every(id => foldRowIds.every(foldId => foldId > id))) ||
+        (liveToolIds.length > 0 && liveToolIds.every(id => foldToolIds.has(id)))
+
+      if (
+        durableFoldCoversLiveResponse(
+          occursAsReinsertion ? turnFolds : committedFoldsOfLocalTurn(candidates, previousMessages, index),
+          message,
+          occursAsReinsertion
+        )
+      ) {
+        continue
+      }
+    }
+
+    if (commitCoversLiveBubble(message, previousMessages)) {
       continue
     }
 
     preserved.push(message)
   }
 
-  const withReplacements =
-    replacements.size > 0 ? nextMessages.map(message => replacements.get(message.id) ?? message) : nextMessages
+  // The refresh's own base can carry a stale live row forward through
+  // `graftRefreshedTailOntoBackfill`, so refusing to preserve it above is not
+  // enough: it would still render next to the committed row that copies it.
+  // Rebuild the array only when something actually leaves it — a no-op merge
+  // must keep returning the same reference (callers compare identity).
+  const baseRows = nextMessages.some(message => commitCoversLiveBubble(message, nextMessages))
+    ? nextMessages.filter(message => !commitCoversLiveBubble(message, nextMessages))
+    : nextMessages
 
-  // #120978: a kept run whose rowIds predate the whole hydrated page belongs
-  // earlier — splice it in front of the first newer row instead of appending it
-  // below the newest turn (non-qualifying runs keep the trailing behavior).
-  return preserved.length ? spliceOlderPreservedRows(withReplacements, preserved) : withReplacements
+  const withReplacements =
+    replacements.size > 0 ? baseRows.map(message => replacements.get(message.id) ?? message) : baseRows
+
+  const merged = preserved.length ? spliceOlderPreservedRows(withReplacements, preserved) : withReplacements
+
+  return merged
 }
 
 /**

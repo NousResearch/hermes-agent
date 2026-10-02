@@ -689,8 +689,10 @@ class _ProfileRoutingFileHandler(logging.Handler):
             finally:
                 reset_hermes_home_override(token)
             # The write was skipped because logs/ is gone (an rmtree inside the liveness interval,
-            # see _ManagedRotatingFileHandler.emit): re-check now so this record is not dropped.
-            if handler.skipped_missing_dir and self._release_if_deleted(home):
+            # see _ManagedRotatingFileHandler.emit): re-check now, and keep the record in the
+            # default log either way (a live profile whose logs/ was removed by hand included).
+            if handler.skipped_missing_dir:
+                self._release_if_deleted(home)
                 self._handler_for_home(self._default_home).handle(record)
         except Exception:
             self.handleError(record)

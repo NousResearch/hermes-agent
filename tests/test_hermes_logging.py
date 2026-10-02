@@ -348,13 +348,14 @@ class TestSetupLogging:
         # No "--- Logging error ---" FileNotFoundError loop on stderr.
         assert "FileNotFoundError" not in capsys.readouterr().err
 
-    @pytest.mark.parametrize("removal", ["tombstone", "rmtree"])
+    @pytest.mark.parametrize("removal", ["tombstone", "rmtree", "logs-only"])
     def test_out_of_band_profile_delete_releases_routed_handler(
         self, hermes_home, capsys, liveness_clock, removal
     ):
         """A CLI delete tombstones then removes the home behind a running serve: the router must
         stop writing there on either signal alone and close the stale file, like an in-process
-        delete. The rmtree case has no tombstone so it exercises the missing-dir branch."""
+        delete. The rmtree case has no tombstone so it exercises the missing-dir branch; logs-only
+        removes just logs/ of a live profile, whose records must still land somewhere."""
         import shutil
 
         from hermes_constants import (
@@ -382,8 +383,10 @@ class TestSetupLogging:
         if removal == "tombstone":
             mark_named_profile_deleted(profile_home)
             liveness_clock()  # a tombstone alone is seen on the next interval check
-        else:
+        elif removal == "rmtree":
             shutil.rmtree(profile_home)  # caught by the write itself, inside the interval
+        else:
+            shutil.rmtree(profile_home / "logs")
         capsys.readouterr()
         for i in range(3):
             emit(f"after delete {i}")

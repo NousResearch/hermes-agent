@@ -378,6 +378,7 @@ export const arSettings = {
       }
     },
     fieldLabels: {
+      'voice.bargeInThresholdMultiplier': 'عتبة المقاطعة',
       model: 'النموذج الافتراضي',
       modelContextLength:
         'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بالرموز). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
@@ -468,6 +469,8 @@ export const arSettings = {
       'updates.nonInteractiveLocalChanges': 'تغييرات التحديث داخل التطبيق'
     },
     fieldDescriptions: {
+      'voice.bargeInThresholdMultiplier':
+        'حساسية مقاطعة الرد الصوتي المتسلسل. استخدم عدداً موجباً؛ القيم الأقل تلتقط الكلام الأخفض، لكنها قد تلتقط صوت مكبر الصوت أيضاً. الافتراضي: 3.',
       model: 'يستخدم في المحادثات الجديدة ما لم تختر نموذجاً مختلفاً من محرر الرسائل.',
       modelContextLength: 'اتركه 0 لاستخدام نافذة السياق المكتشفة للنموذج المحدد.',
       fallbackProviders: 'إدخالات احتياطية بصيغة provider:model لتجربتها إذا فشل النموذج الافتراضي.',

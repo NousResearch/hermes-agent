@@ -467,6 +467,7 @@ export const en: Translations = {
       openMaintenance: 'Open Maintenance'
     },
     voice: {
+      echoDropped: 'Playback echo ignored. Please try speaking again.',
       configureSpeechToText: 'Configure speech-to-text to use voice mode.',
       couldNotStartSession: 'Could not start voice session',
       microphoneAccessDenied: 'Microphone access denied.',

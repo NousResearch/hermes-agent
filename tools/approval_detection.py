@@ -1224,6 +1224,41 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
     return "".join(out)
 
 
+def _unquote_literal_spans(command: str, start: int = 0, end: int | None = None) -> str:
+    """Drop the quotes around every quoted span that holds only plain literal characters.
+
+    The shell removes those quotes before the command sees its argv, so ``rm '-rf' /`` runs as
+    ``rm -rf /`` while the patterns, which anchor flags and paths on whitespace, see a quote. Only
+    spans whose content is in ``_SIMPLE_SHELL_LITERAL_RE``'s class are unquoted: no whitespace,
+    glob, ``$``, backslash or separator, so the result has exactly the words and meaning of the
+    original, and quoted prose (which has spaces) stays quoted. ``$'...'`` with such a body is
+    the same literal. Substitutions inside double quotes are executable and recursed into."""
+    out: list[str] = []
+    opened, literal = 0, False
+    for kind, i, j, quote in _scan_shell(command, start, end, subst="q", comments=True):
+        if kind == "quote" and quote is None:
+            ansi_c = command[i] == "'" and i > start and command[i - 1] == "$" and out and out[-1] == "$"
+            if ansi_c:
+                out.pop()
+            opened, literal = len(out), True
+            out.append(("$" if ansi_c else "") + command[i])
+            continue
+        if kind == "quote":
+            if literal and len(out) > opened + 1:
+                out[opened] = ""
+            else:
+                out.append(command[i])
+            continue
+        if kind == "subst":
+            body_start = i + (2 if command.startswith("$(", i) else 1)
+            out.extend((command[i:body_start], _unquote_literal_spans(command, body_start, j - 1), command[j - 1:j]))
+        else:
+            out.append(command[i:j])
+        if quote and (kind != "char" or not _SIMPLE_SHELL_LITERAL_RE.fullmatch(command[i])):
+            literal = False
+    return "".join(out)
+
+
 def _iter_shell_command_word_spans(command: str):
     """Yield command-position words that may be executable names."""
     for pos in _iter_shell_command_starts(command):
@@ -1456,6 +1491,16 @@ def _command_detection_variants(command: str):
     faithful = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(command), marker=" \n"))
     if fresh(faithful):
         yield faithful
+    # Quoted literal arguments (`rm '-rf' /`, `kill -9 '-1'`, `git reset "--hard"`) as the command
+    # receives them. Unquoted on the RAW quote state, after grep PCRE operands are masked, so the
+    # quoted-data guards above keep holding. Every command word is already deobfuscated below;
+    # this covers the argument words that pass deliberately leaves alone.
+    grep_raw, _ = _grep_safe_detection_variant(_mask_quoted_newlines(command))
+    unquoted = _unquote_literal_spans(grep_raw)
+    if unquoted != grep_raw:
+        unquoted = _normalize_command_for_detection(_mark_command_starts(unquoted, marker=" \n"))
+        if fresh(unquoted):
+            yield unquoted
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
     # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc

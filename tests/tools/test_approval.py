@@ -1158,9 +1158,9 @@ class TestLaunchctlGatewayLifecycle:
     def test_spliced_detection_does_not_flag_prose_or_other_services(self):
         """The splice pass must not widen the blast radius: it is anchored on
         a hermes-gateway identifier, so quoted prose and non-gateway hermes
-        services stay auto-approved."""
+        services stay auto-approved. (`launchctl kick"start" ... ai.hermes.<svc>` is not listed: it
+        runs as `launchctl kickstart ...`, which the broad launchctl rule prompts for.)"""
         for cmd in (
-            'launchctl kick"start" -k gui/501/ai.hermes.update-checker',
             'echo "restart the payment gateway"',
             'git commit -m "document the api gateway restart flow"',
         ):

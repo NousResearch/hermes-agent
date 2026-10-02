@@ -6,6 +6,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any, Dict, List, Optional, cast
 from unittest.mock import MagicMock, patch
 
@@ -45,8 +46,8 @@ class TestRegistration:
         from tools.computer_use import cua_backend
         from tools.computer_use import cua_backend_driver
 
-        driver = tmp_path / "custom-cua-driver"
-        driver.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        driver = tmp_path / ("custom-cua-driver.cmd" if sys.platform == "win32" else "custom-cua-driver")
+        driver.write_text("@exit 0\n" if sys.platform == "win32" else "#!/bin/sh\nexit 0\n", encoding="utf-8")
         driver.chmod(0o755)
 
         monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(driver))
@@ -1493,6 +1494,8 @@ class TestCuaEnvironmentScrubbing:
                 "ANTHROPIC_API_KEY": "sk-ant-secret",  # blocked
                 "PATH": "/usr/bin:/bin",               # safe
                 "HOME": "/home/user",                  # safe
+                "USERPROFILE": os.environ.get("USERPROFILE", "C:\\Users\\user"),
+                "LOCALAPPDATA": os.environ.get("LOCALAPPDATA", "C:\\Users\\user\\AppData\\Local"),
                 "SAFE_VAR": "allowed",                 # safe
             }
 

@@ -1,5 +1,6 @@
 """UWP frame-host windows must resolve without broadening title matching to other apps."""
 
+import contextlib
 import json
 from unittest.mock import MagicMock
 
@@ -10,7 +11,7 @@ from tools.computer_use import tool
 from tools.computer_use.cua_backend import CuaDriverBackend
 from tools.registry import registry
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms("windows")
 
 
 def _capture(monkeypatch, windows, requested="Calculator", **extra_args):
@@ -32,7 +33,10 @@ def _capture(monkeypatch, windows, requested="Calculator", **extra_args):
         return {"data": "", "images": [], "isError": False, "structuredContent": payload}
 
     backend._session.call_tool.side_effect = call_driver
-    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": backend)
+    @contextlib.contextmanager
+    def _mock_backend_for_call(session_id=""):
+        yield backend
+    monkeypatch.setattr(tool, "_backend_for_call", _mock_backend_for_call)
     args = {"action": "capture", "mode": "ax"}
     if requested is not None:
         args["app"] = requested

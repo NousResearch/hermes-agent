@@ -400,6 +400,7 @@ function claimActivationHandoff(scope: string, signal: AbortSignal | undefined):
 
   return handoff.activation
 }
+
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
 // registry) live in ONE container parked on globalThis, NOT in module-level

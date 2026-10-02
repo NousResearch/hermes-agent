@@ -222,6 +222,7 @@ export function CommandCenterView({
       const requestId = systemRequestRef.current + 1
       systemRequestRef.current = requestId
       setSystemLoading(true)
+
       if (!preserveActionError) {
         setSystemError('')
       }
@@ -305,10 +306,13 @@ export function CommandCenterView({
   })
 
   const sessionListHasResults = filteredSessions.length > 0
+
   const visibleLogs = useMemo(() => {
     const needle = logQuery.trim().toLowerCase()
+
     return needle ? logs.filter(line => line.toLowerCase().includes(needle)) : logs
   }, [logQuery, logs])
+
   const logSearch = useLogSearch(visibleLogs, logQuery)
 
   // Same cap semantics as the sidebar's recents ("Load more" visible when any

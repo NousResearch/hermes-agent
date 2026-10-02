@@ -233,7 +233,6 @@ function ScopedSkillsTab({
   return (
     <>
       <SkillCatalog
-        view={view}
         actions={
           <>
             <UpdateSkillsButton profile={profile} />
@@ -314,6 +313,7 @@ function ScopedSkillsTab({
           </>
         )}
         skills={skills}
+        view={view}
       />
       {archiveTarget && (
         <ArchiveSkillConfirmDialog

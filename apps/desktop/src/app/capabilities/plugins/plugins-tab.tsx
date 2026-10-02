@@ -41,11 +41,11 @@ import { $connection } from '@/store/session'
 
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
+import { CapabilityTabs, type CapabilityView } from '../capability-tabs'
 import { CatalogAlert } from '../catalog/catalog-alert'
 import { CatalogBrowser } from '../catalog/catalog-browser'
 import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
-import { CapabilityTabs, type CapabilityView } from '../capability-tabs'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginSettingsForm } from './plugin-settings-form'
@@ -742,7 +742,6 @@ export const PluginsTab = memo(function PluginsTab({
     <>
       <CapabilityTabs onChange={setView} value={view} />
       <CatalogBrowser
-        view={view}
         headerActions={<PluginActions profile={profile} />}
         installedEntries={installedEntries}
         installedPending={status !== 'ready'}
@@ -818,6 +817,7 @@ export const PluginsTab = memo(function PluginsTab({
           )
         }}
         selectedEntryId={selectedEntryId}
+        view={view}
       />
     </>
   )

@@ -268,7 +268,6 @@ function ScopedSkillCatalog({
 
   return (
     <CatalogBrowser
-      view={view}
       actions={actions}
       installedEntries={catalog.entries}
       installedPending={installedPending || identityPending}
@@ -319,6 +318,7 @@ function ScopedSkillCatalog({
 
         return skill ? renderInstalledDetail(skill) : null
       }}
+      view={view}
     />
   )
 }

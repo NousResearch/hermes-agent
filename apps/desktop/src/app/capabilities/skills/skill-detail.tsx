@@ -55,12 +55,34 @@ export function SkillDetail({
       {contentQuery.isLoading ? (
         <PageLoader className="h-40" label={t.skills.loading} />
       ) : parsed ? (
-        <pre
-          className="overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.68rem] leading-relaxed text-(--ui-text-secondary)"
-          data-selectable-text="true"
-        >
-          {parsed.body.trim() || t.skills.noDescription}
-        </pre>
+        <>
+          {parsed.meta.length > 0 && (
+            // Frontmatter metadata as key/value rows (the d5773bfc3ad detail-pane
+            // contract) — keys/values come from the SKILL.md, so no i18n.
+            <dl
+              className="flex shrink-0 flex-col gap-0.5 overflow-auto font-mono text-[0.68rem] leading-relaxed"
+              data-skill-frontmatter
+            >
+              {parsed.meta.map(([key, value]) => (
+                <div className="flex gap-2" key={key}>
+                  <dt className="w-28 shrink-0 truncate text-(--ui-text-tertiary)">{key}</dt>
+                  <dd
+                    className="min-w-0 flex-1 wrap-break-word whitespace-pre-wrap text-(--ui-text-secondary)"
+                    data-selectable-text="true"
+                  >
+                    {value || '—'}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          <pre
+            className="overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.68rem] leading-relaxed text-(--ui-text-secondary)"
+            data-selectable-text="true"
+          >
+            {parsed.body.trim() || t.skills.noDescription}
+          </pre>
+        </>
       ) : null}
     </>
   )

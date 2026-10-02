@@ -1182,6 +1182,8 @@ export interface ProfilesResponse {
 }
 
 export interface SkillInfo {
+  /** SKILL.md frontmatter `author:`; absent on older backends. */
+  author?: string
   category: string
   description: string
   enabled: boolean

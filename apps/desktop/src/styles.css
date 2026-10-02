@@ -1785,6 +1785,44 @@ body.guest-pointer-lock :is(webview, iframe) {
   unicode-bidi: isolate;
 }
 
+/* Long display equations scroll horizontally inside their own box, like code
+   cards and tables: KaTeX's inner span is `white-space: nowrap`, so a formula
+   wider than the column clips at `.aui-md`'s overflow-hidden edge with the
+   tail unreachable. The slider stays visible whenever the formula overflows
+   (no hover gating), so the affordance is discoverable without first
+   hovering. These are unlayered on purpose: the app-wide hover-only thumb
+   rules live in `@layer components` and must not compete with the explicit
+   policy here.
+
+   `width: max-content; margin-inline: auto` on the inner box keeps fitting
+   equations centered and, when the formula overflows, collapses the auto
+   margins so the box starts flush at scrollLeft=0. Plain centered overflow
+   would clip the formula's head permanently — left overflow is unreachable in
+   an LTR scroller. `direction: ltr` keeps the scroll container itself LTR so
+   an RTL message can't flip the scroll origin. */
+.aui-md .katex-display {
+  direction: ltr;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.aui-md .katex-display > .katex {
+  width: max-content;
+  margin-inline: auto;
+}
+
+/* The slider stays visible while the formula overflows (no hover gating):
+   28% at rest, 50% while the mouse is on the thumb. */
+.aui-md .katex-display::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent);
+  background-clip: padding-box;
+}
+
+.aui-md .katex-display::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--dt-scrollbar-thumb) 50%, transparent);
+  background-clip: padding-box;
+}
+
 /* Fenced code stays LTR even inside an RTL list item/blockquote — never mirrors. */
 [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'],
 [data-slot='aui_user-fence'] {

@@ -811,6 +811,77 @@ def test_already_current_short_circuit_does_not_hide_owed_catchup(
     assert receipt.get("stop_reason") != "already_current"
 
 
+def test_already_current_short_circuit_runs_windows_resume_first(
+    monkeypatch, tmp_path, capsys
+):
+    """BLOCKER 1 regression (#115563/#48820): the already-current short-circuit must NOT return
+    before the Windows gateway resume runs — gateways were paused unconditionally at the command
+    boundary, so a skipped resume leaves them stopped while the receipt claims success. On a
+    no-op run the resume must execute BEFORE the ``already_current`` receipt is finalized."""
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
+
+    # Simulate a Windows update that armed a pause token (the pause at the command boundary is
+    # unconditional on Windows). Spy the resume seam the pull path uses.
+    monkeypatch.setattr(
+        hermes_main, "_pause_windows_gateways_for_update",
+        lambda: {"resume_needed": True, "profiles": {"default": None}},
+    )
+
+    order = []
+
+    def spy_resume(outcome, _windows_gateway_resume, gateway_mode):
+        order.append("resume")
+        outcome.incomplete = False  # resume succeeded
+
+    monkeypatch.setattr(update_cmd, "_resume_windows_gateways_and_merge_outcome", spy_resume)
+
+    import hermes_cli.update_receipt as update_receipt_mod
+
+    real_finalize = update_receipt_mod.finalize_update_receipt
+    finalized = []
+
+    def spy_finalize(outcome, fleet=None, stop_reason=""):
+        result = real_finalize(outcome, fleet=fleet, stop_reason=stop_reason)
+        finalized.append((outcome, stop_reason))
+        return result
+
+    monkeypatch.setattr(update_receipt_mod, "finalize_update_receipt", spy_finalize)
+
+    hermes_main.cmd_update(args)
+
+    assert order == ["resume"], "Windows resume must run on the already-current no-op"
+    assert finalized == [("success", "already_current")]
+    assert "Already current" in capsys.readouterr().out
+
+
+def test_already_current_short_circuit_demotes_when_windows_resume_fails(
+    monkeypatch, tmp_path, capsys
+):
+    """BLOCKER 1 regression (#115563/#48820): a FAILED Windows gateway resume on the
+    already-current path must demote the run (partial receipt + exit 1), never write a
+    ``success``/``already_current`` receipt while the gateway is dead."""
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
+
+    def spy_resume(outcome, _windows_gateway_resume, gateway_mode):
+        outcome.incomplete = True  # resume failed (e.g. relaunch verification raced, #48820)
+        outcome.phase_errors.append("boom")
+
+    monkeypatch.setattr(update_cmd, "_resume_windows_gateways_and_merge_outcome", spy_resume)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(args)
+
+    # The exit gate below the short-circuit must fire: partial receipt, exit 1.
+    assert exc_info.value.code == 1
+    latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
+    assert latest.exists()
+    receipt = json.loads(latest.read_text(encoding="utf-8"))
+    assert receipt.get("stop_reason") != "already_current", "a failed resume must not say already_current"
+    assert "Already current" not in capsys.readouterr().out
+
+
 def test_startup_warn_prints_when_marker_present(capsys):
     update_cmd._write_fleet_restart_pending_marker()
     update_cmd._warn_pending_fleet_restart_on_startup()

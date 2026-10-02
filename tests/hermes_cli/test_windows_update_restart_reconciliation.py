@@ -93,6 +93,9 @@ def test_already_up_to_date_path_demotes_on_windows_resume_failure(monkeypatch):
         parked_branch_switched = False
         switch_block_reason = ""
         upstream_checked = True
+        # The P2 already-current short-circuit reads commit_count inside
+        # _finish_already_up_to_date (previously only the caller compared it).
+        commit_count = 0
 
     monkeypatch.setattr(update_cmd, "_invalidate_update_cache", lambda: None)
     monkeypatch.setattr(update_cmd, "_repair_current_checkout", lambda **_kw: True)

@@ -1429,17 +1429,13 @@ def _finish_already_up_to_date(
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
         _windows_gateway_resume=_windows_gateway_resume)
-    if no_fleet_restart_owed and current_checkout_complete:
-        head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
-        print(f"✓ Already current (HEAD == {branch} @ {head_sha[:10] or 'unknown'}) — nothing to do.")
-        with suppress(Exception):
-            from hermes_cli.update_receipt import finalize_update_receipt
-            finalize_update_receipt("success", stop_reason=_ALREADY_CURRENT_STOP_REASON)
-        return
-    # Same contract as the pull path's _resume_windows_gateways_and_merge_outcome: a failed
-    # Windows gateway resume (e.g. the relaunch verification racing a Job-Object kill, #48820)
-    # must demote this run to incomplete, never abort it. A bare call here let the identical
-    # RuntimeError the pull path treats as a warning kill "Already up to date" outright (#115563).
+
+    # Windows gateways were paused unconditionally at the command boundary, so the resume must
+    # run even on the already-current no-op — never let the short-circuit return below skip it
+    # (#115563/#48820): a skipped resume leaves the gateways stopped while the receipt claims
+    # success. Same contract as the pull path's _resume_windows_gateways_and_merge_outcome: a
+    # failed resume (e.g. the relaunch verification racing a Job-Object kill, #48820) must demote
+    # this run to incomplete, never abort it.
     resume_outcome = _GatewayRestartOutcome(
         incomplete=False, phase_errors=[], pre_restart_gateway_pids=[],
         restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],

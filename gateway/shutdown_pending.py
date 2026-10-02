@@ -197,43 +197,48 @@ def project_pending_snapshot(path: Path, payload: dict[str, Any], *, session_res
     """Append an inspection projection once and retain the complete event records."""
     from hermes_constants import get_hermes_home
     from utils import atomic_json_write
-    snapshot = PendingQueueSnapshot.from_payload(payload)
-    if Path(snapshot.runtime_home).resolve() != get_hermes_home().resolve():
-        raise ValueError("pending snapshot belongs to another profile home")
-    if payload.get("projection") is not None:
-        projection = payload["projection"]
-        if not isinstance(projection, dict) or projection.get("message_uids") != [record["uid"] for record in snapshot.events]:
-            raise ValueError("invalid pending snapshot projection marker")
-        return 0
-    if session_resolver is None:
-        return 0
-    resolved = session_resolver(snapshot.session_key, not_after=snapshot.ts)
-    if not resolved or resolved[1] is None:
-        return 0
-    session_id, target = resolved
-    db_path = getattr(target, "db_path", None)
-    if db_path is None or Path(db_path).resolve().parent != Path(snapshot.runtime_home).resolve():
-        raise ValueError("resolved pending session store belongs to another profile")
-    writer = getattr(type(target), "append_recovered_messages_batch", None)
-    if not callable(writer):
-        raise ValueError("pending snapshot projection requires the canonical batch writer")
-    messages = []
-    for record in snapshot.events:
-        event = record["event"]
-        content = "[Pending input preserved at gateway shutdown; not executed]\n" + event["text"]
-        for index, media in enumerate(event.get("media_urls") or []):
-            media_types = event.get("media_types") or []
-            kind = media_types[index] if index < len(media_types) else "attachment"
-            content += f"\n[Attachment: {kind} {media}]"
-        messages.append({"role": "user", "content": content, "message_uid": record["uid"],
-                         "timestamp": record["timestamp"]})
-    inserted = writer(target, session_id, messages)
-    if isinstance(inserted, bool) or not isinstance(inserted, int):
-        raise ValueError("invalid pending snapshot projection count")
-    atomic_json_write(path, {**payload, "projection": {
-        "session_id": session_id, "message_uids": [record["uid"] for record in snapshot.events],
-    }}, mode=0o600)
-    return inserted
+    from gateway.shutdown_pending_lock import pending_snapshot_lock
+
+    with pending_snapshot_lock(path):
+        if json.loads(path.read_bytes()) != payload:
+            raise ValueError("pending snapshot changed before inspection projection")
+        snapshot = PendingQueueSnapshot.from_payload(payload)
+        if Path(snapshot.runtime_home).resolve() != get_hermes_home().resolve():
+            raise ValueError("pending snapshot belongs to another profile home")
+        if payload.get("projection") is not None:
+            projection = payload["projection"]
+            if not isinstance(projection, dict) or projection.get("message_uids") != [record["uid"] for record in snapshot.events]:
+                raise ValueError("invalid pending snapshot projection marker")
+            return 0
+        if session_resolver is None:
+            return 0
+        resolved = session_resolver(snapshot.session_key, not_after=snapshot.ts)
+        if not resolved or resolved[1] is None:
+            return 0
+        session_id, target = resolved
+        db_path = getattr(target, "db_path", None)
+        if db_path is None or Path(db_path).resolve().parent != Path(snapshot.runtime_home).resolve():
+            raise ValueError("resolved pending session store belongs to another profile")
+        writer = getattr(type(target), "append_recovered_messages_batch", None)
+        if not callable(writer):
+            raise ValueError("pending snapshot projection requires the canonical batch writer")
+        messages = []
+        for record in snapshot.events:
+            event = record["event"]
+            content = "[Pending input preserved at gateway shutdown; not executed]\n" + event["text"]
+            for index, media in enumerate(event.get("media_urls") or []):
+                media_types = event.get("media_types") or []
+                kind = media_types[index] if index < len(media_types) else "attachment"
+                content += f"\n[Attachment: {kind} {media}]"
+            messages.append({"role": "user", "content": content, "message_uid": record["uid"],
+                             "timestamp": record["timestamp"]})
+        inserted = writer(target, session_id, messages)
+        if isinstance(inserted, bool) or not isinstance(inserted, int):
+            raise ValueError("invalid pending snapshot projection count")
+        atomic_json_write(path, {**payload, "projection": {
+            "session_id": session_id, "message_uids": [record["uid"] for record in snapshot.events],
+        }}, mode=0o600)
+        return inserted
 
 
 def _write_snapshot(runner: Any, session_key: str, events: list[MessageEvent]) -> None:

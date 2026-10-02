@@ -225,3 +225,89 @@ def test_spooled_withdrawal_uses_live_routes_across_two_profile_homes(
         ] == [("a", True), ("b", True), ("a", True)]
     finally:
         set_multiplex_active(active)
+
+
+def test_overlapping_existing_withdrawal_writers_do_not_restore_a_deleted_input(
+    monkeypatch,
+):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import pm.filesystem
+    import utils
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    monkeypatch.setattr(
+        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
+    )
+    adapter = MatrixAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@hermes:example.org",
+            },
+        )
+    )
+    runner = GatewayRunner(GatewayConfig())
+    runner.adapters[Platform.MATRIX] = adapter
+    adapter.gateway_runner = runner
+    runner._wire_adapter_handlers(adapter)
+    source = adapter.build_source(chat_id="room", user_id="author", chat_type="group")
+    first = MessageEvent(text="first", source=source, message_id="first")
+    second = MessageEvent(text="second", source=source, message_id="second")
+    merge_recorded(first, second, _absorb_pending_text)
+    entry = runner.session_store.get_or_create_session(source)
+    snapshot = PendingQueueSnapshot.capture(entry.session_key, [first])
+    path = get_hermes_home() / "pending_messages" / "spooled.json"
+    path.parent.mkdir()
+    utils.atomic_json_write(path, snapshot.to_payload(), mode=0o600)
+    checked = threading.Event()
+    replacement_attempted = threading.Event()
+    resume_previous = threading.Event()
+    original_write = utils.atomic_json_write
+    original_lock = pm.filesystem.lock_fd
+
+    def paused_write(target, payload, **kwargs):
+        if threading.current_thread().name.startswith("old"):
+            checked.set()
+            assert resume_previous.wait(5)
+        original_write(target, payload, **kwargs)
+        if threading.current_thread().name.startswith("new"):
+            replacement_attempted.set()
+
+    def observed_lock(descriptor, **kwargs):
+        if threading.current_thread().name.startswith("new"):
+            replacement_attempted.set()
+        return original_lock(descriptor, **kwargs)
+
+    monkeypatch.setattr(utils, "atomic_json_write", paused_write)
+    monkeypatch.setattr(pm.filesystem, "lock_fd", observed_lock)
+    with (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="old") as older,
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="new") as newer,
+    ):
+        previous = older.submit(
+            adapter.withdraw_pending_message,
+            "second",
+            chat_id="room",
+            sender_id="author",
+        )
+        try:
+            assert checked.wait(5)
+            replacement = newer.submit(
+                adapter.withdraw_pending_message,
+                "first",
+                chat_id="room",
+                sender_id="author",
+            )
+            assert replacement_attempted.wait(5)
+        finally:
+            resume_previous.set()
+        assert previous.result(timeout=5)
+        assert replacement.result(timeout=5)
+    records = json.loads(path.read_text())["events"]
+    assert [
+        (record["event"]["text"], record.get("withdrawn", False)) for record in records
+    ] == [("first", True)]

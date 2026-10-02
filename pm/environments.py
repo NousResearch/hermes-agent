@@ -6,9 +6,12 @@ any dependency from that environment has been imported.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
+import re
+import shlex
 from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
@@ -50,13 +53,13 @@ def runtime_facts_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "facts.json"
 
 
-# The files that decide the dependency set. `scripts/_hermes-python` re-activates
+# The files that decide the dependency set. `scripts/run-in-hermes-env` re-syncs
 # when any of them differs in mtime from its stamp under activation_inputs_dir.
 ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "pm/lock.json")
 
 
 def activation_inputs_dir(project_root: Path) -> Path:
-    """Beside facts.json, so the prologue finds it from ``$__HERMES_ACTIVATED``."""
+    """Beside facts.json, so the runner finds it from ``$__HERMES_ACTIVATED``."""
     return install_state_dir(project_root) / "inputs"
 
 
@@ -72,7 +75,7 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
 
     Recorded on every successful install, including no-op syncs: a checkout that
     rewrites an input without changing it moves the mtime, and only this record
-    brings the stamp back to equal. The prologue compares for equality, not order,
+    brings the stamp back to equal. The runner compares for equality, not order,
     because switching branches can move an input's mtime in either direction.
     """
     import shutil
@@ -380,7 +383,7 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     # environment was composed against, so a consumer learns that it inherited
     # an activated shell and which checkout/profile that shell came from. Its
     # directory also holds activation_inputs_dir, the input-mtime stamps
-    # `scripts/_hermes-python` compares against to decide staleness.
+    # `scripts/_activation.sh` compares against to decide staleness.
     env["__HERMES_ACTIVATED"] = str(runtime_facts_path(project_root))
     # The suite's interpreter (pm.testenv): an isolated side environment, so it
     # never appears on PYTHONPATH/PATH above. scripts/run_tests.sh reads it.
@@ -392,5 +395,26 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     return env
 
 
+_SHELL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def shell_exports(env: dict[str, str]) -> str:
+    """The composed environment as a POSIX shell script.
+
+    Windows carries names like ``ProgramFiles(ARM)`` that no shell can assign;
+    they pass through untouched instead of failing the whole script.
+    """
+    return "\n".join(f"export {name}={shlex.quote(str(value))}" for name, value in env.items()
+                     if _SHELL_IDENTIFIER.fullmatch(name))
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Print the composed activation environment.")
+    parser.add_argument("--format", choices=["json", "sh"], default="json")
+    options = parser.parse_args(argv)
+    env = activation_environment(Path(__file__).resolve().parents[1])
+    print(json.dumps(env) if options.format == "json" else shell_exports(env))
+
+
 if __name__ == "__main__":
-    print(json.dumps(activation_environment(Path(__file__).resolve().parents[1])))
+    main()

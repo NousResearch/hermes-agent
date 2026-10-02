@@ -342,6 +342,17 @@ Start in a clean shell rather than nesting this inside another venv.
 and removes the function and the prompt prefix.
 It does not uninstall packages or stop processes that you started.
 
+To run one command or script in that environment without activating a shell,
+prefix it with `scripts/run-in-hermes-env`. It applies the same environment to
+that command only, syncing first when there is none to inherit or the inherited
+one is stale, and leaves your shell untouched. `scripts/run_tests.sh` re-runs
+itself this way, and the repo's Python scripts hand themselves to it from their
+shebang.
+
+```bash
+scripts/run-in-hermes-env python scripts/release.py --help
+```
+
 Verify the interpreter and source before doing work:
 
 ```bash

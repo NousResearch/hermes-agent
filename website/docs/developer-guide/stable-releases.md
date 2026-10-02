@@ -159,7 +159,8 @@ python scripts/release.py abandon --version 0.21.5 --remote origin
 
 `publish` performs a synchronous supersession preflight, then dispatches the same
 ordered controller used by automatic recovery. It refuses a known burned version
-below a newer published release. `abandon` deletes the draft when one exists,
+below a newer published release. `abandon` force-cancels the attempt's
+in-progress `Stable Release` runs, deletes the draft when one exists,
 writes an `abandoned-rc.<N>-vX.Y.Z` marker ref, and keeps the attempt ref. The
 marker is the record of abandonment; the attempt ref is never deleted. The
 version is not spent, so the next cut is `rc.<N+1>-vX.Y.Z`.

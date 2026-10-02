@@ -674,6 +674,8 @@ hermes import <zipfile> [options]
 
 将之前创建的 Hermes 备份恢复到 Hermes 主目录。归档中的所有文件会覆盖 Hermes 主目录中的现有文件；`--force` 仅跳过当目标已有 Hermes 安装时触发的确认提示。
 
+在备份创建之后才删除的命名配置文件（profile）会恢复为可用的配置文件（出现在列表中，可通过 `-p` 使用）；汇总信息会在 `Restored previously deleted profile(s)` 下列出它。备份创建时就已删除的配置文件仍保持删除状态。
+
 | 选项 | 说明 |
 |--------|-------------|
 | `-f`, `--force` | 跳过已有安装的确认提示。 |

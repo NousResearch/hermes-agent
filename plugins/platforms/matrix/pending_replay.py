@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import quote
 
 from gateway.pending_native import PendingNativeInput
+from gateway.session import SessionSource
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.matrix.client_events import Method, raw_state_event
@@ -31,8 +32,13 @@ class MatrixPendingReplayMixin(BasePlatformAdapter):
         return PendingNativeInput.capture(event, event.raw_message)
 
     async def revalidate_pending_event(
-        self, event: MessageEvent
+        self,
+        event: MessageEvent,
+        *,
+        authorize: Callable[[SessionSource], bool] | None = None,
     ) -> MessageEvent | None:
+        if authorize is not None and not authorize(event.source):
+            return None
         from hermes_constants import get_hermes_home
         from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
 

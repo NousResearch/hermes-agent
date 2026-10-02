@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 from gateway.native_message_deletion import NativeMessageDeletion
 from gateway.pending_native import PendingNativeInput
 from gateway.platforms.event import MessageEvent
+from gateway.session import SessionSource
 from gateway.session_identity import identity_of
 
 
@@ -375,7 +376,9 @@ class PendingWithdrawalMixin:
     def pending_native_input(self, event: MessageEvent) -> PendingNativeInput | None:
         return None
 
-    async def revalidate_pending_event(self, event: MessageEvent) -> MessageEvent | None:
+    async def revalidate_pending_event(
+        self, event: MessageEvent, *, authorize: Callable[[SessionSource], bool] | None = None,
+    ) -> MessageEvent | None:
         return None
 
     platform: Any

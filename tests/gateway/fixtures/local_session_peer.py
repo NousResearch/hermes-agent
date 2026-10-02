@@ -12,7 +12,7 @@ import traceback
 from authority_controls_peer import ModelPeer
 
 
-async def probe(peer, target, kind):
+async def probe(peer, target, kind, *, plumbing=False):
     import websockets
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
@@ -59,14 +59,16 @@ async def probe(peer, target, kind):
             assert set(authority.sessions) == before_sessions
         finally:
             runner._draining = False
-        created = await rpc(a, 'session.create', request_id='fresh', source='cli')
+        create_options = ({'source': 'gui', 'title': 'Group: approval', 'hidden': True,
+            'room_plumbing': True, 'follow_profile_config': True} if plumbing else {'source': 'cli'})
+        created = await rpc(a, 'session.create', request_id='fresh', **create_options)
         assert 'result' in created, created
         sid = created['result']['session_id']
         assert sid == created['result']['stored_session_id']
         listed = await rpc(a, 'session.list', limit=10)
         assert any(row['session_id'] == sid for row in listed['result']['sessions']), listed
         info = await rpc(a, 'session.info', session_id=sid)
-        assert info['result']['source'] == 'cli', info
+        assert info['result']['source'] == create_options['source'], info
         assert info['result']['lazy'] is True, info
         assert authority.db.get_session(sid) is not None
         # Private route identity cannot be reconstructed from its serialized source,
@@ -94,7 +96,7 @@ async def probe(peer, target, kind):
                 assert exc.reason == reason
             else:
                 raise AssertionError('restricted principal created a local route')
-        repeated = await rpc(a, 'session.create', request_id='fresh', source='cli')
+        repeated = await rpc(a, 'session.create', request_id='fresh', **create_options)
         assert repeated['result']['session_id'] == sid, repeated
         b = await connect()
         resumed = await rpc(b, 'session.resume', session_id=sid)
@@ -169,6 +171,9 @@ def main():
     target.mkdir()
     (target / 'owned.txt').write_text('disposable')
     kind = sys.argv[1] if len(sys.argv) > 1 else 'approval'
+    plumbing = kind == 'plumbing-approval'
+    if plumbing:
+        kind = 'approval'
     from authority_clarify_peer import ModelPeer as ClarifyPeer
     peer = ThreadingHTTPServer(('127.0.0.1', 0), ModelPeer if kind == 'approval' else ClarifyPeer)
     peer.requests = []
@@ -182,7 +187,7 @@ def main():
         'streaming:\n  enabled: false\n'
         'auxiliary:\n  title_generation:\n    enabled: false\n')
     try:
-        asyncio.run(probe(peer, target, kind))
+        asyncio.run(probe(peer, target, kind, plumbing=plumbing))
     finally:
         peer.shutdown()
         peer.server_close()

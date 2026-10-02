@@ -8,7 +8,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
-                           'yolo', 'safe_mode', 'ignore_user_config'})
+                           'yolo', 'safe_mode', 'ignore_user_config', 'room_plumbing'})
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp'}
 
@@ -89,6 +89,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
 
+    from gateway.session_local_plumbing import validate_policy
+    validate_policy(params)
     source = params.get('source', 'cli')
     if source == 'a2a':
         from gateway.session_a2a import build_forward_policy

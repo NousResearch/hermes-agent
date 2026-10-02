@@ -220,11 +220,12 @@ class AuthorityConnection:
         # ``-c <title> --create-if-missing``: resolve-or-create is one owner step (no await
         # between lookup and creation), so concurrent programmatic callers converge.
         title = validate_title(params.pop('title')) if 'title' in params else None
-        # Bot Mode's forever-chat mint: born hidden from the sidebar; `follow_profile_config` is
-        # the canonical default (a local session's runtime is built from the profile's current
-        # config on every attach), so the flag is accepted for the legacy contract and implied.
+        # The legacy follow_profile_config option alone retains its existing behavior.
+        # Explicit room plumbing opts into the separately guarded idle-resume contract.
         hidden = params.pop('hidden', False)
-        params.pop('follow_profile_config', None)
+        follow = params.pop('follow_profile_config', None)
+        from gateway.session_local_plumbing import validate_create
+        validate_create(params, hidden=hidden, follow=follow)
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
@@ -250,7 +251,7 @@ class AuthorityConnection:
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
                 'session_create': {'sources': ['cli', 'tui', 'gui', 'acp'],
-                                   'parameters': sorted(CREATE_FIELDS | {'title'})}}
+                                   'parameters': sorted(CREATE_FIELDS | {'title', 'hidden', 'follow_profile_config'})}}
 
     async def info(self, ref, params):
         from gateway.session_local import local_session_info
@@ -320,6 +321,8 @@ class AuthorityConnection:
         self.authority.authorize(self.actor, ref, 'session:read')
         from gateway.session_local_recovery import reopen_local_session
         reopen_local_session(self.authority, ref)
+        from gateway.session_local_plumbing import refresh_on_resume
+        refresh_on_resume(self.authority, self.actor, ref)
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         # Only local routes have a frozen local launch policy to project.

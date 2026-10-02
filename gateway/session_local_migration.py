@@ -81,7 +81,10 @@ def adopt_legacy_session(authority, actor, row):
     params = {'source': row['source']}
     if row.get('cwd'):
         params['cwd'] = row['cwd']
-    if row.get('model'):
+    from gateway.session_local_plumbing import legacy_plumbing
+    if legacy_plumbing(row):
+        params['room_plumbing'] = True
+    elif row.get('model'):
         params['model'] = row['model']
     private = {}
     policy = build_policy(params, _load_gateway_config(), private_secrets=private)

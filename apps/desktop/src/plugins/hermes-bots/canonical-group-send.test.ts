@@ -20,8 +20,11 @@ test('uncertain sends reopen with exact identity and attachments, isolated by au
   const reopen = () => {
     const journal = preparedJournal(dir, 'http://localhost:5174')
     vi.stubGlobal('window', { hermesDesktop: { preparedSubmissions: {
+      owner: async () => 'original-window',
       read: async () => JSON.stringify(journal.read()),
-      update: async (key: string, entry: string | null) => journal.update(key, entry === null ? null : JSON.parse(entry))
+      update: async (key: string, entry: string | null) => journal.update(key, entry === null ? null : JSON.parse(entry)),
+      compareSend: async (key: string, expected: string | null, entry: string | null) =>
+        journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
     } } })
   }
   try {
@@ -34,7 +37,8 @@ test('uncertain sends reopen with exact identity and attachments, isolated by au
     payload.attachments[0].path = '/mutated'
     reopen() // The server ACK was lost; no retirement has happened.
     expect(await readCanonicalGroupSend(binding)).toEqual(expected)
-    expect(await prepareCanonicalGroupSend(binding, { text: 'new draft must not replace uncertain input' })).toEqual(expected)
+    await expect(prepareCanonicalGroupSend(binding, { text: 'new draft must not replace uncertain input' })).rejects.toThrow('explicit recovery')
+    expect(await readCanonicalGroupSend(binding)).toEqual(expected)
     for (const other of [{ ...binding, profile: 'other' }, { ...binding, roomId: 'other' }, { ...binding, connectionId: 'other' }]) {
       expect(await readCanonicalGroupSend(other)).toBeUndefined()
     }
@@ -52,7 +56,7 @@ test('native journal acknowledgement gates send and a failed write cannot downgr
   let entered!: () => void
   const writing = new Promise<void>(resolve => { entered = resolve })
   const gate = new Promise<void>(resolve => { acknowledge = resolve })
-  const native = { read: async () => '{}', update: vi.fn(() => { entered(); return gate }) }
+  const native = { owner: async () => 'window', read: async () => '{}', update: vi.fn(), compareSend: vi.fn(async () => { entered(); await gate; return true }) }
   const browserWrite = vi.fn()
   vi.stubGlobal('window', { hermesDesktop: { preparedSubmissions: native }, localStorage: { setItem: browserWrite } })
   const send = vi.fn()
@@ -62,8 +66,9 @@ test('native journal acknowledgement gates send and a failed write cannot downgr
   acknowledge()
   await pending
   expect(send).toHaveBeenCalledOnce()
-  native.update.mockRejectedValueOnce(new Error('disk full'))
+  native.compareSend.mockRejectedValueOnce(new Error('disk full'))
   await expect(prepareCanonicalGroupSend(binding, { text: 'blocked' }).then(send)).rejects.toThrow('disk full')
   expect(send).toHaveBeenCalledOnce()
   expect(browserWrite).not.toHaveBeenCalled()
+  expect(native.update).not.toHaveBeenCalled()
 })

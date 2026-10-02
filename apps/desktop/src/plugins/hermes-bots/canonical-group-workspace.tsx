@@ -9,8 +9,8 @@ import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-gro
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalGroupPendingActions } from './canonical-group-pending-actions'
 import { updateCanonicalGroupName } from './canonical-group-registry'
-import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
-import type { PreparedCanonicalGroupSend } from './canonical-group-send'
+import { attemptCanonicalGroupSend, claimCanonicalGroupSend, listCanonicalGroupSends, prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend, settleCanonicalGroupSend } from './canonical-group-send'
+import type { PreparedCanonicalGroupSend, RecoverableCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest, isPendingFileAction } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoomMember } from './canonical-groups'
 
@@ -26,7 +26,7 @@ interface DriverStatus {
 interface RoomState { room: { name: string; authority_epoch?: number; members?: CanonicalRoomMember[] }; driver_status?: DriverStatus }
 type Labels = ReturnType<typeof useCanonicalGroupLabels>
 
-// A 4001 with one of these reasons means nothing was accepted; any other failure may have been.
+// These reasons prove only this attempt had no effect, not any earlier attempt.
 const TERMINAL_SEND_REFUSALS = new Set(['invalid_params', 'permission_denied', 'unknown_execution', 'stale_generation'])
 
 function sendOutcome(error: unknown): 'refused' | 'retryable' | 'unknown' {
@@ -90,6 +90,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   const uploadingRef = useRef(false)
   const [restored, setRestored] = useState(false)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
+  const [recoveries, setRecoveries] = useState<RecoverableCanonicalGroupSend[]>([])
+  const inputRevision = useRef(0)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const [stopping, setStopping] = useState(false)
@@ -108,7 +110,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   useEffect(() => {
     alive.current = true
     let cancelled = false
-    void readCanonicalGroupSend(binding).then(entry => {
+    void Promise.all([readCanonicalGroupSend(binding), listCanonicalGroupSends(binding)]).then(([entry, recoverable]) => {
       if (cancelled) {return}
 
       if (entry) {
@@ -117,6 +119,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
         setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])
       }
 
+      setRecoveries(recoverable)
       setRestored(true)
     }).catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
 
@@ -204,37 +207,68 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   const send = () => {
     if (!restored || busyRef.current || uploadingRef.current || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
     setSendHint('')
+    const editing = inputRevision.current
     void mutate(async () => {
       const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments })
 
       if (!alive.current) {return}
-      setPending(exact)
-      setDraft(String(exact.params.payload.text ?? ''))
-      setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
+      if (inputRevision.current === editing) {
+        setPending(exact)
+        setDraft(String(exact.params.payload.text ?? ''))
+        setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
+      }
 
+      const freshAttempt = await attemptCanonicalGroupSend(binding, exact)
+
+      if (!alive.current) {return}
       try {
-        const result = await canonicalGroupRequest<{ accepted?: boolean; client_event_id?: unknown } | undefined>(binding, 'groups.send', exact.params)
+        const result = await canonicalGroupRequest<{ accepted?: unknown; client_event_id?: unknown } | undefined>(binding, 'groups.send', exact.params)
 
-        if (result?.accepted === false || result?.client_event_id !== exact.params.event_id) {
+        if (!result || typeof result !== 'object' || Array.isArray(result) ||
+            (Object.hasOwn(result, 'accepted') && result.accepted !== true) || result.client_event_id !== exact.params.event_id) {
           throw new Error(labels.unconfirmedSend)
         }
       } catch (error) {
-        const outcome = sendOutcome(error)
+        const outcome = freshAttempt ? sendOutcome(error) : 'unknown'
 
         // Only the room that sent it gets the text back; a view that moved on keeps the journal entry.
         if (outcome === 'refused' && alive.current) {
-          await retireCanonicalGroupSend(binding, exact.params.event_id)
+          await retireCanonicalGroupSend(binding, exact.params.event_id, exact)
 
-          if (alive.current) {setPending(null)}
+          if (alive.current) {setPending(current => current?.params.event_id === exact.params.event_id ? null : current)}
         }
 
         if (alive.current) {setSendHint(outcome === 'refused' ? labels.sendRefused : outcome === 'retryable' ? labels.sendNotYet : labels.sendMaybe)}
         throw error
       }
 
-      await retireCanonicalGroupSend(binding, exact.params.event_id)
+      await settleCanonicalGroupSend(binding, exact)
 
-      if (alive.current) {setPending(null); setDraft(''); setAttachments([])}
+      if (alive.current) {
+        setPending(current => current?.params.event_id === exact.params.event_id ? null : current)
+        if (inputRevision.current === editing) {setDraft(''); setAttachments([])}
+        try {
+          const recoverable = await listCanonicalGroupSends(binding)
+          if (alive.current) {setRecoveries(recoverable)}
+        } catch (error) {console.warn('Accepted group Send recovery journal could not be read', error)}
+      }
+    })
+  }
+
+  const restore = (recovery: RecoverableCanonicalGroupSend) => {
+    if (pending || draft.trim() || attachments.length || uploadingRef.current) {return}
+    const editing = inputRevision.current
+    void mutate(async () => {
+      const exact = await claimCanonicalGroupSend(binding, recovery)
+
+      if (!alive.current) {return}
+      if (inputRevision.current === editing) {
+        setPending(exact)
+        setDraft(String(exact.params.payload.text ?? ''))
+        setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
+      }
+      const recoverable = await listCanonicalGroupSends(binding)
+      if (alive.current) {setRecoveries(recoverable)}
     })
   }
 
@@ -309,12 +343,17 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
         {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
         {pending && <p role="status">{labels.restoredPendingSend}</p>}
         {sendHint && <p aria-live="polite">{sendHint}</p>}
+        {recoveries.filter(recovery => recovery.entry.params.event_id !== pending?.params.event_id).map(recovery =>
+          <div className="flex items-center gap-2" key={recovery.storageKey}>
+            <span className="min-w-0 flex-1 truncate">{String(recovery.entry.params.payload.text || labels.groupMessage)}</span>
+            <Button disabled={!visible || busy || uploading || !!pending || !!draft.trim() || !!attachments.length} onClick={() => restore(recovery)} size="inline" variant="text">{labels.restorePendingSend}</Button>
+          </div>)}
       </div>
       <form className={`${composerInputSurface} rounded-2xl border border-(--ui-stroke-tertiary) p-2`} data-slot="composer-root"
         onSubmit={event => { event.preventDefault(); send() }}>
-        <CanonicalGroupComposerInput disabled={inputDisabled} members={members} name={name} onChange={setDraft} onSubmit={send} value={draft} />
+        <CanonicalGroupComposerInput disabled={inputDisabled} members={members} name={name} onChange={value => {inputRevision.current++; setDraft(value)}} onSubmit={send} value={draft} />
         <div className="mt-1 flex items-end gap-2">
-          <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={inputDisabled} onChange={setAttachments}
+          <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={inputDisabled} onChange={value => {inputRevision.current++; setAttachments(value)}}
             onUploadingChange={uploading => { uploadingRef.current = uploading;
 
  if (alive.current) {setUploading(uploading)} }} />

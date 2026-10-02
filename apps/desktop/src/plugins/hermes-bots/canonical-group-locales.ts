@@ -24,6 +24,7 @@ export interface CanonicalGroupMessages {
   confirmDiscard: string
   unconfirmedSend: string
   restoredPendingSend: string
+  restorePendingSend: string
   groupMessage: string
   attachFiles: string
   removeAttachment: string
@@ -153,6 +154,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: 'Skip reply',
     unconfirmedSend: 'We haven’t confirmed your previous message. Retry that message before sending another.',
     restoredPendingSend: 'Your last message is waiting for confirmation. Retry it before sending another.',
+    restorePendingSend: 'Restore draft',
     groupMessage: 'Group message',
     attachFiles: 'Attach files',
     removeAttachment: 'Remove file',
@@ -281,6 +283,7 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend:
       '前のメッセージの送信をまだ確認できていません。別のメッセージを送る前に、同じメッセージを再試行してください。',
     restoredPendingSend: '最後のメッセージは確認待ちです。別のメッセージを送る前に再試行してください。',
+    restorePendingSend: '下書きを復元',
     groupMessage: 'グループへのメッセージ',
     attachFiles: 'ファイルを添付',
     removeAttachment: 'ファイルを外す',
@@ -405,6 +408,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: '跳过回复',
     unconfirmedSend: '尚未确认你上一条消息的发送结果。请先重试该消息，再发送其他消息。',
     restoredPendingSend: '你的上一条消息正在等待确认。请先重试，再发送其他消息。',
+    restorePendingSend: '恢复草稿',
     groupMessage: '群聊消息',
     attachFiles: '附加文件',
     removeAttachment: '移除文件',
@@ -528,6 +532,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: '略過回覆',
     unconfirmedSend: '尚未確認你上一則訊息的傳送結果。請先重試該訊息，再傳送其他訊息。',
     restoredPendingSend: '你的上一則訊息正在等待確認。請先重試，再傳送其他訊息。',
+    restorePendingSend: '還原草稿',
     groupMessage: '群聊訊息',
     attachFiles: '附加檔案',
     removeAttachment: '移除檔案',
@@ -652,6 +657,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: 'تخطي الإجابة',
     unconfirmedSend: 'لم نؤكد رسالتك السابقة بعد. أعد محاولة إرسال الرسالة نفسها قبل إرسال رسالة أخرى.',
     restoredPendingSend: 'رسالتك الأخيرة تنتظر التأكيد. أعد محاولتها قبل إرسال رسالة أخرى.',
+    restorePendingSend: 'استعادة المسودة',
     groupMessage: 'رسالة للمجموعة',
     attachFiles: 'إرفاق ملفات',
     removeAttachment: 'إزالة الملف',
@@ -779,6 +785,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: 'Пропустить ответ',
     unconfirmedSend: 'Предыдущее сообщение ещё не подтверждено. Повторите это сообщение, прежде чем отправлять другое.',
     restoredPendingSend: 'Последнее сообщение ожидает подтверждения. Повторите его, прежде чем отправлять другое.',
+    restorePendingSend: 'Восстановить черновик',
     groupMessage: 'Сообщение группе',
     attachFiles: 'Прикрепить файлы',
     removeAttachment: 'Убрать файл',
@@ -910,6 +917,7 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend:
       'Votre précédent message n’a pas encore été confirmé. Réessayez ce message avant d’en envoyer un autre.',
     restoredPendingSend: 'Votre dernier message attend une confirmation. Réessayez-le avant d’en envoyer un autre.',
+    restorePendingSend: 'Restaurer le brouillon',
     groupMessage: 'Message au groupe',
     attachFiles: 'Joindre des fichiers',
     removeAttachment: 'Retirer le fichier',
@@ -1043,6 +1051,7 @@ export const CANONICAL_GROUP_LOCALES = {
       'Deine vorige Nachricht wurde noch nicht bestätigt. Versuche diese Nachricht erneut, bevor du eine weitere sendest.',
     restoredPendingSend:
       'Deine letzte Nachricht wartet auf Bestätigung. Versuche sie erneut, bevor du eine weitere sendest.',
+    restorePendingSend: 'Entwurf wiederherstellen',
     groupMessage: 'Gruppennachricht',
     attachFiles: 'Dateien anhängen',
     removeAttachment: 'Datei entfernen',
@@ -1175,6 +1184,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: 'Omitir respuesta',
     unconfirmedSend: 'Aún no hemos confirmado tu mensaje anterior. Reintenta ese mensaje antes de enviar otro.',
     restoredPendingSend: 'Tu último mensaje espera confirmación. Reinténtalo antes de enviar otro.',
+    restorePendingSend: 'Restaurar borrador',
     groupMessage: 'Mensaje al grupo',
     attachFiles: 'Adjuntar archivos',
     removeAttachment: 'Quitar archivo',

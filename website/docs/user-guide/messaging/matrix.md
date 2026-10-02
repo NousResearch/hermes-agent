@@ -20,11 +20,12 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. Any room with 2 or fewer joined members is treated as a DM this way too, even if it has an explicit name — Matrix clients auto-name 1:1 chats, so name alone isn't a reliable signal. |
-| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A deliberately-created 2-person room is still classified as a DM (see above) and silently bypasses `MATRIX_ALLOWED_ROOMS`, `MATRIX_REQUIRE_MENTION`, and `MATRIX_FREE_RESPONSE_ROOMS` — add a third member if you need it to behave like a regular room. |
+| **DMs** | Hermes treats a room as a private bot chat when exactly two users have joined: the bot and one other user. It responds to every message from an authorised user without an `@mention`, and each chat has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a private bot chat. The room name and `m.direct` metadata do not change this classification. |
+| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A room with more than two joined users, or whose joined membership cannot be determined, follows room rules. Only private bot chats bypass `MATRIX_ALLOWED_ROOMS` and the room mention settings. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
-| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. Rooms with 2 or fewer joined members are DM-classified (see above) and follow `MATRIX_DM_AUTO_THREAD`, not `MATRIX_AUTO_THREAD`. |
+| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for private bot chats. This is distinct from `MATRIX_DM_MENTION_THREADS`, which starts a thread when the bot is `@mentioned` in a private bot chat. These two-person chats follow `MATRIX_DM_AUTO_THREAD`. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
+| **Emotes and stickers** | Native `/me` actions include the sender's Matrix ID. Their text is conversational, even when it begins with a command. Stickers include their description and image, subject to the same room, sender and mention rules as other messages. |
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
@@ -55,6 +56,25 @@ are disabled, opportunistic, or required.
 | video | yes |
 | E2EE | off / optional / required |
 | diagnostics | yes |
+
+### Native Actions and Stickers
+
+Hermes receives native Matrix emotes (`m.emote`) and stickers (`m.sticker`) in
+plain and encrypted rooms. Emotes appear as
+`[emote by https://matrix.to/#/@user:server] action`. The sender's Matrix ID is
+written as a permalink so that Hermes does not read it as an `@` context
+reference such as `@file:`. Stickers appear as `[sticker: description]`, with
+cached image pixels when the attachment can be downloaded within the configured
+media limit. If the image is too large or unavailable, Hermes receives the
+description and an attachment status instead. Hermes ignores a sticker that the
+server has already redacted when Hermes receives it.
+
+Replies, thread history and explicit Matrix context reads use the same action
+and sticker descriptions. When an emote or sticker is edited or redacted before
+model dispatch, Hermes rechecks that event's contribution to the new input. A
+withdrawn sticker loses its cached pixels or image description; other stickers
+in a queued burst keep theirs. This recheck affects the new input. Earlier model requests
+and the conversation's existing transcript remain unchanged.
 
 ### Session Model in Matrix
 
@@ -103,7 +123,31 @@ matrix:
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
   max_message_length: 16000       # Outbound chunk size in chars (default: 16000, max: 65535)
+  room_backfill_limit: 20         # Earlier room events to scan on a mention (0 disables)
+  thread_backfill_limit: 20       # Earlier thread events to scan (0 disables)
 ```
+
+In shared rooms and threads that require a mention, an admitted @mention includes the
+messages that did not mention the bot since its previous turn there. The scan stops at
+the bot's own last reply or the last admitted mention, whichever is later, and each
+limit bounds the number of events scanned. The bot's status notices, such as restart
+notices and progress updates, are not replies: the scan continues past them, and
+neither catch-up nor thread history includes them. The previous turn can belong to an
+earlier session. In the main timeline, catch-up after `/new` starts after the bot's
+reply to `/new`, so the conversation that the reset discarded stays out of the new
+session. Thread messages stay within their thread; room catch-up excludes thread
+replies. The first message of a new thread session includes the thread root and up to
+`thread_backfill_limit` earlier thread messages instead. That history does not stop at
+the bot's own messages, because the new session has no transcript that contains them.
+In a thread, the first message after `/new` starts a new thread session, so it gets
+that history, including the messages from before `/new`. Free-response rooms and rooms
+with `require_mention: false` start a turn for every message, so they have no catch-up.
+Threads that the bot already takes part in also start a turn for every message unless
+`thread_require_mention` is `true`. With that setting, those threads require a mention
+and get catch-up as well. Set either limit to `0` to disable that source of earlier
+messages. Catch-up and thread history also list recent reactions to the included
+messages. Redacted reactions are excluded. Ordinary reactions do not start an agent
+turn.
 
 Or via environment variables:
 
@@ -117,13 +161,40 @@ MATRIX_PROCESS_NOTICES=false
 MATRIX_SESSION_SCOPE=room       # recommended for stable project-room context
 MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
-MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
 MATRIX_ALLOW_ROOM_MENTIONS=false
 ```
 
-:::tip Disabling reactions
-`MATRIX_REACTIONS=false` turns off the processing-lifecycle emoji reactions (👀/✅/❌) the bot posts on inbound messages. Useful for rooms where reaction events are noisy or aren't supported by all participating clients.
-:::
+### Read receipts and lifecycle reactions
+
+Configure automatic feedback in the owning profile's `config.yaml`:
+
+```yaml
+matrix:
+  read_receipts: immediate
+  reactions: true
+```
+
+| `read_receipts` | Behaviour |
+|-----------------|-----------|
+| `immediate` | Default. Mark an accepted inbound message as read on arrival. |
+| `after_processing` | Mark the message as read when processing completes, including failure. Expected cancellation skips the receipt. |
+| `disabled` | Send no automatic read receipts. |
+
+Unrecognised receipt modes use `immediate`.
+
+`send_read_receipts` is the read-receipt switch that WhatsApp and BlueBubbles
+also use. On Matrix, `send_read_receipts: false` turns automatic receipts off
+whatever `read_receipts` says. When it is `true` or unset, `read_receipts`
+chooses when the receipt is sent.
+
+`reactions: false` disables the processing reactions (👀/✅/❌). Approval,
+model picker and choice picker reactions remain available. Reactions default to
+`true`; completion keeps the existing success, failure and cancellation behaviour.
+
+Each served profile resolves its own settings. The existing `MATRIX_REACTIONS`
+environment override takes precedence over that profile's YAML value. Receipt
+timing is configured only through `read_receipts` in YAML. Both settings also
+work under `platforms.matrix` or `gateway.platforms.matrix`.
 
 :::tip Room-wide mentions
 Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
@@ -162,6 +233,24 @@ named session from another Matrix room unless you explicitly use
 share the lane. With `group_sessions_per_user: true` (default), Alice and Bob get
 separate Project B sessions. With `group_sessions_per_user: false`, the room has
 one shared Project B transcript.
+
+During a live Matrix turn, the agent can use `matrix_read` to inspect the
+current room's name, topic, alias, join rule, history visibility, encryption,
+joined members, power levels, and pinned messages. Member and pin results are
+bounded by the tool's `limit` argument. Pinned messages use the bot's Matrix
+client and report individual fetch or decryption errors. The tool applies the
+same room and sender access rules as Matrix history reads.
+
+Enable the `matrix_admin` toolset for Matrix in `hermes tools` to allow room
+administration. This toolset is disabled by default. Its actions use the
+current session's connected client and the same room and sender access rules
+as Matrix reads. The `matrix_pin` action changes the current room's
+`m.room.pinned_events` state. The requesting user must have the room power
+level needed to change pins, so a member cannot use the bot's power to change
+pins that they could not change themselves. The homeserver then checks the
+bot's own permission, and the tool reports its error if the bot cannot send
+that state event. The other administration actions are described in
+[Matrix Tools and Controls](#matrix-tools-and-controls).
 
 This guide walks you through the full setup process — from creating your bot account to sending your first message.
 
@@ -355,6 +444,18 @@ The bot should connect to your homeserver and start syncing within a few seconds
 You can run `hermes gateway` in the background or as a systemd service for persistent operation. See the deployment docs for details.
 :::
 
+### Restarts and messages sent while offline
+
+Hermes saves its Matrix sync position for each profile, homeserver account and
+device. After a restart it resumes from that position and handles every message
+that arrived while it was stopped, however old the message is. After a long
+outage the bot can therefore answer a backlog of messages in several rooms.
+
+On the first start of a new device, or when the homeserver rejects the saved
+position (for example after a homeserver database restore), Hermes starts from
+a fresh sync. It then ignores messages that were sent more than five seconds
+before startup, so it does not answer the room history again.
+
 ## End-to-End Encryption (E2EE)
 
 Hermes supports Matrix end-to-end encryption, so you can chat with your bot in encrypted rooms.
@@ -410,9 +511,76 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Hermes does not expose Matrix-specific agent tools (such as room creation, invites, or redaction) — the agent interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
+The `matrix_read` tool, in the `matrix_read` toolset, reads recent messages in the current room, one thread, or one event, and returns at most 50 events. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
 
-If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms (DMs are exempt).
+The `matrix_image_packs` toolset lists and sends image-pack stickers, as described in the Image-pack stickers section below.
+
+The `matrix_reaction` tool, in the `matrix_reaction` toolset, adds an emoji reaction to a message or removes the reactions that the agent added. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. The gateway records agent reactions in memory for the 1,000 most recently used messages, so the agent can remove only reactions that it added since the gateway process started. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
+
+The read and reaction tools operate in the current room. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy.
+
+`matrix_followup` can enable one reaction-triggered follow-up for the current turn. The agent can restrict it to specific emoji. For ten minutes after the final reply is delivered, a new matching reaction from the requester to any part of that reply starts one follow-up turn in the same room and thread. The action is disabled by default, and the last call in the turn decides its setting.
+
+The `matrix_read`, `matrix_reaction`, `matrix_followup` and `matrix_image_packs` toolsets are enabled for Matrix sessions. Turn any of them off in the Matrix checklist of `hermes tools`, or run `hermes tools disable <toolset> --platform matrix`, for example `hermes tools disable matrix_reaction --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before these toolsets existed does not include them; run `hermes tools enable <toolset> --platform matrix` to add each one.
+
+Room administration requires the additional `matrix_admin` toolset. Enable it
+for Matrix in `hermes tools`, or select it in the owning profile's config:
+
+```yaml
+platform_toolsets:
+  matrix: [hermes-matrix, matrix_admin]
+```
+
+When a shared bot routes a conversation to another profile, administration
+still uses the bot that received the event. Enable `matrix_admin` in both the
+runtime profile and the receiving bot's profile. Each operation rechecks both
+selections before writing.
+
+| Tool | Action |
+|---|---|
+| `matrix_room_admin`, `action: create` | Create a private room with a name, topic, invite list, and optional E2EE |
+| `matrix_room_admin`, `action: invite` | Invite a full Matrix user ID to the current room |
+| `matrix_room_admin`, `action: leave` | Leave the current room |
+| `matrix_room_admin`, `action: forget` | Forget the current room after the bot has left |
+| `matrix_room_admin`, `action: redact` | Redact an event in the current room |
+| `matrix_pin` | Pin or unpin an event in the current room |
+
+These tools require a live Matrix session and an authorised actor. Existing
+room actions are limited to the session's current room. Invite and pin also
+require the actor's corresponding Matrix power level. Every redaction requires
+the room's level for sending `m.room.redaction` events, and redacting another
+user's event, including the bot's, also requires the redact level. Leave and
+forget require the room's kick level, because removing the bot affects every
+member of the room. A room v12 creator passes every power check. In a private
+chat with the bot, where the actor is the only other joined member, leave and
+forget need no power level. A refusal reports the required and actual levels.
+The homeserver checks the bot's permissions and its errors are reported in the
+tool result. Create uses the configured actor authorisation and no room power
+level. It can invite only the actor and users whom the gateway authorises,
+such as those in `MATRIX_ALLOWED_USERS`.
+
+New rooms are private. `encrypted: true` requires the owning client's active
+crypto store and adds Megolm encryption state during creation. With
+`is_direct: true`, the room must invite exactly one user, and the bot records
+it as a direct chat with that user in its `m.direct` account data. The bot sees
+the new room through normal sync. Forget removes the room from the bot's own
+account after leaving; other members retain their room. It does not purge the
+room from the homeserver. A leave/forget sequence must run during the current
+turn because the bot cannot receive a new turn in a room after leaving. An
+authorised user can invite the bot back later, and it rejoins through its
+normal invite handling.
+
+Changing the admin selection affects tool discovery for new sessions. Active
+admin operations recheck the current selection, profile, client, room policy,
+and actor authorisation before a write. If the turn is interrupted or the
+operation times out after the request was sent to the homeserver, the result
+reports that the outcome is unknown and tells the agent how to check before
+retrying. Enabling tools does not rebuild the system prompt or rewrite the
+history of an existing conversation.
+
+The adapter also uses reactions and redactions internally to power approval prompts and pickers.
+
+If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms and in private bot chats with exactly two joined users, including the bot.
 
 Reaction controls use:
 
@@ -422,6 +590,43 @@ Reaction controls use:
 - number reactions for `/model` choices
 
 Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
+
+### Image-pack stickers
+
+In a Matrix session, `matrix_image_packs` lists sticker images from current-room
+packs and accessible room packs referenced by the bot account. It supports
+[MSC2545 image packs][image-packs-msc] and the legacy Cinny room and account
+formats. Private account packs belong to the bot account. The tool does not
+read the requester's private packs or join referenced rooms.
+
+Use `action: "list"`, then pass an item's `selection_id` to `action: "send"`.
+Selections expire after five minutes and are limited to the same conversation,
+requester, room, bot and profile. `/new` and compression that creates a child
+session invalidate earlier selections; in-place compression preserves them. The
+tool reads the selected pack again after preparing encryption and rejects
+changed or removed images and account references. It sends a native `m.sticker`
+event with the current reply and thread relations. In encrypted rooms, the
+owning Matrix client's crypto encrypts the sticker event. Pack media remains
+public, as specified by MSC2545.
+
+Pack labels, descriptions and image bodies are untrusted data. Catalogs return
+at most 20 packs, 100 inspected images and 20 account references, with explicit
+errors and truncation indicators. When the current room has more than 1,000
+state events, or its state cannot be read, the catalog reports an error for the
+room's own packs and still lists the bot account's private pack and the packs
+that the bot account references. Matrix's state endpoint has no pagination, so
+the SDK receives the complete state response before Hermes applies this
+processing limit. Declared image sizes must fit the adapter's media limit;
+sending an existing MXC URL does not download or re-upload the image.
+
+The `matrix_image_packs` toolset is enabled for Matrix sessions. Turn it off in
+the Matrix checklist of `hermes tools`, or run
+`hermes tools disable matrix_image_packs --platform matrix`. A saved Matrix
+toolset list that names individual toolsets and was saved before this toolset
+existed does not include it; run
+`hermes tools enable matrix_image_packs --platform matrix` to add it.
+
+[image-packs-msc]: https://github.com/matrix-org/matrix-spec-proposals/blob/0923024fe35068874e59b5536b793dfcfcfc96c0/proposals/2545-emotes.md
 
 ### Media Limits
 
@@ -494,6 +699,7 @@ Other Matrix clients (Element, matrix-commander) may cache the old device keys. 
 If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
 :::
 
+
 ## Home Room
 
 You can designate a "home room" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:
@@ -513,9 +719,9 @@ MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
 
 ## Room allowlist (`allowed_rooms`)
 
-Restrict the bot to a fixed set of Matrix rooms. When set, the bot **only** responds in rooms whose ID appears in the list — messages from any other room are silently ignored, even if the bot is mentioned.
+Restrict the bot to a fixed set of Matrix rooms. When set, the bot responds in listed rooms and private bot chats. It ignores messages from other rooms, even if the bot is mentioned.
 
-**DMs (direct chat rooms) are exempt** from this filter, so authorized users can always reach the bot one-on-one.
+**Private bot chats are exempt** from this filter when exactly two users have joined, including the bot. Other rooms require an allowlist entry, even if a Matrix client marks them as direct.
 
 ```yaml
 matrix:

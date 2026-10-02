@@ -880,6 +880,189 @@ describe('PluginsTab catalog UX', () => {
     expect(screen.queryByRole('button', { name: 'Uninstall: demo-tool' })).toBeNull()
   })
 
+  it('prefers explicit catalog_name over a repository-only candidate', async () => {
+    $agentPlugins.set([
+      {
+        catalog_name: weatherEntry.name,
+        description: '',
+        has_desktop_half: true,
+        key: 'weather-explicit',
+        name: 'weather-explicit',
+        source: 'git',
+        status: 'enabled',
+        version: '2.0.0'
+      },
+      {
+        description: '',
+        has_desktop_half: true,
+        key: 'weather-repo-only',
+        name: 'weather-repo-only',
+        source: 'git',
+        status: 'enabled',
+        version: '2.0.0'
+      }
+    ])
+    publishPlugin({
+      id: 'weather-explicit-desktop',
+      name: 'Explicit Weather Package',
+      kind: 'disk',
+      status: 'loaded',
+      packageName: 'weather-explicit',
+      packageOrigin: { repo: 'https://github.com/example/different-repo' }
+    })
+    publishPlugin({
+      id: 'weather-repo-desktop',
+      name: 'Repo-Only Weather Package',
+      kind: 'disk',
+      status: 'loaded',
+      packageName: 'weather-repo-only',
+      packageOrigin: { repo: weatherEntry.repo }
+    })
+    seedCatalog()
+
+    await act(async () => {
+      renderPlugins({ profile: 'workbot' })
+    })
+    await selectCatalogEntry(weatherEntry.name)
+
+    expect(screen.getByTestId('plugin-row-weather-explicit')).toBeTruthy()
+    expect(screen.queryByTestId('plugin-row-weather-repo-only')).toBeNull()
+  })
+
+  it('associates a git-installed unified package by canonical repository when catalog_name is absent', async () => {
+    $agentPlugins.set([
+      {
+        description: '',
+        has_desktop_half: true,
+        key: 'weather',
+        name: 'weather',
+        source: 'git',
+        status: 'enabled',
+        version: '2.0.0'
+      }
+    ])
+    publishPlugin({
+      id: 'weather-widget',
+      name: 'Weather Widget',
+      kind: 'disk',
+      status: 'loaded',
+      packageName: 'weather',
+      packageOrigin: { repo: 'git@github.com:example/weather-plugin.git' }
+    })
+    seedCatalog()
+
+    await act(async () => {
+      renderPlugins({ profile: 'workbot' })
+    })
+    await selectCatalogEntry(weatherEntry.name)
+
+    const packageRow = screen.getByTestId('plugin-row-weather')
+    expect(within(packageRow).getByRole('switch', { name: 'Desktop: Weather Widget' })).toBeTruthy()
+    expect($agentPlugins.get()[0]?.catalog_name).toBeUndefined()
+    expect($pluginRecords.get()['weather-widget']?.packageOrigin?.catalogName).toBeUndefined()
+  })
+
+  it('uses the installed subdirectory to distinguish catalog entries in a shared repository', async () => {
+    const weatherSubdirEntry = { ...weatherEntry, subdir: 'plugins/weather' }
+    const climateSubdirEntry = { ...weatherEntry, name: 'climate-plugin', subdir: 'plugins/climate' }
+    $agentPlugins.set([
+      {
+        description: '',
+        has_desktop_half: true,
+        key: 'weather',
+        name: 'weather',
+        source: 'git',
+        status: 'enabled',
+        version: '2.0.0'
+      }
+    ])
+    publishPlugin({
+      id: 'weather-widget',
+      name: 'Weather Widget',
+      kind: 'disk',
+      status: 'loaded',
+      packageName: 'weather',
+      packageOrigin: { repo: 'https://github.com/example/weather-plugin.git?ref=main#plugins/weather' }
+    })
+    seedCatalog([climateSubdirEntry, weatherSubdirEntry])
+
+    await act(async () => {
+      renderPlugins({ profile: 'workbot' })
+    })
+    await selectCatalogEntry(weatherSubdirEntry.name)
+
+    expect(screen.getByTestId('plugin-row-weather')).toBeTruthy()
+  })
+
+  it('does not pick an arbitrary installed package when multiple packages share a repository', async () => {
+    $agentPlugins.set(
+      ['weather-a', 'weather-b'].map(name => ({
+        description: '',
+        has_desktop_half: true,
+        key: name,
+        name,
+        source: 'git',
+        status: 'enabled' as const,
+        version: '2.0.0'
+      }))
+    )
+    publishPlugin({
+      id: 'weather-widget-a',
+      name: 'Weather Widget A',
+      kind: 'disk',
+      status: 'loaded',
+      packageName: 'weather-a',
+      packageOrigin: { repo: weatherEntry.repo }
+    })
+    publishPlugin({
+      id: 'weather-widget-b',
+      name: 'Weather Widget B',
+      kind: 'disk',
+      status: 'loaded',
+      packageName: 'weather-b',
+      packageOrigin: { repo: 'git@github.com:example/weather-plugin.git' }
+    })
+    seedCatalog()
+
+    await act(async () => {
+      renderPlugins({ profile: 'workbot' })
+    })
+    await selectCatalogEntry(weatherEntry.name)
+
+    expect(screen.queryByTestId('plugin-row-weather-a')).toBeNull()
+    expect(screen.queryByTestId('plugin-row-weather-b')).toBeNull()
+  })
+
+  it('does not associate by repository when multiple catalog entries share its identity', async () => {
+    $agentPlugins.set([
+      {
+        description: '',
+        has_desktop_half: true,
+        key: 'weather',
+        name: 'weather',
+        source: 'git',
+        status: 'enabled',
+        version: '2.0.0'
+      }
+    ])
+    publishPlugin({
+      id: 'weather-widget',
+      name: 'Weather Widget',
+      kind: 'disk',
+      status: 'loaded',
+      packageName: 'weather',
+      packageOrigin: { repo: weatherEntry.repo }
+    })
+    seedCatalog([weatherEntry, { ...weatherEntry, name: 'weather-plugin-alias' }])
+
+    await act(async () => {
+      renderPlugins({ profile: 'workbot' })
+    })
+
+    expect(screen.getByRole('button', { name: weatherEntry.name })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'weather-plugin-alias' }).length).toBeGreaterThan(0)
+  })
+
   it('toggles an installed catalog card on and off in place instead of reinstalling or uninstalling it', async () => {
     $catalogCardView.set(true)
     $agentPlugins.set([

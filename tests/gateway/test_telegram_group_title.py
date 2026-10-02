@@ -5,7 +5,9 @@ Only the external bot transport is replaced; no live Telegram mutations are made
 
 import asyncio
 import logging
+import threading
 import time
+import unittest.mock
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import AsyncMock
@@ -17,6 +19,7 @@ from agent.secret_scope import is_multiplex_active, set_multiplex_active
 from agent.title_generator import apply_instant_title, auto_title_session
 from gateway.config import Platform, PlatformConfig
 from gateway.run import GatewayRunner, _profile_runtime_scope
+from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn_runner import TurnRunner
 from gateway.session import AsyncSessionStore, SessionSource
@@ -689,6 +692,166 @@ def _title_session(db, session_id, *, title=None, model=None, started_at=None):
         assert db.set_session_title(session_id, title)
 
 
+@pytest.mark.asyncio
+async def test_stt_failure_note_never_names_the_group():
+    """Criterion 5: a rejected STT placeholder is not a subject, so no lane entry can rename a
+    group after a transcription failure. The model can echo the bracket note back verbatim (every
+    real note slips past _MACHINE_PREFIXES), so the guard lives at the composition chokepoint, not
+    only in the title generator. Tag-only composition is legal (§2.4 ex. 4): the rename still
+    happens, carrying the model and reasoning segments and nothing else."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    note = "[voice message could not be transcribed]"
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-stt", title=note, model="opencode-go/space-bunny-free",
+                       started_at=time.time())
+        await _run_lane(runner, source, "session-stt", note)
+        assert [text for _c, text, _h in adapter._bot.renames] == [
+            compose_group_title("", "opencode-go/space-bunny-free", None)]
+        assert note not in adapter._bot.titles["-101"]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_transcribe_opener_still_names_the_group():
+    """Criterion 6: the placeholder rule must not swallow its sibling by shape. ``Transcribe voice
+    message audio_….ogg`` is a real owner request, so it composes and renames in full."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    opener = "Transcribe voice message audio_20260930_1200.ogg"
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-transcribe", title=opener,
+                       model="opencode-go/space-bunny-free", started_at=time.time())
+        await _run_lane(runner, source, "session-transcribe", opener)
+        assert [text for _c, text, _h in adapter._bot.renames] == [
+            compose_group_title(opener, "opencode-go/space-bunny-free", None)]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_placeholder_name_is_replaced_when_real_context_arrives():
+    """Criterion 12: the re-arm must actually move the GROUP name, not just un-stick the title
+    generator. The placeholder-derived name is published first, then the late real title replaces
+    it — the pre-rename name is never what the group is left holding."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-rearm", title="[voice message could not be transcribed]",
+                       model="opencode-go/space-bunny-free", started_at=time.time())
+        await _run_lane(runner, source, "session-rearm", "placeholder")
+        assert "could not be transcribed" not in adapter._bot.titles["-101"]
+        # Late real context arrives and replaces the placeholder-derived name.
+        assert db.set_session_title("session-rearm", "Deploy cron pipeline")
+        await _run_lane(runner, source, "session-rearm", "Deploy cron pipeline")
+        assert adapter._bot.titles["-101"] == compose_group_title(
+            "Deploy cron pipeline", "opencode-go/space-bunny-free", None)
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,chat_type", [
+    (Platform.TELEGRAM, "dm"), (Platform.TELEGRAM, "channel"),
+    (Platform.DISCORD, "group"), (Platform.DISCORD, "thread"), (Platform.SLACK, "group"),
+])
+async def test_non_telegram_and_non_group_surfaces_never_rename(platform, chat_type):
+    """Criterion 14: no transport that is not a Telegram group/forum chat ever sees setChatTitle.
+    Driven through the real callback attach — the same seam production wires — so the lane
+    predicate is what is proven, not a hand-called helper. Discord/Slack are parametrized so a
+    future platform cannot be added to the lane without tripping this."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = SessionSource(platform=platform, chat_id="-101", chat_type=chat_type)
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-excluded", title="Do not rename",
+                       model="opencode-go/space-bunny-free", started_at=time.time())
+        _attach(runner, source, "session-excluded")("Do not rename", "llm")
+        await asyncio.sleep(0.05)  # the lane runs bounded; an excluded surface issues no request
+        assert adapter._bot.renames == []
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_resolution_does_not_block_the_event_loop():
+    """The composition helper must not do the reasoning resolution's config-file stat on the
+    gateway loop: _resolve_session_reasoning_config falls through to load_user_config_effective,
+    which stats config.yaml and the managed config dir on every call. Sync file I/O there stalls
+    dispatch for every platform, not just this rename."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    loop_thread = threading.get_ident()
+    offloaded = []
+    # The runner instance is the seam: the method arrives via GatewayConfigLoadersMixin, so patch
+    # the instance attribute (patching the mixin class would raise AttributeError).
+    real_resolve = runner._resolve_session_reasoning_config
+
+    def _spy(*args, **kwargs):
+        offloaded.append(threading.get_ident())
+        return real_resolve(*args, **kwargs)
+
+    db.close()
+    try:
+        _title_session(db, "session-offloop", title="Fix login",
+                       model="opencode-go/space-bunny-free", started_at=time.time())
+        runner._resolve_session_reasoning_config = _spy
+        await _run_lane(runner, source, "session-offloop", "Fix login")
+        assert offloaded, "the reasoning resolver never ran, so this test proves nothing"
+        assert all(tid != loop_thread for tid in offloaded), (
+            "reasoning config was resolved on the event loop thread")
+        assert adapter._bot.renames, "the rename must still land after offloading"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_one_turn_model_override_flips_the_tag_back():
+    """Spec §3.3: "A one-turn ``/model`` override flips the tag twice (out and back)." The "out"
+    half already fires from the slash-side notify; without the "back" half the group is left
+    permanently advertising a model that is no longer running, which criterion 2 forbids. The
+    turn finalizer has the source in hand, so the restore re-enters the lane and the tag returns.
+    """
+    adapter = _adapter()
+    runner = _switch_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    runner._sessions = {"tg:-101": SimpleNamespace(
+        run_generation=1, conversation=SimpleNamespace(one_turn_restore=None, model_override=None))}
+    runner._notify_telegram_group_title_of_switch = lambda s, k: runner.notices.append((s, k))
+    runner._restore_session_model_override = lambda session_key, snapshot: None
+    runner._is_session_run_current = lambda session_key, generation: True
+    runner._peek_session_state = lambda session_key: runner._sessions["tg:-101"]
+    runner._sessions["tg:-101"].conversation.one_turn_restore = {"had_override": False, "override": None}
+
+    # Out: the switch itself notified, the tag said the one-turn model.
+    runner._notify_telegram_group_title_of_switch(source, "tg:-101")
+    # Back: the turn ends and the finalizer restores the standing model.
+    await asyncio.to_thread(
+        GatewayInboundMixin._restore_pending_one_turn_model_override, runner, "tg:-101", 1, source=source)
+    assert [key for _s, key in runner.notices] == ["tg:-101", "tg:-101"], (
+        "the one-turn restore did not re-enter the rename lane, so the tag never flips back")
+    assert runner._sessions["tg:-101"].conversation.one_turn_restore is None
+
+    # A displaced finalizer (a newer turn owns the generation) must NOT notify.
+    runner._is_session_run_current = lambda session_key, generation: False
+    runner._sessions["tg:-101"].conversation.one_turn_restore = {"had_override": False, "override": None}
+    await asyncio.to_thread(
+        GatewayInboundMixin._restore_pending_one_turn_model_override, runner, "tg:-101", 1, source=source)
+    assert len(runner.notices) == 2, "a displaced finalizer must not notify"
+    assert runner._sessions["tg:-101"].conversation.one_turn_restore is not None, (
+        "a displaced finalizer must leave the snapshot for the live turn's own finalizer")
+
+
 def _rename_counts(runner, source, session_id):
     counts = getattr(runner, "_telegram_group_title_rename_counts", None) or {}
     return counts.get(
@@ -1085,3 +1248,37 @@ def test_notify_without_a_loop_is_silent():
         asyncio.get_running_loop()
     runner._notify_telegram_group_title_of_switch(source, "agent:main:telegram:group:-101")
     assert adapter._bot.renames == []
+
+
+@pytest.mark.asyncio
+async def test_resolvable_effort_reaches_the_transport_as_an_ordinal_tag():
+    """A resolvable reasoning effort must reach Telegram as an ``r<N>`` segment (criterion 1).
+
+    Every other lane assertion composes with ``None``, so nothing in this file proved the lane
+    hands its resolved effort to the composer at all — dropping that argument at the
+    run_topics seam would leave the whole suite green while the tag silently vanished. The
+    expected string is spelled out rather than rebuilt through ``compose_group_title``: a
+    round-trip would recompute the very function under test and prove nothing at the seam.
+
+    ``high`` is the 4th of :data:`VALID_REASONING_EFFORTS`, hence ``r4``.
+    """
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    resolved = []
+    # The resolver's own config-file read is exercised for real by
+    # test_reasoning_resolution_does_not_block_the_event_loop; here only the effort it
+    # returns is injected, so the assertion is about the lane -> composer -> transport seam.
+    runner._load_reasoning_config = lambda *_a, **_k: (
+        resolved.append("high") or {"enabled": True, "effort": "high"})
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-effort", title="Fix login", model="openrouter/gpt-x",
+                       started_at=time.time())
+        await _run_lane(runner, source, "session-effort", "Fix login")
+
+        assert resolved, "the reasoning resolver never ran, so this test proves nothing"
+        assert [text for _chat, text, _home in _recorder(adapter).renames] == [
+            "Fix login · gpt-x · r4"]
+    finally:
+        db.close()

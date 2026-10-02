@@ -75,3 +75,65 @@ it('switches to a typed model on the provider that serves it', async () => {
     instance.cleanup()
   }
 })
+
+
+it.each([
+  {
+    name: 'a rejected model.options request',
+    request: async () => {
+      throw new Error('gateway offline')
+    },
+    terminalText: 'error: gateway offline'
+  },
+  {
+    name: 'an empty provider response',
+    request: async () => ({ model: '', providers: [] }),
+    terminalText: 'no providers available'
+  }
+])('cancels immediately from $name without hidden filter state', async ({ request: requestImpl, terminalText }) => {
+  const request = vi.fn(requestImpl)
+  const onCancel = vi.fn()
+  const onSelect = vi.fn()
+  const stdout = Object.assign(new PassThrough(), { columns: 100, isTTY: false, rows: 40 })
+  let output = ''
+
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(
+    <ModelPicker
+      gw={{ request } as unknown as GatewayClient}
+      onCancel={onCancel}
+      onSelect={onSelect}
+      sessionId="s1"
+      t={DEFAULT_THEME}
+    />,
+    {
+      patchConsole: false,
+      stderr: new PassThrough() as unknown as NodeJS.WriteStream,
+      stdin: Object.assign(new PassThrough(), { isTTY: false }) as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream
+    }
+  )
+
+  try {
+    await vi.waitFor(() => expect(stripAnsi(output)).toContain(terminalText), { timeout: 5000 })
+
+    // q is the advertised close key on terminal views, not search text.
+    inputHarness.handler?.('q', {})
+    expect(onCancel).toHaveBeenCalledTimes(1)
+
+    onCancel.mockClear()
+
+    // Other printable keys must not create an invisible filter that swallows Esc.
+    inputHarness.handler?.('x', {})
+    expect(onCancel).not.toHaveBeenCalled()
+    inputHarness.handler?.('', { escape: true })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(onSelect).not.toHaveBeenCalled()
+  } finally {
+    instance.unmount()
+    instance.cleanup()
+  }
+})

@@ -870,6 +870,13 @@ const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
 
 nvidiaEglFallbackActive = NVIDIA_EGL_FALLBACK.enable
 
+// #124255: the witness time this launch carries. Threaded into the reveal-time
+// marker write so repeated fallback boots age the witness instead of refreshing
+// it — otherwise the re-probe window would never expire on a host that boots
+// the fallback every day.
+const NVIDIA_EGL_FALLBACK_SINCE =
+  NVIDIA_EGL_FALLBACK.nextMarker.state === 'fallback' ? NVIDIA_EGL_FALLBACK.nextMarker.since : undefined
+
 // Persist the launch decision before GPU children start: a `booting` marker
 // left behind by a launch that never reached first paint is itself evidence
 // of a GPU death (the "GPU process isn't usable" FATAL abort wins the race
@@ -887,7 +894,13 @@ if (NVIDIA_EGL_FALLBACK.enable) {
   console.log(
     `[hermes] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE ` +
       'through SwiftShader. Witnessed GPU-process death probe (#40077, #124255); an app or ' +
-      'driver update re-probes hardware GL once. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
+      'driver update, or a stale witness, re-probes hardware GL once. ' +
+      'HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
+  )
+} else if (NVIDIA_EGL_FALLBACK.reason) {
+  console.log(
+    `[hermes] NVIDIA EGL fallback not engaged (${NVIDIA_EGL_FALLBACK.reason}); booting with hardware GL. ` +
+      'A GPU-process death re-arms the sticky fallback through the one-shot SwiftShader relaunch (#124255).'
   )
 }
 
@@ -15227,7 +15240,8 @@ function createWindow() {
       notifyLauncherWindowRevealed()
 
       // #124255: the first revealed window means the GPU survived this boot.
-      // Keep a sticky SwiftShader marker when we launched with the fallback;
+      // Keep a sticky SwiftShader marker when we launched with the fallback
+      // (preserving the original witness time so it can go stale and re-probe);
       // otherwise mark the probe healthy so future launches trust hardware GL.
       if (NVIDIA_DRIVER_MAJOR !== null) {
         try {
@@ -15236,7 +15250,8 @@ function createWindow() {
             nvidiaEglMarkerAfterSuccessfulBoot({
               fallbackActive: nvidiaEglFallbackActive,
               appVersion: app.getVersion(),
-              driverVersion: NVIDIA_DRIVER_VERSION
+              driverVersion: NVIDIA_DRIVER_VERSION,
+              since: NVIDIA_EGL_FALLBACK_SINCE
             })
           )
         } catch {

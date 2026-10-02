@@ -27,6 +27,19 @@
  * process dies before the handler runs, the leftover `booting` marker engages
  * the fallback on the next launch.
  *
+ * A witness is not forever: once a `fallback` marker is older than
+ * NVIDIA_EGL_REPROBE_INTERVAL_DAYS (default 7, override with
+ * HERMES_DESKTOP_NVIDIA_SWIFTSHADER_REPROBE_DAYS; 0 restores sticky-forever),
+ * the next launch re-probes hardware GL once. A GPU that dies again re-arms
+ * the sticky marker through the existing one-shot relaunch; a healthy host
+ * returns to hardware rendering without waiting for an app or driver update.
+ * The bound matters because a false or transient witness pins the host to the
+ * 4-9 core SwiftShader path for as long as the app and driver versions stand
+ * still — unbounded on an install that does not update, and observed at 13
+ * days on a host whose GPU probed clean. On a genuinely broken driver a
+ * re-probe costs one relaunch per window, the same cost the per-update
+ * re-probe already pays.
+ *
  * Deliberately NOT `app.disableHardwareAcceleration()`: on 580.173.02 +
  * Electron 40 that path SIGKILLs the renderer (see #40077 discussion, and the
  * closed #40119 which was rejected for exactly this). We only reroute ANGLE;
@@ -46,6 +59,30 @@ import path from 'node:path'
 const OVERRIDE_ON = new Set(['1', 'true', 'yes', 'on'])
 const OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 
+/**
+ * How long a witnessed GPU death pins the host to SwiftShader before the next
+ * launch re-probes hardware GL once. `HERMES_DESKTOP_NVIDIA_SWIFTSHADER_REPROBE_DAYS`
+ * overrides it; 0 or less restores the old sticky-forever behaviour.
+ */
+export const NVIDIA_EGL_REPROBE_INTERVAL_DAYS = 7
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+/** The re-probe window in ms, or `null` when re-probing is disabled. */
+export function nvidiaEglReprobeIntervalMs(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = String(env.HERMES_DESKTOP_NVIDIA_SWIFTSHADER_REPROBE_DAYS ?? '').trim()
+
+  if (raw) {
+    const days = Number.parseInt(raw, 10)
+
+    if (Number.isFinite(days)) {
+      return days > 0 ? days * MS_PER_DAY : null
+    }
+  }
+
+  return NVIDIA_EGL_REPROBE_INTERVAL_DAYS * MS_PER_DAY
+}
+
 export const NVIDIA_EGL_FALLBACK_MARKER_FILENAME = 'nvidia-egl-fallback.json'
 
 /**
@@ -63,6 +100,12 @@ export interface NvidiaEglMarker {
   version?: string
   /** Full driver version (e.g. "580.178.04") the fallback was witnessed on. */
   driverVersion?: string
+  /**
+   * ISO timestamp of the witnessed GPU death (state === 'fallback'). A witness
+   * older than the re-probe window boots hardware GL once; a marker without
+   * one (written by a build before the window existed) re-probes once too.
+   */
+  since?: string
 }
 
 export function nvidiaEglMarkerPath(userDataDir: string): string {
@@ -89,6 +132,10 @@ export function parseNvidiaEglMarker(raw: unknown): NvidiaEglMarker | null {
 
   if (typeof record.driverVersion === 'string' && record.driverVersion) {
     marker.driverVersion = record.driverVersion
+  }
+
+  if (typeof record.since === 'string' && record.since) {
+    marker.since = record.since
   }
 
   return marker
@@ -126,8 +173,13 @@ export function writeNvidiaEglMarker(
   writeFileSync(nvidiaEglMarkerPath(dir), `${JSON.stringify(marker)}\n`, 'utf8')
 }
 
-export function nvidiaEglFallbackMarker(appVersion: string, driverVersion: string): NvidiaEglMarker {
-  return { state: 'fallback', version: appVersion, driverVersion }
+export function nvidiaEglFallbackMarker(
+  appVersion: string,
+  driverVersion: string,
+  /** Witness time; defaults to now when a death is first recorded. */
+  since: string = new Date().toISOString()
+): NvidiaEglMarker {
+  return { state: 'fallback', version: appVersion, driverVersion, since }
 }
 
 /**
@@ -168,7 +220,8 @@ export interface NvidiaEglFallbackDecision {
  * through SwiftShader, and what the marker becomes. The probe shape:
  *
  * - `fallback` marker matching this app version AND driver version → enable,
- *   keep the marker (sticky until either version changes).
+ *   keep the marker (sticky until either version changes, or until the
+ *   witness goes stale — then boot hardware GL once to re-probe).
  * - `fallback` marker for a different app or driver version → re-probe once:
  *   boot with hardware GL, write `booting`.
  * - `booting` marker left behind by a launch that died before it could mark
@@ -189,6 +242,8 @@ export function decideNvidiaEglFallback(options: {
   platform?: NodeJS.Platform
   isWsl?: boolean
   remoteDisplayReason?: string | null
+  /** Injectable clock (ms since epoch) so witness staleness is deterministic in tests. */
+  now?: number
 }): NvidiaEglFallbackDecision {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
@@ -198,6 +253,7 @@ export function decideNvidiaEglFallback(options: {
   const driverVersion = options.driverVersion ?? null
   const appVersion = options.appVersion ?? ''
   const marker = options.marker ?? null
+  const now = options.now ?? Date.now()
 
   const bootMarker: NvidiaEglMarker = { state: 'booting' }
 
@@ -239,12 +295,33 @@ export function decideNvidiaEglFallback(options: {
     return { enable: true, reason: 'override (HERMES_DESKTOP_NVIDIA_SWIFTSHADER)', nextMarker: bootMarker }
   }
 
-  // Witnessed brokenness: sticky only for the same app AND driver version.
+  // Witnessed brokenness: sticky only for the same app AND driver version,
+  // and only until the witness goes stale. A stale witness (or one with no
+  // recorded time, from a build before the window existed) boots hardware GL
+  // once: a healthy GPU returns the host to hardware rendering, a broken one
+  // re-arms the sticky marker through the one-shot SwiftShader relaunch.
   if (
     marker?.state === 'fallback' &&
     marker.version === (appVersion || marker.version) &&
     marker.driverVersion === (driverVersion ?? marker.driverVersion)
   ) {
+    const reprobeWindowMs = nvidiaEglReprobeIntervalMs(env)
+    const witnessedAt = marker.since ? Date.parse(marker.since) : Number.NaN
+    // A missing or unparsable `since` reads as infinitely old: re-probe once,
+    // then the field is carried on the marker the relaunch writes.
+    const witnessAgeMs = Number.isFinite(witnessedAt) ? now - witnessedAt : Number.POSITIVE_INFINITY
+
+    if (reprobeWindowMs !== null && witnessAgeMs >= reprobeWindowMs) {
+      const ageDays = Number.isFinite(witnessAgeMs) ? Math.floor(witnessAgeMs / MS_PER_DAY) : null
+      const age = ageDays === null ? 'no recorded witness time' : `witnessed ${ageDays}d ago`
+
+      return {
+        enable: false,
+        reason: `stale witness (${age}); re-probing hardware GL`,
+        nextMarker: bootMarker
+      }
+    }
+
     return {
       enable: true,
       reason: `witnessed GPU-process death (app ${marker.version ?? '?'}, driver ${marker.driverVersion ?? '?'})`,
@@ -308,9 +385,15 @@ export function nvidiaEglMarkerAfterSuccessfulBoot(options: {
   fallbackActive: boolean
   appVersion?: string
   driverVersion?: string | null
+  /**
+   * The witness time carried in from the launch decision. Preserved so
+   * repeated fallback boots age the witness instead of refreshing it — the
+   * re-probe window must measure from the death, not from the last boot.
+   */
+  since?: string
 }): NvidiaEglMarker {
   if (options.fallbackActive) {
-    return nvidiaEglFallbackMarker(options.appVersion ?? '', options.driverVersion ?? '')
+    return nvidiaEglFallbackMarker(options.appVersion ?? '', options.driverVersion ?? '', options.since)
   }
 
   return { state: 'ok' }

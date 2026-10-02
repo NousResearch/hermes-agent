@@ -168,7 +168,9 @@ def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, 
     """Resolve one profile's configured sources without mutating ``os.environ``: multiplex gateways route
     turns to profiles that never ran the process-global dotenv path, so resolve against a private mapping
     seeded from that ``.env`` and record the per-home snapshot for ``build_profile_secret_scope()``.
-    Fail-open / once-per-home like ``_apply_external_secret_sources``; never returns plaintext .env entries."""
+    Fail-open / once-per-home like ``_apply_external_secret_sources``; never returns plaintext .env entries.
+    The one fail-closed case is D32's: under the remote config backend, a source that supplies a
+    protected name raises :class:`ConfigBackendUnavailable` and records nothing for the home."""
     with _SECRET_SOURCE_CACHE_LOCK:
         return _hydrate_profile_secret_sources(Path(hermes_home))
 
@@ -206,12 +208,21 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             for _name, _value in load_env_file(op_env).items():
                 local_env.setdefault(_name, _value)
         local_env["HERMES_HOME"] = str(home)
+        env_before = dict(local_env)
         report = apply_all(cfg, home, environ=local_env)
     except Exception:  # noqa: BLE001 — preserve fail-open startup behavior
         return {}
 
     if not report.sources:
         return {}
+    # D32, as on the process-global path: a source must never supply the config backend's own
+    # deployment or plane credential, for a routed profile either (this snapshot feeds that
+    # profile's secret scope, which the Portal/plane resolvers read). Checked before anything of
+    # this attempt is recorded: the remote backend refuses the profile (raises, nothing cached, so
+    # every retry refuses again until the mapping is removed); the file backend drops the selector.
+    from hermes_cli.config_backend import get_config_backend
+
+    _refuse_protected_env_from_sources(report, get_config_backend(), env_before, env=local_env, routed_home=home)
 
     # Routed profiles have no runtime reset path. Keep a failed source retryable so correcting its
     # profile-local bootstrap credentials takes effect on the next turn; successful sources from a
@@ -388,16 +399,23 @@ def _dotenv_assignments(path: Path) -> list:
     return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
 
 
-def _bootstrap_env(home: Path | None = None) -> dict:
-    """The process env as ``load_hermes_dotenv`` leaves it for the names the home's ``.env`` and the
-    managed ``.env`` define: both override, managed last, ``${VAR}`` resolved, the loader's parser.
-    Read-only: nothing is published and no file is rewritten (sanitizing imports hermes_cli.config,
-    whose import-time config read must not run before the backend is decided)."""
+def _bootstrap_env(home: Path | None = None, project_env: Path | None = None) -> dict:
+    """The process env as ``load_hermes_dotenv`` leaves it for the names its dotenv layers define:
+    the home's ``.env`` (override), ``.op.env`` (fills gaps, only without a process
+    ``OP_SERVICE_ACCOUNT_TOKEN``), the caller's *project_env* (fills gaps when the home has a
+    ``.env``, else overrides) and the managed ``.env`` (override, last); ``${VAR}`` resolved, the
+    loader's parser. Read-only: nothing is published and no file is rewritten (sanitizing imports
+    hermes_cli.config, whose import-time config read must not run before the backend is decided)."""
     from dotenv.variables import parse_variables
 
     home = Path(home) if home is not None else _process_hermes_home()
     env = dict(os.environ)
-    layers = [home / ".env"]
+    user_env = home / ".env"
+    layers: list[tuple[Path, bool]] = [(user_env, True)]
+    if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        layers.append((home / ".op.env", False))
+    if project_env is not None:
+        layers.append((Path(project_env), not user_env.exists()))
     try:
         from hermes_cli import managed_scope
 
@@ -405,8 +423,8 @@ def _bootstrap_env(home: Path | None = None) -> dict:
     except Exception:  # noqa: BLE001 — same fail-open as _apply_managed_env
         managed_dir = None
     if managed_dir is not None:
-        layers.append(managed_dir / ".env")
-    for path in layers:
+        layers.append((managed_dir / ".env", True))
+    for path, override in layers:
         try:
             assignments = _dotenv_assignments(path)
         except OSError:
@@ -414,9 +432,12 @@ def _bootstrap_env(home: Path | None = None) -> dict:
         resolved: dict[str, str | None] = {}
         for name, value in assignments:
             if value is not None:
-                value = "".join(atom.resolve({**env, **resolved}) for atom in parse_variables(value))
+                lookup = {**env, **resolved} if override else {**resolved, **env}
+                value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
             resolved[name] = value
-        env.update({k: v for k, v in resolved.items() if v is not None})
+        for name, value in resolved.items():
+            if value is not None and (override or name not in env):
+                env[name] = value
     return env
 
 
@@ -429,7 +450,7 @@ def selected_config_backend_name(home: Path | None = None) -> str:
     return (_bootstrap_env(home).get(BACKEND_ENV) or "").strip().lower() or "file"
 
 
-def apply_config_bootstrap_env(remote_names, home: Path | None = None) -> None:
+def apply_config_bootstrap_env(remote_names, home: Path | None = None, project_env: Path | None = None) -> None:
     """Publish ``remote_names()`` (the remote backend's deployment and plane credential, D26/D32) from the
     launch home's ``.env`` and the managed ``.env``, with the values ``load_hermes_dotenv`` gives
     them. Called before the first config read of a process, which can come before
@@ -439,7 +460,7 @@ def apply_config_bootstrap_env(remote_names, home: Path | None = None) -> None:
     no file defines are left alone; ``load_hermes_dotenv`` later publishes the same values."""
     from hermes_cli.config_backend import BACKEND_ENV
 
-    env = _bootstrap_env(home)
+    env = _bootstrap_env(home, project_env)
     if (env.get(BACKEND_ENV) or "").strip().lower() == "remote":
         names = remote_names()
     else:
@@ -565,6 +586,13 @@ def load_hermes_dotenv(
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
     load_pass = next(_DOTENV_PASSES)  # one pass: later layers below see the earlier layers' output
+
+    # Before anything below imports hermes_cli.config (the .env sanitizer does), whose import-time
+    # config read selects and boots the backend: publish the deployment and plane credential from
+    # THIS load's layers, the project .env included, with the precedence the loads below give them.
+    from hermes_cli.config_backend import bootstrap_deployment
+
+    bootstrap_deployment(home_path, project_env_path)
 
     if user_env.exists():  # normalize formatting / strip NULs before parsing
         _sanitize_env_file_if_needed(user_env)
@@ -710,7 +738,7 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         _SECRET_SOURCE_WRITES_BY_HOME.pop(home_key, None)
 
 
-def _refuse_protected_env_from_sources(report, backend=None, environ_before=None, env=None) -> None:
+def _refuse_protected_env_from_sources(report, backend=None, environ_before=None, env=None, *, routed_home=None) -> None:
     """D32: the config backend's own credential (which plane, which agent, which token) must never
     come from a secret source — a source that could change it could point config at another plane.
     Exits (the backend is unusable), even when the pre-existing value won.
@@ -755,10 +783,12 @@ def _refuse_protected_env_from_sources(report, backend=None, environ_before=None
         print(f"  Secret sources: ignored {BACKEND_ENV} from a secrets: source (the config backend is "
               "chosen by .env or the process environment only).", file=sys.stderr)
         return
+    outcome = (f"Hermes does not serve profile home {routed_home} with it." if routed_home is not None
+               else "Hermes does not start with it.")
     raise ConfigBackendUnavailable(
         f"A secrets: source supplies {', '.join(clash)}, which the {backend.name!r} config "
         "backend uses to reach its config plane. That credential must come from auth.json or .env, never "
-        "from a secret source; remove the mapping. Hermes does not start with it.")
+        f"from a secret source; remove the mapping. {outcome}")
 
 
 def _publish_staged_env(staged: dict, environ_before: dict) -> None:

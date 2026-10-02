@@ -25,7 +25,7 @@ from hermes_cli.config_backend import (
 
 from . import client
 from .credentials import PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError
-from .diff import _get_path, diff, encode_changes, json_equal, strip_locked, write_check
+from .diff import _get_path, apply_intent, diff, encode_changes, intent_diff, json_equal, strip_locked, write_check
 from .paths import Path as KeyPath
 from .paths import PathError, decode, encode, from_dotted
 from .values import secret_literal_path, to_wire
@@ -330,7 +330,8 @@ class RemoteBackend:
         private_token = _PRIVATE.set(m)
         home_token = set_hermes_home_override(st.home)
         try:
-            run_migrations(current, {"env_added": [], "config_added": [], "warnings": []}, True)
+            # config_only: a read (or a refused write's check) must change no local file (D12).
+            run_migrations(current, {"env_added": [], "config_added": [], "warnings": []}, True, config_only=True)
         finally:
             reset_hermes_home_override(home_token)
             _PRIVATE.reset(private_token)
@@ -488,17 +489,16 @@ class RemoteBackend:
             if dropped:
                 print(f"Note: {len(dropped)} setting(s) locked by Remote Config were not saved: "
                       f"{', '.join(sorted(encode(p) for p in dropped))}", file=sys.stderr)
-        return diff(base, new)
+        # Leaf-level: a key added under a section the doc lacked stays a key-level edit, so a
+        # retry after 409 keeps the siblings another writer put in that section meanwhile.
+        return intent_diff(base, new)
 
     def _patch_body(self, st: _ProfileState, sets: Dict[KeyPath, Any], unsets: List[KeyPath]
                     ) -> Optional[Tuple[Dict[str, Any], Dict[KeyPath, Any], List[KeyPath]]]:
         """The PATCH body applying the intent to the current doc, or None when that is no change."""
         base = self._diff_base(st)
         new = copy.deepcopy(base)
-        for p, v in sets.items():
-            _set_path(new, p, copy.deepcopy(v))
-        for p in unsets:
-            _pop_path(new, p)
+        apply_intent(new, sets, unsets)
         sets, unsets = diff(base, new)
         refused = write_check(sets, unsets, st.locks)
         if refused is not None:

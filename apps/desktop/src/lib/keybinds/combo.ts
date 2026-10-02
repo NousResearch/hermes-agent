@@ -245,7 +245,13 @@ export function formatCombo(combo: string): string {
 // primitive for focus-scoped shortcuts — e.g. routing ⌘W to whichever surface
 // (terminal, preview, …) owns focus.
 export function isFocusWithin(selector: string): boolean {
-  return document.activeElement?.closest(selector) != null
+  let active: Element | null = document.activeElement
+
+  while (active instanceof HTMLElement && active.shadowRoot?.activeElement) {
+    active = active.shadowRoot.activeElement
+  }
+
+  return active?.closest(selector) != null
 }
 
 // Overlays that cover the whole window (portaled to the body, or the overlay
@@ -266,6 +272,11 @@ export function isEditableTarget(target: EventTarget | null): boolean {
     el instanceof HTMLTextAreaElement ||
     el instanceof HTMLSelectElement
   )
+}
+
+/** Shadow DOM retargets event.target to the host; use the original target when available. */
+export function eventTarget(event: Event): EventTarget | null {
+  return event.composedPath?.()[0] ?? event.target
 }
 
 const INPUT_SAFE_ACTIONS = new Set([

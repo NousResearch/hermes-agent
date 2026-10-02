@@ -1,5 +1,6 @@
 """Real temporary config files; approval-state operations only, no commands."""
 from contextlib import contextmanager
+import threading
 
 import pytest
 import hermes_yaml as yaml
@@ -100,3 +101,70 @@ def test_reload_of_one_home_does_not_replace_another_cached_home(homes):
         approval._persist_choice("other-session", "always", [("other-new", "Fixture", False)])
         assert disk_allowlist(other) == {"other-only", "other-new"}
     assert disk_allowlist(named) == set()
+
+
+def test_concurrent_always_choices_do_not_restore_a_revoked_pattern(homes, monkeypatch):
+    _, named, other = homes
+    entered, release, second_started, second_done = (threading.Event() for _ in range(4))
+    failures = []
+    save = approval.save_permanent_allowlist
+
+    def paused_save(patterns):
+        if threading.current_thread() is first:
+            entered.set()
+            assert release.wait(5), "first approval was never released"
+        return save(patterns)
+
+    def choose(session, pattern, *, second=False):
+        try:
+            with selected_home(named):
+                if second:
+                    second_started.set()
+                approval._persist_choice(session, "always", [(pattern, "Fixture", False)])
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            if second:
+                second_done.set()
+
+    monkeypatch.setattr(approval, "save_permanent_allowlist", paused_save)
+    first = threading.Thread(target=choose, args=("first", "first-grant"))
+    second = threading.Thread(target=choose, args=("second", "second-grant"), kwargs={"second": True})
+    first.start()
+    try:
+        assert entered.wait(5)
+        write_allowlist(named, ["kept-op"])
+        second.start()
+        assert second_started.wait(5)
+        # Let an unguarded second save finish; a serialized save may wait for the first.
+        second_done.wait(3)
+    finally:
+        release.set()
+        first.join(5)
+        if second.ident is not None:
+            second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert not failures
+    assert disk_allowlist(named) == {"kept-op", "first-grant", "second-grant"}
+    with selected_home(named):
+        assert not approval.is_approved("fresh", "revoked-op")
+    assert disk_allowlist(other) == {"other-only"}
+
+
+def test_suggestion_apply_keeps_the_reconciled_allowlist_in_memory(homes, monkeypatch):
+    from hermes_cli.approvals_suggest import Proposal, apply_proposals
+
+    _, named, other = homes
+    save = approval.save_permanent_allowlist
+
+    def revoke_before_save(patterns):
+        write_allowlist(named, ["kept-op"])
+        return save(patterns)
+
+    monkeypatch.setattr(approval, "save_permanent_allowlist", revoke_before_save)
+    with selected_home(named):
+        result = apply_proposals([Proposal(pattern="suggested-grant", kind="class")], [0])
+        assert disk_allowlist(named) == {"kept-op", "suggested-grant"}
+        assert not approval.is_approved("fresh", "revoked-op")
+        assert result == disk_allowlist(named)
+    assert disk_allowlist(other) == {"other-only"}

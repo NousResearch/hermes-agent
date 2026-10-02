@@ -367,7 +367,22 @@ export const zh: Translations = {
     reload: "重新加载",
     reloadDescription:
       "切换到 {model} 会开启一个新的会话。当前会话仍保留在「会话」列表中，智能体的记忆也会保留。现在重新加载以应用？",
+  },  channelsPage: {
+    botTokenHint: "复制 BotFather 给你的完整机器人令牌。",
+    allowedWhatsappNumbers: "允许的 WhatsApp 号码",
+    connected: "已连接",
+    saveAndRestart: "保存并重启网关。",
+    whatsappQrAlt: "WhatsApp 设置二维码",
+    linked: "已关联",
+    recommended: "推荐",
+    ready: "就绪",
+    ownerDetected: "已识别所有者",
+    telegramUserIdPlaceholder: "Telegram 用户 ID",
+    telegramQrAlt: "Telegram 设置二维码",
+    waiting: "等待中",
   },
+
+
   filesPage: {
     refreshFiles: "刷新文件",
     path: "路径",

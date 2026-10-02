@@ -382,7 +382,22 @@ export const en: Translations = {
     reload: "Reload",
     reloadDescription:
       "Switching to {model} starts a fresh chat. Your current chat stays in your Sessions list and the agent's memory is kept. Reload now to apply it?",
+  },  channelsPage: {
+    botTokenHint: "Copy the complete bot token BotFather gives you.",
+    allowedWhatsappNumbers: "Allowed WhatsApp numbers",
+    connected: "Connected",
+    saveAndRestart: "Save and restart the gateway.",
+    whatsappQrAlt: "WhatsApp setup QR code",
+    linked: "Linked",
+    recommended: "recommended",
+    ready: "Ready",
+    ownerDetected: "owner detected",
+    telegramUserIdPlaceholder: "Telegram user ID",
+    telegramQrAlt: "Telegram setup QR code",
+    waiting: "waiting",
   },
+
+
   filesPage: {
     refreshFiles: "Refresh files",
     path: "Path",

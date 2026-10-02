@@ -386,6 +386,22 @@ export interface Translations {
   };
 
   // ── Logs page ──  /** Optional — Files page copy. */
+  /** Optional — Channels page + onboarding panels copy. */
+  channelsPage?: {
+    botTokenHint: string;
+    allowedWhatsappNumbers: string;
+    connected: string;
+    saveAndRestart: string;
+    whatsappQrAlt: string;
+    linked: string;
+    recommended: string;
+    ready: string;
+    ownerDetected: string;
+    telegramUserIdPlaceholder: string;
+    telegramQrAlt: string;
+    waiting: string;
+  };
+
   filesPage?: {
     refreshFiles: string;
     path: string;

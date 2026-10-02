@@ -4139,7 +4139,7 @@ class BasePlatformAdapter(BaseLifecycleMixin, BaseTextBatchingMixin, BaseTextDeb
         """Stage the next FIFO event before dispatching the removed pending head."""
         promote = getattr(self.gateway_runner, "_promote_queued_event", None)
         if callable(promote):
-            reserve_pending_dispatch(self, session_key, started)
+            reserve_pending_dispatch(self, session_key, started, from_queue=True)
             promote(session_key, self, started)
 
     def _clear_session_guard(self, session_key: str) -> None:

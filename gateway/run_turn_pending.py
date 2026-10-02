@@ -64,7 +64,7 @@ class GatewayPendingDrainMixin:
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
             if pending_event is not None:
-                reserve_pending_dispatch(adapter, session_key, pending_event).task = asyncio.current_task()
+                reserve_pending_dispatch(adapter, session_key, pending_event, from_queue=True).task = asyncio.current_task()
             try:
                 while pending_event is not None and not await self._strict_session_current(
                     pending_event, session_key,
@@ -73,7 +73,7 @@ class GatewayPendingDrainMixin:
                     pending_event = _dequeue_pending_event(adapter, session_key)
                     pending_event = self._promote_queued_event(session_key, adapter, pending_event)
                     if pending_event is not None:
-                        reserve_pending_dispatch(adapter, session_key, pending_event).task = asyncio.current_task()
+                        reserve_pending_dispatch(adapter, session_key, pending_event, from_queue=True).task = asyncio.current_task()
                 if pending_event is not None and pending_dispatch_withdrawn(adapter, session_key, pending_event):
                     release_pending_dispatch(adapter, session_key, pending_event)
                     return None, None
@@ -187,7 +187,7 @@ class GatewayPendingDrainMixin:
             state = self._peek_session_state(session_key)
             if state is not None and state.turn.followup_withdrawn:
                 return
-        reservation = (reserve_pending_dispatch(adapter, session_key, _peek_event)
+        reservation = (reserve_pending_dispatch(adapter, session_key, _peek_event, from_queue=True)
                        if _peek_event is not None else None)
         if reservation is not None and reservation.task is None:
             reservation.task = asyncio.current_task()

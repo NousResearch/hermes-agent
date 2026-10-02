@@ -21,7 +21,7 @@ from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, EphemeralReply, SendResult
 from gateway.platforms.base_pending import Withdraw, ingress_order
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, _ProcessingCompletion, _ProcessingPhase
-from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch, release_pending_dispatch, pending_dispatch_records, pending_dispatch_withdrawn, pending_dispatch_needs_snapshot
+from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch, release_pending_dispatch, pending_dispatch_records, pending_dispatch_withdrawn, pending_dispatch_record, pending_dispatch_needs_snapshot
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -559,9 +559,22 @@ class GatewayBusySessionMixin:
         if pending_dispatch_withdrawn(adapter, session_key, event):
             return
         existing = adapter._pending_messages.get(session_key)
-        if existing is not None and existing is not event:
-            self._session_state(session_key).conversation.queued_events.insert(0, existing)
-        adapter._pending_messages[session_key] = event
+        queued = self._session_state(session_key).conversation.queued_events
+        buffers = getattr(adapter, "_text_debounce", None)
+        buffered = buffers.pop(session_key, None) if isinstance(buffers, dict) else None
+        buffered_events = []
+        if buffered is not None:
+            buffered.cancel_timer(unless=asyncio.current_task())
+            buffered_events = [*buffered.earlier_events, buffered.event]
+        record = pending_dispatch_record(adapter, session_key, event)
+        if record is not None:
+            record.bind(event)
+        values = [value for value in ([existing] if existing is not None else []) + list(queued) + buffered_events
+                  if value is not event and not (record is not None and record.includes(value))]
+        values.append(event)
+        values.sort(key=ingress_order)
+        adapter._pending_messages[session_key] = values[0]
+        queued[:] = values[1:]
         release_pending_dispatch(adapter, session_key, event)
         event._gateway_accepted = True
 

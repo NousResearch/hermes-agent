@@ -89,7 +89,7 @@ class GatewayQueuedFollowupMixin:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
         reservation = None
         if pending_event is not None and adapter is not None and turn_ctx.session_key:
-            reservation = reserve_pending_dispatch(adapter, turn_ctx.session_key, pending_event)
+            reservation = reserve_pending_dispatch(adapter, turn_ctx.session_key, pending_event, from_queue=True)
             reservation.task = asyncio.current_task()
         try:
             from gateway.run import _preserve_queued_followup_history_offset

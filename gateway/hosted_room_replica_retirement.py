@@ -477,7 +477,7 @@ def _validate_enrollment(value: Any, target_install_id: str) -> dict[str, Any]:
 
 def _check_replica_namespace(conn: sqlite3.Connection, value: Mapping[str, Any]) -> sqlite3.Row | None:
     """The copy this enrollment names, if any; never a local room, quarantined or different copy."""
-    from gateway.hosted_room_replicas import _audit_existing_replicas_locked
+    from gateway.hosted_room_replicas import ReplicaError, _audit_existing_replicas_locked, _load_replica_header_locked
 
     _audit_existing_replicas_locked(conn)
     room_id = value["room_id"]
@@ -489,7 +489,10 @@ def _check_replica_namespace(conn: sqlite3.Connection, value: Mapping[str, Any])
         raise RetirementConflictError("Group Chat is locally authoritative")
     if conn.execute("SELECT 1 FROM hosted_room_quarantine WHERE room_id=?", (room_id,)).fetchone():
         raise RetirementConflictError("quarantined Group Chat evidence must be preserved")
-    replica = conn.execute("SELECT * FROM hosted_room_replicas WHERE room_id=?", (room_id,)).fetchone()
+    try:
+        replica = _load_replica_header_locked(conn, room_id)
+    except ReplicaError as exc:
+        raise RetirementConflictError("retained copy metadata cannot be safely read") from exc
     if replica is not None and (
         replica["quarantine_reason"] is not None
         or replica["authority_gateway_id"] != value["authority_gateway_id"]

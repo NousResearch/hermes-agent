@@ -119,16 +119,80 @@ def test_catalog_failure_fails_open(monkeypatch):
     assert _session_deferred_tool_names(agent) == frozenset()
 
 
+def test_fail_open_empty_result_is_not_cached(monkeypatch):
+    # A transient catalog failure must not pin the legacy generic error for the rest of
+    # the session: the next call recomputes instead of serving the cached empty set.
+    import model_tools
+
+    agent = _bridge_agent()
+    defs = [{"type": "function", "function": {"name": "manage_catalog"}}]
+
+    def _flaky(**_k):
+        if _flaky.failing:
+            raise RuntimeError("registry unavailable")
+        return defs
+
+    _flaky.failing = True
+    monkeypatch.setattr(model_tools, "get_tool_definitions", _flaky)
+    _patch_defer_config(monkeypatch, {"manage_catalog"})
+    assert _session_deferred_tool_names(agent) == frozenset()
+    _flaky.failing = False
+    assert _session_deferred_tool_names(agent) == frozenset({"manage_catalog"})
+
+
+def test_bridge_inactive_result_is_not_cached(monkeypatch):
+    # The bridge may activate between turns (scope widened by bot-chat refresh), so an
+    # inactive empty set must not be served once "tool_call" becomes valid.
+    import model_tools
+
+    agent = _Agent({"terminal_exec", "file_write"})
+    assert _session_deferred_tool_names(agent) == frozenset()
+    agent.valid_tool_names = {"tool_search", "tool_describe", "tool_call", "terminal_exec"}
+    monkeypatch.setattr(
+        model_tools, "get_tool_definitions",
+        lambda **_k: [{"type": "function", "function": {"name": "manage_catalog"}}])
+    _patch_defer_config(monkeypatch, {"manage_catalog"})
+    assert _session_deferred_tool_names(agent) == frozenset({"manage_catalog"})
+
+
+def test_cache_invalidated_on_registry_mutation(monkeypatch):
+    # Mid-session catalog rewrites (MCP connect/reload, tools enable) bump the registry
+    # generation; the memo must follow or the session keeps serving pre-rewrite names —
+    # the #130153 symptom, one generation later.
+    import model_tools
+    from tools.registry import registry as _registry
+
+    agent = _bridge_agent()
+    defs = {"v1": [{"type": "function", "function": {"name": "manage_catalog"}}],
+            "v2": [{"type": "function", "function": {"name": "newly_registered_tool"}}]}
+    state = {"version": "v1"}
+
+    def _defs(**_k):
+        return defs[state["version"]]
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", _defs)
+    _patch_defer_config(monkeypatch, {"manage_catalog", "newly_registered_tool"})
+    assert _session_deferred_tool_names(agent) == frozenset({"manage_catalog"})
+    state["version"] = "v2"
+    monkeypatch.setattr(_registry, "_generation", getattr(_registry, "_generation", 0) + 1)
+    assert _session_deferred_tool_names(agent) == frozenset({"newly_registered_tool"})
+
+
 # --- validate_tool_calls end-to-end -----------------------------------------------------------
 
 
 class _ValidationAgent(_Agent):
     """Covers only the surface ``validate_tool_calls`` touches; the deferred-name cache is
-    pre-seeded so the test never rebuilds the real catalog."""
+    pre-seeded in keyed form (matching the live registry, so it counts as a hit) so the
+    test never rebuilds the real catalog."""
 
     def __init__(self, valid_tool_names, deferred_names):
         super().__init__(valid_tool_names)
-        self._bridge_deferred_names = frozenset(deferred_names)
+        from tools.registry import registry as _registry
+        self._bridge_deferred_names = (
+            (_registry.current_scope_key(), getattr(_registry, "_generation", 0), None, None),
+            frozenset(deferred_names),
+        )
         self._invalid_tool_retries = 0
         self._invalid_json_retries = 0
         self.printed = []

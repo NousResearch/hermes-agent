@@ -1055,13 +1055,30 @@ def _canonicalize_api_tool_calls(api_messages) -> None:
 
 def _session_deferred_tool_names(agent) -> frozenset:
     """Names reachable only through the tool_search bridge in this session (empty when the
-    bridge is inactive). Computed once per agent and cached: the invalid-name path is rare,
-    but the answer must be session-scoped — a restricted session (subagent, kanban worker)
-    must not be pointed at a deferred name its catalog cannot reach. Fail-open: any error
-    yields an empty set, which keeps the legacy generic error."""
+    bridge is inactive). Cached on the agent keyed by registry scope/generation and the
+    session's toolsets — the catalog is rewritten mid-session (MCP connect/reload,
+    ``tools enable``, bot-chat refresh), so an unkeyed memo goes stale one rewrite later;
+    the key mirrors ``_tool_search_scoped_names`` in agent/tool_executor.py, which caches
+    the same set for the same purpose. The invalid-name path is rare, but the answer must
+    be session-scoped — a restricted session (subagent, kanban worker) must not be pointed
+    at a deferred name its catalog cannot reach. Fail-open: any error yields an uncached
+    empty set, which keeps the legacy generic error; a bridge-inactive empty set is also
+    uncached, since activation depends on a later scope change, not catalog contents."""
+    enabled = getattr(agent, "enabled_toolsets", None)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    try:
+        from tools.registry import registry as _registry
+        cache_key = (
+            _registry.current_scope_key(),
+            getattr(_registry, "_generation", 0),
+            frozenset(enabled) if enabled is not None else None,
+            frozenset(disabled) if disabled is not None else None,
+        )
+    except Exception:
+        return frozenset()
     cached = getattr(agent, "_bridge_deferred_names", None)
-    if cached is not None:
-        return cached
+    if isinstance(cached, tuple) and cached[0] == cache_key:
+        return cached[1]
     names: frozenset = frozenset()
     try:
         # "tool_call" is a reserved bridge name (tools/tool_search_catalog.py), so its
@@ -1070,15 +1087,17 @@ def _session_deferred_tool_names(agent) -> frozenset:
             import model_tools
             from tools import tool_search as ts
             defs = model_tools.get_tool_definitions(
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                enabled_toolsets=enabled,
+                disabled_toolsets=disabled,
                 quiet_mode=True, skip_tool_search_assembly=True,
             ) or []
             names = ts.scoped_deferrable_names(defs)
+        else:
+            return frozenset()
     except Exception:
-        names = frozenset()
+        return frozenset()
     try:
-        agent._bridge_deferred_names = names
+        agent._bridge_deferred_names = (cache_key, names)
     except Exception:
         pass
     return names

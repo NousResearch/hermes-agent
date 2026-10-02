@@ -415,6 +415,8 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
 
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
+    # One email carries the whole body, so cron delivery hands over the full payload untruncated.
+    splits_long_messages = True
 
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip

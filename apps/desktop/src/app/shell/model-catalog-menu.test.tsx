@@ -15,6 +15,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
+import { registry } from '@/contrib/registry'
 import { queryClient } from '@/lib/query-client'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -31,6 +32,7 @@ import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from './model-catalog-menu'
+import { MODEL_MENU_ROW_AREA, type ModelMenuRowContribution } from './model-menu-row-decorations'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -84,6 +86,48 @@ afterEach(() => {
   queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
   $defaultReasoningEffort.set('')
   vi.clearAllMocks()
+})
+
+describe('model menu row decorations (MODEL_MENU_ROW_AREA)', () => {
+  it('paints a contributed icon and badge in the row slots, skipping a throwing decorator', async () => {
+    const dispose = [
+      registry.register({
+        area: MODEL_MENU_ROW_AREA,
+        data: {
+          decorate: () => {
+            throw new Error('broken plugin')
+          }
+        } satisfies ModelMenuRowContribution,
+        id: 'broken'
+      }),
+      registry.register({
+        area: MODEL_MENU_ROW_AREA,
+        data: {
+          decorate: ({ model, provider }) =>
+            model === 'gemini-3.1-pro' ? { badge: 'new', icon: <img alt="" data-testid={`mark-${provider}`} /> } : null
+        } satisfies ModelMenuRowContribution,
+        id: 'marks'
+      })
+    ]
+
+    try {
+      renderMenu()
+
+      const row = (await screen.findByText('Gemini 3.1 Pro')).closest('[role="menuitem"]')!
+      const icon = row.querySelector('[data-slot="model-menu-row-icon"]')
+
+      expect(icon?.querySelector('[data-testid="mark-google"]')).toBeTruthy()
+      expect(row.querySelector('[data-model-menu-row-badge]')?.textContent).toBe('new')
+
+      // A decorator returning null leaves its row bare.
+      const bare = screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
+
+      expect(bare.querySelector('[data-slot="model-menu-row-icon"]')).toBeNull()
+      expect(bare.querySelector('[data-model-menu-row-badge]')).toBeNull()
+    } finally {
+      dispose.forEach(release => release())
+    }
+  })
 })
 
 describe('the current row effort', () => {

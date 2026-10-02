@@ -192,6 +192,9 @@ DEFAULT_CONFIG = {
         # something non-default is detected (no pip module, pip/python mismatch, PEP 668 without
         # uv); zero tokens when clean. Skipped for docker/modal/ssh backends (own probe).
         "environment_probe": True,
+        # Live OS/kernel probe for remote terminal backends. Disable when prompt construction must not
+        # create a one-shot container/remote connection; direct terminal calls remain unaffected.
+        "backend_probe": True,
         # Bot Mode teammate-messaging protocol section (silent unless desktop Bot Mode manages it).
         "bot_mode_protocol": True,
         # Embedder-supplied text appended to the system prompt's environment-hints block, so a host

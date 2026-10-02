@@ -1103,7 +1103,9 @@ def _remote_backend_hint(backend: str) -> str:
     """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
             f"`search_files` tools all operate inside ")
-    probe = _probe_remote_backend(backend)
+    agent_config = _config_readonly("agent.backend_probe").get("agent", {}) or {}
+    probe_enabled = agent_config.get("backend_probe", True) is not False
+    probe = _probe_remote_backend(backend) if probe_enabled else None
     if probe:
         return lead + (
             f"this {backend} environment — NOT on the machine where Hermes itself is running. The host OS, "

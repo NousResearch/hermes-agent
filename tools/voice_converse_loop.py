@@ -1,0 +1,1302 @@
+"""Framework-agnostic off-device realtime voice loop primitives.
+
+This is the neutral home of the VAD/STT/mic-shim core that backs the live
+"converse" WebSocket hosted by the aiohttp gateway module
+:mod:`gateway.platforms.api_server_converse`. Nothing here touches a socket, an
+audio device, a live model or a specific web framework, so it can be unit-tested
+in isolation.
+
+Pieces:
+
+* :class:`_NetworkMicStream` — a ``sounddevice``-shaped shim whose ``.read()``
+  pulls int16 blocks from a thread-safe queue fed by a WebSocket. It lets the
+  existing endpointer (:func:`tools.voice_mode._capture_until_quiet`) run
+  unchanged against a network source instead of a local microphone.
+* :class:`ConverseSession` — drives the reused VAD/STT loop on a worker thread:
+  read 30 ms blocks, feed :class:`tools.voice_mode._BargeDetector`, and on a
+  trip (speech onset) or silence endpoint capture the utterance, transcribe it
+  and hand the transcript to the handler. It also owns the ``playing`` flag and
+  barge-in (a trip while playing cuts TTS).
+* :func:`split_text_for_tts_stream` — a provider-cap-aware sentence splitter, so
+  a host that has no dashboard dependency can chunk a synthesized sentence
+  without importing :mod:`hermes_cli.web_server_gateway`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import queue
+import threading
+import time
+import uuid
+from typing import (
+    Any, Awaitable, Callable, Dict, Iterator, List, Optional, Tuple)
+
+from tools.voice_tracing import PhaseRecorder, emit_turn_trace, start_turn
+
+_log = logging.getLogger("hermes_cli.web_server")
+
+# Hard cap on a single agent turn (LLM think + stream). A turn that produces nothing — an LLM
+# call hung with no request timeout — otherwise never ends: no reply, no turn_done, so the client
+# is stuck "thinking" forever (observed: 181 s, error=False). The driver abandons the turn at this
+# deadline, sends an error + turn_done, and returns to listening, so the socket never wedges. This
+# is a backstop; the root-cause cap is a provider request_timeout_seconds on the LLM itself.
+_TURN_TIMEOUT_DEFAULT = 120.0
+
+# How long (seconds) the server keeps the "playback tail" state — turn_done sent, waiting for the
+# client's `drained` — before giving up and resuming quiet/VAD on its own. The client sends
+# `drained` at real playback end (tail is normally ~15-25 s), so this is only a backstop for a
+# client that never sends it; keep it generous so a long reply's tail isn't cut short.
+_PLAYBACK_TAIL_FALLBACK_DEFAULT = 45.0
+
+
+def _resolve_tail_fallback() -> float:
+    """Playback-tail fallback (seconds) from ``voice.playback_tail_timeout_seconds``; falls back to
+    :data:`_PLAYBACK_TAIL_FALLBACK_DEFAULT`. ``<= 0`` disables the tail entirely."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("voice") or {}).get("playback_tail_timeout_seconds")
+        return _PLAYBACK_TAIL_FALLBACK_DEFAULT if raw is None else float(raw)
+    except Exception:  # noqa: BLE001
+        return _PLAYBACK_TAIL_FALLBACK_DEFAULT
+
+
+def _resolve_turn_timeout() -> float:
+    """Per-connection agent-turn deadline (seconds) from ``voice.turn_timeout_seconds``; falls back
+    to :data:`_TURN_TIMEOUT_DEFAULT`. ``<= 0`` disables the deadline (not recommended)."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("voice") or {}).get("turn_timeout_seconds")
+        return _TURN_TIMEOUT_DEFAULT if raw is None else float(raw)
+    except Exception:  # noqa: BLE001
+        return _TURN_TIMEOUT_DEFAULT
+
+
+def _drain_pending(session: "ConverseSession") -> List[str]:
+    """Discard every queued item on the session's transcripts queue, preserving the shutdown
+    sentinel (None). Used to flush utterances that queued behind a signed-off turn so their
+    replies never arrive after the client has slept. Returns the dropped transcripts (QuietTicks
+    and other markers are discarded silently)."""
+    dropped: List[str] = []
+    q = session.transcripts
+    while True:
+        try:
+            it = q.get_nowait()
+        except queue.Empty:
+            break
+        if it is None:
+            q.put(None)  # preserve the shutdown sentinel
+            break
+        if isinstance(it, str):
+            dropped.append(it)
+    return dropped
+
+# One-shot fallback synthesis always decodes to this rate (matches the built-in
+# streamers' 24 kHz so the wire format — and the `ready` frame's output.sample_rate —
+# is identical whichever path serves a turn).
+_FALLBACK_SAMPLE_RATE = 24000
+# Split fallback PCM into ~32 KiB frames so a long sentence doesn't land as one
+# giant WS frame (matches the chunk-sized cadence of the streaming path).
+_FALLBACK_PCM_CHUNK_BYTES = 32 * 1024
+
+# ── DSP constants — mirror tools.voice_mode.full_duplex_listen exactly ──
+# Inbound audio is PCM16 mono @16 kHz (Whisper-native, matches voice_mode.SAMPLE_RATE);
+# 30 ms blocks = 480 frames.  These knobs mirror full_duplex_listen's defaults so the
+# network loop behaves identically to the local mic loop.
+_SUSTAINED_MS = 300
+# Fraction of the sustained window that must be above the trigger to count as speech onset.
+# Lower than the CLI barge default (0.8) so soft speech with inter-syllable dips is still heard.
+_CONVERSE_TRIP_FRACTION = 0.6
+# Self-calibrating floor tuning (noisy rooms — e.g. a TV at the mic). MEDIAN floor tracks the
+# typical ambient without being inflated by loud bursts; onset trigger = floor * 1.5 (with no
+# ceiling) sits just above the ambient so a TV baseline doesn't trip but a louder voice does.
+_CONVERSE_FLOOR_PERCENTILE = 50.0
+_CONVERSE_ONSET_MULT = 1.5
+# Endpoint (end-of-utterance) silence threshold is floor-relative too: an utterance ends when
+# the level falls back toward the ambient floor, so it closes when the USER stops even if the
+# TV keeps going (the absolute 200 threshold never fired with a TV on). max() keeps the quiet-
+# room behavior (floor ~50 -> ~200, unchanged).
+_CONVERSE_ENDPOINT_FLOOR_MULT = 1.3
+_CALIBRATION_MS = 450
+_GRACE_MS = 500
+_PRE_ROLL_MS = 1200
+# How long speech must stay un-sustained before the utterance ends. This is the bulk of the
+# "listening" tail the user waits through AFTER they stop talking, so keep it short (a snappy
+# endpoint) — 700 ms is enough to ride over a normal between-word pause without feeling laggy.
+_ENDPOINT_SILENCE_MS = 700
+# Hard cap on one capture. With the sustained endpoint a noisy room ends normally, but bound the
+# pathological case so "listening" can never run to half a minute.
+_MAX_UTTERANCE_MS = 12_000
+
+# ── Smart Turn v3 adaptive endpoint (opt-in) ──
+# When the semantic endpointer is enabled, the fixed silence window above is only a CANDIDATE
+# pause: on reaching it we ask Smart Turn whether the utterance *sounds* finished. If it says
+# "not yet" (P < threshold — the user trailed off mid-thought), we keep listening for another
+# window instead of committing. To bound the wait when the user genuinely stopped mid-phrase,
+# cap the number of consecutive "hold" verdicts; after that we commit anyway. A "hold" costs one
+# window (~700 ms), so the worst-case added tail is _MAX_ENDPOINT_HOLDS * _ENDPOINT_SILENCE_MS —
+# far tighter than running to _MAX_UTTERANCE_MS. Real speech resuming resets the budget.
+_MAX_ENDPOINT_HOLDS = 3
+_SMART_TURN_DEFAULT_THRESHOLD = 0.5
+
+
+class _NetworkMicStream:
+    """A ``sounddevice.InputStream``-shaped shim over a queue of inbound PCM.
+
+    The WebSocket handler calls :meth:`feed` with raw PCM16 bytes as they arrive;
+    the VAD/endpointer worker calls :meth:`read` for exact-size int16 blocks. The
+    shim concatenates and splits inbound chunks so ``read(block)`` always returns
+    a ``(np.ndarray[int16] shape (block,), overflow_bool)`` tuple exactly like the
+    real stream, blocking (with a stop check) until ``block`` samples are ready.
+    """
+
+    def __init__(self, np: Any, *, stop: threading.Event, poll_seconds: float = 0.1) -> None:
+        self._np = np
+        self._stop = stop
+        self._poll_seconds = poll_seconds
+        self._chunks: "queue.Queue[Optional[Any]]" = queue.Queue()
+        # Leftover samples from a chunk that overshot the requested block size.
+        self._carry = np.zeros(0, dtype=np.int16)
+        # A lone trailing byte from an odd-length feed: buffered so a sample split
+        # across two frames survives (clients may frame on arbitrary byte counts).
+        self._byte_carry = b""
+        self._feed_lock = threading.Lock()
+
+    def feed(self, pcm_bytes: bytes) -> None:
+        """Append inbound PCM16 bytes (little-endian mono) as an int16 block.
+
+        A sample split across two feeds is preserved via a one-byte carry, so a
+        client that frames on arbitrary byte boundaries never loses or misaligns
+        audio.
+        """
+        if not pcm_bytes:
+            return
+        with self._feed_lock:
+            buf = self._byte_carry + pcm_bytes
+            # Keep any lone trailing byte for the next feed to complete.
+            if len(buf) % 2:
+                buf, self._byte_carry = buf[:-1], buf[-1:]
+            else:
+                self._byte_carry = b""
+        if buf:
+            self._chunks.put(self._np.frombuffer(buf, dtype=self._np.int16).copy())
+
+    def close(self) -> None:
+        """Unblock any reader waiting for more samples."""
+        self._stop.set()
+        # A sentinel wakes a reader parked on the queue's timeout-free path.
+        self._chunks.put(None)
+
+    def read(self, block: int) -> Tuple[Any, bool]:
+        """Return exactly *block* int16 samples as ``(np.ndarray, overflow=False)``.
+
+        Blocks until enough samples arrive or the stop event is set; on stop,
+        returns whatever is buffered zero-padded up to *block* so the endpointer
+        drains and exits cleanly instead of raising.
+        """
+        np = self._np
+        while len(self._carry) < block:
+            if self._stop.is_set():
+                # Drain anything already queued before giving up (a client's last
+                # frames may have landed before close), then zero-pad the tail: a
+                # partial final block reads as silence, which the endpointer treats
+                # as quiet and stops on.
+                self._drain_pending()
+                if len(self._carry) >= block:
+                    break
+                pad = np.zeros(block - len(self._carry), dtype=np.int16)
+                out = np.concatenate([self._carry, pad])
+                self._carry = np.zeros(0, dtype=np.int16)
+                return out, False
+            try:
+                chunk = self._chunks.get(timeout=self._poll_seconds)
+            except queue.Empty:
+                continue
+            if chunk is None:  # close() sentinel
+                continue
+            self._carry = np.concatenate([self._carry, chunk])
+        out, self._carry = self._carry[:block], self._carry[block:]
+        return out, False
+
+    def _drain_pending(self) -> None:
+        """Pull every queued chunk into the carry without blocking."""
+        while True:
+            try:
+                chunk = self._chunks.get_nowait()
+            except queue.Empty:
+                return
+            if chunk is not None:
+                self._carry = self._np.concatenate([self._carry, chunk])
+
+
+class QuietTick:
+    """A session-mode quiet marker the VAD worker puts on the transcripts queue when the
+    RECEIVED audio stream has been silent for another ``quiet_interval``. ``quiet_seconds`` is
+    the cumulative received-silence since the last speech. Distinct type so the turn driver
+    tells it apart from a transcript (a ``str``) and the shutdown sentinel (``None``)."""
+
+    __slots__ = ("quiet_seconds",)
+
+    def __init__(self, quiet_seconds: float) -> None:
+        self.quiet_seconds = quiet_seconds
+
+
+class _TailBarge:
+    """A marker the VAD worker puts on the transcripts queue when speech trips DURING the playback
+    tail (after turn_done, before the client's `drained`). The driver turns it into an
+    ``{"type":"interrupted"}`` frame and does NOT run a turn — so the reply's own echo leaking into
+    the mic can't be transcribed and answered, while a real barge-in still stops playback."""
+
+    __slots__ = ("turn_id",)
+
+    def __init__(self, turn_id: Optional[str]) -> None:
+        self.turn_id = turn_id
+
+
+class _Utterance(str):
+    """A transcript on the transcripts queue, carrying the :mod:`tools.voice_tracing` recorder of
+    the capture that produced it. Binding the recorder to its transcript (not a session slot)
+    keeps traces correct when the driver is backed up behind a long turn while the VAD worker is
+    already capturing the next utterance. It is a ``str``, so everything that reads the queue as
+    plain transcripts keeps working."""
+
+    recorder: Any
+
+    def __new__(cls, text: str, recorder: Any) -> "_Utterance":
+        self = super().__new__(cls, text)
+        self.recorder = recorder
+        return self
+
+
+class ConverseSession:
+    """Drives the reused VAD → STT loop against a :class:`_NetworkMicStream`.
+
+    A worker thread reads 30 ms blocks, computes RMS and feeds a
+    :class:`~tools.voice_mode._BargeDetector`.  On a trip (speech onset) it runs
+    the shared endpointer (:func:`~tools.voice_mode._capture_until_quiet`) →
+    ``_write_wav`` → ``transcribe_recording`` and puts the transcript on
+    :attr:`transcripts` for the handler.  The handler flips :meth:`set_playing`
+    around TTS playback so the detector rejects speaker bleed; a trip while
+    playing is a barge-in (TTS is cut and the interrupt latch is set).
+    """
+
+    def __init__(
+        self, np: Any, *, stt_model: Optional[str] = None,
+        barge_multiplier: Optional[float] = None, input_rate: int = 16000,
+        quiet_interval: float = 0.0, endpoint_model: bool = False,
+        endpoint_threshold: float = _SMART_TURN_DEFAULT_THRESHOLD,
+    ) -> None:
+        from tools import voice_mode as _vm
+
+        self._np = np
+        self._vm = _vm
+        # Stable per-connection id, echoed in `ready` and joinable across client/server traces.
+        self.session_id = uuid.uuid4().hex
+        self._stt_model = stt_model
+        # Per-connection capture rate. A single-clock device (ESP32) sets this so the
+        # capture WAV is written at the rate the client actually sends; Whisper resamples
+        # internally, so STT works at any rate. Block size is 30 ms worth of samples at it.
+        self._input_rate = int(input_rate)
+        # Session mode: quiet is measured in RECEIVED-audio silence, NOT wall clock. Each
+        # non-speech block the worker reads is 30 ms of audio the client actually sent; when
+        # no audio arrives the worker parks in stream.read() and this clock does not advance,
+        # so a client holding the socket open (streaming only after a wake word) never
+        # accrues phantom quiet time. Reset to 0 on speech. 0 = continuous (no quiet ticks).
+        self._quiet_interval = float(quiet_interval)
+        self._quiet_seconds = 0.0
+        self._next_quiet_at = self._quiet_interval
+        # Set by the driver while a turn is running (STT done → agent thinking → TTS). Quiet is
+        # NOT accrued during a turn: the user has no window to speak into, so counting the
+        # agent's 14-50 s of think/speak time would fire a quiet advisory the instant the reply
+        # ends. Cleared on turn_done, where the quiet clock also restarts from zero.
+        self._turn_active = threading.Event()
+        # Playback-tail state: between turn_done and the client's `drained` (or a fallback), the
+        # client is still PLAYING the reply. Quiet is suppressed and a VAD trip is treated as a
+        # barge-in (not a new turn) so the reply's own echo can't be answered.
+        self._tail_active = False
+        self._tail_turn_id: Optional[str] = None
+        self._tail_deadline = 0.0
+        self._stop = threading.Event()
+        self._playing = threading.Event()
+        # Set by the handler while TTS is streaming so a barge-in can cut it.
+        self._tts_stop: Optional[threading.Event] = None
+        self._interrupted = threading.Event()
+        self.stream = _NetworkMicStream(np, stop=self._stop)
+        # The event stream the driver consumes: a transcript str to run a turn, a
+        # QuietTick advisory, a _TailBarge marker (barge during the playback tail),
+        # or the None sentinel on shutdown.
+        self.transcripts: "queue.Queue[Optional[str | QuietTick | _TailBarge]]" = queue.Queue()
+
+        self._block = int(self._input_rate * 0.03)  # 30 ms of samples at the input rate
+        mult = float(barge_multiplier) if barge_multiplier else _vm.DEFAULT_BARGE_MULTIPLIER
+        self._detector = _vm._BargeDetector(
+            np, mult=mult,
+            calib_blocks=max(1, _CALIBRATION_MS // 30),
+            trip_blocks=max(1, _SUSTAINED_MS // 30),
+            grace_blocks=max(0, _GRACE_MS // 30),
+            # Hear quiet/soft speech: a 0.6 window (vs the 0.8 CLI barge default) tolerates the
+            # inter-syllable dips of soft speech, lowering the reliably-heard level to ~400-500
+            # RMS without loosening noise rejection (the floor + trigger gate noise).
+            trip_fraction=_CONVERSE_TRIP_FRACTION,
+            # Self-calibrating floor for noisy rooms (a TV at the mic): a MEDIAN floor so a loud
+            # burst doesn't lock the floor high, a gentle onset multiplier, and NO onset ceiling
+            # so the trigger rises with the floor above the noise instead of tripping every block.
+            floor_percentile=_CONVERSE_FLOOR_PERCENTILE,
+            onset_mult=_CONVERSE_ONSET_MULT,
+            onset_ceiling=None,
+        )
+        from collections import deque
+
+        self._pre_roll: deque = deque(maxlen=max(1, _PRE_ROLL_MS // 30))
+        self._endpoint_blocks = max(1, _ENDPOINT_SILENCE_MS // 30)
+        self._max_blocks = max(1, _MAX_UTTERANCE_MS // 30)
+        # Optional Smart Turn v3 semantic endpointer. Loaded here (once, module-cached) only when
+        # enabled, so nothing touches onnxruntime/transformers unless the config opts in; if the
+        # deps or weights are missing, load returns None and capture falls back to the fixed timer.
+        self._endpoint_threshold = float(endpoint_threshold)
+        self._turn_detector: Any = None
+        if endpoint_model:
+            try:
+                from tools.turn_detector import load_turn_detector
+
+                self._turn_detector = load_turn_detector(self._endpoint_threshold)
+            except Exception:  # noqa: BLE001 - never let endpointer setup break a connection
+                _log.warning("smart-turn endpointer failed to load; using fixed endpoint",
+                             exc_info=True)
+                self._turn_detector = None
+        self._worker: Optional[threading.Thread] = None
+        # Called with the trip phase name ("generation"/"playback") on every trip.
+        self.on_trip: Optional[Callable[[str], None]] = None
+
+    # ── playback / barge-in coordination ──
+    def playing(self) -> bool:
+        return self._playing.is_set()
+
+    def set_playing(self, value: bool, *, tts_stop: Optional[threading.Event] = None) -> None:
+        """Mark playback active/idle; while active a VAD trip cuts *tts_stop*."""
+        self._tts_stop = tts_stop if value else None
+        if value:
+            self._interrupted.clear()
+            self._playing.set()
+        else:
+            self._playing.clear()
+            self._tts_stop = None
+
+    def take_interrupted(self) -> bool:
+        """Pop the barge-in flag; True when a trip cut playback since the last check."""
+        if self._interrupted.is_set():
+            self._interrupted.clear()
+            return True
+        return False
+
+    def stop(self) -> None:
+        """End the loop and unblock the reader and any transcript waiter."""
+        self._stop.set()
+        self.stream.close()
+        self.transcripts.put(None)
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def commit(self) -> None:
+        """Force the current utterance to endpoint now (client pressed 'commit')."""
+        # A run of silence blocks reaches the endpointer's quiet threshold; the
+        # simplest cross-thread nudge is a stop of the network source, but that
+        # would kill the whole loop.  Instead feed enough zero blocks to satisfy
+        # the endpoint-silence window so _capture_until_quiet returns promptly.
+        silence = self._np.zeros(self._block, dtype=self._np.int16).tobytes()
+        for _ in range(self._endpoint_blocks + 1):
+            self.stream.feed(silence)
+
+    # ── worker loop ──
+    def start(self) -> None:
+        self._worker = threading.Thread(target=self._run, name="converse-vad", daemon=True)
+        self._worker.start()
+
+    def _run(self) -> None:
+        np, vm = self._np, self._vm
+        try:
+            while not self._stop.is_set():
+                # Fallback: end a playback tail the client never closed with `drained` so quiet/VAD
+                # can't stay suppressed forever (only reached when audio is flowing).
+                if self._tail_active and time.monotonic() >= self._tail_deadline:
+                    self.end_playback_tail()
+                data, _ = self.stream.read(self._block)
+                if self._stop.is_set():
+                    break
+                self._pre_roll.append(data.copy())
+                playing = self.playing()
+                phase = self._detector.feed(vm._rms(np, data), playing)
+                if phase is None:
+                    # A block of received audio with no speech onset: 30 ms of real,
+                    # client-sent silence. This is the ONLY place quiet time accrues, and it
+                    # only runs when stream.read() actually returned a block — so a client
+                    # that sends nothing never accrues quiet.
+                    self._account_received_silence()
+                    continue
+                # Speech: the user is talking, so the quiet clock resets.
+                self._reset_quiet()
+                # A trip DURING the playback tail is a barge-in, not a new turn: signal the driver
+                # to emit `interrupted` (the client stops playback) and DON'T capture, so the
+                # reply's own echo leaking into the mic can never be transcribed and answered.
+                if self._tail_active:
+                    tid = self._tail_turn_id
+                    self.end_playback_tail()
+                    self.transcripts.put(_TailBarge(tid))
+                    continue
+                # Barge-in: a trip during playback cuts the reply mid-stream.
+                if playing:
+                    self._trigger_barge_in()
+                if self.on_trip is not None:
+                    try:
+                        self.on_trip(phase)
+                    except Exception:  # noqa: BLE001 - callback must not kill the loop
+                        _log.debug("converse on_trip callback failed", exc_info=True)
+                recorder = PhaseRecorder(input_rate=self._input_rate,
+                                         session_mode=self._quiet_interval > 0)
+                transcript = self._capture_and_transcribe(recorder)
+                if transcript:
+                    self.transcripts.put(_Utterance(transcript, recorder))
+        except Exception:  # noqa: BLE001 - a loop crash must not wedge the socket
+            _log.warning("converse VAD loop failed", exc_info=True)
+        finally:
+            self.transcripts.put(None)
+
+    def _account_received_silence(self) -> None:
+        """One 30 ms block of received non-speech audio elapsed. In session mode, accrue it and
+        emit an :class:`QuietTick` each time the received silence crosses another quiet_interval —
+        so quiet reflects the user going quiet WHILE STREAMING AND FREE TO SPEAK, never wall-clock
+        time and never the agent's think/speak time (suppressed while a turn is active)."""
+        if self._quiet_interval <= 0 or self._turn_active.is_set() or self._tail_active:
+            return
+        self._quiet_seconds += self._block / self._input_rate  # == 0.03 s per block
+        if self._quiet_seconds + 1e-6 >= self._next_quiet_at:
+            self.transcripts.put(QuietTick(round(self._quiet_seconds, 1)))
+            self._next_quiet_at += self._quiet_interval
+
+    def _reset_quiet(self) -> None:
+        """Speech detected: the quiet clock (and the next quiet threshold) start over."""
+        self._quiet_seconds = 0.0
+        self._next_quiet_at = self._quiet_interval
+
+    def begin_turn(self) -> None:
+        """Driver hook: a turn is now running (STT done → agent → TTS). Suppress quiet accrual
+        until :meth:`end_turn` — the user has no window to speak into during a reply."""
+        self._turn_active.set()
+        self._reset_quiet()
+
+    def end_turn(self) -> None:
+        """Driver hook: the reply finished (``turn_done``). Resume the quiet clock FROM ZERO, so
+        the first advisory arrives a full quiet_interval after the reply — a real window to
+        follow up before a wake-word client sleeps."""
+        self._turn_active.clear()
+        self._reset_quiet()
+
+    def begin_playback_tail(self, turn_id: Optional[str], fallback_seconds: float) -> None:
+        """Driver hook: the reply is fully SENT (turn_done) but the client is still PLAYING it.
+        Suppress quiet and treat a VAD trip as a barge-in until the client's `drained` (or the
+        fallback) — so the tail isn't counted as quiet and the reply's echo isn't answered."""
+        if fallback_seconds <= 0:
+            return
+        self._tail_active = True
+        self._tail_turn_id = turn_id
+        self._tail_deadline = time.monotonic() + fallback_seconds
+
+    def end_playback_tail(self) -> None:
+        """Playback finished (client `drained`, a barge-in, or the fallback): resume quiet/VAD from
+        zero, so the follow-up window starts when the user actually stopped hearing the reply."""
+        self._tail_active = False
+        self._tail_turn_id = None
+        self._reset_quiet()
+
+    def notify_drained(self, turn_id: Optional[str] = None) -> None:
+        """Client hook (``{"type":"drained"}``): the last scheduled audio has left the speaker. Ends
+        the playback tail for the matching turn (or the current tail when no id is given)."""
+        if self._tail_active and (turn_id is None or turn_id == self._tail_turn_id):
+            self.end_playback_tail()
+
+    def _trigger_barge_in(self) -> None:
+        """Cut the in-flight reply: latch the interrupt note and stop TTS."""
+        try:
+            from tools.tts_streaming import mark_speech_interrupted
+
+            mark_speech_interrupted()
+        except Exception:  # noqa: BLE001
+            _log.debug("mark_speech_interrupted failed", exc_info=True)
+        if self._tts_stop is not None:
+            self._tts_stop.set()
+        self._playing.clear()
+        self._interrupted.set()
+
+    def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None) -> str:
+        """Endpoint the utterance from the pre-roll and return its transcript, recording the
+        ``voice.capture`` and ``voice.stt`` phases into *recorder*."""
+        vm, np = self._vm, self._np
+        recorder = recorder or PhaseRecorder()
+        # End the utterance when the level falls back toward the ambient floor, not below an
+        # absolute 200 — so with a TV on (floor ~1500) the utterance closes when the USER stops
+        # instead of running to the max cap. Quiet rooms (floor ~50) keep the 200 threshold via
+        # max(). The short endpoint window (_ENDPOINT_SILENCE_MS) keeps the "listening" tail snappy.
+        silence_rms = max(float(vm.SILENCE_RMS_THRESHOLD),
+                          self._detector.quiet_floor * _CONVERSE_ENDPOINT_FLOOR_MULT)
+        with recorder.phase("voice.capture") as cap:
+            if self._turn_detector is not None:
+                cap.set(**{"endpoint.mode": "smart_turn"})
+                wav_path = self._capture_adaptive(silence_rms)
+            else:
+                cap.set(**{"endpoint.mode": "fixed"})
+                wav_path = vm._capture_until_quiet(
+                    self.stream, np, self._block, self._pre_roll,
+                    endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
+                    sample_rate=self._input_rate, silence_rms=silence_rms,
+                )
+        # capture drained the pre-roll into the WAV; start fresh.
+        self._pre_roll.clear()
+        with recorder.phase("voice.stt") as stt:
+            result = vm.transcribe_recording(wav_path, model=self._stt_model)
+            vm._unlink_quietly(wav_path)
+            success = bool(result.get("success"))
+            transcript = str(result.get("transcript") or "").strip() if success else ""
+            stt.set(**{"stt.success": success, "stt.model": self._stt_model or "",
+                       "stt.transcript_chars": len(transcript)})
+        if not success:
+            _log.debug("converse transcription failed: %s", result.get("error"))
+        return transcript
+
+    def _capture_adaptive(self, silence_rms: float) -> str:
+        """Semantic endpoint: mirror the fixed-silence capture, but on reaching a candidate pause
+        ask Smart Turn whether the utterance *sounds* finished. If it doesn't (the user trailed off
+        mid-thought), keep listening for another window instead of committing — bounded by
+        ``_MAX_ENDPOINT_HOLDS`` consecutive holds and the ``_max_blocks`` hard cap. Returns a WAV
+        path, exactly like :func:`~tools.voice_mode._capture_until_quiet`."""
+        vm, np = self._vm, self._np
+        frames = list(self._pre_roll)
+        quiet = 0
+        holds = 0
+        for _ in range(self._max_blocks):
+            data, _ = self.stream.read(self._block)
+            if self._stop.is_set():
+                break
+            frames.append(data.copy())
+            if vm._rms(np, data) < silence_rms:
+                quiet += 1
+            else:
+                quiet = 0
+                holds = 0  # the user resumed talking — restore the full patience budget
+            if quiet < self._endpoint_blocks:
+                continue
+            # Candidate pause reached. Consult the semantic endpointer on the utterance so far.
+            try:
+                prob = self._turn_detector.turn_complete_probability(
+                    self._frames_to_f32_16k(frames))
+            except Exception:  # noqa: BLE001 - a model hiccup must not wedge the turn
+                _log.debug("smart-turn inference failed; committing on silence", exc_info=True)
+                break
+            # Route the per-decision line through the VAD diagnostic hook so it surfaces on
+            # stderr/journal under HERMES_VOICE_DEBUG=1 (the channel used to tune the VAD). This is
+            # the signal for tuning the threshold against real speech.
+            if prob >= self._endpoint_threshold:
+                vm._vad_log(f"smart-turn: p={prob:.3f} >= {self._endpoint_threshold:.2f} -> commit")
+                break
+            holds += 1
+            if holds >= _MAX_ENDPOINT_HOLDS:
+                vm._vad_log(f"smart-turn: p={prob:.3f} held {holds}x -> commit (budget spent)")
+                break
+            vm._vad_log(f"smart-turn: p={prob:.3f} < {self._endpoint_threshold:.2f} -> hold "
+                        f"(keep listening, {holds}/{_MAX_ENDPOINT_HOLDS})")
+            quiet = 0  # keep the mic open for another window
+        return vm.AudioRecorder._write_wav(
+            np.concatenate(frames, axis=0), sample_rate=self._input_rate)
+
+    def _frames_to_f32_16k(self, frames: list) -> Any:
+        """Concatenate int16 capture blocks into a 16 kHz mono float32 array for Smart Turn.
+        Values are scaled to [-1, 1); a non-16 kHz capture rate is linearly resampled to 16 kHz
+        (the model's fixed rate). Only the model's window is ever consumed, but the whole utterance
+        is passed — :meth:`turn_complete_probability` keeps the trailing 8 s."""
+        np = self._np
+        audio = np.concatenate(frames, axis=0).astype(np.float32) / 32768.0
+        if self._input_rate != 16000 and audio.size:
+            n_out = int(round(audio.size * 16000 / self._input_rate))
+            if n_out > 0:
+                audio = np.interp(
+                    np.linspace(0.0, 1.0, n_out, endpoint=False),
+                    np.linspace(0.0, 1.0, audio.size, endpoint=False), audio,
+                ).astype(np.float32)
+        return audio
+
+
+def split_text_for_tts_stream(text: str, cap: int) -> list:
+    """Split *text* into provider-cap-sized pieces on sentence boundaries.
+
+    Mirror of :func:`hermes_cli.web_server_gateway._split_text_for_speak_stream`,
+    lifted here so a host with no dashboard dependency (e.g. the aiohttp gateway)
+    can chunk synthesized sentences without importing the FastAPI web server.
+    Reflows whitespace (sentences re-joined with single spaces); no fence
+    semantics — deliberately NOT unified with the fence-aware splitter.
+    """
+    from tools.tts_streaming import SENTENCE_BOUNDARY_RE as _SENTENCE_BOUNDARY_RE
+
+    cap = cap if cap and cap > 0 else 4000
+    pieces, buf = [], ""
+    for sentence in filter(str.strip, _SENTENCE_BOUNDARY_RE.split(text)):
+        while len(sentence) > cap:
+            pieces.append(sentence[:cap])
+            sentence = sentence[cap:]
+        if buf and len(buf) + len(sentence) + 1 > cap:
+            pieces.append(buf)
+            buf = sentence
+        else:
+            buf = f"{buf} {sentence}" if buf else sentence
+    if buf:
+        pieces.append(buf)
+    return pieces
+
+
+# Bound on the per-connection conversation history kept in memory: at most this
+# many messages (~20 user+assistant turns). A long-lived socket that never closes
+# would otherwise grow ``history`` without limit; this simple tail-cap (no
+# summarization) keeps it bounded while preserving recent context.
+_HISTORY_MAX_MESSAGES = 40
+
+
+_QUIET_INTERVAL_MAX = 3600.0
+
+# Per-connection sample-rate defaults + clamp range. A single-clock device (ESP32) can set
+# input_rate == output_rate; browsers keep the 16 kHz-in / 24 kHz-out split. Rates outside
+# this range are clamped to a sane telephony..studio window.
+DEFAULT_INPUT_RATE = 16000
+DEFAULT_OUTPUT_RATE = 24000
+_SAMPLE_RATE_MIN = 8000
+_SAMPLE_RATE_MAX = 48000
+
+
+def clamp_sample_rate(raw: Any, default: int) -> int:
+    """Coerce *raw* to an int sample rate in [8000, 48000]; *default* when unusable."""
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(_SAMPLE_RATE_MIN, min(val, _SAMPLE_RATE_MAX))
+
+
+# Default converse identity — the name a client gets when the start frame omits one.
+DEFAULT_CONVERSE_NAME = "Sakura"
+
+
+def parse_start_config(frame: Dict[str, Any]) -> Tuple[int, int, float, str, Optional[str]]:
+    """Resolve ``(input_rate, output_rate, quiet_interval, name, profile)`` from a ``start`` frame.
+
+    All fields optional; defaults: input_rate=16000, output_rate=24000, quiet_interval=0
+    (continuous), name="Sakura", profile=None. Rates are clamped to [8000, 48000] and
+    quiet_interval via :func:`parse_quiet_interval`. Shared by both WS hosts.
+    """
+    input_rate = clamp_sample_rate(frame.get("input_rate"), DEFAULT_INPUT_RATE)
+    output_rate = clamp_sample_rate(frame.get("output_rate"), DEFAULT_OUTPUT_RATE)
+    quiet_interval = parse_quiet_interval(frame.get("quiet_interval"))
+    raw_name = frame.get("name")
+    name = str(raw_name).strip() if raw_name is not None and str(raw_name).strip() \
+        else DEFAULT_CONVERSE_NAME
+    profile = frame.get("profile") or None
+    return input_rate, output_rate, quiet_interval, name, profile
+
+
+# Voice replies are spoken aloud — keep them short and speakable. Built per-turn as the
+# ephemeral system prompt (mirrors the CLI voice mode's brevity prefix), so spoken replies
+# don't balloon to full chat length. When a name is known it also carries wake handling.
+_VOICE_BREVITY_PROMPT = (
+    "You are in a live, low-latency voice conversation and your reply is spoken aloud. Speed "
+    "matters: answer immediately with your first, most direct response — do not deliberate, "
+    "plan, weigh options, or think out loud before answering. Keep it concise and conversational "
+    "— at most 2-3 short sentences of plain spoken text, with no code blocks, markdown, lists, or "
+    "URLs. If the request is unclear or you only caught fragments, ask one short clarifying "
+    "question instead of guessing or rambling."
+)
+
+
+def voice_system_prompt(name: Optional[str] = None, *, allow_signoff: bool = False) -> str:
+    """Ephemeral system prompt for one converse turn.
+
+    When *name* is given, prepend an identity + wake-word preamble (so the model knows what
+    it's called and treats a leading name / "hey <name>" as being addressed, not part of the
+    request) before the spoken-brevity rules. When *name* is ``None``/empty, just the brevity
+    rules. The default converse name is ``"Sakura"``, so most turns carry the identity block.
+
+    When *allow_signoff* (session/wake mode), append a sign-off instruction: the model can end
+    the conversation by finishing its reply with the configured end phrase (default "Over and
+    out."), which the server reports as ``turn_done.expects_more = false`` so a wake-word client
+    stops listening — the agent's own way to end the exchange, robust to a noisy room the VAD
+    can't endpoint.
+    """
+    name = (str(name).strip() if name is not None else "")
+    prompt = _VOICE_BREVITY_PROMPT
+    if name:
+        prompt = (
+            f"Your name is {name}. People talk to you by voice and get your attention by saying "
+            f"your name (or 'hey {name}') — treat that as being addressed, not part of the "
+            "request, and don't repeat it back. ") + prompt
+    if allow_signoff:
+        from tools.voice_mode_transcript import _load_voice_end_phrases
+        phrases = _load_voice_end_phrases()
+        if phrases:
+            who = name or "the assistant"
+            prompt += (
+                f" When the exchange is complete and you don't expect the user to follow up, end "
+                f"your reply with '{phrases[0].capitalize()}.' — that closes the conversation so "
+                f"{who} stops listening. Use it only when truly done, never mid-task.")
+    return prompt
+# Safety cap on how much of ONE reply is ever synthesized to speech, so a runaway reply (a
+# model ignoring the brevity prompt, or a tool result read aloud) can't play for minutes.
+# Normal replies sit far under this; it only bounds the pathological case.
+_MAX_TTS_CHARS_PER_TURN = 1500
+
+
+def parse_quiet_interval(raw: Any) -> float:
+    """Clamp an ``quiet_interval`` VALUE (from the ``start`` frame) → seconds of quiet between
+    turns before an ``{"type":"quiet"}`` notification (which also enables stop-phrase →
+    ``{"type":"stop_word"}``). Accepts a number, numeric string, or ``None``.
+
+    This is the SESSION-mode opt-in. Absent / invalid / ``<= 0`` → ``0.0`` = continuous mode:
+    no quiet pings and no stop-word handling — the original always-listening behavior, so
+    existing clients are unaffected. A positive value enables session mode (clamped to a sane
+    max); a wake-word client passes e.g. ``15``."""
+    if raw is None:
+        return 0.0
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if val <= 0 else min(val, _QUIET_INTERVAL_MAX)
+
+
+def parse_smart_turn_config(cfg: Any) -> Tuple[bool, float]:
+    """Read the Smart Turn v3 semantic-endpoint settings from a loaded config dict →
+    ``(enabled, threshold)``. Shape (all optional; the feature is OFF by default)::
+
+        voice:
+          endpoint:
+            model: smart-turn-v3   # any truthy string enables it; false/none disables
+            threshold: 0.5         # P(turn complete) at/above which the turn commits
+
+    Missing/malformed config → ``(False, _SMART_TURN_DEFAULT_THRESHOLD)`` so a box that
+    never opts in keeps the fixed silence endpoint untouched."""
+    threshold = _SMART_TURN_DEFAULT_THRESHOLD
+    try:
+        voice = cfg.get("voice") if isinstance(cfg, dict) else None
+        endpoint = voice.get("endpoint") if isinstance(voice, dict) else None
+        if not isinstance(endpoint, dict):
+            return False, threshold
+        model = endpoint.get("model")
+        enabled = bool(model) and str(model).strip().lower() not in ("", "none", "false", "off")
+        raw_thr = endpoint.get("threshold")
+        if raw_thr is not None:
+            threshold = min(1.0, max(0.0, float(raw_thr)))
+        return enabled, threshold
+    except (AttributeError, TypeError, ValueError):
+        return False, threshold
+
+
+async def drive_converse_turns(
+    *,
+    session: "ConverseSession",
+    synth: Any,
+    cap: int,
+    loop: asyncio.AbstractEventLoop,
+    send_json: Callable[[dict], Awaitable[Any]],
+    send_bytes: Callable[[bytes], Awaitable[Any]],
+    run_turn: Callable[..., Awaitable[Tuple[str, Optional[str]]]],
+    history: List[Dict[str, str]],
+    quiet_interval: float = 0.0,
+    interrupt_turn: Optional[Callable[[], None]] = None,
+) -> None:
+    """Run the per-transcript incremental-TTS turn loop shared by both WS hosts.
+
+    One turn per transcript pulled off ``session.transcripts``: announce it
+    (``{"type":"transcript"}``), run the real agent turn via ``run_turn`` (deltas
+    stream out as they land), and speak the reply INCREMENTALLY — each sentence is
+    synthesized and streamed the moment it is ready (``SentenceChunker`` +
+    ``synth.synth`` → ``send_bytes``), so the user hears sentence 1 while sentence 2
+    is still being generated. Control-frame order per turn is:
+    ``transcript`` → (``speaking`` + PCM frames) → optional ``interrupted``/``error``
+    → ``turn_done``.
+
+    The host adapts by passing:
+
+    * ``send_json`` / ``send_bytes`` — awaitables wrapping the host ws (aiohttp and
+      starlette both expose async ``send_json``/``send_bytes``, so a host can pass
+      ``ws.send_json``/``ws.send_bytes`` directly).
+    * ``run_turn(transcript, on_delta, *, interrupted) -> (reply_text, err)`` — runs
+      one agent turn, calling ``on_delta`` with streaming text, and returns the reply
+      text (for history) and an error string (or ``None``). The driver awaits it as a
+      task and owns closing the synthesis pipeline when it ends.
+    * ``synth`` — a converse synthesizer (``.sample_rate`` + ``.synth(text) ->
+      Iterator[bytes]``); ``cap`` — the provider's max text length.
+    * ``history`` — the mutable conversation-history list; the driver appends the
+      user + assistant message each turn and caps it to a bounded tail.
+
+    BARGE-IN: a VAD trip while playing stops TTS PLAYBACK (``session`` sets ``tts_stop`` +
+    ``mark_speech_interrupted``), we emit ``{"type":"interrupted"}``, AND — when the host provides
+    an ``interrupt_turn`` hook — the in-flight agent turn is cancelled so it stops generating /
+    firing tools and the barge-in utterance is handled at once instead of queuing behind it.
+    """
+    from tools.tts_streaming import SentenceChunker
+    from tools.tts_text_normalize import _strip_markdown_for_tts
+    from tools.voice_mode_transcript import (
+        is_voice_end_phrase, is_voice_stop_phrase, strip_voice_end_phrase)
+
+    turn_timeout = _resolve_turn_timeout()
+    tail_fallback = _resolve_tail_fallback()
+
+    while not session.stopped:
+        # Block for the next event on the session queue: a transcript (str), an QuietTick
+        # (session mode — the RECEIVED stream stayed silent for another quiet_interval; the
+        # socket stays open, a wake-word client uses this to re-arm/sleep), or None (shutdown).
+        # Quiet is stream-driven in the session (see ConverseSession._account_received_silence),
+        # NOT a wall-clock timeout here — a client holding the socket open without streaming
+        # never gets a quiet ping.
+        item = await loop.run_in_executor(None, session.transcripts.get)
+        if item is None:  # shutdown sentinel
+            break
+        if isinstance(item, QuietTick):
+            await send_json({"type": "quiet", "quiet_seconds": item.quiet_seconds})
+            continue
+        if isinstance(item, _TailBarge):
+            # Speech tripped during the playback tail: tell the client to stop playing. NOT a turn —
+            # no capture ran, so nothing (incl. the reply's echo) is transcribed or answered.
+            await send_json({"type": "interrupted", "turn_id": item.turn_id})
+            continue
+        transcript = item  # a transcript str (an _Utterance when it came from a real capture)
+        if not transcript:
+            continue
+        # A fresh id tying every frame of this turn together (transcript → speaking → turn_done),
+        # so a client (or a log) can correlate them; also carried on `drained`/tail/`interrupted`.
+        turn_id = uuid.uuid4().hex
+        tt = start_turn(recorder=getattr(item, "recorder", None), turn_id=turn_id,
+                        **{"session.id": getattr(session, "session_id", None)})
+        meta: Dict[str, Any] = {"turn_id": turn_id}
+        if tt.traceparent:
+            meta["traceparent"] = tt.traceparent
+        await send_json({"type": "transcript", "text": transcript, **meta})
+        # Session mode: a spoken stop phrase ("goodbye"/"stop"/…) ends the exchange —
+        # tell the client and skip the agent turn (the client decides to re-arm/sleep).
+        if quiet_interval > 0 and is_voice_stop_phrase(transcript):
+            await send_json({"type": "stop_word", "text": transcript, "turn_id": turn_id})
+            tt.set(outcome="stop_word")
+            tt.end()
+            continue
+
+        # The agent turn (STT is already done → the model, which can be 5-50s to first token)
+        # now runs, then `speaking`. Tell the client we've moved past listening into processing
+        # so it can show "thinking" instead of looking stuck on "listening" for the whole wait.
+        await send_json({"type": "thinking"})
+        # Suppress quiet accrual for the whole turn (agent think + speak): the user can't speak
+        # into a reply, so those seconds must not count. end_turn (after turn_done) restarts the
+        # quiet clock from zero so the first advisory lands a full quiet_interval later.
+        session.begin_turn()
+        # Clear any stale barge-in latch before this turn; capture it as the per-turn
+        # interrupted note so a host that plumbs barge-in parity (the dashboard) can
+        # prepend it to the model-bound message.
+        interrupted_in = session.take_interrupted()
+        text_q: "queue.Queue[Optional[str]]" = queue.Queue()  # deltas; None = turn done
+        pcm_q: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue()  # PCM out; None = done
+        tts_stop = threading.Event()
+        reply_parts: List[str] = []
+        turn_result: dict = {}
+        # Phase marks (epoch ns) for this turn, from the instant STT finished (the transcript frame
+        # just went out). They feed the latency log below and the voice.agent / voice.tts phases.
+        _ns: Dict[str, int] = {"turn_start": time.time_ns()}
+
+        def _on_delta(delta: str) -> None:
+            # Called from run_turn's execution context (main-loop coroutine or a
+            # worker thread); text_q is thread-safe either way.
+            if delta:
+                _ns.setdefault("first_delta", time.time_ns())
+                reply_parts.append(delta)
+                text_q.put(delta)
+
+        async def _run_turn_task(t=transcript, note=interrupted_in) -> None:
+            # Drive one agent turn via the host adapter; the None sentinel closes the
+            # synthesis pipeline when the turn ends (whichever way it ends).
+            try:
+                reply, err = await run_turn(t, _on_delta, interrupted=note)
+                turn_result["reply"] = reply
+                if err:
+                    turn_result["err"] = err
+            except Exception as exc:  # noqa: BLE001 - surface, don't wedge the loop
+                turn_result["err"] = f"voice turn failed: {exc}"
+            finally:
+                _ns.setdefault("agent_end", time.time_ns())
+                text_q.put(None)
+
+        def _produce() -> None:
+            # Cut streaming deltas into sentences and synthesize each as it lands, so
+            # playback overlaps generation (mirrors the speak-stream producer).
+            chunker = SentenceChunker()
+            idle_poll_seconds = 0.5
+            idle_polls_before_force_flush = 4  # ~2s of silence -> speak the tail
+
+            def _sentences():
+                idle_polls = 0
+                while not (tts_stop.is_set() or session.stopped):
+                    try:
+                        delta = text_q.get(timeout=idle_poll_seconds)
+                    except queue.Empty:
+                        idle_polls += 1
+                        buffered = chunker.buf.strip()
+                        if not buffered or (
+                                "<think" in chunker.buf and "</think>" not in chunker.buf):
+                            continue
+                        if buffered.endswith((".", "!", "?", "…", ":")) or (
+                                idle_polls >= idle_polls_before_force_flush):
+                            yield from chunker.flush()
+                        continue
+                    idle_polls = 0
+                    if delta is None:
+                        yield from chunker.flush()
+                        return
+                    yield from chunker.feed(delta)
+
+            spoken_chars = 0
+            try:
+                for sentence in _sentences():
+                    cleaned = _strip_markdown_for_tts(sentence)
+                    # The sign-off phrase is a control marker, not something to say aloud: in
+                    # session mode, strip a trailing end phrase before TTS so the conversation
+                    # ends silently (the full reply still sets turn_done.expects_more=false).
+                    if quiet_interval > 0:
+                        cleaned = strip_voice_end_phrase(cleaned)
+                    if not cleaned:
+                        continue
+                    _ns.setdefault("first_sentence", time.time_ns())
+                    for piece in split_text_for_tts_stream(cleaned, cap):
+                        for chunk in synth.synth(piece):
+                            if tts_stop.is_set() or session.stopped:
+                                return
+                            _ns.setdefault("first_pcm", time.time_ns())
+                            loop.call_soon_threadsafe(pcm_q.put_nowait, chunk)
+                    spoken_chars += len(cleaned)
+                    if spoken_chars >= _MAX_TTS_CHARS_PER_TURN:
+                        # Safety cap: stop speaking a runaway reply. The agent turn still
+                        # completes and the full reply is recorded in history; only the
+                        # spoken audio is bounded (see _MAX_TTS_CHARS_PER_TURN).
+                        _log.debug("converse: TTS output capped at %d chars", spoken_chars)
+                        break
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("converse synthesis failed: %s", exc)
+            finally:
+                loop.call_soon_threadsafe(pcm_q.put_nowait, None)
+
+        turn_task = asyncio.ensure_future(_run_turn_task())
+        threading.Thread(target=_produce, name="converse-tts", daemon=True).start()
+
+        # Consumer: stream PCM out; flip `playing` on only when real audio starts
+        # (kept off during generation so a mid-thought interjection stays VAD-sensitive).
+        # A turn deadline backstops a hung LLM call (no tokens, no error, no end): once it trips
+        # the turn is abandoned, the task cancelled, and an error + turn_done still go out, so the
+        # client is never left "thinking" forever.
+        speaking = False
+        pcm_chunks = 0
+        timed_out = False
+        turn_deadline = loop.time() + turn_timeout if turn_timeout > 0 else None
+        while True:
+            try:
+                if turn_deadline is None:
+                    chunk = await pcm_q.get()
+                else:
+                    remaining = turn_deadline - loop.time()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    chunk = await asyncio.wait_for(pcm_q.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                timed_out = True
+                break
+            if chunk is None:
+                break
+            if not speaking:
+                session.set_playing(True, tts_stop=tts_stop)
+                await send_json({"type": "speaking", **meta})
+                speaking = True
+            pcm_chunks += 1
+            await send_bytes(chunk)
+        _ns["pcm_done"] = time.time_ns()
+        if timed_out:
+            # Stop the producer and the (likely hung) agent task; record it as a turn error so the
+            # error frame + turn_done below fire and the loop returns to listening.
+            tts_stop.set()
+            turn_task.cancel()
+            turn_result.setdefault("err", f"voice turn timed out after {turn_timeout:.0f}s")
+            _log.warning("converse: turn abandoned after %.0fs (no completion)", turn_timeout)
+        if speaking:
+            session.set_playing(False)
+
+        # Barge-in: the user spoke over the reply, so the VAD worker set `tts_stop` and the audio is
+        # already cut. Cancel the IN-FLIGHT agent turn via the host's cooperative interrupt so it
+        # stops generating and firing tools, and `await turn_task` below returns at once instead of
+        # blocking on a turn that keeps running — which is what made the barge-in utterance (already
+        # captured by the worker) queue behind the old turn. (timed_out sets tts_stop too, but that
+        # path already cancelled the task; exclude it.)
+        barged_in = tts_stop.is_set() and not timed_out
+        if barged_in and interrupt_turn is not None:
+            try:
+                interrupt_turn()
+            except Exception:  # noqa: BLE001 - a failed interrupt must not wedge the loop
+                _log.debug("converse: interrupt_turn failed", exc_info=True)
+
+        # Latency breakdown, relative to STT completion (transcript out). first_delta =
+        # LLM time-to-first-token; first_sentence-first_delta = generation until a full
+        # sentence; first_pcm-first_sentence = TTS synth of that sentence; first_pcm = the
+        # number the user hears as "lag before it starts talking".
+        def _ms(k, since="turn_start"):
+            return round((_ns[k] - _ns[since]) / 1e6) if k in _ns and since in _ns else None
+        _log.info(
+            "converse timing: first_delta=%sms first_sentence=%sms first_pcm=%sms total=%sms "
+            "deltas=%d reply_chars=%d",
+            _ms("first_delta"), _ms("first_sentence"), _ms("first_pcm"), _ms("pcm_done"),
+            len(reply_parts), sum(len(p) for p in reply_parts))
+
+        # The turn task set the None sentinel that ended synthesis, so it is
+        # effectively done; await it to surface errors and settle turn_result. (On a timeout it was
+        # cancelled above — suppress the CancelledError too, which is not an Exception subclass.)
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await turn_task
+
+        # Persist the turn so history carries across the connection. Prefer the reply
+        # the adapter returned (the agent's final response); fall back to the streamed
+        # deltas. Cap the history to a bounded tail so a long-lived socket doesn't grow
+        # `history` without limit (simple slice cap, no summarization).
+        reply = turn_result.get("reply") or "".join(reply_parts)
+        history.append({"role": "user", "content": transcript})
+        if reply:
+            history.append({"role": "assistant", "content": reply})
+        if len(history) > _HISTORY_MAX_MESSAGES:
+            del history[:-_HISTORY_MAX_MESSAGES]
+
+        # Barge-in: report it and skip the error frame (a barged turn's error — typically the
+        # interrupt itself — is noise), else surface any turn error. Always end with `turn_done`.
+        barged = bool(session.take_interrupted() or tts_stop.is_set()) and not timed_out
+        turn_err = bool(turn_result.get("err"))
+        if barged:
+            await send_json({"type": "interrupted", "turn_id": turn_id})
+        elif turn_err:
+            await send_json({"type": "error", "error": turn_result["err"], "turn_id": turn_id})
+        # turn_done carries the agent's follow-up expectation in session mode, so a wake-word
+        # client knows what to do without waiting on the VAD (which a noisy room never
+        # endpoints): expects_more=false when the model signed off ("… Over and out." → the
+        # conversation is over, sleep now), expects_more=true when it asked a question (a
+        # follow-up is coming → keep the mic hot, don't sleep on the next quiet), and the field
+        # is ABSENT otherwise (no signal → the client's quiet timer governs). Absent must read as
+        # "keep listening", so a client ignoring the field never sleeps unexpectedly.
+        turn_done: Dict[str, Any] = {"type": "turn_done", "turn_id": turn_id}
+        if quiet_interval > 0:
+            if is_voice_end_phrase(reply):
+                turn_done["expects_more"] = False
+            elif reply.rstrip().endswith("?"):
+                turn_done["expects_more"] = True
+        await send_json(turn_done)
+        tt.add_phase("voice.agent", _ns["turn_start"], _ns.get("agent_end"),
+                     **{"llm.ttft_ms": _ms("first_delta"), "reply.chars": len(reply),
+                        "llm.deltas": len(reply_parts), "error": turn_err,
+                        "llm.timed_out": timed_out})
+        tt.add_phase("voice.tts", _ns.get("first_sentence"), _ns["pcm_done"],
+                     **{"tts.pcm_chunks": pcm_chunks,
+                        "tts.first_pcm_ms": _ms("first_pcm", since="first_sentence")})
+        tt.set(outcome=("timeout" if timed_out else "interrupted" if barged
+                        else "error" if turn_err else "ok"),
+               interrupted=barged, expects_more=turn_done.get("expects_more"))
+        tt.end()
+        # Reply done (SENDING): resume the quiet clock from zero. In session mode, unless the agent
+        # signed off, enter the playback-tail state — the client is still PLAYING the reply, so hold
+        # quiet/VAD until its `drained` (or the fallback) instead of counting the tail as quiet or
+        # answering the reply's own echo. Sign-off (client sleeps) skips the tail.
+        session.end_turn()
+        if quiet_interval > 0 and turn_done.get("expects_more") is not False and not timed_out:
+            session.begin_playback_tail(turn_id, tail_fallback)
+
+        # Flush-on-sign-off: when the agent signed off (expects_more=False) the conversation is
+        # over and the client sleeps, so DROP any utterances that queued behind this turn (captured
+        # during the think/speak window) — otherwise their replies arrive after the client has gone
+        # to sleep. A follow-up during a turn that did NOT sign off still runs. Dropped utterances
+        # are still handed to the tracing seam so the drop is visible.
+        if turn_done.get("expects_more") is False:
+            for dropped in _drain_pending(session):
+                recorder = getattr(dropped, "recorder", None)
+                if recorder is not None:
+                    recorder.set(outcome="discarded_after_signoff")
+                    emit_turn_trace(recorder)
+
+
+# ── converse synthesizer: one uniform "text -> int16 PCM" seam for both paths ──
+#
+# The converse loop needs a synthesizer that ALWAYS works, mirroring Hermes
+# Desktop: when the configured TTS provider has a chunked/streaming API we use it
+# (low latency, playback starts on sentence one); when it doesn't (edge, the
+# default), we fall back to one-shot synthesis of the whole sentence and transcode
+# the resulting audio file to raw int16 PCM server-side. Both expose the same
+# ``.sample_rate: int`` + ``.synth(text) -> Iterator[bytes]`` contract, so the
+# handler code is identical whichever path serves a turn.
+
+
+def _decode_audio_file_to_pcm16(path: str, target_rate: int = _FALLBACK_SAMPLE_RATE) -> bytes:
+    """Decode an audio file to raw little-endian int16 mono PCM at *target_rate*.
+
+    Uses PyAV to open/decode any container the one-shot providers emit (mp3, wav,
+    opus/ogg, …) and resample to s16/mono/*target_rate*. On any failure logs and
+    returns ``b""`` so a bad file degrades to "no audio", never an exception into
+    the synthesis thread.
+    """
+    try:
+        import av.audio.resampler
+
+        resampler = av.audio.resampler.AudioResampler(
+            format="s16", layout="mono", rate=target_rate)
+        out = bytearray()
+
+        def _emit(frame) -> None:
+            # PyAV 18: resample() returns a LIST of frames (may be empty). Use
+            # to_ndarray() (exact sample count) rather than bytes(planes[0]) — the
+            # plane buffer is over-allocated/padded (e.g. 576 samples -> 1216 bytes,
+            # not 1152), so raw plane bytes append ~64-128 garbage bytes PER frame,
+            # heard as periodic scratchiness. Same fix as _ResampledConverseSynth.
+            for rs in resampler.resample(frame):
+                data = rs.to_ndarray().tobytes()
+                if data:
+                    out.extend(data)
+
+        with av.open(path) as container:
+            for frame in container.decode(audio=0):
+                _emit(frame)
+        _emit(None)  # flush the resampler's internal buffer
+        return bytes(out)
+    except Exception:  # noqa: BLE001 - a decode failure is "no audio", not a crash
+        _log.warning("converse fallback: failed to decode %s", path, exc_info=True)
+        return b""
+
+
+class _StreamingConverseSynth:
+    """Adapter over a streaming TTS provider (the low-latency path)."""
+
+    def __init__(self, streamer: Any) -> None:
+        self._streamer = streamer
+        self.sample_rate: int = streamer.sample_rate
+
+    def synth(self, text: str) -> Iterator[bytes]:
+        return self._streamer.stream(text)
+
+
+class _OneShotConverseSynth:
+    """One-shot fallback: synth to a temp file, transcode to int16 PCM, yield it.
+
+    Works with ANY provider (including edge, which has no chunked API): call the
+    sync ``text_to_speech_tool``, read the file it wrote, decode it to raw PCM at
+    the fixed converse rate, then unlink. A provider that reports failure or writes
+    no readable file yields nothing (the loop treats that as a silent turn).
+    """
+
+    sample_rate: int = _FALLBACK_SAMPLE_RATE
+
+    def synth(self, text: str) -> Iterator[bytes]:
+        from tools import tts_tool, voice_mode
+
+        result_json = tts_tool.text_to_speech_tool(text)
+        try:
+            result = json.loads(result_json) if isinstance(result_json, str) else result_json
+        except Exception:  # noqa: BLE001
+            _log.debug("converse fallback: TTS envelope was not valid JSON")
+            return
+        if not isinstance(result, dict) or not result.get("success"):
+            _log.debug("converse fallback: TTS reported no audio (%s)",
+                       (result or {}).get("error") if isinstance(result, dict) else result)
+            return
+        file_path = result.get("file_path")
+        if not file_path:
+            _log.debug("converse fallback: TTS envelope had no file_path")
+            return
+        try:
+            pcm = _decode_audio_file_to_pcm16(file_path, self.sample_rate)
+        finally:
+            voice_mode._unlink_quietly(file_path)
+        for start in range(0, len(pcm), _FALLBACK_PCM_CHUNK_BYTES):
+            yield pcm[start:start + _FALLBACK_PCM_CHUNK_BYTES]
+
+
+def resolve_converse_synthesizer(tts_config: Dict) -> Any:
+    """Return a synthesizer for the converse loop — NEVER ``None``.
+
+    Prefers the configured streaming provider (low latency); falls back to one-shot
+    synthesis + server-side transcode when the provider has no chunked API. The
+    returned object always exposes ``.sample_rate: int`` and
+    ``.synth(text) -> Iterator[bytes]`` yielding int16 mono PCM.
+
+    The streaming provider is resolved via the MODULE attribute
+    (``tts_streaming.resolve_streaming_provider``) so a test's monkeypatch applies.
+    """
+    from tools import tts_streaming
+
+    streamer = tts_streaming.resolve_streaming_provider(tts_config)
+    if streamer is not None:
+        return _StreamingConverseSynth(streamer)
+    return _OneShotConverseSynth()
+
+
+class _ResampledConverseSynth:
+    """Wrap a converse synth so ``.synth(text)`` yields int16 mono PCM at *output_rate*.
+
+    The inner synth yields int16 mono PCM at ``inner.sample_rate`` (e.g. 24 kHz); this feeds
+    each chunk through a stateful :class:`av.audio.resampler.AudioResampler` and yields the
+    resampled bytes, flushing at end-of-text. Used to serve a single-clock client (ESP32)
+    output at its own rate. A fresh resampler per ``synth`` call keeps turns independent.
+    """
+
+    def __init__(self, inner: Any, output_rate: int) -> None:
+        self._inner = inner
+        self.sample_rate: int = int(output_rate)
+        self._src_rate: int = int(inner.sample_rate)
+
+    def synth(self, text: str) -> Iterator[bytes]:
+        import av.audio.resampler
+        import numpy as np
+
+        resampler = av.audio.resampler.AudioResampler(
+            format="s16", layout="mono", rate=self.sample_rate)
+
+        def _feed(frame) -> Iterator[bytes]:
+            # PyAV 18: resample() returns a LIST of frames (may be empty). Use to_ndarray()
+            # (exact sample count) rather than bytes(planes[0]) — the plane buffer is
+            # over-allocated/padded, so raw plane bytes would append garbage per chunk.
+            for rs in resampler.resample(frame):
+                data = rs.to_ndarray().tobytes()
+                if data:
+                    yield data
+
+        carry = b""
+        for chunk in self._inner.synth(text):
+            if not chunk:
+                continue
+            carry += chunk
+            n = len(carry) - (len(carry) % 2)  # feed whole int16 samples only
+            if n == 0:
+                continue
+            buf, carry = carry[:n], carry[n:]
+            arr = np.frombuffer(buf, dtype=np.int16).reshape(1, -1)  # (channels, samples)
+            frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
+            frame.sample_rate = self._src_rate
+            yield from _feed(frame)
+        yield from _feed(None)  # flush the resampler's internal buffer
+
+
+def resample_synth(synth: Any, output_rate: int) -> Any:
+    """Return a synth whose ``.synth`` yields PCM at *output_rate*.
+
+    No-op (returns *synth* unchanged) when ``synth.sample_rate == output_rate``; otherwise
+    wraps it in :class:`_ResampledConverseSynth`. The result always exposes
+    ``.sample_rate == output_rate`` and the same ``.synth(text) -> Iterator[bytes]`` contract.
+    """
+    if int(output_rate) == int(synth.sample_rate):
+        return synth
+    return _ResampledConverseSynth(synth, output_rate)

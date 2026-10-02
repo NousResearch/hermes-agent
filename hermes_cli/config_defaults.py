@@ -1248,6 +1248,23 @@ DEFAULT_CONFIG = {
         # Saying EXACTLY one of these (case-insensitive, punctuation ignored) ends the voice chat
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
+        # ── server-owned converse WS (/v1/audio/converse) ──
+        # Voice-only model override for the converse path. "" = use model.default; set a model
+        # group here to run voice on its own deployment / reasoning_effort without changing the
+        # global default. provider defaults to the configured one.
+        "model": "",
+        "provider": "",
+        # Hard cap on one converse agent turn: a hung LLM call (no tokens, no error) is abandoned
+        # here and the socket returns to listening instead of hanging "thinking" forever.
+        "turn_timeout_seconds": 120.0,
+        # Playback-tail fallback: between turn_done and the client's {"type":"drained"} the client
+        # is still PLAYING the reply; the server holds quiet/VAD for the tail and gives up after
+        # this many seconds if drained never arrives.
+        "playback_tail_timeout_seconds": 45.0,
+        # Smart Turn v3 semantic end-of-turn endpointer (opt-in; needs the [voice-endpoint] extra).
+        # model: "" = off (fixed silence endpoint); any truthy value enables it. threshold =
+        # P(turn complete) at/above which the turn commits.
+        "endpoint": {"model": "", "threshold": 0.5},
     },
     # Native vision embeds (vision_analyze / browser screenshots on vision-capable main models) ride
     # conversation history and are re-sent on every later API call.

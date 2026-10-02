@@ -60,7 +60,7 @@ function getInitialLocale(): Locale {
   } catch {
     // SSR or privacy mode
   }
-  return "en";
+  return "zh";
 }
 
 interface I18nContextValue {

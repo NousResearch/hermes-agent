@@ -89,6 +89,7 @@ _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
+_SEMANTIC_THREAD_RENAMES_MAX = 2000
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
 #   (discord name, description, [(arg, type, default-or-_REQUIRED, arg description,
 #   [(choice label, value), ...] or None)], command-text template, follow-up message)
@@ -1113,6 +1114,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # thread id -> (name it replaced, name it set) for Hermes's own semantic renames; see
+        # _format_thread_chat_name. In memory: after a restart the next turn re-renders once.
+        self._semantic_thread_renames: Dict[str, Tuple[str, str]] = {}
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
@@ -5452,6 +5456,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return False
         try:
             await edit(name=cleaned, reason="Hermes semantic session title")
+            if only_if_current_name is not None:
+                renames = self._semantic_thread_renames
+                renames.pop(str(thread_id_int), None)
+                renames[str(thread_id_int)] = (current_name, cleaned)
+                while len(renames) > _SEMANTIC_THREAD_RENAMES_MAX:
+                    renames.pop(next(iter(renames)))
             logger.info(
                 "[%s] Renamed Discord thread %s from %r to %r",
                 self.name, thread_id, current_name, cleaned,
@@ -5795,6 +5805,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _format_thread_chat_name(self, thread: Any) -> str:
         """Build a readable chat name for thread-like Discord channels, including forum context when available."""
         thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
+        # chat_name keys the pinned session-context prompt, and Hermes's own title rename lands
+        # between a new thread's first and second turns: keep the name the turns were pinned under.
+        # A rename by anyone else no longer matches what Hermes set, so it still re-renders.
+        renamed = self._semantic_thread_renames.get(str(getattr(thread, "id", "")))
+        if renamed and renamed[1] == thread_name:
+            thread_name = renamed[0]
         parent = getattr(thread, "parent", None)
         guild = getattr(thread, "guild", None) or getattr(parent, "guild", None)
         guild_name = getattr(guild, "name", None)

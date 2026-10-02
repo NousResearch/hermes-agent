@@ -19,6 +19,7 @@ const OWNER = { connectionId: 'connection-1', profile: 'default' }
 const REQUEST: ConnectionRequest = {
   deadlineAt: 1_800_000_000,
   opId: 'operation-1',
+  seq: 0,
   toolCallId: 'connector-call-1',
   sessionId: SESSION_ID,
   settled: false,
@@ -27,18 +28,26 @@ const REQUEST: ConnectionRequest = {
     {
       action: 'connect',
       connectUrl: 'https://connect.example/gmail',
+      connectionId: '',
       detail: '',
+      discoveryError: null,
       kind: 'connector',
+      instructions: null,
       name: 'gmail',
+      requiredEnv: [],
       state: 'initiated',
       tools: []
     },
     {
       action: 'connect',
       connectUrl: 'https://connect.example/notion',
+      connectionId: '',
       detail: '',
+      discoveryError: null,
       kind: 'connector',
+      instructions: null,
       name: 'notion',
+      requiredEnv: [],
       state: 'initiated',
       tools: []
     }
@@ -75,6 +84,8 @@ function view(sessionId: string, storedId: string): SessionView {
     $model: atom(''),
     $provider: atom(''),
     $reasoningEffort: atom(''),
+    $reasoningEffortPending: atom(false),
+    $reasoningEffortWire: atom(''),
     $runtimeId: atom(sessionId),
     $storedId: atom(storedId),
     $turnStartedAt: atom(null),

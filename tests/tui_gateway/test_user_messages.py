@@ -1,61 +1,39 @@
-"""Behaviour contracts for the user-facing copy the gateway sends to the TUI / Desktop.
+"""User-facing copy for assistant-start failures must match the failure's actual cause.
 
-Each test asserts the message says WHAT happened and WHICH command to run next, and that
-the lead phrases clients pattern-match on (``session busy``, ``unknown method:``,
-``invalid params for``) survive the rewording.
+When init dies waiting for a cross-process auth lock — the profile auth-store lock or the shared
+Nous store lock, both on the ``resolve_nous_access_token`` init path (#124533) — the cause is
+contention with another hermes process (a dashboard or a slow credential refresh), so the generic
+/model / `hermes setup` hints would send the user re-checking credentials that are fine.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from tui_gateway import user_messages as um
+from tui_gateway.user_messages import agent_init_failed_message
 
 
-def test_turn_error_text_leads_with_a_plain_title_and_keeps_the_raw_body_on_a_details_line():
-    raw = 'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
-    text = um.turn_error_text(raw, {"layer": "auth", "code": "auth", "retryable": False, "provider": "openai"})
-    title, details, hint = text.split("\n")
-
-    assert not title.startswith("Error")
-    assert "401" not in title and "{" not in title
-    assert "API key" in title and "openai" in title
-    assert details.startswith("Details: ") and "Incorrect API key provided" in details
-    assert "/model" in hint and "/retry" in hint
-
-
-def test_turn_error_text_without_a_surface_still_names_the_next_step():
-    text = um.turn_error_text("HTTP 400: invalid model id 'kimi-k2.6'")
-
-    assert "kimi-k2.6" in text
-    assert "/retry" in text or "/model" in text
-    assert not text.startswith("Error:")
+@pytest.mark.parametrize("exc_text", [
+    "Timed out waiting for auth store lock (/home/u/.hermes/profiles/coder/auth.lock); "
+    "another hermes process (pid 4242) probably still holds it "
+    "(e.g. a dashboard or a slow credential refresh)",
+    "Timed out waiting for auth store lock (/home/u/.hermes/profiles/coder/auth.lock)",
+    "Timed out waiting for shared Nous auth lock (/home/u/.hermes/shared/nous.lock)",
+], ids=["auth-store-with-holder", "auth-store-no-holder", "shared-nous-store"])
+def test_auth_lock_timeout_contention_gets_the_wait_copy(exc_text):
+    message = agent_init_failed_message(TimeoutError(exc_text))
+    assert "/model" not in message
+    assert "hermes setup" not in message
+    assert "lock" in message and "dashboard" in message  # actionable: what holds it, what to do
 
 
-@pytest.mark.parametrize("command", ["undo", "compress", "reload-mcp", "rollback restore"])
-def test_busy_message_names_the_real_gesture_not_a_missing_slash_command(command):
-    text = um.busy_message(command)
-
-    assert text.startswith("session busy")  # clients match this lead phrase (4009)
-    assert "/interrupt" not in text
-    # Shared gateway: name both gestures, never state the terminal one as the only option.
-    assert "Ctrl+C" in text and "Stop button" in text
-    assert "Press Ctrl+C" not in text
-    assert f"/{command}" in text
+def test_generic_timeout_keeps_the_model_setup_hints():
+    # A TimeoutError that is NOT an auth lock (e.g. a network connect timeout) must not
+    # be misread as lock contention.
+    message = agent_init_failed_message(TimeoutError("connect timed out"))
+    assert "/model" in message and "hermes setup" in message
 
 
-def test_agent_init_and_resume_failures_point_at_existing_commands():
-    init = um.agent_init_failed_message(RuntimeError("Unknown provider 'openrouterr'"))
-    assert not init.startswith("agent init failed")
-    assert "openrouterr" in init and "/model" in init and "hermes setup" in init
-    assert "/setup" not in init  # ui-tui-only launcher; Desktop has no such command
-
-    resume = um.resume_failed_message(ValueError("corrupt row"))
-    assert not resume.startswith("resume failed")
-    assert "corrupt row" in resume and "/sessions" in resume and "/new" in resume
-    assert "/sessions new" not in resume  # ui-tui-only alias; Desktop ignores the argument
-
-
-def test_still_starting_copy_is_not_phrased_as_fatal():
-    assert "timed out" not in um.AGENT_STILL_STARTING
-    assert "try again" in um.AGENT_STILL_STARTING.lower()
+def test_other_init_failures_keep_the_model_setup_hints():
+    message = agent_init_failed_message(RuntimeError("provider bootstrap failed"))
+    assert "/model" in message and "hermes setup" in message

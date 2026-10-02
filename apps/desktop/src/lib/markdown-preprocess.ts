@@ -7,12 +7,33 @@ import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 
-const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
+// Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus desktop-only
+// `scratchpad`/`analysis`.
+const REASONING_TAGS = 'think|thinking|reasoning|thought|reasoning_scratchpad|scratchpad|analysis'
+// A run of adjacent closed blocks is one match, so the seam check below sees the
+// prose on either side of the whole run rather than the previous block's `>`.
+const REASONING_BLOCK_RE = new RegExp(`(?:<(${REASONING_TAGS})>[\\s\\S]*?<\\/\\1>\\s*)+`, 'gi')
+// An open tag that starts its own block with no close tag yet. The block-boundary
+// requirement is what lets a real reasoning preamble (always its own block) vanish
+// while prose that merely mentions `<thinking>` mid-sentence survives — the same
+// line agent/think_scrubber.py draws.
+const OPEN_REASONING_BLOCK_RE = new RegExp(`(^|\\n)[ \\t]*<(${REASONING_TAGS})>[\\s\\S]*$`, 'i')
+
+// A half-arrived open tag (`<thin`) at a block boundary is not a tag yet, so the
+// pass above lets it paint as prose for one frame and then erase it — the same
+// paint/un-paint class as #62774, one frame long. Hold it back the way
+// agent/think_scrubber.py `_hold_partial`/`_max_partial_suffix` does, but only
+// for prefixes of the known tag names so `<div` at a line start still renders.
+const REASONING_TAG_PREFIXES = Array.from(
+  new Set(REASONING_TAGS.split('|').flatMap(tag => Array.from({ length: tag.length }, (_, i) => tag.slice(0, i + 1))))
+).join('|')
+
+const PARTIAL_OPEN_REASONING_TAG_RE = new RegExp(`(^|\\n)[ \\t]*<(?:${REASONING_TAG_PREFIXES})?$`, 'i')
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
-const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
-const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~|$))/g
+const FENCE_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)(`{3,}|~{3,})([^\n]*)$/
+const FENCE_CLOSE_LINE_RE = /^[ \t]*(?:>[ \t]*)*(`{3,}|~{3,})[ \t]*\r?$/
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // Math spans as remark-math will see them: a `$$…$$` block, which may span
 // lines, or a same-line `$…$`. A delimiter escaped as `\$` is prose — that is
@@ -24,7 +45,15 @@ const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // must not end the span — the same distinction findClosingSingleDollar draws
 // via isEscapedAt. The two alternatives are disjoint on their first character,
 // so the body cannot backtrack ambiguously.
-const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:[^\n$\\]|\\[^\n])+?(?<!\\)\$)/g
+//
+// The inline branch deliberately has NO lookbehind on its CLOSING `$`: the
+// body alternation consumes escape pairs atomically, so any `$` the engine
+// reaches after the body is by construction unescaped — a trailing `\\$`
+// (escaped backslash, valid TeX) would otherwise defeat a one-character
+// lookbehind and unshield the span ($a\\$ mis-split, #92371). The display
+// branch keeps its guard: its `[\s\S]*?` body does not step over escape
+// pairs, so it genuinely needs it.
+const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:[^\n$\\]|\\[^\n])+?\$)/g
 const LATEX_DISPLAY_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\[[ \t]*\r?$/
 const LATEX_DISPLAY_CLOSE_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\][ \t]*\r?$/
 const CUSTOM_DISPLAY_MATH_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\[\/math\][ \t]*\r?$/
@@ -45,16 +74,155 @@ const HUGGING_DISPLAY_MATH_CLOSE_RE = /^([ \t]*(?:>[ \t]*)*[ \t]*)(\S[^\n]*?)\$\
 // and keeps the emphasis run intact. Other trailing punctuation is still peeled
 // off by the final `[^\s<>"'`*.,;:!?]` class.
 const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
-const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
+const URL_TRAILING_PUNCTUATION = '.,;:!?'
+// Markdown that already owns the URLs inside it, which the bare-URL autolinker
+// steps over whole (#49822): inline links and images `[label](dest "title")`,
+// full and collapsed references `[label][ref]`, and the label + destination of
+// a definition `[ref]: url`. Labels may nest one bracket pair (an IPv6 host,
+// `[see [docs]]`) and destinations one paren pair (`…/wiki/Foo_(bar)`). A label
+// or inline target still streaming in (`[https://exa`, `[x](https://exa`) owns
+// the rest of its line, so the tail repair sees the link it is building instead
+// of a wrapped fragment. Only the outer group captures, so split() leaves the
+// owned spans at odd indices.
+const LINK_LABEL_BODY = String.raw`(?:[^[\]\\\n]|\\.|\[(?:[^[\]\\\n]|\\.)*\])*`
+const LINK_LABEL = String.raw`\[${LINK_LABEL_BODY}\]`
+
+const MARKDOWN_LINK_SPLIT_RE = new RegExp(
+  `(${[
+    String.raw`!?${LINK_LABEL}\((?:[^()\n]|\([^()\n]*\))*(?:\)|$)`,
+    String.raw`${LINK_LABEL}\[(?:[^[\]\\\n]|\\.)*\]`,
+    String.raw`^[ \t]{0,3}${LINK_LABEL}:[ \t]*\S*`,
+    String.raw`\[${LINK_LABEL_BODY}$`
+  ].join('|')})`,
+  'gm'
+)
+
+// A fenced block whose entire body is a loopback URL is the preview-pane
+// hand-off: the widget already paints that address, so the whole block is
+// dropped instead of painting the raw text twice. Bare loopback URLs in
+// PROSE are user-facing content and must survive (#121683) — "dev server at
+// http://localhost:3000" is the address the reader needs, wherever it sits
+// in the sentence.
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
+// Autolink-shaped spans (bare or angle-bracketed http(s) URLs) that must be
+// skipped by lone-tilde escaping: `~` is legal in URL paths and must survive.
+const URL_LIKE_SPLIT_RE = /(<https?:\/\/[^>\s]+>|https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?])/g
+// A `~` that is neither part of `~~~` fence, part of `~~` strikethrough, nor
+// an already-escaped `\~`. Escaping it with `\~` makes `marked` render a
+// literal tilde, so CJK ranges (`1~10`) and approximation prefixes (`~¥0.089`)
+// no longer pair up into a GFM strikethrough span.
+const LONE_TILDE_RE = /(?<![\\~])~(?!~)/g
+// Same shape as DIRECTIVE_LINE_RE, anchored to a single line: escapeLoneTildes
+// tests one line at a time and must not carry the shared regex's `g` flag
+// (stateful lastIndex would skip every other directive line).
+const DIRECTIVE_LINE_ONLY_RE = /^[ \t]*::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\}[ \t]*$/
+// HTML-shaped prose tokens (`<tool_call>`, `<observation>`...) that are NOT
+// real inline elements get swallowed by the HTML-aware renderer (parse5 sees
+// an unclosed tag and consumes the rest of the message). Match unknown tag-like
+// runs and escape them to entities; known safe tags pass through untouched.
+const HTML_TAG_RE = /<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s+[^<>]*?)?\/?>/g
+
+const SAFE_HTML_TAG_NAMES = new Set([
+  'a',
+  'abbr',
+  'b',
+  'blockquote',
+  'br',
+  'cite',
+  'code',
+  'data',
+  'del',
+  'details',
+  'div',
+  'em',
+  'figcaption',
+  'figure',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'i',
+  'img',
+  'ins',
+  'kbd',
+  'li',
+  'mark',
+  'ol',
+  'p',
+  'pre',
+  'q',
+  'rp',
+  'rt',
+  'ruby',
+  's',
+  'samp',
+  'small',
+  'span',
+  'strong',
+  'sub',
+  'summary',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'u',
+  'ul',
+  'var',
+  'wbr'
+])
+
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+
+// Web-citation transport markers (Gemini-style grounding): private-use
+// delimiters U+E200/U+E201 wrap a `citeturn<n>search<m>` id list, with U+E202
+// separating ids — `\uE200citeturn0search11\uE202turn2search0\uE201`, or the
+// single-id `\uE200citeturn0search0\uE201`. The delimiters paint as
+// replacement glyphs (the reported "triple bars") and the ids are protocol
+// noise a reader cannot follow to a source (#120587). Strip the whole marker;
+// a marker that cannot be resolved is dropped, never invented into a link.
+// The bare no-delimiter alternative only fires with the `cite` head, so plain
+// prose can't trip it. Scoped to this shape: stray private-use characters
+// (icon fonts, user content) are left alone.
+const CITATION_TRANSPORT_MARKER_RE =
+  /\uE200(?:cite)?(?:\uE202?turn\d+search\d+)+\uE201?|citeturn\d+search\d+(?:turn\d+search\d+)*/gu
+
+// The `Sources` section header the bundled grounded-citations skill renders —
+// `## Sources` (ATX, 1-6 hashes) or plain `Sources:`, case-insensitive,
+// optionally bolded, colon optional. Mirrors the skill's own header pattern
+// (`_SOURCES_HEADER_RE` in scripts/sources.py) so only the section shape it
+// actually emits is recognized.
+const SOURCES_HEADER_RE = /^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?sources:?(?:\*\*)?[ \t]*\r?$/i
+// Numbered source-list entries inside a `Sources` section — a `[3] https://…`
+// line (optionally behind a list marker or a `-`/`–`/`:` separator), as the
+// bundled grounded-citations skill renders its entries. Such an entry anchors
+// the bare `[3]` marker in prose: the marker cites a listed source, so it
+// must survive the orphan-marker strip (#110370). Entries only count after
+// the LAST `Sources` header and never inside a fenced block, so ordinary
+// `[7] todo` lines or fenced examples can't anchor anything.
+const SOURCE_LIST_ENTRY_RE = /^[ \t]*(?:[-*+][ \t]+)?\[((?:\d+(?:\s*,\s*\d+)*))\][ \t]*(?:[-–:][ \t]*)?https?:\/\/\S/
+// Any fence line toggles code-block state while scanning for the `Sources`
+// section — the same toggle the bundled skill uses to drop fenced code from
+// a draft's prose.
+const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
+
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
-// image syntax (`![alt](path)`) on its existing inline pipeline. The target
-// char class excludes `)`/whitespace, matching how LLMs actually emit these.
-const FILE_LINK_RE = /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target><?(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*>?)\)/gi
+// image syntax (`![alt](path)`) on its existing inline pipeline. Plain
+// targets exclude `)`/whitespace, matching how LLMs actually emit these;
+// CommonMark angle-bracket destinations (`[notes](<~/My Notes/todo.md>`) are
+// matched separately so paths with spaces route to the preview pipeline too
+// (#102782) — `routeFileLinksToPreview` strips the surrounding `<>`.
+const FILE_LINK_RE =
+  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*)\)/gi
 
 // A transcript directive on its own line: `::name{...}`. Attribute values are
 // prose the model wrote (a task brief, a question) and read as markdown to the
@@ -159,8 +327,92 @@ function scrubBacktickNoise(text: string): string {
   return out
 }
 
+// Runs on the ACCUMULATED text every streaming flush, so an unterminated block
+// must already be hidden here: otherwise the chain of thought paints as prose
+// until the close tag lands and then the whole span vanishes in one frame
+// (#62774). Removing a closed block between two words keeps one space so `no` +
+// `Hermes` does not fuse into `noHermes`. The seam check reads the two chars at
+// the match edges rather than slicing the accumulated text, which would copy
+// O(n) per closed block on every flush.
+function stripReasoningBlocks(text: string): string {
+  const closed = text.replace(REASONING_BLOCK_RE, (match: string, _tag: string, offset: number, whole: string) => {
+    const prev = whole[offset - 1]
+    const next = whole[offset + match.length]
+
+    return prev && next && !/\s/.test(prev) && !/\s/.test(next) ? ' ' : ''
+  })
+
+  return closed.replace(OPEN_REASONING_BLOCK_RE, '$1').replace(PARTIAL_OPEN_REASONING_TAG_RE, '$1')
+}
+
+interface MarkdownSegment {
+  code: boolean
+  // A closed fence whose closer is the very next line.
+  empty: boolean
+  text: string
+}
+
+// Prose and fenced-code segments in order; joined, they are `text` exactly. A
+// fence opens only on its own line (after any blockquote / list-item prefix)
+// and closes only on a line holding the same character at least as long — the
+// rule normalizeFenceBlocks applies. A ``` inside a code line, or the inner
+// fences of a ````-fenced markdown example, is code, not a boundary: treating it
+// as one ran the prose rewrites over the rest of the listing (`arr[0]` lost its
+// index, `$5` gained a backslash) and dropped the closing fences.
+function splitFencedCode(text: string): MarkdownSegment[] {
+  const segments: MarkdownSegment[] = []
+  let cursor = 0
+  let fence: null | { marker: string; openerEnd: number; start: number } = null
+
+  for (let lineStart = 0; ;) {
+    const newline = text.indexOf('\n', lineStart)
+    const lineEnd = newline === -1 ? text.length : newline
+    const line = text.slice(lineStart, lineEnd)
+
+    if (!fence) {
+      const open = line.match(FENCE_OPEN_LINE_RE)
+
+      // A backtick run with a backtick in its info string is inline code.
+      if (open && !(open[2][0] === '`' && open[3].includes('`'))) {
+        fence = { marker: open[2], openerEnd: lineEnd, start: lineStart + open[1].length }
+      }
+    } else {
+      const close = line.match(FENCE_CLOSE_LINE_RE)
+
+      if (close && close[1][0] === fence.marker[0] && close[1].length >= fence.marker.length) {
+        segments.push(
+          { code: false, empty: false, text: text.slice(cursor, fence.start) },
+          { code: true, empty: lineStart === fence.openerEnd + 1, text: text.slice(fence.start, lineEnd) }
+        )
+        cursor = lineEnd
+        fence = null
+      }
+    }
+
+    if (newline === -1) {
+      break
+    }
+
+    lineStart = newline + 1
+  }
+
+  if (fence) {
+    segments.push(
+      { code: false, empty: false, text: text.slice(cursor, fence.start) },
+      { code: true, empty: false, text: text.slice(fence.start) }
+    )
+  } else {
+    segments.push({ code: false, empty: false, text: text.slice(cursor) })
+  }
+
+  return segments
+}
+
 function stripEmptyFenceBlocks(text: string): string {
-  return text.replace(EMPTY_FENCE_BLOCK_RE, '$1')
+  return splitFencedCode(text)
+    .filter(segment => !segment.empty)
+    .map(segment => segment.text)
+    .join('')
 }
 
 function isUrlOnlyBlock(lines: string[]): boolean {
@@ -169,16 +421,91 @@ function isUrlOnlyBlock(lines: string[]): boolean {
   return nonEmpty.length > 0 && nonEmpty.every(line => URL_ONLY_LINE_RE.test(line))
 }
 
-function autoLinkRawUrls(text: string): string {
-  return text.replace(RAW_URL_RE, (url: string, index: number) => {
-    const previous = text[index - 1] || ''
-    const beforePrevious = text[index - 2] || ''
+// Where a bare URL match really ends. Peels what the prose wrapped around it:
+// the `)` of `(see https://x)`, the `]` of `[https://x]`, and punctuation that
+// peel exposes (`(https://x.)`). A closer stays when an opener inside the URL
+// pairs with it, so `…/wiki/Foo_(bar)` and `http://[::1]/` keep theirs.
+function isPairedCloser(url: string, index: number): boolean {
+  const close = url[index]
+  const open = close === ')' ? '(' : '['
+  let depth = 0
 
-    if (previous === '<' || (beforePrevious === ']' && previous === '(')) {
-      return url
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (url[cursor] === open) {
+      depth += 1
+    } else if (url[cursor] === close && depth > 0) {
+      depth -= 1
+    }
+  }
+
+  return depth > 0
+}
+
+function bareUrlEnd(url: string): number {
+  let end = url.length
+
+  while (end > 0) {
+    const last = url[end - 1]
+    const strayCloser = (last === ')' || last === ']') && !isPairedCloser(url, end - 1)
+
+    if (!strayCloser && !URL_TRAILING_PUNCTUATION.includes(last)) {
+      break
     }
 
-    return `<${url}>`
+    end -= 1
+  }
+
+  return end
+}
+
+function linkBareUrls(text: string): string {
+  return text.replace(RAW_URL_RE, (match: string, index: number) => {
+    if (text[index - 1] === '<') {
+      return match
+    }
+
+    const end = bareUrlEnd(match)
+
+    return `<${match.slice(0, end)}>${match.slice(end)}`
+  })
+}
+
+function autoLinkRawUrls(text: string): string {
+  return text
+    .split(MARKDOWN_LINK_SPLIT_RE)
+    .map((part, index) => (index % 2 === 1 ? part : linkBareUrls(part)))
+    .join('')
+}
+
+function escapeLoneTildes(text: string): string {
+  return text
+    .split(URL_LIKE_SPLIT_RE)
+    .map(part => {
+      if (/^<?https?:\/\//i.test(part)) {
+        return part
+      }
+
+      // Directive lines are shielded verbatim further down the pipeline:
+      // shieldDirectiveLines backslash-escapes every inline metachar (`~`
+      // included) so the card value arrives as ONE text node. Escaping a `~`
+      // here would leave `\\~` after the shield doubles the backslash, and the
+      // parser then emits the stray `\` into the directive's rendered value
+      // (#50871 follow-up: `brief="Sync ~/notes to ~/backup nightly"`).
+      return part
+        .split('\n')
+        .map(line => (DIRECTIVE_LINE_ONLY_RE.test(line) ? line : line.replace(LONE_TILDE_RE, '\\~')))
+        .join('\n')
+    })
+    .join('')
+}
+
+function escapeUnknownHtmlLikeTags(text: string): string {
+  return text.replace(HTML_TAG_RE, (tag: string, name: string) => {
+    if (SAFE_HTML_TAG_NAMES.has(name.toLowerCase())) {
+      return tag
+    }
+
+    return tag.replace(/</g, '&lt;').replace(/>/g, '&gt;')
   })
 }
 
@@ -202,11 +529,80 @@ function routeFileLinksToPreview(text: string): string {
   })
 }
 
-function rewriteProseSegment(segment: string): string {
+// Mirror of the bundled grounded-citations skill's `_split_draft()`: find the
+// LAST `Sources` header, then collect entry ids only from the section that
+// header opens (fenced code excluded). A marker survives only when this
+// response actually lists a corresponding `[n] url` entry.
+function collectSourceListIds(text: string): Set<string> {
+  const ids = new Set<string>()
+  const lines = text.split('\n')
+  let inFence = false
+  let headerIndex = -1
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+
+    if (FENCE_TOGGLE_RE.test(line)) {
+      inFence = !inFence
+
+      continue
+    }
+
+    if (!inFence && SOURCES_HEADER_RE.test(line)) {
+      headerIndex = index
+    }
+  }
+
+  if (headerIndex === -1) {
+    return ids
+  }
+
+  inFence = false
+
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index]
+
+    if (FENCE_TOGGLE_RE.test(line)) {
+      inFence = !inFence
+
+      continue
+    }
+
+    if (inFence) {
+      continue
+    }
+
+    const match = line.match(SOURCE_LIST_ENTRY_RE)
+
+    if (match) {
+      for (const id of match[1].split(',')) {
+        ids.add(id.trim())
+      }
+    }
+  }
+
+  return ids
+}
+
+function rewriteProseSegment(segment: string, sourceListIds: Set<string>): string {
   return linkifySessionRefs(
-    autoLinkRawUrls(
-      routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+    escapeLoneTildes(
+      autoLinkRawUrls(
+        routeFileLinksToPreview(
+          escapeUnknownHtmlLikeTags(
+            segment
+              .replace(/`{3,}/g, '')
+              .replace(CITATION_TRANSPORT_MARKER_RE, '')
+              .replace(CITATION_MARKER_RE, marker => {
+                const ids = marker
+                  .slice(1, -1)
+                  .split(',')
+                  .map(id => id.trim())
+
+                return ids.every(id => sourceListIds.has(id)) ? marker : ''
+              })
+          )
+        )
       )
     )
   )
@@ -241,7 +637,7 @@ export function shieldDirectiveLines(text: string): string {
  * `startsWith('$')` test, so a prose segment that merely opens with a stray
  * dollar can't be mistaken for math.
  */
-function normalizeVisibleProse(text: string): string {
+function normalizeVisibleProse(text: string, sourceListIds: Set<string>): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
     .map(part =>
@@ -249,7 +645,7 @@ function normalizeVisibleProse(text: string): string {
         ? part
         : part
             .split(MATH_SPAN_SPLIT_RE)
-            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment)))
+            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment, sourceListIds)))
             .join('')
     )
     .join('')
@@ -263,6 +659,33 @@ function isEscapedAt(text: string, index: number): boolean {
   }
 
   return slashCount % 2 === 1
+}
+
+/**
+ * True when the `$` at `index` opens a currency amount rather than math.
+ *
+ * Two shapes, and the second is why this helper exists. The US shape `$5`
+ * hugs its digits, so "followed by a digit" identifies it. Most of the rest
+ * of the world writes a currency PREFIX plus a space — `R$ 12.345` (BRL),
+ * `US$ 1,200`, `AU$ 40`. Treating only the hugging shape as currency left
+ * `R$ 12.345 … R$ 98.765` with two bare dollars on one line, so remark-math
+ * (`singleDollarTextMath: true`) paired them and painted the whole sentence
+ * between two prices as an equation.
+ *
+ * The spaced shape additionally requires a letter immediately before the `$`
+ * — that prefix is what makes it a currency symbol. A bare `$ 5` keeps its
+ * old behavior, so spaced inline math like `$ x^2 $` is untouched.
+ */
+function isCurrencyOpenerAt(text: string, index: number): boolean {
+  if (text[index] !== '$' || isEscapedAt(text, index) || text[index - 1] === '$' || text[index + 1] === '$') {
+    return false
+  }
+
+  if (/\d/u.test(text[index + 1] || '')) {
+    return true
+  }
+
+  return /^[ \u00a0]\d/u.test(text.slice(index + 1, index + 3)) && /^[A-Za-z]$/u.test(text[index - 1] || '')
 }
 
 function findClosingSingleDollar(text: string, openingIndex: number): number {
@@ -339,12 +762,7 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
   let copiedThrough = 0
 
   for (let cursor = 0; cursor < text.length; cursor += 1) {
-    if (
-      text[cursor] !== '$' ||
-      !/\d/u.test(text[cursor + 1] || '') ||
-      text[cursor - 1] === '$' ||
-      isEscapedAt(text, cursor)
-    ) {
+    if (!isCurrencyOpenerAt(text, cursor)) {
       continue
     }
 
@@ -352,9 +770,73 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
 
     if (
       closingIndex !== -1 &&
+      // A second amount on the same line is the NEXT opener, never this
+      // span's closer: `R$ 12.345 … R$ 98.765` is two prices, not one
+      // equation wrapping the prose between them.
+      !isCurrencyOpenerAt(text, closingIndex) &&
       !opensCompleteInlineMath(text, closingIndex) &&
       isLikelyNumericInlineMath(text.slice(cursor + 1, closingIndex), text[closingIndex + 1] || '')
     ) {
+      cursor = closingIndex
+
+      continue
+    }
+
+    out += `${text.slice(copiedThrough, cursor)}\\$`
+    copiedThrough = cursor + 1
+  }
+
+  return out + text.slice(copiedThrough)
+}
+
+// East Asian script and punctuation ranges: CJK Symbols/Punctuation, Hiragana,
+// Katakana, Han (incl. Extension A and compatibility ideographs), Hangul, and
+// the fullwidth/halfwidth forms. Fullwidth punctuation (（） ， ：) is
+// near-universal in CJK prose and is included so a `$foo（bar）$`-shaped span
+// with no Han glyph in its body still classifies as prose.
+const CJK_RE = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\uff00-\uffef]/u
+
+/**
+ * Escape the opening `$` of any same-line single-dollar span whose body
+ * contains East Asian script or punctuation, so remark-math reads it as a
+ * literal dollar instead of pairing it with the later `$` and typesetting the
+ * intervening prose as one KaTeX inline formula (#103546).
+ *
+ * A bare `$identifier` in CJK prose (written twice in one sentence) is the
+ * classic false positive of `singleDollarTextMath: true`: the whole sentence
+ * renders through KaTeX — CJK glyphs in a serif fallback face at 1.21em, and
+ * copy-out yields per-character math-italic codepoints, not the source text.
+ * CJK prose sets no inter-word spaces and rarely writes `$…$` math around
+ * non-Latin text, so a CJK body is prose with near certainty.
+ *
+ * Escaping only the OPENING `$` is enough: the closing `$` loses its partner
+ * and renders literally. Real math is untouched — its body carries no CJK —
+ * and `$$` display runs are skipped by the same `$$`-run guard the currency
+ * escape uses. A non-CJK span is consumed through its closer: otherwise that
+ * closer is scanned as the next opener, and CJK prose between two formulas
+ * makes the escape land on the first equation's real closing `$`. The one
+ * accepted tradeoff: genuine inline math whose body names a CJK variable
+ * (`$x = 变量$`) renders as literal prose. Losing one equation is far cheaper
+ * than corrupting a sentence's copy-out.
+ */
+function escapeCjkProseDollars(text: string): string {
+  let out = ''
+  let copiedThrough = 0
+
+  for (let cursor = 0; cursor < text.length; cursor += 1) {
+    if (text[cursor] !== '$' || text[cursor - 1] === '$' || isEscapedAt(text, cursor)) {
+      continue
+    }
+
+    const closingIndex = findClosingSingleDollar(text, cursor)
+
+    if (closingIndex === -1) {
+      continue
+    }
+
+    const body = text.slice(cursor + 1, closingIndex)
+
+    if (!CJK_RE.test(body)) {
       cursor = closingIndex
 
       continue
@@ -485,8 +967,9 @@ function normalizeProseMath(text: string): string {
   // `$$\begin{aligned}…\end{aligned}$$`. Running afterwards catches both the
   // hugging math the model emitted and the hugging math the rewrite produced.
   const normalized = splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
+  const cjkEscaped = escapeCjkProseDollars(normalized)
 
-  return escapeCurrencyDollarsPreservingMath(normalized)
+  return escapeCurrencyDollarsPreservingMath(cjkEscaped)
 }
 
 function extend(out: string[], lines: string[]) {
@@ -649,16 +1132,19 @@ function normalizeFenceBlocks(text: string): string {
 }
 
 export function preprocessMarkdown(text: string): string {
-  const cleaned = text.replace(REASONING_BLOCK_RE, '').replace(PREVIEW_MARKER_RE, '')
+  const cleaned = stripReasoningBlocks(text).replace(PREVIEW_MARKER_RE, '')
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)
+  // Anchors come from the response's `Sources` section only: a marker
+  // survives the orphan strip exactly when this response lists a matching
+  // `[n] url` entry there (see collectSourceListIds).
+  const sourceListIds = collectSourceListIds(strippedEmptyFences)
 
-  return strippedEmptyFences
-    .split(CODE_FENCE_SPLIT_RE)
-    .map(part => {
+  return splitFencedCode(strippedEmptyFences)
+    .map(({ code, text: part }) => {
       // Fence blocks pass through untouched.
-      if (/^(?:```|~~~)/.test(part)) {
+      if (code) {
         return part
       }
 
@@ -669,7 +1155,7 @@ export function preprocessMarkdown(text: string): string {
       // Directive lines are shielded last, after the prose rewrites have had
       // their look, so nothing re-introduces markdown into them.
       return shieldDirectiveLines(
-        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
+        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part)), sourceListIds))
       )
     })
     .join('')
@@ -690,10 +1176,9 @@ export function preprocessMarkdown(text: string): string {
  * them regardless of this function.
  */
 export function normalizeFilePreviewMath(text: string): string {
-  return text
-    .split(CODE_FENCE_SPLIT_RE)
-    .map(part => {
-      if (/^(?:```|~~~)/.test(part)) {
+  return splitFencedCode(text)
+    .map(({ code, text: part }) => {
+      if (code) {
         return part
       }
 

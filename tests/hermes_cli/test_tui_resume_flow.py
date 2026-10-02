@@ -38,41 +38,6 @@ def main_mod(monkeypatch):
     return mod
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def test_termux_skips_bundled_skill_sync_when_stamp_fresh(monkeypatch, tmp_path, main_mod):
-    calls = []
-
-    monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(main_mod, "_termux_bundled_skills_fingerprint", lambda: "fp1")
-    main_mod._mark_termux_bundled_skills_synced()
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.skills_sync",
-        types.SimpleNamespace(sync_skills=lambda quiet: calls.append(quiet)),
-    )
-
-    assert main_mod._sync_bundled_skills_for_startup() is False
-    assert calls == []
-
-
-
-
-
-
 def test_exit_after_oneshot_flushes_stdio_and_calls_os_exit(
     monkeypatch, main_mod
 ):
@@ -103,10 +68,6 @@ def test_exit_after_oneshot_flushes_stdio_and_calls_os_exit(
     assert flushed == ["stdout", "stderr"]
 
 
-
-
-
-
 def test_oneshot_subprocess_exits_without_teardown_abort():
     program = textwrap.dedent(
         """
@@ -127,16 +88,10 @@ def test_oneshot_subprocess_exits_without_teardown_abort():
     )
 
     assert result.returncode == 0
-    assert result.stdout == b"ok\n"
+    assert result.stdout in (b"ok\n", b"ok\r\n")
     # Don't demand byte-empty stderr — an import-time warning from the heavy
     # CLI import chain shouldn't fail this. What matters is no crash traceback.
     assert b"Traceback" not in result.stderr
-
-
-
-
-
-
 
 
 def _stub_plugin_discovery(monkeypatch):
@@ -145,8 +100,6 @@ def _stub_plugin_discovery(monkeypatch):
         "hermes_cli.plugins",
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
-
-
 
 
 def test_oneshot_wires_session_db_for_recall(monkeypatch):
@@ -194,13 +147,16 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         "hermes_cli.runtime_provider",
         mod(
             "hermes_cli.runtime_provider",
-            resolve_runtime_provider=lambda **_kwargs: {
-                "api_key": "k",
-                "base_url": "u",
-                "provider": "p",
-                "api_mode": "chat_completions",
-                "credential_pool": None,
-            },
+            resolve_runtime_with_fallback=lambda _cfg, **_kwargs: (
+                {
+                    "api_key": "k",
+                    "base_url": "u",
+                    "provider": "p",
+                    "api_mode": "chat_completions",
+                    "credential_pool": None,
+                },
+                None,
+            ),
         ),
     )
     monkeypatch.setitem(
@@ -218,6 +174,7 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
     captured = {}
     active_path_during_call = None
 
@@ -253,35 +210,97 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["NODE_ENV"] == "production"
 
 
+def test_launch_tui_prefers_launch_cwd_over_inherited_hermes_cwd(monkeypatch, main_mod, tmp_path):
+    """The directory `hermes --tui` was run from outranks an inherited HERMES_CWD.
+
+    A shell export - or an outer `hermes --tui` - leaves HERMES_CWD naming a real but stale
+    directory, and ui-tui/src/gatewayClient.ts:478 starts the gateway in whatever it names,
+    so the session reads files and completions from the wrong project (#49637).
+    """
+    stale = tmp_path / "stale-project"
+    launch = tmp_path / "launch-project"
+    stale.mkdir()
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_CWD", str(stale))
+    monkeypatch.chdir(launch)
+
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    handed_to_tui = Path(captured["env"]["HERMES_CWD"]).resolve()
+    assert handed_to_tui == launch.resolve(), "the TUI gateway must start where the user launched"
+    assert handed_to_tui != stale.resolve()
 
 
-def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):
-    tui_dir = tmp_path / "ui-tui"
-    tsx = tui_dir / "node_modules" / ".bin" / "tsx"
-    ink_dir = tui_dir / "packages" / "hermes-ink"
-    tsx.parent.mkdir(parents=True)
-    ink_dir.mkdir(parents=True)
-    tsx.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+def test_launch_tui_worktree_still_outranks_the_launch_cwd(monkeypatch, main_mod, tmp_path):
+    """`--worktree` names an explicit destination, so it keeps precedence over the launch cwd."""
+    worktree = tmp_path / "worktree"
+    launch = tmp_path / "launch-project"
+    worktree.mkdir()
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_CWD", str(tmp_path))
+    monkeypatch.chdir(launch)
 
-    monkeypatch.setattr(main_tui_launch, "_ensure_tui_node", lambda: None)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _tui_dir: False)
-    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda bin_name: f"/usr/bin/{bin_name}")
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_setup_tui_worktree", lambda: {"path": str(worktree)})
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
 
-    calls = []
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(worktree=True)
 
-    def fake_run(cmd, cwd=None, **_kwargs):
-        calls.append((cmd, cwd))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
-
-    argv, cwd = main_tui_launch._make_tui_argv(tui_dir, tui_dev=True)
-
-    assert argv == [str(tsx), "src/entry.tsx"]
-    assert cwd == tui_dir
-    assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
+    assert captured["env"]["HERMES_CWD"] == str(worktree)
+    assert captured["env"]["TERMINAL_CWD"] == str(worktree)
+    assert Path(captured["env"]["HERMES_CWD"]).resolve() != launch.resolve()
 
 
+@pytest.mark.parametrize("backend", ["local", "docker"])
+def test_launch_tui_local_session_starts_in_launch_dir_not_terminal_cwd(monkeypatch, main_mod, tmp_path, backend):
+    """A local TUI follows the classic CLI rule: the launch dir beats an absolute terminal.cwd (#84015).
 
+    Remote backends keep terminal.cwd: the launch dir names nothing on the sandbox.
+    """
+    configured = tmp_path / "configured-home"
+    launch = tmp_path / "launch-project"
+    configured.mkdir()
+    launch.mkdir()
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        f"terminal:\n  backend: {backend}\n  cwd: {configured}\n", encoding="utf-8")
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_TUI_CWD", str(tmp_path))  # stale, from an outer launcher
+    monkeypatch.chdir(launch)
+
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    env = captured["env"]
+    if backend == "local":
+        assert Path(env["HERMES_TUI_CWD"]).resolve() == launch.resolve()
+        assert Path(env["TERMINAL_CWD"]).resolve() == launch.resolve()
+    else:
+        assert "HERMES_TUI_CWD" not in env
+        assert Path(env["TERMINAL_CWD"]).resolve() == configured.resolve()

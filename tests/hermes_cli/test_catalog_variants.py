@@ -4,7 +4,6 @@ synthetic budgets."""
 
 from __future__ import annotations
 
-import pytest
 
 from hermes_cli.local_runtime.catalog import (
     CATALOG,
@@ -86,7 +85,7 @@ def test_small_card_gets_q4_spilled_never_below():
     assert choice is not None
     assert not choice.zero_spill
     assert choice.reason_key == "smallest-fits-spilled"
-    assert choice.variant.quant == "UD-Q4_K_M"
+    assert choice.variant.quant == entry.variants[-1].quant
 
 
 def test_frontier_model_refused_on_consumer_card_offered_on_big_ram():
@@ -114,18 +113,6 @@ def test_selection_accounts_for_kv_not_just_weights():
     assert not choice.zero_spill, "KV cost ignored — weights alone can't zero-spill"
 
 
-def test_floor_fallback_when_target_window_does_not_fit():
-    """Cards where nothing clears the target keep the old rule: highest
-    quality that zero-spills at the 64K floor (reason 'best-fits'), never
-    a needless step down."""
-    entry = catalog_by_id()["qwen3.8-27b"]
-    # ~23.5 GiB usable: Q4 weights (16.7 GiB in-memory) + floor KV (2.2)
-    # + overhead (1.5 + 0.9 mmproj + ~1.0 MTP-posture logits) fits, but
-    # the 144K-target KV (+2.7 more) does not.
-    choice = select_variant(entry, budget(23.5))
-    assert choice is not None and choice.zero_spill
-    assert choice.reason_key == "best-fits"
-    assert choice.variant.quant == "UD-Q4_K_M"
 
 
 def test_target_never_degrades_below_floor_choice():

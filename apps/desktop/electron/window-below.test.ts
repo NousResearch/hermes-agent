@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { type EnumeratedWindow, enumerationFailureNote, pickWindowBelow, resolveOutsideAsar } from './window-below'
+import {
+  type EnumeratedWindow,
+  enumerationFailureNote,
+  getWindowsFailureReason,
+  pickWindowBelow,
+  resolveOutsideAsar
+} from './window-below'
 
 const win = (pid: number, x = 0, y = 0, width = 800, height = 600, app = `app-${pid}`): EnumeratedWindow => ({
   app,
@@ -146,20 +152,54 @@ describe('enumerationFailureNote', () => {
   })
 })
 
+describe('getWindowsFailureReason', () => {
+  it('explains the native binding gap on Windows ARM64 without discarding the failure', () => {
+    for (const detail of [
+      'module missing',
+      'binding failed to load',
+      'the window enumerator returned no window list'
+    ]) {
+      const reason = getWindowsFailureReason(detail, 'win32', 'arm64')
+
+      expect(reason).toContain(detail)
+      expect(reason).toMatch(/win32-arm64/)
+      expect(reason).toMatch(/native binding/)
+      expect(reason).toMatch(/x64/)
+      expect(enumerationFailureNote('win32', {}, reason)).toContain(reason)
+
+      for (const [platform, arch] of [
+        ['win32', 'x64'],
+        ['darwin', 'arm64'],
+        ['linux', 'arm64']
+      ]) {
+        expect(getWindowsFailureReason(detail, platform, arch)).toBe(detail)
+      }
+    }
+  })
+})
+
 describe('resolveOutsideAsar', () => {
   // The helper binary get-windows execs cannot run from inside the archive
   // (execFile on a path through app.asar fails ENOTDIR), so the import must
   // land on the unpacked copy electron-builder ships beside it.
   it('redirects a packaged specifier into app.asar.unpacked', () => {
     expect(
-      resolveOutsideAsar('file:///Applications/Hermes.app/Contents/Resources/app.asar/dist/node_modules/get-windows/index.js')
-    ).toBe('file:///Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist/node_modules/get-windows/index.js')
+      resolveOutsideAsar(
+        'file:///Applications/Hermes.app/Contents/Resources/app.asar/dist/node_modules/get-windows/index.js'
+      )
+    ).toBe(
+      'file:///Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist/node_modules/get-windows/index.js'
+    )
   })
 
   // The staged specifier is built with path.join, so on Windows the archive
   // segment is delimited by backslashes, not the slashes a file: URL has.
   it('redirects a Windows packaged path built with backslashes', () => {
-    expect(resolveOutsideAsar('C:\\Users\\me\\AppData\\Local\\Hermes\\resources\\app.asar\\dist\\node_modules\\get-windows\\index.js')).toBe(
+    expect(
+      resolveOutsideAsar(
+        'C:\\Users\\me\\AppData\\Local\\Hermes\\resources\\app.asar\\dist\\node_modules\\get-windows\\index.js'
+      )
+    ).toBe(
       'C:\\Users\\me\\AppData\\Local\\Hermes\\resources\\app.asar.unpacked\\dist\\node_modules\\get-windows\\index.js'
     )
   })

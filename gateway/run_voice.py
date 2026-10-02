@@ -33,6 +33,7 @@ _CALL_ENDED_MODE = "off"
 
 
 class GatewayVoiceMixin:
+    _voice_mode: Dict[str, str]
     _voice_call_keys: set[str]
     _adapter_profile_for_source: Callable[[SessionSource], Optional[str]]
 

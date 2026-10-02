@@ -49,11 +49,19 @@ def autonomy_block(*, provider="fake", mode="shadow", data="metadata_only", stat
 
 
 def install(tmp_path, block="", name="b"):
+    """The example bundle with ``block`` as its autonomy block — or with none at all.
+
+    The example ships a shadow/fake block as the last thing in its policy; each test states
+    its own instead, so what it exercises is written in the test.
+    """
     root = tmp_path / name
     shutil.copytree(EXAMPLE_BUNDLE, root)
-    if block:
-        policy = root / "policy.yaml"
-        policy.write_text(policy.read_text() + "\n" + block)
+    policy = root / "policy.yaml"
+    text = policy.read_text()
+    marker = "\n# Risk triage and earned autonomy"
+    if marker in text:
+        text = text[: text.index(marker)] + "\n"
+    policy.write_text(text + ("\n" + block if block else ""))
     home = tmp_path / f"{name}-home"
     home.mkdir()
     bundle = load_bundle(root)
@@ -191,6 +199,16 @@ def test_all_safe_answers_let_the_call_run_with_an_intent_and_commit(graduated, 
     assert not [e for e in AuditLog(audit.path, tenant_id="acme").open_intents()
                 if e.kind == "policy.autonomous_action"]
     assert not events(audit, "policy.decision"), "a call that ran without a person is not an escalation"
+
+
+def test_no_write_ahead_record_means_no_autonomous_call(graduated, monkeypatch):
+    """If the intent cannot be written, the call is not run without a person."""
+    home, audit = graduated
+    p = plugin(home, monkeypatch)
+    p._PROVIDERS["typesafe"] = Scripted()
+    p._load_policy()["audit_log"] = str(home / "no-such-dir" / "audit.jsonl")
+    directive = call(p, tool_call_id="call-x")
+    assert directive["action"] == "approve" and "audit log could not be written" in directive["message"]
 
 
 def test_a_tool_that_fails_after_running_unasked_is_recorded_as_failed(graduated, monkeypatch):
@@ -340,11 +358,23 @@ def test_in_task_work_the_held_call_shows_the_triage_note(tmp_path, monkeypatch)
     (autonomy_block(provider="typesafe").replace("data: metadata_only", "data: everything"), "must be one of"),
 ])
 def test_an_unsafe_autonomy_block_is_refused_at_load(tmp_path, block, words):
-    root = tmp_path / "b"
-    shutil.copytree(EXAMPLE_BUNDLE, root)
-    (root / "policy.yaml").write_text((root / "policy.yaml").read_text() + "\n" + block)
     with pytest.raises(SpecError, match=words):
-        load_bundle(root)
+        install(tmp_path, block)
+
+
+def test_the_example_ships_shadow_with_the_fake_provider_and_runs_without_a_key(tmp_path, monkeypatch):
+    """The example as shipped: triage runs, records what it would do, and a person decides."""
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    root = tmp_path / "shipped"
+    shutil.copytree(EXAMPLE_BUNDLE, root)
+    bundle = load_bundle(root)
+    assert (bundle.policy.autonomy.provider, bundle.policy.autonomy.mode) == ("fake", "shadow")
+    home = tmp_path / "shipped-home"
+    home.mkdir()
+    audit = AuditLog(tmp_path / "shipped-audit.jsonl", tenant_id=bundle.tenant_id, actor="test")
+    apply_bundle(bundle, HermesRuntime(home=home, tenant_id=bundle.tenant_id), audit=audit)
+    directive = call(plugin(home, monkeypatch))
+    assert directive["action"] == "approve" and "Triage (shadow) would have let this through" in directive["message"]
 
 
 # -- what ships ------------------------------------------------------------------------------------

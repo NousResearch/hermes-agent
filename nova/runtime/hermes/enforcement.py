@@ -645,18 +645,20 @@ def post_approval_response(pattern_key: str = "", choice: str = "", tool_call_id
 
 
 def _autonomous_intent(policy: Dict[str, Any], decision: Decision, tool_name: str,
-                       args: Dict[str, Any], call: Dict[str, str]) -> None:
+                       args: Dict[str, Any], call: Dict[str, str]) -> bool:
     """The write-ahead record of a call that runs with no person: intent now, outcome later.
 
     ``post_tool_call`` writes ``committed`` or ``failed``. A worker that dies in between
     leaves the intent open, which is how a reviewer finds an action whose outcome is unknown.
     """
     correlation = "autonomous-" + (call.get("tool_call_id") or uuid.uuid4().hex)
-    _AUTONOMOUS[call.get("tool_call_id") or tool_name] = correlation
-    _write_event(policy, "policy.autonomous_action", {
+    written = _write_event(policy, "policy.autonomous_action", {
         "tool": tool_name, "action": decision.action, "args_digest": _triage_rule.digest(args),
         **{k: v for k, v in call.items() if v},
     }, phase="intent", correlation_id=correlation)
+    if written:
+        _AUTONOMOUS[call.get("tool_call_id") or tool_name] = correlation
+    return written
 
 
 def post_tool_call(tool_name: str = "", tool_call_id: str = "", status: str = "",
@@ -677,11 +679,16 @@ def post_tool_call(tool_name: str = "", tool_call_id: str = "", status: str = ""
 
 
 def _write_event(policy: Dict[str, Any], kind: str, detail: Dict[str, Any], *,
-                 phase: str = "record", correlation_id: str = "") -> None:
-    """Append one event to the tenant's audit log, in the control plane's format."""
+                 phase: str = "record", correlation_id: str = "") -> bool:
+    """Append one event to the tenant's audit log, in the control plane's format.
+
+    True when it was written. Most callers ignore that — a governance record we cannot
+    write must not stop a decision being enforced — but a call about to run without a
+    person must not run unrecorded, so that caller checks.
+    """
     target = (policy or {}).get("audit_log")
     if not target:
-        return
+        return False
     event = {
         "event_id": uuid.uuid4().hex,
         "correlation_id": correlation_id or os.environ.get("HERMES_KANBAN_TASK", "") or "runtime",
@@ -705,7 +712,8 @@ def _write_event(policy: Dict[str, Any], kind: str, detail: Dict[str, Any], *,
             os.close(handle)
     except OSError:
         # A governance record we cannot write must not stop the decision being enforced.
-        pass
+        return False
+    return True
 
 
 def _record(policy: Dict[str, Any], decision, tool_name: str, call: Optional[Dict[str, str]] = None) -> None:
@@ -800,8 +808,11 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
         if not (task_id and _answered(task_id, tool_name, args or {})):
             triage = _triage(policy, decision, tool_name, args or {}, call)
         if triage and triage["proceed"]:
-            _autonomous_intent(policy, decision, tool_name, args or {}, call)
-            return None
+            if _autonomous_intent(policy, decision, tool_name, args or {}, call):
+                return None
+            # No write-ahead record, no autonomous call: a person decides instead.
+            triage = {"proceed": False, "note": "Triage passed, but the audit log could not be "
+                                                "written, so a person decides this call."}
         note = (triage or {}).get("note", "")
         _record(policy or {}, decision, tool_name, call)
         if task_id:

@@ -4,7 +4,11 @@ Read-only audit before building risk-gated approvals and earned autonomy. Every 
 is traced to a file and line in this repository, or to TypeSafe's published documentation.
 Line numbers are as of commit `40dc9c632`.
 
-**Status (2026-10-02).** §1 is resolved with option (b), and §2 is closed. Both are in
+**Status (2026-10-02): built.** Phases 1–5 are done. The design, the threat model and
+the operating guide are in [`EARNED_AUTONOMY.md`](EARNED_AUTONOMY.md). The open questions
+for TypeSafe below are still open.
+
+**Earlier status.** §1 is resolved with option (b), and §2 is closed. Both are in
 `enforcement.py`, `approvals.py` and `decide.py`, and are tested in
 `tests/platform/test_task_approvals.py`.
 

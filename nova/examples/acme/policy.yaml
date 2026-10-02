@@ -55,3 +55,18 @@ defaults:
   # Deny anything no rule mentions. The posture a security review will ask for; switch to
   # `allow` while a deployment is still being mapped out.
   unlisted_tool: deny
+
+# Risk triage and earned autonomy for approval-gated calls (docs/platform/EARNED_AUTONOMY.md).
+# Shadow mode with the fake provider: every call still goes to a person, triage records what
+# it would have done, and the example runs without any key. To try the real provider, set
+# `provider: typesafe` and put TYPESAFE_API_KEY in the agent's credentials. `enforce` is
+# refused with the fake provider, and an action only graduates when an administrator confirms
+# a promotion it has earned — never by editing this file.
+autonomy:
+  provider: fake
+  mode: shadow
+  data: metadata_only
+  timeout_seconds: 2.0
+  actions:
+    send_external_email:
+      questions: default

@@ -212,7 +212,9 @@ capability. Documentation mentioning something is *definitely* not a capability.
 | Tenant isolation of state | **tested** | One runtime home per tenant; a NOVA agent id *is* a Hermes profile |
 | Tool denial | **tested** | Compiled into the fail-closed `pre_tool_call` hook |
 | Positive tool scoping | **declared** | Recorded, **not** enforced by the adapter — and the UI says so |
-| Approval gates | **tested** | Runtime blocks the task and will not resume without a decision |
+| Approval gates | **tested** | In chat, the runtime's prompt, with a rule key unique to each call so "always" cannot switch one off for good. In task work, the exact call is filed and the task is held until a person approves or refuses it in the Control Center; an approval lets that one call through once |
+| Risk triage of approval-gated calls | **tested** | A second step after `decide()`, for escalations only: a provider answers questions, a rule in code combines them, and every failure escalates. Shadow by default. Provider client checked live; no tenant has run it in a worker yet |
+| Earned autonomy | **tested** | Ledger of verdicts joined to people's answers. Promotion proposed by NOVA and confirmed by an admin; demotion automatic (rejection, false-safe rate, model change). Not live-proven: no action has graduated in a real tenant |
 | Per-channel approval | **tested** | A derived profile with its own compiled policy |
 | RBAC on the control plane | **tested** | Role checked per route; writes default to refusal |
 | Audit completeness | **tested** | Every write emits intent → committed/failed |

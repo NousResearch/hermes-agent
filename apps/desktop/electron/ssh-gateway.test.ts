@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 
 import { mintLocalGatewayTicket, nativeGatewayHttpHeaders, routedGatewayEndpoint } from './local-gateway'
 import { attachSshGateway } from './ssh-gateway'
@@ -45,7 +45,7 @@ test('SSH attachment pins native credentials to its tunnel and retires no gatewa
 test('only confirmed older command capabilities permit classic SSH fallback', async () => {
   const ssh = { async exec(command: string): Promise<string> {
     if (command.includes('[ -x')) {return 'OK'}
-    return '  start Start\n  serve Legacy'
+    return 'usage: hermes gateway [-h] {run,start,stop,status} ...\n  start Start\n  stop Stop\n  status Status'
   }, async forward() {throw new Error('must not forward')}, async cancelForward() {} }
   const options = { ssh, profile: '', remoteHermesPath: '/usr/bin/hermes', pickLocalPort: async () => 8765 }
   expect(await attachSshGateway(options)).toBeNull()
@@ -56,4 +56,18 @@ test('only confirmed older command capabilities permit classic SSH fallback', as
     throw new Error('SSH unavailable')
   }
   await expect(attachSshGateway(options)).rejects.toThrow('SSH unavailable')
+})
+
+test('ambiguous successful help output never starts a classic owner or tunnel', async () => {
+  const forward = vi.fn()
+  const ssh = {
+    exec: vi.fn(async (command: string) => (command.includes('[ -x') ? 'OK' : 'Welcome to the server')),
+    forward,
+    async cancelForward() {}
+  }
+  await expect(
+    attachSshGateway({ ssh, profile: '', remoteHermesPath: '/usr/bin/hermes', pickLocalPort: async () => 8765 })
+  ).rejects.toThrow(/capabilities/)
+  expect(forward).not.toHaveBeenCalled()
+  expect(ssh.exec.mock.calls.every(([command]) => !command.includes('gateway ensure'))).toBe(true)
 })

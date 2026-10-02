@@ -139,7 +139,7 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
     })
   }
 
-  await actCanonicalGroup(binding, { kind: 'approval', ...identity, request_id: 'request:original' }, 'deny')
+  await actCanonicalGroup(binding, { kind: 'approval', ...identity, request_id: 'request:original', approval: { choices: ['deny'] } }, 'deny')
   expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.approve', {
     profile: route.profile, room_id: binding.roomId, ...identity, request_id: 'request:original', choice: 'deny'
   })

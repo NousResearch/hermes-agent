@@ -57,8 +57,8 @@ it('restores a frozen send after remount and retires only its acknowledged exact
   first.unmount()
   render(<CanonicalGroupWorkspace binding={binding} />)
   await screen.findByRole('button', { name: 'Retry' })
-  request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : { accepted: true, client_event_id: params.event_id })
   await waitFor(() => expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
@@ -87,8 +87,8 @@ it('blocks Send until journal restore and durable preparation complete', async (
   }
 
   window.hermesDesktop = { preparedSubmissions: native } as unknown as typeof window.hermesDesktop
-  request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : { accepted: true, client_event_id: params.event_id })
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'new' }} />)
   await screen.findByText('Room')
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New text' } })
@@ -479,7 +479,7 @@ it.each([
   expect($canonicalGroupBindings.get()[key]).toBeUndefined()
   expect(request.mock.calls.filter(call => call[1] === 'groups.disband').map(call => call[2])).toEqual([
     { room_id: 'leaving', cancel_id: expect.any(String), profile: 'team' },
-    { room_id: 'leaving', cancel_id: expect.any(String), profile: 'team' }
+    { room_id: 'leaving', cancel_id: request.mock.calls.find(call => call[1] === 'groups.disband')![2].cancel_id, profile: 'team' }
   ])
 })
 
@@ -534,4 +534,136 @@ it('shows ordinary file publication as work while preserving attention for block
   view.rerender(<CanonicalGroupWorkspace binding={{ ...binding, roomId: 'file-and-uncertain' }} />)
   await screen.findByText('Sharing files from Atlas Bot…')
   expect(screen.getByText(new RegExp(labels.statusBlocked))).toBeTruthy()
+})
+
+it('keeps its frozen send for missing or malformed acknowledgement identity', async () => {
+  const binding = { connectionId: 'local', profile: 'default', roomId: 'receipt' }
+  const entry = await prepareCanonicalGroupSend(binding, { text: 'Exact intent' })
+  let receipt: unknown = { accepted: true }
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room' }, driver_status: {} }
+      : method === 'groups.log'
+        ? { events: [] }
+        : method === 'groups.send'
+          ? receipt
+          : {}
+  )
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false))
+  for (const value of [{ accepted: true }, { accepted: true, client_event_id: 1 }, { client_event_id: 'wrong' }]) {
+    receipt = value
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.unconfirmedSend)
+    )
+    expect(await readCanonicalGroupSend(binding)).toEqual(entry)
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false)
+    )
+  }
+  receipt = { accepted: true, client_event_id: entry.params.event_id }
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
+})
+
+it('coalesces rapid Stop gestures and reuses the same cancel intent after a lost reply', async () => {
+  let reject!: (error: Error) => void
+  let complete!: (value: unknown) => void
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room' }, driver_status: { working: true } }
+      : method === 'groups.log'
+        ? { events: [] }
+        : method === 'groups.stop'
+          ? new Promise((resolve, fail) => {
+      complete = resolve
+              reject = fail
+            })
+          : {}
+  )
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'default', roomId: 'rapid-stop' }} />)
+  const stop = await screen.findByRole('button', { name: 'Stop' })
+  await act(async () => {
+    fireEvent.click(stop)
+    fireEvent.click(stop)
+  })
+  expect(request.mock.calls.filter(call => call[1] === 'groups.stop')).toHaveLength(1)
+  await act(async () => {
+    reject(new Error('lost stop reply'))
+  })
+  const original = request.mock.calls.find(call => call[1] === 'groups.stop')![2].cancel_id
+  await act(async () => {
+    fireEvent.click(stop)
+  })
+  expect(request.mock.calls.filter(call => call[1] === 'groups.stop').map(call => call[2].cancel_id)).toEqual([
+    original,
+    original
+  ])
+  await act(async () => {complete({})})
+  expect(screen.queryByText(CANONICAL_GROUP_LOCALES.en.nothingRunning)).toBeNull()
+  expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.pendingActionUnconfirmed)
+  await act(async () => {fireEvent.click(stop)})
+  expect(request.mock.calls.filter(call => call[1] === 'groups.stop').map(call => call[2].cancel_id)).toEqual([original, original, original])
+  await act(async () => {complete({cancelled: 0})})
+  expect(screen.getByText(CANONICAL_GROUP_LOCALES.en.nothingRunning)).toBeTruthy()
+})
+
+it('does not offer Stop for file cleanup alone but keeps it for unknown execution', async () => {
+  let driver_status: {
+    running: boolean
+    working: boolean
+    counts: Record<string, number>
+    pending_actions: Array<{
+      kind: string
+      operation: string
+      blocked: boolean
+      member_id: string
+      task_id: string
+      execution_generation: number
+    }>
+  } = {
+    running: true,
+    working: false,
+    counts: { settled: 1 },
+    pending_actions: [
+      {
+        kind: 'output_retry',
+        operation: 'discard',
+        blocked: true,
+        member_id: 'atlas',
+        task_id: 'done-files',
+        execution_generation: 1
+      }
+    ]
+  }
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room' }, driver_status }
+      : method === 'groups.log'
+        ? { events: [] }
+        : {}
+  )
+  const binding = { connectionId: 'local', profile: 'default', roomId: 'cleanup-stop' }
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  await screen.findByText(/Files from .* need attention/)
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  view.unmount()
+  driver_status = {
+    running: true,
+    working: false,
+    counts: { unknown: 1 },
+    pending_actions: [
+      {
+        kind: 'unknown',
+        operation: '',
+        blocked: false,
+        member_id: 'atlas',
+        task_id: 'unknown-task',
+        execution_generation: 1
+      }
+    ]
+  }
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  expect(await screen.findByRole('button', { name: 'Stop' })).toBeTruthy()
 })

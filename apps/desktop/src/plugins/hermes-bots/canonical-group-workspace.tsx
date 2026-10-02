@@ -93,6 +93,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const [stopping, setStopping] = useState(false)
+  const stopPending = useRef(false)
+  const stopIntent = useRef<string | null>(null)
   const [notice, setNotice] = useState('')
   const [sendHint, setSendHint] = useState('')
   const alive = useRef(true)
@@ -213,7 +215,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
       try {
         const result = await canonicalGroupRequest<{ accepted?: boolean; client_event_id?: unknown } | undefined>(binding, 'groups.send', exact.params)
 
-        if (result?.accepted === false || (typeof result?.client_event_id === 'string' && result.client_event_id !== exact.params.event_id)) {
+        if (result?.accepted === false || result?.client_event_id !== exact.params.event_id) {
           throw new Error(labels.unconfirmedSend)
         }
       } catch (error) {
@@ -241,13 +243,18 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
 
   // Stop has its own busy state: it must stay available while a Send is in flight.
   const stop = async () => {
+    if (stopPending.current) {return}
+    stopPending.current = true
+    stopIntent.current ??= crypto.randomUUID()
     setStopping(true)
     setNotice('')
     setError('')
 
     try {
-      const result = await canonicalGroupRequest<{ cancelled?: number }>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() })
-      const cancelled = Number(result?.cancelled) || 0
+      const result = await canonicalGroupRequest<{ cancelled?: number }>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: stopIntent.current })
+      const cancelled = result?.cancelled
+      if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
+      stopIntent.current = null
 
       if (alive.current) {setNotice(cancelled ? labels.stopped.replace('{count}', String(cancelled)) : labels.nothingRunning)}
 
@@ -255,6 +262,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     } catch (e) {
       if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
     } finally {
+      stopPending.current = false
       if (alive.current) {setStopping(false)}
     }
   }
@@ -267,7 +275,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   // `running` reports gateway-worker health, including while this chat is idle.
   const canStop = Boolean(pending || busy || stopping || state?.driver_status && (state.driver_status.working ||
     ['queued', 'running', 'stopping'].some(status => (state.driver_status?.counts?.[status] ?? 0) > 0) ||
-    pendingActions.length))
+    pendingActions.some(action => action.kind !== 'output_retry')))
 
   return <section className="flex h-full min-h-0 flex-col" data-slot="canonical-group-chat">
     <CanonicalGroupHeader attention={state?.driver_status && needsAttention(state.driver_status)}

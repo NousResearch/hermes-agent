@@ -6,6 +6,7 @@ import { ensureLocalGateway, registerGatewayTicketTransport } from './local-gate
 import type { GatewayEndpoint } from './local-gateway'
 import { expandRemotePath, locateHermes, probeHermesVersion } from './remote-lifecycle'
 
+// This launcher is POSIX-only; Windows SSH hosts are not supported here.
 const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
 interface Ssh {
   exec(command: string, options?: { timeoutMs?: number; stdinData?: string }): Promise<string>
@@ -18,7 +19,11 @@ interface Ssh {
 export async function inspectSshGatewayCommands(ssh: Pick<Ssh, 'exec'>, remoteHermesPath: string) {
   const hermesPath = await locateHermes(ssh, remoteHermesPath)
   const help = await ssh.exec(`${expandRemotePath(hermesPath)} gateway --help`, { timeoutMs: 15000 })
-  return { hermesPath, canonical: /^\s+ensure\s+/m.test(help), tickets: /^\s+ticket\s+/m.test(help) }
+  const canonical = /^\s+ensure\s+/m.test(help)
+  // A successful banner or wrapper message does not prove an older runtime.
+  const classic = /^usage:.*\bgateway\b/im.test(help) && /^\s+(?:run|start)\s+/m.test(help) && /^\s+(?:stop|status)\s+/m.test(help)
+  if (!canonical && !classic) {throw new Error('Could not determine SSH gateway capabilities. Check the configured Hermes launcher, then reconnect.')}
+  return { hermesPath, canonical, tickets: /^\s+ticket\s+/m.test(help) }
 }
 
 export async function attachSshGateway(options: {

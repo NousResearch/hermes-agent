@@ -155,7 +155,11 @@ def main():
     os.environ["HERMES_INTERACTIVE"] = "1"
     # The gateway passes its PID at spawn so a fast exit cannot make this child
     # mistake a subreaper for its original parent before the watchdog starts.
-    orig_ppid = args.parent_pid or os.getppid()
+    # The watchdog compares the kernel's live PPID against it, so a reused PID
+    # can never pass for the parent. Windows never reparents, and a venv
+    # python.exe redirector makes the launcher (not the gateway) our direct
+    # parent there, so keep the observed PPID or the worker would exit at once.
+    orig_ppid = os.getppid() if sys.platform == "win32" else (args.parent_pid or os.getppid())
     _start_parent_death_watchdog(orig_ppid)
     _prepare_slash_worker_runtime()
 

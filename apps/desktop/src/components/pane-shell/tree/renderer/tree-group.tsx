@@ -12,6 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
+import { ShellMenuItems } from '@/app/context-menu/shell-menu-items'
 import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -99,6 +100,7 @@ import { paneChrome } from './track-model'
 function ZoneMenu({
   children,
   closable,
+  includeAppActions = false,
   minimizable = true,
   minimizeLabel,
   minimized,
@@ -108,6 +110,7 @@ function ZoneMenu({
   targetPane
 }: {
   children: ReactNode
+  includeAppActions?: boolean
   /** The pane the menu closes (the right-clicked chip / the active pane);
    *  undefined = not closable (the main zone). */
   closable?: () => string | undefined
@@ -212,6 +215,12 @@ function ZoneMenu({
             label: minimized ? t.zones.restore : (minimizeLabel ?? t.zones.minimize),
             onSelect: () => setTreeGroupMinimized(nodeId, !minimized)
           })}
+        {includeAppActions && (
+          <>
+            <kit.Separator />
+            <ShellMenuItems kit={kit} primaryOnly />
+          </>
+        )}
       </>
     )
   }
@@ -784,7 +793,7 @@ export function TreeGroup({
           wrap={
             !isEmpty
               ? body => (
-                  <ZoneMenu {...zoneMenu}>
+                  <ZoneMenu {...zoneMenu} includeAppActions>
                     <div
                       aria-label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}
                       data-zone-body={node.id}

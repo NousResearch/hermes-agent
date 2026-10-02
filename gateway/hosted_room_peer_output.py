@@ -1,4 +1,7 @@
 """Explicit document-output consent and exact scope for a canonical peer attempt."""
+import hashlib
+import json
+
 from gateway.hosted_room_documents import DOCUMENT_CAPABILITY
 from gateway.hosted_room_artifacts import RoomArtifactScope, validate_terminal_artifact_manifest
 
@@ -28,3 +31,9 @@ def output_manifest(value):
                 or item['mime'].startswith(('image/', 'audio/', 'video/')) for item in items)):
         raise ValueError('peer output exceeds its frozen document contract')
     return items
+
+
+def dispatch_digest(dispatch):
+    """Commit the complete immutable peer attempt, excluding only transfer bytes."""
+    return hashlib.sha256(json.dumps(dispatch.as_mapping(), sort_keys=True,
+                                    separators=(',', ':')).encode()).hexdigest()

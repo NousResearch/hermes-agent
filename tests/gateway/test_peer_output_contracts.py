@@ -19,7 +19,7 @@ from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.platforms.api_server_run_scope import room_run_scope_key
 from gateway.session_api import bind_api_session
 from gateway.session_hosted_output import output_binding, terminal_output_fields
-from gateway.session_peer_output import PeerDocumentOutbox, receipt_fields
+from gateway.session_peer_output import PeerDocumentOutbox, accepted_dispatch_digest, receipt_fields
 from hermes_state_runtime import admit_session_input, claim_session_input, settle_session_input
 from tests.gateway.fixtures.hosted_output import owner
 from tests.gateway.test_hosted_room_artifacts import _scope
@@ -106,6 +106,8 @@ async def test_only_authenticated_canonical_consent_can_bind_or_project_output(t
     async with admitted(tmp_path, monkeypatch, consent=consent, authenticated=authenticated) as p:
         binding = await output_binding(p.authority, p.ref, p.row)
         assert (binding is not None) is allowed
+        from gateway.hosted_room_peer_output import dispatch_digest
+        assert accepted_dispatch_digest(p.row) == (dispatch_digest(p.dispatch) if allowed else None)
         if allowed:
             artifact = binding._outbox().put_bytes(scope=p.scope, data=b"%PDF-1.4\nreport", source_name="report.pdf")
             assert artifact["kind"] == "pdf"

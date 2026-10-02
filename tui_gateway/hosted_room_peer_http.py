@@ -534,7 +534,11 @@ class PeerRunsHTTPClient:
 
     def _admit_dispatch(self, checked: HostedMemberDispatch, *, grant: str) -> Mapping[str, Any]:
         if checked.document_output is not None:
-            from tui_gateway.hosted_room_peer_output import mark_dispatched
+            from tui_gateway.hosted_room_peer_output import mark_dispatched, stored_consent
+            saved = stored_consent(self.receipt_db_path, checked.as_mapping()) if self.receipt_db_path else None
+            if saved is None:
+                receipt = self._recover_output_receipt(checked, grant=grant)
+                return self._accepted(checked, run_id=receipt['run_id'], session_id=receipt['session_id'], replayed=True)
             mark_dispatched(self.receipt_db_path, checked)
         session_id = self._session_id(checked, grant=grant)
 
@@ -752,6 +756,32 @@ class PeerRunsHTTPClient:
             self._terminal_receipts.add((str(task_id), int(execution_generation)))
         return result
 
+    def _recover_output_receipt(self, checked, *, grant):
+        """Prove an already accepted exact attempt without ever POSTing a Run."""
+        from gateway.hosted_room_peer_output import dispatch_digest
+        from gateway.platforms.api_server_run_scope import room_run_scope_key
+        if self.proof_install_id != checked.target_install_id:
+            raise PeerRunsHTTPError('peer output receipt requires exact target proof', ambiguous=True)
+        run_id = 'run_' + hashlib.sha256((room_run_scope_key(checked.as_mapping()) + '\0' +
+            f"room:{checked.task_id}:{checked.execution_generation}").encode()).hexdigest()[:32]
+        try:
+            status = self._request('/v1/runs/' + run_id, room_grant=grant)
+        except PeerRunsHTTPError as exc:
+            # A missing/read-failed receipt is not proof that this attempt never ran.
+            raise PeerRunsHTTPError(str(exc), ambiguous=True, retryable=exc.retryable,
+                                   status_code=exc.status_code, error_code=exc.error_code) from exc
+        if (status.get('run_id') != run_id or status.get('status') not in _KNOWN_RUN_STATES
+                or status.get('peer_output_dispatch_digest') != dispatch_digest(checked)):
+            raise PeerRunsHTTPError('peer output accepted dispatch changed or is unavailable', ambiguous=True)
+        receipt = {**{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},
+            'task_id': checked.task_id, 'execution_generation': checked.execution_generation,
+            'run_id': run_id, 'session_id': self._session_id(checked, grant=grant)}
+        if self.receipt_db_path is not None:
+            from gateway import hosted_rooms
+            hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
+        self._runs[(checked.task_id, checked.execution_generation)] = receipt
+        return receipt
+
     def output_request(self, *, scope, manifest_digest, operation, grant, **fields):
         self.bind_room_scope(**{field: scope[field] for field in _RECEIPT_SCOPE_FIELDS})
         receipt = self._receipt(scope['task_id'], scope['execution_generation'])
@@ -760,24 +790,13 @@ class PeerRunsHTTPClient:
             # can outlive both Home's receipt and the target's HTTP receipt.
             from tui_gateway.hosted_room_peer_output import stored_consent
             from gateway.hosted_room_peer_output import output_scope
-            from gateway.platforms.api_server_run_scope import room_run_scope_key
             consent = stored_consent(self.receipt_db_path, scope) if self.receipt_db_path else None
             if consent is None or consent.get('dispatch') is None:
                 raise PeerRunsHTTPError("peer output Run receipt unavailable")
             checked = HostedMemberDispatch.from_mapping(consent['dispatch'])
             if output_scope(checked).as_mapping() != scope:
                 raise PeerRunsHTTPError("peer output persisted dispatch changed")
-            run_id = 'run_' + hashlib.sha256((room_run_scope_key(scope) + '\0' +
-                f"room:{checked.task_id}:{checked.execution_generation}").encode()).hexdigest()[:32]
-            status = self._request('/v1/runs/' + run_id, room_grant=grant)
-            if status.get('run_id') != run_id:
-                raise PeerRunsHTTPError("peer output Run identity changed")
-            receipt = {**{field: scope[field] for field in _RECEIPT_SCOPE_FIELDS},
-                'task_id': checked.task_id, 'execution_generation': checked.execution_generation,
-                'run_id': run_id, 'session_id': self._session_id(checked, grant=grant)}
-            from gateway import hosted_rooms
-            hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
-            self._runs[(checked.task_id, checked.execution_generation)] = receipt
+            receipt = self._recover_output_receipt(checked, grant=grant)
         return self._request(_run_path(receipt, 'artifacts', operation), method='POST', room_grant=grant,
             body={'artifact_scope': scope, 'manifest_digest': manifest_digest, **fields})
 

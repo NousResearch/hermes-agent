@@ -186,6 +186,28 @@ def test_document_versions_execute_from_receiving_custody_and_remain_downloadabl
                 dispatch=payload['api_turn_v1']['settings']['room_dispatch'], grant=invite['grant'])
             assert reply['replayed']
             assert len(peer_model.requests) == 2
+            if lost_status is None:
+                # A source-less client can observe only that complete accepted dispatch.
+                # Changed input/route identity and a genuinely new task must never POST.
+                before_posts = sum(path == '/v1/runs' for path, _, _ in proxy.seen)
+                frozen = payload['api_turn_v1']['settings']['room_dispatch']
+                for field in ('prompt', 'document_inputs', 'trace_id', 'task_id'):
+                    changed = copy.deepcopy(frozen)
+                    if field == 'prompt':
+                        changed[field] += ' Different instruction.'
+                        changed['prompt_digest'] = hashlib.sha256(changed[field].encode()).hexdigest()
+                    elif field == 'document_inputs':
+                        changed[field][0]['sha256'] = '0' * 64
+                    else:
+                        changed[field] += '-different'
+                    fresh = PeerRunsHTTPClient(base_url=proxy_url, api_key='',
+                        proof_install_id=invite['catalog']['installation_id'])
+                    with pytest.raises(PeerRunsHTTPError) as refused:
+                        await asyncio.to_thread(fresh.recover_dispatch, dispatch=changed, grant=invite['grant'])
+                    assert refused.value.ambiguous and not refused.value.not_admitted
+                assert sum(path == '/v1/runs' for path, _, _ in proxy.seen) == before_posts
+                with sqlite3.connect(f'file:{peer / "state.db"}?mode=ro', uri=True) as db:
+                    assert db.execute("SELECT COUNT(*) FROM session_admissions WHERE principal_id='api'").fetchone()[0] == 1
             if lost_status == 409:
                 dispatch = payload['api_turn_v1']['settings']['room_dispatch']
                 # The manifest participates in the exact HTTP fingerprint, even without bytes.

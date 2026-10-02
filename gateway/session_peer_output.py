@@ -100,3 +100,19 @@ def receipt_fields(row, result):
         return fields
     except (ValueError, TypeError, KeyError):
         return {}
+
+
+def accepted_dispatch_digest(row):
+    """Only a canonical authenticated admission can prove a remote output attempt."""
+    from gateway.hosted_room_peer import HostedMemberDispatch
+    from gateway.hosted_room_peer_output import dispatch_digest
+    from gateway.platforms.api_server_run_scope import room_run_scope_key
+    try:
+        payload = row['payload']['api_turn_v1']
+        dispatch = HostedMemberDispatch.from_mapping(payload['settings']['room_dispatch'])
+        if (row['principal_id'] == 'api' and output_contract(dispatch.document_output) is not None
+                and payload.get('run_owner_scope') == room_run_scope_key(dispatch.as_mapping())):
+            return dispatch_digest(dispatch)
+    except (ValueError, TypeError, KeyError):
+        pass
+    return None

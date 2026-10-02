@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { RowButton } from '@/components/ui/row-button'
@@ -37,7 +37,6 @@ import {
   setVisibleModels,
   toggleModelVisibility
 } from '@/store/model-visibility'
-import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 
 interface ModelVisibilityDialogProps {
   gw?: HermesGateway
@@ -62,7 +61,7 @@ export function ModelVisibilityDialog({
   const copy = t.modelVisibility
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
-  const collapsedProviders = useStore($collapsedProviders)
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
   const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
@@ -118,10 +117,14 @@ export function ModelVisibilityDialog({
   )
 
   const customSlug = hasMatches ? null : customModelCandidate(search, providers)
+  const matchingProviders = providers.filter(provider =>
+    collapseModelFamilies(provider.models ?? []).some(family => matches(provider, family.id))
+  )
+  const activeProvider = matchingProviders.find(provider => provider.slug === selectedProvider) ?? matchingProviders[0]
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent bodyClassName="gap-0 overflow-hidden p-0" className="max-w-xs">
+      <DialogContent bodyClassName="gap-0 overflow-hidden p-0" className="max-w-2xl">
         <DialogHeader className="px-3 pb-1 pt-3">
           <DialogTitle className="text-[0.8125rem]">{copy.title}</DialogTitle>
         </DialogHeader>
@@ -138,53 +141,71 @@ export function ModelVisibilityDialog({
           />
         </div>
 
-        <div className="max-h-[55vh] overflow-y-auto pb-1">
-          {providers.length === 0 ? (
-            <div className="px-3 py-5 text-center text-xs text-muted-foreground">
-              {modelOptions.isPending ? <GlyphSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
+        <div className="flex min-h-0">
+          {matchingProviders.length > 0 && (
+            <div className="max-h-[55vh] w-2/5 shrink-0 overflow-y-auto p-2">
+              {matchingProviders.map(provider => {
+                const families = collapseModelFamilies(provider.models ?? [])
+                const count = families.filter(family =>
+                  visible.has(modelVisibilityKey(provider.slug, family.id))
+                ).length
+
+                return (
+                  <RowButton
+                    aria-pressed={activeProvider?.slug === provider.slug}
+                    className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-(--ui-control-active-background) aria-pressed:bg-(--ui-control-active-background) focus-visible:outline-ring"
+                    key={provider.slug}
+                    onClick={() => setSelectedProvider(provider.slug)}
+                  >
+                    <span className="min-w-0 truncate">
+                      <HighlightMatches foldSeparators query={search} text={provider.name} />
+                    </span>
+                    <span className="shrink-0 text-muted-foreground">
+                      {count}/{families.length}
+                    </span>
+                  </RowButton>
+                )
+              })}
             </div>
-          ) : (
-            providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
+          )}
+          <div className="max-h-[55vh] min-w-0 flex-1 overflow-y-auto pb-1" key={activeProvider?.slug}>
+            {providers.length === 0 ? (
+              <div className="px-3 py-5 text-center text-xs text-muted-foreground">
+                {modelOptions.isPending ? <GlyphSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
+              </div>
+            ) : (
+              (activeProvider ? [activeProvider] : []).map(provider => {
+                const models = collapseModelFamilies(provider.models ?? []).filter(family =>
+                  matches(provider, family.id)
+                )
 
-              if (models.length === 0) {
-                return null
-              }
+                if (models.length === 0) {
+                  return null
+                }
 
-              const allFamilies = collapseModelFamilies(provider.models ?? [])
+                const allFamilies = collapseModelFamilies(provider.models ?? [])
 
-              const onCount = allFamilies.filter(family =>
-                visible.has(modelVisibilityKey(provider.slug, family.id))
-              ).length
+                const onCount = allFamilies.filter(family =>
+                  visible.has(modelVisibilityKey(provider.slug, family.id))
+                ).length
 
-              const checkState = onCount === 0 ? false : onCount === allFamilies.length ? true : 'indeterminate'
+                const checkState = onCount === 0 ? false : onCount === allFamilies.length ? true : 'indeterminate'
 
-              const collapsed = collapsedProviders.includes(provider.slug) && !q
-
-              return (
-                <div className="py-0.5" key={provider.slug}>
-                  <div className="flex items-center gap-2 px-3 pb-0.5 pt-1">
-                    <button
-                      className="group/label flex w-full items-center gap-1 pb-0.5 pt-0.5 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary) hover:bg-transparent"
-                      onClick={() => toggleCollapsedProvider(provider.slug)}
-                      type="button"
-                    >
-                      <span className="min-w-0 truncate">
-                        <HighlightMatches foldSeparators query={search} text={provider.name} />
-                      </span>
-                      <DisclosureCaret
-                        className="shrink-0 opacity-0 transition group-hover/label:opacity-100"
-                        open={!collapsed}
-                        size="0.625rem"
+                return (
+                  <div className="py-0.5" key={provider.slug}>
+                    <div className="flex items-center gap-2 px-3 pb-0.5 pt-1">
+                      <div className="group/label flex w-full items-center gap-1 pb-0.5 pt-0.5 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary) hover:bg-transparent">
+                        <span className="min-w-0 truncate">
+                          <HighlightMatches foldSeparators query={search} text={provider.name} />
+                        </span>
+                      </div>
+                      <Checkbox
+                        aria-label={provider.name}
+                        checked={checkState}
+                        onCheckedChange={next => setProviderVisible(provider, next !== false)}
                       />
-                    </button>
-                    <Checkbox
-                      checked={checkState}
-                      onCheckedChange={next => setProviderVisible(provider, next !== false)}
-                    />
-                  </div>
-                  {!collapsed &&
-                    models.map(family => {
+                    </div>
+                    {models.map(family => {
                       const { name, tag } = modelDisplayParts(family.id)
                       const key = modelVisibilityKey(provider.slug, family.id)
 
@@ -220,35 +241,35 @@ export function ModelVisibilityDialog({
                         </label>
                       )
                     })}
+                  </div>
+                )
+              })
+            )}
+            {customSlug && providers.length > 0 && (
+              <div className="py-0.5">
+                <div className="px-3 pb-0.5 pt-1 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
+                  {copy.addCustomModel}
                 </div>
-              )
-            })
-          )}
-          {customSlug && providers.length > 0 && (
-            <div className="py-0.5">
-              <div className="px-3 pb-0.5 pt-1 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
-                {copy.addCustomModel}
+                {providers.map(provider => (
+                  <RowButton
+                    className="flex w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-(--ui-control-active-background)"
+                    key={`custom:${provider.slug}`}
+                    onClick={() => {
+                      addCustomModel(provider.slug, customSlug, provider)
+                      setSearch('')
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      {customSlug}
+                      <span className="text-(--ui-text-tertiary)"> {provider.name}</span>
+                    </span>
+                    <Plus className="size-3 shrink-0 text-(--ui-text-tertiary)" />
+                  </RowButton>
+                ))}
               </div>
-              {providers.map(provider => (
-                <RowButton
-                  className="flex w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-(--ui-control-active-background)"
-                  key={`custom:${provider.slug}`}
-                  onClick={() => {
-                    addCustomModel(provider.slug, customSlug, provider)
-                    setSearch('')
-                  }}
-                >
-                  <span className="min-w-0 flex-1 truncate">
-                    {customSlug}
-                    <span className="text-(--ui-text-tertiary)"> {provider.name}</span>
-                  </span>
-                  <Plus className="size-3 shrink-0 text-(--ui-text-tertiary)" />
-                </RowButton>
-              ))}
-            </div>
-          )}
+            )}
+          </div>
         </div>
-
         <div className="flex items-center justify-between px-3 py-2">
           <Button
             className="-ml-2 text-(--ui-text-tertiary)"

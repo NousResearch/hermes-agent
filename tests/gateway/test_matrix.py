@@ -1691,7 +1691,7 @@ async def test_text_reply_to_image_attaches_the_quoted_image(monkeypatch, declar
 
     adapter = _make_adapter()
     adapter._max_media_bytes = matrix_limit
-    monkeypatch.setattr("gateway.platforms.base.get_inbound_media_max_bytes", lambda: gateway_limit)
+    monkeypatch.setattr("gateway.platforms.base_media_limits.get_inbound_media_max_bytes", lambda: gateway_limit)
     adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)

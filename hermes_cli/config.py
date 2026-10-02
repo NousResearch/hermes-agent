@@ -3530,6 +3530,26 @@ def _guard_section_overwrite(key: str, value: Any, user_config: Dict[str, Any], 
     if "." in key or not isinstance(existing, dict):
         return key
     if key == "model":
+        # The bare-name shorthand takes a model id. A mapping/list literal under it is a section
+        # write attempt: redirecting it into model.default would store a container in the string
+        # slot every model reader ignores while config get echoed it back (#131435) — the same
+        # silent no-op shape _refuse_container_type_mismatch guards for container slots.
+        if isinstance(value, (dict, list)):
+            if not force:
+                _exit_invalid(
+                    f"✗ Cannot set 'model' to a {'mapping' if isinstance(value, dict) else 'list'} — "
+                    "the bare 'model' shorthand takes a model id, and a container value has no "
+                    "slot there.\n"
+                    "  Set the section's keys individually instead:\n"
+                    "    hermes config set model.provider <provider>\n"
+                    "    hermes config set model.default <model-id>\n"
+                    "  Or replace the whole section deliberately:\n"
+                    "    hermes config set --force model '{provider: <provider>, default: <model-id>}'")
+            print(
+                f"⚠ Replacing entire 'model' section with the given "
+                f"{'mapping' if isinstance(value, dict) else 'list'} "
+                f"(discarding {len(existing)} existing sub-key(s))")
+            return key
         if force:
             print(
                 f"⚠ Replacing entire 'model' section with a scalar "
@@ -3674,6 +3694,20 @@ def set_config_value(key: str, value: str, force: bool = False):
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
     value = _coerce_config_set_value(key, value)
+    # ``model`` is seeded as a string in DEFAULT_CONFIG, so the generic coerce above leaves a
+    # mapping/list literal verbatim. Under bare ``model`` that text must not ride the shorthand
+    # into model.default as a bogus model id (#131435): parse it so the section guard below sees
+    # (and gates) the real shape.
+    if key.strip().lower() == "model" and isinstance(value, str) and _looks_structured_value(value):
+        try:
+            parsed = yaml.safe_load(value)
+        except yaml.YAMLError as exc:
+            detail = str(getattr(exc, "problem", None) or exc).splitlines()[0]
+            _exit_invalid(
+                f"✗ Value for 'model' looks like a list/mapping but is not valid YAML/JSON "
+                f"({detail}) — nothing was written.")
+        if isinstance(parsed, (dict, list)):
+            value = parsed
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")

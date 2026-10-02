@@ -14751,6 +14751,7 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
     server._sessions["sid"] = session
 
     try:
+        monkeypatch.setattr(server, "_get_db", lambda: None)
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)

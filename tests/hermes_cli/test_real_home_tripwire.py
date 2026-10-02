@@ -226,3 +226,121 @@ def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
+
+
+@pytest.fixture(params=["sysconfig", "loaded-modules"])
+def protected_runtime_library(tmp_path, monkeypatch, request):
+    from tests import conftest, home_io_guard
+
+    home = tmp_path / "runtime-home"
+    library = home / "runtime" / "Lib"
+    library.mkdir(parents=True)
+    source = library / "threading.py"
+    source.write_text("stdlib source", encoding="utf-8")
+    (library / "empty").mkdir()
+    state = home / "state.txt"
+    state.write_text("private state", encoding="utf-8")
+    paths = [source]
+    state_paths = [state]
+    try:
+        alias = tmp_path / "library-link"
+        alias.symlink_to(library, target_is_directory=True)
+        (library / "state-link").symlink_to(state)
+    except OSError:
+        request.node.user_properties.append(("symlink_supported", False))
+    else:
+        paths.append(alias / source.name)
+        state_paths.extend([library / "state-link", alias / "state-link"])
+        request.node.user_properties.append(("symlink_supported", True))
+    # Exercise discovery from runtime facts, never sys.path or a home-wide whitelist.
+    with monkeypatch.context() as discovery:
+        discovery.setattr(home_io_guard.sysconfig, "get_path", lambda name: str(
+            library if request.param == "sysconfig" else tmp_path / "stale-runtime" / name))
+        for module in (home_io_guard.shutil, home_io_guard.threading):
+            discovery.setattr(module, "__file__", str(
+                (library if request.param == "loaded-modules" else tmp_path / module.__name__)
+                / (module.__name__ + ".py")))
+        prefixes = home_io_guard._stdlib_prefixes()
+    monkeypatch.setattr(home_io_guard, "_STDLIB_PREFIX_STRS",
+                        home_io_guard._STDLIB_PREFIX_STRS + prefixes)
+    original_roots = conftest._REAL_HERMES_ROOT_CANDIDATES
+    monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES", original_roots + [home])
+    try:
+        yield home, paths, state_paths
+    finally:
+        monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES", original_roots)
+
+
+def test_runtime_library_reads_and_metadata_preserve_state_isolation(protected_runtime_library):
+    home, paths, state_paths = protected_runtime_library
+    for source in paths:
+        assert source.read_text(encoding="utf-8") == "stdlib source"
+        with open(source, encoding="utf-8") as stream:
+            assert stream.read() == "stdlib source"
+        fd = os.open(source, os.O_RDONLY)
+        try:
+            assert os.read(fd, 100) == b"stdlib source"
+        finally:
+            os.close(fd)
+        assert source.stat().st_size == len(b"stdlib source")
+        assert source.lstat().st_size == len(b"stdlib source")
+        assert os.access(source, os.R_OK)
+        assert os.path.realpath(source).endswith(os.path.join("Lib", "threading.py"))
+        assert "threading.py" in os.listdir(source.parent)
+        with os.scandir(source.parent) as entries:
+            assert "threading.py" in {entry.name for entry in entries}
+    # realpath walks metadata through protected ancestors, but reading those
+    # directories would reveal sibling state and remains forbidden.
+    assert (home / "runtime").stat().st_mode
+    assert (home / "runtime").resolve() == home / "runtime"
+    for state in state_paths:
+        for operation in (lambda: state.read_text(), state.stat):
+            with pytest.raises(AssertionError, match="REAL hermes home"):
+                operation()
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        os.listdir(home / "runtime")
+
+
+def test_runtime_library_exception_never_permits_mutation(protected_runtime_library, tmp_path):
+    _, paths, _ = protected_runtime_library
+    replacement = tmp_path / "replacement.py"
+    replacement.write_text("replacement", encoding="utf-8")
+    for source in paths:
+        changes = [
+            lambda: source.write_text("changed"),
+            lambda: open(source, "r+"),
+            lambda: open(source.parent / "created.py", "x"),
+            lambda: os.open(source, os.O_WRONLY),
+            lambda: os.open(source, os.O_RDONLY | os.O_CREAT),
+            lambda: os.open(source, os.O_RDONLY | os.O_APPEND),
+            lambda: (source.parent / "new").mkdir(),
+            lambda: os.makedirs(source.parent / "deep" / "child"),
+            lambda: os.chmod(source, 0o600),
+            lambda: os.utime(source, None),
+            source.unlink,
+            lambda: source.replace(tmp_path / "removed.py"),
+            lambda: source.rename(tmp_path / "renamed.py"),
+            lambda: replacement.replace(source),
+            lambda: (source.parent / "empty").rmdir(),
+            lambda: shutil.rmtree(source.parent),
+            lambda: sqlite3.connect(source.parent / "state.db"),
+        ]
+        if getattr(os, "O_TEMPORARY", 0):
+            changes.append(lambda: os.open(source, os.O_RDONLY | os.O_TEMPORARY))
+        for change in changes:
+            with pytest.raises(AssertionError, match="REAL hermes home"):
+                change()
+        assert source.read_text(encoding="utf-8") == "stdlib source"
+        assert "created.py" not in os.listdir(source.parent)
+    assert replacement.read_text(encoding="utf-8") == "replacement"
+
+
+@pytest.mark.parametrize("missing_second", [False, True])
+def test_loaded_library_requires_two_matching_module_paths(tmp_path, monkeypatch, missing_second):
+    from tests import home_io_guard
+
+    monkeypatch.setattr(home_io_guard.sysconfig, "get_path", lambda name: None)
+    monkeypatch.setattr(home_io_guard.shutil, "__file__", str(tmp_path / "first" / "shutil.py"))
+    monkeypatch.setattr(home_io_guard.threading, "__file__",
+                        None if missing_second else str(tmp_path / "second" / "threading.py"))
+    assert home_io_guard._stdlib_prefixes() == ()

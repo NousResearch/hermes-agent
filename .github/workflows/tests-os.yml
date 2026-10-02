@@ -89,7 +89,7 @@ jobs:
             timeout: 60
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # No arm64 wheels for some of the extras below: PM builds them from sdist.
       - name: Set up native ARM64 build dependencies
@@ -221,7 +221,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm

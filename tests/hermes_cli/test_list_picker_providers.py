@@ -323,3 +323,37 @@ def test_openrouter_row_without_configured_models_is_the_live_list(monkeypatch):
                                    live=["a/curated"])
     assert rows["openrouter"]["models"] == ["a/curated"]  # stale ids still drop out
     assert rows["deepseek"]["models"] == ["pinned/extra", "deepseek-chat"]  # other rows untouched
+
+
+def test_configured_openrouter_models_survive_real_config_and_picker(tmp_path, monkeypatch):
+    """Configured IDs stay profile-local through disk loading and real row construction."""
+    import json
+    from hermes_cli.inventory import load_picker_context
+
+    homes = [tmp_path / "a", tmp_path / "b"]
+    for home, model in zip(homes, ("stealth/profile-a", "stealth/profile-b")):
+        home.mkdir()
+        (home / "config.yaml").write_text(json.dumps({
+            "model": {"provider": "openrouter"},
+            "model_catalog": {"enabled": False},
+            "providers": {"openrouter": {"models": [model, "catalog/shared"]}},
+        }), encoding="utf-8")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy")
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **k: {})
+    monkeypatch.setattr(models_mod, "cached_provider_model_ids", lambda *a, **k: ["catalog/shared"])
+    monkeypatch.setattr(models_mod, "fetch_openrouter_models",
+                        lambda *a, **k: [("catalog/shared", ""), ("catalog/other", "")])
+    monkeypatch.setattr(models_mod, "_spawn_swr_refresh", lambda *a, **k: None)
+
+    for home, expected in ((homes[0], "stealth/profile-a"),
+                           (homes[1], "stealth/profile-b"),
+                           (homes[0], "stealth/profile-a")):
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        ctx = load_picker_context()
+        rows = model_switch_providers.list_picker_providers(
+            current_provider=ctx.current_provider, user_providers=ctx.user_providers,
+            custom_providers=ctx.custom_providers, non_blocking_catalogs=True,
+            probe_custom_providers=False, max_models=2)
+        row = next(r for r in rows if r["slug"] == "openrouter")
+        assert row["models"] == [expected, "catalog/shared"]
+        assert row["total_models"] == 3

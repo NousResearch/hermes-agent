@@ -1,65 +1,6 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const arCapabilities = {
-  catalog: {
-    add: 'إضافة',
-    added: 'تمت الإضافة',
-    discover: 'اكتشف',
-    featured: 'مميزة',
-    explorePlugins: 'استكشف الإضافات',
-    exploreSkills: 'استكشف المهارات',
-    mostStarred: 'الأكثر حصولًا على نجوم',
-    newest: 'الأحدث',
-    recentlyUpdated: 'المحدثة مؤخرًا',
-    alphabetical: 'الاسم',
-    sortBy: 'ترتيب حسب',
-    seeAll: 'عرض الكل',
-    related: 'عناصر مشابهة',
-    tags: 'الوسوم',
-    screenshots: 'لقطات الشاشة',
-    listView: 'عرض القائمة',
-    cardView: 'عرض البطاقات',
-    installTitle: (name: string) => `تثبيت «${name}»؟`,
-    installDescription: 'ستتوفر هذه المهارة في الجلسات الجديدة. ثبّت من المصادر التي تثق بها فقط.',
-    installTo: 'التثبيت في',
-    thisComputer: 'هذا الكمبيوتر',
-    installing: 'جارٍ التثبيت…',
-    installComplete: (name: string) => `تم تثبيت «${name}»`,
-    destinationChanged: 'تغيرت وجهة التثبيت. أغلق هذا الحوار وافتح رابط التثبيت مجددًا.',
-    installed: 'المثبتة',
-    searchSkills: 'البحث في المهارات',
-    searchPlugins: 'البحث في الإضافات',
-    allSources: 'كل المصادر',
-    allCategories: 'كل الفئات',
-    about: 'نبذة',
-    author: 'المؤلف',
-    source: 'المصدر',
-    category: 'الفئة',
-    version: 'الإصدار',
-    platforms: 'المنصات',
-    requires: 'المتطلبات',
-    tools: 'الأدوات',
-    hooks: 'الخطافات',
-    middleware: 'البرمجيات الوسيطة',
-    commands: 'الأوامر',
-    license: 'الترخيص',
-    addedDate: 'تاريخ الإضافة',
-    updatedDate: 'تاريخ التحديث',
-    repository: 'المستودع',
-    documentation: 'التوثيق',
-    noResults: 'لا توجد نتائج مطابقة',
-    tryAnother: 'جرّب بحثًا آخر أو امسح عوامل التصفية.',
-    clearFilters: 'مسح عوامل التصفية',
-    filters: 'عوامل التصفية',
-    loadFailed: 'تعذر تحميل الكتالوج',
-    retry: 'حاول مرة أخرى',
-    more: 'عرض المزيد',
-    pinned: 'التزام تمت مراجعته',
-    snapshotHint: 'من كتالوج Hermes. لا يتصل التصفح بمستودعات المصدر مطلقًا.',
-    installHint: 'راجع المصدر قبل التثبيت. تسري التغييرات على الجلسات الجديدة.',
-    results: (count: number) => `النتائج: ${count.toLocaleString('ar')}`,
-    back: 'العودة إلى النتائج'
-  },
   skills: {
     plugins: {
       pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
@@ -132,4 +73,4 @@ export const arCapabilities = {
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
     tokens: value => `${value} رمز`
   }
-} satisfies Pick<TranslationOverrides, 'catalog' | 'skills' | 'agents'>
+} satisfies Pick<TranslationOverrides, 'skills' | 'agents'>

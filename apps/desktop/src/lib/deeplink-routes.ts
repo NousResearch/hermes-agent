@@ -11,7 +11,6 @@ export type DeepLinkAction =
   /** `hermes://plugin/install?catalog=<name>` — resolved against the curated
    *  catalog by the caller; the raw name is never treated as a git identifier. */
   | { type: 'plugin-catalog-install'; name: string }
-  | { type: 'skill-install'; identifier: string }
   | { type: 'composer-blueprint'; name: string; params: Record<string, string> }
   | { type: 'connection-done'; op: string; status: string }
   | { type: 'ignore' }
@@ -51,20 +50,7 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
     return { type: 'plugin-catalog-install', name: payload.params.catalog.trim() }
   }
 
-  if (payload.kind === 'skill') {
-    const identifier = payload.params?.identifier
-
-    return payload.name === 'install' && identifier && identifier === identifier.trim()
-      ? { type: 'skill-install', identifier }
-      : { type: 'ignore' }
-  }
-
-  const repo = (
-    payload.params?.repo ||
-    payload.params?.identifier ||
-    (payload.kind !== 'plugin' ? payload.name : '') ||
-    ''
-  ).trim()
+  const repo = (payload.params?.repo || payload.params?.identifier || payload.name || '').trim()
 
   if (payload.kind === 'plugin' && payload.name === 'install' && repo) {
     return {

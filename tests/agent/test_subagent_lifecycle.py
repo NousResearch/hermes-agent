@@ -73,6 +73,31 @@ def lifecycle(monkeypatch):
 
 
 
+@pytest.mark.parametrize("limit", ["paused", "depth"])
+def test_launch_honours_delegate_task_spawn_admission(monkeypatch, limit):
+    """A plugin launch is refused exactly when delegate_task would refuse the same parent, before any child exists."""
+    import json
+
+    import tools.delegate_tool as dt
+
+    built = []
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: built.append(kw) or FakeChild())
+    monkeypatch.setattr(dt, "_run_single_child", lambda *_a: {"status": "completed", "summary": "x"})
+    parent = SimpleNamespace(session_id="parent-1", enabled_toolsets=["file"], _delegate_depth=0)
+    if limit == "paused":
+        dt.set_spawn_paused(True)
+    else:
+        parent._delegate_depth = dt._get_max_spawn_depth()
+    try:
+        expected = json.loads(dt.delegate_task(goal="x", parent_agent=parent))["error"]
+        with pytest.raises(SubagentLifecycleError) as refused:
+            SubagentLifecycleService(lambda: parent).launch(SubagentLaunchRequest(goal="x"))
+    finally:
+        dt.set_spawn_paused(False)
+    assert str(refused.value) == expected
+    assert built == []
+
+
 def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
     handle = lifecycle.launch(SubagentLaunchRequest(goal="x"))
     assert lifecycle.cancel(handle, reason="test").accepted

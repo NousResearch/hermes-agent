@@ -437,6 +437,27 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
     return None
 
 
+def _spawn_admission_error(parent_agent: Any) -> Optional[str]:
+    """Why *parent_agent* may not spawn a child right now, or None. Every spawn entry point (``delegate_task`` and
+    the plugin ``SubagentLifecycleService.launch``) calls this, so neither the operator pause nor
+    ``delegation.max_spawn_depth`` can be sidestepped by the route a child is launched through."""
+    # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
+    if is_spawn_paused():
+        return (
+            "Delegation spawning is paused. Clear the pause via the TUI "
+            "(`p` in /agents) or the `delegation.pause` RPC before retrying."
+        )
+    depth = getattr(parent_agent, "_delegate_depth", 0)
+    max_spawn = _get_max_spawn_depth()
+    if depth >= max_spawn:
+        return (
+            f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn}). Raise "
+            f"delegation.max_spawn_depth in config.yaml if deeper nesting is required (no hard ceiling, but each level "
+            f"multiplies API cost)."
+        )
+    return None
+
+
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
@@ -457,26 +478,14 @@ def delegate_task(
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
 
-    # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
-    if is_spawn_paused():
-        return tool_error(
-            "Delegation spawning is paused. Clear the pause via the TUI "
-            "(`p` in /agents) or the `delegation.pause` RPC before retrying."
-        )
+    err = _spawn_admission_error(parent_agent)
+    if err:
+        return tool_error(err)
 
     top_role = _normalize_role(role)
     # background applies to single tasks AND batches: a batch is ONE async unit
     # that joins on every child and re-enters as a single consolidated message.
     background = is_truthy_value(background, default=False) if background is not None else False
-
-    depth = getattr(parent_agent, "_delegate_depth", 0)
-    max_spawn = _get_max_spawn_depth()
-    if depth >= max_spawn:
-        return tool_error(
-            f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn}). Raise "
-            f"delegation.max_spawn_depth in config.yaml if deeper nesting is required (no hard ceiling, but each level "
-            f"multiplies API cost)."
-        )
 
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)

@@ -87,6 +87,31 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
+def _is_workspace_or_dependency_venv(path: Path) -> bool:
+    """True if *path* lives inside a dependency generation's workspace venv.
+
+    Workspace venvs are temporary: they live under ``installs/<key>/environments/<gen>/workspace``
+    and are subject to GC (``collect_generations``). Baking them into a systemd unit guarantees
+    a crash loop once the generation is collected or the workspace changes (#131164).
+    """
+    try:
+        path_str = str(path.resolve())
+    except (OSError, RuntimeError):
+        return False
+    # Dependency generation workspaces live under installs/<key>/environments/<gen>/workspace.
+    # The key markers are "/environments/" followed by a generation name, then "/workspace".
+    if "/environments/" in path_str and "/workspace" in path_str:
+        # Verify the pattern: .../environments/<gen>/workspace...
+        # This avoids false positives on paths that happen to contain these strings.
+        parts = path_str.split("/environments/")
+        if len(parts) == 2:
+            after_environments = parts[1]
+            # Should have /workspace after the generation name
+            if "/workspace" in after_environments:
+                return True
+    return False
+
+
 def _stable_service_working_dir() -> str:
     """WorkingDirectory that won't disappear under systemd (HERMES_HOME, else _gw().PROJECT_ROOT). cwd is
     irrelevant to ``-m`` resolution, and a pinned transient checkout rots: systemd fails at CHDIR
@@ -154,6 +179,16 @@ def _service_venv_dir() -> str:
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = _gw().get_python_path()
+    # Refuse to bake a workspace/dependency-generation Python into the unit: those paths are
+    # temporary and subject to GC, which would break the unit on the next restart (#131164).
+    python_path_parent = Path(python_path).parent.parent  # bin/python -> venv dir
+    if _is_workspace_or_dependency_venv(python_path_parent):
+        raise RuntimeError(
+            "Refusing to generate systemd unit with workspace Python path. "
+            "The current Python interpreter is from a dependency generation workspace, "
+            "which is temporary and subject to garbage collection. "
+            "Run 'hermes gateway restart' from the stable checkout instead."
+        )
     working_dir = _gw()._stable_service_working_dir()
     venv_dir = _gw()._service_venv_dir()
 

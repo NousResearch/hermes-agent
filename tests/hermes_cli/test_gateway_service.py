@@ -447,6 +447,47 @@ class TestGeneratedSystemdUnits:
 
         assert "SoftResourceLimits" not in plist
 
+    def test_is_workspace_or_dependency_venv_detection(self, tmp_path):
+        """#131164: workspace venv paths must be detected correctly."""
+        from hermes_cli.gateway_service_unit import _is_workspace_or_dependency_venv
+
+        # Workspace paths (should be detected)
+        workspace_paths = [
+            tmp_path / "installs" / "abc123" / "environments" / "gen1" / "workspace" / "venv",
+            tmp_path / "installs" / "xyz789" / "environments" / "gen2" / "workspace" / "venv",
+        ]
+        for path in workspace_paths:
+            path.mkdir(parents=True)
+            assert _is_workspace_or_dependency_venv(path) is True, f"Should detect {path}"
+
+        # Stable paths (should NOT be detected)
+        stable_paths = [
+            tmp_path / "hermes-agent" / "venv",
+            tmp_path / ".venv",
+            tmp_path / "opt" / "hermes" / "venv",
+        ]
+        for path in stable_paths:
+            path.mkdir(parents=True)
+            assert _is_workspace_or_dependency_venv(path) is False, f"Should NOT detect {path}"
+
+    def test_generate_systemd_unit_refuses_workspace_venv_paths(self, monkeypatch, tmp_path):
+        """#131164: generate_systemd_unit must refuse workspace Python paths."""
+        # Create a workspace venv structure
+        workspace_venv = (
+            tmp_path / "installs" / "test" / "environments" / "gen1" / "workspace" / "venv"
+        )
+        workspace_venv.mkdir(parents=True)
+        fake_python = workspace_venv / "bin" / "python"
+        fake_python.parent.mkdir(parents=True)
+        fake_python.write_text("#!/bin/sh\n")
+
+        # Monkey-patch get_python_path to return workspace Python
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(fake_python))
+
+        # Should raise RuntimeError
+        with pytest.raises(RuntimeError, match="workspace Python path"):
+            gateway_cli.generate_systemd_unit(system=False)
+
 
 class TestGatewayStopCleanup:
     @pytest.mark.linux_only

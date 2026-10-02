@@ -28,9 +28,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX serve-runner path under test"
-)
+pytestmark = pytest.mark.platforms("posix")  # POSIX serve-runner path under test
 
 
 # ---------------------------------------------------------------------------
@@ -79,11 +77,6 @@ def test_addr_in_use_error_classification():
     assert _is_addr_in_use_error(OSError(errno.EACCES, "denied")) is False
 
 
-def test_exit_code_is_distinct_tempfail():
-    from hermes_cli.web_server_lifecycle import PORT_IN_USE_EXIT_CODE
-
-    assert PORT_IN_USE_EXIT_CODE == 75  # EX_TEMPFAIL — repo convention
-    assert PORT_IN_USE_EXIT_CODE != 1
 
 
 # ---------------------------------------------------------------------------
@@ -168,25 +161,6 @@ def test_conflict_emits_sentinel_and_exit_75(tmp_path):
     assert out.count("BACKEND_PORT_IN_USE") == 1
 
 
-def test_free_port_boots_and_announces_ready(tmp_path):
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.bind(("127.0.0.1", 0))
-    port = probe.getsockname()[1]
-    probe.close()
-
-    proc = _spawn_serve(port, tmp_path)
-    try:
-        ready, lines = _read_until(proc, "HERMES_BACKEND_READY")
-        out = "".join(lines)
-        assert ready, f"no READY sentinel; output:\n{out}"
-        assert f"HERMES_BACKEND_READY port={port}" in out
-        assert "BACKEND_PORT_IN_USE" not in out
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
 
 def test_ephemeral_port_zero_unaffected(tmp_path):
@@ -236,6 +210,49 @@ def test_ready_sentinel_arrives_on_stdout_not_stderr(tmp_path):
             f"stdout:\n{out}"
         )
         assert f"HERMES_BACKEND_READY port={port}" in out
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def test_headless_serve_announces_both_ready_tokens(tmp_path):
+    """#60772 — a headless ``serve`` must announce BOTH ready tokens.
+
+    The packaged Desktop artifact can be older than the Python backend (the
+    CLI-only ``hermes update`` path does not rebuild the packaged app). Its
+    readiness parser may still match only the legacy ``HERMES_DASHBOARD_READY``
+    line; a backend that announces only ``HERMES_BACKEND_READY`` then boots
+    healthily and gets killed after the port-announcement timeout — the exact
+    artifact-skew signature in #60772. The neutral token must come first so
+    current parsers match it before the legacy one.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    proc = _spawn_serve(port, tmp_path)
+    try:
+        # Read past the NEUTRAL token to the legacy one: _read_until stops at
+        # its token, so waiting for the legacy line proves BOTH were written
+        # (the neutral one precedes it) without a timing race.
+        ready, lines = _read_until(proc, f"HERMES_DASHBOARD_READY port={port}")
+        out = "".join(lines)
+        assert ready, (
+            f"legacy token missing (a stale packaged Desktop would time out); output:\n{out}"
+        )
+        # The neutral token must come first: current parsers stop at their
+        # first hit, and they should bind to the newer contract.
+        assert f"HERMES_BACKEND_READY port={port}" in out
+        backend_at = out.index(f"HERMES_BACKEND_READY port={port}")
+        legacy_at = out.index(f"HERMES_DASHBOARD_READY port={port}")
+        assert backend_at < legacy_at
+        # Exactly one of each — never a loop of announcements.
+        assert out.count("HERMES_BACKEND_READY port=") == 1
+        assert out.count("HERMES_DASHBOARD_READY port=") == 1
     finally:
         proc.terminate()
         try:

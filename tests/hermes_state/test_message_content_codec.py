@@ -50,16 +50,20 @@ def test_structured_and_bytes_round_trip_as_printable_nul_free_text(
     assert db.get_messages_as_conversation("codec")[0]["content"] == content
 
 
+@pytest.mark.parametrize("operation", ("append", "replace"))
 @pytest.mark.parametrize("fts_table", ("messages_fts", "messages_fts_trigram"))
-def test_structured_content_fts_mirror_is_nul_free_when_available(db, fts_table):
-    # role must not be 'tool': the trigram index reads through
-    # messages_fts_trigram_src, which excludes tool rows by design (they
-    # stay searchable via the standard messages_fts index).
-    message_id = db.append_message(
-        "codec",
-        role="assistant",
-        content={"parts": [{"text": "line\x00break"}]},
-    )
+def test_structured_content_fts_mirror_is_nul_free_when_available(db, fts_table, operation):
+    # Assistant rows participate in both indexes; trigram excludes tool rows.
+    content = {"parts": [{"text": "line\x00break"}]}
+    if operation == "replace":
+        db.append_message("codec", role="assistant", content="old content")
+        db.replace_messages("codec", [{"role": "assistant", "content": content}])
+        messages = db.get_messages("codec")
+        assert len(messages) == 1
+        message_id = messages[0]["id"]
+    else:
+        message_id = db.append_message("codec", role="assistant", content=content)
+    assert db.get_messages("codec")[0]["content"] == content
 
     with db._lock:
         table_exists = db._conn.execute(

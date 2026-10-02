@@ -85,11 +85,12 @@ def _connect_patches(mock_proc, mock_fh):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "windows,winerror,recovered",
-    [(True, 5, True), (True, 2, False), (False, 5, False)],
-    ids=["windows-job-denied", "other-windows-error", "non-windows"],
+    "windows,winerror,flags,recovered",
+    [(True, 5, 0x09000200, True), (True, 5, 0x08000200, False),
+     (True, 2, 0x09000200, False), (False, 5, 0x09000200, False)],
+    ids=["windows-job-denied", "already-without-breakaway", "other-windows-error", "non-windows"],
 )
-async def test_bridge_spawn_retries_only_windows_job_denial(windows, winerror, recovered):
+async def test_bridge_spawn_retries_only_windows_job_denial(windows, winerror, flags, recovered):
     """A job that rejects breakaway must still permit the managed bridge to start."""
     adapter = _make_adapter()
     proc, log = MagicMock(), MagicMock()
@@ -108,7 +109,7 @@ async def test_bridge_spawn_retries_only_windows_job_denial(windows, winerror, r
         stack.enter_context(patch.object(adapter, "_wire_plugin_handlers"))
         for name in ("_kill_stale_bridge_by_pidfile", "_kill_port_process", "_write_bridge_pidfile"):
             stack.enter_context(patch(f"plugins.platforms.whatsapp.adapter.{name}"))
-        stack.enter_context(patch("plugins.platforms.whatsapp.adapter.windows_detach_popen_kwargs", return_value={"creationflags": 0x09000200}))
+        stack.enter_context(patch("plugins.platforms.whatsapp.adapter.windows_detach_popen_kwargs", return_value={"creationflags": flags}))
         spawn = stack.enter_context(patch("subprocess.Popen", side_effect=[denied, proc]))
         result = await adapter.connect()
     assert result is recovered
@@ -118,7 +119,8 @@ async def test_bridge_spawn_retries_only_windows_job_denial(windows, winerror, r
         assert first.args == second.args
         assert {k:v for k,v in first.kwargs.items() if k != "creationflags"} == {k:v for k,v in second.kwargs.items() if k != "creationflags"}
         assert first.kwargs["creationflags"] & 0x01000000
-        assert not second.kwargs["creationflags"] & 0x01000000
+        assert second.kwargs["creationflags"] == flags & ~0x01000000
+        assert second.kwargs["creationflags"] & 0x08000200 == 0x08000200
         assert adapter._bridge_process is proc
 
 
@@ -138,6 +140,7 @@ async def test_bridge_spawn_failed_fallback_releases_lock_and_log():
         stack.enter_context(patch.object(adapter, "_ensure_bridge_deps", return_value=True))
         stack.enter_context(patch.object(adapter, "_reuse_running_bridge", new_callable=AsyncMock, return_value=False))
         stack.enter_context(patch.object(adapter, "_bridge_env", return_value={"PUBLIC_TEST": "1"}))
+        stack.enter_context(patch("plugins.platforms.whatsapp.adapter.windows_detach_popen_kwargs", return_value={"creationflags": 0x09000200}))
         for name in ("_kill_stale_bridge_by_pidfile", "_kill_port_process"):
             stack.enter_context(patch(f"plugins.platforms.whatsapp.adapter.{name}"))
         spawn = stack.enter_context(patch("subprocess.Popen", side_effect=[denied, OSError("bridge unavailable")]))

@@ -17,7 +17,7 @@ from typing import Dict, Optional, Any
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
-from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -543,12 +543,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 self._bridge_process = subprocess.Popen(bridge_args, **bridge_kwargs)
             except PermissionError as exc:
-                if not _IS_WINDOWS or getattr(exc, "winerror", None) != 5:
+                breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+                flags = bridge_kwargs.get("creationflags", 0)
+                if not _IS_WINDOWS or getattr(exc, "winerror", None) != 5 or not flags & breakaway:
                     raise
                 # A Windows job can forbid breakaway. Keep the bridge managed by
                 # this Gateway, retaining its hidden console and process group.
                 logger.warning("[%s] Retrying bridge without Windows job breakaway after access denial", self.name)
-                bridge_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
+                bridge_kwargs["creationflags"] = flags & ~breakaway
                 self._bridge_process = subprocess.Popen(bridge_args, **bridge_kwargs)
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():

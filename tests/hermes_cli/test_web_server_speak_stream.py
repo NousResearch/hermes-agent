@@ -222,4 +222,62 @@ def test_edge_speak_stream_speaks_each_sentence_instead_of_whole_text_fallback(
     assert second in calls[1] and first not in calls[1]
     assert reply not in calls
 
+class _LoudStreamer(_FakeStreamer):
+    """Emits a frame whose edges are at full scale — the DC-step case."""
 
+    def __init__(self, samples: int = 4000):
+        super().__init__([(b"\xff\x7f" * samples)])
+
+
+def test_frame_edges_are_ramped_to_zero(stream_client, monkeypatch):
+    """A full-scale first/last sample is a DC step against the next frame. After
+    the fade the outermost samples must be exactly zero, or the click survives."""
+    import numpy as np
+
+    _patch_provider(monkeypatch, _LoudStreamer())
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
+        conn.receive_json()
+        frame = conn.receive_bytes()
+        conn.receive_json()
+
+    arr = np.frombuffer(frame, dtype="<i2")
+    assert arr[0] == 0
+    assert arr[-1] == 0
+
+
+def test_fade_leaves_the_audio_body_untouched(stream_client, monkeypatch):
+    """Only the boundary windows may change; the body must be bit-identical to
+    the provider's output, or this is an audible volume change, not a fix."""
+    import numpy as np
+
+    from hermes_cli.web_routers.audio import _FADE_SAMPLES
+
+    n = 4000
+    src = (b"\xff\x7f" * n)
+    _patch_provider(monkeypatch, _LoudStreamer(n))
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
+        conn.receive_json()
+        frame = conn.receive_bytes()
+        conn.receive_json()
+
+    got = np.frombuffer(frame, dtype="<i2")
+    want = np.frombuffer(src, dtype="<i2")
+    assert got.size == want.size
+    assert np.array_equal(got[_FADE_SAMPLES:-_FADE_SAMPLES], want[_FADE_SAMPLES:-_FADE_SAMPLES])
+
+
+def test_frame_length_and_count_are_preserved(stream_client, monkeypatch):
+    """The client contract is one PCM frame per provider request. Fading must
+    never merge frames or change their count or byte length."""
+    streamer = _LoudStreamer(4000)
+    _patch_provider(monkeypatch, streamer)
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
+        conn.receive_json()
+        frame = conn.receive_bytes()
+        conn.receive_json()
+
+    assert len(frame) == 4000 * 2
+    assert len(streamer.requests) == 1

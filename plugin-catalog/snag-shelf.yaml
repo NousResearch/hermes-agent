@@ -1,8 +1,7 @@
 name: snag-shelf
 repo: https://github.com/aydnOktay/hermes-snag-shelf
 sha: da1b51c53235010ca161bfda67097bfbc74ae277
-description: Everything that snagged - cross-session shelf of failed tool calls.
-  Full Desktop page, chip, pin, fix-prompt insert. No API keys.
+description: "Everything that snagged - cross-session shelf of failed tool calls. Full Desktop page, chip, pin, fix-prompt insert. No API keys. Disclosure — stores failed tool-call metadata (tool, truncated args with key-name redaction, error snippet) locally in plugin-data; no network."
 maintainer: aydnOktay
 tier: community
 category: desktop

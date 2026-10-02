@@ -636,6 +636,9 @@ def fetch_openrouter_models(
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
 
+    if not curated:
+        return list(cached or fallback)
+
     # Free models are the one part of the live catalog that must not be hidden by the
     # curated ranking snapshot: users open this row specifically to discover no-cost
     # options. Keep the curated order first, then append eligible live-only entries.
@@ -648,8 +651,6 @@ def fetch_openrouter_models(
         and _openrouter_model_is_free(item.get("pricing"))
     )
 
-    if not curated:
-        return list(cached or fallback)
     if not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
     profile_slot_set(_me, "_openrouter_catalog_cache", curated)

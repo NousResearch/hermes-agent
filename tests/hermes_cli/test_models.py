@@ -104,6 +104,28 @@ class TestFetchOpenRouterModels:
 
         assert models == [("curated/model", "recommended"), ("live/free", "free")]
 
+    def test_falls_back_when_all_curated_models_are_missing_but_live_free_models_exist(self, monkeypatch):
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, exc_type, exc, tb): return False
+            def read(self):
+                return (b'{"data":['
+                        b'{"id":"live/free","pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}'
+                        b']}')
+
+        cached = [("cached/model", "cached")]
+        monkeypatch.setattr(_models_mod, "OPENROUTER_MODELS", [("retired/model", "")])
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", cached)
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+            patch("hermes_cli.models._write_openrouter_catalog_disk") as write_disk,
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert models == cached
+        write_disk.assert_not_called()
+
 
 class TestOpenRouterToolSupportHelper:
     """Unit tests for _openrouter_model_supports_tools (Kilo port #9068)."""

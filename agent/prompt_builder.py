@@ -506,13 +506,38 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
 )
 
 
-def execution_guidance_text() -> str:
-    """OPENAI_MODEL_EXECUTION_GUIDANCE as injected into the system prompt.
+# Each <mandatory_tool_use>/<act_dont_ask> line above named against the tool(s) it tells the model to reach
+# for. A line is dropped when none of its named tools are in the session's valid_tool_names, so a toolset
+# without terminal/execute_code/etc. isn't told to use them (#106506). The
+# guidance names no web tool (#39797), so there is no entry for one.
+_EXECUTION_GUIDANCE_LINE_TOOLS = {
+    "- Arithmetic, math, calculations → use terminal or execute_code\n": {"terminal", "execute_code"},
+    "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n": {"terminal"},
+    "- Current time, date, timezone → use terminal (e.g. date)\n": {"terminal"},
+    "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n": {"terminal"},
+    "- File contents, sizes, line counts → use read_file, search_files, or terminal\n": {
+        "read_file",
+        "search_files",
+        "terminal",
+    },
+    "- Git history, branches, diffs → use terminal\n": {"terminal"},
+    "- 'What time is it?' → run `date` (don't guess)\n": {"terminal"},
+}
 
-    The guidance names no web tool (#39797: a hard "use web_search" overrode SOUL.md and dangled in Blank Slate),
-    so the text is toolset-neutral and needs no per-session filtering.
+
+def execution_guidance_text(valid_tool_names=None) -> str:
+    """OPENAI_MODEL_EXECUTION_GUIDANCE for the session's toolset (cache-safe: the toolset is fixed per session).
+
+    Lines that tell the model to reach for a tool absent from the session's toolset would dangle, so they are
+    dropped.
     """
-    return OPENAI_MODEL_EXECUTION_GUIDANCE
+    text = OPENAI_MODEL_EXECUTION_GUIDANCE
+    if valid_tool_names is not None:
+        valid_tool_names = set(valid_tool_names)
+        for line, tools in _EXECUTION_GUIDANCE_LINE_TOOLS.items():
+            if not tools & valid_tool_names:
+                text = text.replace(line, "")
+    return text
 
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.

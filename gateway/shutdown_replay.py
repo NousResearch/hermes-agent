@@ -6,10 +6,11 @@ import json
 import logging
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Protocol
 
 from gateway.input_owner import gateway_input_owner
-from gateway.pending_execution import PendingExecutionOwner
+from gateway.pending_execution import PendingExecutionOwner, PendingExecutionRunner
+from gateway.config import GatewayConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_pending import (
     merge_recorded,
@@ -24,14 +25,20 @@ from gateway.shutdown_pending import PENDING_SCHEMA, PendingQueueSnapshot
 from gateway.shutdown_pending_codec import decode_pending_event, decode_pending_source
 from gateway.shutdown_recovery import consume_executed_pending
 from gateway.session_transcript import TranscriptReadError
-
-if TYPE_CHECKING:
-    from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 
 logger = logging.getLogger("gateway.run")
 
 
-async def replay_pending_snapshots(runner: GatewayRunner) -> int:
+class PendingReplayRunner(PendingExecutionRunner, Protocol):
+    config: GatewayConfig
+
+    def _session_key_for_source(self, source: SessionSource) -> str: ...
+
+    def _is_user_authorized_for_source(self, source: SessionSource) -> bool: ...
+
+
+async def replay_pending_snapshots(runner: PendingReplayRunner) -> int:
     from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
     from hermes_constants import get_hermes_home
 
@@ -110,7 +117,7 @@ async def replay_pending_snapshots(runner: GatewayRunner) -> int:
 
 
 async def _replay_record(
-    runner: GatewayRunner,
+    runner: PendingReplayRunner,
     snapshot: PendingQueueSnapshot,
     path: Path,
     original: bytes,

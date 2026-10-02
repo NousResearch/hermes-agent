@@ -19,15 +19,18 @@ from gateway.warning_notifications import diagnostic_metadata
 
 if TYPE_CHECKING:
     from gateway.run import GatewayRunner
+    from gateway.session import SessionStore
 
 logger = logging.getLogger("gateway.run")
 
 
 class GatewayQueuedFollowupMixin:
+    session_store: SessionStore
     _MAX_INTERRUPT_DEPTH: int
     _reply_anchor_for_event: Callable[[MessageEvent], str | None]
 
     if TYPE_CHECKING:
+        _adapters_for_profile = GatewayRunner._adapters_for_profile
         _delivery_adapter_for = GatewayRunner._delivery_adapter_for
         _goal_still_active_for_session = GatewayRunner._goal_still_active_for_session
         _intake_adapter_for = GatewayRunner._intake_adapter_for

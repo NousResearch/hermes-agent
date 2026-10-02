@@ -31,7 +31,12 @@ from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES, DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, loop_heartbeat_forever,
 )
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gateway.run import GatewayRunner
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -62,6 +67,15 @@ def recover_left_core_at_gateway_start() -> None:
 
 class GatewayStartupMixin:
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
+
+    config: GatewayConfig
+    session_store: SessionStore
+
+    if TYPE_CHECKING:
+        _adapters_for_profile = GatewayRunner._adapters_for_profile
+        _session_key_for_source = GatewayRunner._session_key_for_source
+        _is_user_authorized_for_source = GatewayRunner._is_user_authorized_for_source
+
 
     @staticmethod
     def _log_agent_budget() -> None:

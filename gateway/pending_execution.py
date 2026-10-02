@@ -5,17 +5,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from gateway.input_owner import gateway_input_owner
+from gateway.config import Platform
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent
+from gateway.session import SessionStore
 from gateway.session_identity import identity_of
 from gateway.session_transcript import TranscriptReadError
 
-if TYPE_CHECKING:
-    from gateway.run import GatewayRunner
-
 logger = logging.getLogger("gateway.run")
+
+
+class PendingExecutionRunner(Protocol):
+    session_store: SessionStore
+
+    def _adapters_for_profile(
+        self, profile: str | None
+    ) -> dict[Platform, BasePlatformAdapter]: ...
 
 
 @dataclass(frozen=True)
@@ -26,7 +34,7 @@ class PendingExecutionOwner:
     owner: str
 
     def current(
-        self, runner: GatewayRunner, event: MessageEvent, session_key: str
+        self, runner: PendingExecutionRunner, event: MessageEvent, session_key: str
     ) -> bool:
         from hermes_constants import get_hermes_home
 
@@ -67,17 +75,20 @@ class PendingExecutionOwner:
 
 
 def pending_execution_current(
-    runner: GatewayRunner, event: MessageEvent, session_key: str
+    runner: PendingExecutionRunner, event: MessageEvent, session_key: str | None
 ) -> bool:
     owner = getattr(event, "_pending_execution_owner", None)
     return (
         owner is None
         or isinstance(owner, PendingExecutionOwner)
+        and session_key is not None
         and owner.current(runner, event, session_key)
     )
 
 
-def consume_pending_execution(runner: GatewayRunner, event: MessageEvent) -> None:
+def consume_pending_execution(
+    runner: PendingExecutionRunner, event: MessageEvent
+) -> None:
     owner = getattr(event, "_pending_execution_owner", None)
     if not isinstance(owner, PendingExecutionOwner):
         return

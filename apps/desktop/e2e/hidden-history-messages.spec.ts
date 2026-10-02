@@ -41,7 +41,7 @@ async function setupSeededMockBackend(): Promise<MockBackendFixture> {
     '\ncompression:\n  threshold_tokens: 1\n',
     'utf8',
   )
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
   const builder = await RealSessionBuilder.start(sandbox.hermesHome)
 
   try {
@@ -122,7 +122,7 @@ test('live verify-on-stop continuations stay out of the transcript', async ({}, 
     '\nauxiliary:\n  title_generation:\n    enabled: false\n',
     'utf8',
   )
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
   const { app, page } = await launchDesktop(buildAppEnv(sandbox))
 
   const fixture: MockBackendFixture = {

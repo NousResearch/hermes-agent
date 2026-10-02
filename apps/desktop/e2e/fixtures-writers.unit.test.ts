@@ -107,3 +107,91 @@ for (const name of ['setupMockBackend', 'setupPackagedApp', 'setupDeadBackend'])
     }
   })
 }
+
+test('every direct E2E spec config/env writer pairing carries its exact mock URL', () => {
+  let pairs = 0
+
+  for (const file of fs.readdirSync(import.meta.dirname).filter(name => name.endsWith('.spec.ts'))) {
+    const source = fs.readFileSync(path.join(import.meta.dirname, file), 'utf8')
+    const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
+    const calls: ts.CallExpression[] = []
+
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isCallExpression(node) &&
+        ['writeMockProviderConfig', 'writeEnvFile'].includes(node.expression.getText(ast))
+      ) {
+        calls.push(node)
+      }
+
+      ts.forEachChild(node, visit)
+    }
+
+    visit(ast)
+
+    for (const env of calls.filter(node => node.expression.getText(ast) === 'writeEnvFile')) {
+      const home = env.arguments[0].getText(ast)
+
+      const config = calls
+        .filter(
+          node =>
+            node.expression.getText(ast) === 'writeMockProviderConfig' &&
+            node.pos < env.pos &&
+            node.arguments[0].getText(ast) === home
+        )
+        .at(-1)
+
+      assert.ok(config, `${file}: env writer has a preceding same-home config owner`)
+      assert.equal(
+        env.arguments[2]?.getText(ast),
+        config.arguments[1].getText(ast),
+        `${file}: env uses the config's exact mock URL`
+      )
+      pairs += 1
+    }
+  }
+
+  assert.ok(pairs > 0, 'direct spec pairings are exercised')
+})
+
+test('mock-server dev launch writes the credential required by its config before launch', () => {
+  const source = fs.readFileSync(new URL('../../../tests-js/scripts/mock-server.ts', import.meta.url), 'utf8')
+
+  const check = (text: string) => {
+    const ast = ts.createSourceFile('mock-server.ts', text, ts.ScriptTarget.Latest, true)
+    const launch = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'runDevLaunch')
+    assert.ok(launch, 'actual dev launch function exists')
+    const calls: ts.CallExpression[] = []
+
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isCallExpression(node) &&
+        ['writeMockProviderConfig', 'writeEnvFile'].includes(node.expression.getText(ast))
+      ) {
+        calls.push(node)
+      }
+
+      ts.forEachChild(node, visit)
+    }
+
+    visit(launch)
+    const config = calls.find(node => node.expression.getText(ast) === 'writeMockProviderConfig')
+    const env = calls.find(node => node.expression.getText(ast) === 'writeEnvFile')
+    assert.ok(config && env)
+    assert.equal(env.arguments[0].getText(ast), config.arguments[0].getText(ast))
+    assert.equal(env.arguments[2]?.getText(ast), config.arguments[1].getText(ast))
+    assert.ok(config.pos < env.pos)
+  }
+
+  check(source)
+
+  // A source-only negative oracle proves the old call is rejected without
+  // mutating source or launching the development app.
+  const legacy = source.replace(
+    "writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)",
+    'writeEnvFile(sandbox.hermesHome)'
+  )
+
+  assert.notEqual(legacy, source)
+  assert.throws(() => check(legacy))
+})

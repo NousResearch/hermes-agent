@@ -166,7 +166,7 @@ const peerTest = test.extend<{ gateways: { app: ElectronApplication; source: Pag
 
       for (const hermesHome of [local.hermesHome, remote.hermesHome, remoteProfileHome]) {
         writeMockProviderConfig(hermesHome, mock.url)
-        writeEnvFile(hermesHome)
+        writeEnvFile(hermesHome, 'e2e-mock-key', mock.url)
       }
 
       const port = await freePort()

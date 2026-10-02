@@ -66,7 +66,7 @@ async function seedBot(hermesHome: string, mockUrl: string, name: string): Promi
   const dir = path.join(hermesHome, 'profiles', name)
   fs.mkdirSync(dir, { recursive: true })
   writeMockProviderConfig(dir, mockUrl)
-  writeEnvFile(dir)
+  writeEnvFile(dir, 'e2e-mock-key', mockUrl)
 
   const builder = await RealSessionBuilder.start(dir)
 
@@ -208,7 +208,7 @@ test.beforeAll(async () => {
   const mock = await startMockServer()
   const sandbox = createSandbox('bots-screen-stale')
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
   await seedBot(sandbox.hermesHome, mock.url, 'alpha')
 
   const { app, page } = await launchDesktop(buildAppEnv(sandbox))

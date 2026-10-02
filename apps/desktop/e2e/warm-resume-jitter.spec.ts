@@ -117,7 +117,7 @@ async function setupSeededMockBackend(): Promise<MockBackendFixture> {
   // 2. Create sandbox + write config
   const sandbox = createSandbox('warm-seed')
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
 
   // 3. Produce all 16 user/assistant pairs through the real TUI gateway,
   // AIAgent, mock provider, and SessionDB persistence path before desktop starts.

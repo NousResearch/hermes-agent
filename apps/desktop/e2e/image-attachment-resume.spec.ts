@@ -61,7 +61,7 @@ async function setupSeededDesktop(): Promise<SeededFixture> {
   const mock = await startMockServer()
   const sandbox = createSandbox('image-attachment')
   writeMockProviderConfig(sandbox.hermesHome, mock.url, undefined, NATIVE_IMAGE_CONFIG)
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
 
   const builder = await RealSessionBuilder.start(sandbox.hermesHome)
 

@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "aprobación"
     label: "Aprobación"
+    timeout_denying: "⏱ Tiempo agotado — denegando el comando"
+    timed_out_no_response: "tiempo agotado (sin respuesta)"
     outcome_once: "permitido una vez"
     outcome_session: "permitido para la sesión"
     outcome_always: "añadido a la lista de permitidos"
@@ -2259,6 +2261,7 @@ cli:
   clarify:
     bell_context: "aclaración"
     label: "Aclarar"
+    timed_out_locked_answers: "(la aclaración expiró tras {timeout}s — se devolvieron las respuestas fijadas)"
   connect:
     bell_context: "configuración de conexión"
     cannot_restart: "Esta conexión no se puede iniciar de nuevo. Cancela y vuelve a pedírselo al agente."
@@ -3284,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Clon superficial — no se puede verificar el estado del push, se conserva: {path}"
     next_session_deepens: "La próxima sesión `hermes -w` profundiza el clon y elimina automáticamente los worktrees fusionados."
     unpushed_keeping: "⚠ El worktree tiene commits sin push, se conserva: {path}"
+    uncommitted_keeping: "⚠ El worktree tiene cambios sin commit, se conserva: {path}"
     clean_up_manually: "Para limpiar manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree limpiado: {path}"
 display:

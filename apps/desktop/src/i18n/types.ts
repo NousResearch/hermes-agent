@@ -3106,6 +3106,7 @@ export interface Translations {
       reveal: string
       copyPath: string
       removeFromSidebar: string
+      createdInPreviousContext: string
       createFailed: string
       staleBackend: string
       deleteConfirm: string
@@ -4118,8 +4119,6 @@ export interface Translations {
 
   preview: {
     tab: string
-    pin: string
-    unpin: string
     closePane: string
     loading: string
     unavailable: string
@@ -4151,6 +4150,7 @@ export interface Translations {
     editing: string
     unsavedChanges: string
     saveFailed: (message: string) => string
+    saveScopeChanged: string
     diskChangedTitle: string
     diskChangedBody: string
     overwrite: string

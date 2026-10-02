@@ -27,25 +27,9 @@ const $focusedTreePaneId = $focusedTreePaneIdMock as unknown as WritableAtom<nul
 // The focused pane is derived from the layout tree; a settable atom stands in
 // so a test can focus a tile without building a pane tree.
 vi.mock('@/store/session-focus', async () => {
-  const { atom, computed } = await import('nanostores')
-  const { $selectedStoredSessionId } = await import('@/store/session')
+  const { atom } = await import('nanostores')
 
-  // The focused pane is derived from the layout tree; a settable atom stands
-  // in so a test can focus a tile without building a pane tree.
-  const $focusedTreePaneId = atom<null | string>(null)
-
-  // The preview store (reached via session-states) derives $visiblePreviewTabs
-  // from $focusedStoredSessionId at import time, and the timer tests depend on
-  // the REAL derivation (tile focus overrides the primary selection), so the
-  // mock mirrors session-focus's shape instead of stubbing a static atom.
-  const TILE_PANE_PREFIX = 'session-tile:'
-
-  return {
-    $focusedTreePaneId,
-    $focusedStoredSessionId: computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
-      active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
-    )
-  }
+  return { $focusedTreePaneId: atom<null | string>(null) }
 })
 
 // $focusedStoredSessionId derives from the LAYOUT TREE ($activeTreeGroup +

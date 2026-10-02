@@ -241,6 +241,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { preReadyDockLaunchSteps } from './dock-launch-order'
+import { embedHostOrigin } from './embed-host'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps, reportPreOpenStatFailure } from './external-open'
@@ -450,6 +451,7 @@ import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { PreviewReachRegistry } from './preview-reach'
+import { previewHttpUrlTarget } from './preview-url-target'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
@@ -535,8 +537,6 @@ import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
-import { startRendererServer } from './renderer-server'
-import { isRendererUrl } from './renderer-url'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import { rosterSourceStatus } from './roster-source-status'
 import {
@@ -627,6 +627,7 @@ import { createStoreStrategy } from './updater/store-client'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
+import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
@@ -702,7 +703,6 @@ if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
-let packagedRendererServer: Awaited<ReturnType<typeof startRendererServer>> | null = null
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -1178,6 +1178,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
 }
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
+ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
 
 // Keep the renderer's PROCESS priority normal while its windows are hidden —
 // a deprioritized renderer streams a live answer visibly slower once the
@@ -1704,7 +1705,6 @@ const MEDIA_MIME_TYPES = {
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
 const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
-const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 
 const PREVIEW_LANGUAGE_BY_EXT = {
@@ -5186,10 +5186,6 @@ function resolveRendererIndex() {
   return resolveRendererIndexWithMissing().index
 }
 
-function rendererBaseUrl() {
-  return DEV_SERVER || packagedRendererServer?.origin || pathToFileURL(resolveRendererIndex()).toString()
-}
-
 // True when `dir` lives inside the packaged app bundle / install tree.
 // Packaged Electron's process.cwd() (and npm's INIT_CWD when dev tooling
 // leaked into a release build) often resolve here — e.g. win-unpacked on
@@ -6054,10 +6050,6 @@ async function writeComposerImage(buffer, ext = '.png', name = '') {
   return filePath
 }
 
-function previewLabelForUrl(url) {
-  return `${url.host}${url.pathname === '/' ? '' : url.pathname}`
-}
-
 function expandUserPath(filePath) {
   const value = String(filePath || '').trim()
 
@@ -6186,30 +6178,6 @@ async function previewFileTarget(rawTarget, baseDir) {
   }
 }
 
-function previewUrlTarget(rawTarget) {
-  const raw = String(rawTarget || '').trim()
-  const url = new URL(raw)
-
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    return null
-  }
-
-  if (!LOCAL_PREVIEW_HOSTS.has(url.hostname.toLowerCase())) {
-    return null
-  }
-
-  if (url.hostname === '0.0.0.0') {
-    url.hostname = '127.0.0.1'
-  }
-
-  return {
-    kind: 'url',
-    label: previewLabelForUrl(url),
-    source: raw,
-    url: url.toString()
-  }
-}
-
 async function normalizePreviewTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
 
@@ -6219,7 +6187,7 @@ async function normalizePreviewTarget(rawTarget, baseDir) {
 
   try {
     if (/^https?:\/\//i.test(raw)) {
-      return previewUrlTarget(raw)
+      return previewHttpUrlTarget(raw)
     }
 
     return await previewFileTarget(raw, baseDir)
@@ -6259,28 +6227,45 @@ async function watchPreviewFile(owner, rawUrl) {
   // it by whole quit-cycles waiting on a change event that never comes.
   const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
-  const watcher = fs.watch(watchDir, (_eventType, filename) => {
-    const changedName = filename ? path.basename(String(filename)) : ''
-
-    if (changedName && changedName !== targetName) {
+  const emit = () => {
+    if (!fileExists(filePath)) {
       return
     }
 
-    if (timer) {
-      clearTimeout(timer)
-    }
+    sendPreviewFileChangedToOwner(owner, { id, path: filePath, url: pathToFileURL(filePath).toString() }, () =>
+      stopPreviewFileWatch(id)
+    )
+  }
 
-    timer = setTimeout(() => {
-      timer = null
+  // guardedWatch: a win32 event storm closes the raw fs.watch and falls back
+  // to a slow stat poll instead of pinning the main thread (#118974).
+  const watcher = guardedWatch({
+    platform: process.platform,
+    watch: listener => fs.watch(watchDir, listener),
+    onEvent: (_eventType, filename) => {
+      const changedName = filename ? path.basename(String(filename)) : ''
 
-      if (!fileExists(filePath)) {
+      if (changedName && changedName !== targetName) {
         return
       }
 
-      sendPreviewFileChangedToOwner(owner, { id, path: filePath, url: pathToFileURL(filePath).toString() }, () =>
-        stopPreviewFileWatch(id)
-      )
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      timer = setTimeout(() => {
+        timer = null
+        emit()
+      }, PREVIEW_WATCH_DEBOUNCE_MS)
+    },
+    snapshot: () => {
+      const stat = fs.statSync(filePath)
+
+      return `${stat.mtimeMs}:${stat.size}`
+    },
+    onPollChange: emit,
+    onTrip: ({ events, windowMs }) =>
+      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
   })
 
   previewWatchers.set(id, {
@@ -6347,17 +6332,31 @@ function watchDirectory(owner, rawDir) {
   // watch must not keep polling the disk-plugin door until quit.
   const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
-  const watcher = fs.watch(watchDir, () => {
-    if (timer) {
-      clearTimeout(timer)
-    }
+  const emit = () => {
+    sendPreviewFileChangedToOwner(owner, { id, path: watchDir, url: pathToFileURL(watchDir).toString() }, () =>
+      stopPreviewFileWatch(id)
+    )
+  }
 
-    timer = setTimeout(() => {
-      timer = null
-      sendPreviewFileChangedToOwner(owner, { id, path: watchDir, url: pathToFileURL(watchDir).toString() }, () =>
-        stopPreviewFileWatch(id)
-      )
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
+  // A win32 event storm here pinned a core at 100% (#118974): the breaker
+  // closes the raw watch and falls back to the readdir poll it replaced.
+  const watcher = guardedWatch({
+    platform: process.platform,
+    watch: listener => fs.watch(watchDir, listener),
+    onEvent: () => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      timer = setTimeout(() => {
+        timer = null
+        emit()
+      }, PREVIEW_WATCH_DEBOUNCE_MS)
+    },
+    snapshot: () => fs.readdirSync(watchDir).sort().join('\0'),
+    onPollChange: emit,
+    onTrip: ({ events, windowMs }) =>
+      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
   })
 
   previewWatchers.set(id, {
@@ -13716,7 +13715,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     }
   })
   win.webContents.on('will-navigate', (event, url) => {
-    if (isRendererUrl(url, rendererBaseUrl())) {
+    if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return
     }
 
@@ -13924,14 +13923,9 @@ function spawnSecondaryWindow({
     win,
     buildSessionWindowUrl(sessionId, {
       connectionId,
+      devServer: DEV_SERVER,
       profile,
-      // Prefer the packaged renderer HTTP server when it is running: loading the
-      // renderer over http:// gives embeds a real origin, which `file://` cannot
-      // provide (YouTube rejects file-origin embeds). Fall back to upstream's
-      // rendererIndexPath path so the file:// URL is still built correctly --
-      // passing a file:// URL as `devServer` would yield `index.html/?win=...`.
-      devServer: DEV_SERVER || packagedRendererServer?.origin,
-      rendererIndexPath: DEV_SERVER || packagedRendererServer?.origin ? undefined : resolveRendererIndex(),
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
       watch
     }),
     'Session window'
@@ -14014,10 +14008,8 @@ function spawnBrowserWindow(tabId) {
   loadWindowUrl(
     win,
     buildBrowserWindowUrl(tabId, {
-      // Prefer the packaged renderer HTTP server when it is running (real
-      // origin for embeds — see rendererBaseUrl()).
-      devServer: DEV_SERVER || packagedRendererServer?.origin,
-      rendererIndexPath: DEV_SERVER || packagedRendererServer?.origin ? undefined : resolveRendererIndex()
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
     }),
     'Browser window'
   )
@@ -14134,10 +14126,8 @@ function createInstanceWindow(
     win,
     buildInstanceWindowUrl({
       ...route,
-      // Prefer the packaged renderer HTTP server when it is running (real
-      // origin for embeds — see rendererBaseUrl()).
-      devServer: DEV_SERVER || packagedRendererServer?.origin,
-      rendererIndexPath: DEV_SERVER || packagedRendererServer?.origin ? undefined : resolveRendererIndex()
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
     }),
     'Instance window'
   )
@@ -14184,9 +14174,11 @@ let appQuitting = false
 let petOverlayClosing = false
 
 function petOverlayUrl() {
-  const base = rendererBaseUrl().replace(/\/$/, '')
+  if (DEV_SERVER) {
+    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=overlay#/`
+  }
 
-  return `${base}/?win=overlay#/`
+  return `${pathToFileURL(resolveRendererIndex()).toString()}?win=overlay#/`
 }
 
 function spawnPetOverlayWindow(bounds) {
@@ -14687,11 +14679,9 @@ function hudUrl(sessionId, profile) {
   // non-primary profile's conversation resolves the session id against the
   // wrong backend and falls back to the default profile's last session.
   return buildHudWindowUrl(sessionId, {
-    // Prefer the packaged renderer HTTP server when it is running (real
-    // origin for embeds — see rendererBaseUrl()).
-    devServer: DEV_SERVER || packagedRendererServer?.origin,
+    devServer: DEV_SERVER,
     profile,
-    rendererIndexPath: DEV_SERVER || packagedRendererServer?.origin ? undefined : resolveRendererIndex()
+    rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
   })
 }
 
@@ -14972,9 +14962,11 @@ function writeQuickEntrySettings(settings) {
 }
 
 function quickEntryUrl() {
-  const base = rendererBaseUrl().replace(/\/$/, '')
+  if (DEV_SERVER) {
+    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=quick#/`
+  }
 
-  return `${base}/?win=quick#/`
+  return `${pathToFileURL(resolveRendererIndex()).toString()}?win=quick#/`
 }
 
 function spawnQuickEntryWindow() {
@@ -15460,7 +15452,7 @@ function createWindow() {
             errorDescription:
               'The desktop renderer crashed repeatedly (Windows STATUS_STACK_BUFFER_OVERRUN / 0xC0000409). GPU fallback could not recover the window.',
             repairHint: 'hermes desktop --force-build',
-            reloadUrl: rendererBaseUrl()
+            reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
           })
 
           return
@@ -15517,7 +15509,7 @@ function createWindow() {
           url: details?.url,
           errorDescription: 'The desktop renderer failed to load repeatedly after the update.',
           repairHint: 'hermes desktop --force-build',
-          reloadUrl: rendererBaseUrl()
+          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
         })
       },
       // #116472: the OS/Chromium can kill a renderer while the window is live (memory
@@ -15539,7 +15531,7 @@ function createWindow() {
           errorDescription:
             `The desktop UI process was terminated unexpectedly (reason: ${reason}${exit}). ` +
             'Your sessions and the background gateway are unaffected — reload to continue.',
-          reloadUrl: rendererBaseUrl()
+          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
         })
       }
     },
@@ -15578,10 +15570,14 @@ function createWindow() {
       errorDescription: `The desktop renderer bundle is incomplete after the last update (${tornAssets.length} missing file(s)).`,
       missingAssets: tornAssets,
       repairHint: 'hermes desktop --force-build',
-      reloadUrl: rendererBaseUrl()
+      reloadUrl: pathToFileURL(rendererIndex).toString()
     })
   } else {
-    loadWindowUrl(mainWindow, rendererBaseUrl(), 'Renderer')
+    loadWindowUrl(
+      mainWindow,
+      DEV_SERVER || pathToFileURL(rendererIndex || resolveRendererIndex()).toString(),
+      'Renderer'
+    )
   }
 
   // Start the Python backend NOW, in parallel with the renderer load — not on
@@ -19368,14 +19364,7 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(async () => {
-  // Serve the packaged renderer over loopback HTTP (real origin for embeds —
-  // see renderer-server.ts) before any window loads it. In dev the Vite dev
-  // server already provides the origin.
-  if (!DEV_SERVER) {
-    packagedRendererServer = await startRendererServer(path.dirname(resolveRendererIndex()))
-  }
-
+app.whenReady().then(() => {
   // Post-update relaunch detection (App Installer arm): when the previous
   // version wrote the one-shot pending-relaunch marker before quitting into
   // an OS package swap, consume it here — the renderer toasts "Hermes
@@ -19460,9 +19449,9 @@ app.whenReady().then(async () => {
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
-  installCommandScreenshot({ rendererUrl: rendererBaseUrl() })
+  installCommandScreenshot({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
   installHudModifierTap({
-    rendererUrl: rendererBaseUrl(),
+    rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
     summon: () => {
       if (!isQuittingForHandoff && !backendShutdown.hasStarted()) {
         openHudWindow(null, null)
@@ -19778,8 +19767,6 @@ app.on('before-quit', event => {
   }
 
   hudWindow = null
-
-  void packagedRendererServer?.close()
 
   // Same for the Quick Entry composer — and release its global accelerator so a
   // quitting Hermes never keeps another app's chord hostage.

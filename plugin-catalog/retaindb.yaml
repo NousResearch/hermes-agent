@@ -1,0 +1,20 @@
+name: retaindb
+repo: https://github.com/NousResearch/hermes-plugin-retaindb
+sha: 8d7ea4d79ecaf5632e4f73c05133349b64258482
+version: "1.0.1"
+description: RetainDB cloud memory provider — hybrid search (vector + BM25 + reranking) over seven memory
+  types, a stable user profile, explicit remember/forget tools and a shared file store. Formerly bundled with
+  Hermes; maintained by Nous Research. Disclosure — conversation turns, memories and any
+  file you ask it to upload are sent to the RetainDB cloud API (api.retaindb.com by default; paid
+  account, RETAINDB_API_KEY).
+maintainer: NousResearch
+tier: official
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/NousResearch/hermes-plugin-retaindb#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - RETAINDB_API_KEY

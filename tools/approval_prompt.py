@@ -44,8 +44,8 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     See #81887.
     """
     if timeout_seconds is None:
-        timeout_seconds = _ctx.approval_wait_seconds()
-    # Everything below is a human prompt (callback panel or input() fallback, both bounded by the approval window):
+        timeout_seconds = _ctx._get_approval_timeout()
+    # Everything below is a human prompt (callback panel or input() fallback, both bounded by the approval deadline):
     # record it as human-wait time so the concurrent batch deadline excludes it.
     # See #79719.
     with human_wait_window():

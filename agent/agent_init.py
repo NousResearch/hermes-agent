@@ -586,9 +586,11 @@ _TURN_STATE: Dict[str, Any] = {
 # Session persistence state.
 _SESSION_STATE: Dict[str, Any] = {
     "_session_messages": list,
-    # Responses encrypted-reasoning replay: routes that 400 with ``invalid_encrypted_content``
-    # make the loop disable it for the session (stateless continuity).
+    # Responses encrypted-reasoning replay. The first ``invalid_encrypted_content`` rejection only
+    # strips the stale blobs (a rotated sealing key); a second one means the route cannot round-trip
+    # its own fresh blobs, so replay is disabled for the session (stateless continuity).
     "_codex_reasoning_replay_enabled": True,
+    "_codex_reasoning_replay_rejected": False,
     "_memory_write_origin": "assistant_tool",
     "_memory_write_context": "foreground",
     # Cached system prompt (built once, rebuilt on compression) + its cross-session-stable

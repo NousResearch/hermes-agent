@@ -3,12 +3,14 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { PreviewTilePane } from '@/app/chat/right-rail/preview'
+import type { HermesConnection } from '@/global'
 import { $poppedBrowserTabIds, $previewTabs, newBrowserTab, openPreview, popOutBrowserTab } from '@/store/preview'
 import {
   $realProfilePromptClaim,
   $realProfilePromptDismissed,
   $realProfilePromptMuted
 } from '@/store/real-profile-consent'
+import { $connection } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 
 import { openPluginPreview } from './preview'
@@ -37,6 +39,8 @@ beforeEach(() => {
   $realProfilePromptDismissed.set(false)
   $realProfilePromptMuted.set(false)
   config.data = { browser: { use_real_profile: false } }
+  // The real-profile consent prompt is only offered for a local backend.
+  $connection.set({ mode: 'local' } as HermesConnection)
   $sessionTiles.set([
     { storedSessionId: 'stored', runtimeId: 'runtime', ownerRoute: { connectionId: 'local', profile: 'worker' } }
   ])

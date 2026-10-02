@@ -1853,6 +1853,12 @@ def _sum_skills_list(name, args, content, content_len, line_count):
     return f"[skills_list]{scope}{listed}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
 
 
+def _failure_suffix(reason: Any) -> str:
+    """`` FAILED: <reason>`` on one line, or `` FAILED`` when the payload carries no message."""
+    preview = " ".join(str(reason).split())[:80] if reason else ""
+    return f" FAILED: {preview}" if preview else " FAILED"
+
+
 def _skill_result_failure_suffix(content: str) -> str:
     """`` FAILED: <error>`` for a skill-tool payload that reports failure, else ``""``.
     The skill tools return ``{"success": false, "error": ...}``; without the outcome in the stub a
@@ -1862,8 +1868,42 @@ def _skill_result_failure_suffix(content: str) -> str:
     error = payload.get("error")
     if not error and payload.get("success") is not False:
         return ""
-    preview = " ".join(str(error).split())[:80] if error else ""
-    return f" FAILED: {preview}" if preview else " FAILED"
+    return _failure_suffix(error)
+
+
+def _sum_cronjob_manage(name, args, content, content_len, line_count):
+    """``[cronjob] <action>``, plus the outcome of the run it triggered.
+
+    A manual run reports a dead or skipped job inside the job view while the tool call itself
+    succeeded, so the payload is a clean ``{"success": true, "job": {...}}`` and a top-level probe
+    finds nothing to mark. Only this call's own fields decide: ``job`` also carries the job's stored
+    state, including an ``error`` left behind by an earlier run.
+    """
+    stub = f"[cronjob] {args.get('action', '?')}"
+    suffix = _skill_result_failure_suffix(content)
+    if not suffix:
+        job = _json_dict(content).get("job")
+        job = job if isinstance(job, dict) else {}
+        reason = job.get("execution_error") or job.get("execution_skipped")
+        if reason is not None or job.get("execution_success") is False:
+            suffix = _failure_suffix(reason)
+    return stub + suffix
+
+
+def _sum_process_manage(name, args, content, content_len, line_count):
+    """``[process] <action> session=<id>``, plus how the process itself ended.
+
+    A poll of a finished process reports ``exit_code`` and ``completion_reason`` instead of an
+    ``error``, so a non-zero exit is invisible to a top-level probe. A process still running
+    reports no exit code at all, and that is not a failure.
+    """
+    stub = f"[process] {args.get('action', '?')} session={args.get('session_id', '?')}"
+    suffix = _skill_result_failure_suffix(content)
+    if not suffix:
+        exit_code = _json_dict(content).get("exit_code")
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
+            suffix = f" FAILED: exit code {exit_code}"
+    return stub + suffix
 
 
 def _sum_template(template: str, **defaults):
@@ -1907,8 +1947,8 @@ _TOOL_RESULT_SUMMARIZERS = {
     "todo_list": lambda *a: "[todo] updated task list",
     "clarify": _sum_clarify,
     "text_to_speech": _sum_template("[text_to_speech] generated audio ({content_len:,} chars)"),
-    "cronjob_manage": _sum_template("[cronjob] {action}", action="?"),
-    "process_manage": _sum_template("[process] {action} session={session_id}", action="?", session_id="?"),
+    "cronjob_manage": _sum_cronjob_manage,
+    "process_manage": _sum_process_manage,
 }
 
 

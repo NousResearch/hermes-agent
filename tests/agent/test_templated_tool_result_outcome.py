@@ -104,3 +104,65 @@ def test_summarizer_never_raises_on_a_hostile_payload():
     for tool_name, args, _reason in FAILING_CALLS:
         for hostile in ("", "null", "[1, 2, 3]", '{"error": {"nested": true}}', "not json at all"):
             assert isinstance(_stub(tool_name, args, hostile), str)
+
+
+class TestFailuresTheTopLevelProbeCannotSee:
+    """Two real shapes carry their outcome where a top-level ``error`` / ``success is False`` cannot.
+
+    A ``cronjob_manage(action="run")`` whose job died returns ``{"success": True, "job": {...
+    "execution_error": ...}}`` — the tool call itself worked, the job did not. A
+    ``process_manage(action="poll")`` on a process that exited non-zero reports ``exit_code`` and
+    ``completion_reason`` and nothing else. Both compressed into the byte-identical success stub.
+    """
+
+    def test_a_failed_cron_run_is_marked(self):
+        payload = json.dumps({"success": True, "job": {"name": "nightly", "execution_success": False,
+                                                       "execution_error": "Traceback: agent exited with code 1"}})
+
+        stub = _stub("cronjob_manage", {"action": "run"}, payload)
+
+        assert "FAILED: Traceback: agent exited with code 1" in stub, stub
+        assert stub.startswith("[cronjob] run"), stub
+
+    def test_a_cron_run_lost_to_the_scheduler_is_marked(self):
+        payload = json.dumps({"success": True, "job": {"execution_skipped":
+                             "Already being fired by the scheduler; not run again."}})
+
+        stub = _stub("cronjob_manage", {"action": "run"}, payload)
+
+        assert "FAILED: Already being fired by the scheduler" in stub, stub
+
+    def test_a_failed_run_without_a_message_is_still_marked(self):
+        payload = json.dumps({"success": True, "job": {"execution_success": False}})
+
+        assert "FAILED" in _stub("cronjob_manage", {"action": "run"}, payload)
+
+    def test_a_stored_error_from_an_earlier_run_is_not_marked(self):
+        """``job`` carries the job's own state, so only this call's outcome may mark the stub."""
+        payload = json.dumps({"success": True, "job": {"name": "nightly", "error": "last run failed",
+                                                       "execution_success": True}})
+
+        stub = _stub("cronjob_manage", {"action": "poll"}, payload)
+
+        assert stub == "[cronjob] poll", stub
+
+    def test_a_non_zero_exit_is_marked(self):
+        payload = json.dumps({"session_id": "proc_1", "status": "exited", "exit_code": 1,
+                              "completion_reason": "nonzero_exit", "termination_source": "child"})
+
+        stub = _stub("process_manage", {"action": "poll", "session_id": "proc_1"}, payload)
+
+        assert "FAILED" in stub and "exit code 1" in stub, stub
+        assert stub.startswith("[process] poll session=proc_1"), stub
+
+    def test_a_clean_exit_is_not_marked(self):
+        payload = json.dumps({"session_id": "proc_1", "status": "exited", "exit_code": 0})
+
+        assert _stub("process_manage", {"action": "poll", "session_id": "proc_1"}, payload) == \
+            "[process] poll session=proc_1"
+
+    def test_a_still_running_poll_is_not_marked(self):
+        payload = json.dumps({"session_id": "proc_1", "status": "running", "pid": 4242})
+
+        assert _stub("process_manage", {"action": "poll", "session_id": "proc_1"}, payload) == \
+            "[process] poll session=proc_1"

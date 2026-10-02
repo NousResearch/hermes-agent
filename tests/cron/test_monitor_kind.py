@@ -27,6 +27,8 @@ import sys
 
 import pytest
 
+from tests.cron.conftest import marked_cron_interpreter
+
 
 @pytest.fixture
 def hermes_env(tmp_path, monkeypatch):
@@ -284,22 +286,10 @@ def test_bidi_monitor_output_is_sanitized_before_agent(hermes_env, monkeypatch):
 
 def test_monitor_script_uses_configured_interpreter(hermes_env, monkeypatch):
     """A monitor script uses the same job-level interpreter as `script`."""
-    import stat
-
     from cron.jobs import create_job
     from cron.scheduler import run_job
 
-    wrapper = hermes_env / "venv" / "bin" / "python3"
-    wrapper.parent.mkdir(parents=True)
-    wrapper.write_text(
-        f"#!{sys.executable}\n"
-        "import os, sys\n"
-        "env = os.environ.copy()\n"
-        'env["CRON_MONITOR_WRAPPER_USED"] = "1"\n'
-        "os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)\n",
-        encoding="utf-8",
-    )
-    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    wrapper = marked_cron_interpreter(hermes_env / "venv", "CRON_MONITOR_WRAPPER_USED")
     _write_script(
         hermes_env,
         "mon.py",

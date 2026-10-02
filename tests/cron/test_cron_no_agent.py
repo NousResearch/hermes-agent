@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.cron.conftest import marked_cron_interpreter
+
 
 @pytest.fixture
 def hermes_env(tmp_path, monkeypatch):
@@ -283,23 +285,11 @@ def test_run_job_no_agent_uses_configured_interpreter(hermes_env):
     Proves the override survives the no_agent branch of ``run_job`` →
     ``_run_job_script_with_claim_heartbeat`` → ``_run_job_script``.
     """
-    import stat as _stat
-    import sys
-
     from cron.jobs import create_job
     from cron.scheduler import run_job
 
-    # A wrapper that re-execs the real interpreter with an env marker.
-    wrapper = hermes_env / "venv" / "bin" / "python3"
-    wrapper.parent.mkdir(parents=True)
-    wrapper.write_text(
-        f"#!{sys.executable}\n"
-        "import os, sys\n"
-        "env = os.environ.copy()\n"
-        'env["CRON_WRAPPER_USED"] = "1"\n'
-        "os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)\n"
-    )
-    wrapper.chmod(wrapper.stat().st_mode | _stat.S_IXUSR)
+    # A wrapper that runs the real interpreter with an env marker.
+    wrapper = marked_cron_interpreter(hermes_env / "venv", "CRON_WRAPPER_USED")
 
     script_path = hermes_env / "scripts" / "marker.py"
     script_path.write_text(

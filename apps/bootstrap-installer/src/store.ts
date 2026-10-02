@@ -357,7 +357,7 @@ export async function launchHermesDesktop(): Promise<void> {
   await Promise.race([
     launch,
     new Promise<never>((_, reject) => {
-      window.setTimeout(() => {
+      setTimeout(() => {
         reject(new Error('The desktop launch request timed out. Please try Launch again.'))
       }, 30_000)
     })

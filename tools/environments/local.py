@@ -844,12 +844,22 @@ def _kill_process_group_posix(proc) -> None:
     """TERM the group, wait, KILL, then sweep setsid escapees. Descendants are
     snapshotted BEFORE the first signal — once the wrapper dies they reparent to
     init — and we wait on the group, not the wrapper, which can exit before
-    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
+    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller).
+
+    ``proc`` is duck-typed: anything with ``pid`` + ``kill()`` (+ ``poll``/``wait`` when
+    available) works, including non-subprocess shims. Callers pass only what they
+    actually have — this helper must never fail for a missing optional convenience.
+    """
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
+        # Zombie window: a bounded child (rg at the fetch limit) is already dead-but-
+        # unreaped when poll() says alive (#116855 on Linux, here on Darwin too). The
+        # group is dying on its own — nothing to signal, the caller owns its drained
+        # output. _hermes_pgid fallback covers a wrapper that raced the same window
+        # under the gateway's posix_spawn shim.
         if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
-            raise
+            return
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
         descendants = psutil.Process(proc.pid).children(recursive=True)
@@ -865,8 +875,9 @@ def _kill_process_group_posix(proc) -> None:
             if not _wait_for_group_exit(proc, pgid, 1.0):
                 os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
                 _wait_for_group_exit(proc, pgid, 2.0)
-                with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-                    proc.wait(timeout=0.2)
+                if hasattr(proc, "wait"):  # shims may be poll-only (test fake, #131316)
+                    with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                        proc.wait(timeout=0.2)
         except ProcessLookupError:
             pass
         except PermissionError:

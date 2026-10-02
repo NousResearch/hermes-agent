@@ -660,7 +660,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_started_at, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.workspace_kind, t.workspace_path "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -690,6 +690,12 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
         # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
         # mismatch) is never signalled: the worker is already gone.
+        # Secure uncommitted work on the card's own branch BEFORE the kill — a
+        # worktree worker often holds uncommitted edits, and the whole point of a
+        # runtime cap is that the task's work survives the respawn (#131802).
+        if row["workspace_kind"] == "worktree":
+            with contextlib.suppress(Exception):
+                _kbw.commit_worktree_wip(tid, row["workspace_path"])
         killed = False
         kill = _kill_fn(signal_fn)
         if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):

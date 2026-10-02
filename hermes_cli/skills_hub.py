@@ -605,11 +605,15 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
     rate_limited = any(getattr(src, "is_rate_limited", False)
                        or getattr(getattr(src, "github", None), "is_rate_limited", False)
                        for src in sources)
+    # Only the adapter that listed the skill decides: its own fetch got no answer (connection or DNS
+    # error, 5xx). An unrelated adapter failing must not hide a real 404 (#130443).
+    unreachable = (getattr(source, "is_unreachable", False)
+                   or getattr(getattr(source, "github", None), "is_unreachable", False))
     # Index hit but files gone: a stale index entry, not a user typo — name it so users stop
-    # re-trying spellings (#3259). Only when no adapter was rate limited: a throttled fetch
-    # also yields meta-without-bundle, and calling that "stale" would send users away from a
-    # skill that exists.
-    if meta is not None and not rate_limited:
+    # re-trying spellings (#3259). Only when no adapter was rate limited and the listing adapter got
+    # an answer: a throttled or unanswered fetch also yields meta-without-bundle, and calling that
+    # "stale" would send users away from a skill that exists.
+    if meta is not None and not rate_limited and not unreachable:
         src_id = getattr(source, "source_id", lambda: "the registry")()
         c.print(f"[bold red]Error:[/] '{identifier}' is listed in the {src_id} index, "
                 f"but its files no longer exist upstream.")

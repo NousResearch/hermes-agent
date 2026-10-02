@@ -1,0 +1,93 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-higher-ancestor-lock-covers-lower-child-lock",
+  "description": "Proves d5-lock, r9: A higher group locks a with a scalar over a lower group's lock on a.b; the higher locking group governs the whole section, so a is the higher group's scalar.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "a": {
+          "b": "t"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-high",
+      "priority": 2,
+      "values": {
+        "a": 5
+      },
+      "locks": [
+        "a"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-low",
+      "priority": 1,
+      "values": {
+        "a": {
+          "b": 1
+        }
+      },
+      "locks": [
+        "a.b"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": 5
+    },
+    "provenance": {
+      "a": "group"
+    },
+    "groupProvenance": {
+      "a": "g-high"
+    },
+    "locks": [
+      {
+        "path": "a",
+        "level": "group",
+        "groupId": "g-high"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "a.b",
+      "value": "p",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-high"
+      }
+    }
+  ]
+}

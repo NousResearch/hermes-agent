@@ -58,6 +58,10 @@ class StubPlane:
     def __init__(self) -> None:
         self.upper: Dict[str, Any] = {}
         self.upper_locks: List[Dict[str, str]] = []
+        # portal-groups contract §6.7: a member's group levels ({"groupId", "priority", "version"}) and
+        # groupProvenance, emitted as-is so tests prove the agent ignores fields it does not use.
+        self.groups: List[Dict[str, Any]] = []
+        self.group_provenance: Optional[Dict[str, Any]] = None
         self.profiles: Dict[str, Dict[str, Any]] = {}
         self.fail_status: Optional[int] = None   # every /self request returns this
         self.requests: List[Dict[str, Any]] = []
@@ -89,9 +93,12 @@ class StubPlane:
             "locks": copy.deepcopy(self.upper_locks),
             "provenance": {},
             "levels": [{"kind": "tenant", "version": 1, "writerConfigVersion": None},
+                       *({"kind": "group", "writerConfigVersion": None, **g} for g in self.groups),
                        {"kind": "profile", "version": prof["version"], "writerConfigVersion": prof["writer"]}],
             "profileVersion": prof["version"], "recordVersion": 1,
         }
+        if self.group_provenance is not None:
+            body["groupProvenance"] = copy.deepcopy(self.group_provenance)
         digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
         body["etag"] = f'"{digest}"'
         return body
@@ -169,8 +176,13 @@ class StubPlane:
                 refused = write_check(sets, unsets, locks)
                 if refused is not None:
                     path = encode(refused[0])
-                    return self._send(403, {"error": "config_key_locked", "path": path, "lockedBy": refused[1],
-                                            "message": f"{path} is locked by {refused[1]}"})
+                    body = {"error": "config_key_locked", "path": path, "lockedBy": refused[1],
+                            "message": f"{path} is locked by {refused[1]}"}
+                    group_id = next((lk.get("groupId") for lk in plane.upper_locks
+                                     if lk["path"] == path and lk["level"] == refused[1]), None)
+                    if group_id:  # portal-groups contract §6.6
+                        body["lockedByGroupId"] = group_id
+                    return self._send(403, body)
                 for p, v in sets.items():
                     if _depth(v) > MAX_VALUE_DEPTH:  # contract §11.1
                         path = encode(p)

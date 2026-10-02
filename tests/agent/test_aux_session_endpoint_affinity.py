@@ -42,7 +42,7 @@ def test_rotation_survives_at_session_origin_and_for_independent_aux_pool():
 
 
 def test_named_provider_defaults_compose_under_task_overrides(monkeypatch, tmp_path):
-    """URL-only / key-only task overrides win field-by-field; the named entry fills only the blanks."""
+    """Overrides win, but saved credentials only compose within the configured origin."""
     monkeypatch.setenv("NAMED_KEY", "named-key")
     (tmp_path / "config.yaml").write_text(
         "model:\n  provider: openai\n  default: gpt-5.4\n"
@@ -55,7 +55,8 @@ def test_named_provider_defaults_compose_under_task_overrides(monkeypatch, tmp_p
         return str(client.base_url).rstrip("/"), str(client.api_key)
 
     assert route() == ("https://named.example/v1", "named-key")
-    assert route(explicit_base_url="https://aux-explicit.example/v1") == ("https://aux-explicit.example/v1", "named-key")
+    assert route(explicit_base_url="https://named.example/v2") == ("https://named.example/v2", "named-key")
+    assert route(explicit_base_url="https://aux-explicit.example/v1") == ("https://aux-explicit.example/v1", "no-key-required")
     assert route(explicit_api_key="task-key") == ("https://named.example/v1", "task-key")
     assert route(explicit_base_url="https://aux-explicit.example/v1", explicit_api_key="task-key") == (
         "https://aux-explicit.example/v1", "task-key")

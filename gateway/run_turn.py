@@ -3697,7 +3697,14 @@ class GatewayTurnMixin:
                 )
             elif pending and not pending_event:
                 from gateway.platforms.base import MessageEvent
-                steer_event = MessageEvent(text=leftover_steer, source=source)
+                # A deferred steer continues the active channel context, just like an
+                # eventless follow-up. Reuse its pins without marking the user as internal.
+                steer_prompt, steer_source = self._pinned_channel_inputs(
+                    session_key, None, source, internal=True,
+                )
+                steer_event = MessageEvent(
+                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
+                )
                 if session_key:
                     self._enqueue_fifo(session_key, steer_event, adapter)
                 logger.debug(

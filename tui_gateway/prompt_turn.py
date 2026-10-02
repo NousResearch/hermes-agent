@@ -116,7 +116,7 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, display_text: str | None = None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -152,7 +152,8 @@ def _admit_prompt_turn(
         # by the time a new turn starts — replace it, never append onto it.
         if not isinstance(inflight, dict) or inflight.get("status") == "error":
             _start_inflight_turn(
-                session, text, display_kind=display_kind, display_metadata=display_metadata)
+                session, text, display_kind=display_kind, display_metadata=display_metadata,
+                display_text=display_text)
         agent = session["agent"]
         if agent is None:
             session["running"] = False
@@ -175,7 +176,8 @@ def _admit_prompt_turn(
 
 
 def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
-                        notification_category: str | None = None) -> str:
+                        notification_category: str | None = None,
+                        display_text: str | None = None) -> str:
     """Write the durable crash marker; returns the session key it was written under (compression
     can rotate session_key mid-turn).  A surviving marker means the process died mid-turn.
     The key is published before the disk write so an interrupt racing startup can retire
@@ -183,7 +185,7 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
     marker_home = _session_home(session)
     marker_key = str(session.get("session_key") or "")
     marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
-    marker_text = session.pop("_auto_continue_prompt", None) or text
+    marker_text = session.pop("_auto_continue_prompt", None) or display_text or text
     if isinstance(marker_text, str) and marker_text.strip():
         with session["history_lock"]:
             session["_active_turn_marker_key"] = marker_key
@@ -734,7 +736,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
     images: list[str], display_kind: str | None, display_metadata: dict | None,
-    turn_author: dict | None = None, text: Any = None) -> None:
+    turn_author: dict | None = None, text: Any = None, display_text: str | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``.
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
@@ -777,7 +779,8 @@ def _invoke_agent(
         "conversation_history": list(st.history),
         "stream_callback": _stream,
         "persist_user_message": (
-            _build_persist_user_message(prompt, images, run_message) if images else prompt)}
+            _build_persist_user_message(display_text if display_text is not None else prompt, images, run_message)
+            if images else (display_text if display_text is not None else prompt))}
     try:
         run_params = inspect.signature(agent.run_conversation).parameters
     except (TypeError, ValueError):
@@ -790,7 +793,9 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
-    _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"], text)
+    if display_text is not None and "title_user_message" in run_params:
+        run_kwargs["title_user_message"] = display_text
+    _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"], text, display_text)
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
@@ -1107,7 +1112,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, display_text: str | None = None) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1117,7 +1122,7 @@ def _run_prompt_submit(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata, display_text)
     if admitted is None:
         return False
     images, agent = admitted
@@ -1154,7 +1159,8 @@ def _run_prompt_submit(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
-            notification_category=(display_metadata or {}).get("notification_category"))
+            notification_category=(display_metadata or {}).get("notification_category"),
+            display_text=display_text)
         goal_followup = None
         try:
             prepared = _prepare_turn_input(sid, session, st, text, images)
@@ -1168,7 +1174,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author, text)
+                display_metadata, turn_author, text, display_text)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)

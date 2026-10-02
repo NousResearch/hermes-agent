@@ -80,6 +80,12 @@ A truncating submit is never absorbed by the busy-input policy. While a turn is 
 
 On a successful truncating submit against a durable session, the `prompt.submit` result additionally carries `survivor_user_row_ids` — the fresh post-rewrite row IDs of the surviving user turns, in visible-user-ordinal order. The rewrite re-inserts the kept prefix as new rows, so every row ID the host cached before the rewind is stale afterward; rebind cached IDs from this list (a `null` entry means that turn has no durable ID — drop the cached one) or the next rewind targeting an older surviving turn will be refused with `4018`.
 
+### Showing different text than the model receives
+
+`prompt.submit` accepts an optional `display_text` string (max 100,000 characters). When set, that string is what the transcript, Desktop history, session search, and auto-title store. `text` is still what the model receives, kept on the row's `api_content` sidecar so later turns replay the exact model input. Omit `display_text` and storage is unchanged. A non-string or oversized value is ignored. Older gateways ignore the field, so a client can send it before every install has updated.
+
+This is how a client can hand the model a structured turn (page context, a source receipt) without making every other Hermes surface render that payload. The session owner is the same party that already authors `text`; `display_text` does not grant a new trust boundary.
+
 ### Events streamed back
 
 `message.delta`, `message.complete`, `tool.start`, `tool.generating`, `tool.complete`, `gateway.ready`, `request.cancel`, plus session lifecycle and error events.

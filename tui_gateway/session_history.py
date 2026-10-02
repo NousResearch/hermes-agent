@@ -261,6 +261,42 @@ def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted mid-run"
 
 
+_BROWSER_TURN_PROTOCOL = "hermes.browser.turn.v2"
+_BROWSER_TURN_MAX_UNWRAP = 4
+
+
+def _browser_turn_display_text(text: str) -> str | None:
+    """Typed text from a stored browser-turn envelope; ``None`` for anything else.
+
+    Older browser clients stored the model-facing JSON envelope as the user row. New clients send
+    ``display_text`` so the row is clean at write time. This projection only heals rows already on
+    disk, and only when the text is exactly a ``hermes.browser.turn.v2`` object with a string
+    ``human_input.text``. Lookalikes, truncated blobs, and assistant rows stay untouched.
+    """
+    import json
+
+    current = text
+    unwrapped = False
+    for _ in range(_BROWSER_TURN_MAX_UNWRAP):
+        stripped = current.strip() if isinstance(current, str) else ""
+        if not (stripped.startswith("{") and _BROWSER_TURN_PROTOCOL in stripped):
+            break
+        try:
+            envelope = json.loads(stripped)
+        except (TypeError, ValueError):
+            break
+        human = envelope.get("human_input") if isinstance(envelope, dict) else None
+        if (
+            not isinstance(envelope, dict)
+            or envelope.get("protocol") != _BROWSER_TURN_PROTOCOL
+            or not isinstance(human, dict)
+            or not isinstance(human.get("text"), str)
+        ):
+            break
+        current, unwrapped = human["text"], True
+    return current if unwrapped else None
+
+
 def _legacy_display_kind(role: str, text: str) -> str | None:
     """Display type of a synthetic row persisted untyped: new rows are typed at turn start (``persist_user_display_kind``);
     this prefix sniff migrates rows already on disk (a turn killed mid-run never reached the stamp)."""
@@ -306,6 +342,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             continue
         if role == "user":
             content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
+        if role == "user" and (typed := _browser_turn_display_text(content_text)) is not None:
+            content_text = typed
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")
@@ -380,17 +418,18 @@ def _coerce_seed_history(value: Any) -> list[dict]:
 
 
 def _inflight_text(value: Any) -> str:
-    return _content_display_text(value).strip()
+    text = _content_display_text(value).strip()
+    return typed.strip() if (typed := _browser_turn_display_text(text)) is not None else text
 
 
 def _start_inflight_turn(
     session: dict, text: Any, *, display_kind: str | None = None,
-    display_metadata: dict | None = None,
+    display_metadata: dict | None = None, display_text: str | None = None,
 ) -> None:
     now = time.time()
     turn = {
         "assistant": "", "started_at": now, "streaming": True, "updated_at": now,
-        "user": _inflight_text(text),
+        "user": _inflight_text(display_text if display_text is not None else text),
     }
     if display_kind:
         turn["display_kind"] = display_kind

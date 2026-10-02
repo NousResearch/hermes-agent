@@ -138,7 +138,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'We need to finish an earlier setup first. Reconnect the original host and Bots, then choose Retry.',
     classicMembers: 'Choose different Bots with unique @names. @all and @everyone are reserved.',
-    createRefused: 'The host isn’t ready to run these Bots together. Check the group chat setup guide, then try again.',
+    createRefused: 'The gateway couldn’t create this group chat. Check the group name and selected Bots, then try again.',
     hostedProfileOwners: 'Group chat setup guide',
     refreshGroups: 'Refresh group chats',
     loadingGroup: 'Loading group chat…',
@@ -162,7 +162,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusStopped: 'Not running',
     statusBlocked: 'Needs attention',
     statusApprovals: '{count} waiting for approval',
-    statusAttention: '{count} need attention',
+    statusAttention: 'Needs attention: {count}',
     stopped: 'Stop requested',
     nothingRunning: 'No Bots are working right now.',
     sendRefused: 'This message wasn’t accepted. Edit it and send again.',
@@ -264,8 +264,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       '以前の設定を先に完了する必要があります。元のホストとBotに再接続して、「再試行」を選んでください。',
     classicMembers: 'それぞれ異なる@名を持つ別々のBotを選んでください。@allと@everyoneは予約されています。',
-    createRefused:
-      'ホストがこれらのBotを一緒に実行する準備ができていません。設定ガイドを確認して、もう一度試してください。',
+    createRefused: 'ゲートウェイでグループチャットを作成できませんでした。グループ名と選択したBotを確認して、再試行してください。',
     hostedProfileOwners: 'グループチャット設定ガイド',
     refreshGroups: 'グループチャットを更新',
     loadingGroup: 'グループチャットを読み込み中…',
@@ -391,7 +390,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupStorage: 'Desktop无法读取或保存设置所需的访问信息。请检查存储设置，然后重试。',
     peerSetupCleanup: '需要先完成之前的设置。请重新连接原来的托管主机和Bot，然后选择重试。',
     classicMembers: '请选择不同的Bot，并确保每个Bot有唯一的@名称。@all和@everyone是保留名称。',
-    createRefused: '托管主机尚未准备好让这些Bot一起工作。请查看群聊设置指南，然后重试。',
+    createRefused: '网关无法创建此群聊。请检查群聊名称和所选Bot，然后重试。',
     hostedProfileOwners: '群聊设置指南',
     refreshGroups: '刷新群聊',
     loadingGroup: '正在加载群聊…',
@@ -514,7 +513,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupStorage: 'Desktop無法讀取或儲存設定所需的存取資訊。請檢查儲存設定，然後重試。',
     peerSetupCleanup: '需要先完成先前的設定。請重新連接原來的託管主機和Bot，然後選擇重試。',
     classicMembers: '請選擇不同的Bot，並確保每個Bot有唯一的@名稱。@all和@everyone是保留名稱。',
-    createRefused: '託管主機尚未準備好讓這些Bot一起工作。請查看群聊設定指南，然後重試。',
+    createRefused: '閘道無法建立此群聊。請檢查群聊名稱和所選Bot，然後重試。',
     hostedProfileOwners: '群聊設定指南',
     refreshGroups: '重新整理群聊',
     loadingGroup: '正在載入群聊…',
@@ -638,7 +637,7 @@ export const CANONICAL_GROUP_LOCALES = {
       'لم يتمكن Desktop من قراءة معلومات الوصول للإعداد أو حفظها. تحقّق من إعداد التخزين ثم حاول مجددًا.',
     peerSetupCleanup: 'نحتاج أولًا إلى إكمال إعداد سابق. أعد الاتصال بالمضيف والبوتات الأصلية ثم اختر إعادة المحاولة.',
     classicMembers: 'اختر بوتات مختلفة بأسماء @ فريدة. الاسمان @all و@everyone محجوزان.',
-    createRefused: 'المضيف غير جاهز لتشغيل هذه البوتات معًا. راجع دليل إعداد محادثة المجموعة ثم حاول مجددًا.',
+    createRefused: 'تعذّر على البوابة إنشاء هذه الدردشة الجماعية. تحقّق من اسم المجموعة والبوتات المحددة، ثم حاول مرة أخرى.',
     hostedProfileOwners: 'دليل إعداد محادثة المجموعة',
     refreshGroups: 'تحديث محادثات المجموعات',
     loadingGroup: 'جارٍ تحميل محادثة المجموعة…',
@@ -764,8 +763,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'Сначала нужно завершить предыдущую настройку. Подключите исходный хост и Ботов, затем выберите Повторить.',
     classicMembers: 'Выберите разных Ботов с уникальными @именами. Имена @all и @everyone зарезервированы.',
-    createRefused:
-      'Хост пока не готов запускать этих Ботов вместе. Проверьте руководство по настройке группового чата и попробуйте снова.',
+    createRefused: 'Шлюз не смог создать групповой чат. Проверьте название группы и выбранных ботов, затем повторите попытку.',
     hostedProfileOwners: 'Руководство по настройке группового чата',
     refreshGroups: 'Обновить групповые чаты',
     loadingGroup: 'Загружаем групповой чат…',
@@ -790,7 +788,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusStopped: 'Не работает',
     statusBlocked: 'Требует внимания',
     statusApprovals: '{count} ожидают разрешения',
-    statusAttention: '{count} требуют внимания',
+    statusAttention: 'Требуется внимание: {count}',
     stopped: 'Остановка запрошена',
     nothingRunning: 'Сейчас ни один Бот не работает.',
     sendRefused: 'Это сообщение не принято. Измените его и отправьте снова.',
@@ -895,8 +893,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'Une configuration précédente doit d’abord être terminée. Reconnectez l’hôte et les Bots d’origine, puis choisissez Réessayer.',
     classicMembers: 'Choisissez des Bots différents avec des @noms uniques. @all et @everyone sont réservés.',
-    createRefused:
-      'L’hôte n’est pas prêt à faire travailler ces Bots ensemble. Consultez le guide de configuration, puis réessayez.',
+    createRefused: 'La passerelle n’a pas pu créer cette discussion de groupe. Vérifiez le nom du groupe et les Bots sélectionnés, puis réessayez.',
     hostedProfileOwners: 'Guide de configuration des discussions de groupe',
     refreshGroups: 'Actualiser les discussions de groupe',
     loadingGroup: 'Chargement de la discussion…',
@@ -1028,8 +1025,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'Eine frühere Einrichtung muss zuerst abgeschlossen werden. Verbinde den ursprünglichen Host und die Bots erneut und wähle Erneut versuchen.',
     classicMembers: 'Wähle unterschiedliche Bots mit eindeutigen @Namen. @all und @everyone sind reserviert.',
-    createRefused:
-      'Der Host ist noch nicht bereit, diese Bots gemeinsam auszuführen. Prüfe die Einrichtungsanleitung und versuche es erneut.',
+    createRefused: 'Das Gateway konnte diesen Gruppenchat nicht erstellen. Prüfen Sie den Gruppennamen und die ausgewählten Bots und versuchen Sie es erneut.',
     hostedProfileOwners: 'Anleitung zur Gruppenchat-Einrichtung',
     refreshGroups: 'Gruppenchats aktualisieren',
     loadingGroup: 'Gruppenchat wird geladen…',
@@ -1056,7 +1052,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusStopped: 'Läuft nicht',
     statusBlocked: 'Braucht Aufmerksamkeit',
     statusApprovals: '{count} warten auf Freigabe',
-    statusAttention: '{count} brauchen Aufmerksamkeit',
+    statusAttention: 'Aufmerksamkeit erforderlich: {count}',
     stopped: 'Stopp angefordert',
     nothingRunning: 'Gerade arbeitet kein Bot.',
     sendRefused: 'Diese Nachricht wurde nicht angenommen. Bearbeite sie und sende sie erneut.',
@@ -1164,8 +1160,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerSetupCleanup:
       'Primero hay que terminar una configuración anterior. Reconecta el anfitrión y los Bots originales y elige Reintentar.',
     classicMembers: 'Elige Bots distintos con @nombres únicos. @all y @everyone están reservados.',
-    createRefused:
-      'El anfitrión aún no está preparado para ejecutar estos Bots juntos. Revisa la guía de configuración e inténtalo de nuevo.',
+    createRefused: 'La pasarela no pudo crear este chat grupal. Comprueba el nombre del grupo y los Bots seleccionados e inténtalo de nuevo.',
     hostedProfileOwners: 'Guía de configuración de chats de grupo',
     refreshGroups: 'Actualizar chats de grupo',
     loadingGroup: 'Cargando chat de grupo…',
@@ -1189,7 +1184,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusStopped: 'Sin actividad',
     statusBlocked: 'Necesita atención',
     statusApprovals: '{count} esperan aprobación',
-    statusAttention: '{count} necesitan atención',
+    statusAttention: 'Atención necesaria: {count}',
     stopped: 'Parada solicitada',
     nothingRunning: 'Ahora no hay ningún Bot trabajando.',
     sendRefused: 'Este mensaje no se aceptó. Edítalo y envíalo de nuevo.',

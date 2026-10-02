@@ -43,10 +43,9 @@ import { isBackfilledFacePng } from './avatar-image'
 import { groupCreationSource } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import { CanonicalGroupRoomActions } from './canonical-group-header'
-import { HOSTED_PROFILE_OWNERS_URL } from './canonical-group-locales'
 import { $canonicalGroupBindings, $canonicalGroupNames, forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
-import { canonicalGroupEligibility, createCanonicalGroup, isCanonicalGroupCreateRefusal, knownGroupExecutionMode, readGroupExecutionMode } from './canonical-groups'
+import { canonicalGroupCreateErrorMessage, canonicalGroupEligibility, createCanonicalGroup, knownGroupExecutionMode, readGroupExecutionMode } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -582,7 +581,6 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const knownMode = knownGroupExecutionMode({ connectionId: connectionId ?? '', profile })
   const mode = capability?.source === source ? capability.mode : knownMode === 'legacy' ? 'legacy' : 'checking'
   const [error, setError] = useState('')
-  const [createRefused, setCreateRefused] = useState(false)
   const [busy, setBusy] = useState(false)
   const [refresh, setRefresh] = useState(0)
   useEffect(() => host.state.gateway.listen(() => {
@@ -593,7 +591,6 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     let cancelled = false
     setCapability(null)
     setError('')
-    setCreateRefused(false)
     const activationEpoch = gatewayActivationEpoch()
 
     if (gateway !== 'open') {
@@ -629,9 +626,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     <div className="grid gap-3 p-3">
     {mode !== 'canonical' && !existingClassicRoom && <h2>{props.group}</h2>}
     <p>{mode === 'canonical' ? b.canonical.legacyRoom : mode === 'unavailable' ? b.canonical.driverUnavailable : b.canonical.checkingDriver}</p>
-    {error && <p role="alert">{error}{createRefused && <>{' '}
-      <a href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>
-    </>}</p>}
+    {error && <p role="alert">{error}</p>}
     {mode === 'unavailable' && <Button onClick={() => setRefresh(value => value + 1)}>{b.roster.retryNow}</Button>}
     <Button disabled={mode !== 'canonical' || busy} onClick={() => {
       const route = { connectionId: connectionId ?? '', profile }
@@ -655,7 +650,6 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
 
       setBusy(true)
       setError('')
-      setCreateRefused(false)
       void (async () => {
           const current = await readGroupExecutionMode(route, activationEpoch, true)
 
@@ -675,9 +669,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
         })()
         .catch(e => {
           if (sourceCurrent()) {
-            const refused = isCanonicalGroupCreateRefusal(e)
-            setCreateRefused(refused)
-            setError(refused ? b.canonical.createRefused : String(e))
+            setError(canonicalGroupCreateErrorMessage(e, b.canonical))
           }
         }).finally(() => setBusy(false))
     }}>{b.canonical.startGatewayGroup}</Button>

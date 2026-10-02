@@ -130,7 +130,8 @@ def test_long_session_does_not_wedge_on_replayed_reasoning_budget(tmp_path) -> N
         h.write(_impersonated_config("inference-api.nousresearch.com"), dotenv={"OPENAI_API_KEY": "sk-fake"})
         gw = TuiGateway(h, _proxy_env(srv))
         try:
-            sid = gw.call("session.create", {"cols": 120})["session_id"]
+            created = gw.call("session.create", {"cols": 120})
+            sid, stored_id = created["session_id"], created["stored_session_id"]
             for i in range(turns):
                 answers.append(gw.turn(sid, f"question {i}"))
         finally:
@@ -144,6 +145,7 @@ def test_long_session_does_not_wedge_on_replayed_reasoning_budget(tmp_path) -> N
     assert leaked == [], f"reasoning_details sent to the Portal wire: {leaked}"
     missing = [i for i in range(turns) if f"ANSWER-{i}" not in answers[i]]
     assert not missing, f"turns {missing} were not answered: {answers}"
-    stored = [json.loads(r["reasoning_details"]) for r in db_messages(h, sid)
+    # Rows persist under the STORED session key (the runtime id only routes RPCs).
+    stored = [json.loads(r["reasoning_details"]) for r in db_messages(h, stored_id)
               if r["role"] == "assistant" and r["reasoning_details"]]
     assert stored == [_rd(str(i), "r" * 1000) for i in range(turns)], "state.db must keep the blocks for a switch back"

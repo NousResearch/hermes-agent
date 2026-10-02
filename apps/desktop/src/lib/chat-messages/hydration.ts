@@ -603,6 +603,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
       ...(message.role === 'assistant'
         ? {
+            ...(message.display_content !== undefined && message.display_content !== message.content
+              ? { nativeReplayUnsafe: true }
+              : {}),
             reasoning: message.reasoning,
             reasoning_content: message.reasoning_content,
             reasoning_details: message.reasoning_details,

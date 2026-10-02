@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -316,6 +316,53 @@ describe('sessionShouldHaveTranscript', () => {
 })
 
 describe('toBranchMessages', () => {
+  it.each(['merged', 'display-projected'] as const)(
+    'does not give %s display seeds authoritative native message carriers',
+    projection => {
+      const preamble = 'Checking now.'
+      const final = 'The final answer.'
+
+      const carriers = {
+        _reasoning_route: 'same-route-provenance',
+        anthropic_content_blocks: [{ type: 'text', text: preamble }],
+        bedrock_content_blocks: [{ text: preamble }],
+        codex_message_items: [
+          { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: preamble }] }
+        ],
+        codex_reasoning_items: [{ type: 'reasoning', encrypted_content: 'opaque' }]
+      }
+
+      const row = { id: 2, role: 'assistant' as const, content: preamble, ...carriers }
+
+      const messages = toChatMessages([
+        { id: 1, role: 'user', content: 'go' },
+        ...(projection === 'merged'
+          ? [
+              {
+                ...row,
+                tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'terminal', arguments: '{}' } }]
+              },
+              { id: 3, role: 'tool' as const, tool_call_id: 'call_1', content: 'done' },
+              { id: 4, role: 'assistant' as const, content: final }
+            ]
+          : [{ ...row, display_content: final }])
+      ])
+
+      const [user, assistant] = toBranchSeedMessages(toBranchMessages(messages))
+
+      expect(user.content).toBe('go')
+      expect(assistant.content).toContain(final)
+      expect(assistant._reasoning_route).toBe(carriers._reasoning_route)
+      expect(assistant).not.toHaveProperty('anthropic_content_blocks')
+      expect(assistant).not.toHaveProperty('bedrock_content_blocks')
+      expect(assistant).not.toHaveProperty('codex_message_items')
+      expect(assistant.codex_reasoning_items).toEqual(carriers.codex_reasoning_items)
+      // Neither hydration nor fallback seeding changes the canonical source row.
+      expect(row.anthropic_content_blocks).toEqual(carriers.anthropic_content_blocks)
+      expect(toBranchSeedMessages(toBranchMessages(toChatMessages([row])))[0]).toMatchObject(carriers)
+    }
+  )
+
   it('keeps only user/assistant turns that carry text', () => {
     const out = toBranchMessages([
       msg('u', 'user', 'hi'),
@@ -468,6 +515,13 @@ describe('chatPartsEquivalent', () => {
 })
 
 describe('chatMessagesEquivalent', () => {
+  it('publishes a changed native replay safety verdict even when display text is unchanged', () => {
+    const current = msg('a', 'assistant', 'same text')
+    const projected = { ...current, nativeReplayUnsafe: true }
+
+    expect(preserveEquivalentTranscript([current], [projected])).toEqual([projected])
+  })
+
   it('returns true for structurally identical messages', () => {
     expect(chatMessagesEquivalent(msg('1', 'user', 'Hello'), msg('1', 'user', 'Hello'))).toBe(true)
   })

@@ -245,6 +245,13 @@ test.describe('warm clarification activation', () => {
   test.beforeEach(async () => {
     fixture = await setupMockBackend()
     await waitForAppReady(fixture, 120_000)
+    // This regression targets ordinary-main session.activate. The default
+    // tab path correctly fronts its still-live cached pane without a REST read.
+    await fixture.page.evaluate(() => {
+      localStorage.setItem('hermes.desktop.sidebarSessionsOpenInNewTab', 'false')
+    })
+    await fixture.page.reload()
+    await waitForAppReady(fixture, 120_000)
   })
 
   test.afterEach(async () => {

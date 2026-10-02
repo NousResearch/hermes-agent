@@ -358,13 +358,13 @@ async def test_call_sources_follow_current_route_home_and_authority(tmp_path, mo
     runner = object.__new__(GatewayRunner)
     runner._primary_profile_name = "default"
     runner._profile_adapters = {"a": {}, "b": {}}
-    runner._pairing_stores = {}
+    runner.pairing_stores = {}
     runner.config = GatewayConfig(multiplex_profiles=True)
     adapter = MatrixAdapter(PlatformConfig(enabled=True))
     adapter.gateway_runner = runner
     adapter._client = SimpleNamespace(api=object())
     adapter._joined_rooms = {ROOM}
-    adapter._rtc_call_state = {ROOM: remembered(call_state((ALICE, "DEVICEAAA"), ("@bob:hs.tld", "DEVICEBBB")))}
+    adapter._remember_call_state(ROOM, call_state((ALICE, "DEVICEAAA"), ("@bob:hs.tld", "DEVICEBBB")))
     runner.adapters = {Platform.MATRIX: adapter}
 
     for profile in ("a", "b", "a"):
@@ -372,6 +372,8 @@ async def test_call_sources_follow_current_route_home_and_authority(tmp_path, mo
         source = adapter.build_source(chat_id=ROOM, user_id=ALICE, chat_type="group")
         source.role_authorized = change == "revoked-role"
         assert canonical_identity(source, runner=runner, adapter=adapter) is not None
+        source_identity = identity_of(source)
+        assert source_identity is not None
         sessions = MatrixRTCSessions(adapter)
         sessions.bind(ROOM, source)
         expected_home = a if profile == "a" else b
@@ -393,11 +395,14 @@ async def test_call_sources_follow_current_route_home_and_authority(tmp_path, mo
             (home / ".env").write_text("GATEWAY_ALLOWED_USERS=@somebody:hs.tld\n")
         try:
             fresh = sessions.source_for(ROOM, speaker)
+            fresh_identity = identity_of(fresh) if fresh is not None else None
+            if fresh is not None:
+                assert fresh_identity is not None
             authorized = sessions.is_user_authorized(ROOM, speaker, "DEVICEAAA" if speaker == ALICE else "DEVICEBBB")
             actual = (
                 sessions.current(ROOM), authorized,
-                None if fresh is None else (fresh.user_id, fresh.role_authorized, identity_of(fresh).runtime_home, identity_of(fresh).adapter() is adapter),
-                source.user_id, identity_of(source).runtime_home,
+                None if fresh is None or fresh_identity is None else (fresh.user_id, fresh.role_authorized, fresh_identity.runtime_home, fresh_identity.adapter() is adapter),
+                source.user_id, source_identity.runtime_home,
             )
             expected_source = (speaker, False, expected_home, True) if change in {"control", "revoked-role"} else None
             assert actual == (change in {"control", "speaker-route", "revoked-role"}, change == "control", expected_source, ALICE, expected_home)

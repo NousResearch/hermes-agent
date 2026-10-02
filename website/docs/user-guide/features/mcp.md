@@ -904,6 +904,24 @@ speaks SSE only (set `transport: sse`) or a proxy in front of it rejects the req
 means the token or OAuth grant is wrong; an HTML body means the URL points at a web page, not an MCP
 endpoint. `hermes logs --level debug` additionally shows the exact endpoint each connect attempt used.
 
+### stdio server fails to start with `Permission denied` on a directory
+
+A stdio server with no `cwd:` key launches in the terminal backend's working directory — with an SSH
+terminal backend that directory belongs to the remote account (often its home), which the user
+running Hermes may not be able to open, and the server dies at startup with
+`[Errno 13] Permission denied: PosixPath('...')`. Point the server at a directory its user can open:
+
+```yaml
+mcp_servers:
+  <name>:
+    command: "..."
+    cwd: "/srv/optimus/server"   # stdio only; default would be the session cwd, not this folder
+```
+
+The default is the session working directory when one is pinned (ACP/gateway sessions,
+`terminal.cwd`), else the Hermes process directory; it is resolved once at connect time and fixed
+for the connection's lifetime. See [`cwd` in the config reference](../../reference/mcp-config-reference.md).
+
 ### Tools not appearing
 
 Possible causes:

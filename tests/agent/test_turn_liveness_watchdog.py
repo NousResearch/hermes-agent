@@ -755,7 +755,8 @@ def test_declined_abort_does_not_cancel_pending_compression_commit():
     fence.finish_commit()
 
 
-def test_host_sleep_is_not_a_stalled_turn(monkeypatch):
+@pytest.mark.parametrize("during_sample", [False, True])
+def test_host_sleep_is_not_a_stalled_turn(monkeypatch, during_sample):
     """A host that sleeps mid-turn wakes with a wall-clock activity stamp as old as the nap.
     The nap is not a stall; awake silence after it still aborts at the bound."""
     from types import SimpleNamespace
@@ -777,9 +778,21 @@ def test_host_sleep_is_not_a_stalled_turn(monkeypatch):
         is_turn_active=lambda: True, commit_abort=abort, deactivate_turn=MagicMock(),
     )
 
+    pending_sleep = [0.0]
+    original_sample = watchdog._sample
+
+    def sample():
+        snapshot = original_sample()
+        clock.wall += pending_sleep[0]
+        pending_sleep[0] = 0.0
+        return snapshot
+
+    monkeypatch.setattr(watchdog, "_sample", sample)
+
     def poll(asleep=0.0):
         clock.mono += 15
-        clock.wall += 15 + asleep
+        clock.wall += 15 + (0.0 if during_sample else asleep)
+        pending_sleep[0] = asleep if during_sample else 0.0
         return watchdog._tick()
 
     poll()

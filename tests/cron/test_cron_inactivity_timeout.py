@@ -4,6 +4,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 
 class TestInactivityWatchdogLoop:
     """The daemon-thread inactivity helper must not depend on the caller thread."""
@@ -79,7 +81,8 @@ class TestInactivityWatchdogLoop:
 class TestHostSleep:
     """A sleeping host freezes the whole job, so the nap is not job inactivity."""
 
-    def test_sleep_is_not_idle_time_but_awake_idle_still_fires(self, monkeypatch):
+    @pytest.mark.parametrize("during_sample", [False, True])
+    def test_sleep_is_not_idle_time_but_awake_idle_still_fires(self, monkeypatch, during_sample):
         from agent import session_activity
         from cron.scheduler import _inactivity_watchdog_loop
 
@@ -95,12 +98,18 @@ class TestHostSleep:
                 polls.append(timeout)
                 clock.wall += timeout
                 clock.mono += timeout
-                if len(polls) == 3:
+                if len(polls) == 3 and not during_sample:
                     clock.wall += 900.0  # the laptop sleeps for 15 minutes mid-job
                 return len(polls) > 1000
 
+        def read_idle():
+            idle = clock.wall - last_activity_wall
+            if during_sample and len(polls) == 3:
+                clock.wall += 900.0  # suspend after the activity read, before meter clocks
+            return idle
+
         fired = _inactivity_watchdog_loop(
-            get_idle_seconds=lambda: clock.wall - last_activity_wall,
+            get_idle_seconds=read_idle,
             limit_s=600.0,
             poll_s=5.0,
             stop=_Stop(),

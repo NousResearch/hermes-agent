@@ -135,8 +135,10 @@ class AwakeIdleMeter:
     def measure(self, idle_s: float) -> float:
         """Return *idle_s* minus the sleep observed since the agent's last activity."""
         wall, mono = time.time(), time.monotonic()
-        self._asleep_s += max(0.0, (wall - self._wall) - (mono - self._mono))
+        slept_s = max(0.0, (wall - self._wall) - (mono - self._mono))
+        self._asleep_s += slept_s
         self._wall, self._mono = wall, mono
-        # New activity pulls idle below the credit, which then drops with it (to within one poll).
-        self._asleep_s = max(0.0, min(self._asleep_s, idle_s))
-        return idle_s - self._asleep_s
+        # The idle sample may predate sleep observed by these clock reads. Keep that new
+        # credit until the next poll; only older credit can be trimmed by renewed activity.
+        self._asleep_s = max(0.0, min(self._asleep_s, idle_s + slept_s))
+        return max(0.0, idle_s - self._asleep_s)

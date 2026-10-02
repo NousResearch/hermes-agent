@@ -11,7 +11,7 @@ logger = logging.getLogger("gateway.run")
 
 
 def log_inbound_reply_context(source: SessionSource, message_text: str | None, event: MessageEvent | None = None, *, queued: bool = False) -> str:
-    _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+    _platform_name = str(source.platform.value) if hasattr(source.platform, "value") else str(source.platform)
     logger.info(
         "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r queued=%s",
         _platform_name, source.user_name or source.user_id or "unknown",

@@ -23,6 +23,7 @@ import {
   channelLabel, channelState, isPlaceholderContact, modelLabel, modelState, since,
 } from "@/lib/state";
 import { AutomationsScreen } from "@/screens/automations";
+import { AutonomyScreen, type AutonomyPayload } from "@/screens/autonomy";
 import { plural } from "@/lib/api";
 import { usePanel, useRoute, useTheme } from "@/lib/hooks";
 
@@ -38,6 +39,7 @@ const SCREEN_META: Record<string, { title: string; subtitle: string }> = {
   objectives: { title: "Objectives", subtitle: "Repeatable business processes and how far each has got." },
   work: { title: "Work", subtitle: "Everything on the board, newest first." },
   approvals: { title: "Approvals", subtitle: "What is waiting on a person, and what always will be." },
+  autonomy: { title: "Autonomy", subtitle: "What each action has earned the right to do without a person, and the record behind it." },
   automations: {
     title: "Automations",
     subtitle: "Recurring work the runtime holds, and whether anything is running it.",
@@ -85,6 +87,8 @@ export default function App() {
     "/decisions?limit=80",
   );
   const budget = usePanel<Budget>("/budget");
+  const [autonomyNonce, setAutonomyNonce] = React.useState(0);
+  const autonomy = usePanel<AutonomyPayload>("/autonomy", 30000, autonomyNonce);
 
   const brand = identity.state === "ok" ? identity.data : null;
   const agentRows = agents.state === "ok" ? agents.data.agents : [];
@@ -95,7 +99,7 @@ export default function App() {
   const decisionRows = decisions.state === "ok" ? decisions.data.decisions : [];
 
   const failedTasks = taskRows.filter((t) => t.attention_kind === "failed");
-  const decisionTasks = taskRows.filter((t) => t.attention_kind === "decision");
+  const decisionTasks = taskRows.filter((t) => t.attention_kind === "decision" || t.attention_kind === "approval");
   const running = taskRows.filter((t) => ["running", "ready"].includes(String(t.runtime_status)));
   const live = channelRows.filter((c) => c.status === "connected" && c.live?.state === "connected");
   const modelData = model.state === "ok" ? model.data : undefined;
@@ -444,6 +448,12 @@ export default function App() {
               />
             )
             : route === "activity" ? <ActivityScreen decisions={decisions} />
+            : route === "autonomy" ? (
+              // The decisions log is admin-only, so reading it is the screen's admin signal; the
+              // API refuses a viewer's write either way.
+              <AutonomyScreen autonomy={autonomy} canAct={decisions.state === "ok"}
+                              onChanged={() => setAutonomyNonce((n) => n + 1)} />
+            )
             : route === "knowledge" ? <KnowledgeScreen knowledge={knowledge} onChanged={() => setKnowledgeNonce((n) => n + 1)} />
             : route === "channels" ? <ChannelsScreen channels={channels} />
             : route === "policies" ? <PoliciesScreen policy={policy} />

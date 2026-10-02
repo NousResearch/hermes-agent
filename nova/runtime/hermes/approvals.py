@@ -31,7 +31,7 @@ from nova.runtime.hermes.enforcement import (
 
 __all__ = [
     "APPROVAL_BLOCK_PREFIX", "APPROVED", "PENDING", "REFUSED",
-    "pending", "first_pending", "answer", "reopen", "view",
+    "pending", "first_pending", "answer", "reopen", "view", "answered",
 ]
 
 
@@ -102,3 +102,26 @@ def view(record: dict[str, Any]) -> dict[str, Any]:
 def first_pending(home: Path, task_id: str) -> Optional[dict[str, Any]]:
     waiting = pending(home, task_id)
     return waiting[0] if waiting else None
+
+
+def answered(home: Path) -> list[dict[str, Any]]:
+    """Every request a person answered on the board, spent or not, for the ledger.
+
+    Outcome fields only — who, when, approved or refused, and the ids that join the answer
+    to its triage. The call's arguments stay in the store; the ledger never needs them.
+    """
+    root = approvals_root(home)
+    out: list[dict[str, Any]] = []
+    if not root.is_dir():
+        return out
+    for path in sorted(root.glob("*/ap_*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict) or record.get("status") not in (APPROVED, REFUSED):
+            continue
+        out.append({key: record.get(key, "") for key in (
+            "request_id", "task_id", "agent_id", "tenant_id", "tool", "action", "status",
+            "decided_by", "decided_at", "requested_at")})
+    return out

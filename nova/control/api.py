@@ -91,6 +91,9 @@ def _write_route(tail: str) -> Optional[str]:
     # so a new action has to be added here before it can be called.
     if len(parts) == 3 and parts[0] == "agents" and parts[2] in AGENT_ACTIONS:
         return f"/agents/{parts[2]}"
+    # /autonomy/<action>/<verb>: promote, demote, or flag an incident. Enumerated.
+    if len(parts) == 3 and parts[0] == "autonomy" and parts[2] in ("promote", "demote", "incident"):
+        return f"/autonomy/{parts[2]}"
     return None
 
 
@@ -195,6 +198,10 @@ class ControlAPI:
             return self._knowledge_write(tail, route.rsplit("/", 1)[1], principal, payload)
         if route.startswith("/agents/"):
             return self._agent_action(tail, route.rsplit("/", 1)[1], principal, payload)
+        if route.startswith("/autonomy/"):
+            from nova.control import autonomy
+
+            return autonomy.write(self, tail, route.rsplit("/", 1)[1], principal, payload)
         return self._submit_objective(tail, principal, payload)
 
     def _decide_work(self, tail: str, principal, payload: Mapping[str, Any]) -> Response:
@@ -332,6 +339,10 @@ class ControlAPI:
             return self.simulate(query)
         if tail == "/decisions":
             return self.decisions(query)
+        if tail == "/autonomy":
+            from nova.control import autonomy
+
+            return autonomy.read(self)
         if tail == "/budget":
             return self.budget()
         if tail == "/knowledge":

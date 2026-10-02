@@ -479,6 +479,30 @@ capabilities:
     live_validated: false
     priority: p1
 
+  - id: policy.earned_autonomy
+    name: Earned autonomy (ledger, promotion, demotion)
+    category: governance
+    description: >-
+      A ledger of triage verdicts joined to people's answers (chat via the approval hook,
+      board via the approvals store). An action that meets the promotion bar on one model
+      is proposed; an administrator confirms it. Rejection of an autonomous call, a
+      false-safe rate over the limit, or a model change demotes it automatically, and the
+      hook re-reads the compiled policy before acting without a person. Approved-after-
+      editing and who answered in chat are not observable and are shown as such. Tested;
+      no tenant has graduated an action yet.
+    hermes_source: nova/runtime/hermes/enforcement.py
+    hermes_symbol: post_approval_response, _still_graduated
+    runtime_enforcement: tested
+    nova_status: partial
+    customer_visible: true
+    customer_editable: true
+    required_role: admin
+    tenant_safe: true
+    audit_required: true
+    core_changes_required: false
+    live_validated: false
+    priority: p1
+
   - id: policy.tool_allowlist
     name: Positive tool scoping
     category: governance

@@ -51,6 +51,8 @@ WRITABLE_FILES = (
     "knowledge.yaml",
     "channels.yaml",
     "deployment.yaml",
+    # An action's earned autonomy state; written only by promotion and demotion.
+    "autonomy_state.yaml",
 )
 
 

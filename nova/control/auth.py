@@ -78,6 +78,9 @@ ROUTE_ROLES: Mapping[str, str] = {
     "/policy/simulate": "admin",
     "/decisions": "admin",
     "/budget": "admin",
+    # Earned autonomy: each triaged action's state, ledger and recent verdicts. Readable by a
+    # viewer — it is how the business sees what its agents may do alone, and on what record.
+    "/autonomy": "viewer",
 }
 
 #: Minimum role per *write* route, kept separate from :data:`ROUTE_ROLES` on purpose.
@@ -91,6 +94,11 @@ WRITE_ROUTES: Mapping[str, str] = {
     # Acting on work already on the board: release it, send it back for changes, resume it,
     # or leave a note a worker will read.
     "/work/decide": "admin",
+    # Earned autonomy. Confirming a promotion lets calls run without a person, so admin; so
+    # are demoting and flagging an incident, which change what an agent may do.
+    "/autonomy/promote": "admin",
+    "/autonomy/demote": "admin",
+    "/autonomy/incident": "admin",
     # Agent lifecycle. Every one is admin: an agent's persona is its standing instruction
     # on every turn, and its permissions are what it may do — neither is operational state
     # a viewer should be able to change.

@@ -464,6 +464,12 @@ class HermesRuntime(AgentRuntime):
             self.paths.home, agent_id=agent_id, limit=limit, tenant_id=self.tenant_id
         )
 
+    def approval_outcomes(self) -> list[dict[str, Any]]:
+        """Answers people gave on the board to calls a worker was held on (autonomy ledger)."""
+        from nova.runtime.hermes import approvals
+
+        return approvals.answered(self.paths.home)
+
     def get_task(self, task_id: str) -> Optional[TaskView]:
         return _work.get_task(self.paths.home, task_id, tenant_id=self.tenant_id)
 

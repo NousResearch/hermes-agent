@@ -209,6 +209,13 @@ def load_bundle(root: Path | str, *, env: Optional[Mapping[str, str]] = None) ->
         if policy_path.is_file()
         else None
     )
+    if policy is not None and policy.autonomy is not None:
+        # The earned state of each triaged action, as NOVA last recorded it.
+        from dataclasses import replace
+
+        from nova.autonomy.state import load_states
+
+        policy = replace(policy, autonomy=policy.autonomy.with_states(load_states(root)))
 
     knowledge = load_catalog(root, env=env)
     objectives = load_objectives(root, env=env)

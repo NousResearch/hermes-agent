@@ -576,6 +576,12 @@ def _triage(policy: Dict[str, Any], decision: Decision, tool_name: str, args: Di
                 f"answered by model {version or '(none)'!r}, but this action graduated on {expected!r}")}]}
         proceed = (mode == "enforce" and graduated and provider != "fake"
                    and result["verdict"] == _triage_rule.AUTO_OK and not result["failed"])
+        if proceed and not _still_graduated(decision.action, expected):
+            # A demotion lands in the compiled file; a long-lived process (the gateway)
+            # holds the policy it read at start. Re-read before acting without a person.
+            proceed = False
+            result = {"verdict": _triage_rule.ESCALATE, "failed": [
+                {"id": "state", "why": "this action is no longer graduated"}]}
         note = _triage_rule.explain(result, mode=mode, proceed=proceed)
         detail.update({
             "verdict": result["verdict"], "failed": result["failed"], "proceed": proceed,
@@ -589,6 +595,50 @@ def _triage(policy: Dict[str, Any], decision: Decision, tool_name: str, args: Di
                        "failed": [{"id": "", "why": f"triage error ({type(exc).__name__})"}]})
     _write_event(policy, "policy.triage", {**detail, **{k: v for k, v in call.items() if v}})
     return {"proceed": proceed, "note": note}
+
+
+def _still_graduated(action: str, model_version: str) -> bool:
+    """The compiled policy on disk, read now, still lets ``action`` run without a person."""
+    try:
+        current = json.loads(_policy_path().read_text(encoding="utf-8"))
+        config = current.get("autonomy") or {}
+        entry = (config.get("actions") or {}).get(action) or {}
+        return (config.get("mode") == "enforce" and entry.get("state") == "graduated"
+                and str(entry.get("model_version") or "") == model_version)
+    except Exception:  # noqa: BLE001 — unreadable means not shown to be still graduated
+        return False
+
+
+#: The runtime's answers to an approval prompt, as the ledger counts them. ``deny`` also
+#: covers a turn interrupted while waiting (the runtime reports both the same way), so the
+#: ledger's "rejected" is an upper bound; ``notify_failed`` means nobody was asked.
+_CHOICE_OUTCOME = {"once": "approved", "session": "approved", "always": "approved",
+                   "deny": "rejected", "timeout": "timed_out", "notify_failed": "not_asked"}
+
+
+def post_approval_response(pattern_key: str = "", choice: str = "", tool_call_id: str = "",
+                           session_id: str = "", surface: str = "", **_: Any) -> None:
+    """Record a person's answer to one of NOVA's escalations, joined by the call's id.
+
+    Only NOVA's own prompts (``plugin_rule:nova:<action>:<call>``) are recorded; the
+    runtime's dangerous-command prompts are not NOVA decisions. Who answered is not in the
+    payload, so it is not recorded — the ledger says so rather than guessing.
+    """
+    try:
+        key = str(pattern_key or "")
+        if not key.startswith("plugin_rule:nova:"):
+            return
+        parts = key[len("plugin_rule:nova:"):].split(":")
+        _write_event(_load_policy() or {}, "policy.approval_outcome", {
+            "action": parts[0] if parts else "",
+            "choice": str(choice or ""),
+            "outcome": _CHOICE_OUTCOME.get(str(choice or ""), "unknown"),
+            "surface": str(surface or ""),
+            "tool_call_id": str(tool_call_id or ""),
+            "session_id": str(session_id or ""),
+        })
+    except Exception:  # noqa: BLE001 — an observer must never break the approval flow
+        pass
 
 
 def _autonomous_intent(policy: Dict[str, Any], decision: Decision, tool_name: str,
@@ -738,6 +788,9 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
 
     if decision.effect == REQUIRE_APPROVAL:
         task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        if task_id:
+            # The board request this call becomes, so triage and the person's answer join.
+            call["request_id"] = request_id(task_id, tool_name, args or {})
         # A call a person already answered on the board is not triaged again: their answer
         # stands, and asking the provider would only spend a call to second-guess it.
         triage = None
@@ -794,6 +847,7 @@ def register(ctx: Any) -> None:
     """
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("post_tool_call", post_tool_call)
+    ctx.register_hook("post_approval_response", post_approval_response)
     ctx.register_hook("on_session_start", on_session_start)
 
 

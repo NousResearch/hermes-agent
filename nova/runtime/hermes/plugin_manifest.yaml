@@ -9,4 +9,5 @@ kind: backend
 hooks:
   - pre_tool_call
   - post_tool_call
+  - post_approval_response
   - on_session_start

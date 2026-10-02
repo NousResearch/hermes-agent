@@ -7,7 +7,7 @@
 import * as React from "react";
 import {
   Activity, Blocks, BookOpen, CalendarClock, Boxes, CircleCheck, Command, Gauge,
-  LayoutDashboard, ListChecks, Moon, Network, ScrollText, ShieldCheck, Sun, Target, X, Settings2 } from "lucide-react";
+  LayoutDashboard, ListChecks, Moon, Network, ScrollText, ShieldCheck, Sparkles, Sun, Target, X, Settings2 } from "lucide-react";
 import { GlassPanel, StatusDot, type State } from "@/components/glass";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/tooltip";
 import { usePanel } from "@/lib/hooks";
@@ -32,6 +32,7 @@ export const NAV: NavItem[] = [
   { id: "objectives", label: "Objectives", icon: Target },
   { id: "work", label: "Work", icon: ListChecks },
   { id: "approvals", label: "Approvals", icon: CircleCheck },
+  { id: "autonomy", label: "Autonomy", icon: Sparkles },
   { id: "activity", label: "Activity", icon: Activity, admin: true },
   { id: "knowledge", label: "Knowledge", icon: BookOpen },
   { id: "channels", label: "Channels", icon: Blocks },

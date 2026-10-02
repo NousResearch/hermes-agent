@@ -123,7 +123,9 @@ def test_the_enforcement_plugin_registers_its_hook():
     enforcement.register(Context())
     # on_session_start records a task refused by delegation on the board before the first turn;
     # post_tool_call closes the write-ahead record of a call triage let through without a person.
+    # post_approval_response records a person's answer to a NOVA escalation, for the ledger.
     assert registered == [("pre_tool_call", "pre_tool_call"), ("post_tool_call", "post_tool_call"),
+                          ("post_approval_response", "post_approval_response"),
                           ("on_session_start", "on_session_start")]
 
 

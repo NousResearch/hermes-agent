@@ -17,6 +17,10 @@ import pytest
 from hermes_cli import venv_sync
 from pm.environments import install_key, install_state_dir, owning_home_root, store_root
 
+# Every lane, Windows included: the owner check resolves the platform default root, which differs on Windows, so the
+# marked-OS lanes (scripts/ci/list_os_marked_tests.py) must collect this file too.
+pytestmark = pytest.mark.platforms("any")
+
 
 @pytest.fixture(autouse=True)
 def _no_tool_downloads(monkeypatch):
@@ -33,7 +37,13 @@ def completion_tail(monkeypatch):
 
 
 def _checkout(tmp_path, monkeypatch, *, parent: Path | None = None) -> Path:
+    import hermes_constants
+
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # The layout's default root is ``<tmp>/.hermes`` on every OS. On Windows the platform default is
+    # ``%LOCALAPPDATA%\hermes`` (``Path.home`` only backs an unset ``LOCALAPPDATA``), and no
+    # ``LOCALAPPDATA`` value spells ``<tmp>/.hermes``, so pin the default itself.
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: tmp_path / ".hermes")
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
     root = (parent or tmp_path / ".hermes") / "hermes-agent"

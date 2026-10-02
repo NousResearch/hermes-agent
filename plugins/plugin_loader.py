@@ -10,12 +10,20 @@ import importlib.machinery
 import importlib.util
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
 _log = logging.getLogger(__name__)
 
 _PLUGINS_ROOT = Path(__file__).parent
+_MODULE_LOAD_LOCKS: dict[str, threading.RLock] = {}
+_MODULE_LOAD_LOCKS_GUARD = threading.Lock()
+
+
+def _module_load_lock(module_name: str) -> threading.RLock:
+    with _MODULE_LOAD_LOCKS_GUARD:
+        return _MODULE_LOAD_LOCKS.setdefault(module_name, threading.RLock())
 
 
 def register_synthetic_package(name: str, search_locations: List[str]) -> None:
@@ -99,40 +107,44 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return None
-    # A synthetic package shell has no __file__; only reuse modules loaded from disk.
-    cached = sys.modules.get(module_name)
-    if cached is not None and getattr(cached, "__file__", None):
-        return cached
-    for parent in parents:
-        parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
-        if parent not in sys.modules and (parent_path / "__init__.py").exists():
-            _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
-    if synthetic_namespace:
-        register_synthetic_package(synthetic_namespace, [])
-    # Reserve the name before siblings exec so their relative imports resolve.
-    mod = _new_module(module_name, init_file, [str(plugin_dir)])
-    if mod is None:
-        return None
-    loaded_submodules = []
-    for sub_file in plugin_dir.glob("*.py"):
-        full_sub_name = f"{module_name}.{sub_file.stem}"
-        if sub_file.name == "__init__.py" or full_sub_name in sys.modules:
-            continue
-        sub_mod = _new_module(full_sub_name, sub_file)
-        if _exec(sub_mod, logger):
-            loaded_submodules.append((sub_file.stem, sub_mod))
-        else:
-            sys.modules.pop(full_sub_name, None)
-    if not _exec(mod, logger):
-        sys.modules.pop(module_name, None)
-        return None
-    parent_name, child_name = module_name.rsplit(".", 1)
-    parent_mod = sys.modules.get(parent_name)
-    if parent_mod is not None:
-        setattr(parent_mod, child_name, mod)
-    for sub_name, sub_mod in loaded_submodules:
-        setattr(mod, sub_name, sub_mod)
-    return mod
+    # _new_module publishes a package shell before executing it so sibling relative
+    # imports work. Serialize the complete load so another thread cannot observe
+    # that half-built shell as a loaded plugin.
+    with _module_load_lock(module_name):
+        # A synthetic package shell has no __file__; only reuse modules loaded from disk.
+        cached = sys.modules.get(module_name)
+        if cached is not None and getattr(cached, "__file__", None):
+            return cached
+        for parent in parents:
+            parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
+            if parent not in sys.modules and (parent_path / "__init__.py").exists():
+                _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
+        if synthetic_namespace:
+            register_synthetic_package(synthetic_namespace, [])
+        # Reserve the name before siblings exec so their relative imports resolve.
+        mod = _new_module(module_name, init_file, [str(plugin_dir)])
+        if mod is None:
+            return None
+        loaded_submodules = []
+        for sub_file in plugin_dir.glob("*.py"):
+            full_sub_name = f"{module_name}.{sub_file.stem}"
+            if sub_file.name == "__init__.py" or full_sub_name in sys.modules:
+                continue
+            sub_mod = _new_module(full_sub_name, sub_file)
+            if _exec(sub_mod, logger):
+                loaded_submodules.append((sub_file.stem, sub_mod))
+            else:
+                sys.modules.pop(full_sub_name, None)
+        if not _exec(mod, logger):
+            sys.modules.pop(module_name, None)
+            return None
+        parent_name, child_name = module_name.rsplit(".", 1)
+        parent_mod = sys.modules.get(parent_name)
+        if parent_mod is not None:
+            setattr(parent_mod, child_name, mod)
+        for sub_name, sub_mod in loaded_submodules:
+            setattr(mod, sub_name, sub_mod)
+        return mod
 
 
 class NoopPluginContext:

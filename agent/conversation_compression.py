@@ -2972,6 +2972,13 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
     memory_context = ""
     memory_manager = getattr(agent, "_memory_manager", None)
     evidence_messages = _direct_messages_for_pre_compress_memory(messages)
+    # Detached review/side-question forks cannot persist checkpoints by design. Their
+    # isolated compressor has no memory manager, session database, or persistence.
+    # Do not weaken the fork's configured flag globally: native compaction still uses it.
+    if (checkpoint_required and getattr(agent, "_persist_disabled", False)
+            and getattr(agent, "_session_db", None) is None
+            and memory_manager is None):
+        checkpoint_required = False
     if checkpoint_required:
         supports_checkpoint = getattr(memory_manager, "supports_pre_compress_checkpoint", None)
         if memory_manager is None or not callable(supports_checkpoint):

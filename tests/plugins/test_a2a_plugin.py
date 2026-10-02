@@ -1199,6 +1199,91 @@ class TestInboundRoundTrip:
         assert "A2A_JOB_TIMEOUT" in stored["reply"]
         assert "t-parked" not in adapter._parked
 
+    def test_budget_sweep_leaves_no_pending_state_and_next_task_keeps_its_reply(self, monkeypatch):
+        """The job-budget sweep must FULLY tear down an over-budget task.
+
+        A pending entry left behind sits at the HEAD of _pending_order[context_id], and adapter.send()
+        resolves replies oldest-first — so the tombstone would swallow the next legitimate reply on
+        that context (context ids are reused across turns, so that is the normal case) and that task
+        would then park with its answer lost. All three containers must be clean, and the following
+        task on the same context must receive its OWN reply.
+        """
+        from plugins.platforms.a2a import adapter as adapter_mod
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+
+        # t-dead: parked, then aged past the job budget so the sweep tombstones it.
+        rec = adapter.tasks.create("t-dead", "ctx1", "peer")
+        adapter.tasks.set_state("t-dead", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-dead"]["created_at"] = time.time() - (adapter_mod._job_timeout() + 60)
+        dead_pending = {"task_id": "t-dead", "context_id": "ctx1", "peer": "peer",
+                        "future": adapter._add_pending("t-dead", "ctx1"), "created_iso": rec["created_iso"],
+                        "started": time.time()}
+        adapter._park_task(dead_pending, "parked note")
+
+        assert adapter._fail_orphans_once() == ["t-dead"]
+
+        # (1) all three containers are clean — this is the defect that stole the next reply.
+        assert "t-dead" not in adapter._pending
+        assert "t-dead" not in adapter._parked
+        assert "t-dead" not in adapter._active_tasks
+        assert adapter._pending_order.get("ctx1") is None
+
+        # (2) a following task on the SAME context receives its own reply, not the dead task's.
+        t2 = adapter._add_pending("t2", "ctx1")
+        adapter._resolve_task("t2", protocol.STATE_COMPLETED, "T2_REPLY")
+        assert t2.done(), "the real reply must resolve t2, not the tombstoned task"
+        assert t2.result() == (protocol.STATE_COMPLETED, "T2_REPLY")
+
+    def test_budget_sweep_does_not_double_count_one_task(self, monkeypatch):
+        """One task must never be counted as both failed and completed: the sweep tombstones it and
+        counts it failed, so the late-finalize callback must not record a second outcome."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        rec = adapter.tasks.create("t-once", "ctx1", "peer")
+        adapter.tasks.set_state("t-once", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-once"]["created_at"] = time.time() - (adapter_mod._job_timeout() + 60)
+        pending = {"task_id": "t-once", "context_id": "ctx1", "peer": "peer",
+                   "future": adapter._add_pending("t-once", "ctx1"), "created_iso": rec["created_iso"],
+                   "started": time.time()}
+        adapter._park_task(pending, "parked note")
+
+        failed_before = protocol.metrics.tasks_failed
+        completed_before = protocol.metrics.tasks_completed
+        assert adapter._fail_orphans_once() == ["t-once"]
+        assert protocol.metrics.tasks_failed == failed_before + 1
+        assert protocol.metrics.tasks_completed == completed_before
+
+        # A reply arriving afterwards must not resurrect the tombstone or re-count the task.
+        adapter._resolve_task("t-once", protocol.STATE_COMPLETED, "TOO_LATE")
+        time.sleep(0.3)  # the late-finalize path runs on a worker thread
+        stored = adapter.tasks.get("t-once")
+        assert stored["state"] == protocol.STATE_FAILED
+        assert protocol.metrics.tasks_failed == failed_before + 1
+        assert protocol.metrics.tasks_completed == completed_before
+        assert "t-once" not in adapter._pending and "t-once" not in adapter._parked
+
+    def test_park_task_reports_the_real_outcome_when_the_reply_already_landed(self, monkeypatch):
+        """An instant reply must be reported as finished, not as WORKING-with-poll-hint: telling a
+        caller to poll an already-completed task is what the blocking path avoids by checking done()."""
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        rec = adapter.tasks.create("t-instant", "ctx1", "peer")
+        adapter.tasks.set_state("t-instant", protocol.STATE_WORKING)
+        pending = {"task_id": "t-instant", "context_id": "ctx1", "peer": "peer",
+                   "future": adapter._add_pending("t-instant", "ctx1"), "created_iso": rec["created_iso"],
+                   "started": time.time()}
+        # The agent answers before the caller gets to decide what to do with it.
+        adapter._resolve_task("t-instant", protocol.STATE_COMPLETED, "INSTANT")
+        completed_before = protocol.metrics.tasks_completed
+
+        task = adapter._park_task(pending, "would-be-a-poll-hint")
+
+        assert task["status"]["state"] == protocol.STATE_COMPLETED
+        assert protocol.extract_text(task["status"]["message"]) == "INSTANT"
+        assert adapter.tasks.get("t-instant")["state"] == protocol.STATE_COMPLETED
+        assert protocol.metrics.tasks_completed == completed_before + 1
+        assert "t-instant" not in adapter._parked
+        assert "t-instant" not in adapter._pending
+
     def test_health_reports_reply_and_job_windows(self, monkeypatch):
         """The reply window must be readable live (GET /health) instead of guessed from .env files."""
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "420")

@@ -1655,6 +1655,21 @@ def test_default_spawn_pins_checkout_on_worker_pythonpath(monkeypatch, tmp_path)
     assert pp_entries[0] == repo_root
 
 
+def test_pin_checkout_only_applies_to_module_form_workers(monkeypatch):
+    """A PATH-resolved Hermes executable must keep its own import environment."""
+    from cron import scheduler_worker_env
+    monkeypatch.setattr(scheduler_worker_env, "_installed_purelib", lambda: None)
+    module_env = {}
+    kbd._pin_checkout_on_worker_pythonpath(
+        module_env, [sys.executable, "-m", "hermes_cli.main"])
+    assert module_env["PYTHONPATH"].split(os.pathsep)[0] == str(
+        Path(kbd.__file__).resolve().parents[1])
+
+    path_env = {}
+    kbd._pin_checkout_on_worker_pythonpath(path_env, ["/opt/hermes"])
+    assert "PYTHONPATH" not in path_env
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #

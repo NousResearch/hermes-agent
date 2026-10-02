@@ -2467,7 +2467,7 @@ def _rotate_worker_log(
         pass
 
 
-def _pin_checkout_on_worker_pythonpath(env: dict) -> None:
+def _pin_checkout_on_worker_pythonpath(env: dict, command: list[str]) -> None:
     """Ensure a module-form worker's env can import this checkout.
 
     Workers run as ``sys.executable -m hermes_cli.main`` with the task
@@ -2481,6 +2481,9 @@ def _pin_checkout_on_worker_pythonpath(env: dict) -> None:
     Hermes-owned entries, skipping purelib-installed trees where the import
     already works.
     """
+    if command[:3] != [sys.executable, "-m", "hermes_cli.main"]:
+        return
+
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
 
     pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
@@ -2931,7 +2934,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Module-form workers import this checkout through PYTHONPATH (see
     # _module_hermes_argv); without the pin a package-manager-launcher
     # gateway spawns workers that die on `No module named hermes_cli`.
-    _pin_checkout_on_worker_pythonpath(env)
+    _pin_checkout_on_worker_pythonpath(env, cmd)
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above

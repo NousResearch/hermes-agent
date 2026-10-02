@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, List, Optional
 
 
@@ -908,6 +909,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     except Exception as exc:  # unreadable target home / secret source: refuse, never fall back
         return _fail(f"bot-chat delivery to profile '{profile_label}' could not build the target "
                      f"profile's environment ({type(exc).__name__}: {exc}); do not resend")
+    if argv[:3] == [sys.executable, "-m", "hermes_cli.main"]:
+        from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+        pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
     if home.parent.name != "profiles":
         argv += ["-p", "default"]
 

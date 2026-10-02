@@ -112,6 +112,11 @@ def finish_text_response(
                 len(_promoted), agent.model, agent.provider, api_call_count,
                 sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
             )
+    # A repetition-dominated reasoning channel is a stalled generation, not a completed
+    # answer. Keep it out of ``final_response`` so the empty-response ladder can nudge the
+    # model instead of persisting and replaying the loop on every subsequent turn.
+    if _promoted and is_runaway_repetition(_promoted):
+        _promoted = None
     final_response = _promoted or assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.

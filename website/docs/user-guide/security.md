@@ -607,6 +607,13 @@ hermes sandbox run --pr 123 --setup 'pip install --user -e .' --setup-network op
 
 The bundled `github` skill's PR review runs tests this way. Options and details: [`hermes sandbox`](../reference/cli-commands.md#hermes-sandbox). It needs Docker or Podman.
 
+**Trying code outside a review.** The bundled [`sandboxed-prototyping`](skills/bundled/software-development/software-development-sandboxed-prototyping.md) skill tells the agent to run the same way anything it has not written: a package it is trying, a snippet you paste, a repo you point it at. Like every skill, the agent loads it when the task looks relevant, which does not happen every time, and one-shot runs (`hermes chat -q`) load skills more sparingly than chat sessions. To have it apply in every session, [pin it](configuration.md#auto-loading-skills-every-session), which adds the skill (about 2,000 tokens) to the system prompt:
+
+```yaml
+skills:
+  auto_load: [sandboxed-prototyping]
+```
+
 **No container runtime, or a hosted deployment without one.** Without Docker or Podman, `hermes sandbox run` exits 69 and runs nothing. Hermes then reviews untrusted code by reading it only (diff and source) and says that the tests were not run; it does not fall back to running the code on the host. Other isolation runtimes, such as remote terminal backends or a bubblewrap backend, may be supported later.
 
 **For a whole profile: the docker backend, locked down.** When a profile exists to work on code you do not trust, run every command in an ephemeral, air-gapped container:

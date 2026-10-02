@@ -493,8 +493,8 @@ See the [upstream Hermes integration docs](https://hindsight.vectorize.io/sdks/i
 
 Hindsight used to ship inside the Hermes tree (and as the `hermes-agent[hindsight]` pip extra). If your `config.yaml` already has `memory.provider: hindsight`, there is nothing to do for most users:
 
-- `hermes update` installs the catalog plugin into every profile home that names the provider (this runs even when `security.allow_lazy_installs` is `false`).
-- If the plugin is still missing on the first agent start (`hermes chat`, the gateway, …), Hermes installs it and prints `✓ Memory provider 'hindsight' moved out of core — installed its plugin from the catalog (your memory.hindsight settings and data are unchanged).`
+- `hermes update` installs the catalog plugin into every profile home that names the provider. In a terminal it asks before preparing the plugin's Python dependencies. Without a terminal (the Desktop app, a script, a service) nobody can answer, so it prepares them unattended when `security.allow_lazy_installs` is on (the default) and otherwise prints the `hermes plugins install hindsight` one-liner.
+- If the plugin is still missing on the first agent start (`hermes chat`, the gateway, the Desktop app, …), Hermes installs it, dependencies included, and prints `✓ Memory provider 'hindsight' moved out of core — installed its plugin from the catalog (your memory.hindsight settings and data are unchanged).`
 - With `security.allow_lazy_installs: false`, the agent-start path instead logs one line — ``Memory provider 'hindsight' is not installed; security.allow_lazy_installs is off — run `hermes plugins install hindsight`.`` — and you run `hermes plugins install hindsight` yourself.
 
 What changes on disk: the plugin appears in `~/.hermes/plugins/hindsight/` and `config.yaml` gains `plugins.enabled: [hindsight]`. `memory.provider`, `memory.hindsight.*`, `$HERMES_HOME/hindsight/config.json`, `HINDSIGHT_API_KEY` in `.env` and your memory bank data are untouched. Verify with `hermes memory status` (provider active) and `hermes plugins list` (plugin installed and enabled).

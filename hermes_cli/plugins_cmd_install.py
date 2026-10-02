@@ -103,7 +103,7 @@ def _consent_python_deps(
     # An explicit --yes-deps is the user's own answer, TTY or not.
     if assume_yes:
         console.print(
-            "[dim]--yes-deps: preparing the declared dependencies without prompting.[/dim]\n"
+            "[dim]Consent given up front — preparing them without prompting.[/dim]\n"
         )
         return True, None
 
@@ -583,11 +583,13 @@ def cmd_install(
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None,
+    ref: Optional[str] = None, assume_deps_consent: bool = False,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
-    contract as ``--ref``); every path enforces the kill list (no GUI bypass)."""
+    contract as ``--ref``); every path enforces the kill list (no GUI bypass). *assume_deps_consent*
+    is consent the caller already holds for the catalog entry's Python deps (the memory-provider
+    migration under ``security.allow_lazy_installs``), so no terminal is needed to answer the gate."""
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None
@@ -610,7 +612,8 @@ def dashboard_install_plugin(
         return {"ok": False, "error": str(exc)}
     def _install() -> tuple:
         if entry is not None:
-            return catalog.install_catalog_entry(entry, force=force, allow_removed=False)
+            return catalog.install_catalog_entry(entry, force=force, allow_removed=False,
+                                                 assume_deps_consent=assume_deps_consent)
         return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None)
 
     try:

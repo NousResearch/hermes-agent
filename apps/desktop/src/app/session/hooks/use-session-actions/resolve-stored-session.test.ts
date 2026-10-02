@@ -45,6 +45,89 @@ describe('resolveStoredSession profile ownership', () => {
     $unlistedSessionOwnerRows.set([])
   })
 
+  it('preserves omitted rich metadata from the exact owner while direct values and explicit clears win', async () => {
+    for (const clearPreview of [false, true]) {
+      $sessions.set([])
+      let release!: (value: SessionInfo) => void
+      mockGetSession.mockReturnValueOnce(
+        new Promise<SessionInfo>(resolve => {
+          release = resolve
+        })
+      )
+      const pending = resolveStoredSession('s1', {
+        connectionId: 'remote-1',
+        profile: 'meta',
+        targetProfile: 'meta'
+      } as never)
+      expect(mockGetSession).toHaveBeenLastCalledWith('s1', { connectionId: 'remote-1', profile: 'meta' })
+      $sessions.set([
+        session({
+          id: 's1',
+          connection_id: ' remote-1 ',
+          profile: ' meta ',
+          title: 'Listed title',
+          preview: 'E2E_DELEGATE_CARD_A',
+          last_active: 123,
+          message_count: 18,
+          archived: true,
+          source: 'desktop'
+        })
+      ])
+      const direct = session({
+        id: 's1',
+        title: null,
+        message_count: 0,
+        archived: false,
+        source: 'cli',
+        ...(clearPreview ? { preview: null } : {})
+      })
+      release(direct)
+      expect(await pending).toBe(direct)
+      expect($sessions.get()).toHaveLength(1)
+      expect($sessions.get()[0]).toMatchObject({
+        id: 's1',
+        connection_id: 'remote-1',
+        profile: 'meta',
+        preview: clearPreview ? null : 'E2E_DELEGATE_CARD_A',
+        last_active: 123,
+        title: null,
+        message_count: 0,
+        archived: false,
+        source: 'cli'
+      })
+      // Cache enrichment must not change what the direct resolver returns.
+      expect(direct.last_active).toBeUndefined()
+      if (!clearPreview) expect(direct.preview).toBeUndefined()
+    }
+  })
+
+  it('does not borrow rich metadata across canonical IDs or explicit owners', async () => {
+    for (const [listed, connectionId] of [
+      [session({ id: 's1', connection_id: 'foreign', profile: 'meta' }), 'remote-1'],
+      [session({ id: 's1', connection_id: 'remote-1', profile: 'foreign' }), 'remote-1'],
+      [session({ id: 's1', profile: 'meta' }), 'remote-1'],
+      [session({ id: 's1', connection_id: 'remote-1', profile: 'meta' }), ''],
+      [session({ id: 'other', connection_id: 'remote-1', profile: 'meta' }), 'remote-1']
+    ] as const) {
+      $sessions.set([])
+      let release!: (value: SessionInfo) => void
+      mockGetSession.mockReturnValueOnce(
+        new Promise<SessionInfo>(resolve => {
+          release = resolve
+        })
+      )
+      const pending = resolveStoredSession('s1', { connectionId, profile: 'meta', targetProfile: 'meta' } as never)
+      $sessions.set([{ ...listed, preview: 'Foreign preview', last_active: 456 }])
+      release(session({ id: 's1', title: 'Direct title', message_count: 2, archived: false }))
+      const resolved = await pending
+      const cached = $sessions.get().find(row => row.id === 's1')!
+      expect(cached.preview).toBeUndefined()
+      expect(cached.last_active).toBeUndefined()
+      expect(cached).toMatchObject({ id: 's1', title: 'Direct title', connection_id: connectionId, profile: 'meta' })
+      expect(resolved?.preview).toBeUndefined()
+    }
+  })
+
   it('returns a cached row that carries an owning profile', async () => {
     $sessions.set([session({ id: 's1', profile: 'default' })])
 

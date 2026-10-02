@@ -188,6 +188,8 @@ $GAPI gmail search "has:attachment filename:pdf newer_than:7d"
 
 # Read full message (returns JSON with body text)
 $GAPI gmail get MESSAGE_ID
+# Several messages in one batched request (returns a JSON list)
+$GAPI gmail get ID1 ID2 ID3
 
 # Send
 $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"

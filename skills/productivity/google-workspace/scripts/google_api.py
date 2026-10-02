@@ -318,12 +318,26 @@ def gmail_search(args):
         print("No messages found.")
         return
 
-    output = []
+    # One batched HTTP request for all metadata gets instead of one round trip per message.
+    fetched = {}
+    batch = service.new_batch_http_request(callback=lambda rid, resp, exc: fetched.__setitem__(rid, resp) if exc is None else None)
     for msg_meta in messages:
-        msg = service.users().messages().get(
+        batch.add(service.users().messages().get(
             userId="me", id=msg_meta["id"], format="metadata",
             metadataHeaders=["From", "To", "Subject", "Date"],
-        ).execute()
+        ), request_id=msg_meta["id"])
+    batch.execute()
+    # Gmail rate-limits some items inside a batch (429); fetch those individually so none are dropped
+    for msg_meta in messages:
+        if msg_meta["id"] not in fetched:
+            fetched[msg_meta["id"]] = service.users().messages().get(
+                userId="me", id=msg_meta["id"], format="metadata",
+                metadataHeaders=["From", "To", "Subject", "Date"],
+            ).execute()
+
+    output = []
+    for msg_meta in messages:
+        msg = fetched[msg_meta["id"]]
         headers = _headers_dict(msg)
         output.append({
             "id": msg["id"],
@@ -335,7 +349,7 @@ def gmail_search(args):
             "snippet": msg.get("snippet", ""),
             "labels": msg.get("labelIds", []),
         })
-    print(json.dumps(output, indent=2, ensure_ascii=False))
+    print(json.dumps(output, ensure_ascii=False))
 
 
 
@@ -343,7 +357,7 @@ def gmail_get(args):
     if _gws_binary():
         msg = _run_gws(
             ["gmail", "users", "messages", "get"],
-            params={"userId": "me", "id": args.message_id, "format": "full"},
+            params={"userId": "me", "id": args.message_id[0], "format": "full"},
         )
         headers = _headers_dict(msg)
         result = {
@@ -360,22 +374,34 @@ def gmail_get(args):
         return
 
     service = build_service("gmail", "v1")
-    msg = service.users().messages().get(
-        userId="me", id=args.message_id, format="full"
-    ).execute()
+    ids = args.message_id
+    # Several IDs -> one batched HTTP request; items Gmail rate-limits (429) are refetched one by one.
+    fetched = {}
+    if len(ids) > 1:
+        batch = service.new_batch_http_request(callback=lambda rid, resp, exc: fetched.__setitem__(rid, resp) if exc is None else None)
+        for mid in ids:
+            batch.add(service.users().messages().get(userId="me", id=mid, format="full"), request_id=mid)
+        batch.execute()
+    for mid in ids:
+        if mid not in fetched:
+            fetched[mid] = service.users().messages().get(userId="me", id=mid, format="full").execute()
 
-    headers = _headers_dict(msg)
-    result = {
-        "id": msg["id"],
-        "threadId": msg["threadId"],
-        "from": headers.get("from", ""),
-        "to": headers.get("to", ""),
-        "subject": headers.get("subject", ""),
-        "date": headers.get("date", ""),
-        "labels": msg.get("labelIds", []),
-        "body": _extract_message_body(msg),
-    }
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    results = []
+    for mid in ids:
+        msg = fetched[mid]
+        headers = _headers_dict(msg)
+        results.append({
+            "id": msg["id"],
+            "threadId": msg["threadId"],
+            "from": headers.get("from", ""),
+            "to": headers.get("to", ""),
+            "subject": headers.get("subject", ""),
+            "date": headers.get("date", ""),
+            "labels": msg.get("labelIds", []),
+            "body": _extract_message_body(msg),
+        })
+    # one ID keeps the original single-object output; several return a list
+    print(json.dumps(results[0] if len(results) == 1 else results, indent=2, ensure_ascii=False))
 
 
 
@@ -1161,7 +1187,7 @@ def main():
     p.set_defaults(func=gmail_search)
 
     p = gmail_sub.add_parser("get")
-    p.add_argument("message_id")
+    p.add_argument("message_id", nargs="+", help="one or more message IDs (several are fetched in one batch)")
     p.set_defaults(func=gmail_get)
 
     p = gmail_sub.add_parser("send")

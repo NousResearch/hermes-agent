@@ -269,3 +269,110 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+class _FakeRequest:
+    def __init__(self, fn):
+        self._fn = fn
+
+    def execute(self):
+        return self._fn()
+
+
+class _FakeGmail:
+    """Minimal googleapiclient stand-in: users().messages().list/get plus batch requests.
+    Ids in ``fail_in_batch`` come back from a batch with an error (as Gmail does for 429s)."""
+
+    def __init__(self, ids, fail_in_batch=()):
+        self.msgs = {
+            i: {
+                "id": i,
+                "threadId": f"t-{i}",
+                "snippet": f"snippet {i}",
+                "labelIds": ["INBOX"],
+                "payload": {
+                    "mimeType": "text/plain",
+                    "headers": [{"name": "Subject", "value": f"subject {i}"}],
+                    "body": {"data": "aGk="},
+                },
+            }
+            for i in ids
+        }
+        self.fail_in_batch = set(fail_in_batch)
+        self.batches = 0
+        self.single_gets = []
+
+    def users(self):
+        return self
+
+    def messages(self):
+        return self
+
+    def list(self, userId, q, maxResults):
+        return _FakeRequest(lambda: {"messages": [{"id": i} for i in list(self.msgs)[:maxResults]]})
+
+    def get(self, userId, id, format, metadataHeaders=None):
+        def run():
+            self.single_gets.append(id)
+            return self.msgs[id]
+        return _FakeRequest(run)
+
+    def new_batch_http_request(self, callback):
+        svc = self
+
+        class _Batch:
+            def __init__(self):
+                self.items = []
+
+            def add(self, request, request_id):
+                self.items.append(request_id)
+
+            def execute(self):
+                svc.batches += 1
+                for rid in self.items:
+                    if rid in svc.fail_in_batch:
+                        callback(rid, None, Exception("429 rateLimitExceeded"))
+                    else:
+                        callback(rid, svc.msgs[rid], None)
+
+        return _Batch()
+
+
+@pytest.fixture
+def python_gmail(api_module, monkeypatch):
+    """Force the Python SDK path with a fake Gmail service."""
+    def install(fake):
+        monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
+        monkeypatch.setattr(api_module, "build_service", lambda *a, **k: fake)
+        return fake
+    return install
+
+
+def test_gmail_search_fetches_metadata_in_one_batch_and_refetches_dropped_items(api_module, python_gmail, capsys):
+    """Search must not cost one round trip per message, and items Gmail drops from
+    a batch (429) are fetched individually so no result silently disappears."""
+    ids = [f"m{i}" for i in range(20)]
+    fake = python_gmail(_FakeGmail(ids, fail_in_batch={"m3", "m7"}))
+    api_module.gmail_search(types.SimpleNamespace(query="from:x", max=20))
+    out = json.loads(capsys.readouterr().out)
+    assert [m["id"] for m in out] == ids  # all results, original order
+    assert fake.batches == 1
+    assert sorted(fake.single_gets) == ["m3", "m7"]  # only the dropped ones
+    assert out[0]["subject"] == "subject m0"
+
+
+def test_gmail_get_accepts_several_ids_in_one_batch(api_module, python_gmail, capsys):
+    fake = python_gmail(_FakeGmail(["a", "b", "c"], fail_in_batch={"b"}))
+    api_module.gmail_get(types.SimpleNamespace(message_id=["a", "b", "c"]))
+    out = json.loads(capsys.readouterr().out)
+    assert [m["id"] for m in out] == ["a", "b", "c"]
+    assert all("body" in m for m in out)
+    assert fake.batches == 1 and fake.single_gets == ["b"]
+
+
+def test_gmail_get_single_id_keeps_object_output(api_module, python_gmail, capsys):
+    fake = python_gmail(_FakeGmail(["a"]))
+    api_module.gmail_get(types.SimpleNamespace(message_id=["a"]))
+    out = json.loads(capsys.readouterr().out)
+    assert isinstance(out, dict) and out["id"] == "a"
+    assert fake.batches == 0 and fake.single_gets == ["a"]

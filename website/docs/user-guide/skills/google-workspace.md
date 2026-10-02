@@ -40,6 +40,7 @@ Returns JSON with `id`, `from`, `subject`, `date`, `snippet`, and `labels` for e
 
 ```bash
 $GAPI gmail get MESSAGE_ID
+$GAPI gmail get ID1 ID2 ID3   # several at once: one batched request, returns a JSON list
 ```
 
 Returns the full message body as text (prefers plain text, falls back to HTML).

@@ -69,6 +69,10 @@ def kanban_stop_target() -> Optional[KanbanStopTarget]:
         with kbc.connect_readonly_closing() as conn:
             task = kb.get_task(conn, task_id)
             run = kb.get_run(conn, run_id)
+            terminal_status = (
+                kb.goal_run_status(conn, task_id, expected_run_id=run_id)
+                if task is not None and task.status != "running" else None
+            )
     except Exception:
         return None
     if task is None:
@@ -81,16 +85,10 @@ def kanban_stop_target() -> Optional[KanbanStopTarget]:
             return None
         return KanbanStopTarget(task_id=task_id, run_id=run_id, status=status)
 
-    accepted_statuses = {
-        "completed": {"done"},
-        "review_requested": {"review"},
-        "changes_requested": {"ready"},
-        "blocked": {"blocked", "todo", "triage"},
-    }
-    expected_statuses = accepted_statuses.get(str(getattr(run, "outcome", "") or ""), set())
     if (
         run is None or run.task_id != task_id or run.ended_at is None
-        or status not in expected_statuses or task.current_run_id is not None
+        or terminal_status not in {"done", "review", "changes_requested", "blocked"}
+        or task.current_run_id is not None
     ):
         return None
     return KanbanStopTarget(task_id=task_id, run_id=run_id, status=status, terminal_handoff_accepted=True)

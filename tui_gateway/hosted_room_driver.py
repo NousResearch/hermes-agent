@@ -383,6 +383,10 @@ class HostedRoomRuntime:
             # absence is a safe Stop acknowledgement (errors raise); a peer stays uncertain.
             return transport is not None and transport is self.rpc
         info = transport.info(**_session_kw(profile, session_id))
+        if info.get("status") == "unknown":
+            # The canonical owner exposes uncertainty as inactive for explicit
+            # resolution. It is not a terminal Stop receipt.
+            return False
         if not _info_active(info):
             # History was checked just before this probe: an inactive exact session cannot
             # keep executing, and after a restart its process-local task marker is absent.

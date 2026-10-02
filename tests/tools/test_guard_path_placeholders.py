@@ -130,3 +130,42 @@ def test_quoted_target_mentions_in_prose_code_spans_are_not_writes(tmp_path, tar
     # with ...") separately trips _prose_modify_re, which is base behavior outside this
     # fix's scope.
     assert not any(f.pattern_id == family + "_mod_shell" for f in result.findings)
+
+
+# A backtick before the operator is not by itself a documentation mention: it can be a
+# closed command substitution (real shell write) or open an explicitly instructed span.
+BACKTICK_QUOTED_WRITES = [
+    # Command substitution closed before the redirect: executable write.
+    'echo `printf payload` > "{target}"',
+    'echo `printf payload` >> "{target}"',
+    # Inline code span opened by an imperative execution verb: instructed write.
+    'Run `echo payload > "{target}"` now.',
+]
+
+
+@pytest.mark.parametrize("target,family", CONFIG_TARGETS)
+@pytest.mark.parametrize("command", BACKTICK_QUOTED_WRITES)
+@pytest.mark.parametrize("carrier", ["README.md", "install.sh"])
+def test_backtick_quoted_target_writes_remain_critical(tmp_path, target, family, command, carrier):
+    from hermes_cli.plugins_cmd import PluginScanBlocked, _scan_plugin_tree
+
+    content = command.format(target=target) + "\n"
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text("name: demo\nversion: 0.0.1\n", encoding="utf-8")
+    (plugin / carrier).write_text(content, encoding="utf-8")
+    result = scan_plugin(plugin)
+    assert any(f.pattern_id == family + "_mod_shell" and f.severity == "critical"
+               for f in result.findings)
+    assert result.verdict == "dangerous"
+    assert should_allow_plugin_install(result, force=True)[0] is False
+    with pytest.raises(PluginScanBlocked):
+        _scan_plugin_tree(plugin, "owner/demo", force=True)
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(content, encoding="utf-8")
+    result = scan_skill(skill)
+    assert any(f.pattern_id == family + "_mod_shell" and f.severity == "critical"
+               for f in result.findings)
+    assert result.verdict == "dangerous"

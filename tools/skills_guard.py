@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v10"
+SCANNER_VERSION = "skills-guard-v11"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -80,13 +80,17 @@ def _shell_write_re(file_alt: str) -> str:
     ``cp AGENTS.md backup/`` misses; ``AGENTS.md.bak`` is not the file). A single ``>`` needs a preceding word/quote/
     paren char so blockquotes (``> text``) and arrows (``-> file``) miss. Before a slash, unquoted tokens
     match from their boundary so the closing bracket in ``<vault-root>/...`` is not a redirect.
-    An unquoted target is matched wherever the operator sits; a *quoted* target only matches when the
-    redirect is in a backtick-free line — an inline code span inside prose (``Never run `cat > 'AGENTS.md'```)
-    is a documentation mention, and flagging mentions blocked popular community skills (#92021)."""
+    An unquoted target is matched wherever the operator sits; a *quoted* target matches in three
+    shell-honest contexts: a backtick-free line, a line where a *closed* backtick pair (command
+    substitution) precedes the redirect, and a span opened by an imperative execution verb
+    (``Run `echo payload > "AGENTS.md"` now.``). Only the bare documentation mention inside an
+    inline code span (``Never run `cat > 'AGENTS.md'```) is exempt — flagging mentions blocked
+    popular community skills (#92021), but a backtick does not by itself establish a mention:
+    it can equally introduce command substitution or an execution instruction."""
     redirect = (
         r'(?:>>|["\'`)\]]\s*>|(?<![<\w./\\:-])[\w./\\:-]*\w(?:<[\w./\\:-]+)?\s*>'
         r'|\w\s*>(?![/\\]))')
-    # The quoted-target arm below cannot borrow the backtick from ``redirect``: a backtick
+    # The quoted-target arms below cannot borrow the backtick from ``redirect``: a backtick
     # right before the operator is the *opening* of an inline code span (``A safe pattern
     # is `> "AGENTS.md"```), i.e. a documentation mention rather than a write (#92021).
     quoted_line_redirect = (
@@ -99,9 +103,25 @@ def _shell_write_re(file_alt: str) -> str:
     # A real redirect can target a documented placeholder path; excluding its closing ``>``
     # must not hide an earlier write operator on the same line.
     path_prefix = r'(?:[~\w./-]|<[\w./\\:-]+>)*'
+    # A backtick pair *closed* before the redirect is shell command substitution
+    # (``echo `printf payload` > "AGENTS.md"``), not a documentation span, so the write is
+    # real. First arm: the operator sits right after the closing backtick. Second arm: the
+    # substitution is nested earlier (``echo "`date` x" > "AGENTS.md"``) and only
+    # backtick-free text separates it from the operator.
+    substitution_redirect = (
+        rf'[^\`\n]*\`[^\`\n]*\`\s*>>?\s*[\'"]{path_prefix}{file_alt}(?!\.?\w)'
+        rf'|[^\`\n]*\`[^\`\n]*\`[^\`\n]*?(?:{quoted_line_redirect}|{input_output})\s*[\'"]{path_prefix}{file_alt}(?!\.?\w)')
+    # An imperative execution verb opening the span (``Run `echo payload > "AGENTS.md"` now.``)
+    # instructs execution; the verb must sit at line start or after a sentence boundary, so
+    # ``Never run `cat > 'AGENTS.md'` `` (negated mention) stays exempt. Bare ``>`` is safe
+    # here because such a line cannot be a blockquote.
+    imperative_span = (
+        rf'(?:^|[.!?]\s+)(?:please\s+)?(?:run|execute|exec|invoke|source|eval|try)\s+\`[^\`\n]*?>>?\s*[\'"]{path_prefix}{file_alt}(?!\.?\w)')
     return (
         rf'(?:{redirect}|{input_output})\s*{path_prefix}{file_alt}(?!\.?\w)'
         rf'|^[^\`\n]*?(?:{quoted_line_redirect}|{input_output})\s*[\'"]{path_prefix}{file_alt}(?!\.?\w)'
+        rf'|{substitution_redirect}'
+        rf'|{imperative_span}'
         rf'|\bsed\b[^\n]*\s(?:-[A-Za-z]*i[A-Za-z]*|--in-place)\b[^\n]*{file_alt}(?!\.?\w)'
         rf'|\btee\s+(?:-a\s+)?[~\w./"\'-]*{file_alt}(?!\.?\w)'
         rf'|\b(?:cp|mv)\s+[^\s|;&]+\s+[^\n|;&]{{0,40}}?{file_alt}(?!\.?\w)')

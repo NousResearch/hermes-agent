@@ -1,12 +1,17 @@
-"""Shared runner for user-configured shell ("command") TTS/STT providers.
+"""Shared runner for user-configured ("command") TTS/STT providers.
 
-``tts.providers.<name>: {type: command, command: "piper -f {output_path} < {input_path}"}``
+``tts.providers.<name>: {type: command, command: "voxcpm --text-file {input_path} --out {output_path}"}``
 (and the ``stt.`` twin): ``{placeholders}`` are shell-quoted for their surrounding quote
 context, ``{{``/``}}`` stay literal. Owns the quote-aware rendering, the idle-timeout
 process runner and the generic ``<section>.providers.<name>`` readers, re-imported by
 ``tts_tool``/``transcription_tools`` under their historical private names. TTS placeholders:
 ``{input_path}``/``{text_path}``, ``{output_path}``, ``{format}``, ``{voice}``, ``{model}``,
 ``{speed}``. Built-in provider names always win over a same-named ``providers`` entry.
+
+Commands are tokenized into an argv list and executed WITHOUT a shell (Aikido #414):
+shell operators (``|``, ``>``, ``<``, ``&&``, ``;``) and ``$VAR``/``%VAR%`` reach the
+program as literal arguments, so stdin/stdout redirects and pipelines are not
+available — engines that read stdin need a small wrapper script.
 """
 
 from __future__ import annotations
@@ -135,10 +140,15 @@ def command_failure_detail(exc: subprocess.CalledProcessError) -> str:
 def run_command_provider(
     command: str, timeout: float, env_passthrough: Optional[list] = None,
 ) -> subprocess.CompletedProcess:
-    """Run a command-provider shell command with process-tree idle cleanup.
+    """Run a command-provider command with process-tree idle cleanup.
     ``timeout`` is an IDLE timeout, reset whenever the command emits output — a slow-but-alive
     provider survives, a silently stalled one is killed. Child env is scrubbed of Hermes secrets
-    while propagating delegated-child lineage markers."""
+    while propagating delegated-child lineage markers.
+
+    The command string is tokenized into an argv list and executed WITHOUT a shell
+    (Aikido #414, same policy as the ``HERMES_LOCAL_STT_COMMAND`` path): shell
+    operators and variable expansion are passed through as literal arguments.
+    """
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.env_passthrough import resolve_passthrough_value
     from tools.environments.local import hermes_subprocess_env
@@ -149,11 +159,21 @@ def run_command_provider(
         value = resolve_passthrough_value(key, os.environ.get(key))
         if value is not None:
             scrubbed[key] = value
+    # Tokenize the template the way a shell would — quotes group, quotes are
+    # dropped — then exec the argv directly. No /bin/sh interpolation, so
+    # metacharacters can never be re-interpreted (Aikido #414).
+    argv = shlex.split(command, posix=(os.name != "nt"))
+    if os.name == "nt":
+        # posix=False keeps the quote characters in each token; Windows
+        # templates are list2cmdline-style and only ever wrap whole tokens,
+        # so peel the outer quotes before exec.
+        argv = [tok[1:-1] if len(tok) > 1 and tok[0] == tok[-1] and tok[0] in "\"'" else tok
+                for tok in argv]
     # Own process group so the whole tree can be signalled on idle timeout. Lossy UTF-8 decode:
     # locale-mismatched bytes must not raise in the reader threads.
     group = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
              else {"start_new_session": True})
-    proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    proc = subprocess.Popen(argv, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
                             stdin=subprocess.DEVNULL, **group)
     output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()

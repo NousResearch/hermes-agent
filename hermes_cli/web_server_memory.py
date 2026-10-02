@@ -102,12 +102,17 @@ def _memory_provider_setup_env() -> Dict[str, str]:
 
 
 def _run_setup_command(
-    command: Any, *, display: str, shell: bool = False, timeout: int = 180
+    command: Any, *, display: str, timeout: int = 180
 ) -> subprocess.CompletedProcess:
+    """Run a setup *command* (argv list) without a shell (Aikido #414).
+
+    Callers pass ``shlex.split(check_cmd)``-style argv lists; no ``/bin/sh``
+    interpolation happens, so shell operators in a manifest string are literal
+    arguments to the first token's program.
+    """
     return subprocess.run(
         command,
-        shell=shell,
-        executable="/bin/bash" if shell else None,
+        shell=False,
         env=_memory_provider_setup_env(),
         capture_output=True,
         text=True,

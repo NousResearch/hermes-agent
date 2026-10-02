@@ -349,7 +349,7 @@ def _install_memory_provider_python_dependencies(name: str) -> List[Dict[str, An
 def _run_setup_step(results: list, kind: str, name: str, command: str, status_of, **kwargs) -> Optional[int]:
     """Run a setup command, append its result row; returncode or None on spawn failure."""
     try:
-        completed = _run_setup_command(command if kwargs.get("shell") else shlex.split(command), display=command, **kwargs)
+        completed = _run_setup_command(shlex.split(command), display=command, **kwargs)
     except Exception as exc:
         results.append(_command_result(kind=kind, name=name, status=status_of(None), command=command, error=str(exc)))
         return None
@@ -374,7 +374,7 @@ def _install_memory_provider_external_dependencies(dependencies: List[Dict[str, 
             continue
         rc = _run_setup_step(
             results, "external_install", name, install_cmd, lambda ok: "installed" if ok else "failed",
-            shell=True, timeout=300,
+            timeout=300,
         )
         if check_cmd and rc == 0:
             _run_setup_step(results, "external_check", name, check_cmd, lambda ok: "verified" if ok else "failed", timeout=20)

@@ -3406,6 +3406,22 @@ def request_review(
                     "(worker ownership) or force=True (explicit operator "
                     "override) instead of clearing the live run's claim",
                 )
+            # The actor is the run that did the work, resolved before the
+            # reviewer so the lane check below can see it. ``assignee`` is the
+            # actor only while a worker holds the card; on a never-claimed card
+            # it is whoever the operator assigned -- possibly the reviewer
+            # itself, which is what ``kanban create --assignee <reviewer>``
+            # followed by ``request-review`` produces. Recording the reviewer as
+            # its own implementer is worse than recording nothing:
+            # request_changes() routes on this field, and it already refuses a
+            # handoff that carries no implementer provenance.
+            run_profile = None
+            if trow["current_run_id"] is not None:
+                arow = conn.execute(
+                    "SELECT profile FROM task_runs WHERE id = ?",
+                    (trow["current_run_id"],),
+                ).fetchone()
+                run_profile = arow["profile"] if arow else None
             if reviewer is None:
                 reviewer = _prior_reviewer(conn, task_id)
                 if reviewer is False:
@@ -3414,22 +3430,18 @@ def request_review(
                         "latest changes_requested event is missing or "
                         "malformed); pass reviewer= explicitly",
                     )
+                # Reusing the recorded reviewer is only safe when that reviewer
+                # serves the card's lane; otherwise the silent reassignment
+                # hands the card to a reviewer that cannot complete it and the
+                # changes_requested -> re-review cycle never terminates.
+                conflict = _reviewer_lane_conflict(
+                    _canonical_assignee(reviewer),
+                    _canonical_assignee(run_profile or trow["assignee"]),
+                )
+                if conflict is not None:
+                    return _ret(False, conflict)
             reviewer = _canonical_assignee(reviewer)
-            # The actor is the run that did the work. ``assignee`` is the actor
-            # only while a worker holds the card; on a never-claimed card it is
-            # whoever the operator assigned -- possibly the reviewer itself,
-            # which is what ``kanban create --assignee <reviewer>`` followed by
-            # ``request-review`` produces. Recording the reviewer as its own
-            # implementer is worse than recording nothing: request_changes()
-            # routes on this field, and it already refuses a handoff that
-            # carries no implementer provenance.
-            implementer = None
-            if trow["current_run_id"] is not None:
-                arow = conn.execute(
-                    "SELECT profile FROM task_runs WHERE id = ?",
-                    (trow["current_run_id"],),
-                ).fetchone()
-                implementer = arow["profile"] if arow else None
+            implementer = run_profile
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
@@ -3478,6 +3490,37 @@ def request_review(
             _discard_staged_copies(staged_copies, staged_copies[0].parent)
         raise
     return _ret(True)
+
+
+# Reviewer profiles that may only review cards from specific implementer lanes.
+# ``request_review(reviewer=None)`` reuses the reviewer recorded by the latest
+# ``changes_requested`` event; when the card's lane is outside that reviewer's
+# scope, the reuse silently reassigns the card to a reviewer that cannot
+# complete it, so the changes_requested -> re-review cycle never terminates (the
+# observed code-reviewer <-> non-code-lane ping-pong). A reviewer absent from
+# this table is never lane-restricted; deployments add their own reviewer lanes.
+REVIEWER_LANE_SCOPE: dict[str, frozenset[str]] = {
+    "code-reviewer": frozenset({"software-developer"}),
+}
+
+
+def _reviewer_lane_conflict(
+    reviewer: Optional[str], lane: Optional[str],
+) -> Optional[str]:
+    """Reason to refuse reusing *reviewer* for a card in *lane*, else ``None``.
+
+    ``None`` when the reviewer is unrestricted or *lane* is inside its scope;
+    otherwise a message naming both and the explicit ``reviewer=`` escape.
+    """
+    scope = REVIEWER_LANE_SCOPE.get(reviewer or "")
+    if scope is None or lane in scope:
+        return None
+    return (
+        f"re-review would re-route this card to {reviewer!r}, which reviews "
+        f"{', '.join(sorted(scope))} cards only, and this card's lane is "
+        f"{lane or 'unassigned'}; pass reviewer= explicitly to name the "
+        f"reviewer for this lane"
+    )
 
 
 def _prior_reviewer(conn: sqlite3.Connection, task_id: str):

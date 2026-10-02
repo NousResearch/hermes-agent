@@ -272,6 +272,77 @@ def test_request_review_malformed_provenance_gets_distinct_reason(
         ) is True
 
 
+def test_request_review_refuses_to_re_route_a_non_code_lane_to_the_code_reviewer(
+    kanban_home: Path,
+) -> None:
+    """A non-code card must not silently re-route to a code-only reviewer.
+
+    Regression for the observed ping-pong: the card was bounced by
+    ``code-reviewer``, handed back to its implementer lane, and
+    ``request_review(reviewer=None)`` then replayed the recorded reviewer
+    forever — the card re-entered the review lane, the reviewer could only
+    bounce it again, and neither lane could ever complete it. The silent reuse
+    now fails the way the missing-provenance path does, asking for an explicit
+    ``reviewer=`` instead of reassigning.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="pricing page copy", assignee="marketing-design")
+        claimed = kb.claim_task(conn, tid)
+        assert kb.request_review(
+            conn, tid, summary="v1", reviewer="code-reviewer",
+            expected_run_id=claimed.current_run_id,
+        )
+        review = kb.claim_review_task(conn, tid)
+        assert review is not None
+        assert kb.request_changes(
+            conn, tid, reason="not a code change", expected_run_id=review.current_run_id,
+        ) == (True, "marketing-design")
+
+        retry = kb.claim_task(conn, tid, claimer="marketing-design:retry")
+        assert retry is not None
+        ok, reason = kb.request_review(
+            conn, tid, summary="v2", expected_run_id=retry.current_run_id,
+            with_reason=True,
+        )
+        assert ok is False
+        assert reason is not None and "reviewer" in reason
+        # Nothing was reassigned: the card is still with its own lane.
+        row = kb.get_task(conn, tid)
+        assert row.assignee == "marketing-design"
+        assert row.status == "running"
+
+        # Naming the reviewer explicitly recovers, as the reason instructs.
+        assert kb.request_review(
+            conn, tid, summary="v2", reviewer="marketing-design",
+            expected_run_id=retry.current_run_id,
+        ) is True
+
+
+def test_request_review_re_uses_the_code_reviewer_for_a_code_lane_card(
+    kanban_home: Path,
+) -> None:
+    """The lane-scope guard must not break the normal code re-review cycle."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="fix parser", assignee="software-developer")
+        claimed = kb.claim_task(conn, tid)
+        assert kb.request_review(
+            conn, tid, summary="v1", reviewer="code-reviewer",
+            expected_run_id=claimed.current_run_id,
+        )
+        review = kb.claim_review_task(conn, tid)
+        assert review is not None
+        assert kb.request_changes(
+            conn, tid, reason="edge case", expected_run_id=review.current_run_id,
+        ) == (True, "software-developer")
+
+        retry = kb.claim_task(conn, tid, claimer="software-developer:retry")
+        assert retry is not None
+        assert kb.request_review(
+            conn, tid, summary="v2", expected_run_id=retry.current_run_id,
+        ) is True
+        assert kb.get_task(conn, tid).assignee == "code-reviewer"
+
+
 @pytest.mark.parametrize("blank", ["   ", "\n", "\t\n  "])
 def test_request_review_whitespace_only_summary_does_not_crash(
     kanban_home: Path, blank: str

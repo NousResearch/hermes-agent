@@ -1,0 +1,81 @@
+name: Bootstrap installer unsigned
+
+# Hand-dispatched UNSIGNED Windows build of the Tauri bootstrap installer
+# (apps/bootstrap-installer, "Hermes-Setup"). Test / sideload only.
+# SmartScreen will warn. Do not publish. Azure Trusted Signing is not used
+# because release-signing has no AZURE_SIGN_* vars yet.
+#
+# Same compile path as bootstrap-installer-build.yml windows-x64, minus
+# environment: release-signing, Azure login, and Authenticode.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, branch or tag to build
+        required: true
+        default: main
+      pin_branch:
+        description: Branch the installer follows at install time (HERMES_BUILD_PIN_BRANCH)
+        required: true
+        default: main
+      pin_commit:
+        description: Optional commit pin baked in instead (HERMES_BUILD_PIN_COMMIT)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bootstrap-installer-unsigned-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  HERMES_BUILD_PIN_BRANCH: ${{ inputs.pin_branch }}
+  HERMES_BUILD_PIN_COMMIT: ${{ inputs.pin_commit }}
+  CARGO_INCREMENTAL: '0'
+  SCCACHE_DISABLE: '1'
+
+jobs:
+  windows-x64:
+    name: Hermes-Setup.exe (windows x64, unsigned test)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
+        with:
+          node-version: 24.11.1
+
+      - name: Fresh cache dirs
+        shell: bash
+        run: |
+          {
+            echo "CARGO_HOME=$RUNNER_TEMP/cargo-home"
+            echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target"
+            echo "npm_config_cache=$RUNNER_TEMP/npm-cache"
+            echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/electron-builder-cache"
+          } >> "$GITHUB_ENV"
+          echo "$USERPROFILE/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build unsigned exe
+        shell: bash
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          npm ci --workspace apps/bootstrap-installer --include-workspace-root=false --prefer-online --no-audit --no-fund
+          cd apps/bootstrap-installer
+          npx tauri build --target x86_64-pc-windows-msvc --no-bundle
+          exe="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/Hermes-Setup.exe"
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$exe" "$RUNNER_TEMP/out/Hermes-Setup.exe"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Hermes-Setup-windows-x64-unsigned
+          path: ${{ runner.temp }}/out/Hermes-Setup.exe
+          if-no-files-found: error

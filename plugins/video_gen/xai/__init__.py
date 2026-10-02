@@ -13,7 +13,6 @@ import asyncio
 import base64
 import logging
 import mimetypes
-import os
 import uuid
 from contextlib import closing
 from pathlib import Path
@@ -66,10 +65,13 @@ def _xai_http(helper: str, fallback: Any, *args: Any, log: Optional[str] = None)
 
 
 def _resolve_xai_credentials() -> Tuple[str, str]:
-    """``(api_key, base_url)``: runtime xai-oauth pool entry → ``auth.json`` OAuth tokens → ``XAI_API_KEY`` (empty key = none; callers check)."""
+    """``(api_key, base_url)``: runtime xai-oauth pool entry → ``auth.json`` OAuth tokens → ``XAI_API_KEY``
+    (empty key = none; callers check). ``resolve_xai_http_credentials`` already applies the profile
+    secret scope to both fields, so a miss stays a miss: a raw ``os.getenv`` fallback here would hand a
+    multiplexed secondary the default profile's key after the scoped resolver correctly returned none."""
     creds = _xai_http("resolve_xai_http_credentials", {}, log="xAI credential resolver failed: %s") or {}
-    base_url = str(creds.get("base_url") or os.getenv("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL)
-    return str(creds.get("api_key") or os.getenv("XAI_API_KEY", "")).strip(), base_url.strip().rstrip("/")
+    base_url = str(creds.get("base_url") or DEFAULT_XAI_BASE_URL)
+    return str(creds.get("api_key") or "").strip(), base_url.strip().rstrip("/")
 
 
 def _xai_headers(api_key: str) -> Dict[str, str]:
@@ -166,8 +168,8 @@ class XAIVideoGenProvider(VideoGenProvider):
         seed: Optional[int] = None, **kwargs: Any,
     ) -> Dict[str, Any]:
         return _run_xai_video(
-            "generation", _generate_xai_video_async, prompt=prompt, model=model,
-            explicit_model=bool(kwargs.get("_model_override_explicit")), image_url=image_url,
+            # ``model`` is the configured video_gen.model; the agent has no per-request override (#83080).
+            "generation", _generate_xai_video_async, prompt=prompt, model=model, explicit_model=False, image_url=image_url,
             reference_image_urls=reference_image_urls, duration=duration, aspect_ratio=aspect_ratio, resolution=resolution,
         )
 
@@ -316,63 +318,3 @@ async def _submit_xai_video_payload(api_key: str, base_url: str, endpoint: str, 
 def register(ctx) -> None:
     """Plugin entry point — wire ``XAIVideoGenProvider`` into the registry."""
     ctx.register_video_gen_provider(XAIVideoGenProvider())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def run_xai_video_generation(
-    *,
-    prompt: str,
-    model: Optional[str],
-    explicit_model: bool,
-    image_url: Optional[str],
-    reference_image_urls: Optional[List[str]],
-    duration: Optional[int],
-    aspect_ratio: str,
-    resolution: str,
-) -> Dict[str, Any]:
-    return _run_xai_video_coroutine(
-        _generate_xai_video_async(
-            prompt=prompt,
-            model=model,
-            explicit_model=explicit_model,
-            image_url=image_url,
-            reference_image_urls=reference_image_urls,
-            duration=duration,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
-        ),
-        operation_label="generation",
-        model=model,
-        prompt=prompt,
-        aspect_ratio=aspect_ratio,
-    )
-
-def _run_xai_video_coroutine(
-    coro,
-    *,
-    operation_label: str,
-    model: Optional[str],
-    prompt: str,
-    aspect_ratio: str,
-) -> Dict[str, Any]:
-    try:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-    except Exception as exc:
-        logger.warning("xAI video %s unexpected failure: %s", operation_label, exc, exc_info=True)
-        return error_response(
-            error=f"xAI video {operation_label} failed: {exc}",
-            error_type="api_error",
-            provider="xai",
-            model=model or DEFAULT_MODEL,
-            prompt=prompt,
-            aspect_ratio=aspect_ratio,
-        )
-# ---- END PLUGIN-COMPAT ----

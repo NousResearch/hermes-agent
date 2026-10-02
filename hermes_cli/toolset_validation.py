@@ -1,11 +1,33 @@
 """Validation for the ``platform_toolsets`` config section."""
 
-from typing import Callable, List
+import ast
+from typing import Callable, List, Optional
 
 from hermes_cli.platforms import PLATFORMS
 from hermes_cli.toolset_scope import toolset_allowed_for_platform
 
 _NO_TOOLS = "the agent will have no tools on this platform. Run `hermes tools` to reconfigure."
+
+
+def parse_platform_toolsets_value(value: object) -> Optional[List[str]]:
+    """The toolset list a saved ``platform_toolsets.<platform>`` value encodes, or None.
+
+    Older ``hermes config set`` builds stored a bare ``[...]`` argument as a plain string, so an
+    explicit selection like ``'["browser", "terminal"]'`` parses as str, not list (#115866).
+    Every reader and writer of the section goes through this one parser so the runtime,
+    ``hermes doctor`` and ``hermes plugins enable`` agree on what the user configured. Any other
+    shape (null, scalar, unparseable string) is None: the caller decides how to report it.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip().startswith("["):
+        try:
+            parsed = ast.literal_eval(value.strip())
+        except (ValueError, SyntaxError):
+            return None
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    return None
 
 
 def _platform_default_toolset(platform: object) -> str:
@@ -28,6 +50,36 @@ def _platform_default_is_valid(
         return False
 
 
+def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
+    """``is_valid_toolset`` for a saved ``platform_toolsets`` list, mirroring what
+    ``tools_config._get_platform_tools`` lets through: registered toolsets, any configured MCP server
+    (a disabled one is inactive, not a typo), ``hermes-<platform>`` plugin-platform bundles and the
+    ``no_mcp`` sentinel. The manifest scan and the plugin lookup (which may run plugin discovery)
+    happen only for a name the cheaper checks cannot place."""
+    from functools import cache
+
+    from toolsets import validate_toolset
+
+    mcp_servers = config.get("mcp_servers")
+    known = {str(name) for name in mcp_servers} if isinstance(mcp_servers, dict) else set()
+    known.add("no_mcp")
+
+    @cache
+    def platform_bundles() -> frozenset:
+        from hermes_cli.config import _platform_plugin_manifests
+
+        return frozenset(f"hermes-{name}" for name, _manifest in _platform_plugin_manifests())
+
+    @cache
+    def plugin_names() -> frozenset:
+        from hermes_cli.plugins import get_plugin_toolset_keys_nowait, get_portable_mcp_server_names_nowait
+
+        return frozenset(get_plugin_toolset_keys_nowait() | get_portable_mcp_server_names_nowait())
+
+    return lambda name: (validate_toolset(name) or name in known
+                         or name in platform_bundles() or name in plugin_names())
+
+
 def validate_platform_toolsets(
     platform_toolsets: object, is_valid_toolset: Callable[[str], bool],
     is_allowed_for_platform: Callable[[str, str], bool] = toolset_allowed_for_platform,
@@ -47,7 +99,8 @@ def validate_platform_toolsets(
         default = _platform_default_toolset(platform)
         default_valid = _platform_default_is_valid(platform, default, is_valid_toolset, is_allowed_for_platform)
         platform_valid_count = 0
-        if not isinstance(raw, list):
+        toolsets = parse_platform_toolsets_value(raw)
+        if toolsets is None:
             if default_valid:
                 valid_count += 1
                 platform_valid_count += 1
@@ -65,7 +118,7 @@ def validate_platform_toolsets(
                 warnings.append(f"platform '{platform}' has no valid toolsets configured — {_NO_TOOLS}")
             continue
 
-        for name in raw:
+        for name in toolsets:
             if not isinstance(name, str) or not name:
                 continue
             if not is_valid_toolset(name):
@@ -80,7 +133,7 @@ def validate_platform_toolsets(
                 )
 
         if platform_valid_count == 0:
-            reason = "is configured with an empty toolset list" if not raw else "has no valid toolsets configured"
+            reason = "is configured with an empty toolset list" if not toolsets else "has no valid toolsets configured"
             warnings.append(f"platform '{platform}' {reason} — {_NO_TOOLS}")
 
     if valid_count == 0:

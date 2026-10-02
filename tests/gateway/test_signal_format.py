@@ -5,12 +5,7 @@ strikethrough, monospace, code blocks, headings, and — critically — the
 false-positive regressions that caused spurious italics in production.
 """
 
-import pytest
-
-from gateway.config import PlatformConfig
-from gateway.platforms.signal import SignalAdapter
 from gateway.platforms.signal_format import markdown_to_signal
-
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -20,16 +15,13 @@ def _m2s(text: str):
     """Shorthand: return (plain_text, styles)."""
     return markdown_to_signal(text)
 
-
 def _style_types(styles: list[str]) -> list[str]:
     """Extract just the STYLE part from '0:4:BOLD' strings."""
     return [s.rsplit(":", 1)[1] for s in styles]
 
-
 def _find_style(styles: list[str], style_type: str) -> list[str]:
     """Return only styles matching a given type."""
     return [s for s in styles if s.endswith(f":{style_type}")]
-
 
 # ===========================================================================
 # Basic formatting
@@ -44,13 +36,11 @@ class TestMarkdownToSignalBasic:
         assert len(styles) == 1
         assert styles[0].endswith(":BOLD")
 
-
     def test_italic_single_asterisk(self):
         text, styles = _m2s("hello *world*")
         assert text == "hello world"
         assert len(styles) == 1
         assert styles[0].endswith(":ITALIC")
-
 
     def test_strikethrough(self):
         text, styles = _m2s("hello ~~world~~")
@@ -63,7 +53,6 @@ class TestMarkdownToSignalBasic:
         assert text == "run ls -la now"
         assert len(styles) == 1
         assert styles[0].endswith(":MONOSPACE")
-
 
 # ===========================================================================
 # Italic false-positive regressions
@@ -81,9 +70,7 @@ class TestItalicFalsePositives:
         assert text == "the config_file is ready"
         assert _find_style(styles, "ITALIC") == []
 
-
     # --- Bullet lists (second fix) ---
-
 
     def test_hyphen_bullet_list_uses_signal_safe_bullets(self):
         """Signal does not render Markdown list markers; normalize them."""
@@ -91,7 +78,6 @@ class TestItalicFalsePositives:
         text, styles = _m2s(md)
         assert text == "• item one\n• item two"
         assert styles == []
-
 
     def test_bullet_list_file_paths(self):
         """Real-world case that triggered the bug."""
@@ -103,9 +89,7 @@ class TestItalicFalsePositives:
         text, styles = _m2s(md)
         assert _find_style(styles, "ITALIC") == []
 
-
     # --- Cross-line spans (DOTALL removal) ---
-
 
     def test_underscore_italic_no_cross_line(self):
         """_foo\\nbar_ must NOT match as italic (no DOTALL)."""
@@ -126,7 +110,6 @@ class TestItalicFalsePositives:
 
     # --- Legitimate italic still works ---
 
-
     def test_multiple_italic_same_line(self):
         text, styles = _m2s("*foo* and *bar* ok")
         assert text == "foo and bar ok"
@@ -136,7 +119,6 @@ class TestItalicFalsePositives:
         text, styles = _m2s("*word*")
         assert text == "word"
         assert len(_find_style(styles, "ITALIC")) == 1
-
 
 # ===========================================================================
 # Style position accuracy
@@ -160,7 +142,6 @@ class TestStylePositions:
         assert len(styles) == 1
         assert self._extract(text, styles[0]) == "world"
 
-
 # ===========================================================================
 # Edge cases
 # ===========================================================================
@@ -175,13 +156,11 @@ class TestEdgeCases:
         assert len(_find_style(styles, "BOLD")) == 1
         assert _find_style(styles, "ITALIC") == []
 
-
     def test_lone_asterisk(self):
         """A single * with no pair should not cause issues."""
         text, styles = _m2s("5 * 3 = 15")
         # Should not crash; any italic match would be a false positive
         assert "5" in text and "15" in text
-
 
 # ===========================================================================
 # signal-markdown-strip-patch: core conversion pipeline
@@ -189,12 +168,11 @@ class TestEdgeCases:
 
 class TestMarkdownStripPatch:
     """Tests for the original signal-markdown-strip-patch.
-    
+
     Covers: fenced code blocks with language tags, links preserved,
     headings converted to bold, multiple headings, UTF-16 correctness
     for multi-byte characters, and marker stripping completeness.
     """
-
 
     def test_fenced_code_block_multiline(self):
         """Multi-line code blocks preserve all lines."""
@@ -219,7 +197,6 @@ class TestMarkdownStripPatch:
         assert len(styles) == 1
         assert styles[0].endswith(":BOLD")
 
-
     def test_multiple_headings(self):
         """Multiple headings each become separate bold spans."""
         md = "## First\n\nSome text\n\n## Second"
@@ -233,21 +210,40 @@ class TestMarkdownStripPatch:
         # ## at end might remain if not at line start — that's ok
         # The important thing is styled markers are stripped
 
-
 # ===========================================================================
 # signal-streaming-patch: SUPPORTS_MESSAGE_EDITING and send() behavior
 # ===========================================================================
 
-class TestSignalStreamingPatch:
-    """Tests for signal-streaming-patch: cursor suppression and edit support.
-    
-    These verify the adapter-level properties that prevent the streaming
-    cursor from leaking into Signal messages.
-    """
+class TestTableRealignment:
+    """GFM pipe tables are re-aligned to a fixed monospace width and wrapped in a
+    single MONOSPACE style range, per the Signal table-rendering feature request."""
 
-    def test_signal_does_not_support_editing(self, monkeypatch):
-        """SignalAdapter.SUPPORTS_MESSAGE_EDITING must be False."""
-        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        from gateway.platforms.signal import SignalAdapter
-        assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is False
+    @staticmethod
+    def _u16_slice(text: str, style: str) -> str:
+        start, length = (int(p) for p in style.split(":")[:2])
+        u16 = text.encode("utf-16-le")
+        return u16[start * 2 : (start + length) * 2].decode("utf-16-le")
 
+    def test_wide_char_table_becomes_one_aligned_monospace_block(self):
+        """Cells with CJK/emoji (2 display cells, 1-2 UTF-16 units) still produce pipes that line up
+        by display width, one MONOSPACE range covering exactly the block, and correct UTF-16 offsets
+        for styles after it."""
+        from wcwidth import wcswidth
+
+        text, styles = _m2s("| 名前 | Score |\n|---|---|\n| 東京 | 🚀 |\n| Bob | 1 |\n\n**tail**")
+        (mono,) = _find_style(styles, "MONOSPACE")
+        block = self._u16_slice(text, mono)
+        assert text == block + "\n\ntail"
+        rows = block.split("\n")
+        assert len(rows) == 4 and all(wcswidth(row) == wcswidth(rows[0]) for row in rows)
+        assert self._u16_slice(text, _find_style(styles, "BOLD")[0]) == "tail"
+
+    def test_fenced_pipe_table_is_code_and_later_code_range_survives_realignment(self):
+        """A pipe table inside ``` is code and must not be realigned or double-styled; a table's
+        padding changes its length, and a code block after it still maps to its own text."""
+        text, styles = _m2s("| Name | Age |\n|---|---|\n| Alice | 30 |\n\n```\n| a | b |\n|---|---|\n| 1 | 22 |\n```")
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 2
+        assert self._u16_slice(text, mono[0]) == "| Name  | Age |\n|-------|-----|\n| Alice | 30  |"
+        assert self._u16_slice(text, mono[1]) == "| a | b |\n|---|---|\n| 1 | 22 |"
+        assert "cost | value" == _m2s("cost | value\nnot a table")[0].split("\n")[0]

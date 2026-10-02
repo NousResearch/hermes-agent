@@ -21,6 +21,7 @@ from gateway.config import (
     PlatformConfig,
     _getenv_str,
     _has_usable_api_server_key,
+    SHARED_LISTENER_MIRROR_PLATFORMS,
 )
 from utils import is_truthy_value
 
@@ -38,6 +39,7 @@ _ENV_ENABLE_CREDENTIALS: dict = {
     Platform.TELEGRAM: ("TELEGRAM_BOT_TOKEN",),
     Platform.DISCORD: ("DISCORD_BOT_TOKEN",),
     Platform.SLACK: ("SLACK_BOT_TOKEN",),
+    Platform.WHATSAPP: ("WHATSAPP_ENABLED",),
     Platform.WHATSAPP_CLOUD: ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
     Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
     Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
@@ -168,23 +170,37 @@ def _env_reply_mode(config: GatewayConfig, platform: Platform, env: str) -> None
         config.platforms.setdefault(platform, PlatformConfig()).reply_to_mode = mode
 
 
+def _loading_secondary_under_multiplexer() -> bool:
+    """True while a multiplexer loads a NON-default profile's config (``_profile_runtime_scope`` sets the
+    home override; the runner sets the multiplex flag). Same signal ``gateway.config`` uses for scoped reads."""
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    override = get_hermes_home_override()
+    return bool(override) and is_multiplex_active() and profile_name_for_home(override) != "default"
+
+
 def _enable_from_env(
     config: GatewayConfig, platform: Platform, *, pop_marker: bool = False, warn: bool = True
 ) -> PlatformConfig:
     """Enable *platform* on env credentials unless config.yaml explicitly disabled it.
 
-    A multiplex secondary profile pins ``enabled: false`` to share the default profile's listener
-    yet inherits the process env; without this guard env presence would force-enable it and trip
-    MultiplexConfigError. By default the ``_enabled_explicit`` marker is READ (the plugin-enable
-    and relay passes still need it) and the disable is warned once; port-binding platforms POP it
-    (terminal branch) and stay silent.
+    A multiplex secondary profile may pin ``enabled: false`` yet inherit the process env; without
+    this guard env presence would force-enable it. By default the ``_enabled_explicit`` marker is
+    READ (the plugin-enable and relay passes still need it) and the disable is warned once;
+    api_server/webhook POP it (terminal branch) and stay silent.
     """
     platform_config = config.platforms.setdefault(platform, PlatformConfig())
     extra = platform_config.extra
     explicit = extra.pop("_enabled_explicit", False) if pop_marker else extra.get("_enabled_explicit", False)
     if platform_config.enabled:
         return platform_config
-    if not explicit:
+    if not explicit and not (
+        platform.value in SHARED_LISTENER_MIRROR_PLATFORMS and _loading_secondary_under_multiplexer()
+    ):
+        # A secondary's API_SERVER_KEY / WEBHOOK_ENABLED (the docs require the key in its .env for
+        # /p/<profile>/ auth) must not turn into listener intent: the default profile's listener already
+        # mirrors those two at /p/<profile>/ (#100397). The credential still lands in ``extra`` for it.
+        # Every other inbound-port platform IS enabled for a secondary: it runs in shared-listener mode.
         platform_config.enabled = True
     elif warn:
         _warn_explicit_disable_beats_env(platform)
@@ -249,17 +265,16 @@ def _telegram_fallback_ips(config: GatewayConfig) -> None:
 
 
 def _whatsapp(config: GatewayConfig) -> None:
-    """WhatsApp (Baileys bridge) uses a flag, not credentials; an explicit false overrides YAML."""
+    """WhatsApp (Baileys bridge) uses a flag, not credentials. WHATSAPP_ENABLED=false overrides YAML;
+    WHATSAPP_ENABLED=true follows the credential contract — it never beats an explicit YAML disable
+    (the dashboard's disable action writes only ``platforms.whatsapp.enabled: false`` and leaves the
+    env flag on disk, #73289)."""
     raw = getenv("WHATSAPP_ENABLED")
-    enabled = is_truthy_value(raw)
     wa_cfg = config.platforms.get(Platform.WHATSAPP)
-    if wa_cfg is None:
-        if enabled:
-            config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
-    elif raw.lower() in {"false", "0", "no"}:
+    if wa_cfg is not None and raw.lower() in {"false", "0", "no"}:
         wa_cfg.enabled = False
-    elif enabled:
-        wa_cfg.enabled = True
+    elif is_truthy_value(raw):
+        _enable_from_env(config, Platform.WHATSAPP)
 
 
 def _slack_home(config: GatewayConfig) -> None:
@@ -301,9 +316,15 @@ def _api_server(config: GatewayConfig) -> None:
 
 
 def _webhook(config: GatewayConfig) -> None:
-    if is_truthy_value(getenv("WEBHOOK_ENABLED")):
-        extra = _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False).extra
-        _env_extras(extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
+    enabled = is_truthy_value(getenv("WEBHOOK_ENABLED"))
+    if not (enabled or Platform.WEBHOOK in config.platforms):
+        return
+    webhook_config = (
+        _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False)
+        if enabled
+        else config.platforms[Platform.WEBHOOK]
+    )
+    _env_extras(webhook_config.extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
 
 
 def _msgraph_webhook(config: GatewayConfig) -> None:
@@ -339,13 +360,6 @@ def _qq_home(config: GatewayConfig, qq_config: PlatformConfig) -> None:
             name=getenv("QQBOT_HOME_CHANNEL_NAME") or getenv(name_env, "Home"),
             thread_id=getenv("QQBOT_HOME_CHANNEL_THREAD_ID") or getenv("QQ_HOME_CHANNEL_THREAD_ID") or None,
         )
-
-
-def _session_settings(config: GatewayConfig) -> None:
-    for env, attr in (("SESSION_IDLE_MINUTES", "idle_minutes"), ("SESSION_RESET_HOUR", "at_hour")):
-        if raw := getenv(env):
-            with contextlib.suppress(ValueError):
-                setattr(config.default_reset_policy, attr, int(raw))
 
 
 def _plugin_probe_seed(entry) -> Optional[dict]:
@@ -457,7 +471,11 @@ def _relay(config: GatewayConfig) -> None:
     relay_url_yaml = str(existing_relay.extra.get("relay_url") or "").strip() if existing_relay else ""
     relay_url_val = relay_url_env or relay_url_yaml
     if relay_url_val:
-        _enable_from_env(config, Platform.RELAY).extra["relay_url"] = relay_url_val.rstrip("/")
+        relay_config = _enable_from_env(config, Platform.RELAY)
+        relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
+        # An opted-out relay does not own this profile's native connections.
+        if not relay_config.enabled:
+            return
 
     if not relay_url_env or is_truthy_value(getenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS")):
         return
@@ -623,7 +641,7 @@ _ENV_STEPS: tuple = (
         ),
         home="YUANBAO_HOME_CHANNEL",
     ),
-    _session_settings,
+
     _enable_plugin_platforms_from_env,
     _relay,
     _scrub_explicit_markers,

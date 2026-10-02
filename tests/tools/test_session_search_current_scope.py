@@ -1002,27 +1002,36 @@ def test_cross_scope_lineage_root_cannot_leak_metadata_or_results(db):
     assert "Foreign Root Private Title" not in json.dumps(result)
 
 
-def test_current_scoped_exact_miss_never_scans_other_profiles(db, monkeypatch):
+def test_current_scoped_exact_miss_never_scans_other_profiles(db, tmp_path, monkeypatch):
     current_source = _source(chat_id="chat-a", user_id="user-1")
     current_key, _ = _seed(db, "current", current_source, "active turn")
+    foreign_home = tmp_path / "profiles" / "work"
+    foreign_home.mkdir(parents=True)
+    (foreign_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    foreign_db = SessionDB(foreign_home / "state.db")
+    try:
+        foreign_db.create_session("foreign-exact-session", source="cli")
+        foreign_db.append_message("foreign-exact-session", role="user", content="foreign transcript")
+    finally:
+        foreign_db.close()
+    from hermes_cli import profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: db.db_path.parent)
+    monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: tmp_path / "profiles")
 
-    def forbidden_scan(_session_id):
-        raise AssertionError("current-scoped miss broadened to all profiles")
-
-    monkeypatch.setattr(
-        "tools.session_search_tool._locate_session_db", forbidden_scan
-    )
     with _bound(current_source, current_key, "current"):
-        result = json.loads(
-            session_search(
-                session_id="missing-exact-session",
-                db=db,
-                current_session_id="current",
-            )
-        )
-
-    assert result["success"] is False
-    assert "not found" in result["error"]
+        for scope in (None, "all"):
+            result = json.loads(session_search(
+                session_id="foreign-exact-session", db=db,
+                current_session_id="current", scope=scope))
+            assert result["success"] is False
+            assert "not found" in result["error"]
+            assert "foreign transcript" not in json.dumps(result)
+        # Naming the owning profile is explicit authority; a bare id must never scan for it.
+        explicit = json.loads(session_search(
+            session_id="foreign-exact-session", profile="work", db=db,
+            current_session_id="current"))
+        assert explicit["success"] is True
+        assert "foreign transcript" in json.dumps(explicit)
 
 
 def test_ordinary_unbound_is_global_but_bound_gateway_mismatch_fails_closed(db):
@@ -1523,3 +1532,53 @@ def test_python_and_sql_recall_normalization_are_equal_or_sql_narrower(db):
         assert python_matches is expected, label
         assert sql_matches is expected, label
         assert not sql_matches or python_matches, label
+
+
+@pytest.mark.parametrize("query,stale", [("composed needle", False), ("历史测试", False), ("composed needle", True)])
+def test_current_scope_composes_with_time_window_and_exclusions(db, query, stale):
+    from datetime import datetime, timezone
+
+    current_source = _source(chat_id="chat-a", user_id="user-1")
+    current_key, _ = _seed(db, "current-composed", current_source, "active turn")
+    foreign_source = _source(chat_id="chat-b", user_id="user-1")
+    for sid, source, month in (
+        ("scoped-in-window", current_source, 6),
+        ("scoped-outside-window", current_source, 8),
+        ("foreign-in-window", foreign_source, 6),
+    ):
+        _seed(db, sid, source, query)
+        epoch = datetime(2026, month, 15, tzinfo=timezone.utc).timestamp()
+        db._execute_write(lambda conn, sid=sid, epoch=epoch: conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (epoch, sid)))
+    if stale:
+        db._fts_stale = True
+    with _bound(current_source, current_key, "current-composed"):
+        result = json.loads(session_search(
+            query=query, after="2026-06-01", before="2026-07-01",
+            db=db, current_session_id="current-composed", limit=10))
+        assert result["success"] is True
+        assert _result_ids(result) == {"scoped-in-window"}
+        excluded = json.loads(session_search(
+            query=query, after="2026-06-01", before="2026-07-01",
+            exclude_session_ids=["scoped-in-window"],
+            db=db, current_session_id="current-composed", limit=10))
+        assert excluded["success"] is True
+        assert _result_ids(excluded) == set()
+
+def test_list_sessions_rich_preserves_old_positional_include_subagents(db):
+    """Main's last positional argument still controls delegate visibility."""
+    db.create_session("positional-parent", source="cli")
+    db.create_session(
+        "positional-delegate", source="subagent", parent_session_id="positional-parent",
+        model_config={"_delegate_from": "positional-parent"},
+    )
+    db.append_message("positional-delegate", role="user", content="delegated work")
+    # This is the complete pre-recall_scope positional API, through include_subagents.
+    legacy_arguments = (
+        None, None, None, None, 20, 0, False, 0, True, False,
+        False, False, None, None, False, False, None, False,
+    )
+    hidden = db.list_sessions_rich(*legacy_arguments, False)
+    visible = db.list_sessions_rich(*legacy_arguments, True)
+    assert {row["id"] for row in hidden} == {"positional-parent"}
+    assert {row["id"] for row in visible} == {"positional-parent", "positional-delegate"}

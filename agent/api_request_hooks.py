@@ -148,6 +148,8 @@ class ApiRequestHooksMixin:
         return self._sanitize_hook_payload(
             {
                 "model": getattr(response, "model", None),
+                # Downstream that served the call (relays re-roll it per request; #90216).
+                "upstream_provider": getattr(response, "provider", None),
                 "finish_reason": finish_reason,
                 "assistant_message": {
                     "role": getattr(assistant_message, "role", "assistant"),

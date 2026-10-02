@@ -253,8 +253,12 @@ def test_auxiliary_provider_fallback_records_one_terminal_model_route(
     assert snapshot[0]["metric_name"] == MODEL_ROUTE_METRIC
     assert snapshot[0]["resource"]["hermes_version"] == "test-version"
     assert snapshot[0]["dimensions"] == {
+        "call_role": "auxiliary",
+        "error_class": "none",
         "model": "accepted/model",
+        "outcome": "success",
         "provider": "openrouter",
+        "ttft_bucket": "unknown",
     }
     assert snapshot[0]["value"] == 1
     assert snapshot[0]["packaged_value"] == 0

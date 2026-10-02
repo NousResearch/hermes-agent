@@ -297,7 +297,7 @@ export function ModelPickerDialog(props: Props) {
             message:
               result.confirm_message ||
               result.warning ||
-              "This model has unusually high known pricing.",
+              (P?.confirmPricingMessage ?? "This model has unusually high known pricing."),
           });
           return;
         }
@@ -325,7 +325,7 @@ export function ModelPickerDialog(props: Props) {
             message:
               result.confirm_message ||
               result.warning ||
-              "This model has unusually high known pricing.",
+              (P?.confirmPricingMessage ?? "This model has unusually high known pricing."),
           });
           return;
         }
@@ -457,7 +457,7 @@ export function ModelPickerDialog(props: Props) {
                 className="font-mondwest normal-case tracking-normal text-xs text-muted-foreground cursor-pointer"
                 htmlFor="model-picker-persist-global"
               >
-                Persist globally (otherwise this session only)
+                {P?.persistGlobal ?? "Persist globally (otherwise this session only)"}
               </Label>
             </div>
           )}
@@ -469,13 +469,13 @@ export function ModelPickerDialog(props: Props) {
               disabled={applying || loading || refreshing}
             >
               {refreshing ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
-              Refresh Models
+              {P?.refreshModels ?? "Refresh Models"}
             </Button>
             <Button outlined onClick={onClose} disabled={applying}>
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button onClick={confirm} disabled={!canConfirm}>
-              {applying ? <Spinner /> : "Switch"}
+              {applying ? <Spinner /> : (P?.switch ?? "Switch")}
             </Button>
           </div>
         </footer>
@@ -486,7 +486,7 @@ export function ModelPickerDialog(props: Props) {
         description={pendingConfirm?.message}
         destructive
         confirmLabel={P?.switchAnyway ?? "Switch anyway"}
-        cancelLabel="Cancel"
+        cancelLabel={t.common.cancel}
         loading={applying}
         onCancel={() => setPendingConfirm(null)}
         onConfirm={() => {
@@ -537,7 +537,7 @@ function ProviderColumn({
     <div className="border-r border-border overflow-y-auto">
       {loading && (
         <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
-          <Spinner className="text-xs" /> loading…
+          <Spinner className="text-xs" /> {P?.loadingProviders ?? "loading…"}
         </div>
       )}
 
@@ -551,7 +551,7 @@ function ProviderColumn({
             </span>
           ) : (
             <div className="flex flex-col gap-2">
-              <span>{NO_PROVIDERS_MESSAGE}</span>
+              <span>{P?.noProviders ?? NO_PROVIDERS_MESSAGE}</span>
               <div className="flex flex-wrap gap-2">
                 <Link to="/env" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
                   Open Keys
@@ -585,7 +585,7 @@ function ProviderColumn({
                 {isCurrentProvider && <CurrentTag />}
               </div>
               <div className="text-xs text-text-secondary font-mono truncate">
-                {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
+                {p.slug} · {(P?.modelCount ?? "{count} models").replace("{count}", String(p.total_models ?? p.models?.length ?? 0))}
               </div>
             </div>
           </ListItem>
@@ -618,11 +618,13 @@ function ModelColumn({
   onSelect(model: string): void;
   onConfirm(model: string): void;
 }) {
+  const { t } = useI18n();
+  const P = t.modelPicker;
   if (!provider) {
     return (
       <div className="overflow-y-auto">
         <div className="p-4 text-xs text-muted-foreground italic">
-          pick a provider →
+          {P?.pickProvider ?? "pick a provider →"}
         </div>
       </div>
     );
@@ -639,8 +641,8 @@ function ModelColumn({
       {models.length === 0 ? (
         <div className="p-4 text-xs text-muted-foreground italic">
           {allModels.length
-            ? "no models match your filter"
-            : "no models listed for this provider"}
+            ? (P?.noModelsMatchFilter ?? "no models match your filter")
+            : (P?.noModelsForProvider ?? "no models listed for this provider")}
         </div>
       ) : (
         models.map(({ model: m, positions }) => {

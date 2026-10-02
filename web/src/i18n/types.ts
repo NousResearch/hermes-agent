@@ -156,6 +156,10 @@ export interface Translations {
     sharedMetricsOff?: string;
     sharedMetricsDetails?: string;
     sharedMetricsSaveFailed?: string;
+    loadingChat?: string;
+    restartAll?: string;
+    restartSharedGatewayTitle?: string;
+    updateConfirmBehind?: string;
   };
 
   // ── System page: Memory section ──
@@ -412,6 +416,16 @@ export interface Translations {
     reloadTitle: string;
     reload: string;
     reloadDescription: string;
+    persistGlobal: string;
+    refreshModels: string;
+    switch: string;
+    loadingProviders: string;
+    noProviders: string;
+    noModelsMatchFilter: string;
+    noModelsForProvider: string;
+    confirmPricingMessage: string;
+    modelCount: string;
+    pickProvider: string;
   };
 
   // ── Logs page ──  /** Optional — Files page copy. */
@@ -638,6 +652,29 @@ export interface Translations {
     deleteFolderDescription: string;
     deleteFileDescription: string;
     targetLabel: string;
+  };
+
+
+  /** Optional — Chat page copy. */
+  chat?: {
+    imageUploadDisconnected: string;
+    reconnecting: string;
+    disconnected: string;
+    reconnectChat: string;
+    reconnectNow: string;
+    checkServerStatus: string;
+    startNewSessionAria: string;
+    startNewSession: string;
+    openLogs: string;
+    copyLastRawTitle: string;
+    copyLastTitle: string;
+    copyLast: string;
+    copied: string;
+    showSidePanelTitle: string;
+    showSidePanelAria: string;
+    panelLabel: string;
+    collapseSidePanelAria: string;
+    collapseSidePanelTitle: string;
   };
 
 
@@ -1036,6 +1073,7 @@ export interface Translations {
       external: string;
     };
     expiresIn: string;
+    disconnectBody?: string;
   };
 
   // ── Language switcher ──

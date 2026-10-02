@@ -798,7 +798,7 @@ export default function App() {
                   !chatOverriddenByPlugin &&
                   (pluginsLoading ? (
                     isChatRoute ? (
-                      <RouteFallback label="Loading chat…" />
+                      <RouteFallback label={t.app.loadingChat ?? "Loading chat…"} />
                     ) : null
                   ) : chatHostMounted ? (
                     <div
@@ -812,7 +812,7 @@ export default function App() {
                       <Suspense
                         fallback={
                           isChatRoute ? (
-                            <RouteFallback label="Loading chat…" />
+                            <RouteFallback label={t.app.loadingChat ?? "Loading chat…"} />
                           ) : null
                         }
                       >
@@ -820,7 +820,7 @@ export default function App() {
                       </Suspense>
                     </div>
                   ) : isChatRoute ? (
-                    <RouteFallback label="Loading chat…" />
+                    <RouteFallback label={t.app.loadingChat ?? "Loading chat…"} />
                   ) : null)}
               </div>
               <PluginSlot name="post-main" />
@@ -981,14 +981,18 @@ function SidebarSystemActions({
     if (updateConfirmInfo?.behind && updateConfirmInfo.behind > 0) {
       const cmd = updateConfirmInfo.update_command;
       const n = updateConfirmInfo.behind;
-      return `This will run 'hermes update' (${cmd}) and pull ${n} new commit${n === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`;
+      return (t.app.updateConfirmBehind ??
+        "This will run 'hermes update' ({cmd}) and pull {n} new commit{s}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.")
+        .replace("{cmd}", cmd)
+        .replace("{n}", String(n))
+        .replace("{s}", n === 1 ? "" : "s");
     }
     const cmd = updateConfirmInfo?.update_command ?? "hermes update";
     return (
       t.status.updateHermesConfirmMessage ??
       `This will run 'hermes update' (${cmd}) and restart the gateway when it finishes.`
     );
-  }, [t.status.updateHermesConfirmMessage, updateConfirmInfo]);
+  }, [t.status.updateHermesConfirmMessage, t.app.updateConfirmBehind, updateConfirmInfo]);
 
   const items: SystemActionItem[] = [
     {
@@ -1081,7 +1085,7 @@ function SidebarSystemActions({
 
     <ConfirmDialog
       cancelLabel={t.common.cancel}
-      confirmLabel={sharedGateway ? "Restart all" : t.status.restartGateway}
+      confirmLabel={sharedGateway ? (t.app.restartAll ?? "Restart all") : t.status.restartGateway}
       description={
         sharedGateway
           ? sharedGatewayRestartDescription(sharedGateway)
@@ -1094,7 +1098,7 @@ function SidebarSystemActions({
       open={restartConfirmOpen}
       title={
         sharedGateway
-          ? "Restart the shared gateway?"
+          ? (t.app.restartSharedGatewayTitle ?? "Restart the shared gateway?")
           : (t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`)
       }
     />

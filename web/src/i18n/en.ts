@@ -132,6 +132,10 @@ export const en: Translations = {
     sharedMetricsOff: "No thanks",
     sharedMetricsDetails: "Details",
     sharedMetricsSaveFailed: "Couldn't save your choice",
+    loadingChat: "Loading chat…",
+    restartAll: "Restart all",
+    restartSharedGatewayTitle: "Restart the shared gateway?",
+    updateConfirmBehind: "This will run 'hermes update' ({cmd}) and pull {n} new commit{s}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.",
   },
 
   // ── System page: Memory section ──
@@ -408,6 +412,16 @@ export const en: Translations = {
     reload: "Reload",
     reloadDescription:
       "Switching to {model} starts a fresh chat. Your current chat stays in your Sessions list and the agent's memory is kept. Reload now to apply it?",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    refreshModels: "Refresh Models",
+    switch: "Switch",
+    loadingProviders: "loading…",
+    noProviders: "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models to see models here.",
+    noModelsMatchFilter: "no models match your filter",
+    noModelsForProvider: "no models listed for this provider",
+    confirmPricingMessage: "This model has unusually high known pricing.",
+    modelCount: "{count} models",
+    pickProvider: "pick a provider →",
   },  mcpPage: {
     removeServer: "Remove MCP server",
     removeBodyNamed: '"{name}" — this will remove the server.',
@@ -635,6 +649,28 @@ export const en: Translations = {
     "deleteFolderDescription": "This removes the folder and everything inside it.",
     "deleteFileDescription": "This removes the file.",
     "targetLabel": "Target:",
+  },
+
+
+  chat: {
+    imageUploadDisconnected: "Image uploaded, but chat is not connected — try again.",
+    reconnecting: "Chat is reconnecting.",
+    disconnected: "Chat disconnected.",
+    reconnectChat: "Reconnect chat",
+    reconnectNow: "Reconnect now",
+    checkServerStatus: "Check server status",
+    startNewSessionAria: "Start a new chat session",
+    startNewSession: "Start new session",
+    openLogs: "Open logs",
+    copyLastRawTitle: "Copy last assistant response as raw markdown",
+    copyLastTitle: "Copy last assistant response",
+    copyLast: "copy last response",
+    copied: "copied",
+    showSidePanelTitle: "Show side panel (model + sessions)",
+    showSidePanelAria: "Show chat side panel",
+    panelLabel: "panel",
+    collapseSidePanelAria: "Collapse chat side panel",
+    collapseSidePanelTitle: "Collapse side panel",
   },
 
 
@@ -2925,6 +2961,7 @@ export const en: Translations = {
       external: "External CLI",
     },
     expiresIn: "expires in {time}",
+    disconnectBody: "This will remove the stored OAuth tokens for {name}. You will need to re-authenticate to use it again.",
   },
 
   language: {

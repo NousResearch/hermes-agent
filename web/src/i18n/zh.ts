@@ -120,6 +120,10 @@ export const zh: Translations = {
     diskElevatedBanner:
       "你的代理磁盘空间正在被占满。建议清理旧会话或扩充存储。",
     dismiss: "忽略",
+    loadingChat: "正在加载聊天…",
+    restartAll: "全部重启",
+    restartSharedGatewayTitle: "重启共享网关？",
+    updateConfirmBehind: "将运行 'hermes update'（{cmd}）并拉取 {n} 个新提交{s}。更新完成后网关会重启；在此之前当前会话会保留其提示缓存。",
   },
 
   // ── System page: Memory section ──
@@ -393,6 +397,16 @@ export const zh: Translations = {
     reload: "重新加载",
     reloadDescription:
       "切换到 {model} 会开启一个新的会话。当前会话仍保留在「会话」列表中，智能体的记忆也会保留。现在重新加载以应用？",
+    persistGlobal: "全局持久保存（否则仅本次会话有效）",
+    refreshModels: "刷新模型列表",
+    switch: "切换",
+    loadingProviders: "加载中…",
+    noProviders: "尚未配置任何模型提供方。请在「密钥」页面添加 API 密钥，或在「模型」页面登录某个提供方，即可在此看到模型。",
+    noModelsMatchFilter: "没有符合筛选条件的模型",
+    noModelsForProvider: "该提供方没有列出任何模型",
+    confirmPricingMessage: "该模型已知价格异常偏高。",
+    modelCount: "{count} 个模型",
+    pickProvider: "选择一个提供方 →",
   },  mcpPage: {
     removeServer: "移除 MCP 服务器",
     removeBodyNamed: "「{name}」— 这将移除该服务器。",
@@ -614,6 +628,28 @@ export const zh: Translations = {
     "deleteFolderDescription": "将删除该文件夹及其中的全部内容。",
     "deleteFileDescription": "将删除该文件。",
     "targetLabel": "目标：",
+  },
+
+
+  chat: {
+    imageUploadDisconnected: "图片已上传，但聊天未连接——请重试。",
+    reconnecting: "聊天正在重新连接。",
+    disconnected: "聊天已断开。",
+    reconnectChat: "重新连接聊天",
+    reconnectNow: "立即重连",
+    checkServerStatus: "检查服务器状态",
+    startNewSessionAria: "开始新的聊天会话",
+    startNewSession: "开始新会话",
+    openLogs: "打开日志",
+    copyLastRawTitle: "以原始 Markdown 复制最后一条助手回复",
+    copyLastTitle: "复制最后一条助手回复",
+    copyLast: "复制最后一条回复",
+    copied: "已复制",
+    showSidePanelTitle: "显示侧边栏（模型 + 会话）",
+    showSidePanelAria: "显示聊天侧边栏",
+    panelLabel: "面板",
+    collapseSidePanelAria: "收起聊天侧边栏",
+    collapseSidePanelTitle: "收起侧边栏",
   },
 
 
@@ -2880,6 +2916,7 @@ export const zh: Translations = {
       external: "外部 CLI",
     },
     expiresIn: "{time}后过期",
+    disconnectBody: "这将移除 {name} 已存储的 OAuth 令牌。之后你需要重新认证才能继续使用。",
   },
 
   language: {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import logging
 import time
 from typing import Any, Optional, TYPE_CHECKING
@@ -21,7 +22,7 @@ class MatrixReactionPromptMixin:
         _schedule_reaction_redaction: Any
 
     async def _send_reaction_prompt(
-        self, chat_id: str, text: str, metadata: Optional[dict], make_prompt, registry: dict, emojis,
+        self, chat_id: str, text: str, metadata: Optional[dict], make_prompt, registry: dict, emojis: Iterable[str],
         label: str) -> SendResult:
         """Send *text*, register ``make_prompt(message_id, requester, expires_at)`` under
         the resulting event, then seed the bot's reaction controls (recording their IDs)."""

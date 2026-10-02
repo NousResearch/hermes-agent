@@ -406,6 +406,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       let startingRouteToken = getRouteToken()
 
+      // True once this submit had to mint or resume its target runtime (a
+      // fresh create, a routed re-home, a plain resume). Those pipelines churn
+      // selection/route as part of the send itself, so navigation stays fatal
+      // at every boundary for them (#62805 pins the post-create one). A target
+      // that was already live at entry keeps its proven binding across a
+      // navigation — the caller passes `ignoreNavigation` at the post-binding
+      // boundaries.
+      let targetBoundViaMintOrResume = false
+
       // Reason string (or null) for why the session context genuinely drifted
       // under this in-flight submit. sessionContextDrift ignores the churn a
       // busy gateway produces (selection null-resets on a gateway/profile
@@ -416,23 +425,26 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // the created chat after createBackendSessionForSend. submitTargetStoredId
       // is the stored session this submit targets, so a move ONTO it (the
       // pipeline's own re-home) is never counted as drift.
-      const sessionDriftReason = (): string | null =>
+      const sessionDriftReason = ({ ignoreNavigation = false }: { ignoreNavigation?: boolean } = {}): string | null =>
         targetStartedInCurrentView
-          ? sessionContextDrift({
-              startRouteToken: startingRouteToken,
-              nowRouteToken: getRouteToken(),
-              startSelectedStoredId: startingSelectedStoredSessionId,
-              nowSelectedStoredId: selectedStoredSessionIdRef.current,
-              submitTargetStoredId: startingStoredSessionId,
-              composerScope: options?.composerScope,
-              // The composer keys drafts/attachments on the durable lineage
-              // root (survives auto-compression tip rotation), while
-              // startingStoredSessionId is the live tip — resolve the target
-              // into the same lineage-root domain before comparing, or every
-              // submit into a session that has ever compressed would
-              // false-positive-abort.
-              submitTargetComposerScope: resolveComposerSessionKey(startingStoredSessionId, $sessions.get())
-            })
+          ? sessionContextDrift(
+              {
+                startRouteToken: startingRouteToken,
+                nowRouteToken: getRouteToken(),
+                startSelectedStoredId: startingSelectedStoredSessionId,
+                nowSelectedStoredId: selectedStoredSessionIdRef.current,
+                submitTargetStoredId: startingStoredSessionId,
+                composerScope: options?.composerScope,
+                // The composer keys drafts/attachments on the durable lineage
+                // root (survives auto-compression tip rotation), while
+                // startingStoredSessionId is the live tip — resolve the target
+                // into the same lineage-root domain before comparing, or every
+                // submit into a session that has ever compressed would
+                // false-positive-abort.
+                submitTargetComposerScope: resolveComposerSessionKey(startingStoredSessionId, $sessions.get())
+              },
+              { ignoreNavigation }
+            )
           : null
 
       const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionDriftReason()
@@ -652,6 +664,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // swap/reconnect left its volatile session binding incomplete or
         // cross-wired. Run the full profile-aware resume path. Creating here
         // would fork a contextless chat against whichever profile is active.
+        targetBoundViaMintOrResume = true
+
         try {
           await resumeStoredSession(routedStoredSessionId)
         } catch {
@@ -699,6 +713,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // live session was orphan-reaped, a timeout/reconnect cleared it, or a
         // background queue drain only has the durable id). Continue that target
         // conversation; only a genuine new-chat draft may create a new session.
+        targetBoundViaMintOrResume = true
+
         try {
           // Re-register on the session's OWNING profile — resuming on whichever
           // profile is live would fork the conversation into the wrong DB (#67603).
@@ -778,6 +794,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       if (!sessionId) {
+        targetBoundViaMintOrResume = true
+
         try {
           sessionId = await createBackendSessionForSend(bubbleText, undefined, {
             onComposerScopeAssigned: options?.onComposerScopeAssigned
@@ -874,7 +892,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         sessionId = liveSessionId
 
-        const attachmentsDrift = sessionDriftReason()
+        const attachmentsDrift = sessionDriftReason({ ignoreNavigation: !targetBoundViaMintOrResume })
 
         if (attachmentsDrift) {
           console.warn('[submit-drift-abort]', attachmentsDrift, { phase: 'post-attachments' })
@@ -902,7 +920,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             profile: profileScopeForTranscriptSession(resolveActiveTranscriptSession(guardStoredId, liveSessionId))
           })
 
-          if (sessionDriftReason()) {
+          const refreshDrift = sessionDriftReason({ ignoreNavigation: !targetBoundViaMintOrResume })
+
+          if (refreshDrift) {
+            console.warn('[submit-drift-abort]', refreshDrift, { phase: 'post-refresh' })
+
             return abortForSessionSwitch(liveSessionId)
           }
 
@@ -1006,6 +1028,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               ),
             {
               requestGateway,
+              // The recovery path stays strict: the binding turned out stale —
+              // that is exactly when a user switch must abort rather than
+              // guess a context (#54527 pins the abort for this shape).
               driftReason: sessionDriftReason,
               onRecovered: recoveredId => {
                 if (onRuntimeRecovered) {

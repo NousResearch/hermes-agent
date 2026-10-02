@@ -165,7 +165,7 @@ export default function FilesPage() {
   const goToPath = async () => {
     const nextPath = pathInput.trim();
     if (!nextPath) {
-      showToast("Path required", "error");
+      showToast(F?.pathRequired ?? "Path required", "error");
       return;
     }
     await load(nextPath);
@@ -174,11 +174,11 @@ export default function FilesPage() {
   const createDirectory = async () => {
     const name = folderName.trim();
     if (!activePath) {
-      showToast("Directory unavailable", "error");
+      showToast(F?.directoryUnavailable ?? "Directory unavailable", "error");
       return;
     }
     if (!name) {
-      showToast("Folder name required", "error");
+      showToast(F?.folderNameRequired ?? "Folder name required", "error");
       return;
     }
     setCreating(true);
@@ -186,10 +186,10 @@ export default function FilesPage() {
       await api.createDirectory(joinPath(activePath, name));
       setFolderName("");
       setCreateDialogOpen(false);
-      showToast("Folder created", "success");
+      showToast(F?.folderCreated ?? "Folder created", "success");
       await load();
     } catch (e) {
-      showToast(`Create failed: ${errorMessage(e)}`, "error");
+      showToast(`${F?.createFailed ?? "Create failed"}: ${errorMessage(e)}`, "error");
     } finally {
       setCreating(false);
     }
@@ -257,11 +257,11 @@ export default function FilesPage() {
     setDeleting(true);
     try {
       await api.deleteFile(pendingDelete.path, pendingDelete.is_directory);
-      showToast("Deleted", "success");
+      showToast(F?.deleted ?? "Deleted", "success");
       setPendingDelete(null);
       await load();
     } catch (e) {
-      showToast(`Delete failed: ${errorMessage(e)}`, "error");
+      showToast(`${F?.deleteFailed ?? "Delete failed"}: ${errorMessage(e)}`, "error");
     } finally {
       setDeleting(false);
     }
@@ -351,15 +351,15 @@ export default function FilesPage() {
           </span>
           <span className="min-w-0">
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
-              {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
+              {uploading ? (F?.uploading ?? "Uploading") : draggingFiles ? (F?.releaseToUpload ?? "Release to upload") : (F?.dropFilesHere ?? "Drop files here")}
             </span>
             <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
-              {activePath || "Loading"}
+              {activePath || (F?.loading ?? "Loading")}
             </span>
           </span>
         </span>
         <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary sm:block">
-          Choose files
+          {F?.chooseFiles ?? "Choose files"}
         </span>
       </button>
 
@@ -490,7 +490,7 @@ export default function FilesPage() {
           <DialogHeader>
             <DialogTitle>{F?.createFolder ?? "Create folder"}</DialogTitle>
             <DialogDescription>
-              Target: {activePath || "Loading"}
+              {F?.targetLabel ?? "Target:"} {activePath || (F?.loading ?? "Loading")}
             </DialogDescription>
           </DialogHeader>
           <div className="p-4">
@@ -515,7 +515,7 @@ export default function FilesPage() {
               }}
               disabled={creating}
             >
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button
               type="button"
@@ -523,7 +523,7 @@ export default function FilesPage() {
               disabled={creating}
               prefix={creating ? <Spinner /> : <FolderPlus />}
             >
-              Create
+              {t.common.create}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -534,11 +534,11 @@ export default function FilesPage() {
         loading={deleting}
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => void confirmDelete()}
-        title={pendingDelete ? `Delete ${pendingDelete.name}?` : "Delete item?"}
+        title={pendingDelete ? `${F?.deleteNamedTitle ?? "Delete"} ${pendingDelete.name}?` : (F?.deleteItemTitle ?? "Delete item?")}
         description={
           pendingDelete?.is_directory
-            ? "This removes the folder and everything inside it."
-            : "This removes the file."
+            ? (F?.deleteFolderDescription ?? "This removes the folder and everything inside it.")
+            : (F?.deleteFileDescription ?? "This removes the file.")
         }
       />
     </div>

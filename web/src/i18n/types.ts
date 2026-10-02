@@ -285,6 +285,8 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+    /** Optional — "All time" range preset; en/zh seed it, other locales fall back. */
+    all?: string;
   };
 
   // ── Models page ──
@@ -519,6 +521,23 @@ export interface Translations {
     noFiles: string;
     createFolder: string;
     folderNamePlaceholder: string;
+    pathRequired: string;
+    directoryUnavailable: string;
+    folderNameRequired: string;
+    folderCreated: string;
+    createFailed: string;
+    deleted: string;
+    deleteFailed: string;
+    uploading: string;
+    releaseToUpload: string;
+    dropFilesHere: string;
+    chooseFiles: string;
+    loading: string;
+    deleteItemTitle: string;
+    deleteNamedTitle: string;
+    deleteFolderDescription: string;
+    deleteFileDescription: string;
+    targetLabel: string;
   };
 
 

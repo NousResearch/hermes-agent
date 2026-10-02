@@ -264,6 +264,7 @@ export const en: Translations = {
     perDayAvg: "/day avg",
     acrossModels: "across {count} models",
     inOut: "{input} in / {output} out",
+    all: "All",
   },
 
   models: {
@@ -520,6 +521,23 @@ export const en: Translations = {
     noFiles: "No files",
     createFolder: "Create folder",
     folderNamePlaceholder: "Folder name",
+      "pathRequired": "Path required",
+      "directoryUnavailable": "Directory unavailable",
+      "folderNameRequired": "Folder name required",
+      "folderCreated": "Folder created",
+      "createFailed": "Create failed",
+      "deleted": "Deleted",
+      "deleteFailed": "Delete failed",
+      "uploading": "Uploading",
+      "releaseToUpload": "Release to upload",
+      "dropFilesHere": "Drop files here",
+      "chooseFiles": "Choose files",
+      "loading": "Loading",
+      "deleteItemTitle": "Delete item?",
+      "deleteNamedTitle": "Delete",
+      "deleteFolderDescription": "This removes the folder and everything inside it.",
+      "deleteFileDescription": "This removes the file.",
+      "targetLabel": "Target:",
   },
 
 

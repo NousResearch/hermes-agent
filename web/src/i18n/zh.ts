@@ -250,6 +250,7 @@ export const zh: Translations = {
     perDayAvg: "/天 平均",
     acrossModels: "共 {count} 个模型",
     inOut: "输入 {input} / 输出 {output}",
+    all: "全部",
   },
 
   models: {
@@ -499,6 +500,23 @@ export const zh: Translations = {
     noFiles: "没有文件",
     createFolder: "新建文件夹",
     folderNamePlaceholder: "文件夹名称",
+      "pathRequired": "请输入路径",
+      "directoryUnavailable": "目录不可用",
+      "folderNameRequired": "文件夹名称不能为空",
+      "folderCreated": "文件夹已创建",
+      "createFailed": "创建失败",
+      "deleted": "已删除",
+      "deleteFailed": "删除失败",
+      "uploading": "上传中",
+      "releaseToUpload": "松开即可上传",
+      "dropFilesHere": "将文件拖到这里",
+      "chooseFiles": "选择文件",
+      "loading": "加载中",
+      "deleteItemTitle": "删除该项？",
+      "deleteNamedTitle": "删除",
+      "deleteFolderDescription": "将删除该文件夹及其中的全部内容。",
+      "deleteFileDescription": "将删除该文件。",
+      "targetLabel": "目标：",
   },
 
 

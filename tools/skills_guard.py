@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v9"
+SCANNER_VERSION = "skills-guard-v10"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -79,9 +79,18 @@ def _shell_write_re(file_alt: str) -> str:
     ``| tee output | AGENTS.md |`` cells miss), ``cp``/``mv`` with the file as destination (source arg required, so
     ``cp AGENTS.md backup/`` misses; ``AGENTS.md.bak`` is not the file). A single ``>`` needs a preceding word/quote/
     paren char so blockquotes (``> text``) and arrows (``-> file``) miss. Before a slash, unquoted tokens
-    match from their boundary so the closing bracket in ``<vault-root>/...`` is not a redirect."""
+    match from their boundary so the closing bracket in ``<vault-root>/...`` is not a redirect.
+    An unquoted target is matched wherever the operator sits; a *quoted* target only matches when the
+    redirect is in a backtick-free line — an inline code span inside prose (``Never run `cat > 'AGENTS.md'```)
+    is a documentation mention, and flagging mentions blocked popular community skills (#92021)."""
     redirect = (
         r'(?:>>|["\'`)\]]\s*>|(?<![<\w./\\:-])[\w./\\:-]*\w(?:<[\w./\\:-]+)?\s*>'
+        r'|\w\s*>(?![/\\]))')
+    # The quoted-target arm below cannot borrow the backtick from ``redirect``: a backtick
+    # right before the operator is the *opening* of an inline code span (``A safe pattern
+    # is `> "AGENTS.md"```), i.e. a documentation mention rather than a write (#92021).
+    quoted_line_redirect = (
+        r'(?:>>|["\')\]]\s*>|(?<![<\w./\\:-])[\w./\\:-]*\w(?:<[\w./\\:-]+)?\s*>'
         r'|\w\s*>(?![/\\]))')
     # At command position, ``<input>/path`` is an input/output redirect pair, even though
     # the same token inside a prose sentence can be a documented path placeholder.
@@ -89,9 +98,10 @@ def _shell_write_re(file_alt: str) -> str:
         r'(?:^|[;&|`(])\s*(?:\$\s+)?[\w./\\:-]+(?:\s+-[\w-]+)*\s+<[\w./\\:-]+\s*>')
     # A real redirect can target a documented placeholder path; excluding its closing ``>``
     # must not hide an earlier write operator on the same line.
-    path_prefix = r'["\']?(?:[~\w./-]|<[\w./\\:-]+>)*'
+    path_prefix = r'(?:[~\w./-]|<[\w./\\:-]+>)*'
     return (
         rf'(?:{redirect}|{input_output})\s*{path_prefix}{file_alt}(?!\.?\w)'
+        rf'|^[^\`\n]*?(?:{quoted_line_redirect}|{input_output})\s*[\'"]{path_prefix}{file_alt}(?!\.?\w)'
         rf'|\bsed\b[^\n]*\s(?:-[A-Za-z]*i[A-Za-z]*|--in-place)\b[^\n]*{file_alt}(?!\.?\w)'
         rf'|\btee\s+(?:-a\s+)?[~\w./"\'-]*{file_alt}(?!\.?\w)'
         rf'|\b(?:cp|mv)\s+[^\s|;&]+\s+[^\n|;&]{{0,40}}?{file_alt}(?!\.?\w)')

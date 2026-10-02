@@ -99,3 +99,34 @@ def test_real_config_writes_remain_critical_and_block_install(tmp_path, target, 
     assert any(f.pattern_id == family + "_mod_shell" and f.severity == "critical"
                for f in result.findings)
     assert result.verdict == "dangerous"
+
+
+QUOTED_TARGET_MENTIONS = [
+    # Inline code spans embedded in prose are documentation mentions, not writes
+    # (#92021): the quoted-target arm must not fire across the span's opening backtick.
+    'Write the file with `echo x > "{target}"` to update it.',
+    "Never run `cat > '{target}'` in this plugin.",
+    'A safe pattern is `> "{target}"` only when asked.',
+]
+
+
+@pytest.mark.parametrize("target,family", CONFIG_TARGETS)
+@pytest.mark.parametrize("doc", QUOTED_TARGET_MENTIONS)
+def test_quoted_target_mentions_in_prose_code_spans_are_not_writes(tmp_path, target, family, doc):
+    content = doc.format(target=target) + "\n"
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text("name: demo\nversion: 0.0.1\n", encoding="utf-8")
+    (plugin / "README.md").write_text(content, encoding="utf-8")
+    result = scan_plugin(plugin)
+    assert result.verdict != "dangerous"
+    assert not any(f.pattern_id == family + "_mod_shell" for f in result.findings)
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(content, encoding="utf-8")
+    result = scan_skill(skill)
+    # Only the shell-write arm is asserted here: an imperative opener ("Write the file
+    # with ...") separately trips _prose_modify_re, which is base behavior outside this
+    # fix's scope.
+    assert not any(f.pattern_id == family + "_mod_shell" for f in result.findings)

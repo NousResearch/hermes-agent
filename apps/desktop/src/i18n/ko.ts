@@ -4,6 +4,7 @@ import { mergeTranslations } from '@hermes/shared/i18n'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introKo } from './intro-ko'
 import { koBulkOverrides } from './ko-bulk'
+import { koFnOverrides } from './ko-fn'
 
 export const koOverrides = {
   externalOpenFailed: {
@@ -939,4 +940,6 @@ export const koOverrides = {
   },
 } satisfies TranslationOverrides
 
-export const ko = defineLocale(mergeTranslations(koOverrides as TranslationOverrides, koBulkOverrides))
+export const ko = defineLocale(
+  mergeTranslations(mergeTranslations(koOverrides as TranslationOverrides, koBulkOverrides), koFnOverrides)
+)

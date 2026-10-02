@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -21,12 +21,12 @@ import { SkillDetail } from './skill-detail'
 import { skillsQueryKey, usageOf } from './skills-data'
 
 interface SkillsTabProps {
-  view?: 'installed' | 'browse'
   /** The scope's skill list, straight from the shell's query. */
   skills: SkillInfo[]
   /** Every read and write targets this connection/profile pair. */
   profile: ProfileScope
   query: string
+  view?: 'installed' | 'browse'
   onQueryChange?: (value: string) => void
   installedPending?: boolean
   installedError?: unknown
@@ -40,10 +40,10 @@ export function SkillsTab(props: SkillsTabProps) {
 }
 
 function ScopedSkillsTab({
-  view,
   onRefresh,
   profile,
   query,
+  view,
   onQueryChange,
   skills,
   installedPending = false,
@@ -75,30 +75,6 @@ function ScopedSkillsTab({
       queryClient.setQueryData<SkillInfo[]>(skillsQueryKey(profile), prev => fn(prev) ?? prev),
     [profile]
   )
-
-  // Provenance counts make it clear why a skill appears in this list (agent,
-  // bundled, or Skills Hub) instead of implying that only one source exists.
-  // Older backends do not send provenance at all; do not fabricate an
-  // `agent` count because that would turn missing metadata into a false claim.
-  const provenanceSummary = useMemo(() => {
-    if (!skills || skills.some(skill => !skill.provenance || skill.provenance === 'external')) {
-      return null
-    }
-
-    const counts = { agent: 0, bundled: 0, hub: 0 }
-
-    for (const skill of skills) {
-      const provenance = skill.provenance
-
-      if (!provenance || provenance === 'external') {
-        return null
-      }
-
-      counts[provenance] += 1
-    }
-
-    return t.skills.provenanceSummary(counts.agent, counts.bundled, counts.hub)
-  }, [skills, t.skills])
 
   // The backend saves one disabled-list config value: serialize individual and
   // bulk changes together, not merely the members of a bulk action.
@@ -279,14 +255,7 @@ function ScopedSkillsTab({
           </>
         }
         installedPending={installedPending || Boolean(installedError)}
-        notice={
-          <>
-            {provenanceSummary && (
-              <p className="px-3 py-1 text-xs text-(--ui-text-tertiary)">{provenanceSummary}</p>
-            )}
-            {notice}
-          </>
-        }
+        notice={notice}
         onQueryChange={onQueryChange}
         profile={profile}
         query={query}

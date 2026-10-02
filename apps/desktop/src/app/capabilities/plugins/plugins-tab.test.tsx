@@ -4,9 +4,17 @@ import { type ComponentProps, useState } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection, setApiRequestLocalMode } from '@/api/client'
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
-import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store/agent-plugins'
+import {
+  $agentPlugins,
+  $agentPluginsOwner,
+  $agentPluginsStatus,
+  agentPluginRequestOwner,
+  type AgentPluginRow,
+  scopedAgentPluginRequest
+} from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $notifications } from '@/store/notifications'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
@@ -22,6 +30,12 @@ const requestGateway = vi.fn(async (_method: string, _params?: Record<string, un
   plugins: $agentPlugins.get()
 }))
 
+const { scopedGateway } = vi.hoisted(() => ({ scopedGateway: vi.fn() }))
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestGatewayForAgent: (...args: unknown[]) => scopedGateway(...args)
+}))
+
 // The shell owns search; exercise the same controlled composition as CapabilitiesView.
 function PluginsHarness({ query: initialQuery, ...props }: ComponentProps<typeof PluginsTab>) {
   const [query, setQuery] = useState(initialQuery ?? '')
@@ -34,6 +48,14 @@ function PluginsHarness({ query: initialQuery, ...props }: ComponentProps<typeof
 }
 
 function renderPlugins(props: ComponentProps<typeof PluginsTab>) {
+  // Seeded rows in these fixtures belong to the surface being rendered.
+  if ($agentPlugins.get().length) {
+    const profile = typeof props.profile === 'object' ? props.profile?.profile : props.profile
+    $agentPluginsOwner.set(
+      agentPluginRequestOwner(scopedAgentPluginRequest(props.profile, requestGateway as never), profile)
+    )
+  }
+
   return render(
     <QueryClientProvider client={queryClient}>
       <PluginsHarness {...props} />
@@ -56,6 +78,12 @@ function seedCatalog(entries = [weatherEntry]) {
 }
 
 async function selectCatalogEntry(name: string) {
+  const browse = screen.queryByRole('button', { name: 'Browse', pressed: false })
+
+  if (browse) {
+    fireEvent.click(browse)
+  }
+
   fireEvent.click((await screen.findAllByRole('button', { name }))[0])
   expect(screen.getAllByRole('heading', { name }).length).toBeGreaterThan(0)
 }
@@ -96,6 +124,10 @@ vi.mock('@/api/toolsets', async importOriginal => ({
 }))
 
 beforeEach(() => {
+  setApiRequestConnection(null)
+  setApiRequestLocalMode(true)
+  $connection.set({ ...connectionFixture, mode: 'local', connectionId: 'local' })
+  scopedGateway.mockReset().mockImplementation(async () => ({ plugins: [] }))
   $pluginRecords.set({})
   $agentPlugins.set([])
   $agentPluginsStatus.set('ready')
@@ -137,6 +169,10 @@ describe('PluginsTab', () => {
     function Location() {
       return <output data-testid="route">{useLocation().search}</output>
     }
+
+    $agentPluginsOwner.set(
+      agentPluginRequestOwner(scopedAgentPluginRequest('workbot', requestGateway as never), 'workbot')
+    )
 
     render(
       <QueryClientProvider client={queryClient}>
@@ -347,6 +383,34 @@ describe('PluginsTab', () => {
       'plugins.manage',
       expect.objectContaining({ action: 'list', profile: 'workbot' })
     )
+  })
+
+  it('reads a pinned remote on its own transport while another backend remains active', async () => {
+    $connection.set({ ...connectionFixture, connectionId: 'active-other', mode: 'remote' })
+    requestGateway.mockClear()
+    renderPlugins({ profile: { connectionId: 'pinned-remote', profile: 'default' } })
+    await waitFor(() =>
+      expect(scopedGateway).toHaveBeenCalledWith(
+        'pinned-remote',
+        'default',
+        'plugins.manage',
+        expect.objectContaining({ action: 'list' }),
+        undefined,
+        undefined,
+        { spawnPriority: 'foreground' }
+      )
+    )
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect($connection.get()?.connectionId).toBe('active-other')
+  })
+
+  it('opens a reviewed native catalog install with the complete pinned remote scope', async () => {
+    seedCatalog()
+    const profile = { connectionId: 'pinned-remote', profile: 'default' }
+    renderPlugins({ profile, view: 'browse' })
+    await selectCatalogEntry('weather-plugin')
+    fireEvent.click(screen.getByRole('switch', { name: 'Add weather-plugin' }))
+    expect($pluginInstallRequest.get()).toMatchObject({ profile, catalogName: 'weather-plugin', sha: 'a'.repeat(40) })
   })
 
   it.each([false, true])('opens the scoped native install dialog from the selected entry (cards=%s)', async cards => {
@@ -618,6 +682,76 @@ describe('PluginsTab', () => {
 })
 
 describe('PluginsTab catalog UX', () => {
+  it.each(['settings', 'remove'] as const)(
+    'keeps a completed pinned A %s from publishing success or rescanning view B',
+    async action => {
+      const a = { connectionId: 'pinned-A', profile: 'default' }
+      const b = { connectionId: 'pinned-B', profile: 'default' }
+
+      const plugin = (name: string): AgentPluginRow => ({
+        name,
+        key: name,
+        description: '',
+        source: 'git',
+        status: 'enabled',
+        version: '1',
+        settings_schema: [
+          { key: 'retries', label: 'Retries', type: 'number', description: '', required: true, value: 3 }
+        ]
+      })
+
+      let finish!: (value: unknown) => void
+      scopedGateway.mockImplementation(async (connectionId, _profile, _method, params) => {
+        if (params.action === 'list') {
+          return { plugins: [plugin(connectionId)] }
+        }
+
+        return new Promise(resolve => {
+          finish = resolve
+        })
+      })
+      const view = renderPlugins({ profile: a })
+      await screen.findByRole('row', { name: /^pinned-A/ })
+
+      if (action === 'settings') {
+        fireEvent.click(screen.getByRole('button', { name: 'Settings: pinned-A' }))
+        fireEvent.change(screen.getByRole('spinbutton', { name: 'Retries' }), { target: { value: '9' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+      } else {
+        fireEvent.click(screen.getByRole('button', { name: 'Uninstall: pinned-A' }))
+        await waitFor(() => expect($confirmRequest.get()?.title).toContain('pinned-A'))
+        act(() => settleConfirm(true))
+      }
+
+      await waitFor(() =>
+        expect(scopedGateway).toHaveBeenCalledWith(
+          'pinned-A',
+          'default',
+          'plugins.manage',
+          expect.objectContaining({ action, profile: 'default' }),
+          undefined,
+          undefined,
+          { spawnPriority: 'foreground' }
+        )
+      )
+      view.rerender(
+        <QueryClientProvider client={queryClient}>
+          <PluginsHarness profile={b} />
+        </QueryClientProvider>
+      )
+      await screen.findByRole('row', { name: /^pinned-B/ })
+      $notifications.set([])
+      await act(async () => {
+        finish({ ok: true, plugin: plugin('pinned-A') })
+      })
+      expect(screen.getByRole('row', { name: /^pinned-B/ })).toBeTruthy()
+      expect($notifications.get().filter(item => item.kind === 'success')).toEqual([])
+      expect(
+        scopedGateway.mock.calls.filter(([id, , , params]) => id === 'pinned-A' && params.action === 'list')
+      ).toHaveLength(1)
+    }
+  )
+
   it('saves declared settings from the installed detail with values and secrets on their scoped routes', async () => {
     const row: AgentPluginRow = {
       name: 'demo-settings',
@@ -633,7 +767,7 @@ describe('PluginsTab catalog UX', () => {
     }
 
     $agentPlugins.set([row])
-    requestGateway.mockImplementation(async (_method, params) =>
+    scopedGateway.mockImplementation(async (_connection, _profile, _method, params) =>
       params?.action === 'settings'
         ? {
             ok: true,
@@ -648,6 +782,8 @@ describe('PluginsTab catalog UX', () => {
     )
 
     const profile = { profile: 'workbot', connectionId: 'remote-work' }
+    $connection.set({ ...connectionFixture, connectionId: 'active-other', mode: 'remote' })
+    requestGateway.mockClear()
 
     await act(async () => {
       renderPlugins({ profile })
@@ -660,15 +796,24 @@ describe('PluginsTab catalog UX', () => {
 
     await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('DEMO_API_KEY', 'test-api-key', profile))
     await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith('plugins.manage', {
-        action: 'settings',
-        key: row.key,
-        values: { retries: 9 },
-        profile: 'workbot'
-      })
+      expect(scopedGateway).toHaveBeenCalledWith(
+        'remote-work',
+        'workbot',
+        'plugins.manage',
+        {
+          action: 'settings',
+          key: row.key,
+          values: { retries: 9 },
+          profile: 'workbot'
+        },
+        undefined,
+        undefined,
+        { spawnPriority: 'foreground' }
+      )
     )
     await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>('API key').value).toBe(''))
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Save settings' }).disabled).toBe(true)
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 
   it('requires widening consent before retrying an update, and leaves a declined update untouched', async () => {
@@ -744,11 +889,12 @@ describe('PluginsTab catalog UX', () => {
     fireEvent.change(search, { target: { value: 'weather' } })
     expect(await screen.findByRole('heading', { name: weatherEntry.name })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'garden-plugin' })).toBeNull()
-
-    const installedFilter = screen.getAllByRole('button', { name: 'Installed', pressed: false })
-      .find(button => !button.closest('[data-capability-tabs]'))!
-
-    fireEvent.click(installedFilter)
+    fireEvent.click(
+      within(document.querySelector('[data-capability-tabs]') as HTMLElement).getByRole('button', {
+        name: 'Installed',
+        pressed: false
+      })
+    )
     expect(screen.queryByRole('heading', { name: weatherEntry.name })).toBeNull()
     expect(search.value).toBe('weather')
     fireEvent.click(screen.getAllByRole('button', { name: 'Clear filters' })[0])
@@ -770,13 +916,13 @@ describe('PluginsTab catalog UX', () => {
       .mockResolvedValue({ ok: true, json: async () => [weatherEntry] })
 
     vi.stubGlobal('fetch', fetchCatalog)
-    const view = renderPlugins({ profile: null })
+    const view = renderPlugins({ profile: null, view: 'browse' })
 
     expect(await screen.findByText('Catalog HTTP 503')).toBeTruthy()
     expect(fetchCatalog).toHaveBeenCalledTimes(1)
     view.unmount()
     await act(async () => {
-      renderPlugins({ profile: null })
+      renderPlugins({ profile: null, view: 'browse' })
     })
     expect(fetchCatalog).toHaveBeenCalledTimes(1)
     expect(screen.getByText('Catalog HTTP 503')).toBeTruthy()
@@ -838,40 +984,56 @@ describe('PluginsTab catalog UX', () => {
     )
   })
 
-  it('uninstalls through plugins.manage remove only after the confirm dialog is accepted', async () => {
-    $agentPlugins.set([
-      {
-        description: '',
-        key: 'demo-weather',
-        name: 'demo-weather',
-        source: 'git',
-        status: 'enabled',
-        version: '1.0.0'
-      }
-    ])
-    requestGateway.mockImplementation(async (_method, params) =>
-      params?.action === 'remove' ? { ok: true, name: 'demo-weather' } : { plugins: $agentPlugins.get() }
-    )
+  it.each(['workbot', { connectionId: 'pinned-remote', profile: 'workbot' }])(
+    'uninstalls through its owning transport only after confirmation (%j)',
+    async profile => {
+      $agentPlugins.set([
+        {
+          description: '',
+          key: 'demo-weather',
+          name: 'demo-weather',
+          source: 'git',
+          status: 'enabled',
+          version: '1.0.0'
+        }
+      ])
 
-    renderPlugins({ profile: 'workbot' })
+      const reply = async (_method: unknown, params: Record<string, unknown>) =>
+        params?.action === 'remove' ? { ok: true, name: 'demo-weather' } : { plugins: $agentPlugins.get() }
 
-    screen.getByRole('button', { name: 'Uninstall: demo-weather' }).click()
+      requestGateway.mockImplementation(reply as never)
+      scopedGateway.mockImplementation((_connection, _profile, method, params) => reply(method, params))
 
-    // The click only asks; nothing is deleted until the destructive confirm is answered.
-    await waitFor(() => expect($confirmRequest.get()?.title).toContain('demo-weather'))
-    expect(screen.getByRole('row', { name: /^demo-weather/ })).toBeTruthy()
-    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
+      renderPlugins({ profile })
 
-    settleConfirm(true)
+      screen.getByRole('button', { name: 'Uninstall: demo-weather' }).click()
 
-    await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith(
-        'plugins.manage',
-        expect.objectContaining({ action: 'remove', name: 'demo-weather', profile: 'workbot' })
+      // The click only asks; nothing is deleted until the destructive confirm is answered.
+      await waitFor(() => expect($confirmRequest.get()?.title).toContain('demo-weather'))
+      expect(screen.getByRole('row', { name: /^demo-weather/ })).toBeTruthy()
+      expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
+
+      settleConfirm(true)
+
+      await waitFor(() =>
+        typeof profile === 'string'
+          ? expect(requestGateway).toHaveBeenCalledWith(
+              'plugins.manage',
+              expect.objectContaining({ action: 'remove', name: 'demo-weather', profile: 'workbot' })
+            )
+          : expect(scopedGateway).toHaveBeenCalledWith(
+              'pinned-remote',
+              'workbot',
+              'plugins.manage',
+              expect.objectContaining({ action: 'remove', name: 'demo-weather', profile: 'workbot' }),
+              undefined,
+              undefined,
+              { spawnPriority: 'foreground' }
+            )
       )
-    )
-    await waitFor(() => expect(screen.queryByText('demo-weather')).toBeNull())
-  })
+      await waitFor(() => expect(screen.queryByText('demo-weather')).toBeNull())
+    }
+  )
 
   it('uninstalls a standalone desktop plugin through Electron only after the confirm dialog is accepted', async () => {
     $pluginRecords.set({

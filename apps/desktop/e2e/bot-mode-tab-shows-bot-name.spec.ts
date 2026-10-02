@@ -43,7 +43,7 @@ async function seedBot(
   const dir = path.join(hermesHome, 'profiles', name)
   fs.mkdirSync(dir, { recursive: true })
   writeMockProviderConfig(dir, mockUrl)
-  writeEnvFile(dir)
+  writeEnvFile(dir, 'e2e-mock-key', mockUrl)
 
   markChildAttempted()
   const builder = await RealSessionBuilder.start(dir)
@@ -74,7 +74,7 @@ test.beforeAll(async () => {
     startMock: startMockServer,
     seed: async (mockUrl, markChildAttempted) => {
       writeMockProviderConfig(sandbox.hermesHome, mockUrl)
-      writeEnvFile(sandbox.hermesHome)
+      writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mockUrl)
       await seedBot(sandbox.hermesHome, mockUrl, 'alpha', markChildAttempted)
       await seedBot(sandbox.hermesHome, mockUrl, 'beta', markChildAttempted)
     },

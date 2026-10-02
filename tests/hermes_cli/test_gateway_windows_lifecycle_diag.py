@@ -25,7 +25,7 @@ def lifecycle_home(tmp_path, monkeypatch):
     return tmp_path, identity
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 @pytest.mark.parametrize(
     ("previous_unclean", "store", "passes"),
     [(False, "absent", True), (True, "absent", True),
@@ -75,7 +75,7 @@ def test_deep_probe_preserves_previous_exit_and_integrity(
     assert diag_path.read_bytes() == original_log
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 @pytest.mark.parametrize("case", [
     "missing-log", "empty-log", "malformed-json", "non-object", "missing-pid",
     "string-pid", "other-pid", "missing-ts", "malformed-ts", "naive-ts",

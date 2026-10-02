@@ -46,7 +46,6 @@ export const zh = defineLocale({
   },
   intro: introZh,
   catalog: {
-    browse: '浏览',
     add: '添加',
     added: '已添加',
     discover: '发现',
@@ -103,7 +102,8 @@ export const zh = defineLocale({
     snapshotHint: '内容来自 Hermes 目录。浏览时不会连接来源代码仓库。',
     installHint: '安装前请检查源代码。更改将在新会话中生效。',
     results: (count: number) => `${count.toLocaleString('zh')} 个结果`,
-    back: '返回结果'
+    back: '返回结果',
+    browse: '浏览'
   },
   connectors: {
     title: '连接你的应用',
@@ -211,7 +211,6 @@ export const zh = defineLocale({
     on: '开',
     off: '关'
   },
-
   fileMenu: {
     revealFinder: '在访达中显示',
     revealExplorer: '在文件资源管理器中显示',
@@ -231,7 +230,6 @@ export const zh = defineLocale({
     pathCopied: '已复制路径',
     revealMissing: '该文件夹不在这台电脑上'
   },
-
   boot: {
     ready: 'Hermes 桌面版已就绪',
     desktopBootFailedWithMessage: message => `桌面启动失败：${message}`,
@@ -290,7 +288,6 @@ export const zh = defineLocale({
       identityProvider: '你的身份提供方'
     }
   },
-
   notifications: {
     sharedProfileWarning:
       '另一个 Hermes 安装实例正在使用此配置。两个实例共享此配置的设置和数据，因此更改可能发生冲突。你可以继续使用，也可以在更改前关闭另一个实例。',
@@ -379,11 +376,9 @@ export const zh = defineLocale({
       creditsTitle: '额度'
     }
   },
-
   remoteDisplayBanner: {
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
   },
-
   billingBlock: {
     titleNous: 'Nous 额度已用尽',
     titleProvider: provider => `额度已用尽 — ${provider}`,
@@ -392,7 +387,6 @@ export const zh = defineLocale({
     addCredits: '添加额度',
     dismiss: '忽略'
   },
-
   sendDiagnostics: {
     title: '向 Nous 发送诊断信息',
     privacyNotice:
@@ -415,7 +409,6 @@ export const zh = defineLocale({
       discord: 'Discord'
     }
   },
-
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',
@@ -435,7 +428,6 @@ export const zh = defineLocale({
     layoutEditor: '布局编辑器',
     layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
   },
-
   keybinds: {
     title: '键盘快捷键',
     subtitle: open => `点击快捷键即可重新绑定 · ${open} 可重新打开此面板。`,
@@ -546,12 +538,10 @@ export const zh = defineLocale({
       'composer.cancel': '关闭弹窗·取消运行'
     }
   },
-
   findInPage: {
     next: '下一个匹配',
     previous: '上一个匹配'
   },
-
   language: {
     label: '语言',
     description: '选择桌面界面的语言。',
@@ -561,7 +551,6 @@ export const zh = defineLocale({
     searchPlaceholder: '搜索语言…',
     noResults: '未找到语言'
   },
-
   settings: {
     subpages: {
       appearanceTheme: '主题',
@@ -851,9 +840,6 @@ export const zh = defineLocale({
       system: { label: '跟随系统', description: '跟随系统外观' }
     },
     appearance: {
-      loginStartupFailed: 'Windows 未能启用启动项。请在 Windows 设置中检查“启动应用”。',
-      loginStartupDesc: '登录时最小化打开桌面应用。使用已保存的主配置文件。',
-      loginStartupTitle: '随 Windows 启动 Hermes',
       chatTextScaleTitle: '聊天文字大小',
       chatTextScaleDesc: '相对于界面缩放调整对话文字和消息输入框的字号。侧边栏和控件大小保持不变。',
       title: '外观',
@@ -1002,7 +988,10 @@ export const zh = defineLocale({
         noneAvailable: '当前没有可开启的宠物。',
         turnOnFailed: '无法开启宠物。',
         turnOffFailed: '无法关闭宠物。'
-      }
+      },
+      loginStartupTitle: '随 Windows 启动 Hermes',
+      loginStartupDesc: '登录时最小化打开桌面应用。使用已保存的主配置文件。',
+      loginStartupFailed: 'Windows 未能启用启动项。请在 Windows 设置中检查“启动应用”。'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -1361,11 +1350,42 @@ export const zh = defineLocale({
       driverHealth: '驱动健康状态'
     },
     about: {
-      branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
+      updates: '更新',
+      heading: 'Hermes Desktop',
+      version: value => `版本 ${value}`,
+      versionUnavailable: '版本不可用',
+      bundleOutOfSync: '应用构建版本过旧',
+      bundleOutOfSyncDesc:
+        'Hermes 运行时已更新,但桌面应用本身仍是旧构建——在应用更新之前,新的界面功能(如 Bot Mode)不会显示。请运行下方的更新以重新构建应用。如果此警告仍未消除,请从最新的桌面安装程序重新安装。',
+      bundleOutOfSyncAction: '获取安装程序',
+      bundleSwapPending: '重启以完成更新',
+      bundleSwapPendingDesc: '更新后的应用已安装完成，只需重启 Hermes 即可加载新版本。聊天记录和设置不会受到影响。',
+      bundleSwapPendingAction: '重启 Hermes',
+      checkNow: '立即检查',
+      checking: '检查中…',
+      seeWhatsNew: '查看新增内容',
+      updateNow: '立即更新',
       updateSource: '更新源',
-      automaticUpdatesDesc: '在后台检查更新并通知你；安装仍需手动确认。',
+      releaseNotes: '发行说明',
+      onLatest: '已配置的更新源已是最新。',
+      installing: '正在安装更新。',
+      cantUpdate: '此版本无法在应用内自我更新。',
+      cantReach: '无法连接更新服务器。',
+      tapCheck: '点击"立即检查"以查找更新。',
+      updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
+      updateReadyUnknown: '新更新已就绪。',
+      lastChecked: age => `上次检查:${age}`,
+      justNowSuffix: ' · 刚刚',
       automaticUpdates: '自动检查更新',
-      updates: '更新'
+      automaticUpdatesDesc: '在后台检查更新并通知你；安装仍需手动确认。',
+      updateParked: '更新正在等待安全的工作区。',
+      updateParkedDesc: '本地修复改动已保留。请在安装上游更新前先检查或移动这些改动。',
+      branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
+      never: '从未',
+      justNow: '刚刚',
+      minAgo: count => `${count} 分钟前`,
+      hoursAgo: count => `${count} 小时前`,
+      daysAgo: count => `${count} 天前`
     },
     config: {
       minimizeToTrayTitle: '最小化到托盘',
@@ -1467,7 +1487,6 @@ export const zh = defineLocale({
       set: '设置',
       clear: '清除'
     },
-    // v2 多连接注册表：设置 → 网关。
     connections: {
       title: '已注册网关',
       intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
@@ -2308,10 +2327,7 @@ export const zh = defineLocale({
       }
     }
   },
-
   skills: {
-    provenanceSummary: (agent, bundled, hub) => `${agent} 个已学习 · ${bundled} 个内置 · ${hub} 个 Hub`,
-    tabHub: '浏览技能中心',
     tabSkills: '技能',
     tabToolsets: '工具集',
     configuringProfile: '正在配置：',
@@ -2478,9 +2494,10 @@ export const zh = defineLocale({
       previewFailed: '技能预览失败',
       scanFailed: '安全扫描失败',
       searchFailed: '技能中心搜索失败'
-    }
+    },
+    tabHub: '浏览技能中心',
+    provenanceSummary: (agent, bundled, hub) => `${agent} 个已学习 · ${bundled} 个内置 · ${hub} 个 Hub`
   },
-
   starmap: {
     title: '记忆图谱',
     subtitle: (nodes, clusters) => `${clusters} 个类别中的 ${nodes} 个技能`,
@@ -2550,11 +2567,7 @@ export const zh = defineLocale({
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
     tokens: value => `${value} 词元`
   },
-
   commandCenter: {
-    logTailHint: count => `显示所选文件和级别的最近日志，最多 ${count} 行。`,
-    allLogLevels: '所有级别',
-    actionTimedOut: '操作仍在运行；请查看最近日志以确认最终状态。',
     close: '关闭命令中心',
     paletteTitle: '命令面板',
     back: '返回',
@@ -2697,7 +2710,6 @@ export const zh = defineLocale({
     logLevel: '级别',
     logSearchPlaceholder: '搜索日志行…',
     maintenance: {
-      openFile: '打开文件',
       runOps: '诊断',
       doctor: '运行体检',
       doctorDesc: '检查安装、配置与提供方的健康状态',
@@ -2739,10 +2751,20 @@ export const zh = defineLocale({
       actionStarted: name => `${name} 已启动 — 正在跟踪日志…`,
       actionFailed: name => `${name} 启动失败`,
       running: '运行中…',
-      viewLog: '操作日志'
-    }
+      viewLog: '操作日志',
+      openFile: '打开文件'
+    },
+    sectionDescriptions: {
+      maintenance: '诊断、备份、维护器与记忆数据',
+      sessions: '搜索与管理会话',
+      system: '状态、日志与系统操作',
+      usage: '一段时间内的词元、成本与技能活动'
+    },
+    actionTimedOut: '操作仍在运行；请查看最近日志以确认最终状态。',
+    allLogLevels: '所有级别',
+    noMatchingLogs: '没有与搜索匹配的日志行。',
+    logTailHint: count => `显示所选文件和级别的最近日志，最多 ${count} 行。`
   },
-
   messaging: {
     search: '搜索消息平台…',
     statusFilter: {
@@ -2932,7 +2954,6 @@ export const zh = defineLocale({
       webhook: '运行一个 HTTP 服务器，供其他工具 (GitHub、GitLab、自定义应用)POST。用 secret 验证签名。'
     }
   },
-
   webhooks: {
     search: '搜索 Webhook…',
     loading: '正在加载 Webhook…',
@@ -2998,7 +3019,6 @@ export const zh = defineLocale({
       github_comment: 'GitHub 评论'
     }
   },
-
   profiles: {
     close: '关闭配置档案',
     nameHint: '小写字母、数字、连字符和下划线。必须以字母或数字开头。',
@@ -3142,7 +3162,6 @@ export const zh = defineLocale({
     failedCreate: '创建配置档案失败',
     failedRename: '重命名配置档案失败'
   },
-
   modelAssignment: {
     saveFailed: 'Hermes 未保存该模型更改。',
     confirmTitle: '模型选择警告',
@@ -3150,7 +3169,6 @@ export const zh = defineLocale({
     confirmAction: '确认',
     declined: '已取消模型更改 — 你拒绝了数据训练层级警告。'
   },
-
   cron: {
     close: '关闭定时任务',
     title: '定时任务',
@@ -3287,7 +3305,6 @@ export const zh = defineLocale({
       emptyDesc: '此后端上没有可用的自动化蓝图。'
     }
   },
-
   artifacts: {
     search: '搜索产物…',
     refresh: '刷新产物',
@@ -3322,14 +3339,12 @@ export const zh = defineLocale({
     copyUrl: '复制 URL',
     copyPath: '复制路径'
   },
-
   artifactCard: {
     kind: { code: '代码', html: '交互页面', svg: '图形' },
     generating: lines => `生成中… ${lines} 行`,
     versionBadge: count => `${count} 个版本`,
     open: '打开'
   },
-
   artifactPreview: {
     versionOf: (current, total) => `第 ${current}/${total} 版`,
     olderVersion: '较旧版本',
@@ -3342,7 +3357,6 @@ export const zh = defineLocale({
     missingTitle: '产物不可用',
     missingBody: '此产物已不在本地注册表中。'
   },
-
   sidebar: {
     filter: {
       grouping: '分组',
@@ -3561,7 +3575,6 @@ export const zh = defineLocale({
     },
     markAllRead: '全部标记为已读'
   },
-
   composer: {
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
@@ -3820,7 +3833,6 @@ export const zh = defineLocale({
       }
     }
   },
-
   statusStack: {
     hideStack: '隐藏状态面板',
     showStack: '显示状态面板',
@@ -3974,9 +3986,7 @@ export const zh = defineLocale({
       worktrees: '工作树'
     }
   },
-
   updates: {
-    automaticUpdatesSaveFailed: '无法确认设置已保存。请重试。',
     discontinuedTitle: '此版本的 Hermes 已停止支持',
     discontinuedBody: '此版本的 Hermes 已停止支持，可能无法正常运行——请卸载。您的数据仍保留在磁盘上。',
     channels: { stable: '稳定版', canary: '预览版' },
@@ -4073,7 +4083,6 @@ export const zh = defineLocale({
       failed: '后端更新失败。',
       noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
     },
-    // Update-status overlay + version-details (mechanism-aware update UI).
     appName: 'Hermes',
     version: value => `版本 ${value}`,
     versionUnavailable: '版本不可用',
@@ -4117,9 +4126,9 @@ export const zh = defineLocale({
     versionDetailsRuntimeEmbedded: '嵌入式（捆绑）',
     versionDetailsRuntimeExternal: '外部',
     versionDetailsInstallId: '安装 ID',
-    versionDetailsUncommittedChanges: '未提交的变更'
+    versionDetailsUncommittedChanges: '未提交的变更',
+    automaticUpdatesSaveFailed: '无法确认设置已保存。请重试。'
   },
-
   guidedGreeting: {
     line: '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
     nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
@@ -4199,7 +4208,6 @@ export const zh = defineLocale({
     copyOutput: '复制输出',
     reloadRetry: '重新加载并重试'
   },
-
   onboarding: {
     headerTitle: '开始设置 Hermes Agent',
     headerDesc: '连接模型提供方即可开始对话。大多数选项只需一次点击。',
@@ -4273,9 +4281,6 @@ export const zh = defineLocale({
     startChatting: '开始',
     docs: provider => `${provider} 文档`
   },
-
-  // Not yet translated — English fallbacks so the free-tier surfaces stay
-  // readable until a zh pass lands.
   freeTier: {
     providerRowTitle: 'Nous · 免费层',
     providerRowPitch: '登录 Nous 账户以解锁更多模型和工具。',
@@ -4318,7 +4323,6 @@ export const zh = defineLocale({
     alreadySignedInHeading: '已登录。',
     alreadySignedInBody: '此 Hermes 已登录 Nous 账户。'
   },
-
   modelPicker: {
     title: '切换模型',
     current: '当前：',
@@ -4341,7 +4345,6 @@ export const zh = defineLocale({
     addCustomModelAction: '添加自定义模型…',
     customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5'
   },
-
   modelVisibility: {
     title: '模型',
     search: '搜索模型',
@@ -4354,7 +4357,6 @@ export const zh = defineLocale({
     resetDescription: '你对模型显示与隐藏的选择将被清除，每个提供方都会恢复默认列表。你添加的自定义模型会保留并显示。',
     resetAction: '恢复'
   },
-
   shell: {
     windowControls: '窗口控件',
     paneControls: '面板控件',
@@ -4518,10 +4520,10 @@ export const zh = defineLocale({
       openModelPicker: '打开模型选择器',
       modelPinned: '已由你固定；新对话将使用此模型而非“设置”中的默认模型',
       modelTitle: (provider, model) => `模型 · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      session: '会话'
     }
   },
-
   rightSidebar: {
     terminalReadOnly: '只读输出',
     terminalReadOnlyHelp:
@@ -4569,7 +4571,6 @@ export const zh = defineLocale({
     terminalCloseAll: '关闭全部',
     addToChat: '添加到对话'
   },
-
   preview: {
     tab: '预览',
     closePane: '关闭预览面板',
@@ -4681,7 +4682,6 @@ export const zh = defineLocale({
       cancelComment: '取消批注'
     }
   },
-
   interfaceMode: {
     title: '界面模式',
     hint: '只改变显示的内容，不改变 Hermes 的能力。',
@@ -4695,7 +4695,6 @@ export const zh = defineLocale({
       description: '面向开发者。终端、文件、差异、状态栏和布局，按你的设置显示。'
     }
   },
-
   zones: {
     showTabStrip: '显示标签',
     hideTabStrip: '隐藏标签',
@@ -4744,7 +4743,6 @@ export const zh = defineLocale({
     zoneCount: count => `${count} 个区域`,
     tabCount: count => `${count} 个标签页`
   },
-
   contextMenu: {
     link: {
       openInApp: '在应用内浏览器中打开',
@@ -4768,7 +4766,6 @@ export const zh = defineLocale({
       inspectElement: '检查元素'
     }
   },
-
   assistant: {
     thread: {
       loadingSession: '正在加载会话',
@@ -4921,7 +4918,12 @@ export const zh = defineLocale({
       singleSelectHint: '选一个',
       multiSelectHint: '可多选',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
-      notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
+      notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。',
+      continueLabel: '继续',
+      answeredBadge: '已回答',
+      lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
+      lateAnswerTip: '将此回答起草为后续消息',
+      lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
     },
     catalogInstall: {
       preparing: '正在准备安装…',
@@ -5053,7 +5055,6 @@ export const zh = defineLocale({
       }
     }
   },
-
   prompts: {
     gatewayDisconnected: 'Hermes 网关未连接',
     sudoSendFailed: '无法发送 sudo 密码',
@@ -5093,7 +5094,6 @@ export const zh = defineLocale({
     vaultCodeSkip: '跳过',
     vaultCodeConfirm: '输入验证码'
   },
-
   desktop: {
     audioReadFailed: '无法读取录制的音频',
     sessionUnavailable: '会话不可用',
@@ -5189,7 +5189,6 @@ export const zh = defineLocale({
       timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
     }
   },
-
   tips: {
     close: '不再显示这条提示',
     items: {
@@ -5241,7 +5240,6 @@ export const zh = defineLocale({
       }
     }
   },
-
   errors: {
     genericFailure: '发生错误',
     boundaryTitle: '界面出错了',
@@ -5249,7 +5247,6 @@ export const zh = defineLocale({
     reloadWindow: '重新加载窗口',
     openLogs: '打开日志'
   },
-
   ui: {
     search: {
       clear: '清除搜索'

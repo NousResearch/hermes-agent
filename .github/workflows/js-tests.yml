@@ -13,8 +13,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up the locked JS build toolchain
         id: node
         uses: ./.github/actions/setup-pm
@@ -32,10 +30,6 @@ jobs:
           sudo apt-get install -y zsh xvfb \
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
-
-      - name: grab npm 12
-        run: |
-          npm --version | grep -q '^12\.' || npm i -g npm@12
 
       # setup-pm caches npm downloads, not the installed workspace tree.
       # The job then extracts the full workspace node_modules

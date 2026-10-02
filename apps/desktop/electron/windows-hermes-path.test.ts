@@ -2,13 +2,13 @@
 // main.ts's findOnPath(), handOffWindowsBootstrapRecovery(), and
 // unwrapWindowsVenvHermesCommand(). These pin the two Windows resolution bugs
 // that caused desktop reinstall loops:
-//   1. buildPathExtCandidates() â€” PATHEXT extensions must be tried BEFORE the
+//   1. buildPathExtCandidates() — PATHEXT extensions must be tried BEFORE the
 //      empty extension, or an extensionless Git-Bash `hermes` shim shadows
 //      the real hermes.cmd/hermes.exe.
-//   2. chooseUpdaterArgs() â€” must distinguish a runnable updater from stale
+//   2. chooseUpdaterArgs() — must distinguish a runnable updater from stale
 //      install provenance. The bootstrap marker can outlive the venv, and a
 //      partial venv cannot run the updater; those states require --repair.
-//   3. resolveVenvHermesCommand() â€” must probe the venv python via
+//   3. resolveVenvHermesCommand() — must probe the venv python via
 //      canImportHermesCli() before trusting it, or a broken venv gets
 //      re-selected forever instead of falling through to bootstrap.
 
@@ -16,7 +16,12 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, resolveVenvHermesCommand } from './windows-hermes-path'
+import {
+  buildPathExtCandidates,
+  chooseUpdaterArgs,
+  getVenvSitePackagesEntries,
+  resolveVenvHermesCommand
+} from './windows-hermes-path'
 
 test('buildPathExtCandidates: Windows tries PATHEXT extensions before the empty extension', () => {
   const extensions = buildPathExtCandidates('.COM;.EXE;.BAT;.CMD', true)
@@ -129,7 +134,7 @@ test('resolveVenvHermesCommand: is case-insensitive on hermes.exe and the Script
   assert.ok(await resolveVenvHermesCommand('/root/venv/SCRIPTS/hermes.exe', [], deps))
 })
 
-// â”€â”€ getVenvSitePackagesEntries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── getVenvSitePackagesEntries ─────────────────────────────────────────────
 
 test('getVenvSitePackagesEntries: returns Lib/site-packages on Windows when it exists', () => {
   const expected = 'C:\\venv\\Lib\\site-packages'
@@ -159,7 +164,6 @@ test('getVenvSitePackagesEntries: reads pyvenv.cfg version on POSIX and resolves
     directoryExists: p => p === expected,
     readFile: p => {
       assert.equal(p, '/venv/pyvenv.cfg')
-
       return 'version_info = 3.12.1\n'
     }
   })

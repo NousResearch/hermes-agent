@@ -11,9 +11,9 @@ const _READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 // (#103792). Match on a token boundary instead; `port=<digits>` keeps prose mentions out.
 export const READY_IN_MERGED_OUTPUT_RE = /(?<!\w)HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/
 
-// The announcement clock starts the instant the backend process is spawned â€”
+// The announcement clock starts the instant the backend process is spawned —
 // before uvicorn binds its socket. On a cold install the child must first
-// compile and import the whole `hermes_cli.main` â†’ `web_server` â†’ FastAPI/
+// compile and import the whole `hermes_cli.main` → `web_server` → FastAPI/
 // uvicorn chain, and on Windows real-time AV (Defender) scans every freshly
 // written `.pyc`. That pre-bind cost can run 30-60s on a slow disk, so a tight
 // 45s deadline kills a *healthy but still-starting* backend and respawns it,
@@ -24,26 +24,16 @@ const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 180_000
 // (the historical default) so a malformed override can't reintroduce the loop.
 const MIN_PORT_ANNOUNCE_TIMEOUT_MS = 45_000
 
-// While the backend prints venv_sync's source-update completion banners it is
-// finishing an owed update tail BEFORE `hermes serve` starts, and that tail
-// legitimately runs minutes (dependency sync alone measured at ~19-22 min,
-// #122206) â€” far past the 90s cold-start budget, which is sized for imports
-// and AV scans, not repairs. Killing the child mid-repair and respawning it
-// (what the old timeout did) re-runs the repair from scratch on every boot.
-// While a banner is present the deadline is re-armed instead, up to this
-// total cap; a tail that outlasts the cap fails with the usual timeout and
-// the banner text in the output tail, which is truthful and actionable.
-const SOURCE_COMPLETION_BANNER_RE = /finishing an interrupted source update|completing source-update dependencies/
-const SOURCE_COMPLETION_GRACE_MS = 5 * 60_000
+// venv_sync emits these banners on stderr before running an owed source-update
+// phase. Dependency completion can be quiet for 19-22 minutes. Only this
+// explicit phase may use the existing absolute 30-minute budget from spawn;
+// repeated banners never move the deadline. Ordinary startup keeps its budget.
+const SOURCE_COMPLETION_BANNER_RE =
+  /hermes: (?:finishing an interrupted source update|completing source-update dependencies)\.\.\./
+
 const SOURCE_COMPLETION_MAX_TOTAL_MS = 30 * 60_000
 
-/**
- * The source-completion grace resolves against the REAL clock, not the faked
- * one: vitest's advanceTimersByTimeAsync advances Date.now() with the timers,
- * so a `Date.now() + GRACE` deadline re-computed each tick stays GRACE away
- * forever and the cap never fires under tests. The real clock also matches
- * production semantics â€” the grace measures wall-clock repair time.
- */
+// A monotonic clock keeps system-clock corrections from extending startup.
 function realNow() {
   return Number(process.hrtime.bigint() / 1_000_000n)
 }
@@ -78,7 +68,7 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
  * backend has even bound its port. Pass an explicit `timeoutMs` to override.
  *
  * A single `cleanup()` tears down every listener (data/exit/error/timeout)
- * on every terminal path â€” resolve, reject, or timeout â€” so repeated
+ * on every terminal path — resolve, reject, or timeout — so repeated
  * backend spawns don't leak listener slots on the child.
  */
 function waitForDashboardPort(
@@ -94,24 +84,23 @@ function waitForDashboardPort(
     // awaits claimBackendChild + advanceBootProgress BEFORE this listener
     // attaches. child.stdout is in flowing mode from the tail's listener, so
     // a READY line flushed during that window is emitted once and never
-    // replayed to late listeners â€” the wait then times out at 90s and a
+    // replayed to late listeners — the wait then times out at 90s and a
     // healthy backend is killed. Scanning the tail's buffer (and seeding any
     // trailing partial line) makes the listener-attach ordering irrelevant.
     let buf = ''
+    let progressBuf = ''
     let done = false
     let readyFileInterval = null
     // #122206: the child is finishing an owed source-update completion
     // (venv_sync banners) before `hermes serve` starts. While that repair is
-    // visibly in progress the 90s deadline is re-armed, up to the total cap,
+    // explicitly in progress the startup deadline becomes the absolute phase cap,
     // instead of killing a healthy repair mid-run.
     const startedAt = realNow()
     let completionInProgress = false
     let timer
 
     function completionDeadline() {
-      return completionInProgress
-        ? Math.min(startedAt + SOURCE_COMPLETION_MAX_TOTAL_MS, realNow() + SOURCE_COMPLETION_GRACE_MS)
-        : null
+      return completionInProgress ? startedAt + SOURCE_COMPLETION_MAX_TOTAL_MS : null
     }
 
     function rearmTimer() {
@@ -143,6 +132,7 @@ function waitForDashboardPort(
       }
 
       child.stdout.off('data', onData)
+      child.stderr?.off('data', onProgressData)
       child.off('exit', onExit)
       child.off('error', onError)
     }
@@ -173,6 +163,18 @@ function waitForDashboardPort(
       }
     }
 
+    function onProgressData(chunk) {
+      // Progress is separate from readiness: a READY-shaped stderr line must
+      // never resolve the port. Retain a bounded suffix for split banners.
+      const progress = progressBuf + chunk.toString()
+      progressBuf = progress.slice(-512)
+
+      if (!completionInProgress && SOURCE_COMPLETION_BANNER_RE.test(progress)) {
+        completionInProgress = true
+        rearmTimer()
+      }
+    }
+
     function onExit(code, signal) {
       cleanup()
       reject(new Error(`Hermes backend: exited before port announcement (${signal || code})${describeOutputTail()}`))
@@ -198,10 +200,11 @@ function waitForDashboardPort(
 
     rearmTimer()
     child.stdout.on('data', onData)
+    child.stderr?.on('data', onProgressData)
     child.on('exit', onExit)
     child.on('error', onError)
 
-    // Listener is live â€” now recover a sentinel that was already flushed and
+    // Listener is live — now recover a sentinel that was already flushed and
     // consumed before this promise existed. The snapshot is taken AFTER the
     // listener attaches, so no chunk can fall between snapshot and listener.
     // Merged-buffer regex here (the tail interleaves both streams). Currently dormant: both
@@ -209,6 +212,8 @@ function waitForDashboardPort(
     // snapshot is empty; any await reintroduced between them makes this the live path again.
     if (!done) {
       const alreadyBuffered = bufferedOutput()
+      // Preserve a partial producer banner across the snapshot/live boundary.
+      progressBuf = alreadyBuffered.slice(-512)
       const m = alreadyBuffered ? alreadyBuffered.match(READY_IN_MERGED_OUTPUT_RE) : null
 
       if (m) {

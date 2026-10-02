@@ -35,7 +35,7 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == tmp_path / ".hermes"
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms('macos')
     def test_no_hermes_home_returns_native_on_macos(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)

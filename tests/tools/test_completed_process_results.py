@@ -87,12 +87,12 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
                 self.send_error(404)
                 return
             tool_results = [m for m in request["messages"] if m["role"] == "tool"]
-            follow_ups = [m["content"] for m in request["messages"]
-                          if m["role"] == "user" and "Background process" in str(m.get("content") or "")]
-            follow_ups_by_request.append(follow_ups)
+            request_follow_ups = [m["content"] for m in request["messages"]
+                                 if m["role"] == "user" and "Background process" in str(m.get("content") or "")]
+            follow_ups_by_request.append(request_follow_ups)
             # A retry re-carries conversation history; it is not a second delivery.
             # Exercise that boundary instead of relying on incidental extra calls.
-            if follow_ups and not retried_completion:
+            if request_follow_ups and not retried_completion:
                 retried_completion = True
                 self.send_error(503, "Synthetic completion retry")
                 return

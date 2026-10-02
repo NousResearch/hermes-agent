@@ -82,23 +82,29 @@ describe('scanGitRepos', () => {
 })
 
 describe('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
-  it.runIf(process.platform === 'darwin')('finds a normal repo but skips root-level media folders on darwin', async () => {
-    const root = tempDir()
-    const dev = makeRepoAt(root, 'dev', 'proj')
-    makeRepoAt(root, 'Pictures', 'wallpapers')
-    makeRepoAt(root, 'Music', 'samples')
-    makeRepoAt(root, 'Movies', 'clips')
-    makeRepoAt(root, 'Public', 'shared')
+  it.runIf(process.platform === 'darwin')(
+    'finds a normal repo but skips root-level media folders on darwin',
+    async () => {
+      const root = tempDir()
+      const dev = makeRepoAt(root, 'dev', 'proj')
+      makeRepoAt(root, 'Pictures', 'wallpapers')
+      makeRepoAt(root, 'Music', 'samples')
+      makeRepoAt(root, 'Movies', 'clips')
+      makeRepoAt(root, 'Public', 'shared')
 
-    expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([dev])
-  })
+      expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([dev])
+    }
+  )
 
-  it.runIf(process.platform === 'darwin')('still scans a media-named directory below the search root on darwin', async () => {
-    const root = tempDir()
-    const nested = makeRepoAt(root, 'dev', 'Music', 'app')
+  it.runIf(process.platform === 'darwin')(
+    'still scans a media-named directory below the search root on darwin',
+    async () => {
+      const root = tempDir()
+      const nested = makeRepoAt(root, 'dev', 'Music', 'app')
 
-    expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([nested])
-  })
+      expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([nested])
+    }
+  )
 
   it.runIf(process.platform === 'darwin')('skips Apple media-library packages at any depth on darwin', async () => {
     const root = tempDir()
@@ -119,13 +125,16 @@ describe('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
     expect(foundRoots(await scanGitRepos([musicRoot], { enabled: true, platform: 'darwin' }))).toEqual([repo])
   })
 
-  it.runIf(process.platform !== 'darwin')('does not exclude media-named folders on the native non-macOS host', async () => {
-    const root = tempDir()
-    const dev = makeRepoAt(root, 'dev', 'proj')
-    const music = makeRepoAt(root, 'Music', 'samples')
+  it.runIf(process.platform !== 'darwin')(
+    'does not exclude media-named folders on the native non-macOS host',
+    async () => {
+      const root = tempDir()
+      const dev = makeRepoAt(root, 'dev', 'proj')
+      const music = makeRepoAt(root, 'Music', 'samples')
 
-    expect(foundRoots(await scanGitRepos([root], { enabled: true }))).toEqual([dev, music].sort())
-  })
+      expect(foundRoots(await scanGitRepos([root], { enabled: true }))).toEqual([dev, music].sort())
+    }
+  )
 })
 
 describe('repository scan path normalization', () => {

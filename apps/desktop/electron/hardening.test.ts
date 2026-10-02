@@ -145,13 +145,13 @@ test('encryptDesktopSecret stores safeStorage base64 payload', () => {
 
   // Contract: the payload is tagged with the SAME constant main's
   // decryptDesktopSecret dispatches on, and `value` is the keychain ciphertext
-  // base64'd أ¢â‚¬â€‌ not the token itself.
+  // base64'd — not the token itself.
   assert.equal(secret?.encoding, SAFE_STORAGE_ENCODING)
   assert.equal(Buffer.from(String(secret?.value), 'base64').toString('utf8'), 'enc:token-123')
   assert.doesNotMatch(String(secret?.value), /token-123/, 'the plaintext is not recoverable from the payload')
 })
 
-// أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬ Owner-only credential files (connection.json) أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬
+// ─── Owner-only credential files (connection.json) ─────────────────────────
 
 test.runIf(process.platform !== 'win32')(
   'writeSecretFileAtomic creates the file owner-only, not at the 0644 umask default',
@@ -385,7 +385,7 @@ test('resolvePersistedRemoteToken keeps the existing token when no new token is 
 
 test('resolveRemoteTokenPlainText stays silent in the keychain-opt-out default', () => {
   // #117269: with encryption opted out (the default), plain text is the CHOSEN
-  // mode and probeSecureTokenStorage reports availability on purpose أ¢â‚¬â€‌ every
+  // mode and probeSecureTokenStorage reports availability on purpose — every
   // saved token is plain here, so warning off the encoding alone would fire for
   // every default user.
   assert.equal(
@@ -423,7 +423,7 @@ test('resolveRemoteTokenPlainText warns only when the token is plain and the mac
   }
 
   // A missing token, or an absent availability signal, never manufactures a
-  // warning أ¢â‚¬â€‌ the strict `=== false` match.
+  // warning — the strict `=== false` match.
   assert.equal(resolveRemoteTokenPlainText({ envOverride: false, token: undefined, secureTokenStorage: false }), false)
   assert.equal(
     resolveRemoteTokenPlainText({ envOverride: false, token: { encoding: 'plain' }, secureTokenStorage: undefined }),
@@ -447,7 +447,7 @@ test.runIf(process.platform !== 'win32')(
   'writeSecretFileAtomic does not inherit loose bits from a stale temp file',
   () => {
     // renameSync keeps the TEMP file's permissions, and writeFileSync's `mode`
-    // is ignored when the path already exists أ¢â‚¬â€‌ so a temp left by a crashed
+    // is ignored when the path already exists — so a temp left by a crashed
     // earlier write would otherwise hand 0644 straight to the target.
     withTempDir(dir => {
       const target = path.join(dir, 'connection.json')
@@ -463,8 +463,8 @@ test.runIf(process.platform !== 'win32')(
 )
 
 /**
- * Owner-only is carried by two independent mechanisms أ¢â‚¬â€‌ the create-time `mode`
- * and the chmod before the rename أ¢â‚¬â€‌ because each covers a case the other
+ * Owner-only is carried by two independent mechanisms — the create-time `mode`
+ * and the chmod before the rename — because each covers a case the other
  * cannot. The next two tests knock out one mechanism at a time (with the REAL
  * fs doing the actual write, so the assertion is still the on-disk mode) and
  * require the survivor to hold the line on its own. Without them, either
@@ -477,11 +477,11 @@ function fsWith(overrides: Record<string, unknown>) {
 test.runIf(process.platform !== 'win32')('the written file is owner-only even where chmod does nothing', () => {
   // Windows, and any mount that refuses chmod. The create-time `mode` is what
   // A POSIX filesystem where chmod is unavailable. The create-time `mode` is what
-  // covers this أ¢â‚¬â€‌ there is no second chance to tighten.
+  // covers this — there is no second chance to tighten.
   withTempDir(dir => {
     const target = path.join(dir, 'connection.json')
     // Pin a permissive umask so a mode-less create WOULD land
-    // group/other-readable أ¢â‚¬â€‌ otherwise a restrictive-umask host could pass this
+    // group/other-readable — otherwise a restrictive-umask host could pass this
     // for free. Synchronous and restored in `finally`, and the electron project
     // runs one process per file, so no other test observes it.
     const previousUmask = process.umask(0o022)
@@ -533,7 +533,6 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
     } catch (error: any) {
       if (error?.code === 'EPERM' || error?.code === 'EACCES') {
         context.skip(`Native file symlink creation is unavailable: ${error.code}`)
-        context.skip('creating a file symlink requires host permission')
       }
 
       throw error
@@ -543,7 +542,6 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
 
     assert.equal(fs.readFileSync(victim, 'utf8'), 'original', 'the symlink target was not written through')
     assert.equal(modeOf(victim), victimMode, 'the victim file was not chmodded either')
-    assert.equal(modeOf(victim), victimMode, 'the victim file mode stays unchanged')
     assert.equal(fs.readFileSync(target, 'utf8'), 'tok-live-42')
     assert.equal(fs.lstatSync(target).isSymbolicLink(), false, 'the target is a real file, not the planted link')
 
@@ -627,6 +625,9 @@ test.runIf(process.platform !== 'win32')(
 )
 
 test('tightenSecretFileMode never changes a symlink target', context => {
+  // Matches readInstallationId in desktop-installation.ts. Without the lstat
+  // guard a link planted at the config path sends the chmod to whatever it
+  // resolves to — someone else's file gets its mode rewritten.
   withTempDir(dir => {
     const target = path.join(dir, 'connection.json')
     const victim = path.join(dir, 'victim.txt')
@@ -638,8 +639,6 @@ test('tightenSecretFileMode never changes a symlink target', context => {
     } catch (error: any) {
       if (error?.code === 'EPERM' || error?.code === 'EACCES') {
         context.skip('creating a file symlink requires host permission')
-
-        return
       }
 
       throw error
@@ -649,6 +648,33 @@ test('tightenSecretFileMode never changes a symlink target', context => {
     assert.equal(modeOf(victim), victimMode, 'the symlink target keeps its own mode')
   })
 })
+
+test.runIf(process.platform !== 'win32')(
+  'tightenSecretFileMode refuses to chmod a symlink instead of following it to its target',
+  () => {
+    // Matches readInstallationId in desktop-installation.ts. Without the lstat
+    // guard a link planted at the config path sends the chmod to whatever it
+    // resolves to — someone else's file gets its mode rewritten.
+    withTempDir(dir => {
+      const target = path.join(dir, 'connection.json')
+      const victim = path.join(dir, 'victim.txt')
+      fs.writeFileSync(victim, 'not mine', { mode: 0o644 })
+
+      try {
+        fs.symlinkSync(victim, target, 'file')
+      } catch (error: any) {
+        if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+          return
+        }
+
+        throw error
+      }
+
+      assert.equal(tightenSecretFileMode(target), false, 'reports "not tightened" rather than acting on the link')
+      assert.equal(modeOf(victim), 0o644, 'the symlink target keeps its own mode')
+    })
+  }
+)
 
 test.runIf(process.platform !== 'win32')(
   'tightenSecretFileMode only touches a regular file the current user owns',
@@ -734,7 +760,7 @@ test('a token is never persisted in plaintext when safeStorage is unavailable', 
   // The defined degradation for `isEncryptionAvailable() === false` (Linux with
   // no keyring): encryptDesktopSecret throws with an actionable message, so the
   // save aborts before any write. It must never fall back to a plaintext
-  // payload أ¢â‚¬â€‌ the file mode is defense in depth, not a substitute for the
+  // payload — the file mode is defense in depth, not a substitute for the
   // keychain.
   const unavailable = {
     isEncryptionAvailable: () => false,
@@ -753,7 +779,7 @@ test('a token is never persisted in plaintext when safeStorage is unavailable', 
   )
 
   // And a throwing keychain (available, but encryptString fails) is the same
-  // contract أ¢â‚¬â€‌ no silent plaintext.
+  // contract — no silent plaintext.
   assert.throws(
     () =>
       encryptDesktopSecret('tok-live-42', {
@@ -827,7 +853,7 @@ test('resolveRequestedPathForIpc expands ~ to the home directory', () => {
     resolveRequestedPathForIpc('~/www/project', { purpose: 'Directory read' }),
     path.resolve(os.homedir(), 'www/project')
   )
-  // `~user` shorthand is NOT expanded أ¢â‚¬â€‌ only the caller's own home.
+  // `~user` shorthand is NOT expanded — only the caller's own home.
   assert.equal(
     resolveRequestedPathForIpc('~other/secret', { baseDir: os.tmpdir(), purpose: 'Directory read' }),
     path.resolve(os.tmpdir(), '~other/secret')
@@ -955,7 +981,7 @@ test('resolveReadableFileForIpc blocks symlinks whose realpath is sensitive', as
       fs.symlinkSync(envPath, linkPath, 'file')
     } catch (error) {
       if (error?.code === 'EPERM' || error?.code === 'EACCES') {
-        // symlink creation is not permitted on this platform أ¢â‚¬â€‌ skip
+        // symlink creation is not permitted on this platform — skip
         return
       }
 
@@ -1001,7 +1027,7 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () 
       fs.symlinkSync(directory, linkPath, process.platform === 'win32' ? 'junction' : 'dir')
     } catch (error) {
       if (error?.code === 'EPERM' || error?.code === 'EACCES') {
-        // directory symlink creation is not permitted on this platform أ¢â‚¬â€‌ skip
+        // directory symlink creation is not permitted on this platform — skip
         return
       }
 
@@ -1084,7 +1110,7 @@ test('isMissingFileError classifies ENOENT/ENOTDIR as expected preview-read outc
   ;(missingDir as NodeJS.ErrnoException).code = 'ENOTDIR'
   assert.equal(isMissingFileError(missingDir), true)
 
-  // Everything else أ¢â‚¬â€‌ permission, size, invalid path أ¢â‚¬â€‌ is a real error and
+  // Everything else — permission, size, invalid path — is a real error and
   // must keep rejecting so the renderer sees it as a genuine failure.
   for (const code of ['EACCES', 'EFBIG', 'EISDIR', 'invalid-path', 'sensitive-file', undefined]) {
     const error = new Error('some read failure')

@@ -29,21 +29,24 @@ function argvOf(prompt: string): string[] {
   const isWindows = process.platform === 'win32'
 
   const shell = isWindows
-    ? [process.env.ProgramFiles, process.env['ProgramFiles(x86)']]
-        .filter((directory): directory is string => Boolean(directory))
-        .map(directory => join(directory, 'Git', 'bin', 'bash.exe'))
-        .find(existsSync)
+    ? ([process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA]
+        .filter((root): root is string => Boolean(root))
+        .flatMap(root => [join(root, 'Git', 'bin', 'bash.exe'), join(root, 'Programs', 'Git', 'bin', 'bash.exe')])
+        .find(existsSync) ?? 'bash')
     : 'sh'
 
   expect(shell, 'Git Bash is required for the Windows shell-quoting regression').not.toBeNull()
 
-  const result = spawnSync(shell!, [...(isWindows ? ['--noprofile', '--norc'] : []), '-c',
-    `hermes() { printf '%s\\037' "$@"; }\n${command}`], {
-    encoding: 'utf8',
-    input: '',
-    timeout: 10_000,
-    windowsHide: true
-  })
+  const result = spawnSync(
+    shell!,
+    [...(isWindows ? ['--noprofile', '--norc'] : []), '-c', `hermes() { printf '%s\\037' "$@"; }\n${command}`],
+    {
+      encoding: 'utf8',
+      input: '',
+      timeout: 10_000,
+      windowsHide: true
+    }
+  )
 
   expect(result.error).toBeUndefined()
   expect(result.status, result.stderr).toBe(0)

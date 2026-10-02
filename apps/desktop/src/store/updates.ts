@@ -28,6 +28,7 @@ import { withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
+import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
@@ -286,6 +287,10 @@ export function reportInstallMethodWarning(message: string | undefined): void {
  * showed the user a machine they weren't told about, with no way back.
  */
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
+  if (onboardingSurfaceActive()) {
+    return
+  }
+
   // Either signal means "update ready": behind > 0 (git checkout) or
   // updateAvailable (shallow clone, App Installer feed).
   if (!status || status.supported === false || status.error) {

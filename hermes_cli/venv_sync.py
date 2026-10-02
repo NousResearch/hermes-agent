@@ -375,7 +375,6 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         return None  # Developer checkouts and packaged runtimes retain their owner.
 
     import pm
-    from hermes_cli._launchers import resolve_store_python
     from hermes_cli.update_lock import UpdateLock, read_live_update
 
     current = pm.venv_is_current(project_root=root)
@@ -414,8 +413,40 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                     raise RuntimeError("dependency sync left this install out of date")
             else:
                 _finish_source_update(root, current=current, pending=pending)
+        except RuntimeError as exc:
+            # A product build can fail after PM committed a generation for a different Python.
+            # Bootstrap catches that failure and activates dependencies, so first move a legacy
+            # interpreter onto the store Python. The marker and retry record remain owed.
+            if not pm.venv_is_current(project_root=root):
+                raise
+            python = _store_python_relaunch(root, current=True)
+            if python is None:
+                raise
+            print(
+                f"hermes: source-update completion failed: {exc}; "
+                "continuing on the managed Python with the committed dependencies",
+                file=sys.stderr, flush=True,
+            )
+            return python
         finally:
             lock.release()
+    python = _store_python_relaunch(root, current=current)
+    if python is not None:
+        return python
+    if owed_to_cli:
+        # Left owed, not dropped: say so (once, in the process that boots) where an
+        # operator of the unit will read it.
+        print("hermes: a source update is unfinished; run `hermes update` from a shell to finish it",
+              file=sys.stderr, flush=True)
+    return None
+
+
+def _store_python_relaunch(root: Path, *, current: bool) -> Path | None:
+    """Return the same managed-interpreter transition for successful and failed tails."""
+    import os
+    import sys
+    from hermes_cli._launchers import resolve_store_python
+
     python = resolve_store_python(root)
     if python is None:
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")
@@ -428,11 +459,6 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     if not current or not same:
         publish_launchers(root)
         return python
-    if owed_to_cli:
-        # Left owed, not dropped: say so (once, in the process that boots) where an
-        # operator of the unit will read it.
-        print("hermes: a source update is unfinished; run `hermes update` from a shell to finish it",
-              file=sys.stderr, flush=True)
     return None
 
 

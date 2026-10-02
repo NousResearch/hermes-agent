@@ -48,7 +48,7 @@ class TestSubdirectoryHintTracker:
 
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms('windows')
     def test_display_path_uses_posix_separators_inside_workdir(self, tmp_path):
         tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
         hint_path = tmp_path / "nested" / "AGENTS.md"

@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { $apiRequestScope, type ProfileScope } from '@/api/client'
+import { getProfiles } from '@/api/profiles'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
@@ -23,7 +25,16 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { type AgentPluginLiveNow, COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import {
+  agentPluginConnectionOwner,
+  type AgentPluginLiveNow,
+  captureAgentPluginView,
+  COMMIT_SHA_RE,
+  installAgentPlugin,
+  loadAgentPlugins,
+  scopedAgentPluginRequest
+} from '@/store/agent-plugins'
+import { $connectionsRegistry, registryConnectionKind } from '@/store/connection-registry-state'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
@@ -33,6 +44,7 @@ import {
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { setSettingsScope } from '@/store/settings-scope'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
@@ -52,10 +64,11 @@ function installOutcome(m: InstallModalCopy, live: AgentPluginLiveNow, nextChat:
 }
 
 export function PluginInstallModal() {
+  useStore($apiRequestScope)
   const request = useStore($pluginInstallRequest)
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
-  const { requestGateway } = useGatewayRequest()
+  const { requestGateway: ambientRequest } = useGatewayRequest()
   const navigate = useNavigate()
   const location = useLocation()
   const onSettings = location.pathname.startsWith(SETTINGS_ROUTE)
@@ -63,9 +76,40 @@ export function PluginInstallModal() {
   const activeProfile = useStore($activeGatewayProfile)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
+  useStore($connectionsRegistry)
 
   const [repoInput, setRepoInput] = useState('')
   const [targetProfile, setTargetProfile] = useState('default')
+  const [targetProfiles, setTargetProfiles] = useState<typeof profiles | null>(null)
+
+  const initialProfile = normalizeProfileKey(
+    request?.profile && typeof request.profile === 'object'
+      ? request.profile.profile || 'default'
+      : (typeof request?.profile === 'string' ? request.profile : null) || activeProfile || profileScope
+  )
+
+  const targetScope: ProfileScope = useMemo(
+    () =>
+      request?.profile && typeof request.profile === 'object'
+        ? { ...request.profile, profile: targetProfile }
+        : targetProfile,
+    [request?.profile, targetProfile]
+  )
+
+  const ambientConnectionId = agentPluginConnectionOwner(connection)
+
+  const requestGateway = useMemo(
+    () => scopedAgentPluginRequest(targetScope, ambientRequest, ambientConnectionId),
+    [targetScope, ambientRequest, ambientConnectionId]
+  )
+
+  const targetConnectionId =
+    request?.profile && typeof request.profile === 'object' ? request.profile.connectionId?.trim() || 'local' : null
+
+  const remoteTarget = targetConnectionId
+    ? targetConnectionId !== 'local' && registryConnectionKind(targetConnectionId) !== 'local'
+    : connection?.mode === 'remote'
+
   const [phase, setPhase] = useState<ProbePhase>('idle')
   const [probe, setProbe] = useState<ProbeResult | null>(null)
   const [installAgent, setInstallAgent] = useState(true)
@@ -73,7 +117,8 @@ export function PluginInstallModal() {
   const [enableAgent, setEnableAgent] = useState(true)
   const [forceReinstall, setForceReinstall] = useState(false)
   const [pinRef, setPinRef] = useState('')
-  const [installing, setInstalling] = useState(false)
+  const [installingRequest, setInstallingRequest] = useState<PluginInstallRequest | null>(null)
+  const installing = request !== null && installingRequest === request
   const [installError, setInstallError] = useState<string | null>(null)
   const [installUncertain, setInstallUncertain] = useState(false)
   const probeToken = useRef(0)
@@ -87,7 +132,7 @@ export function PluginInstallModal() {
     setEnableAgent(true)
     setForceReinstall(false)
     setPinRef('')
-    setInstalling(false)
+    setInstallingRequest(null)
     setInstallError(null)
     setInstallUncertain(false)
   }, [])
@@ -169,30 +214,56 @@ export function PluginInstallModal() {
       return
     }
 
-    setTargetProfile(normalizeProfileKey(request.profile || activeProfile || profileScope))
+    setTargetProfile(initialProfile)
 
     if (request.repo) {
       void runProbe(request)
     }
-  }, [activeProfile, profileScope, request, resetState, runProbe])
+  }, [initialProfile, request, resetState, runProbe])
 
-  const targetProfileInfo = profiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
-  const profileOptions = targetProfileInfo ? profiles : [...profiles, { name: targetProfile }]
+  useEffect(() => {
+    setTargetProfiles(null)
+
+    if (!request?.profile || typeof request.profile !== 'object') {
+      return
+    }
+
+    let current = true
+    void getProfiles(request.profile).then(
+      result => {
+        if (current) {
+          setTargetProfiles(result.profiles)
+        }
+      },
+      () => {
+        if (current) {
+          setTargetProfiles([])
+        }
+      }
+    )
+
+    return () => {
+      current = false
+    }
+  }, [request?.profile])
+
+  const scopedProfiles = targetConnectionId ? (targetProfiles ?? []) : profiles
+  const targetProfileInfo = scopedProfiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
+  const profileOptions = targetProfileInfo ? scopedProfiles : [...scopedProfiles, { name: targetProfile }]
   const targetProfileLabel = profileLabel(targetProfileInfo ?? { name: targetProfile })
 
-  const agentTargetHint =
-    connection?.mode === 'remote'
-      ? m.agentTargetRemote(targetProfileLabel)
-      : m.agentTargetLocal(
-          targetProfileLabel,
-          targetProfile === 'default' ? '~/.hermes/plugins/' : `~/.hermes/profiles/${targetProfile}/plugins/`
-        )
+  const agentTargetHint = remoteTarget
+    ? m.agentTargetRemote(targetProfileLabel)
+    : m.agentTargetLocal(
+        targetProfileLabel,
+        targetProfile === 'default' ? '~/.hermes/plugins/' : `~/.hermes/profiles/${targetProfile}/plugins/`
+      )
 
   // A unified package installed into a local backend carries its own desktop
   // half; the app copies that half out of the package folder. Only a remote
   // backend (whose plugins/ folder this machine cannot read) or a desktop-only
   // repo needs a separate desktop clone.
-  const desktopHalfFromPackage = Boolean(probe?.agent && installAgent && connection?.mode !== 'remote')
+  const desktopHalfFromPackage = Boolean(probe?.agent && installAgent && !remoteTarget)
 
   const sourceLinks = useMemo(() => (request ? resolvePluginSourceLinks(request.repo) : null), [request])
 
@@ -216,7 +287,7 @@ export function PluginInstallModal() {
       return
     }
 
-    setInstalling(true)
+    setInstallingRequest(request)
     setInstallError(null)
     setInstallUncertain(false)
 
@@ -224,6 +295,8 @@ export function PluginInstallModal() {
     const successes: string[] = []
     let agentInstalled = false
     let live: AgentPluginLiveNow = { mcpServers: [], skills: [] }
+    const ownsView = captureAgentPluginView(requestGateway, targetProfile)
+    const operationConnection = targetConnectionId ?? agentPluginConnectionOwner()
 
     try {
       if (installAgent && probe.agent) {
@@ -235,6 +308,10 @@ export function PluginInstallModal() {
           ref: pinRefTrimmed || undefined,
           profile: targetProfile
         })
+
+        if ($pluginInstallRequest.get() !== request) {
+          return
+        }
 
         if (result.ok) {
           successes.push(
@@ -256,7 +333,16 @@ export function PluginInstallModal() {
               // the user to hunt through Settings → Tools & Keys by hand.
               action: {
                 label: m.missingEnvAction,
-                onClick: () => navigate(`/settings?tab=keys&key=${encodeURIComponent(firstVar)}`)
+                onClick: () => {
+                  if (operationConnection !== agentPluginConnectionOwner()) {
+                    notify({ kind: 'warning', message: m.agentTargetRemote(targetProfileLabel) })
+
+                    return
+                  }
+
+                  setSettingsScope(targetProfile)
+                  navigate(`/settings?tab=keys&key=${encodeURIComponent(firstVar)}`)
+                }
               }
             })
           }
@@ -270,7 +356,8 @@ export function PluginInstallModal() {
           // installing. A read-only list refresh can show an already landed
           // package; the user can rescan later if the backend is still busy.
           setInstallUncertain(true)
-          void loadAgentPlugins(requestGateway, targetProfile)
+
+          void loadAgentPlugins(requestGateway, targetProfile, ownsView())
 
           return
         } else {
@@ -316,7 +403,11 @@ export function PluginInstallModal() {
         }
       }
 
-      await loadAgentPlugins(requestGateway, targetProfile)
+      await loadAgentPlugins(requestGateway, targetProfile, ownsView())
+
+      if ($pluginInstallRequest.get() !== request) {
+        return
+      }
 
       if (errors.length === 0) {
         for (const message of successes) {
@@ -345,7 +436,9 @@ export function PluginInstallModal() {
 
       setInstallError(errors.join('\n'))
     } finally {
-      setInstalling(false)
+      if ($pluginInstallRequest.get() === request) {
+        setInstallingRequest(null)
+      }
     }
   }
 

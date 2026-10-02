@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -43,12 +43,19 @@ test.each(['npm', 'npm-fixture'])('prepared npm discovers lib/%s without npm_exe
   cpSync(installedCli, join(root, 'bin', process.platform === 'win32' ? 'npm.cmd' : 'npm'))
   symlinkSync(dirname(dirname(installedCli)), join(root, 'lib', directory), 'junction')
   const env = { ...process.env, PATH: join(root, 'bin') }
-  delete env.npm_execpath
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'npm_execpath') delete env[key]
   const [selectedNode, cli] = npmCommand({ env })
   expect(selectedNode).toBe(node)
   expect(cli).toBe(join(root, 'lib', directory, 'bin/npm-cli.js'))
   const version = execFileSync(selectedNode, [cli, '--version'], { cwd: tmpdir(), env, encoding: 'utf8' }).trim()
   expect(version).toMatch(/^\d+\.\d+\.\d+/)
+})
+
+test.skipIf(process.platform !== 'win32')('a copied Windows environment preserves the selected npm entrypoint', () => {
+  const [node, cli] = npmCommand()
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'npm_execpath'))
+  env.NPM_EXECPATH = cli
+  expect(npmCommand({ env })).toEqual([node, cli])
 })
 
 test('read-only dependency preparation reuses complete receipts but refuses missing inputs', async () => {
@@ -190,7 +197,7 @@ test('npm configuration name casing does not invalidate a completed install', as
 
 // A stand-in npm: `ci` fails with ENOTEMPTY (or `failure`) while a stuck
 // node_modules/.bin entry survives, and records every ci run.
-function fakeNpm(root, failure) {
+function fakeNpm(root, failure, { debug = '', usageLines = 0, retryFailure } = {}) {
   const [, realCli] = npmCommand()
   const dir = join(root, 'fake-npm')
   mkdirSync(join(dir, 'node_modules'), { recursive: true })
@@ -200,13 +207,19 @@ function fakeNpm(root, failure) {
 const args = process.argv.slice(2)
 if (args[0] === '--version') { console.log('10.9.0'); process.exit(0) }
 fs.appendFileSync(path.join(${JSON.stringify(root)}, 'ci-runs'), 'ci\\n')
-if (fs.existsSync('node_modules/.bin/stuck')) {
+if (fs.existsSync('node_modules/.bin/stuck') || ${JSON.stringify(retryFailure ?? false)}) {
   const logs = args.find(arg => arg.startsWith('--logs-dir=')).slice('--logs-dir='.length)
-  fs.writeFileSync(path.join(logs, 'debug-0.log'), 'error code ${failure}\\n')
+  const code = fs.existsSync('node_modules/.bin/stuck') ? ${JSON.stringify(failure)} : ${JSON.stringify(retryFailure)}
+  fs.writeFileSync(path.join(${JSON.stringify(root)}, 'npm-logs-path'), logs)
+  fs.writeFileSync(path.join(logs, 'debug-0.log'), ${JSON.stringify(debug)} + 'error code ' + code + '\\n')
+  for (let i = 0; i < ${usageLines}; i++) console.error('npm error usage line ' + i)
   process.exit(1)
 }
 `)
-  return { ...process.env, npm_execpath: cli }
+  const env = { ...process.env }
+  // Windows child environments collapse names case-insensitively.
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'npm_execpath') delete env[key]
+  return { ...env, npm_execpath: cli }
 }
 
 function stuckNodeModules(root) {
@@ -230,6 +243,40 @@ test('any other npm ci failure keeps node_modules and does not retry', async () 
   expect(() => prepareNodeDependencies({ source, workspaces: ['web'], env: fakeNpm(source, 'EINTEGRITY') })).toThrow()
   expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\n')
   expect(existsSync(join(source, 'node_modules/.bin/stuck'))).toBe(true)
+}, 30000)
+
+test('a hidden npm override cause survives long usage without exposing its debug log', () => {
+  const source = fixture()
+  stuckNodeModules(source)
+  const lock = readFileSync(join(source, 'package-lock.json'))
+  const env = fakeNpm(source, 'EUSAGE', {
+    debug: '17 verbose loadVirtual Error: Override for js-yaml@4.3.1 conflicts with direct dependency\n' +
+      '18 verbose stack at C:\\private-user\\private-project\\source.js\n' +
+      '19 verbose fetch https://example.invalid/?token=private-test-value\n',
+    usageLines: 120,
+  })
+  const result = spawnSync(process.execPath, [join(repo, 'scripts/build/node-deps.mjs'),
+    '--source', source, '--workspace', 'web'], { env, encoding: 'utf8' })
+  expect(result.status, result.stdout + result.stderr).toBe(1)
+  const tail = result.stderr.trim().split('\n').slice(-80).join('\n')
+  expect(tail).toContain('EOVERRIDE: a dependency override conflicts with a direct dependency')
+  expect(tail).not.toMatch(/private-user|private-project|private-test-value|example\.invalid/)
+  expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\n')
+  expect(existsSync(join(source, 'node_modules/.bin/stuck'))).toBe(true)
+  expect(readFileSync(join(source, 'package-lock.json'))).toEqual(lock)
+  expect(existsSync(readFileSync(join(source, 'npm-logs-path'), 'utf8'))).toBe(false)
+}, 30000)
+
+test('a failed ENOTEMPTY retry reports the final cause and never retries a third time', () => {
+  const source = fixture()
+  stuckNodeModules(source)
+  const env = fakeNpm(source, 'ENOTEMPTY', { retryFailure: 'EBUSY', usageLines: 120 })
+  const result = spawnSync(process.execPath, [join(repo, 'scripts/build/node-deps.mjs'),
+    '--source', source, '--workspace', 'web'], { env, encoding: 'utf8' })
+  expect(result.status, result.stdout + result.stderr).toBe(1)
+  expect(result.stderr.trim().split('\n').slice(-80).join('\n')).toContain('npm ci failed (EBUSY)')
+  expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\nci\n')
+  expect(existsSync(readFileSync(join(source, 'npm-logs-path'), 'utf8'))).toBe(false)
 }, 30000)
 
 // A fake npm whose version probes die but whose ci succeeds: the Job-Object

@@ -125,7 +125,6 @@ describe('settings subpage routing', () => {
         'Guided Tours',
         'Keep computer awake',
         'Auto-archive stale chats',
-        'Automatic update checks',
         TRANSLATIONS.en.settings.about.updates
       ])
     )

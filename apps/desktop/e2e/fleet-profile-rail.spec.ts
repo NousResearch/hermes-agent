@@ -89,7 +89,7 @@ async function startRemoteGateway(root: string, mockUrl: string, profiles: strin
   const home = path.join(root, 'homelab-home')
   fs.mkdirSync(home, { recursive: true })
   writeMockProviderConfig(home, mockUrl)
-  writeEnvFile(home)
+  writeEnvFile(home, 'e2e-mock-key', mockUrl)
   seedProfiles(home, profiles)
 
   const port = await freePort()
@@ -226,7 +226,7 @@ test.describe('fleet profile rail — two registered gateways', () => {
     mock = await startMockServer()
     sandbox = createSandbox('fleet')
     writeMockProviderConfig(sandbox.hermesHome, mock.url)
-    writeEnvFile(sandbox.hermesHome)
+    writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
     // A named profile on This device too, so the active group has a square
     // beside its home pill. "research" exists on BOTH gateways on purpose: the
     // rail must keep the two apart by gateway, never by name alone.

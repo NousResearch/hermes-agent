@@ -48,7 +48,7 @@ async function setupSeededDesktop(mockServer?: MockServerOptions): Promise<Seede
   const mock = await startMockServer(mockServer)
   const sandbox = createSandbox('large-session')
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
 
   const builder = await RealSessionBuilder.start(sandbox.hermesHome)
   try {

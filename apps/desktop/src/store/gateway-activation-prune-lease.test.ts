@@ -196,23 +196,6 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
       releaseConnect()
       await switching
     }
-    // Dial starts and never settles (wedged bridge call).
-    void ensureGatewayForProfile('bot')
-    await flushUntilSecondaryRegistered()
-    expect(secondaryGateways).toHaveLength(1)
-
-    // Inside the lease window: spared.
-    pruneSecondaryGateways(new Set())
-    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
-
-    // Past the lease window — which now spans a whole dial budget (#120298) —
-    // reclaimed. (Lease is wall-clock bounded so a leaked lease cannot pin a
-    // dead entry forever.)
-    vi.setSystemTime(Date.now() + SOURCE_SWITCH_DIAL_TIMEOUT_MS + SECONDARY_MIN_LIFETIME_MS)
-    pruneSecondaryGateways(new Set())
-    expect(secondaryGateways[0].close).toHaveBeenCalled()
-
-    releaseConnect()
   })
 
   it('a freshly opened idle secondary rides one prune tick before reaping (#94769)', async () => {

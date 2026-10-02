@@ -1413,7 +1413,7 @@ async function runDevLaunch(): Promise<void> {
 
   const sandbox = createDevSandbox()
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
   console.log(`  HERMES_HOME: ${sandbox.hermesHome}`)
 
   const electronBin = findElectron(repoRoot)

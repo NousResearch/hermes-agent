@@ -38,7 +38,7 @@ test('restores named and Default selections on the same local gateway after rest
     for (const home of [sandbox.hermesHome, path.join(sandbox.hermesHome, 'profiles', 'full')]) {
       fs.mkdirSync(home, { recursive: true })
       writeMockProviderConfig(home, mock.url)
-      writeEnvFile(home)
+      writeEnvFile(home, 'e2e-mock-key', mock.url)
     }
 
     fs.writeFileSync(path.join(sandbox.userDataDir, 'active-profile.json'), JSON.stringify({ profile: 'default' }))

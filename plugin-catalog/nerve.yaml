@@ -1,6 +1,6 @@
 name: nerve
 repo: https://github.com/keeltrace/hermes-nerve
-sha: b9e78dd5e00cf1117c563cada4d563a56f66e609
+sha: a8e117347617ca7d445dcb8483186202a03b28f1
 description: >-
   Nerve is a supervisory nervous system for Hermes Agent with provider-neutral Jev, Laya, and
   OpenJev Reflex backends, evidence-backed Kanban supervision, context governance, token-budget
@@ -9,15 +9,13 @@ description: >-
   12k characters) and redacted tool/result previews are sent to the configured Jev provider
   (OpenRouter Decisions / TypeSafe Jev) using your OPENROUTER_API_KEY or TYPESAFE_API_KEY,
   spending your credits on every turn. Laya and OpenJev can be configured as local/self-hosted
-  backends. The operator-only nerve setup CLI can copy a local HermesContextBus checkout into
-  HERMES_HOME/plugins/hermes-context-bus and runs hermes plugins enable/disable for that plugin
-  when a profile is saved; the model cannot trigger this.
+  backends.
 maintainer: keeltrace
 tier: community
 category: automation
 requires_hermes: '>=0.21'
 docs_url: https://github.com/keeltrace/hermes-nerve#readme
-version: 0.3.0
+version: 0.2.2
 capabilities:
   provides_tools:
   - nerve_decide

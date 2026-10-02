@@ -1213,7 +1213,6 @@ def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeyp
 
 
 
-@pytest.mark.linux_only
 @pytest.mark.platforms("linux")
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
@@ -1227,7 +1226,6 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
-@pytest.mark.linux_only
 @pytest.mark.platforms("linux")
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
@@ -1241,7 +1239,7 @@ def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms('linux')
 def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
     target = tmp_path / "attacker-controlled"
     target.mkdir()

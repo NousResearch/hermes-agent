@@ -17,9 +17,9 @@ import { type CatalogEntry, parseCatalog } from './catalog-data'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]
-  view?: 'installed' | 'browse'
   profile: ProfileScope
   query?: string
+  view?: 'installed' | 'browse'
   onQueryChange?: (value: string) => void
   actions?: ReactNode
   installedPending?: boolean
@@ -36,9 +36,9 @@ export function SkillCatalog(props: SkillCatalogProps) {
 
 function ScopedSkillCatalog({
   skills,
-  view,
   profile,
   query,
+  view,
   onQueryChange,
   actions,
   installedPending,

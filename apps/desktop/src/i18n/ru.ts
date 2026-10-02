@@ -61,7 +61,6 @@ export const ru = defineLocale({
     stripDetails: 'Подробнее'
   },
   catalog: {
-    browse: 'Обзор',
     add: 'Добавить',
     added: 'Добавлено',
     discover: 'Открывайте новое',
@@ -119,7 +118,8 @@ export const ru = defineLocale({
     installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сессиям.',
     results: (count: number) =>
       `${count.toLocaleString('ru')} ${RU_PLURAL(count, 'результат', 'результата', 'результатов')}`,
-    back: 'Назад к результатам'
+    back: 'Назад к результатам',
+    browse: 'Обзор'
   },
   sessionImport: {
     title: 'Продолжить из другого приложения',
@@ -355,7 +355,6 @@ export const ru = defineLocale({
     message: reason =>
       `Включён программный рендеринг — обнаружен удалённый дисплей (${reason}). GPU-ускорение отключено, чтобы избежать мерцания.`
   },
-
   billingBlock: {
     titleNous: 'Кредиты Nous закончились',
     titleProvider: provider => `Кредиты закончились — ${provider}`,
@@ -364,7 +363,6 @@ export const ru = defineLocale({
     addCredits: 'Пополнить кредиты',
     dismiss: 'Скрыть'
   },
-
   titlebar: {
     hideSidebar: 'Скрыть боковую панель',
     showSidebar: 'Показать боковую панель',
@@ -499,14 +497,14 @@ export const ru = defineLocale({
       'composer.slash': 'Палитра slash-команд',
       'composer.help': 'Быстрая справка',
       'composer.history': 'Переключить поповер / историю',
-      'composer.cancel': 'Закрыть поповер · отменить запуск'
+      'composer.cancel': 'Закрыть поповер · отменить запуск',
+      'view.terminalSelection': 'Отправить выделенное из терминала в композер'
     }
   },
   findInPage: {
     next: 'Следующее вхождение',
     previous: 'Предыдущее вхождение'
   },
-
   language: {
     label: 'Язык',
     description: 'Выберите язык интерфейса приложения.',
@@ -721,10 +719,6 @@ export const ru = defineLocale({
       system: { label: 'Системная', description: 'Следовать настройкам ОС' }
     },
     appearance: {
-      loginStartupFailed: 'Windows не включила автозапуск. Проверьте приложения автозагрузки в настройках Windows.',
-      loginStartupDesc:
-        'Открывать приложение свёрнутым при входе в систему. Используется сохранённый основной профиль.',
-      loginStartupTitle: 'Запускать Hermes вместе с Windows',
       chatTextScaleTitle: 'Размер текста чата',
       chatTextScaleDesc:
         'Масштабирует текст беседы и поле ввода относительно масштаба интерфейса. Размер боковых панелей и элементов управления не меняется.',
@@ -878,7 +872,11 @@ export const ru = defineLocale({
         noneAvailable: 'Сейчас нет доступных питомцев для включения.',
         turnOnFailed: 'Не удалось включить питомца.',
         turnOffFailed: 'Не удалось выключить питомца.'
-      }
+      },
+      loginStartupTitle: 'Запускать Hermes вместе с Windows',
+      loginStartupDesc:
+        'Открывать приложение свёрнутым при входе в систему. Используется сохранённый основной профиль.',
+      loginStartupFailed: 'Windows не включила автозапуск. Проверьте приложения автозагрузки в настройках Windows.'
     },
     fieldLabels: defineFieldCopy({
       model: 'Модель по умолчанию',
@@ -1144,11 +1142,41 @@ export const ru = defineLocale({
       }
     }),
     about: {
-      branchCommit: (branch, commit) => `Ветка ${branch} · Коммит ${commit}`,
+      updates: 'Обновления',
+      heading: 'Hermes Desktop',
+      version: value => `Версия ${value}`,
+      versionUnavailable: 'Версия недоступна',
+      bundleOutOfSync: 'Сборка приложения устарела',
+      bundleOutOfSyncDesc:
+        'Рантайм Hermes обновлён, но само приложение — ещё старая сборка: новые функции интерфейса (например, Bot Mode) не появятся до обновления. Запустите обновление ниже, чтобы пересобрать приложение. Если предупреждение не исчезнет, переустановите с последнего установщика.',
+      bundleOutOfSyncAction: 'Скачать установщик',
+      checkNow: 'Проверить сейчас',
+      checking: 'Проверка…',
+      seeWhatsNew: 'Смотреть, что нового',
+      updateNow: 'Обновить сейчас',
       updateSource: 'Источник обновлений',
-      automaticUpdatesDesc: 'Hermes автоматически проверяет обновления в фоне и сообщает, когда они готовы.',
+      releaseNotes: 'Заметки о выпуске',
+      onLatest: 'Настроенный источник обновлений актуален.',
+      installing: 'Сейчас устанавливается обновление.',
+      cantUpdate: 'Эта сборка не может обновляться изнутри приложения.',
+      cantReach: 'Не удалось связаться с сервером обновлений.',
+      tapCheck: 'Нажмите «Проверить сейчас», чтобы найти обновления.',
+      updateReady: count =>
+        `Готово новое обновление (включено ${count} ${RU_PLURAL(count, 'изменение', 'изменения', 'изменений')}).`,
+      updateReadyUnknown: 'Готово новое обновление.',
+      lastChecked: age => `Проверено ${age}`,
+      justNowSuffix: ' · только что',
       automaticUpdates: 'Автоматические обновления',
-      updates: 'Обновления'
+      automaticUpdatesDesc: 'Hermes автоматически проверяет обновления в фоне и сообщает, когда они готовы.',
+      updateParked: 'Обновление ожидает безопасного состояния рабочей копии.',
+      updateParkedDesc:
+        'Локальные исправления сохранены. Проверьте или перенесите их перед установкой обновления из upstream.',
+      branchCommit: (branch, commit) => `Ветка ${branch} · Коммит ${commit}`,
+      never: 'никогда',
+      justNow: 'только что',
+      minAgo: count => `${count} ${RU_NOUN(count, 'минуту', 'минуты', 'минут')} назад`,
+      hoursAgo: count => `${count} ${RU_NOUN(count, 'час', 'часа', 'часов')} назад`,
+      daysAgo: count => `${count} ${RU_NOUN(count, 'день', 'дня', 'дней')} назад`
     },
     config: {
       minimizeToTrayTitle: 'Сворачивать в трей',
@@ -1258,7 +1286,6 @@ export const ru = defineLocale({
       set: 'Установить',
       clear: 'Очистить'
     },
-    // v2 multi-connection registry: Settings → Gateways.
     connections: {
       title: 'Зарегистрированные шлюзы',
       intro:
@@ -1582,7 +1609,8 @@ export const ru = defineLocale({
         approval: { label: 'Одобрение', hint: 'Умное авто-одобрение' },
         mcp: { label: 'MCP', hint: 'Маршрутизация MCP-инструментов' },
         title_generation: { label: 'Ген. заголовка', hint: 'Заголовки сеансов' },
-        curator: { label: 'Куратор', hint: 'Просмотр использования навыков' }
+        curator: { label: 'Куратор', hint: 'Просмотр использования навыков' },
+        web_extract: { label: 'Веб-извлечение', hint: 'Суммаризация страниц' }
       }
     },
     providers: {
@@ -1736,8 +1764,6 @@ export const ru = defineLocale({
     }
   },
   skills: {
-    provenanceSummary: (agent, bundled, hub) => `${agent} обученных · ${bundled} встроенных · ${hub} из хаба`,
-    tabHub: 'Открыть хаб',
     plugins: {
       pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
     },
@@ -1848,7 +1874,9 @@ export const ru = defineLocale({
       previewFailed: 'Не удалось получить предпросмотр навыка',
       scanFailed: 'Не удалось выполнить проверку безопасности',
       searchFailed: 'Поиск в хабе не удался'
-    }
+    },
+    tabHub: 'Открыть хаб',
+    provenanceSummary: (agent, bundled, hub) => `${agent} обученных · ${bundled} встроенных · ${hub} из хаба`
   },
   starmap: {
     title: 'Граф памяти',
@@ -1922,9 +1950,6 @@ export const ru = defineLocale({
     tokens: value => `${value} ток`
   },
   commandCenter: {
-    logTailHint: count => `Показано не более ${count} последних строк выбранного файла и уровня.`,
-    allLogLevels: 'Все уровни',
-    actionTimedOut: 'Действие всё ещё выполняется; проверьте последние журналы для итогового статуса.',
     close: 'Закрыть командный центр',
     paletteTitle: 'Палитра команд',
     back: 'Назад',
@@ -2110,7 +2135,17 @@ export const ru = defineLocale({
       actionFailed: name => `Не удалось запустить ${name}`,
       running: 'Выполняется...',
       viewLog: 'Журнал действия'
-    }
+    },
+    sectionDescriptions: {
+      maintenance: 'Диагностика, резервные копии, курир и данные памяти',
+      sessions: 'Поиск и управление сеансами',
+      system: 'Статус, журналы и системные действия',
+      usage: 'Токены, стоимость и активность навыков со временем'
+    },
+    actionTimedOut: 'Действие всё ещё выполняется; проверьте последние журналы для итогового статуса.',
+    allLogLevels: 'Все уровни',
+    noMatchingLogs: 'Нет строк журнала, соответствующих поиску.',
+    logTailHint: count => `Показано не более ${count} последних строк выбранного файла и уровня.`
   },
   messaging: {
     search: 'Поиск в сообщениях...',
@@ -2491,7 +2526,6 @@ export const ru = defineLocale({
   modelAssignment: {
     saveFailed: 'Hermes не сохранил это изменение модели.'
   },
-
   cron: {
     close: 'Закрыть cron',
     title: 'Запланированные задачи',
@@ -2663,14 +2697,12 @@ export const ru = defineLocale({
     copyUrl: 'Копировать URL',
     copyPath: 'Копировать путь'
   },
-
   artifactCard: {
     kind: { code: 'Код', html: 'Интерактивная страница', svg: 'Графика' },
     generating: lines => `Генерация… ${lines} ${RU_NOUN(lines, 'строка', 'строки', 'строк')}`,
     versionBadge: count => `${count} ${RU_NOUN(count, 'версия', 'версии', 'версий')}`,
     open: 'Открыть'
   },
-
   artifactPreview: {
     versionOf: (current, total) => `v${current} из ${total}`,
     olderVersion: 'Более старая версия',
@@ -3309,7 +3341,6 @@ export const ru = defineLocale({
     }
   },
   updates: {
-    automaticUpdatesSaveFailed: 'Не удалось подтвердить сохранение настройки. Повторите попытку.',
     discontinuedTitle: 'Эта сборка Hermes больше не поддерживается',
     discontinuedBody:
       'Эта сборка Hermes больше не поддерживается и может перестать работать — удалите её. Ваши данные останутся на диске.',
@@ -3410,7 +3441,6 @@ export const ru = defineLocale({
       failed: 'Не удалось обновить бэкенд.',
       noReturn: 'Бэкенд не вернулся в сеть. Обновление могло не завершиться — проверьте хост бэкенда.'
     },
-    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
     version: value => `Версия ${value}`,
     versionUnavailable: 'Версия недоступна',
     checkNow: 'Проверить сейчас',
@@ -3434,7 +3464,8 @@ export const ru = defineLocale({
     bundleOutOfSyncDesc:
       'Рантайм Hermes обновлён, но само приложение — ещё старая сборка: новые функции интерфейса (например, Bot Mode) не появятся до обновления. Запустите обновление ниже, чтобы пересобрать приложение. Если предупреждение не исчезнет, переустановите с последнего установщика.',
     bundleOutOfSyncAction: 'Скачать установщик',
-    checkingShort: 'Проверка…'
+    checkingShort: 'Проверка…',
+    automaticUpdatesSaveFailed: 'Не удалось подтвердить сохранение настройки. Повторите попытку.'
   },
   guidedGreeting: {
     line: 'Заходите. Я Hermes. Дайте мне пару минут — обустрою тут всё под вас, а потом займёмся тем, что вам правда нужно.\n\nДля начала: как к вам обращаться?',
@@ -3609,7 +3640,6 @@ export const ru = defineLocale({
     addCustomModelAction: 'Добавить свою модель…',
     customModelPlaceholder: 'Введите id модели, например openai/gpt-5'
   },
-
   modelVisibility: {
     title: 'Модели',
     search: 'Поиск моделей',
@@ -3774,7 +3804,8 @@ export const ru = defineLocale({
       openModelPicker: 'Открыть выбор модели',
       modelPinned: 'закреплено вами; новые чаты используют её вместо модели по умолчанию из настроек',
       modelTitle: (provider, model) => `Модель · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      session: 'Сеанс'
     }
   },
   rightSidebar: {
@@ -4086,7 +4117,12 @@ export const ru = defineLocale({
       multiSelectHint: 'Выберите все подходящие',
       questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
       notDelivered:
-        'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
+        'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.',
+      continueLabel: 'Продолжить',
+      answeredBadge: 'Ответ дан',
+      lateAnswer: (question, choice) => `Re: «${question}» — мой ответ: ${choice}`,
+      lateAnswerTip: 'Составить этот ответ как продолжение',
+      lateAnswerHint: 'Этот промпт больше не ждёт. Выберите вариант, чтобы составить его как сообщение-продолжение.'
     },
     catalogInstall: {
       preparing: 'Готовим установку…',
@@ -4352,7 +4388,6 @@ export const ru = defineLocale({
     reloadWindow: 'Перезагрузить окно',
     openLogs: 'Открыть журналы'
   },
-
   ui: {
     search: {
       clear: 'Очистить поиск'

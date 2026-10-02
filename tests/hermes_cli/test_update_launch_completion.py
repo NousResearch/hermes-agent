@@ -152,6 +152,53 @@ def test_metadata_query_never_waits_on_source_completion(tmp_path, monkeypatch, 
     assert venv_sync.prepare_launch(root, argv) is None
 
 
+@pytest.mark.parametrize("already_current", [False, True])
+def test_failed_tail_relaunches_committed_dependencies_before_foreign_abi_activation(
+        tmp_path, monkeypatch, completion_tail, capsys, already_current):
+    """A failed product build must not load the committed generation into a legacy Python."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    fact = runtime_facts_path(root)
+    previous = {"packages": {"venv": {"stamp": "complete", "extras": ["all"]}}}
+    if already_current:
+        fact.parent.mkdir(parents=True)
+        fact.write_text(json.dumps(previous))
+        venv_sync.arm_completion(root)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: fact.is_file())
+    managed_python = tmp_path / "managed" / "python.exe"
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: managed_python)
+    published = []
+    monkeypatch.setattr(venv_sync, "publish_launchers", lambda path: published.append(path))
+    syncs = []
+
+    def sync(extras=None, **kwargs):
+        syncs.append(extras)
+        fact.parent.mkdir(parents=True, exist_ok=True)
+        fact.write_text(json.dumps(previous))
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
+    completion_tail.exit_code = 1
+    assert venv_sync.prepare_launch(root, []) == managed_python
+    assert len(syncs) == (0 if already_current else 1)
+    assert published == [root]
+    assert json.loads(fact.read_text()) == previous
+    assert venv_sync.completion_pending_path(root).is_file()
+    assert venv_sync.completion_retry_state(root)[1] == 1
+    assert "source-update completion failed" in capsys.readouterr().err
+
+    # The next boot uses that Python. Its failed tail stays owed and obeys the normal backoff.
+    monkeypatch.setattr(sys, "executable", str(managed_python))
+    with pytest.raises(RuntimeError, match="completion failed"):
+        venv_sync.prepare_launch(root, [])
+    assert len(completion_tail) == 2
+    assert venv_sync.prepare_launch(root, []) is None
+    assert len(completion_tail) == 2
+    assert not venv_sync.completion_retry_state(root)[0]
+    assert venv_sync.completion_pending_path(root).is_file()
+
+
 def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_path, monkeypatch, completion_tail):
     """Dependencies committed, tail failed: the next launch owes the tail only."""
     import pm

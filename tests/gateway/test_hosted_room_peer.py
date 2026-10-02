@@ -56,8 +56,8 @@ def test_gateway_room_grant_secret_is_persistent_and_not_an_api_key(
 @pytest.mark.parametrize(
     "_platform",
     [
-        pytest.param("linux", marks=pytest.mark.linux_only),
-        pytest.param("macos", marks=pytest.mark.macos_only),
+        pytest.param("linux", marks=pytest.mark.platforms('linux')),
+        pytest.param("macos", marks=pytest.mark.platforms('macos')),
     ],
 )
 def test_gateway_room_grant_secret_has_private_posix_mode(

@@ -111,7 +111,6 @@ export interface Translations {
     custom: (label: string) => string[]
   }
   catalog: {
-    browse: string
     add: string
     added: string
     discover: string
@@ -169,6 +168,8 @@ export interface Translations {
     installHint: string
     results: (count: number) => string
     back: string
+
+    browse: string
   }
   connectors: {
     title: string
@@ -963,9 +964,6 @@ export interface Translations {
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
     appearance: {
-      loginStartupFailed: string
-      loginStartupDesc: string
-      loginStartupTitle: string
       title: string
       intro: string
       colorMode: string
@@ -1110,6 +1108,10 @@ export interface Translations {
         turnOnFailed: string
         turnOffFailed: string
       }
+
+      loginStartupTitle: string
+      loginStartupDesc: string
+      loginStartupFailed: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -1183,11 +1185,42 @@ export interface Translations {
       driverHealth: string
     }
     about: {
-      branchCommit: (branch: string, commit: string) => string
-      updateSource: string
-      automaticUpdatesDesc: string
-      automaticUpdates: string
       updates: string
+
+      heading: string
+      version: (value: string) => string
+      versionUnavailable: string
+      bundleOutOfSync: string
+      bundleOutOfSyncDesc: string
+      bundleOutOfSyncAction: string
+      bundleSwapPending: string
+      bundleSwapPendingDesc: string
+      bundleSwapPendingAction: string
+      checkNow: string
+      checking: string
+      seeWhatsNew: string
+      updateNow: string
+      updateSource: string
+      releaseNotes: string
+      onLatest: string
+      installing: string
+      cantUpdate: string
+      cantReach: string
+      tapCheck: string
+      updateReady: (count: number) => string
+      updateReadyUnknown: string
+      lastChecked: (age: string) => string
+      justNowSuffix: string
+      automaticUpdates: string
+      automaticUpdatesDesc: string
+      updateParked: string
+      updateParkedDesc: string
+      branchCommit: (branch: string, commit: string) => string
+      never: string
+      justNow: string
+      minAgo: (count: number) => string
+      hoursAgo: (count: number) => string
+      daysAgo: (count: number) => string
     }
     config: {
       minimizeToTrayTitle: string
@@ -2091,8 +2124,6 @@ export interface Translations {
   }
 
   skills: {
-    provenanceSummary: (agent: number, bundled: number, hub: number) => string
-    tabHub: string
     tabSkills: string
     tabToolsets: string
     configuringProfile: string
@@ -2275,6 +2306,9 @@ export interface Translations {
       scanFailed: string
       searchFailed: string
     }
+
+    tabHub: string
+    provenanceSummary: (agent: number, bundled: number, hub: number) => string
   }
 
   starmap: {
@@ -2347,9 +2381,6 @@ export interface Translations {
   }
 
   commandCenter: {
-    logTailHint: (count: number) => string
-    allLogLevels: string
-    actionTimedOut: string
     close: string
     paletteTitle: string
     back: string
@@ -2482,7 +2513,6 @@ export interface Translations {
     logLevel: string
     logSearchPlaceholder: string
     maintenance: {
-      openFile: string
       runOps: string
       doctor: string
       doctorDesc: string
@@ -2525,7 +2555,15 @@ export interface Translations {
       actionFailed: (name: string) => string
       running: string
       viewLog: string
+
+      openFile: string
     }
+
+    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
+    actionTimedOut: string
+    allLogLevels: string
+    noMatchingLogs: string
+    logTailHint: (count: number) => string
   }
 
   messaging: {
@@ -3517,7 +3555,6 @@ export interface Translations {
   }
 
   updates: {
-    automaticUpdatesSaveFailed: string
     discontinuedTitle: string
     discontinuedBody: string
     channels: { stable: string; canary: string }
@@ -3651,6 +3688,8 @@ export interface Translations {
     versionDetailsRuntimeExternal: string
     versionDetailsInstallId: string
     versionDetailsUncommittedChanges: string
+
+    automaticUpdatesSaveFailed: string
   }
 
   /** The guided first run's pre-written opening line — banked, not generated,
@@ -4073,6 +4112,8 @@ export interface Translations {
       modelPinned: string
       modelTitle: (provider: string, model: string) => string
       providerModelTitle: (provider: string, model: string) => string
+
+      session: string
     }
   }
 
@@ -4461,6 +4502,12 @@ export interface Translations {
       multiSelectHint: string
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
+
+      continueLabel: string
+      answeredBadge: string
+      lateAnswer: (question: string, choice: string) => string
+      lateAnswerTip: string
+      lateAnswerHint: string
     }
     catalogInstall: {
       preparing: string

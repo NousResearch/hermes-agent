@@ -8,7 +8,6 @@
  * against an already-spawned backend use the shorter
  * RECONNECT_ATTEMPT_TIMEOUT_MS below instead. */
 export const BACKEND_BOOT_WAIT_TIMEOUT_MS = 240_000
-
 // desktop.getConnection() / getConnectionFor() / revalidateConnection() /
 // resolveGatewayWsUrl() are IPC round-trips into the main process with no
 // timeout of their own (#93454). A wedged main-process round-trip (e.g. a

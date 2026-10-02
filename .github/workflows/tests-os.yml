@@ -12,17 +12,15 @@ name: OS-specific tests
 # is where those markers actually execute:
 #
 #   macos    → ``-m platforms``    on macos-latest
-#   windows  → ``-m platforms``    on windows-latest-32-core and windows-latest-32-arm-core
+#   windows  → ``-m platforms``    on native x64 and arm64 Windows runners
 #
 # (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
 # foreign-OS ``platforms(...)`` markers on each host, so one shared ``-m
 # platforms`` expression selects "this host's own marked tests" on either
 # lane — the helper narrows WHICH FILES get imported first.)
 #
-# Deliberately NOT sliced. The marked set is small (tens of tests, not
-# thousands), so one plain ``pytest`` process per OS is both faster and far
-# less machinery than the per-file parallel runner the Linux lane uses.
-# Each lane FAILS when it selects zero tests (pytest exit code 5) — a
+# macOS runs in two slices; every lane uses the canonical per-file runner.
+# Each lane FAILS when it selects zero tests — a
 # renamed marker or bad selector can never report a green job that ran
 # nothing.
 
@@ -83,10 +81,10 @@ jobs:
             marker: macos
             slice: 2/2
           - name: Windows-only tests
-            runner: windows-latest-32-core
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
             marker: windows
           - name: Windows-only tests (arm64)
-            runner: windows-latest-32-arm-core
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-arm-core' || 'windows-11-arm' }}
             marker: windows
             timeout: 60
     steps:
@@ -160,6 +158,10 @@ jobs:
           # (bash 3.2 on the macOS runner: an empty array under ``set -u`` is
           # an unbound-variable error, hence the ``${arr[@]+...}`` idiom.)
           EXTRA_ARGS=()
+          SLICE_ARGS=()
+          if [ -n "${{ matrix.slice }}" ]; then
+            SLICE_ARGS+=(--slice "${{ matrix.slice }}")
+          fi
           if [ "${{ inputs.desktop_updater }}" != "true" ]; then
             echo "desktop_updater lane off: skipping tests/scripts/desktop_update/test_desktop_update_windows_*.py"
             EXTRA_ARGS+=(--ignore-glob='*test_desktop_update_windows_*.py')
@@ -174,15 +176,14 @@ jobs:
           # ``-m`` — "must never pass without running its OS's tests").
           SEPARATOR="$(python -c 'import os, sys; sys.stdout.write(os.pathsep)')"
           FILES="$(tr -d '\r' < "$LIST" | paste -sd "$SEPARATOR" -)"
-          scripts/run_tests.sh --files "$FILES" -- \
+          scripts/run_tests.sh --files "$FILES" ${SLICE_ARGS[@]+"${SLICE_ARGS[@]}"} -- \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
             -m "platforms and not integration" \
             -v --tb=short
         env:
           # These files spawn nested PowerShell trees. CPU-count parallelism
           # starves cold child startup before the fixture's idle deadline.
-          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
-          HERMES_TEST_SLICE: ${{ matrix.slice || '' }}
+          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (github.repository == 'NousResearch/hermes-agent' && '16' || '2') || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ''
@@ -236,7 +237,7 @@ jobs:
           scripts/run_tests.sh tests/e2e/core/windows/ -- \
             -m "platforms and integration" -v --tb=short -rA
         env:
-          HERMES_TEST_WORKERS: '6'
+          HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && '6' || '2' }}
           HERMES_TEST_FILE_TIMEOUT: '900'
           HERMES_TEST_FILE_RETRIES: '0'
           OPENROUTER_API_KEY: ''

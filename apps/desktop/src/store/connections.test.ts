@@ -1069,7 +1069,11 @@ describe('selectConnection', () => {
 
     await selectConnection('local')
 
-    expect(openGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(openGatewayAgent).toHaveBeenLastCalledWith(
+      'local',
+      'mac',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
     expect(ensureGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.anything())
     expect($newChatProfile.get()).toBe('mac')
   })

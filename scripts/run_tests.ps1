@@ -6,10 +6,10 @@ $testRepoRoot = Split-Path -Parent $PSScriptRoot
 $testUserHome = [Environment]::GetEnvironmentVariable('HOME')
 if (-not $testUserHome) { $testUserHome = [Environment]::GetFolderPath('UserProfile') }
 $testCandidates = @(
+    [Environment]::GetEnvironmentVariable('HERMES_PYTHON'),
     (Join-Path $testRepoRoot '.venv/Scripts/python.exe'),
     (Join-Path $testRepoRoot 'venv/Scripts/python.exe'),
-    (Join-Path $testUserHome '.hermes/hermes-agent/venv/Scripts/python.exe'),
-    [Environment]::GetEnvironmentVariable('HERMES_PYTHON')
+    (Join-Path $testUserHome '.hermes/hermes-agent/venv/Scripts/python.exe')
 )
 
 function New-TestProcessInfo([string]$Executable, [string[]]$Arguments) {
@@ -21,8 +21,8 @@ function New-TestProcessInfo([string]$Executable, [string[]]$Arguments) {
     $info.Environment.Clear()
     # Keep this allowlist in parity with run_tests.sh; never forward credentials.
     foreach ($name in @(
-        'PATH', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA', 'APPDATA',
-        'SYSTEMROOT', 'TEMP', 'TMP', 'HERMES_TEST_IMAGE', 'HERMES_TEST_WORKERS',
+        'PATH', 'PATHEXT', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA', 'APPDATA',
+        'SYSTEMROOT', 'TEMP', 'TMP', 'PATHEXT', 'HERMES_TEST_IMAGE', 'HERMES_TEST_WORKERS',
         'HERMES_TEST_PATHS', 'HERMES_TEST_FILE_TIMEOUT', 'HERMES_TEST_FILE_RETRIES',
         'HERMES_TEST_SLICE', 'HERMES_GATEWAY_LOCK_DIR', 'HERMES_RUN_SLOW_PET_TESTS',
         'HERMES_E2E_BROWSER'
@@ -69,6 +69,7 @@ if (Test-Path -LiteralPath $testGuard -PathType Leaf) {
     $runnerInfo.Environment['PYTEST_PLUGINS'] = 'pytest_live_guard'
 }
 Write-Host 'Running per-file test suite (native Windows; clean environment, UTC, deterministic hash seed).'
+Write-Host "Test interpreter: $testPython"
 $runner = [Diagnostics.Process]::Start($runnerInfo)
 $outputTask = $runner.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())
 $errorTask = $runner.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())

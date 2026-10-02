@@ -28,25 +28,25 @@ import { refreshToolCalls } from './toolsets/tool-calls'
 import { TOOLSETS_QUERY_KEY, toolsetSearchTerms, useToolsetsQuery, visibleToolsetCount } from './toolsets/toolsets-data'
 import { ToolsetsTab } from './toolsets/toolsets-tab'
 
-// Native catalog browsing and the full Hub each retain their own surface.
+// Retain the fork's standalone Hub route alongside native catalog management.
 const CAPABILITY_MODES = ['skills', 'toolsets', 'connectors', 'plugins', 'hub'] as const
 
 type CapabilityMode = (typeof CAPABILITY_MODES)[number]
 
 interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
-  /** Embedded mode (plugin dialogs â€” e.g. Bot Mode's Advanced section): tab
+  /** Embedded mode (plugin dialogs — e.g. Bot Mode's Advanced section): tab
    *  state lives in local React state instead of the route's `?tab=` param,
    *  so an embedding dialog never fights the page router. */
   embedded?: boolean
   /** Pin the WHOLE view to one profile: the scope selector is hidden and
-   *  every tab reads/writes THAT profile. This is the plugin door â€” Bot Mode
+   *  every tab reads/writes THAT profile. This is the plugin door — Bot Mode
    *  renders the real Capabilities surface pinned to a bot. */
   fixedProfile?: string
   /** Pin the view to a REGISTERED gateway connection alongside `fixedProfile`:
    *  every read/write routes to that machine's backend instead of the active
    *  gateway. `''`/`'local'` mean the local pool. This is Bot Mode's
-   *  remote-target door â€” a bot living on another registered gateway gets the
+   *  remote-target door — a bot living on another registered gateway gets the
    *  live surface pointed at ITS backend. Ignored without `fixedProfile`. */
   fixedConnection?: string
 }
@@ -73,8 +73,6 @@ export function CapabilitiesView({
 
   const [query, setQuery] = useState('')
   const [capabilityView, setCapabilityView] = useState<CapabilityView>('installed')
-
-  // Keep the docs iframe alive after the first Hub visit.
   const [hubMounted, setHubMounted] = useState(mode === 'hub')
 
   if (mode === 'hub' && !hubMounted) {
@@ -86,6 +84,7 @@ export function CapabilitiesView({
   // The two installed lists the tab pills count. They are fetched here, as a
   // pair, because the counts stay live for the tab the user is NOT on.
   const { data: skills, isError: skillsFailed, error: skillsError } = useSkillsQuery(scope.profile)
+  const installedSkillNames = useMemo(() => new Set((skills ?? []).map(skill => skill.name)), [skills])
   const { data: toolsets, isError: toolsetsFailed } = useToolsetsQuery(scope.profile)
 
   const refreshCapabilities = useCallback(async () => {
@@ -100,15 +99,13 @@ export function CapabilitiesView({
     void refreshToolCalls(scope.profile)
   }, [scope.profile])
 
-  const installedSkillNames = useMemo(() => new Set((skills ?? []).map(skill => skill.name)), [skills])
-
   useRefreshHotkey(refreshCapabilities)
 
   // Plugins is small enough to warm from any tab. Skills (~100k rows) only
   // loads when asked for: an idle parse of it would still block the page.
   useEffect(() => (mode === 'plugins' ? undefined : prefetchCatalogWhenIdle('plugins')), [mode])
 
-  // Rotating placeholder nudges from the user's own data â€” teach that search
+  // Rotating placeholder nudges from the user's own data — teach that search
   // understands categories and tool names, not just titles.
   const searchHints = useMemo(() => {
     if (mode === 'skills' && skills?.length) {
@@ -144,7 +141,8 @@ export function CapabilitiesView({
   const tabContent = {
     hub: () => null,
     // The gateway instance backs ONLY the live `reload.mcp` RPC, and it is the
-    // ACTIVE gateway's socket. A scope pinned elsewhere must not reload it.
+    // ACTIVE gateway's socket — for a scope pinned to a different backend that
+    // (config edits still apply on that backend's next session).
     connectors: () => (
       <ConnectorsTab
         gateway={scope.crossBackend ? null : gateway}
@@ -161,7 +159,6 @@ export function CapabilitiesView({
         query={query}
         scopeLabel={scope.label}
         scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
-        view={capabilityView}
       />
     ),
     skills: () => (
@@ -195,9 +192,7 @@ export function CapabilitiesView({
         mode === 'plugins'
           ? t.catalog.searchPlugins
           : mode === 'skills'
-            ? capabilityView === 'browse'
-              ? t.catalog.searchSkills
-              : t.skills.searchSkills
+            ? t.catalog.searchSkills
             : t.skills.searchToolsets
       }
       searchValue={query}
@@ -211,12 +206,7 @@ export function CapabilitiesView({
     >
       <div className="flex h-full flex-col">
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
-        {mode === 'skills' && (
-          <CapabilityTabs
-            onChange={setCapabilityView}
-            value={capabilityView}
-          />
-        )}
+        {mode === 'skills' && <CapabilityTabs onChange={setCapabilityView} value={capabilityView} />}
         <div className="flex min-h-0 flex-1 flex-col">
           <div className={mode === 'hub' ? 'hidden' : 'min-h-0 flex-1 overflow-hidden'}>
             {loadGate ?? tabContent[mode]()}
@@ -237,7 +227,7 @@ export function CapabilitiesView({
 
 // Feature-detection flag for plugins (Bot Mode): TRUE means this build's
 // CapabilitiesView routes `fixedConnection` to the pinned connection's backend.
-// Older builds export CapabilitiesView WITHOUT the prop â€” passing it there would
+// Older builds export CapabilitiesView WITHOUT the prop — passing it there would
 // silently read/write the ACTIVE gateway under the remote bot's profile name,
 // which is exactly the wrong-machine bug the prop exists to prevent. A static
 // property is probe-able without rendering.

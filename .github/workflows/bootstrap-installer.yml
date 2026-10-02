@@ -27,7 +27,7 @@ jobs:
     # env — a job-env `${{ runner.temp }}` makes GitHub reject the workflow
     # graph at dispatch (0 jobs). Each step that needs these exports them.
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The mirror step pushes HEAD to a fresh bare repo — a shallow
           # checkout can't (git: "shallow update not allowed").
@@ -131,7 +131,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Windows PowerShell 5.1 is what ships with Windows and what `irm | iex`
       # lands in for most users — the protocol surface must parse there.

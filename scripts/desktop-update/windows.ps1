@@ -1717,23 +1717,16 @@ try {
     if ($parkedBranchSkipped) {
         $shouldRetry = $false
         Write-HandoffLog "hermes update skipped (parked dirty checkout); not retrying"
-    } elseif ($shouldRetry) {
+    } elseif ($legacyInstall -and $shouldRetry) {
         # One retry for update-boundary failures. Most exit-2 safety refusals
         # remain terminal, but self-lock deferral also uses exit 2 and writes
         # .update-incomplete after the code swap. That marker is only a retry
         # signal here: the fresh process's early-recovery pass finishes core
         # dependency sync before native modules load, then `update` continues
         # the remaining Desktop/skills stages of the full pipeline.
-        Write-HandoffLog "first attempt left retryable update state; retrying once in a fresh process"
-    }
-    # Retry only the identified pre-PM update-boundary transition. Current
-    # update/build failures propagate and must not trigger another owner.
-    if ($legacyInstall -and $shouldRetry -and $res.Code -ne 0 -and $res.Code -ne 2) {
+        # Current PM update/build failures propagate without starting another owner.
         Write-HandoffLog "legacy update failed; retrying once from the updated installation"
         Publish-UiProgress "Retrying update"
-        $res = Invoke-HermesStep $pythonExe $updateArgs "update"
-        Write-HandoffLog "retry exit code: $($res.Code)"
-        $parkedBranchSkipped = $res.Output -match '(?im)CODE UPDATE SKIPPED'
         $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
         $pythonExe = $runtimeCommand[0]
         $runtimeArgs = @($runtimeCommand | Select-Object -Skip 1)
@@ -1742,6 +1735,8 @@ try {
         $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
         $res = Invoke-HermesStep $pythonExe $updateArgs 'update'
         $res = Resolve-HermesUpdateOutcome $res
+        Write-HandoffLog "retry exit code: $($res.Code)"
+        $parkedBranchSkipped = $res.Output -match '(?im)CODE UPDATE SKIPPED'
     }
 
     # Pre-PM updates reported a successful exit with a failed build warning.

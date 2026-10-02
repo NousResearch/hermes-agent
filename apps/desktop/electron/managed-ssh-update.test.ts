@@ -233,7 +233,7 @@ test('managed update joins a pre-claim bootstrap until its final gate check roll
     { managedScope: 'primary', registryConnectionId: 'homelab' }
   )
 
-  // The fence rethrows managed-update-in-progress after rolling back أ¢â‚¬â€‌ that
+  // The fence rethrows managed-update-in-progress after rolling back — that
   // rejection propagating out of start() is the CONTRACT under test, not an
   // accident. Swallow it here so vitest doesn't flag the floating promise as
   // an unhandled rejection while the assertions below verify the rollback.
@@ -397,6 +397,8 @@ test.runIf(process.platform !== 'win32').each([0, 23])(
         }
       }
 
+      assert.match(stdout, /MANAGED_UPDATE_STARTED/)
+      assert.equal(status, '0')
       const log: string = await readFile(logPath, 'utf8')
       assert.match(stdout, /MANAGED_UPDATE_STARTED/)
       assert.match(log, /managed-update start pid=/)
@@ -494,7 +496,7 @@ test.runIf(process.platform !== 'win32')(
         CORRELATION
       )
 
-      const { stdout } = await exec(command, { shell: 'sh' })
+      const { stdout } = await exec(command, { shell: '/bin/sh' })
       const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
 
       assert.equal(parsed.marker, 'absent')
@@ -528,7 +530,7 @@ test.runIf(process.platform !== 'win32')(
         CORRELATION
       )
 
-      const { stdout } = await exec(command, { shell: 'sh' })
+      const { stdout } = await exec(command, { shell: '/bin/sh' })
       const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
 
       assert.equal(parsed.marker, 'live')

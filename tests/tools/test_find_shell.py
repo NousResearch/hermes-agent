@@ -34,7 +34,6 @@ def _pid_alive(pid: int) -> bool:
 class _PosixShellPreferenceChecks:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 
-    @pytest.mark.platforms("linux")
     def test_returns_shell_env_when_set_and_exists(self, tmp_path):
         """When $SHELL points to an existing allowlisted executable, _find_shell returns it."""
         fake_zsh = tmp_path / "zsh"
@@ -63,7 +62,6 @@ class _PosixShellPreferenceChecks:
             assert _find_shell() == _find_bash()
 
 
-    @pytest.mark.platforms("linux")
     def test_honours_allowlisted_bash_and_dash(self, tmp_path):
         """Every allowlisted POSIX-sh-family shell is honoured."""
         for name in ("bash", "dash", "sh", "ksh"):
@@ -80,12 +78,12 @@ class _PosixShellPreferenceChecks:
             assert _find_shell() == _find_bash()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms('linux')
 class TestFindShellPrefersUserShell(_PosixShellPreferenceChecks):
     """Run POSIX executable and login-shell checks on native Linux."""
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms('macos')
 class TestFindShellPrefersUserShellOnMacOS(_PosixShellPreferenceChecks):
     """Run the same contract on native macOS, including its CI marker lane."""
 

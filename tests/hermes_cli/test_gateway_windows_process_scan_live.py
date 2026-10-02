@@ -19,15 +19,19 @@ import pytest
 from hermes_cli import gateway, gateway_windows
 
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms('windows')
 
 
-def _spawn_gateway_shaped_sleeper(profile: str) -> subprocess.Popen:
+def _spawn_gateway_shaped_sleeper(profile: str, module_root) -> subprocess.Popen:
+    # Use the real Python module entry-point shape. A -c program with gateway
+    # words in its trailing arguments is correctly rejected by the strict matcher.
+    package = module_root / "hermes_cli"
+    package.mkdir(exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "main.py").write_text("import time; time.sleep(120)\n", encoding="utf-8")
     return subprocess.Popen(
         [
             getattr(sys, "_base_executable", sys.executable),
-            "-c",
-            "import time; time.sleep(120)",
             "-m",
             "hermes_cli.main",
             "--profile",
@@ -39,6 +43,7 @@ def _spawn_gateway_shaped_sleeper(profile: str) -> subprocess.Popen:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW,
+        cwd=module_root,
     )
 
 
@@ -69,9 +74,9 @@ def test_native_scan_avoids_wmi_and_preserves_profile_scope_and_exclusions(
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
     with ExitStack() as owned_children:
-        own = _spawn_gateway_shaped_sleeper(profile)
+        own = _spawn_gateway_shaped_sleeper(profile, tmp_path)
         owned_children.callback(_stop_owned, own)
-        sibling = _spawn_gateway_shaped_sleeper(sibling_profile)
+        sibling = _spawn_gateway_shaped_sleeper(sibling_profile, tmp_path)
         owned_children.callback(_stop_owned, sibling)
 
         def _wmi_must_not_run():
@@ -188,7 +193,7 @@ def test_nonempty_orphan_sweep_keeps_supervision_and_rescans_after_probe(
     monkeypatch.setattr(gateway, "_reaper_candidate_is_supervisor_owned", lambda _pid: False)
 
     with ExitStack() as owned_children:
-        original = _spawn_gateway_shaped_sleeper(profile)
+        original = _spawn_gateway_shaped_sleeper(profile, tmp_path)
         owned_children.callback(_stop_owned, original)
         replacement = None
 
@@ -198,7 +203,7 @@ def test_nonempty_orphan_sweep_keeps_supervision_and_rescans_after_probe(
             if not supervised:
                 # The process table can change during a slow scheduler query.
                 _stop_owned(original)
-                replacement = _spawn_gateway_shaped_sleeper(profile)
+                replacement = _spawn_gateway_shaped_sleeper(profile, tmp_path)
                 owned_children.callback(_stop_owned, replacement)
                 _wait_for_gateway_pid(replacement.pid)
             return state

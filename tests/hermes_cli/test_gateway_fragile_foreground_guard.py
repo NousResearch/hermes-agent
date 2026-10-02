@@ -24,7 +24,7 @@ def _force_conditions(monkeypatch, *, tty, console, detached_env):
         monkeypatch.delenv("HERMES_GATEWAY_DETACHED", raising=False)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 @pytest.mark.parametrize("replace", [False, True])
 def test_refuses_interactive_windows_console_attached_run(monkeypatch, capsys, replace):
     _force_conditions(monkeypatch, tty=True, console=True, detached_env=False)
@@ -38,7 +38,7 @@ def test_refuses_interactive_windows_console_attached_run(monkeypatch, capsys, r
     assert "--force" in out
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 @pytest.mark.parametrize(
     "kwargs, cond",
     [
@@ -58,20 +58,20 @@ def test_passes_through_for_non_fragile_cases(monkeypatch, kwargs, cond):
     assert gateway_cli._guard_fragile_foreground_gateway(**kwargs) is None
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_supervised_run_is_exempt(monkeypatch):
     _force_conditions(monkeypatch, tty=True, console=True, detached_env=False)
     monkeypatch.setattr(gateway_cli, "_running_under_gateway_supervisor", lambda: True)
     assert gateway_cli._guard_fragile_foreground_gateway() is None
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms('linux')
 def test_linux_foreground_run_is_exempt(monkeypatch):
     _force_conditions(monkeypatch, tty=True, console=True, detached_env=False)
     assert gateway_cli._guard_fragile_foreground_gateway() is None
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms('macos')
 def test_macos_foreground_run_is_exempt(monkeypatch):
     _force_conditions(monkeypatch, tty=True, console=True, detached_env=False)
     assert gateway_cli._guard_fragile_foreground_gateway() is None

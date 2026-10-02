@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
+import { $apiRequestScope } from '@/api/client'
 import { setEnvVar } from '@/api/config'
 import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -21,19 +22,25 @@ import {
   $agentPluginBusy,
   $agentPlugins,
   $agentPluginsError,
+  $agentPluginsOwner,
   $agentPluginsStatus,
+  agentPluginConnectionOwner,
+  agentPluginRequestOwner,
   type AgentPluginRow,
   type AgentPluginServerState,
   type AgentPluginUpdateOutcome,
+  captureAgentPluginView,
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   removeAgentPlugin,
   saveAgentPluginSettings,
+  scopedAgentPluginRequest,
   toggleAgentPlugin,
   updateAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
+import { $connectionsRegistry, registryConnectionKind } from '@/store/connection-registry-state'
 import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
@@ -69,7 +76,7 @@ function reveal(file: string) {
 
 async function revealPluginsDir() {
   try {
-    // Electron owns the app-level plugin root â€” deriving it from the backend's
+    // Electron owns the app-level plugin root — deriving it from the backend's
     // hermes_home breaks against a remote backend (#66899).
     const dir = await window.hermesDesktop?.desktopPluginsRoot?.()
 
@@ -90,18 +97,22 @@ async function revealPluginsDir() {
 }
 
 /** Copy any changed unified desktop halves into the app root FIRST, then
- *  rescan the root â€” a concurrent scan would read the pre-copy state. */
+ *  rescan the root — a concurrent scan would read the pre-copy state. */
 async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
+  const ownsView = captureAgentPluginView(requestGateway, scope)
   await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
   await discoverRuntimePlugins()
-  await loadAgentPlugins(requestGateway, scope)
+
+  if (ownsView()) {
+    await loadAgentPlugins(requestGateway, scope)
+  }
 }
 
 /** Open the dual-target install modal pre-filled to install ONLY the agent
  *  half of a unified package into the scoped profile (the desktop half is
  *  already here). Provenance comes from the package marker Electron stamped
  *  when it copied the half out (catalog sidecar or git remote). */
-function installAgentHalfHere(record: PluginRecord, profile: null | string) {
+function installAgentHalfHere(record: PluginRecord, profile: ProfileScope) {
   const origin = record.packageOrigin
 
   if (!origin?.repo) {
@@ -192,7 +203,7 @@ function HalfCell({ label, labelContent, children }: { label: string; labelConte
 function Dash() {
   return (
     <span aria-hidden className="w-9 text-center text-(--ui-text-quaternary)">
-      â€”
+      —
     </span>
   )
 }
@@ -227,7 +238,7 @@ function PackageRow({
   const d = t.settings.plugins
   const desktop = pkg.desktop
   const agent = pkg.agent
-  // Manifest `config_schema` â†’ an inline settings form under the row (#46600, #87934).
+  // Manifest `config_schema` → an inline settings form under the row (#46600, #87934).
   const settingsFields = agent?.settings_schema ?? []
   const hasSettings = Boolean(agent?.key) && settingsFields.length > 0
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -246,7 +257,17 @@ function PackageRow({
   const desktopRemovable = desktop?.kind === 'disk' && !desktop.packageName && !agent
   // Electron's desktop-half reconcile only walks THIS machine's homes, so a
   // package installed on a remote backend can never materialize here (#114079).
-  const remoteBackend = useStore($connection)?.mode === 'remote'
+  const connection = useStore($connection)
+  useStore($connectionsRegistry)
+
+  const remoteBackend =
+    profile && typeof profile === 'object'
+      ? Boolean(
+          profile.connectionId &&
+          profile.connectionId !== 'local' &&
+          registryConnectionKind(profile.connectionId) !== 'local'
+        )
+      : connection?.mode === 'remote'
 
   // #96969: when the feature's agent-side tools live in a toolset (the
   // built-in Kanban board has no agent-plugin half), the Desktop switch flips
@@ -465,7 +486,7 @@ function PackageRow({
                 <Button
                   className="h-5 px-1.5 text-[0.65rem]"
                   disabled={!desktop.packageOrigin?.repo}
-                  onClick={() => installAgentHalfHere(desktop, scope)}
+                  onClick={() => installAgentHalfHere(desktop, profile)}
                   size="xs"
                   variant="outline"
                 >
@@ -485,6 +506,8 @@ function PackageRow({
             fields={settingsFields}
             idPrefix={`plugin-settings-${agent.key}`}
             onSave={async changes => {
+              const ownsView = captureAgentPluginView(request, scope)
+
               const ok = await saveAgentPluginSettings(request, {
                 key: agent.key!,
                 values: changes.values,
@@ -494,7 +517,7 @@ function PackageRow({
                 profile: scope
               })
 
-              if (ok) {
+              if (ok && ownsView()) {
                 notify({ kind: 'success', message: p.settingsForm.saved(pkg.name) })
               }
 
@@ -508,14 +531,23 @@ function PackageRow({
 }
 
 export function PluginActions({ profile }: { profile: ProfileScope }) {
+  useStore($apiRequestScope)
   const { t } = useI18n()
   const d = t.settings.plugins
-  const { requestGateway } = useGatewayRequest()
+  const { requestGateway: ambientRequest } = useGatewayRequest()
+  const connection = useStore($connection)
+  const ambientConnectionId = agentPluginConnectionOwner(connection)
+
+  const requestGateway = useMemo(
+    () => scopedAgentPluginRequest(profile, ambientRequest, ambientConnectionId),
+    [profile, ambientRequest, ambientConnectionId]
+  )
+
   const scope = profileParam(profile)
 
   return (
     <>
-      <Button onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="textStrong">
+      <Button onClick={() => openPluginInstallRequest({ profile, repo: '' })} size="xs" variant="textStrong">
         {d.installModal.installFromGit}
       </Button>
       <Tip label={d.openFolder}>
@@ -546,14 +578,14 @@ export const PluginsTab = memo(function PluginsTab({
   profile,
   scopeSelector,
   scopeLabel,
-  view = 'browse',
-  query = '',
-  onQueryChange
+  query,
+  onQueryChange,
+  view: initialView = 'installed'
 }: {
+  profile: ProfileScope
   query?: string
   onQueryChange?: (value: string) => void
   view?: CapabilityView
-  profile: ProfileScope
   /** The profile selector governs only the Agent half, not the app-level Desktop half. */
   scopeSelector?: ReactNode
   /** Display name of the selected profile for the Agent half label. */
@@ -561,17 +593,31 @@ export const PluginsTab = memo(function PluginsTab({
 }) {
   const { t } = useI18n()
   const p = t.skills.plugins
-  const { requestGateway } = useGatewayRequest()
+  const [view, setView] = useState<CapabilityView>(initialView)
+  useStore($apiRequestScope)
+  const { requestGateway: ambientRequest } = useGatewayRequest()
+  const connection = useStore($connection)
+  const ambientConnectionId = agentPluginConnectionOwner(connection)
 
-  const [localView, setLocalView] = useState<CapabilityView>(view)
+  const requestGateway = useMemo(
+    () => scopedAgentPluginRequest(profile, ambientRequest, ambientConnectionId),
+    [profile, ambientRequest, ambientConnectionId]
+  )
 
   const desktopRecords = useStore($pluginRecords)
-  const agentRows = useStore($agentPlugins)
+  const storedAgentRows = useStore($agentPlugins)
+  const agentOwner = useStore($agentPluginsOwner)
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
   const busyKey = useStore($agentPluginBusy)
 
   const scope = profileParam(profile)
+
+  const agentRows = useMemo(
+    () => (agentOwner === agentPluginRequestOwner(requestGateway, scope) ? storedAgentRows : []),
+    [agentOwner, storedAgentRows, requestGateway, scope]
+  )
+
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
 
   useEffect(() => {
@@ -612,7 +658,8 @@ export const PluginsTab = memo(function PluginsTab({
     )
   })
 
-  const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
+  const agentBusy = (row: AgentPluginRow) =>
+    status !== 'ready' || busyKey === (row.key ?? row.name) || busyKey === row.name
 
   const installedEntries = useMemo(
     () =>
@@ -658,24 +705,32 @@ export const PluginsTab = memo(function PluginsTab({
 
   const handleAgentRemove = useCallback(
     (row: AgentPluginRow) => {
+      const ownsView = captureAgentPluginView(requestGateway, scope)
+
+      if (status !== 'ready') {
+        return
+      }
+
       void confirm({
         confirmLabel: p.uninstall,
         description: p.uninstallConfirmBody(row.name, label),
         destructive: true,
         title: p.uninstallConfirmTitle(row.name)
       }).then(async ok => {
-        if (!ok) {
+        if (!ok || !ownsView()) {
           return
         }
 
         if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) {
-          notify({ kind: 'success', message: p.uninstalled(row.name) })
           // Prunes the app-level desktop half whose source package just went away.
-          void rescanAll(requestGateway, scope)
+          if (ownsView()) {
+            notify({ kind: 'success', message: p.uninstalled(row.name) })
+            void rescanAll(requestGateway, scope)
+          }
         }
       })
     },
-    [label, p, requestGateway, scope]
+    [label, p, requestGateway, scope, status]
   )
 
   const handleDesktopRemove = useCallback(
@@ -728,9 +783,6 @@ export const PluginsTab = memo(function PluginsTab({
     )
   }
 
-  const install = (entry: CatalogEntry) =>
-    openCatalogPluginInstall({ name: entry.name, repo: entry.repo, sha: entry.sha, subdir: entry.subdir }, scope)
-
   const notice =
     status === 'error' ? (
       <CatalogAlert
@@ -743,86 +795,92 @@ export const PluginsTab = memo(function PluginsTab({
     ) : null
 
   return (
-    <CatalogBrowser
-      headerActions={
-        <>
-          <CapabilityTabs onChange={setLocalView} value={localView} />
-          <PluginActions profile={profile} />
-        </>
-      }
-      installedEntries={installedEntries}
-      installedPending={status !== 'ready'}
-      isInstalled={isInstalled}
-      kind="plugins"
-      matchInstalled={matchInstalled}
-      notice={notice}
-      onInstall={entry => openCatalogPluginInstall(entry, scope)}
-      onQueryChange={onQueryChange}
-      query={query}
-      renderInstalledAction={entry => {
-        const pkg = packageById.get(entry.id)
+    <>
+      <CapabilityTabs onChange={setView} value={view} />
+      <CatalogBrowser
+        headerActions={<PluginActions profile={profile} />}
+        installedEntries={installedEntries}
+        installedPending={status !== 'ready'}
+        isInstalled={isInstalled}
+        kind="plugins"
+        matchInstalled={matchInstalled}
+        notice={notice}
+        onInstall={entry => openCatalogPluginInstall(entry, profile)}
+        onQueryChange={onQueryChange}
+        query={query}
+        renderInstalledAction={entry => {
+          const pkg = packageById.get(entry.id)
 
-        return pkg ? packageSwitch(pkg) : null
-      }}
-      renderInstalledDetail={entry => {
-        const pkg = packageById.get(entry.id)
+          return pkg ? packageSwitch(pkg) : null
+        }}
+        renderInstalledDetail={entry => {
+          const pkg = packageById.get(entry.id)
 
-        if (!pkg) {
-          return null
-        }
+          if (!pkg) {
+            return null
+          }
 
-        return (
-          <PackageRow
-            busy={pkg.agent ? agentBusy(pkg.agent) : false}
-            key={pkg.key}
-            onAgentRemove={handleAgentRemove}
-            onAgentToggle={(row, enable) => {
-              if (!row.key) {
-                return
-              }
-
-              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-            }}
-            onAgentUpdate={row => {
-              const finish = (outcome: AgentPluginUpdateOutcome) => {
-                if (outcome.kind === 'applied') {
-                  notify({ kind: 'success', message: p.updated(row.name) })
-                  void rescanAll(requestGateway, scope)
-                }
-              }
-
-              void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
-                if (outcome.kind !== 'consent') {
-                  finish(outcome)
-
+          return (
+            <PackageRow
+              busy={pkg.agent ? agentBusy(pkg.agent) : false}
+              key={pkg.key}
+              onAgentRemove={handleAgentRemove}
+              onAgentToggle={(row, enable) => {
+                if (!row.key) {
                   return
                 }
 
-                // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                // half); the backend changed nothing until the user confirms the delta.
-                const ok = await confirm({
-                  confirmLabel: p.updateConsentConfirm,
-                  description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
-                  title: p.updateConsentTitle(row.name)
-                })
+                void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+              }}
+              onAgentUpdate={row => {
+                const ownsView = captureAgentPluginView(requestGateway, scope)
 
-                if (ok) {
-                  finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                const finish = (outcome: AgentPluginUpdateOutcome) => {
+                  if (!ownsView()) {
+                    return
+                  }
+
+                  if (outcome.kind === 'applied') {
+                    notify({ kind: 'success', message: p.updated(row.name) })
+                    void rescanAll(requestGateway, scope)
+                  }
                 }
-              })
-            }}
-            onDesktopRemove={handleDesktopRemove}
-            pkg={pkg}
-            profile={profile}
-            request={requestGateway}
-            scope={scope}
-            scopeLabel={label}
-            scopeSelector={scopeSelector}
-          />
-        )
-      }}
-      selectedEntryId={selectedEntryId}
-      view={localView}
-    />
+
+                void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
+                  async outcome => {
+                    if (outcome.kind !== 'consent') {
+                      finish(outcome)
+
+                      return
+                    }
+
+                    // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
+                    // half); the backend changed nothing until the user confirms the delta.
+                    const ok = await confirm({
+                      confirmLabel: p.updateConsentConfirm,
+                      description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                      title: p.updateConsentTitle(row.name)
+                    })
+
+                    if (ok && ownsView()) {
+                      finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                    }
+                  }
+                )
+              }}
+              onDesktopRemove={handleDesktopRemove}
+              pkg={pkg}
+              profile={profile}
+              request={requestGateway}
+              scope={scope}
+              scopeLabel={label}
+              scopeSelector={scopeSelector}
+            />
+          )
+        }}
+        selectedEntryId={selectedEntryId}
+        view={view}
+      />
+    </>
   )
 })

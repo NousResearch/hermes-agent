@@ -9,7 +9,6 @@ import { $connection } from '@/store/session'
 import {
   $automaticUpdateChecksEnabled,
   $desktopVersion,
-  $updateStatus,
   checkBackendUpdates,
   refreshDesktopVersion,
   setAutomaticUpdateChecksEnabled
@@ -44,9 +43,7 @@ interface AppUpdatesSettingsProps {
 
 function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): ReactElement {
   const { t } = useI18n()
-  const a = t.settings.about
   const version = useStore($desktopVersion)
-  const status = useStore($updateStatus)
   const automaticUpdateChecksEnabled = useStore($automaticUpdateChecksEnabled)
   const connection = useStore($connection)
   const remote = connection?.mode === 'remote'
@@ -64,22 +61,18 @@ function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): Reac
     <SettingsContent>
       <VersionHero version={version} />
       <div className="mx-auto mt-4 w-full max-w-2xl">
-        <SectionHeading icon={RefreshCw} title={a.updates} />
+        <SectionHeading icon={RefreshCw} title={t.settings.about.updates} />
+        <ToggleRow
+          checked={automaticUpdateChecksEnabled}
+          description={t.settings.about.automaticUpdatesDesc}
+          label={t.settings.about.automaticUpdates}
+          onChange={setAutomaticUpdateChecksEnabled}
+        />
         <div className="grid gap-3" id={settingElementId(SETTING_IDS.about.updates)}>
           <UpdateStatusCard target="client" />
           {/* Client and remote backend updates are independent. Only the client has release notes. */}
           {remote && <UpdateStatusCard showReleaseNotes={false} target="backend" />}
         </div>
-
-        <ToggleRow
-          checked={automaticUpdateChecksEnabled}
-          description={a.automaticUpdatesDesc}
-          hint={`${a.updateSource}: ${status?.repository ? `${status.repository} · ` : ''}${a.branchCommit(`origin/${status?.branch ?? 'unknown'}`, status?.currentSha?.slice(0, 7) ?? 'unknown')}`}
-          id={settingElementId(SETTING_IDS.about.automaticUpdates)}
-          label={a.automaticUpdates}
-          onChange={setAutomaticUpdateChecksEnabled}
-        />
-
         {version && <VersionDetails version={version} />}
         {includeUninstall && <UninstallSection />}
       </div>

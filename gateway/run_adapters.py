@@ -407,6 +407,7 @@ class GatewayAdapterLifecycleMixin:
                 logger.error("No connected messaging platforms remain. Shutting down gateway for service restart.")
             else:
                 logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
+            self._exit75_allowed = False
             await self.stop()
         elif not self.adapters and self._failed_platforms:
             # All down but queued: stay alive (cron runs, watcher recovers) rather than restart-loop.

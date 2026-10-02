@@ -3396,6 +3396,7 @@ class GatewayRunner(
     _restart_task_started: bool = False
     _restart_detached: bool = False
     _restart_via_service: bool = False
+    _exit75_allowed: bool = True
     _detached_restart_helper_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
@@ -3564,6 +3565,7 @@ class GatewayRunner(
         # OOM, bare kill); _stop_impl must NOT persist gateway_state=stopped or container_boot won't restart.
         self._restart_requested = self._signal_initiated_shutdown = self._restart_task_started = False
         self._restart_detached = self._restart_via_service = self._detached_restart_helper_started = False
+        self._exit75_allowed = True
         self._restart_command_source: Optional[SessionSource] = None
         # Construction clock: bounds the /restart redelivery guard's window (missing dedup marker = stale).
         self._startup_time: float = time.time()

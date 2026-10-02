@@ -2434,6 +2434,7 @@ class _CronAgentSetup:
     runtime: dict = None
     prefill_messages: Any = None
     max_iterations: Any = None
+    max_tokens: Any = None
     reasoning_config: Any = None
     fallback_model: Any = None
     credential_pool: Any = None
@@ -2453,6 +2454,9 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     if _mt is None:
         _mt = _cfg.get("max_turns")
     setup.max_iterations = _resolve_turn_limit(_mt)
+    _cron_cfg = _cfg.get("cron") if isinstance(_cfg, dict) else {}
+    _global_max_tokens = _cron_cfg.get("max_tokens_default") if isinstance(_cron_cfg, dict) else None
+    setup.max_tokens = job.get("max_tokens", _global_max_tokens)
 
     # Runtime backstop (CWE-200/522): fail closed BEFORE resolution on a provider/base_url pair
     # that would ship a stored credential off-host; hand-written jobs bypass create-time checks.
@@ -2464,6 +2468,35 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 
     setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
     setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
+    # Providers commonly use the model context window as the implicit output cap. Make that
+    # reservation explicit so cron jobs do not request a larger budget than the selected model
+    # can support, while still allowing a smaller per-job/global cap.
+    try:
+        from agent.model_metadata import get_model_context_length
+        _model_cfg = _cfg.get("model") if isinstance(_cfg, dict) else {}
+        _config_context_length = _model_cfg.get("context_length") if isinstance(_model_cfg, dict) else None
+        _model_default_max_tokens = get_model_context_length(
+            setup.model,
+            base_url=str(setup.runtime.get("base_url") or ""),
+            api_key=str(setup.runtime.get("api_key") or ""),
+            provider=str(setup.runtime.get("provider") or ""),
+            config_context_length=_config_context_length,
+        )
+    except Exception:
+        _model_default_max_tokens = None
+    _requested_max_tokens = setup.max_tokens
+    try:
+        _requested_max_tokens = int(_requested_max_tokens) if _requested_max_tokens is not None else None
+    except (TypeError, ValueError):
+        _requested_max_tokens = None
+    if isinstance(_model_default_max_tokens, int) and _model_default_max_tokens > 0:
+        setup.max_tokens = min(
+            _model_default_max_tokens,
+            _requested_max_tokens if isinstance(_requested_max_tokens, int) and _requested_max_tokens > 0
+            else _model_default_max_tokens,
+        )
+    else:
+        setup.max_tokens = _requested_max_tokens
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
@@ -2496,6 +2529,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         max_iterations=setup.max_iterations,
+        max_tokens=setup.max_tokens,
         reasoning_config=setup.reasoning_config,
         prefill_messages=setup.prefill_messages,
         fallback_model=setup.fallback_model,

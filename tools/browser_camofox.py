@@ -553,10 +553,14 @@ def _vision_llm_settings() -> tuple[float, float]:
 
 
 def _save_screenshot(content: bytes) -> str:
-    """Write PNG bytes under ``$HERMES_HOME/browser_screenshots`` and return the path."""
-    from hermes_constants import get_hermes_home
-    screenshots_dir = get_hermes_home() / "browser_screenshots"
+    """Write PNG bytes into the browser screenshot cache and return the path."""
+    # Same dir and 24h prune as browser_vision: sandbox backends mount only this resolved dir,
+    # and writing the legacy name directly would flip every other caller's resolution to it.
+    from hermes_constants import get_hermes_dir
+    from tools.browser_tool_lifecycle import _cleanup_old_screenshots
+    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
     screenshots_dir.mkdir(parents=True, exist_ok=True)
+    _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
     screenshot_path = str(screenshots_dir / f"browser_screenshot_{uuid.uuid4().hex[:8]}.png")
     with open(screenshot_path, "wb") as f:
         f.write(content)

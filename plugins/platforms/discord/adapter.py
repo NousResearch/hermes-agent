@@ -2995,23 +2995,6 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return None
         return str(value)
 
-    def _existing_command_to_payload(self, command: Any) -> dict[str, Any]:
-        """Build a canonical-ready dict from an AppCommand; ``to_dict()`` omits nsfw/dm_permission/
-        default_member_permissions, so pull them from attributes or every startup diffs."""
-        payload = dict(command.to_dict())
-        nsfw = getattr(command, "nsfw", None)
-        if nsfw is not None:
-            payload["nsfw"] = bool(nsfw)
-        guild_only = getattr(command, "guild_only", None)
-        if guild_only is not None:
-            payload["dm_permission"] = not bool(guild_only)
-        default_permissions = getattr(command, "default_member_permissions", None)
-        if default_permissions is not None:
-            payload["default_member_permissions"] = getattr(
-                default_permissions, "value", default_permissions
-            )
-        return payload
-
     def _canonicalize_app_command_option(self, payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "type": int(payload.get("type", 0) or 0),
@@ -3038,6 +3021,13 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             ],
         }
 
+    @staticmethod
+    def _without_unmanaged_install_fields(current: dict[str, Any], desired: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **current,
+            **{field: None for field in ("contexts", "integration_types") if desired.get(field) is None},
+        }
+
     def _patchable_app_command_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Fields supported by discord.py's edit_global_command route."""
         canonical = self._canonicalize_app_command_payload(payload)
@@ -3060,15 +3050,11 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
             for payload in desired_payloads
         }
-        existing_commands = await tree.fetch_commands()
-        existing_by_key = {
-            (
-                int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
-                str(command.name or "").lower(),
-            ): command
-            for command in existing_commands
-        }
         http = self._client.http
+        existing_by_key = {
+            (int(command.get("type", 1) or 1), str(command.get("name", "") or "").lower()): command
+            for command in await http.get_global_commands(app_id)
+        }
         mutation_count = 0
 
         async def mutate(call, *args):
@@ -3083,7 +3069,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
         for key in obsolete_keys:
             current = existing_by_key.pop(key)
-            await mutate(http.delete_global_command, app_id, current.id)
+            await mutate(http.delete_global_command, app_id, current["id"])
             summary["deleted"] += 1
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
@@ -3091,13 +3077,14 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 await mutate(http.upsert_global_command, app_id, desired)
                 summary["created"] += 1
                 continue
-            current_existing_payload = self._existing_command_to_payload(current)
-            current_payload = self._canonicalize_app_command_payload(current_existing_payload)
             desired_payload = self._canonicalize_app_command_payload(desired)
+            current_payload = self._without_unmanaged_install_fields(
+                self._canonicalize_app_command_payload(current), desired_payload
+            )
             if current_payload == desired_payload:
                 summary["unchanged"] += 1
                 continue
-            if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
+            if self._patchable_app_command_payload(current) == self._patchable_app_command_payload(desired):
                 # Upsert alone recreates the command: Discord's create endpoint
                 # overwrites the existing same-name command ("Returns 201 if a
                 # command with the same name does not already exist, or a 200
@@ -3110,7 +3097,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 await mutate(http.upsert_global_command, app_id, desired)
                 summary["recreated"] += 1
                 continue
-            await mutate(http.edit_global_command, app_id, current.id, desired)
+            await mutate(http.edit_global_command, app_id, current["id"], desired)
             summary["updated"] += 1
         summary["total"] = len(desired_payloads)
         return summary

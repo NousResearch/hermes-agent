@@ -18,6 +18,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.utils import formatdate, parseaddr
 from email import encoders
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -54,6 +55,10 @@ _CHARSET_ALIASES = {"unknown-8bit": "utf-8", "unknown": "utf-8", "x-unknown": "u
 _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[^>]*>", re.IGNORECASE), "\n"),
               (re.compile(r"</p>", re.IGNORECASE), "\n"), (re.compile(r"<[^>]+>"), ""), (re.compile(r"&nbsp;"), " "),
               (re.compile(r"&amp;"), "&"), (re.compile(r"&lt;"), "<"), (re.compile(r"&gt;"), ">"), (re.compile(r"\n{3,}"), "\n\n"))
+# Outbound: a body that OPENS with an HTML document (matched after stripping leading whitespace, so
+# ``\n <HTML ...>`` and ``<!DoCtYpE HtMl>`` count) is delivered as real HTML with a plain-text fallback;
+# anything else — ordinary chat replies, bodies that merely CONTAIN a tag — stays single text/plain.
+_HTML_DOC_RE = re.compile(r"^\s*<(!doctype\s+html|html)\b", re.IGNORECASE)
 # ``display <bracketed>`` split for the _extract_email_address fallback (linear: neither part can match the other's delimiters).
 _SINGLE_BRACKET_FROM_RE = re.compile(r'([^"<>]*)<([^<>\s]+)>\s*')
 _COMMENT_RE = re.compile(r"\([^()]*\)")
@@ -251,6 +256,77 @@ def _strip_html(html: str) -> str:
     for pattern, repl in _HTML_SUBS:
         html = pattern.sub(repl, html)
     return html.strip()
+
+
+class _HtmlToText(HTMLParser):
+    """Flatten an HTML document into readable plain text for the ``text/plain`` part of an outbound
+    ``multipart/alternative`` body.
+
+    Unlike the read-side ``_strip_html`` (a tag regex), this skips the CONTENT of ``script``/``style``/
+    ``head`` — a tag stripper otherwise dumps CSS and JS source into the fallback — and normalises
+    whitespace the way a client renders it: runs inside text collapse to one space, block boundaries
+    become newlines. ``convert_charrefs`` decodes entities exactly once, while parsing.
+    """
+
+    _SKIP_TAGS = {"head", "noscript", "script", "style", "template", "title"}
+    _BLOCK_TAGS = {"address", "article", "blockquote", "br", "div", "figcaption", "figure", "footer",
+                   "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p",
+                   "pre", "section", "table", "tbody", "td", "th", "thead", "tr", "ul"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._chunks: List[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        elif not self._skip_depth and tag in self._BLOCK_TAGS:
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        elif not self._skip_depth and tag in self._BLOCK_TAGS:
+            self._chunks.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self._chunks.append(re.sub(r"\s+", " ", data))  # source newlines render as spaces
+
+    def text(self) -> str:
+        joined = re.sub(r"[ \t]*\n[ \t]*", "\n", "".join(self._chunks))  # drop source indentation
+        return re.sub(r"\n{3,}", "\n\n", re.sub(r" {2,}", " ", joined)).strip()
+
+
+def _html_to_plain(html: str) -> str:
+    """Readable ``text/plain`` fallback for an HTML body; degrades to ``_strip_html`` if parsing fails."""
+    parser = _HtmlToText()
+    try:
+        parser.feed(html)
+        parser.close()
+        return parser.text() or _strip_html(html)
+    except Exception:  # noqa: BLE001 — a pathological body must never break the send
+        logger.debug("[Email] HTML plain-text fallback failed, using regex stripper", exc_info=True)
+        return _strip_html(html)
+
+
+def _body_part(body: str) -> Any:
+    """The MIME part carrying *body*: ``multipart/alternative`` with the readable plain text FIRST (clients
+    that ignore HTML, and the older test expectations, still see text) followed by the untouched HTML when
+    the body opens with an HTML document; otherwise the unchanged single ``text/plain`` part.
+
+    Shared by every outbound path in this module (``_new_reply`` → ``_send_email`` / ``_send_with_files``,
+    and ``_standalone_send``) so an HTML reply renders instead of arriving as visible markup.
+    """
+    if _HTML_DOC_RE.match(body):
+        alternative = MIMEMultipart("alternative")
+        alternative.attach(MIMEText(_html_to_plain(body), "plain", "utf-8"))
+        alternative.attach(MIMEText(body, "html", "utf-8"))
+        return alternative
+    return MIMEText(body, "plain", "utf-8")
 
 
 def _extract_email_address(raw: str) -> str:
@@ -800,7 +876,7 @@ class EmailAdapter(BasePlatformAdapter):
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(_body_part(body))
         return msg, msg_id, subject
 
     def _smtp_send(self, msg: MIMEMultipart) -> None:
@@ -901,7 +977,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if not all([address, password, smtp_host]):
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
-        msg = MIMEText(message, "plain", "utf-8")
+        msg = _body_part(message)
         for key, value in (("From", address), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)

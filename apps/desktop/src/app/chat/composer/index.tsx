@@ -406,6 +406,22 @@ export function ChatBar({
     return onCancel()
   }, [activeQueueSessionKeyRef, onCancel])
 
+  useEffect(() => {
+    const stopActiveRun = (event: Event) => {
+      if (!busy || awaitingInput) {
+        return
+      }
+
+      event.preventDefault()
+      triggerHaptic('cancel')
+      void Promise.resolve(haltRun())
+    }
+
+    window.addEventListener('hermes:stop-active-run', stopActiveRun)
+
+    return () => window.removeEventListener('hermes:stop-active-run', stopActiveRun)
+  }, [awaitingInput, busy, haltRun])
+
   const { compactPill, foldVoice, minimal, stacked } = useComposerMetrics({
     composerDockRef,
     composerRef,

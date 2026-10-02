@@ -81,6 +81,7 @@ gateway:
     running_processes: "**Processi in background in esecuzione:** {count}"
     async_jobs: "**Job asincroni del gateway:** {count}"
     background_delegations: "**Delegazioni in background:** {count}"
+    plugin_status: "**Stato dei plugin:** {count}"
     none: "Nessun agente attivo o attività in esecuzione."
     state_starting: "in avvio"
     state_running: "in esecuzione"

@@ -11,6 +11,7 @@ from gateway.input_owner import gateway_input_owner
 from gateway.platforms.base_pending import Withdraw
 from gateway.platforms.event import MessageEvent
 from gateway.session_identity import canonical_identity, clear_identity
+from gateway.shutdown_pending_lock import pending_snapshot_lock
 from gateway.shutdown_pending import (
     PENDING_SCHEMA,
     PendingQueueSnapshot,
@@ -62,62 +63,63 @@ def withdraw_spooled_pending(runner: Any, adapter: Any, withdraw: Withdraw) -> b
         with _profile_runtime_scope(home):
             for path in (home / "pending_messages").glob("*.json"):
                 try:
-                    original = path.read_bytes()
-                    payload = json.loads(original)
-                    if (
-                        not isinstance(payload, dict)
-                        or payload.get("schema") != PENDING_SCHEMA
-                        or payload.get("projection") is not None
-                    ):
-                        continue
-                    snapshot = PendingQueueSnapshot.from_payload(payload)
-                    if Path(snapshot.runtime_home).resolve() != home:
-                        continue
-                    changed = False
-                    records = []
-                    for record in snapshot.events:
-                        records.append(record)
+                    with pending_snapshot_lock(path):
+                        original = path.read_bytes()
+                        payload = json.loads(original)
                         if (
-                            record.get("withdrawn") is True
-                            or "input_owner" not in record
+                            not isinstance(payload, dict)
+                            or payload.get("schema") != PENDING_SCHEMA
+                            or payload.get("projection") is not None
                         ):
                             continue
-                        routing = record.get("routing")
-                        if routing is None and runner.config.multiplex_profiles:
+                        snapshot = PendingQueueSnapshot.from_payload(payload)
+                        if Path(snapshot.runtime_home).resolve() != home:
                             continue
-                        profile = (
-                            routing.get("transport_profile")
-                            if isinstance(routing, dict)
-                            else None
-                        )
-                        event = decode_pending_event(record, adapter=adapter)
-                        if (
-                            runner._adapters_for_profile(profile).get(
-                                event.source.platform
+                        changed = False
+                        records = []
+                        for record in snapshot.events:
+                            records.append(record)
+                            if (
+                                record.get("withdrawn") is True
+                                or "input_owner" not in record
+                            ):
+                                continue
+                            routing = record.get("routing")
+                            if routing is None and runner.config.multiplex_profiles:
+                                continue
+                            profile = (
+                                routing.get("transport_profile")
+                                if isinstance(routing, dict)
+                                else None
                             )
-                            is not adapter
-                            or event.internal
-                            or event.source.delivered_via_upstream_relay
-                        ):
-                            continue
-                        if not bind_spooled_event(
-                            runner, adapter, event, home, snapshot.session_key
-                        ):
-                            continue
-                        matched, remaining = withdraw(event)
-                        if not matched:
-                            continue
-                        records[-1] = (
-                            {**record, "withdrawn": True}
-                            if remaining is None
-                            else _capture_event(remaining)
-                        )
-                        changed = True
-                    if changed and path.read_bytes() == original:
-                        atomic_json_write(
-                            path, {**payload, "events": records}, mode=0o600
-                        )
-                        found = True
+                            event = decode_pending_event(record, adapter=adapter)
+                            if (
+                                runner._adapters_for_profile(profile).get(
+                                    event.source.platform
+                                )
+                                is not adapter
+                                or event.internal
+                                or event.source.delivered_via_upstream_relay
+                            ):
+                                continue
+                            if not bind_spooled_event(
+                                runner, adapter, event, home, snapshot.session_key
+                            ):
+                                continue
+                            matched, remaining = withdraw(event)
+                            if not matched:
+                                continue
+                            records[-1] = (
+                                {**record, "withdrawn": True}
+                                if remaining is None
+                                else _capture_event(remaining)
+                            )
+                            changed = True
+                        if changed and path.read_bytes() == original:
+                            atomic_json_write(
+                                path, {**payload, "events": records}, mode=0o600
+                            )
+                            found = True
                 except (OSError, ValueError, TypeError, KeyError):
                     logger.warning(
                         "Could not withdraw spooled input in %s; preserving it",

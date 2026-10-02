@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v8"
+SCANNER_VERSION = "skills-guard-v9"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -654,11 +654,17 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     name, trust = skill_path.name, _resolve_trust_level(source)
     findings: List[Finding] = []
     if skill_path.is_dir():
-        ignore = _load_skill_ignore(skill_path)
-        findings.extend(_check_structure(skill_path, ignore=ignore))
+        # Ignore manifests are publisher-controlled input.  Applying them here would
+        # let a bundle hide the files that the security gate is responsible for scanning.
+        for ignore_name in _SKILL_IGNORE_FILENAMES:
+            if (skill_path / ignore_name).is_file():
+                findings.append(Finding(
+                    "skill_ignore_file", "high", "structural", ignore_name, 0, ignore_name,
+                    "bundle-supplied ignore file is not honored during security scanning"))
+        findings.extend(_check_structure(skill_path))
         for f in skill_path.rglob("*"):
-            if f.is_file() and not ignore(rel := str(f.relative_to(skill_path))):
-                findings.extend(scan_file(f, rel))
+            if f.is_file():
+                findings.extend(scan_file(f, str(f.relative_to(skill_path))))
     elif skill_path.is_file():
         findings.extend(scan_file(skill_path, skill_path.name))
     verdict = _determine_verdict(findings)

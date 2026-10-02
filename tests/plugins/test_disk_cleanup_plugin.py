@@ -485,6 +485,65 @@ class TestDryRun:
         assert any(i["path"] == str(test_f) for i in auto)
 
 
+class TestLargeFilePromptOnly:
+    """Files past _LARGE_FILE_BYTES are prompt-only: quick() must keep them,
+    dry_run() must route them to the deep ``large`` prompt group."""
+
+    LARGE = 500 * 1024 * 1024 + 1
+
+    def _tracked_entry(self, home, path, category, age_days, size):
+        path.write_text("x")
+        os.truncate(path, size)  # sparse file: st_size == size, matching the recorded entry
+        ts = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
+        tracked_file = home / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(path), "category": category, "timestamp": ts, "size": size}]))
+
+    def test_quick_never_deletes_large_temp_past_age_threshold(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "tmp_huge.bin"
+        self._tracked_entry(_isolate_env, p, "temp", age_days=30, size=self.LARGE)
+        summary = dg.quick()
+        assert summary["deleted"] == 0
+        assert p.exists(), "large file must survive quick() even when temp is past its age threshold"
+
+    def test_quick_still_deletes_small_temp_past_age_threshold(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "tmp_small.bin"
+        self._tracked_entry(_isolate_env, p, "temp", age_days=30, size=10)
+        summary = dg.quick()
+        assert summary["deleted"] == 1
+        assert not p.exists(), "small temp file past its age threshold must still be auto-deleted"
+
+    def test_large_file_surviving_quick_lands_in_deep_prompt_group(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "tmp_huge.bin"
+        self._tracked_entry(_isolate_env, p, "temp", age_days=30, size=self.LARGE)
+        dg.quick()
+        auto, prompt = dg.dry_run()
+        assert len(auto) == 0
+        assert any(i["path"] == str(p) and dg._prompt_group(i, 0) == "large" for i in prompt), \
+            "a large file kept by quick() must surface in the deep prompt list"
+
+    def test_grown_file_survives_quick_despite_stale_recorded_size(self, _isolate_env):
+        # track() records the size at creation; a cron-output log that later
+        # grows past the threshold must not be auto-deleted on the stale value.
+        dg = _load_lib()
+        p = _isolate_env / "cron" / "output" / "job.log"  # real cron-output path: passes re-validation
+        p.parent.mkdir(parents=True)
+        p.write_bytes(b"x")
+        self._tracked_entry(_isolate_env, p, "cron-output", age_days=20, size=1)
+        os.truncate(p, self.LARGE)  # grew on disk after tracking
+        summary = dg.quick()
+        assert summary["deleted"] == 0
+        assert p.exists(), "a file that grew past the threshold after tracking must survive quick()"
+        auto, prompt = dg.dry_run()
+        assert len(auto) == 0
+        assert any(dg._prompt_group(i, 0) == "large" for i in prompt), \
+            "the grown file must land in the deep 'large' prompt group"
+
+
 # ---------------------------------------------------------------------------
 # Plugin hooks tests
 # ---------------------------------------------------------------------------

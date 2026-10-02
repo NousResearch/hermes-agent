@@ -141,6 +141,7 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     busyRef,
     creatingSessionRef,
     getRoutedStoredSessionId: () => route,
+    routedSessionId: route,
     getRouteToken,
     navigate: to => {
       route = routeSessionId(String(to))
@@ -182,7 +183,6 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     activeQueueSessionKey,
     attachments,
     busy: false,
-    compacting: false,
     disabled: false,
     inputDisabled: false,
     drainNextQueued: async () => false,

@@ -572,13 +572,23 @@ telemetry:
 - Like `enabled`, `send` is profile-owned and is not overridden by
   managed-scope configuration.
 
-Both keys are asked once per profile: by the Shared Metrics section of
-`hermes setup`, or in Hermes Desktop by an offer strip above the composer
-(Send to Nous / Local only / No thanks, with a Details view). The Desktop offer
-never blocks the composer or takes focus, appears only after first-run
-onboarding, and stays until answered. A profile whose `config.yaml` already
-carries either key is never asked again on any surface. Settings › Safety ›
-Privacy & network toggles both keys later.
+Both keys are asked once per profile, with the same three answers everywhere
+(Send to Nous / Local only / No thanks):
+
+| Surface | Where the offer appears |
+| --- | --- |
+| `hermes setup` | At the end of every flow (Quick, Full, Blank Slate, Portal, `--quick`). |
+| `hermes` / `hermes --tui` | Once before an interactive chat starts. Skipped for `-q`, piped or JSON output, spawned actions and Desktop-hosted panes. |
+| Hermes Desktop | A strip above the composer, after first-run onboarding. It never blocks the composer or takes focus. |
+| Web dashboard | A banner above every page, for the profile being managed. |
+
+"No thanks" is the default in the terminal, so pressing Enter never opts
+anyone in. Esc in the terminal and the dashboard banner's ✕ leave the question
+open, so it is asked again next time. Answering on any surface writes both keys
+to the profile's `config.yaml`, and a profile that already carries either key is
+never asked again. A managed install is never offered. To change the answer
+later, use `hermes setup telemetry`, `hermes tools`, or Desktop's Settings ›
+Safety › Privacy & network.
 
 **A package is only sent when its whole period falls inside a recorded
 consent window.** Consent is stored as explicit intervals in the shared-

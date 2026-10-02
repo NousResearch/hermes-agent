@@ -677,8 +677,8 @@ describe('Hermes REST helpers', () => {
     api.mockResolvedValueOnce({ ok: true })
     api.mockResolvedValueOnce({ ok: true })
 
-    await setSttLease('desktop:voice-input:abc', true)
-    await setSttLease('desktop:voice-input:abc', false)
+    await setSttLease('desktop:voice-input:abc', true, { connectionId: null, profile: null })
+    await setSttLease('desktop:voice-input:abc', false, { connectionId: null, profile: null })
 
     expect(api).toHaveBeenNthCalledWith(1, {
       body: { active: true, lease: 'desktop:voice-input:abc' },
@@ -692,6 +692,47 @@ describe('Hermes REST helpers', () => {
       path: '/api/audio/stt-lease',
       timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
     })
+  })
+
+  it('sends an STT lease to its resolved owner verbatim — never the ambient selection', async () => {
+    // #128668 review: the owner is resolved once per voice operation. A later
+    // gateway/profile switch must not re-route it, and its untagged halves
+    // must stay untagged instead of re-reading the ambient scope.
+    setApiRequestConnection('gateway-b')
+    setApiRequestProfile('worker_beta')
+    api.mockResolvedValue({ ok: true })
+
+    await setSttLease('desktop:voice-input:abc', true, { connectionId: 'gateway-a', profile: 'worker_alpha' })
+    await setSttLease('desktop:voice-input:abc', false, { connectionId: null, profile: null })
+
+    expect(api).toHaveBeenNthCalledWith(1, {
+      body: { active: true, lease: 'desktop:voice-input:abc' },
+      connectionId: 'gateway-a',
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      priority: 'foreground',
+      profile: 'worker_alpha',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      body: { active: false, lease: 'desktop:voice-input:abc' },
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+    })
+  })
+
+  it('transcribes on the recording owner when one is given', async () => {
+    setApiRequestConnection('gateway-b')
+    setApiRequestProfile('worker_beta')
+    api.mockResolvedValue({ ok: true, transcript: 'hi' })
+
+    await transcribeAudio('data:audio/webm;base64,AAAA', 'audio/webm', { connectionId: 'gateway-a', profile: null })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'gateway-a', path: '/api/audio/transcribe' })
+    )
+    expect(api.mock.calls.at(-1)?.[0]).not.toHaveProperty('profile')
   })
 
   it('defaults model options to configured providers only', async () => {

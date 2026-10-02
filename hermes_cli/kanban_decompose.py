@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -336,8 +337,22 @@ def decompose_task(
     return _apply_fanout(task_id, parsed, routing, audit_author)
 
 
-def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+def list_triage_ids(
+    *, tenant: Optional[str] = None, max_age_days: Optional[float] = None,
+) -> list[str]:
+    """Return task ids currently in the triage column.
+
+    ``max_age_days`` bounds the ambient auto-decompose trigger (#124397): cards
+    created more than that many days ago are skipped, so ``triage`` can serve as
+    a durable idea inbox without every dormant card fanning out on each tick.
+    ``None`` (or ``<= 0``) disables the bound — explicit callers
+    (``hermes kanban decompose --all``) keep the full sweep.
+    """
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
+    if max_age_days is not None and max_age_days > 0:
+        # ponytail: created_at only — no updated_at column exists, so a re-touched
+        # old card still reads as stale until task search (#72764) lands.
+        cutoff = int(time.time()) - int(max_age_days * 86400)
+        rows = [row for row in rows if row.created_at >= cutoff]
     return [row.id for row in rows]

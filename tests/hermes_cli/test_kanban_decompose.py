@@ -256,3 +256,16 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+def test_list_triage_ids_skips_stale_cards(kanban_home):
+    """#124397: the ambient auto-decomposer must not fan out dormant triage cards."""
+    import time
+
+    with kbc.connect() as conn:
+        fresh = kb.create_task(conn, title="fresh idea", triage=True)
+        stale = kb.create_task(conn, title="17-day-old idea", triage=True)
+        conn.execute(
+            "UPDATE tasks SET created_at = ? WHERE id = ?",
+            (int(time.time()) - 18 * 86400, stale),
+        )
+    assert decomp.list_triage_ids(max_age_days=7) == [fresh]
+    assert sorted(decomp.list_triage_ids()) == sorted([fresh, stale])

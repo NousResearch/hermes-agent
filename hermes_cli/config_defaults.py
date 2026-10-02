@@ -1939,6 +1939,11 @@ DEFAULT_CONFIG = {
         # Max triage tasks decomposed per tick, bounding the aux-LLM burst from a bulk load. Excess
         # defers to the next tick.
         "auto_decompose_per_tick": 3,
+        # Max age (days, from created_at) of triage cards the ambient auto-decomposer may fan
+        # out (#124397): a card nobody decomposed within this window is a parked idea, not a
+        # queue item. 0 or negative disables the bound. Explicit runs
+        # (`hermes kanban decompose --all`, dashboard button) are unaffected.
+        "auto_decompose_max_age_days": 7,
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,

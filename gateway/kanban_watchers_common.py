@@ -87,6 +87,24 @@ def _resolve_auto_decompose_settings(load_config: Callable[[], Any]) -> "tuple[b
     return bool(kcfg.get("auto_decompose", True)), max(per_tick, 1)
 
 
+def _auto_decompose_max_age_days() -> float | None:
+    """``kanban.auto_decompose_max_age_days`` (default 7; 0/negative = off), re-read per tick.
+
+    Fails safe to the default bound: a config read error must not silently turn the ambient
+    auto-decomposer back into an unbounded sweep (#124397).
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        raw = ((load_config() or {}).get("kanban") or {}).get("auto_decompose_max_age_days", 7)
+        value = float(raw) if raw is not None else None
+    except Exception:
+        return 7
+    if value is None or value <= 0:
+        return None
+    return value
+
+
 def _gc_retention_days() -> int:
     """``kanban.done_sub_retention_days`` (default 30; 0 disables), re-read per sweep; fails safe to 30."""
     try:

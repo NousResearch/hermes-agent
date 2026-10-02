@@ -15,7 +15,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
+from gateway.kanban_watchers_common import (
+    _auto_decompose_max_age_days, _board_slugs, _positive_int_setting, logger,
+)
 
 
 def _kbc():
@@ -248,6 +250,9 @@ class _KanbanDispatcher:
             return 0
         attempted = 0
         successes = 0
+        # Read once per tick (not per board); still live every tick like the
+        # auto_decompose toggle (#49638).
+        max_age_days = _auto_decompose_max_age_days()
         with _default_profile_secret_scope():
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
@@ -258,7 +263,7 @@ class _KanbanDispatcher:
                 try:
                     os.environ["HERMES_KANBAN_BOARD"] = slug
                     try:
-                        triage_ids = _decomp.list_triage_ids()
+                        triage_ids = _decomp.list_triage_ids(max_age_days=max_age_days)
                     except Exception as exc:
                         logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
                         triage_ids = []

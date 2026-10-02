@@ -33,7 +33,7 @@ def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkey
         seen["value"] = ss.get_secret("ANTHROPIC_API_KEY")
         return SimpleNamespace(ok=True, fanout=False, child_ids=None, reason=None)
 
-    fake = SimpleNamespace(list_triage_ids=lambda: ["t1"], decompose_task=fake_decompose)
+    fake = SimpleNamespace(list_triage_ids=lambda max_age_days=None: ["t1"], decompose_task=fake_decompose)
     monkeypatch.setitem(sys.modules, "hermes_cli.kanban_decompose", fake)
     monkeypatch.setattr(hermes_cli, "kanban_decompose", fake, raising=False)
 

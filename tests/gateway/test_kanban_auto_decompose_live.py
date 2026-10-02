@@ -11,6 +11,7 @@ from __future__ import annotations
 
 
 from gateway.kanban_watchers_common import _resolve_auto_decompose_settings
+from gateway import kanban_watchers_common as kwc
 
 
 
@@ -22,3 +23,20 @@ def test_disabled_when_flag_false():
     assert enabled is False
 
 
+def test_max_age_days_defaults_to_bound(monkeypatch):
+    """#124397: no config value still bounds the ambient sweep (fail safe)."""
+    from hermes_cli import config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    assert kwc._auto_decompose_max_age_days() == 7
+
+
+def test_max_age_days_zero_disables(monkeypatch):
+    """#124397: 0 opts back into the unbounded sweep."""
+    from hermes_cli import config as config_mod
+
+    monkeypatch.setattr(
+        config_mod, "load_config",
+        lambda: {"kanban": {"auto_decompose_max_age_days": 0}},
+    )
+    assert kwc._auto_decompose_max_age_days() is None

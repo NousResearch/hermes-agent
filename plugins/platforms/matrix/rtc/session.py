@@ -116,12 +116,12 @@ class MatrixRTCSessions:
         if self._sources.pop(room_id, None) is not None:
             logger.info("MatrixRTC: call in %s unbound", room_id)
 
-    def _speaker_source(self, bound: SessionSource, user_id: str,
+    def _speaker_source(self, bound: SessionSource, user_id: Optional[str],
                         user_name: Optional[str] = None) -> Optional[SessionSource]:
         source = replace_source(bound, user_id=user_id, user_name=user_name or user_id,
                                 role_authorized=False)
         runner = getattr(self._adapter, "gateway_runner", None)
-        if callable(getattr(runner, "_canonicalize", None)):
+        if runner is not None and callable(getattr(runner, "_canonicalize", None)):
             registered, _profile = runner._owning_profile(self._adapter, source.platform)
             if not registered:
                 return None

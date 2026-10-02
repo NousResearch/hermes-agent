@@ -996,7 +996,10 @@ def _exit_summary_marker() -> str:
 
 def _log_noise_prefixes() -> tuple[str, ...]:
     from agent.i18n import t
-    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
+    # ``cli.single_query.query_label`` is locale-dependent (e.g. "Anfrage:" in
+    # German, "查询：" in Chinese) — the English literal alone missed every
+    # non-English worker's echoed query line (#129663 review).
+    return ("session_id:", t("cli.single_query.query_label"), t("cli.chat.initializing_agent"))
 
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:

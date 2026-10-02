@@ -37,9 +37,13 @@ The agent authenticates as itself:
   optionally `GATEWAY_RELAY_IDP_SCOPE`.
 
 These values, and the `HERMES_CONFIG_*` variables above, must come from
-`auth.json`, `.env`, or the process environment. If a `secrets:` source
+`auth.json`, a `.env` file (the profile's, the project `.env` a Hermes command
+loads, or the managed one), or the process environment. If a `secrets:` source
 (1Password, Bitwarden, a command) supplies any of them, Hermes refuses to
-start.
+start. The same holds for `HERMES_PORTAL_BASE_URL`, `NOUS_PORTAL_BASE_URL` and
+`HERMES_SHARED_AUTH_DIR` (they decide where the Cloud token is read and sent).
+A multi-profile process (gateway, dashboard) that serves a profile whose
+`secrets:` source supplies one of these names refuses to serve that profile.
 
 A Hermes process started for another profile (a `hermes -p <name>` worker, a
 profile's cron or bot child) keeps the `HERMES_CONFIG_*` deployment of the
@@ -70,9 +74,10 @@ exits with an error rather than read a local file.
   undoing the other one. Removing a key removes it from the profile level only:
   if an upper level also sets it, that value still applies, and Hermes warns
   you.
-- **Locked keys are refused.** `hermes config set` (and a single setting
-  changed in the TUI or desktop app) on a locked key reports which level locks
-  it and changes nothing. When a whole document is saved, locked keys are left
+- **Locked keys are refused.** `hermes config set` (and any setting changed
+  in the TUI or desktop app, including the prompt, reasoning display and
+  details-mode settings) on a locked key reports which level locks it and
+  changes nothing. When a whole document is saved, locked keys are left
   out, and Hermes prints a note listing them.
 - **Secrets stay out of the plane.** A secret-shaped key such as `api_key`
   accepts only a `${VAR}` reference, never the secret itself. Put the value in
@@ -87,7 +92,10 @@ exits with an error rather than read a local file.
 - **Schema migrations run in memory.** A document written by an older Hermes is
   migrated when it is read, and the result is not written back. A later write
   from a newer Hermes keeps the profile's stored schema version unless that
-  data is already current, so every later reader still migrates it. For the
+  data is already current, so every later reader still migrates it. These
+  in-memory migrations change only the config document: steps that also
+  tidy local files (removing a retired section from `SOUL.md`, clearing old
+  values from `.env`) do not run in remote mode. For the
   same reason, setting a value that one of those migrations rewrites (for
   example `compression.threshold_tokens: 256000`, an old default, on a profile
   stored at an older schema) is refused with a message naming the key: it would

@@ -396,7 +396,7 @@ def test_migration_steps_persist_into_memory(plane, monkeypatch):
     latest = backend_mod._latest_config_version()
     plane.profile("default").update(values={"old_key": 1}, version=1, writer=latest - 1)
 
-    def fake_run_migrations(current, results, quiet):
+    def fake_run_migrations(current, results, quiet, **kwargs):
         doc = config_mod.read_raw_config()
         doc["new_key"] = doc.pop("old_key")
         config_mod._persist_migration(doc)
@@ -1286,3 +1286,371 @@ def test_rpc_refused_by_the_config_backend_still_gets_its_one_answer(plane, monk
     assert written.wait(10)
     (frame,) = transport.frames
     assert frame["id"] == "pooled-1" and "cannot load the config" in frame["error"]["message"]
+
+
+
+# --- review round 4 regressions -----------------------------------------------------------
+
+def _absent_section_race(plane, monkeypatch):
+    """Another writer adds ``terminal.persistent`` to a profile with no ``terminal`` section
+    between our read and our first PATCH (so that PATCH gets a 409)."""
+    from plugins.config_backends.remote import client
+    plane.profile("default").update(values={"display": {"personality": "concise"}}, version=1)
+    get_config_backend().read_user_layer(plane.home)
+    real_request = client.request
+    raced = []
+
+    def other_writer_lands_first(method, *args, **kwargs):
+        if method == "PATCH" and not raced:
+            raced.append(True)
+            prof = plane.profile("default")
+            prof["values"]["terminal"] = {"persistent": True}
+            prof["version"] += 1
+        return real_request(method, *args, **kwargs)
+
+    monkeypatch.setattr(client, "request", other_writer_lands_first)
+
+
+@pytest.mark.parametrize("entry", ["set_config_value", "write_config_key"])
+def test_cas_retry_keeps_a_sibling_added_to_a_section_the_doc_lacked(plane, monkeypatch, entry):
+    """Round 4 #1: our edit adds terminal.timeout to a doc with no terminal section; the 409 retry
+    must add that one key to the re-read doc, not replace the section another writer created."""
+    from hermes_cli.config import set_config_value
+    _absent_section_race(plane, monkeypatch)
+
+    if entry == "set_config_value":
+        set_config_value("terminal.timeout", "321")
+    else:
+        write_config_key(plane.home / "config.yaml", "terminal.timeout", 321)
+
+    assert plane.profile("default")["values"]["terminal"] == {"persistent": True, "timeout": 321}
+    first, retry = plane.patches()
+    assert retry["body"]["expectedVersion"] == 2
+    assert retry["body"]["set"] == {"terminal.timeout": 321} and "unset" not in retry["body"]
+
+
+def test_cas_retry_of_a_new_empty_section_keeps_a_concurrent_one(plane, monkeypatch):
+    """An empty mapping the edit adds means "make this a mapping": on retry it must not replace
+    the mapping (with keys) another writer created meanwhile."""
+    _absent_section_race(plane, monkeypatch)
+    from hermes_cli.config_backend import Changes
+    get_config_backend().write_changes(plane.home, Changes(set={"terminal": {}}))
+    assert plane.profile("default")["values"]["terminal"] == {"persistent": True}
+    assert len(plane.patches()) == 1  # nothing left to send after the re-read: one PATCH, the 409
+
+
+def test_explicit_section_replacement_stays_a_replacement(plane):
+    """Control: replacing a present section with a scalar, or unsetting it, is still sent whole."""
+    from hermes_cli.config_backend import Changes
+    plane.profile("default").update(values={"terminal": {"persistent": True, "timeout": 3}}, version=1)
+    backend = get_config_backend()
+    backend.write_changes(plane.home, Changes(unset=("terminal",)))
+    assert plane.patches()[-1]["body"]["unset"] == ["terminal"]
+    assert "terminal" not in plane.profile("default")["values"]
+
+
+def _routed_profile(profile_plane, source_env_line):
+    named = profile_plane.home / "profiles" / "routed"
+    named.mkdir(parents=True)
+    (named / ".env").write_text("# synthetic\n")
+    profile_plane.profile("routed").update(values={"secrets": {"command": {
+        "enabled": True, "override_existing": True,
+        "command": f"printf '{source_env_line}\\n'"}}}, version=1)
+    return named
+
+
+def test_routed_hydration_refuses_a_source_that_supplies_a_protected_name(profile_plane, monkeypatch):
+    """Round 4 #2: a routed profile's remote secrets: source supplies HERMES_PORTAL_BASE_URL (where
+    auth.json's refresh token is sent). Refused before any snapshot, ownership or scope publication;
+    every retry refuses again; the profile hydrates once the mapping is gone."""
+    import os
+
+    from hermes_cli import env_loader
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", set())
+    monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)
+    named = _routed_profile(profile_plane, "HERMES_PORTAL_BASE_URL=http://127.0.0.1:1")
+
+    for _attempt in range(2):  # nothing is cached by a refusal: a retry refuses again
+        with pytest.raises(ConfigBackendUnavailable, match="HERMES_PORTAL_BASE_URL"):
+            with _config_profile_scope("routed"):
+                pass
+        assert env_loader.get_secret_source_values(named) == {}
+        assert str(named.resolve()) not in env_loader._APPLIED_HOMES
+        assert "HERMES_PORTAL_BASE_URL" not in env_loader._SOURCE_SUPPLIED_NAMES
+        assert "HERMES_PORTAL_BASE_URL" not in os.environ
+
+    profile_plane.profile("routed").update(values={"secrets": {"command": {
+        "enabled": True, "override_existing": True, "command": "printf 'SYNTHETIC_KEY=routed-ok\\n'"}}}, version=2)
+    backend = get_config_backend()
+    assert backend.poll_one(backend._state(named))
+    assert env_loader.hydrate_profile_secret_sources(named) == {"SYNTHETIC_KEY": "routed-ok"}
+
+
+def test_file_mode_routed_hydration_drops_only_the_selector(monkeypatch, tmp_path, capsys):
+    """Control: under the file backend a routed source may not switch the backend either, but its
+    other values (a Portal URL included: file mode has no plane credential) still hydrate."""
+    from hermes_cli import env_loader
+    for name in ("HERMES_CONFIG_BACKEND", "HERMES_CONFIG_REMOTE_URL", "HERMES_CONFIG_INSTANCE_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    home = tmp_path / "routed"
+    home.mkdir()
+    (home / ".env").write_text("# synthetic\n")
+    (home / "config.yaml").write_text(
+        "secrets:\n  command:\n    enabled: true\n    override_existing: true\n"
+        "    command: \"printf 'HERMES_CONFIG_BACKEND=remote\\\\nHERMES_PORTAL_BASE_URL=http://portal.test\\\\n'\"\n")
+
+    values = env_loader.hydrate_profile_secret_sources(home)
+
+    assert values == {"HERMES_PORTAL_BASE_URL": "http://portal.test"}
+    assert "ignored HERMES_CONFIG_BACKEND" in capsys.readouterr().err
+
+
+_LEGACY_SOUL = "# Beta identity\n\n## Messaging other agents\nKEEP THIS PROFILE SECTION\n"
+
+
+def _sibling_with_legacy_soul(home):
+    beta = home / "profiles" / "beta"
+    beta.mkdir(parents=True)
+    (beta / "SOUL.md").write_text(_LEGACY_SOUL)
+    return beta / "SOUL.md"
+
+
+def test_remote_read_migration_changes_no_local_file(plane):
+    """Round 4 #3: reading default's remote config stamped 40 runs the 40->41 step in memory. That
+    step's only effect is on profile SOUL.md files; a config read must not rewrite a sibling's."""
+    from hermes_cli.config_backend import read_config_doc
+    soul = _sibling_with_legacy_soul(plane.home)
+    plane.profile("default").update(values={"display": {"personality": "old"}}, writer=40, version=1)
+
+    doc = read_config_doc(plane.home / "config.yaml")
+
+    assert doc["_config_version"] == backend_mod._latest_config_version()  # it did migrate
+    assert soul.read_text() == _LEGACY_SOUL
+    assert plane.patches() == []
+
+
+def test_refused_write_validation_changes_no_local_file(plane):
+    """Round 4 #3: the config_migration_conflict check simulates the migration of the stored doc;
+    a refused edit must leave every local file as it was."""
+    from hermes_cli.config import read_raw_config
+    plane.profile("default").update(values={}, writer=40, version=1)
+    read_raw_config()
+    soul = _sibling_with_legacy_soul(plane.home)  # created after the read's own migration
+
+    with pytest.raises(ConfigValueError) as exc:
+        write_config_key(plane.home / "config.yaml", "compression.threshold_tokens", 256000)
+
+    assert exc.value.code == "config_migration_conflict"
+    assert soul.read_text() == _LEGACY_SOUL
+    assert plane.patches() == []
+
+
+def _home_files(root):
+    return {str(p.relative_to(root)): (p.read_bytes() if p.is_file() else None)
+            for p in sorted(root.rglob("*"))}
+
+
+@pytest.mark.parametrize("config_only", [True, False])
+def test_config_only_migration_ladder_touches_no_file(tmp_path, monkeypatch, config_only):
+    """The whole ladder from the support floor, config-only, over a home whose files every
+    file-touching step would change (.env dead/legacy values, a legacy SOUL.md section, no logs/):
+    the only output is the config document. Control: a file-mode run does change them."""
+    from hermes_cli import config as config_mod
+    from hermes_cli import config_migrations
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for name in ("HERMES_CONFIG_BACKEND", "LLM_MODEL", "OPENAI_MODEL", "TERMINAL_VERCEL_RUNTIME"):
+        monkeypatch.delenv(name, raising=False)
+    from hermes_cli.config_defaults import LEGACY_VERCEL_RUNTIME
+    (home / ".env").write_text(f"LLM_MODEL=old-model\nTERMINAL_VERCEL_RUNTIME={LEGACY_VERCEL_RUNTIME}\n")
+    (home / "SOUL.md").write_text(_LEGACY_SOUL)
+    _sibling_with_legacy_soul(home)
+    doc = {"_config_version": config_migrations.SUPPORT_FLOOR_VERSION, "model": {"default": "m"}}
+    persisted = []
+    monkeypatch.setattr(config_mod, "read_raw_config", lambda: dict(persisted[-1] if persisted else doc))
+    monkeypatch.setattr(config_mod, "_persist_migration", lambda cfg: persisted.append(dict(cfg)))
+    before = _home_files(home)
+
+    config_migrations.run_migrations(config_migrations.SUPPORT_FLOOR_VERSION,
+                                     {"env_added": [], "config_added": [], "warnings": []}, True,
+                                     config_only=config_only)
+
+    assert persisted  # the document itself was migrated either way
+    assert (_home_files(home) == before) is config_only
+
+
+
+def test_concurrent_first_reader_waits_for_the_bootstrap(plane, monkeypatch, tmp_path):
+    """Round 4 #4: while one thread publishes the deployment from .env, a concurrent first reader
+    must wait for it, not select the file backend and read the local config.yaml meanwhile."""
+    import threading
+
+    from hermes_cli import config_backend, env_loader
+    from hermes_cli.config_backend import read_config_doc
+    _drop_process_deployment(plane, monkeypatch, tmp_path)
+    (plane.home / ".env").write_text("".join(f"{k}={v}\n" for k, v in remote_env(plane).items()))
+    (plane.home / "config.yaml").write_text("display:\n  personality: forbidden-local\n")
+    plane.profile("default").update(values={"display": {"personality": "remote"}}, version=1)
+    monkeypatch.setattr(config_backend, "_BOOTSTRAPPED", False)
+    entered, resume = threading.Event(), threading.Event()
+    real_apply = env_loader.apply_config_bootstrap_env
+
+    def paused(*args, **kwargs):
+        entered.set()
+        assert resume.wait(10)
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(env_loader, "apply_config_bootstrap_env", paused)
+    results = {}
+
+    def run(name, fn):
+        threading.Thread(target=lambda: results.__setitem__(name, fn()), name=name, daemon=True).start()
+
+    run("first", lambda: get_config_backend().name)
+    assert entered.wait(10)
+    run("concurrent", lambda: read_config_doc(plane.home / "config.yaml")["display"]["personality"])
+    import time
+    time.sleep(0.3)
+    assert "concurrent" not in results  # waiting for the bootstrap, not reading the local file
+    resume.set()
+    deadline = time.monotonic() + 10
+    while len(results) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert results == {"first": "remote", "concurrent": "remote"}
+
+
+def test_same_thread_reentry_during_the_bootstrap_does_not_deadlock(monkeypatch):
+    """Control: an import-time config read on the bootstrapping thread itself returns at once."""
+    from hermes_cli import config_backend, env_loader
+    monkeypatch.setattr(config_backend, "_BOOTSTRAPPED", False)
+    seen = []
+
+    def reentrant(*args, **kwargs):
+        seen.append(config_backend.get_config_backend().name)  # would block on a plain Lock
+
+    monkeypatch.setattr(env_loader, "apply_config_bootstrap_env", reentrant)
+    monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
+    assert config_backend.get_config_backend().name == "file"
+    assert seen == ["file"] and config_backend._BOOTSTRAPPED
+
+
+def _fresh_interpreter_boot(tmp_path, env, project_env):
+    import os
+    import subprocess
+    import sys
+    code = ("import json\n"
+            "from hermes_cli.env_loader import load_hermes_dotenv\n"
+            f"load_hermes_dotenv(project_env={str(project_env)!r}, load_external_secrets=False)\n"
+            "from hermes_cli.config_backend import get_config_backend\n"
+            "from hermes_cli.config import load_config\n"
+            "print('RESULT=' + json.dumps([get_config_backend().name, load_config()['display']['personality']]))\n")
+    child = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "TMPDIR", "SYSTEMROOT")}
+    child.update(env, PYTHONPATH=str(Path(__file__).resolve().parents[3]))
+    return subprocess.run([sys.executable, "-c", code], env=child, capture_output=True, text=True,
+                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path))
+
+
+def test_plane_credential_from_the_project_dotenv_boots(plane, tmp_path):
+    """Round 4 #5: user .env selects remote and names the plane and instance; the project .env (a
+    supported load_hermes_dotenv layer) holds the IdP credential. A fresh process boots and fetches:
+    the early bootstrap sees the project layer before the sanitizer's config import reads config."""
+    env = remote_env(plane)
+    (plane.home / ".env").write_text("".join(f"{k}={v}\n" for k, v in env.items() if k.startswith("HERMES_CONFIG_")))
+    project = tmp_path / "project.env"
+    project.write_text("".join(f"{k}={v}\n" for k, v in env.items() if k.startswith("GATEWAY_RELAY_IDP_")))
+    (plane.home / "config.yaml").write_text("display:\n  personality: forbidden-local\n")
+    plane.profile("default").update(values={"display": {"personality": "remote"}}, version=1)
+
+    proc = _fresh_interpreter_boot(tmp_path, {"HERMES_HOME": str(plane.home), "HOME": str(tmp_path)}, project)
+
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    line = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT=")][-1]
+    assert json.loads(line[len("RESULT="):]) == ["remote", "remote"]
+    assert _gets(plane)
+
+
+def test_bootstrap_keeps_the_dotenv_precedence(tmp_path, monkeypatch):
+    """The bootstrap composes the layers as load_hermes_dotenv does: user .env overrides the
+    process, the project .env only fills gaps when a user .env exists, managed .env wins last."""
+    from hermes_cli.env_loader import _bootstrap_env
+    home = tmp_path / "home"
+    home.mkdir()
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("CC_A", "process")
+    monkeypatch.setenv("CC_D", "process")
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    (home / ".env").write_text("CC_A=user\nCC_B=user\n")
+    (home / ".op.env").write_text("CC_B=op\nCC_E=op\n")
+    project = tmp_path / "project.env"
+    project.write_text("CC_B=project\nCC_C=project\nCC_D=project\n")
+    (managed / ".env").write_text("CC_C=managed\n")
+
+    env = _bootstrap_env(home, project)
+
+    assert (env["CC_A"], env["CC_B"], env["CC_C"], env["CC_D"], env["CC_E"]) == (
+        "user", "user", "managed", "process", "op")
+    (home / ".env").unlink()  # no user .env: the project layer overrides the process
+    assert _bootstrap_env(home, project)["CC_D"] == "project"
+
+
+def test_tui_section_and_prompt_setters_refuse_locked_edits(plane, monkeypatch):
+    """Round 4 #6: prompt / reasoning / details_mode / details_mode.<section> under an upper lock
+    answer with the lock, send nothing, and leave the session as it was. Unlocked, they write."""
+    plane.upper = {"custom_prompt": "tenant-prompt",
+                   "display": {"show_reasoning": False, "sections": {"thinking": "hidden"}, "details_mode": "collapsed"}}
+    plane.upper_locks = [{"path": "custom_prompt", "level": "tenant"}, {"path": "display", "level": "group"}]
+    server = _tui_server(monkeypatch, plane.home)
+    session = {"show_reasoning": False, "session_key": "k"}
+    server._sessions["s1"] = session
+    try:
+        _locked_then_unlocked_tui_setters(plane, server, session)
+    finally:
+        server._sessions.pop("s1", None)  # never torn down by the TUI fixture after the plane stops
+
+
+def _locked_then_unlocked_tui_setters(plane, server, session):
+    calls = [("prompt", "synthetic-new-prompt"), ("prompt", "clear"), ("reasoning", "show"),
+             ("details_mode", "expanded"), ("details_mode.thinking", "expanded"), ("details_mode.thinking", "")]
+
+    for rid, (key, value) in enumerate(calls):
+        answer = server._methods["config.set"](rid, {"key": key, "value": value, "session_id": "s1"})
+        assert answer.get("error", {}).get("code") == 4002, (key, value, answer)
+        assert "locked" in answer["error"]["message"]
+    assert plane.patches() == []
+    assert session["show_reasoning"] is False
+    raw = server._load_cfg_raw()
+    assert raw["custom_prompt"] == "tenant-prompt" and raw["display"]["show_reasoning"] is False
+
+    plane.upper_locks = []
+    backend = get_config_backend()
+    assert backend.poll_one(backend._state(plane.home))
+    for rid, (key, value) in enumerate(calls[:1] + calls[2:5]):
+        assert "result" in server._methods["config.set"](100 + rid, {"key": key, "value": value, "session_id": "s1"})
+    stored = plane.profile("default")["values"]
+    assert stored["custom_prompt"] == "synthetic-new-prompt"
+    assert stored["display"]["show_reasoning"] is True and stored["display"]["details_mode"] == "expanded"
+    assert stored["display"]["sections"]["thinking"] == "expanded"
+    assert session["show_reasoning"] is True
+    assert all("unset" not in p["body"] for p in plane.patches())
+
+
+def test_tui_shared_metrics_set_refuses_a_locked_consent(plane, monkeypatch):
+    """Round 4 #6 (same class): the consent setter is explicit too; a locked answer is refused,
+    not saved-minus-the-lock while the consent bookkeeping records it."""
+    plane.upper = {"telemetry": {"shared_metrics": {"enabled": False, "send": False}}}
+    plane.upper_locks = [{"path": "telemetry.shared_metrics", "level": "tenant"}]
+    server = _tui_server(monkeypatch, plane.home)
+    recorded = []
+    from hermes_cli import setup as setup_mod
+    monkeypatch.setattr(setup_mod, "_record_send_consent_change", lambda **kw: recorded.append(kw))
+
+    answer = server._methods["shared_metrics.set"](1, {"enabled": True, "send": True})
+
+    assert answer["error"]["code"] == 4002 and "locked" in answer["error"]["message"]
+    assert plane.patches() == [] and recorded == []

@@ -565,7 +565,7 @@ export const zh: Translations = {
     allProfiles: "多Agent配置列表",
     noProfiles: "暂无多Agent配置。",
     defaultBadge: "默认",
-    hasEnv: "已配置 env",
+    hasEnv: "已配置环境",
     model: "模型",
     skills: "技能",
     rename: "重命名",
@@ -614,6 +614,8 @@ export const zh: Translations = {
     modelSaved: "模型已更新",
     modelSelect: "选择模型",
     actions: "操作",
+    manageSkills: "管理技能与工具",
+    build: "构建",
   },
 
   pluginsPage: {

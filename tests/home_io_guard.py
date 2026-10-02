@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import sys
+import sysconfig
 import threading
 
 _INTERPRETER_PREFIXES = tuple({
@@ -30,6 +31,21 @@ _INTERPRETER_PREFIXES = tuple({
 # resolve once at import, as before: they are fixed for the process lifetime.
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
+
+
+def _stdlib_prefixes():
+    # Relocated Windows runtimes can retain build-time prefixes. Two independently
+    # loaded, non-frozen stdlib modules corroborate the library actually in use.
+    prefixes = {Path(sysconfig.get_path(name)).resolve() for name in ("stdlib", "platstdlib")
+                if sysconfig.get_path(name)}
+    loaded = [Path(module.__file__).resolve().parent for module in (shutil, threading)
+              if getattr(module, "__file__", None)]
+    if len(loaded) == 2 and loaded[0] == loaded[1]:
+        prefixes.add(loaded[0])
+    return tuple(_normcase(os.fspath(prefix)) for prefix in prefixes)
+
+
+_STDLIB_PREFIX_STRS = _stdlib_prefixes()
 
 
 def _within(path: str, prefix: str) -> bool:
@@ -56,7 +72,7 @@ class HomeIOGuard:
         self.checking = threading.local()
         self.directories: dict[int, Path] = {}
 
-    def check(self, value, *, dir_fd=None, metadata=False, destructive=False):
+    def check(self, value, *, dir_fd=None, metadata=False, destructive=False, read_only=False):
         if value is None or isinstance(value, int) or getattr(self.checking, "active", False):
             return
         self.checking.active = True
@@ -100,8 +116,16 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
-            # Check the lexical path first: resolving must not probe a protected
-            # tree merely to decide that the original path was forbidden.
+            # Only reads may use the narrower library exception. Resolve even a
+            # lexical library path so a link into sibling state cannot grant access.
+            if read_only:
+                if resolved is None:
+                    resolved = _normcase(os.path.realpath(absolute))
+                for prefix in _STDLIB_PREFIX_STRS:
+                    if _within(resolved, prefix) or (metadata and _contains(resolved, prefix)):
+                        return
+            # After the read-only library exception, refuse lexical state paths
+            # before the remaining canonical-path checks.
             for root in roots:
                 if _within(absolute, root):
                     self.refuse(value)
@@ -157,7 +181,7 @@ class HomeIOGuard:
         )
 
     def install(self, monkeypatch):
-        def wrap(module, name, parameters, *, metadata=False, destructive=False):
+        def wrap(module, name, parameters, *, metadata=False, destructive=False, read_only=False):
             original = getattr(module, name)
 
             @wraps(original)
@@ -165,7 +189,8 @@ class HomeIOGuard:
                 for index, (parameter, descriptor) in enumerate(parameters):
                     value = args[index] if index < len(args) else kwargs.get(parameter)
                     self.check(value, dir_fd=kwargs.get(descriptor) if descriptor else None, metadata=metadata,
-                               destructive=destructive(args, kwargs) if callable(destructive) else destructive)
+                               destructive=destructive(args, kwargs) if callable(destructive) else destructive,
+                               read_only=read_only(args, kwargs) if callable(read_only) else read_only)
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(module, name, guarded)
@@ -175,13 +200,15 @@ class HomeIOGuard:
             return any(flag in mode for flag in "wax+")
 
         for module in (builtins, io):
-            wrap(module, "open", (("file", None),), destructive=open_writes)
+            wrap(module, "open", (("file", None),), destructive=open_writes,
+                 read_only=lambda args, kwargs: not open_writes(args, kwargs))
         for name in ("mkdir", "unlink", "remove", "rmdir", "chmod", "utime"):
             wrap(os, name, (("path", "dir_fd"),), destructive=name != "mkdir")
         for name in ("stat", "lstat", "readlink", "access"):
-            wrap(os, name, (("path", "dir_fd"),), metadata=True)
+            wrap(os, name, (("path", "dir_fd"),), metadata=True, read_only=True)
         for name in ("makedirs", "listdir", "scandir"):
-            wrap(os, name, (("name" if name == "makedirs" else "path", None),))
+            wrap(os, name, (("name" if name == "makedirs" else "path", None),),
+                 read_only=name != "makedirs")
         for name in ("rename", "replace"):
             wrap(os, name, (("src", "src_dir_fd"), ("dst", "dst_dir_fd")), destructive=True)
         wrap(shutil, "rmtree", (("path", "dir_fd"),), destructive=True)
@@ -191,7 +218,9 @@ class HomeIOGuard:
 
         @wraps(original_open)
         def guarded_open(path, flags, *args, **kwargs):
-            self.check(path, dir_fd=kwargs.get("dir_fd"), destructive=bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC)))
+            writes = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+                                  | getattr(os, "O_TEMPORARY", 0)))
+            self.check(path, dir_fd=kwargs.get("dir_fd"), destructive=writes, read_only=not writes)
             fd = original_open(path, flags, *args, **kwargs)
             candidate = Path(os.fsdecode(path))
             if kwargs.get("dir_fd") is not None and not candidate.is_absolute():

@@ -289,7 +289,7 @@ def detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(command))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
-    for command_variant in _command_detection_variants(command):
+    for command_variant in _deny_command_variants(command):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
@@ -681,7 +681,7 @@ _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
                           "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
-_SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
+_SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-D", "--chdir", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
 _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
@@ -840,7 +840,7 @@ def _shell_tokens_with_spans(segment: str, start: int):
                     end_at = i
                     break
                 depth -= 1
-            elif ch in ";|&\n":
+            elif ch in ";|&\n" and not _is_redirection_punctuation(segment, i):
                 end_at = i
                 break
         if token_start is None:
@@ -956,11 +956,27 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
         return None
 
 
+def _is_redirection_punctuation(command: str, index: int) -> bool:
+    """Distinguish unquoted >& / <& / >| / &> from command separators."""
+    char = command[index]
+    if char == "&" and command[index + 1:index + 2] == ">":
+        return True
+    if char not in "&|" or index == 0 or command[index - 1] not in "<>":
+        return False
+    # An escaped operator is a word character, not a redirection.
+    backslashes, cursor = 0, index - 2
+    while cursor >= 0 and command[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 0
+
+
 def _iter_top_level_shell_segments(command: str):
     """Yield top-level command segments in one left-to-right pass."""
     start = 0
     for kind, i, j, quote in _scan_shell(command, comments=True):
-        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n"):
+        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n"
+                                 and not _is_redirection_punctuation(command, i)):
             if start < i:
                 yield command[start:i]
             start = j
@@ -1258,7 +1274,7 @@ def _iter_shell_command_starts(command: str):
                 if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
                                                                    or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
-                elif command[i] in "&|":
+                elif command[i] in "&|" and not _is_redirection_punctuation(command, i):
                     repeated = i + 1 < end and command[i + 1] == command[i]
                     skip = i + 1 if repeated else skip
                     starts.append(i + 1 + repeated)
@@ -1371,7 +1387,8 @@ def _shell_command_segment(command: str, start: int) -> str:
     """Bound a candidate to its command, preserving quoted argument bytes."""
     end = len(command)
     for kind, i, _, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
-        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"):
+        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"
+                                 and not _is_redirection_punctuation(command, i)):
             end = i
             break
     return command[start:end].strip()
@@ -1484,7 +1501,9 @@ def _deny_command_variants(command: str):
                     parts.append(tail[i:j])
             tail = "".join(parts)
             for name in dict.fromkeys((executable, os.path.basename(executable))):
-                candidate = name + tail
+                # Preserve quote state while masking data newlines, before normalization
+                # strips escapes and may change which quotes appear to be paired.
+                candidate = _mask_quoted_newlines(name + tail)
                 yield candidate
                 # Apply the existing text matching semantics only AFTER locating
                 # executable positions; never parse its rewritten quotes again.
@@ -1624,7 +1643,7 @@ def detect_dangerous_command(command: str) -> tuple:
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
-    for command_variant in _command_detection_variants(command):
+    for command_variant in _deny_command_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:

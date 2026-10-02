@@ -310,6 +310,50 @@ class BaseEnvironment(ABC):
             return None
         return next((ln.strip() for ln in reversed((result.get("output") or "").splitlines()) if ln.strip().startswith("/")), None)
 
+    def fetch_device_identity(self, remote_path: str) -> tuple[str, str | None]:
+        """Return an explicit identity outcome for a possible raw-device target.
+
+        Outcomes are ``device`` with its canonical path, ``not_device``, ``missing``, or
+        ``indeterminate``. Transport/probe failures never collapse into a safe result.
+        """
+        marker = f"__HERMES_DEVICE_ID_{uuid.uuid4().hex[:12]}__"
+        # Python preserves errno from pathname traversal; shell -e/-L tests erase it.
+        # An unavailable interpreter or any unsupported probe is indeterminate.
+        probe = """
+import errno, os, stat, sys
+path, marker = sys.argv[1:]
+try:
+    info = os.stat(path)
+    resolved = os.path.realpath(path, strict=True)
+    mode = info.st_mode
+    status = ('device' if stat.S_ISBLK(mode) or stat.S_ISCHR(mode) else
+              'directory' if stat.S_ISDIR(mode) else 'not_device')
+except OSError as exc:
+    status = 'missing' if exc.errno == errno.ENOENT else 'indeterminate'
+    resolved = ''
+except Exception:
+    status, resolved = 'indeterminate', ''
+print(marker + ':' + status + ('\\t' + resolved if resolved else ''))
+"""
+        script = "python3 -c " + shlex.quote(probe) + " " + shlex.quote(remote_path) + " " + shlex.quote(marker)
+        result = self.execute(script, rewrite_compound_background=False)
+        if int(result.get("returncode") or 0) != 0:
+            return ("indeterminate", None)
+        prefix = f"{marker}:"
+        line = next(
+            (ln.strip() for ln in reversed((result.get("output") or "").splitlines())
+             if ln.strip().startswith(prefix)),
+            "",
+        )
+        if not line:
+            return ("indeterminate", None)
+        status, _tab, resolved = line[len(prefix):].partition("\t")
+        if status == "device":
+            return ("device", resolved or None)
+        if status in {"directory", "not_device", "missing"}:
+            return (status, resolved or None)
+        return ("indeterminate", None)
+
     # --- Session snapshot (init_session) ---
     def _additional_profile_scoped_passthrough_names(self) -> Iterable[str]:
         """Return backend-specific names that must not persist in snapshots."""

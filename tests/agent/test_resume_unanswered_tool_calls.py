@@ -11,10 +11,13 @@ import json
 import pytest
 
 from agent.agent_runtime_helpers import repair_message_sequence
+from agent.codex_responses_adapter import _chat_messages_to_responses_input
 from hermes_state import SessionDB
 
 _CALL = {"id": "call_1", "type": "function",
          "function": {"name": "terminal", "arguments": json.dumps({"command": "systemctl restart app"})}}
+# A stored Responses call: ``id`` is the output item, ``call_id`` the key its output must carry.
+_RESPONSES_CALL = {**_CALL, "id": "fc_item_1", "call_id": "call_pair_1"}
 
 
 @pytest.fixture()
@@ -28,11 +31,12 @@ def _wire(messages):
     return [(m["role"], m.get("content"), m.get("tool_call_id")) for m in messages]
 
 
+@pytest.mark.parametrize("call", [_CALL, _RESPONSES_CALL], ids=["chat-completions", "responses"])
 @pytest.mark.parametrize("resumed_turns", [0, 1], ids=["killed-turn-is-tail", "after-a-resumed-turn"])
-def test_killed_side_effect_call_survives_restore(db, resumed_turns):
+def test_killed_side_effect_call_survives_restore(db, resumed_turns, call):
     db.create_session("s1", "system prompt")
     db.append_message(session_id="s1", role="user", content="restart the app")
-    db.append_message(session_id="s1", role="assistant", content="", tool_calls=[_CALL])
+    db.append_message(session_id="s1", role="assistant", content="", tool_calls=[call])
     for n in range(resumed_turns):
         db.append_message(session_id="s1", role="user", content=f"later ask {n}")
         db.append_message(session_id="s1", role="assistant", content=f"later reply {n}")
@@ -41,9 +45,12 @@ def test_killed_side_effect_call_survives_restore(db, resumed_turns):
 
     assert [m["role"] for m in restored[:3]] == ["user", "assistant", "tool"]
     assert restored[0]["content"] == "restart the app"
-    assert restored[1]["tool_calls"][0]["id"] == "call_1"
-    assert restored[2]["tool_call_id"] == "call_1"
+    assert restored[1]["tool_calls"][0]["id"] == call["id"]
+    assert restored[2]["tool_call_id"] == call.get("call_id", call["id"])
     assert restored[2]["effect_disposition"] == "unknown"
+    wire = _chat_messages_to_responses_input(restored)
+    assert [i["call_id"] for i in wire if i.get("type") == "function_call_output"] == [
+        i["call_id"] for i in wire if i.get("type") == "function_call"]
     # The pre-request pass sees the same shape and leaves it byte-identical (cache-stable), and the
     # recovered result is a projection: nothing new was written to the durable transcript.
     live = list(restored) + [{"role": "user", "content": "next"}]

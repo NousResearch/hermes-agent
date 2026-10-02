@@ -11,7 +11,7 @@ import pytest
 from agent.runtime_cwd import scoped_session_cwd, set_session_cwd, reset_session_cwd
 from agent.secret_scope import get_secret
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionSource
 from gateway.session_identity import replace_source
@@ -247,3 +247,48 @@ async def test_queued_tool_context_restores_outer_identity_and_profile(
     finally:
         reset_session_cwd(cwd_token)
         clear_session_vars(tokens)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route', ['fifo-photo', 'busy-start', 'telegram-grace', 'recursion-cap'])
+async def test_existing_pending_turn_keeps_a_conflicting_reply_separate(route, monkeypatch):
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.turn_context import TurnContext
+
+    runner = GatewayRunner(config=GatewayConfig())
+    try:
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token='1234:dummy'))
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id='12345', chat_type='dm', user_id='sender')
+        key = 'key'
+        monkeypatch.setattr(runner, '_delivery_adapter_for', lambda actual_source: adapter)
+        first = MessageEvent(text='one', source=source, message_id='m-one', message_type=MessageType.PHOTO,
+                             media_urls=['one.png'], media_types=['image/png'],
+                             reply_to_message_id='q-one', reply_to_text='quoted one')
+        second = MessageEvent(text='two', source=source, message_id='m-two', message_type=MessageType.PHOTO,
+                              media_urls=['two.png'], media_types=['image/png'],
+                              reply_to_message_id='q-two', reply_to_text='quoted two')
+        adapter._pending_messages[key] = first
+        if route == 'fifo-photo':
+            runner._queue_or_replace_pending_event(key, second)
+        elif route == 'busy-start':
+            runner._hm_merge_pending_for_source(source, key, second, merge_text=True)
+        elif route == 'telegram-grace':
+            import time
+            first.message_type = second.message_type = MessageType.TEXT
+            first.media_urls = second.media_urls = []
+            first.media_types = second.media_types = []
+            runner._session_state(key).turn.started_ts = time.time()
+            assert runner._hm_busy_telegram_grace_queue(second, source, key, 'interrupt')
+        else:
+            context = TurnContext(source=source, session_id='session', session_key=key, history=[],
+                                  _interrupt_depth=runner._MAX_INTERRUPT_DEPTH)
+            await runner._run_agent_queued_followup(context, adapter, second.text, second, 'done', {}, None)
+        events = [adapter._pending_messages[key], *(runner._overflow_queue(key) or ())]
+        expected = [('one', 'q-one', 'quoted one'), ('two', 'q-two', 'quoted two')]
+        if route == 'recursion-cap':
+            expected.reverse()
+        assert [(event.text, event.reply_to_message_id, event.reply_to_text) for event in events] == expected
+    finally:
+        runner.session_store.close_all_db_handles()

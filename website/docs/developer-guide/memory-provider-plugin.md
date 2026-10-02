@@ -480,7 +480,7 @@ def register_cli(subparser) -> None:
 
 ### Reference implementation
 
-See `plugins/memory/honcho/cli.py` for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
+See the Honcho plugin's [`cli.py`](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho/cli.py) for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
 
 ### Directory structure with CLI
 

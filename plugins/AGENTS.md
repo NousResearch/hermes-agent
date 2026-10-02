@@ -16,10 +16,13 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 
 ## What may live in this tree (policy)
 
-- **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (honcho, mem0,
-  supermemory, byterover, holographic, openviking, retaindb stay; bug fixes welcome; hindsight moved
-  to the plugin catalog in Sep 2026 — `plugin-catalog/hindsight.yaml`, auto-installed by
-  `hermes_cli/memory_provider_migration.py` for homes still configured for it). New
+- **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (mem0, supermemory,
+  byterover, holographic, openviking, retaindb stay; bug fixes welcome). hindsight (Sep 2026) and
+  honcho (Oct 2026) moved to the plugin catalog — `plugin-catalog/<name>.yaml`, auto-installed by
+  `hermes_cli/memory_provider_migration.py` for homes still configured for them. Host-side code a
+  catalog provider still relies on (the `honcho_host_block` config storage kind, profile clone /
+  rename / update-sync hooks) resolves the provider's modules through
+  `plugins.memory.import_provider_module`, never a `plugins.memory.<name>` import. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS

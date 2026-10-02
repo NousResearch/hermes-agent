@@ -49,7 +49,6 @@ def test_secondary_profile_memory_identity_never_inherits_default_environ(second
     import plugins.memory.openviking as openviking
     import plugins.memory.retaindb as retaindb
     import plugins.memory.supermemory as supermemory
-    from plugins.memory.honcho import client as honcho_client
 
     cfg = mem0._load_config()
     assert "user_id" not in cfg  # falls back to the gateway-native id, not the default's user
@@ -68,9 +67,6 @@ def test_secondary_profile_memory_identity_never_inherits_default_environ(second
     assert "default" not in settings["endpoint"]
     client = openviking._VikingClient("http://x", "k")
     assert (client._account, client._user) == ("default", "default")  # the built-in tenant, not acct-default
-
-    assert honcho_client.resolve_active_host() != "host-default"
-    assert honcho_client._env_base_url() is None
 
 
 def test_mem0_oss_llm_never_borrows_default_profile_openai_key(secondary_profile):

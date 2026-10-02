@@ -72,15 +72,9 @@ def _openviking(seen, tmp_path):
     return list(workers)
 
 
-def _honcho(seen, tmp_path):
-    from plugins.memory.honcho import HonchoMemoryProvider
-
-    return [HonchoMemoryProvider()._spawn_write(_probe_home(seen), "honcho-test", "failed %s")]
-
-
 _PROVIDERS = {
     "mem0": _mem0, "retaindb": _retaindb, "byterover": _byterover, "supermemory": _supermemory,
-    "openviking": _openviking, "honcho": _honcho,
+    "openviking": _openviking,
 }
 
 

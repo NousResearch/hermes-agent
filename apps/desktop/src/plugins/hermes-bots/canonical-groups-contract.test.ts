@@ -23,7 +23,7 @@ it('checks recorded discovery, creation and exact attempt calls against the cano
   const { binding } = await createCanonicalGroup(route, 'Team', [{ name: 'alice' }, { name: 'bob' }])
 
   for (const kind of ['retry', 'discard', 'approval']) {
-    await actCanonicalGroup(binding, { kind, member_id: 'alice', task_id: 'task', execution_generation: 7, request_id: 'approval' }, 'deny')
+    await actCanonicalGroup(binding, { kind, member_id: 'alice', task_id: 'task', execution_generation: 7, request_id: 'approval', approval: { choices: ['deny'] } }, 'deny')
   }
 
   const calls = doubles.capture!.calls

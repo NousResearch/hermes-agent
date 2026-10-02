@@ -12,8 +12,11 @@ from pathlib import Path
 import stat
 import tempfile
 import time
+import random
 
 _LOCK_POLL_SECONDS = 0.05
+_CONTENDED_REPLACE_WINERRORS = frozenset({5, 32, 33})
+_REPLACE_RETRY_DELAYS_S = (0.02, 0.04, 0.08, 0.1)
 
 
 def is_junction(path: Path) -> bool:
@@ -62,6 +65,34 @@ def file_digest(path: Path) -> str | None:
     return hashlib.sha256(data).hexdigest() if data is not None else None
 
 
+def _is_contended_replace(exc: OSError) -> bool:
+    return os.name == "nt" and getattr(exc, "winerror", None) in _CONTENDED_REPLACE_WINERRORS
+
+
+def _publish_bytes(temporary: str, path: Path, data: bytes) -> None:
+    for delay in (0.0, *_REPLACE_RETRY_DELAYS_S):
+        if delay:
+            time.sleep(delay * (0.5 + random.random()))
+        try:
+            os.replace(temporary, path)
+            return
+        except OSError as exc:
+            if not _is_contended_replace(exc):
+                raise
+
+    # Windows readers commonly deny replacement. Preserve the target inode as a
+    # last resort so readers can release it without losing the update.
+    fd = os.open(path, os.O_WRONLY | getattr(os, "O_BINARY", 0))
+    try:
+        written = 0
+        while written < len(data):
+            written += os.write(fd, data[written:])
+        os.ftruncate(fd, len(data))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def durable_write_bytes(path: Path, data: bytes) -> None:
     """Replace ``path`` atomically and fsync file and directory so a crash keeps old or new bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +102,7 @@ def durable_write_bytes(path: Path, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _publish_bytes(temporary, path, data)
         if os.name != "nt":
             directory = os.open(path.parent, os.O_RDONLY)
             try:

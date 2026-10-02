@@ -43,6 +43,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { launchMarkerNeedsReprobe } from './launch-build-identity'
+
 const OVERRIDE_ON = new Set(['1', 'true', 'yes', 'on'])
 const OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 
@@ -63,6 +65,10 @@ export interface NvidiaEglMarker {
   version?: string
   /** Full driver version (e.g. "580.178.04") the fallback was witnessed on. */
   driverVersion?: string
+  /** Build identity that entered fallback (see launch-build-identity.ts). A
+   *  source install reports 0.0.0 on every build, so this is what actually
+   *  moves there and lets the ladder clear a promoted marker. */
+  build?: string
 }
 
 export function nvidiaEglMarkerPath(userDataDir: string): string {
@@ -89,6 +95,10 @@ export function parseNvidiaEglMarker(raw: unknown): NvidiaEglMarker | null {
 
   if (typeof record.driverVersion === 'string' && record.driverVersion) {
     marker.driverVersion = record.driverVersion
+  }
+
+  if (typeof record.build === 'string' && record.build) {
+    marker.build = record.build
   }
 
   return marker
@@ -126,8 +136,18 @@ export function writeNvidiaEglMarker(
   writeFileSync(nvidiaEglMarkerPath(dir), `${JSON.stringify(marker)}\n`, 'utf8')
 }
 
-export function nvidiaEglFallbackMarker(appVersion: string, driverVersion: string): NvidiaEglMarker {
-  return { state: 'fallback', version: appVersion, driverVersion }
+export function nvidiaEglFallbackMarker(
+  appVersion: string,
+  driverVersion: string,
+  buildIdentity?: string
+): NvidiaEglMarker {
+  const marker: NvidiaEglMarker = { state: 'fallback', version: appVersion, driverVersion }
+
+  if (buildIdentity && buildIdentity !== appVersion) {
+    marker.build = buildIdentity
+  }
+
+  return marker
 }
 
 /**
@@ -185,6 +205,7 @@ export function decideNvidiaEglFallback(options: {
   driverVersion?: string | null
   marker?: NvidiaEglMarker | null
   appVersion?: string
+  buildIdentity?: string
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   isWsl?: boolean
@@ -197,6 +218,7 @@ export function decideNvidiaEglFallback(options: {
   const driverMajor = options.driverMajor
   const driverVersion = options.driverVersion ?? null
   const appVersion = options.appVersion ?? ''
+  const buildIdentity = String(options.buildIdentity || '')
   const marker = options.marker ?? null
 
   const bootMarker: NvidiaEglMarker = { state: 'booting' }
@@ -239,11 +261,13 @@ export function decideNvidiaEglFallback(options: {
     return { enable: true, reason: 'override (HERMES_DESKTOP_NVIDIA_SWIFTSHADER)', nextMarker: bootMarker }
   }
 
-  // Witnessed brokenness: sticky only for the same app AND driver version.
+  // Witnessed brokenness: sticky only for the same app AND driver version —
+  // and, on a source install where the app version never moves, the same build.
   if (
     marker?.state === 'fallback' &&
     marker.version === (appVersion || marker.version) &&
-    marker.driverVersion === (driverVersion ?? marker.driverVersion)
+    marker.driverVersion === (driverVersion ?? marker.driverVersion) &&
+    !launchMarkerNeedsReprobe(marker, { appVersion, buildIdentity })
   ) {
     return {
       enable: true,
@@ -260,7 +284,7 @@ export function decideNvidiaEglFallback(options: {
     return {
       enable: true,
       reason: 'previous launch aborted mid-boot with the GPU probe live',
-      nextMarker: nvidiaEglFallbackMarker(appVersion, driverVersion ?? String(driverMajor))
+      nextMarker: nvidiaEglFallbackMarker(appVersion, driverVersion ?? String(driverMajor), buildIdentity)
     }
   }
 
@@ -308,9 +332,14 @@ export function nvidiaEglMarkerAfterSuccessfulBoot(options: {
   fallbackActive: boolean
   appVersion?: string
   driverVersion?: string | null
+  buildIdentity?: string
 }): NvidiaEglMarker {
   if (options.fallbackActive) {
-    return nvidiaEglFallbackMarker(options.appVersion ?? '', options.driverVersion ?? '')
+    return nvidiaEglFallbackMarker(
+      options.appVersion ?? '',
+      options.driverVersion ?? '',
+      options.buildIdentity
+    )
   }
 
   return { state: 'ok' }

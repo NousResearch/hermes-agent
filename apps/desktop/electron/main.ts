@@ -865,11 +865,21 @@ const NVIDIA_DRIVER_VERSION = parseNvidiaDriverVersion(NVIDIA_PROC_VERSION)
 let nvidiaEglFallbackActive = false
 let nvidiaEglRelaunchAttempted = false
 
+// Recovery ladders below run before `app ready` (Chromium only reads its
+// command line pre-launch), which is also before the single-instance lock.
+// Launch-wide facts they need, computed once here — the build identity in
+// particular, which the NVIDIA EGL ladder below also keys on.
+const LAUNCH_BUILD_IDENTITY = launchBuildIdentity({
+  appVersion: app.getVersion(),
+  installStamp: INSTALL_STAMP
+})
+
 const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
   driverMajor: NVIDIA_DRIVER_MAJOR,
   driverVersion: NVIDIA_DRIVER_VERSION,
   marker: readNvidiaEglMarker(app.getPath('userData')),
   appVersion: app.getVersion(),
+  buildIdentity: LAUNCH_BUILD_IDENTITY,
   env: process.env,
   platform: process.platform,
   isWsl: IS_WSL,
@@ -882,12 +892,12 @@ nvidiaEglFallbackActive = NVIDIA_EGL_FALLBACK.enable
 // left behind by a launch that never reached first paint is itself evidence
 // of a GPU death (the "GPU process isn't usable" FATAL abort wins the race
 // against our relaunch handler), and the next launch engages from it.
+// Queued like the other ladders — a launch that exits at the single-instance
+// lock never started a GPU child, so its marker must not land (#131055).
 if (NVIDIA_DRIVER_MAJOR !== null) {
-  try {
+  launchMarkerWriter.queue(() =>
     writeNvidiaEglMarker(app.getPath('userData'), NVIDIA_EGL_FALLBACK.nextMarker)
-  } catch {
-    void 0
-  }
+  )
 }
 
 if (NVIDIA_EGL_FALLBACK.enable) {
@@ -921,7 +931,11 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
     try {
       writeNvidiaEglMarker(
         app.getPath('userData'),
-        nvidiaEglFallbackMarker(app.getVersion(), NVIDIA_DRIVER_VERSION ?? String(NVIDIA_DRIVER_MAJOR))
+        nvidiaEglFallbackMarker(
+          app.getVersion(),
+          NVIDIA_DRIVER_VERSION ?? String(NVIDIA_DRIVER_MAJOR),
+          LAUNCH_BUILD_IDENTITY
+        )
       )
     } catch {
       void 0
@@ -942,14 +956,6 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
     }
   })
 }
-
-// Recovery ladders below run before `app ready` (Chromium only reads its
-// command line pre-launch), which is also before the single-instance lock.
-// Two launch-wide facts they need, computed once here.
-const LAUNCH_BUILD_IDENTITY = launchBuildIdentity({
-  appVersion: app.getVersion(),
-  installStamp: INSTALL_STAMP
-})
 
 // #131055: on Linux the launcher's preferred sandbox is the user-namespace
 // one, where `--no-sandbox` turns a recoverable boot into a renderer SIGILL
@@ -15273,7 +15279,8 @@ function createWindow() {
             nvidiaEglMarkerAfterSuccessfulBoot({
               fallbackActive: nvidiaEglFallbackActive,
               appVersion: app.getVersion(),
-              driverVersion: NVIDIA_DRIVER_VERSION
+              driverVersion: NVIDIA_DRIVER_VERSION,
+              buildIdentity: LAUNCH_BUILD_IDENTITY
             })
           )
         } catch {

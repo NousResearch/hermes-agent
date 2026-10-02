@@ -813,7 +813,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `comment <id> "<text>"` | Append a comment. The next worker that claims the task reads it as part of its `kanban_show()` response. |
 | `complete <id>` | Mark task done. Flags: `--result`, `--summary`, `--metadata`. |
 | `block <id> "<reason>"` | Mark task blocked for human input. Also appends the reason as a comment. |
-| `request-review <id>` | Move a task to `review` with a reviewer handoff — NOT a block. Flags: `--summary`, `--metadata`, `--reviewer` (reassigns before review dispatch). |
+| `request-review <id>` | Move a task to `review` with a reviewer handoff — NOT a block. Flags: `--summary`, `--metadata`, `--reviewer` (reassigns before review dispatch), `--from-done` (explicitly reopens a completed card, retaining its evidence and re-gating descendants). |
 | `request-changes <id> <reason>` | Reviewer verdict for an active review run: close the review attempt and route the task back to its original implementer. |
 | `reopen-review <id>...` | Send review task(s) back for changes (`review` → ready/todo). Flag: `--reason` (appended as a comment). |
 | `schedule <id> "<reason>"` | Park time-delay/follow-up work in `scheduled` so it is not shown as a human blocker. |

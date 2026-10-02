@@ -663,8 +663,9 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     _record_codex_app_server_compaction(agent, turn)
     usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
     # Skill nudge check AFTER iters were incremented (same as chat_completions).
+    from agent.tool_executor import session_can_reach_tool
     should_review_skills = (0 < agent._skill_nudge_interval <= agent._iters_since_skill
-                            and "skill_manage" in agent.valid_tool_names)
+                            and session_can_reach_tool(agent, "skill_manage"))
     if should_review_skills:
         agent._iters_since_skill = 0
     # External memory sync skipped on interrupt/error (no partial transcripts).

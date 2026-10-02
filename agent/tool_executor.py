@@ -51,6 +51,7 @@ from agent.tool_dispatch_helpers import (
 )
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
+from tools.tool_search_catalog import TOOL_CALL_NAME
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
@@ -381,6 +382,15 @@ def _tool_search_scoped_names(agent) -> frozenset:
     with contextlib.suppress(Exception):
         agent._tool_search_scope_cache = (cache_key, names)
     return names
+
+
+def session_can_reach_tool(agent, tool_name: str) -> bool:
+    """Whether this session can invoke ``tool_name``: exposed directly, or deferred behind an
+    exposed ``tool_call`` and inside the session-scoped bridge catalog. Gates background work
+    that needs the tool without widening the model-visible schema."""
+    if tool_name in agent.valid_tool_names:
+        return True
+    return TOOL_CALL_NAME in agent.valid_tool_names and tool_name in _tool_search_scoped_names(agent)
 
 
 def _canonical_tool_name(function_name: str) -> str:

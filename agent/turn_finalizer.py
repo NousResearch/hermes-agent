@@ -735,10 +735,11 @@ def finalize_turn(
     agent._stream_callback = None  # don't leak into future calls
 
     # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
+    from agent.tool_executor import session_can_reach_tool
     _should_review_skills = (
         agent._skill_nudge_interval > 0
         and agent._iters_since_skill >= agent._skill_nudge_interval
-        and "skill_manage" in agent.valid_tool_names
+        and session_can_reach_tool(agent, "skill_manage")
     )
     if _should_review_skills:
         agent._iters_since_skill = 0

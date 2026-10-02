@@ -85,3 +85,29 @@ def test_same_name_uses_active_profile_without_mutating_runner(tmp_path, monkeyp
         assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, 'topic') == 'Beta style.'
     assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, 'topic') == 'Default style.'
     assert runner._ephemeral_system_prompt == 'Untouched'
+
+
+def test_turn_composition_and_cache_identity_preserve_named_style(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.session import SessionSource
+
+    config = write_config(tmp_path, {
+        'one': {'personality': 'focused', 'system_prompt': 'Task.'},
+        'two': {'system_prompt': 'Task.'},
+    })
+    monkeypatch.setattr('gateway.run._gateway_config_home', lambda: tmp_path)
+    runner = make_runner(config)
+    ctx = SimpleNamespace(context_prompt='Platform context.', channel_prompt='Channel hint.',
+                          source=SessionSource(platform=Platform.TELEGRAM, chat_id='one'))
+    turn = TurnRunner(runner, ctx)
+    first = turn._combined_ephemeral_prompt()
+    assert first == 'Platform context.\n\nChannel hint.\n\nBe focused.\n\nTask.'
+    signature = runner._agent_config_signature('model', {}, [], first)
+    assert runner._agent_config_signature('model', {}, [], turn._combined_ephemeral_prompt()) == signature
+    ctx.source.chat_id = 'two'
+    second = turn._combined_ephemeral_prompt()
+    assert second == 'Platform context.\n\nChannel hint.\n\nTask.'
+    assert runner._agent_config_signature('model', {}, [], second) != signature
+    ctx.source.chat_id = 'one'
+    assert turn._combined_ephemeral_prompt() == first

@@ -77,17 +77,27 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
     return reasons, waiting
 
 
-def _spellings(name: str) -> set[str]:
-    """Every spelling a config list may hold for plugin *name* (key, bare leaf, manifest name)."""
+def _discover_plugins() -> list | None:
+    """One scan of the plugin tree for alias lookup, or None when it cannot be read."""
     try:
-        from hermes_cli.plugins_cmd import _plugin_aliases
+        from hermes_cli.plugins_cmd import _discover_all_plugins
 
-        return _plugin_aliases(name)
+        return _discover_all_plugins()
     except (ImportError, OSError) as exc:
         # Discovery only adds manifest-name aliases; the key and its bare leaf are always known.
         # Anything else is a real bug in the plugin tree and should surface, not be hidden.
-        logger.warning("Could not discover aliases of plugin '%s': %s", name, exc)
+        logger.warning("Could not discover plugin aliases: %s", exc)
+        return None
+
+
+def _spellings(name: str, discovered: list | None) -> set[str]:
+    """Every spelling a config list may hold for plugin *name* (key, bare leaf, manifest name).
+    *discovered* is the shared scan from :func:`_discover_plugins`; None means the scan failed."""
+    if discovered is None:
         return {name, name.split("/")[-1]}
+    from hermes_cli.plugins_cmd import _plugin_aliases
+
+    return _plugin_aliases(name, discovered)
 
 
 def _discard_aliases(names: list, aliases: set[str]) -> None:
@@ -110,6 +120,8 @@ class PluginEviction:
             if plugin_dir.resolve() in reasons:
                 by_home.setdefault(plugins_dir.parent, []).append(name)
         self.edits: list[tuple[Path, bytes | None, bytes]] = []
+        discovered: list | None = None
+        scanned = False  # scan once for every evicted plugin, and only if an enabled list needs it
         for home, names in by_home.items():
             path = home / "config.yaml"
             previous = read_bytes_or_none(path)
@@ -130,7 +142,9 @@ class PluginEviction:
                 # Keep the two lists consistent: a plugin that is disabled must not stay enabled
                 # under any spelling the loader matches, or `plugins enable` has nothing to repair.
                 if isinstance(enabled, list):
-                    _discard_aliases(enabled, _spellings(name))
+                    if not scanned:
+                        discovered, scanned = _discover_plugins(), True
+                    _discard_aliases(enabled, _spellings(name, discovered))
                 # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
                 if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
                     memory["provider"] = ""

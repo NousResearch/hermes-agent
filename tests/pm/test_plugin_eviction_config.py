@@ -15,6 +15,7 @@ from pm.plugin_eviction import PluginEviction, _discard_aliases
 
 
 _REAL_ALIASES = _plugins_cmd._plugin_aliases
+_REAL_DISCOVER = _plugins_cmd._discover_all_plugins
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +23,7 @@ def _no_alias_discovery(monkeypatch):
     """Alias discovery scans installed plugins; these tests only need key + bare leaf."""
     import hermes_cli.plugins_cmd as plugins_cmd
 
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: [])
     monkeypatch.setattr(plugins_cmd, "_plugin_aliases", lambda key, entries=None: {key, key.split("/")[-1]})
     monkeypatch.setattr(publication, "selection_snapshot", lambda: {})
 
@@ -159,10 +161,10 @@ def test_discard_aliases_keeps_other_entries_in_order():
 def test_alias_discovery_failure_from_io_falls_back_and_is_logged(tmp_path, monkeypatch, caplog):
     import hermes_cli.plugins_cmd as plugins_cmd
 
-    def unreadable(key, entries=None):
+    def unreadable():
         raise OSError("tree unreadable")
 
-    monkeypatch.setattr(plugins_cmd, "_plugin_aliases", unreadable)
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", unreadable)
     with caplog.at_level("WARNING", logger="pm.plugin_eviction"):
         cfg, _ = _evict(tmp_path, ["web/firecrawl"], "plugins:\n  enabled: [web/firecrawl, firecrawl, keep]\n")
     assert cfg["plugins"]["enabled"] == ["keep"]
@@ -172,10 +174,10 @@ def test_alias_discovery_failure_from_io_falls_back_and_is_logged(tmp_path, monk
 def test_unexpected_alias_discovery_error_is_not_swallowed(tmp_path, monkeypatch):
     import hermes_cli.plugins_cmd as plugins_cmd
 
-    def broken(key, entries=None):
+    def broken():
         raise RuntimeError("half-broken plugin tree")
 
-    monkeypatch.setattr(plugins_cmd, "_plugin_aliases", broken)
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", broken)
     with pytest.raises(RuntimeError, match="half-broken plugin tree"):
         _evict(tmp_path, ["plug-a"], "plugins:\n  enabled: [plug-a]\n")
 
@@ -183,6 +185,7 @@ def test_unexpected_alias_discovery_error_is_not_swallowed(tmp_path, monkeypatch
 def test_real_alias_discovery_skips_a_malformed_manifest_and_still_removes_aliases(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(_plugins_cmd, "_plugin_aliases", _REAL_ALIASES)
+    monkeypatch.setattr(_plugins_cmd, "_discover_all_plugins", _REAL_DISCOVER)
     good = tmp_path / "plugins" / "web" / "firecrawl"
     good.mkdir(parents=True)
     (good / "plugin.yaml").write_text("name: web-firecrawl\n", encoding="utf-8")
@@ -192,3 +195,23 @@ def test_real_alias_discovery_skips_a_malformed_manifest_and_still_removes_alias
     cfg, _ = _evict(tmp_path, ["web/firecrawl"],
                     "plugins:\n  enabled: [web/firecrawl, web-firecrawl, firecrawl, keep]\n")
     assert cfg["plugins"]["enabled"] == ["keep"]
+
+
+def test_several_evicted_plugins_share_one_plugin_tree_scan(tmp_path, monkeypatch):
+    import hermes_cli.plugins_cmd as plugins_cmd
+
+    scans = []
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: scans.append(1) or [])
+    cfg, _ = _evict(tmp_path, ["plug-a", "plug-b", "plug-c"],
+                    "plugins:\n  enabled: [plug-a, plug-b, plug-c, keep]\n")
+    assert cfg["plugins"]["enabled"] == ["keep"]
+    assert len(scans) == 1
+
+
+def test_no_tree_scan_when_nothing_is_enabled(tmp_path, monkeypatch):
+    import hermes_cli.plugins_cmd as plugins_cmd
+
+    scans = []
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: scans.append(1) or [])
+    _evict(tmp_path, ["plug-a"], "plugins:\n  disabled: []\n")
+    assert scans == []

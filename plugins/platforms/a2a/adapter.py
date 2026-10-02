@@ -107,6 +107,10 @@ _ASYNC_ACCEPTED_NOTE = (
     "(configuration.returnImmediately=true, A2A v1.0; blocking=false, A2A v0.2) or handed off as a kanban "
     "card — never as a blocking message/send.")
 
+# Sentinel reply used when a sweep (the job budget) tombstones a still-waiting task. It tells the
+# late-finalize callback that the outcome is already recorded, so it is not counted a second time.
+_SWEPT_REPLY = "[task already tombstoned by the A2A sweep]"
+
 
 def _window_elapsed_note() -> str:
     return (
@@ -355,8 +359,10 @@ class A2AAdapter(BasePlatformAdapter):
         # Parked tasks: the requester stopped waiting (reply window elapsed, or the call asked for
         # accept-then-poll) while the agent is still working. They stay in _active_tasks on purpose —
         # that membership is what keeps the orphan sweep off them and lets the late reply land — and
-        # are bounded by _job_timeout() instead of the reply window.
-        self._parked: set[str] = set()
+        # are bounded by _job_timeout() instead of the reply window. Maps task_id -> the pending
+        # record, because the budget sweep needs that record to mark the task tombstoned before it
+        # tears the pending entry down (otherwise its late reply steals the next reply on the context).
+        self._parked: Dict[str, dict] = {}
         self._pending_lock = threading.Lock()
 
     @property
@@ -431,6 +437,7 @@ class A2AAdapter(BasePlatformAdapter):
         failed = self.tasks.fail_orphans(timeout, exclude=active_tasks)
         for tid in failed:
             logger.warning("A2A: orphaned task %s marked failed (timeout %gs)", tid, timeout)
+            self._drop_swept_pending(tid)
         # Parked tasks are deliberately excluded above (a live entry is what lets the late reply land),
         # so the job budget is the only thing that ever bounds them.
         job = _job_timeout()
@@ -438,12 +445,28 @@ class A2AAdapter(BasePlatformAdapter):
                                           reason=f"[task exceeded A2A_JOB_TIMEOUT={job:.0f}s — no reply within the job budget]")
         for tid in expired:
             logger.warning("A2A: parked task %s marked failed (job budget %.0fs)", tid, job)
-        if expired:
-            with self._pending_lock:
-                self._parked.difference_update(expired)
+            # Full teardown, not just a _parked removal: a pending entry left here keeps the task id at
+            # the HEAD of _pending_order[context_id], and adapter.send() resolves replies oldest-first —
+            # so the tombstone would eat the *next* real reply on that (reused) context and lose that
+            # task's answer too. Tombstone first (see _drop_swept_pending) so a reply already in flight
+            # cannot resurrect the task behind our back.
+            self._drop_swept_pending(tid)
         failed += expired
         protocol.metrics.tasks_failed += len(failed)
         return failed
+
+    def _drop_swept_pending(self, task_id: str) -> None:
+        """Tear down a task the sweep just made terminal: cancel its waiter and drop every pending
+        container entry. Idempotent — the task store already ignores a second terminal transition,
+        so counting it twice is impossible.
+        """
+        with self._pending_lock:
+            entry = self._pending.get(task_id)
+        if entry is not None and not entry[1].done():
+            # Resolve the waiter with a sentinel the late-finalize path recognises as "already
+            # tombstoned": the store is authoritative, so the outcome is NOT recorded a second time.
+            entry[1].set_result((protocol.STATE_FAILED, _SWEPT_REPLY))
+        self._pop_pending(task_id)
 
     def _load_served_agents(self, extra: dict) -> dict[str, dict]:
         """Served-agent routing from ``platforms.a2a.extra.agents`` (top-level ``a2a_served_agents``
@@ -567,7 +590,7 @@ class A2AAdapter(BasePlatformAdapter):
     def _pop_pending(self, task_id: str) -> None:
         with self._pending_lock:
             self._active_tasks.discard(task_id)
-            self._parked.discard(task_id)
+            self._parked.pop(task_id, None)
             entry = self._pending.pop(task_id, None)
             order = self._pending_order.get(entry[0]) if entry else None
             if order and task_id in order:
@@ -581,8 +604,20 @@ class A2AAdapter(BasePlatformAdapter):
         dying with the HTTP thread — which is exactly what a reply-window expiry used to do to a long
         job's result."""
         task_id = pending["task_id"]
+        if pending["future"].done():
+            # The agent answered in the same breath as the deadline (or the sweep tombstoned it):
+            # the real outcome is already available, so park nothing — reporting WORKING here would
+            # tell the caller to poll a task that is finished. Caller checks done() first in the
+            # blocking path; this keeps the accept-then-poll path consistent with it.
+            try:
+                state, reply = pending["future"].result()
+            except Exception:
+                state, reply = protocol.STATE_FAILED, "[agent reply lost]"
+            state, reply = self._finalize_task(pending, state, reply)
+            return protocol.build_task(task_id, pending["context_id"], state, reply,
+                                       created_at=pending["created_iso"])
         with self._pending_lock:
-            self._parked.add(task_id)
+            self._parked[task_id] = pending
         self._attach_late_finalize(pending)
         self.tasks.set_state(task_id, protocol.STATE_WORKING)
         self.tasks.note(task_id, note)
@@ -603,6 +638,11 @@ class A2AAdapter(BasePlatformAdapter):
                 state, reply = fut.result()
             except Exception:
                 state, reply = protocol.STATE_FAILED, "[agent reply lost]"
+            if reply == _SWEPT_REPLY:
+                # The job-budget sweep already tombstoned this task and counted it failed. Its pending
+                # entry is gone, so re-recording the outcome here would count the SAME task as both
+                # failed and completed. _pop_pending() is already idempotent, so just leave it.
+                return
             threading.Thread(target=self._finalize_task, args=(owned, state, reply),
                              name="a2a-late-finalize", daemon=True).start()
 

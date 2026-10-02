@@ -130,6 +130,27 @@ a fix.** A reproduction on current `main` plus a line-level account beats a plau
 rationale. When unsure about intent, asking is cheaper than shipping a fix that fights the
 design.
 
+### Security reports and fixes — follow `SECURITY.md`
+
+Read `SECURITY.md` before filing an issue or opening a PR with a security angle. It is the
+scope authority; these are the rules that matter at submission time:
+
+- **Undisclosed vulnerabilities go private, never public.** If a finding is in scope under
+  `SECURITY.md` §3.1 (isolation escape, unauthorized external-surface access, credential
+  exfiltration, trust-model documentation violation), report it via
+  [GitHub Security Advisories](https://github.com/NousResearch/hermes-agent/security/advisories/new)
+  or security@nousresearch.com. Do not open a public issue or PR for it, and keep
+  reproduction or exploit details out of commit messages, PR bodies, and comments.
+- **Out-of-scope hardening is ordinary public work.** §3.2 items — approval-gate, redaction,
+  or Skills Guard bypasses; prompt injection without a chained §3.1 outcome; consequences of
+  the chosen isolation posture; break-glass settings; third-party skills/plugins — are not
+  vulnerabilities. File them as regular issues/PRs; don't route them through the private
+  channel or describe them as vulnerabilities.
+- **Name the boundary.** A security issue or PR states which §2 trust boundary is crossed,
+  with `path/to/file.py:line` references and a reproduction on current `main`.
+- **Sweeper:** a public issue or PR that discloses an apparent §3.1 vulnerability is never a
+  sweeper close or merge candidate; leave it for a maintainer.
+
 ### The Footprint Ladder (new capability decision)
 
 Choose the highest (least-footprint) rung that correctly solves the problem:
@@ -177,8 +198,13 @@ session-scoped. Assert the GUI session gets the tool **with the env var absent**
 ## Development Environment
 
 ```bash
-source .venv/bin/activate   # or: source venv/bin/activate
+source ./activate   # provisions/syncs PM tools + dependencies, then activates
 ```
+Select an isolated development `HERMES_HOME` and `HERMES_RUNTIME_DIR` first;
+see `website/docs/reference/package-management.md#developer-workflow`.
+PowerShell: `. .\activate.ps1`. `deactivate` restores the prior environment.
+For tests, use the independent test environment in `CONTRIBUTING.md` (or Nix);
+PM activation's `PYTHONPATH` does not survive the test runner's environment scrub.
 `scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
 (worktrees sharing the main checkout's venv).
 
@@ -212,7 +238,7 @@ hermes-agent/
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                 # jobs.py + scheduler.py (+ scheduler_*.py)
 ├── evals/                # Offline benchmarks (codebase_navigability/, compaction/, ...)
-├── scripts/              # run_tests.sh, release.py, check_compat_pointers.py, ci/
+├── scripts/              # run_tests.sh, release.py, ci/
 ├── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
 └── tests/                # Pytest suite (~39k tests / ~3.7k files, Sep 2026)
 ```
@@ -241,18 +267,14 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   function so `monkeypatch.setattr(facade, "name", ...)` is the seam; a patch on the defining
   module passes silently. Check the call site's binding before writing a patch target
   (blind repointing to defining modules broke 130+ tests).
-- **Compat pointers are OFF LIMITS in-tree.** Old import paths kept alive for external plugins
-  (`PLUGIN-COMPAT` blocks, `COMPAT_MANIFEST.md`, `compat_manifest.json`) must not be used by
-  in-tree code or tests; `scripts/check_compat_pointers.py` runs in CI, and
-  `-W error::hermes_cli.plugin_compat.HermesPluginCompatWarning` catches them in the suite.
-  They are removed 2026-09-14 by reverting one commit. Import from the defining module.
 - **Don't recreate god files.** A file passing ~2,000 lines or a function passing ~300 lines /
   cyclomatic complexity 30 is the signal to split along `<stem>_<topic>` FIRST, in its own
   commit. New behaviour goes in a new or topical sibling — never appended to a facade.
 - **No `if/elif` ladders ≥ 4 branches keyed on a name/kind** — use a dict/table → handler
   (`_SLASH_DISPATCH` in `cli.py`, `_command_handler_table` in the gateway are the shape).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
-  are not API; external compat is handled ONCE by the compat layer, not per PR.
+  are not API: plugins build on `ctx` and the documented ABCs. The one-time Sep 2026
+  decomposition compat layer for external plugins has been removed; never reintroduce one.
 - **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`,
   `skills/`, and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
   after the refactor). `evals/codebase_navigability/static_metrics.py <tree> <label>` measures
@@ -286,6 +308,16 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   spawns (`served_profile_child_env`, never `os.environ.copy()`). Fail-closed reads exist only after
   `set_multiplex_active(True)`. Prove live with two homes (A→B→A) under multiplex, not one temp
   `HERMES_HOME`. Advisory lint: `scripts/check_profile_scope_patterns.py`.
+- **Machine facts and resource lookup go through `hermes_platform`.** `hermes_platform.host` is the
+  one answer for OS family, native architecture (`IsWow64Process2` → `platform.machine()`; never
+  `PROCESSOR_ARCHITECTURE` alone, it reads AMD64 under x64-on-ARM64 emulation), CPU identity, and
+  WSL/container/Termux. Facts are cached per process and take **no environment-variable input**, so
+  a hardware recognizer (`host/products.py`) cannot be set from a shell. Distinguish the control
+  host (where this Python runs) from the terminal execution target (SSH/container) and the Desktop
+  client (another machine): `host.*` answers only the first. A new bare `shutil.which` or a
+  hand-written known-path table outside `hermes_platform/` fails
+  `tests/test_managed_runtime_resolution.py` unless allowlisted with a reason; resolvers land in
+  `hermes_platform/resolver/`. Lookup never installs, downloads, or starts anything.
 - **Argparse alias dispatch:** `add_parser("list", aliases=["ls"])` sets `dest` to the literal
   the user typed (`"ls"`). Dispatch must accept both (caught PTY-testing `hermes webhook ls`).
 - **Don't wire in dead code without E2E validation.** Unshipped code was dead for a reason;
@@ -310,8 +342,25 @@ Table-driven beats condition ladders for ids/routes/views. `src/app` owns routes
 All dependencies carry upper bounds (litellm compromise #2796/#2810; Mini Shai-Hulud worm,
 May 2026). PyPI: `>=floor,<next_major` (`"httpx>=0.28.1,<1"`); pre-1.0: `<0.(minor+2)`
 (`>=0.29,<0.32`). Git URLs: 40-char commit SHA. GitHub Actions: SHA + `# vN` comment. CI-only
-pip: `==exact`. A bare `>=X.Y.Z` is rejected by CI and reviewers. Run `uv lock` after
-changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
+Python requirements: `==exact`. A bare `>=X.Y.Z` is rejected by CI and reviewers.
+After changing `pyproject.toml`, run `hermes pm lock`, re-source `./activate`, and commit
+`pyproject.toml` with `uv.lock`. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
+
+PM owns Hermes Python dependency changes. Use `pm.sync_venv(['extra'], explicit=True)`
+for declared runtime extras, `hermes pm install` for setup/sync, and `hermes pm repair`
+for damaged dependencies. Do not mutate Hermes environments with raw pip or uv.
+Use `pm.build_environment` for fresh build outputs and `pm.ensure_environment` for
+isolated tool environments. Callers receive an interpreter or tool path, not uv.
+Nix's declarative uv2nix builds and unrelated user projects remain independently owned.
+
+The `[tool.uv] exclude-newer = "14 days"` quarantine covers **Hermes's own dependencies only**
+(every registry package in core's `uv.lock`). Plugin `python_dependencies` follow the plugin's own
+policy: when PM generates the plugin workspace (`pm/workspace.py::_core_release_quarantine`) the
+global cutoff moves onto each core-locked package, so plugin-only packages are not filtered and a
+plugin still cannot drag a core package past the window. Teknium's ruling: "plugins dont have to
+abide by our 14 day rule … Only hermes' dependencies themselves have to." We recommend (not require)
+plugin authors adopt their own quarantine — the developer guide and `plugin-catalog/README.md` carry
+that guidance.
 
 ## Commits, Merges, PRs
 
@@ -332,6 +381,17 @@ isolation via `scripts/run_tests_parallel.py` (no xdist; workers scale with CPU 
 module-level dicts/ContextVars cannot leak between files. Direct `pytest` on a big machine
 with API keys set has caused repeated "works locally, fails in CI" incidents (and the reverse).
 
+Prepare a test interpreter with the checkout's bootstrapped Python:
+
+```bash
+python -m pm.build_env --source . --out .venv --group dev --group test
+```
+
+This is a fresh build, not an in-place sync. If the disposable output exists,
+stop its processes and intentionally remove it before regeneration. The runner
+clears `PYTHONPATH`, so PM shell activation alone does not supply pytest. For a
+fresh output outside the checkout, set `HERMES_PYTHON` to its interpreter.
+
 ```bash
 scripts/run_tests.sh                                    # full suite
 scripts/run_tests.sh tests/gateway/                     # one directory
@@ -340,7 +400,8 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
 ```
 
 - **Flake policy:** a failing FILE is retried once in a fresh subprocess (`--file-retries`;
-  `HERMES_TEST_FILE_RETRIES=0` disables). Pass-on-retry is green but printed under `⚠ FLAKY`
+  `HERMES_TEST_FILE_RETRIES=0` disables); a worker killed by signal or the file timeout is never
+  retried (relaunching a runaway doubles the damage). Pass-on-retry is green but printed under `⚠ FLAKY`
   with both outputs — a bug to fix, not noise. Timing tests must not assume a quiet runner:
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races.
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
@@ -369,8 +430,8 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
 
 ### Don't fake the host OS
 
-Behaviour that genuinely differs per host is tested ON that host with `@pytest.mark.linux_only`
-/ `macos_only` / `windows_only`, never by patching `sys.platform`. Host-independent things stay
+Behaviour that genuinely differs per host is tested ON that host with `@pytest.mark.platforms("linux")`
+/ `platforms("macos")` / `platforms("windows")`, never by patching `sys.platform`. Host-independent things stay
 unmarked: pure functions that take the platform as data (`hidden_windows_child_options(opts,
 is_windows=True)`) and declaration/packaging invariants ("pyproject declares `tzdata` with a
 `sys_platform == 'win32'` marker"). Setting a module-level `IS_WINDOWS` flag and calling
@@ -378,20 +439,58 @@ is_windows=True)`) and declaration/packaging invariants ("pyproject declares `tz
 is on another OS to pass, it belongs on that OS.** A test that walks several platforms in
 sequence is split — host-native arm on Linux, other arms as their own marked tests.
 
-**Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py` finds files for
-the macOS/Windows lanes by grepping the marker *name*, then filters with `-m <marker>`. A
-`skipif(sys.platform != "win32")` test skips on Linux AND is never imported on Windows — it runs
-nowhere, silently. A file-local alias (`windows_only = pytest.mark.skipif(...)`) is listed but
-`-m windows_only` deselects everything: green over zero coverage. Don't `pytest.skip()` non-host
-rows of a platform `@parametrize` — split into one marked test per OS.
+One marker per test, with any number of spec strings (any-of semantics) plus
+optional arch filters. To gate on several OSes, pass several specs to ONE
+marker — never stack several `platforms()` decorators on one test (the
+conftest rejects that at collection):
 
-**Live Windows process-topology E2E (`wine2e` lane):** `windows-venv-e2e.yml` runs
-`tests/hermes_cli/test_venv_holder_windows_live.py` on a real `windows-latest` runner (real
-processes, no mocked psutil) ONLY on pushes to `wine2e/**` branches. Workflow: write probes
-pinning CORRECT behavior, push to `wine2e/` to reproduce live on unfixed code, fix, iterate to
-green, then open the PR with the live receipt. Extend it when touching that subsystem; assert
-against the gateway ANCESTOR found by argv, not the direct parent (the venv shim makes every
-spawn a launcher/worker chain).
+```python
+@pytest.mark.platforms("linux", "macos")  # ONE marker, two specs: runs on either
+def test_posix_signal_path(): ...
+```
+
+Other single-marker forms (each is a complete marker on its own):
+`platforms("windows")` (native Windows only), `platforms("not macos")`
+(anywhere except macOS), `platforms("windows", arch="arm64")` (native Windows
+on arm64), `platforms("posix")` (Linux or macOS).
+
+Specs: `linux`, `macos`, `windows`, `posix`, `any`, and `not <spec>`.
+The historic `linux_only` / `macos_only` / `windows_only` markers have been
+fully replaced — `platforms` is the only host-gating marker in the tree.
+
+**Live Windows process-topology E2E: the `wine2e` lane.** For claims about
+real Windows process behavior that mocks cannot reproduce (venv-holder
+scans, process-tree parentage, launcher/worker chains, detach semantics),
+there is an on-demand workflow `windows-venv-e2e.yml` that runs
+`tests/hermes_cli/test_venv_holder_windows_live.py` on a real
+`windows-latest` runner — spawning actual processes and driving the real
+detection code, no mocked psutil. It fires ONLY on pushes to `wine2e/**`
+branches (inert on PRs and main; costs nothing on normal work). The proven
+workflow: write probes that pin CORRECT behavior, push to a `wine2e/`
+branch to reproduce the bugs live on unfixed code, build the fix, iterate
+until the lane is green, then open the PR — the live receipt on the exact
+head is the Windows proof reviewers ask for. Extend the live suite when
+touching that subsystem; assert against the gateway ANCESTOR found by
+argv, not the direct parent (the venv shim makes every spawn a
+launcher/worker chain).
+
+**Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
+decides which files an OS lane imports by resolving the quoted specs inside
+`platforms(...)` (`"posix"` reaches the macOS lane, `"not linux"` reaches
+both others), and the lane then selects with `-m platforms` while the
+conftest's per-test host skips do the actual gating. A test gated with
+`@pytest.mark.skipif(sys.platform != "win32")` therefore runs on no host at
+all, silently — it is never imported by the lane that would run it, and the
+full-suite lanes skip it. `skipif(sys.platform == "win32")` becomes
+`platforms("posix")`; a non-host condition (`os.geteuid() == 0`) stays a
+separate `skipif` beside the marker. A misspelt spec is a collection error,
+not a skip. Don't stack a module-level `pytestmark =
+platforms(...)` on a file whose tests carry their own host marker — the
+conftest hard-rejects tests carrying two `platforms()` markers (a test
+skipped on every host, reported green everywhere).
+Equally, don't `pytest.skip()` the non-host rows of a `@parametrize` over
+platforms — split it into one marked test per OS, or only the host's row ever
+executes.
 
 ### Don't write change-detector tests
 
@@ -431,7 +530,8 @@ extract, not to regex around it.
 | `cli.py`, `hermes_cli/`, `main.py` | `hermes_cli/AGENTS.md` | CLI mixins, `_SLASH_DISPATCH`, slash registry, config system + loaders, skins, `hermes update` pipeline, profiles / multiplex |
 | `gateway/` | `gateway/AGENTS.md` | Adapters, two message guards, streaming contract, background notifications, gateway vs desktop lifecycle, token locks, scoped secrets |
 | `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | Adding tools, registry, toolsets, delegation, cross-tool references, backends |
-| `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | Plugin kinds, native compat contract, in-tree policy, Sep-2026 compat window |
+| `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | Plugin kinds, native compat contract, in-tree policy |
+| `plugin-catalog/` entries, catalog reviews | `plugin-catalog/README.md` (canonical admission rules), `website/docs/developer-guide/plugins/catalog-submission.md` (mirror + submission guide) | What a listed plugin may do; keep the two rule blocks identical |
 | `tui_gateway/`, `ui-tui/` | `tui_gateway/AGENTS.md` | Process model, JSON-RPC transport, key surfaces, slash flow, dev commands |
 | `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | Dashboard embeds the real TUI; what React may and may not rebuild |
 | `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | Desktop judgment guide; `serve` backend, slash palette curation, Bot Mode canonical chat |

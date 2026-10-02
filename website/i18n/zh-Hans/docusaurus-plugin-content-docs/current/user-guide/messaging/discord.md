@@ -724,8 +724,8 @@ Hermes Agent 支持 Discord 语音消息：
 - **Discord 语音频道**：Hermes 还可以加入语音频道，聆听用户说话，并在频道中回话。
 
 完整的设置和操作指南，请参阅：
-- [语音模式](/user-guide/features/voice-mode)
-- [与 Hermes 使用语音模式](/guides/use-voice-mode-with-hermes)
+- [语音模式](../features/voice-mode.md)
+- [与 Hermes 使用语音模式](../../guides/use-voice-mode-with-hermes.md)
 
 ## 论坛频道
 

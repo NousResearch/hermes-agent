@@ -250,8 +250,8 @@ def _mcp_error(code, message="boom"):
     ``.error.code`` attribute ``_is_method_not_found_error`` inspects survives
     unchanged, which is the point of the structural check.
     """
-    from mcp.shared.exceptions import MCPError
-    return MCPError(code=code, message=message)
+    exceptions = pytest.importorskip("mcp.shared.exceptions", reason="MCP SDK not installed")
+    return exceptions.MCPError(code=code, message=message)
 
 
 class TestMethodNotFoundDetection:

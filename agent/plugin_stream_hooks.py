@@ -8,10 +8,10 @@ registered are stopped lazily on the next lookup.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import queue
 import threading
-from contextvars import Context, copy_context
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -28,7 +28,7 @@ _STOP = object()
 class _ConsumerDispatcher:
     hook_name: str
     callback: Callable[..., Any]
-    events: "queue.Queue[tuple[Context, dict[str, Any]] | object]"
+    events: "queue.Queue[tuple[contextvars.Context, dict[str, Any]] | object]"
     thread: threading.Thread | None = None
 
 
@@ -78,7 +78,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
             if item is _STOP:
                 return
             context, payload = item
-            context.run(_deliver, dispatcher, payload)
+            context.copy().run(_deliver, dispatcher, payload)
         finally:
             dispatcher.events.task_done()
 
@@ -134,11 +134,9 @@ def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
 def enqueue_plugin_stream_hook(hook_name: str, **payload: Any) -> bool:
     """Queue an observer hook for each consumer without running plugin code inline."""
     queued = False
-    item = dict(payload)
+    item = (contextvars.copy_context(), dict(payload))
     for dispatcher in _dispatchers_for(hook_name):
-        # Workers outlive a turn: bind each event's current secrets/terminal scope,
-        # with a separate Context for each consumer so workers can run concurrently.
-        if _put_drop_oldest(dispatcher.events, (copy_context(), item)):
+        if _put_drop_oldest(dispatcher.events, item):
             queued = True
         else:
             logger.debug(
@@ -157,10 +155,13 @@ def has_reasoning_stream_observer_hooks() -> bool:
 
 
 def stream_reasoning_deltas_enabled() -> bool:
-    """Return True only when the user opted plugins into reasoning deltas."""
+    """Return True only when the user opted plugins into reasoning deltas.
+
+    Read-only scalar lookup: skips ``load_config()``'s deepcopy. Callers on the token path
+    should still cache the result per stream (``_fire_reasoning_delta`` does)."""
     try:
         from hermes_cli import config as config_mod
-        config = config_mod.load_config()
+        config = config_mod.load_config_readonly()
         return bool(config_mod.cfg_get(config, "plugins", "stream_reasoning_deltas", default=False))
     except Exception:
         logger.debug("failed to read plugins.stream_reasoning_deltas", exc_info=True)

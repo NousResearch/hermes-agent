@@ -11,7 +11,7 @@ class _FakeDB:
     def resolve_session_id(self, session_id):
         return "sess-123"
 
-    def export_session(self, session_id):
+    def export_session(self, session_id, include_compacted=False):
         return {"id": "sess-123", "source": "cli", "messages": [{"role": "user", "content": "hi"}]}
 
     def close(self):

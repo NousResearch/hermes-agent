@@ -106,6 +106,8 @@ class ProcessEntry(_Open):
     watch_hit: bool | None = None
     notify_on_complete: bool | None = None
     exit_code: int | None = None
+    exited_at: float | None = None
+    completion_reason: str | None = None
     detached: bool | None = None
 
 
@@ -199,6 +201,7 @@ class ArgumentMode(WireEnum):
 class CommandCatalogMeta(Result):
     argument_mode: ArgumentMode | None = None
     desktop: str | None = None
+    desktop_subcommands: list[str] | None = None
 
 
 class CommandCategory(Result):
@@ -511,11 +514,14 @@ class BrowserAction(WireEnum):
     status = "status"
     connect = "connect"
     disconnect = "disconnect"
+    use = "use"
 
 
 class BrowserManageParams(Params):
     action: BrowserAction = BrowserAction.status
     url: str | None = None
+    # ``use`` only: True selects Browser Use mode (browser_exec), False the built-in browser tools.
+    enabled: bool | None = None
     session_id: str | None = None
     profile: str | None = None
 
@@ -524,7 +530,10 @@ class BrowserManageResult(Result):
     connected: bool
     url: str | None = None
     messages: list[str] | None = None
+    # ``status`` / ``use``: whether new agents for this profile get browser_exec.
+    browser_use: bool | None = None
 
 
 method("browser.manage", params=BrowserManageParams, result=BrowserManageResult,
-       doc="Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.")
+       doc="Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode "
+           "(``use``, applies to new sessions); ``messages`` narrate a connect.")

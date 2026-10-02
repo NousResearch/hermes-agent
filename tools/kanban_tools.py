@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,15 @@ def _check_kanban_orchestrator_mode() -> bool:
 
 # --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---
 
+# Worker tools that terminate or transition a run's ownership. An unbound worker
+# (HERMES_KANBAN_RUN_ID unresolvable) must not run these: expected_run_id=None
+# would silently skip the run-ownership CAS in kanban_db. Non-lifecycle tools
+# (heartbeat / attach / attach_url) do not terminate a run and are not gated.
+_RUN_LIFECYCLE_TOOLS = frozenset({
+    "kanban_complete", "kanban_block", "kanban_schedule",
+    "kanban_request_review", "kanban_request_changes",
+})
+
 class _Reject(Exception):
     """Carries a finished ``tool_error`` payload out of a validation helper."""
 
@@ -117,6 +126,30 @@ def _check(cond: Any, message: str) -> None:
         raise _Reject(message)
 
 
+# Keys a handler reads that its LLM-facing schema deliberately does not declare:
+# ``session_id`` is provenance stamped by internal callers (31fe2290393), ``project_id``
+# the pre-``project`` alias still honoured by ``_handle_create`` (e7811345c17).
+_UNDECLARED_ARGS: dict[str, frozenset[str]] = {
+    "kanban_create": frozenset({"session_id", "project_id"}),
+    # ``title`` is the pre-schema alias of ``filename`` that ``_handle_attach_url`` still honours.
+    "kanban_attach_url": frozenset({"title"}),
+}
+
+
+def _persisted_identity() -> str:
+    """Profile name persisted into board records (comment author, task creator).
+
+    ``hermes_cli.profiles.current_profile_name`` resolves the profile this call runs FOR — the bound
+    home override under a multiplexed tick or turn, else the dispatcher's ``HERMES_PROFILE`` pin,
+    else the process home; the generic ``"worker"`` only when nothing names a profile. Never taken
+    from tool args: board records are injected into future workers' prompts, so a caller-supplied
+    identity could forge an authoritative-looking author (see #19713).
+    """
+    from hermes_cli.profiles import current_profile_name
+
+    return current_profile_name("worker") or "worker"
+
+
 def _kanban_handler(tool_name: str) -> Callable:
     """Wrap a handler so every failure is a structured tool error. ``ValueError``
     (invalid board slug, DB validation such as cycle/self-link, ``AttachmentTooLarge``)
@@ -125,6 +158,13 @@ def _kanban_handler(tool_name: str) -> Callable:
         @functools.wraps(fn)
         def wrapper(args: dict, **kw) -> str:
             try:
+                # Reject typos before a handoff can succeed without its artifacts.
+                properties = registry.get_schema(tool_name)["parameters"]["properties"]
+                allowed = set(properties) | _UNDECLARED_ARGS.get(tool_name, frozenset())
+                unknown = sorted(set(args) - allowed)
+                _check(not unknown,
+                       f"{tool_name}: unknown parameter(s): {', '.join(unknown)}. "
+                       f"Valid parameters: {', '.join(sorted(properties))}. Nothing changed.")
                 return fn(args, **kw)
             except _Reject as e:
                 return e.args[0]
@@ -200,10 +240,36 @@ def _enforce_worker_task_ownership(tid: str) -> None:
 
 def _worker_guard(tool_name: str, args: dict) -> str:
     """Worker mutation preamble, in order: delegate-child rejection, task id
-    resolution, task-scope ownership. Returns the task id."""
+    resolution, task-scope ownership, run-identity proof. Returns the task id.
+
+    A dispatcher-spawned worker (``HERMES_KANBAN_TASK`` set) that cannot name
+    its run id is refused on the run-lifecycle mutations: ``expected_run_id=None``
+    would silently skip the run-ownership CAS in ``kanban_db`` (``complete_task`` /
+    ``block_task`` / ``request_review`` / ``request_changes`` only append
+    ``AND current_run_id = ?`` when the value is not ``None``), so an unbound
+    stale worker could complete a card a live successor owns. This mirrors
+    ``agent/kanban_stop.py``, which already treats an unbound run id as unknown
+    and fails closed. CLI / human / orchestrator paths (no ``HERMES_KANBAN_TASK``)
+    legitimately pass ``expected_run_id=None`` and are unaffected. Non-lifecycle
+    worker tools (heartbeat / attach / attach_url) do not terminate a run and are
+    not gated here.
+    """
     _reject_delegated_child_mutation(tool_name)
     tid = _require_task_id(args)
     _enforce_worker_task_ownership(tid)
+    if (
+        tool_name in _RUN_LIFECYCLE_TOOLS
+        and os.environ.get("HERMES_KANBAN_TASK")
+        and _worker_run_id(tid) is None
+    ):
+        raise _Reject(
+            f"{tool_name} refused: this worker cannot resolve its "
+            "HERMES_KANBAN_RUN_ID, so it cannot prove ownership of the card's "
+            "current run. A stale or unbound worker must not terminate a run a "
+            "live successor owns. Re-run through the dispatcher so the run id is "
+            "pinned, or use an orchestrator/CLI path that passes an explicit "
+            "expected_run_id."
+        )
     return tid
 
 
@@ -447,16 +513,39 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
 # for the explicit tool which carries a model-supplied note.
 _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 _auto_heartbeat_last_attempt: float = 0.0
+_auto_heartbeat_fence_warned = False
+
+
+def register_current_worker_from_env() -> bool:
+    """Record this worker's pid on its run when the dispatcher died before it could
+    (``adopt_worker_pid``). False only when the board says the run was already reclaimed:
+    the caller must exit. Anything unreadable (no run id, delegate child, board error)
+    lets the worker run, as before."""
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    run_id = _worker_run_id(tid) if tid else None
+    if run_id is None or _is_delegated_child_context():
+        return True
+    try:
+        from hermes_cli import kanban_db_dispatch as kbd
+        with _board(None, quiet_close=True) as (_kb, conn):
+            return kbd.adopt_worker_pid(conn, tid, run_id, os.getpid())
+    except Exception:
+        logger.debug("kanban worker registration for %s failed", tid, exc_info=True)
+        return True
 
 
 def heartbeat_current_worker_from_env() -> bool:
-    """Claim extension + board heartbeat for the current worker; True iff a write was
-    attempted. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
+    """Claim extension + board heartbeat for the current worker; True iff both writes
+    succeed. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
     heartbeated; ``HERMES_KANBAN_CLAIM_LOCK`` absent -> default claimer (local workers)."""
-    global _auto_heartbeat_last_attempt
+    global _auto_heartbeat_last_attempt, _auto_heartbeat_fence_warned
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
     if not tid or (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
+        return False
+    if _is_delegated_child_context():
+        # An in-process delegate child's activity is not the worker's liveness; checked before
+        # stamping the window so a chatty child cannot starve the worker's own heartbeat.
         return False
     _auto_heartbeat_last_attempt = now
     try:
@@ -464,13 +553,29 @@ def heartbeat_current_worker_from_env() -> bool:
         with _board(None, quiet_close=True) as (kb, conn):
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
                    (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
+            succeeded = True
             for fn, kwargs in ops:
                 op = fn.__name__
                 try:
-                    fn(conn, tid, **kwargs)
+                    succeeded = bool(fn(conn, tid, **kwargs)) and succeeded
+                except PermissionError as exc:
+                    # The board fence rejected the worker's own liveness write: this process
+                    # inherited HERMES_DELEGATED_CHILD_CONTEXT next to HERMES_KANBAN_TASK, so it is
+                    # a delegate descendant, not the dispatcher's worker (kanban_complete refuses
+                    # too). Loud once: at DEBUG the board just showed a worker that never beats.
+                    succeeded = False
+                    if not _auto_heartbeat_fence_warned:
+                        _auto_heartbeat_fence_warned = True
+                        logger.warning(
+                            "kanban auto-heartbeat for task %s refused (%s): this process carries "
+                            "HERMES_DELEGATED_CHILD_CONTEXT together with HERMES_KANBAN_TASK, so the board "
+                            "treats it as a delegate_task descendant and its claim will not be extended by "
+                            "activity. Only the dispatcher's own spawn grants worker scope; do not copy a "
+                            "worker's environment into a hand-launched process.", tid, exc)
                 except Exception:
                     logger.debug("auto-heartbeat: %s failed", op, exc_info=True)
-        return True
+                    succeeded = False
+        return succeeded
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
         return False
@@ -486,7 +591,7 @@ _comment_watermark: dict[str, int] = {}
 
 def inject_new_comments_from_env(agent: Any) -> bool:
     """Steer new operator comments on the worker's task into ``agent``; True iff a
-    steer was injected; never raises. Own comments (``HERMES_PROFILE``) are skipped."""
+    steer was injected; never raises. Own comments (``_persisted_identity``) are skipped."""
     global _comment_poll_last_attempt
     # Operator notes address the dispatcher-owned worker; a delegate_task child sharing
     # this process must neither receive them nor advance the shared watermark (#112817).
@@ -509,7 +614,10 @@ def inject_new_comments_from_env(agent: Any) -> bool:
         return False
     # Advance past everything read (including our own notes) so nothing is re-injected.
     _comment_watermark[tid] = max(c.id for c in rows)
-    own = (os.environ.get("HERMES_PROFILE") or "").strip()
+    # Same resolution the write side used, so a worker skips its OWN comments even
+    # when the dispatcher did not pin HERMES_PROFILE (echoed notes would otherwise
+    # re-enter the live turn as fake operator steering).
+    own = _persisted_identity()
     fresh = [c for c in rows if (c.author or "").strip() != own and (c.body or "").strip()]
     if not fresh:
         return False
@@ -633,6 +741,13 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"in-flight (no state change). Retry kanban_complete with the same "
                 f"summary/metadata and either drop these ids from created_cards, or pass "
                 f"created_cards=[] to skip the card-claim check entirely.")
+        except kb.EmptyCompletionError as empty_err:
+            # Same shape as the card gate: nothing was mutated, the audit event
+            # already landed; the worker retries with evidence instead of stalling.
+            return tool_error(
+                f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
+                f"change). Retry kanban_complete with a non-empty summary or result describing "
+                f"what was done.")
         task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or
@@ -647,7 +762,14 @@ def _handle_complete(args: dict, **kw) -> str:
             _check(False, (task.last_failure_error if task else None) or
                    f"could not complete {tid} (unknown id, stale run, or already terminal)")
         run = kb.latest_run(conn, tid)
-        return _ok(task_id=tid, run_id=run.id if run else None)
+        # Artifact staging is atomic with the completion write, so a worker that
+        # read `kanban_attachments` before completing saw an empty list and has
+        # no way to observe what its completion just registered (#117360).
+        # Report the card's durable attachment set in the result.
+        return _ok(task_id=tid, run_id=run.id if run else None,
+                   attachments=[
+                       _fields(a, _ATTACHMENT_FIELDS)
+                       for a in kb.list_attachments(conn, tid)])
 
 
 @_kanban_handler("kanban_block")
@@ -689,6 +811,27 @@ def _handle_block(args: dict, **kw) -> str:
                 "instead of parking in todo where the dispatcher would respawn it."
             )
         return _ok_landed(kb, conn, tid, "blocked", **extra)
+
+
+@_kanban_handler("kanban_schedule")
+def _handle_schedule(args: dict, **kw) -> str:
+    """Park the current task until an orchestrator re-gates it."""
+    tid = _worker_guard("kanban_schedule", args)
+    raw_reason = args.get("reason")
+    _check(raw_reason is None or isinstance(raw_reason, str), "reason must be a string")
+    reason = _redact(raw_reason.strip()) if raw_reason and raw_reason.strip() else None
+    with _board(args.get("board")) as (kb, conn):
+        # The goal loop treats ``scheduled`` as terminal like ``blocked``, so
+        # parking would bypass the completion judge (see kanban_block, #38696).
+        task = kb.get_task(conn, tid)
+        _check(not (task and task.goal_mode),
+               "goal_mode tasks cannot be scheduled: use kanban_block with kind "
+               f"in {sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} for a genuine external "
+               "blocker, or kanban_complete so the completion judge can evaluate it.")
+        ok = kb.schedule_task(
+            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
+        _check(ok, f"could not schedule {tid} (unknown id or not in todo/ready/running/blocked)")
+        return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
 
 
 @_kanban_handler("kanban_request_review")
@@ -775,15 +918,15 @@ def _handle_comment(args: dict, **kw) -> str:
     _check(tid, "task_id is required (use the current task id if that's what "
                 "you mean — pulls from env but kept explicit here)")
     body = _redact(_require_text(args, "body"))
-    # Author comes from the worker's runtime identity, never caller args: comments are
-    # injected into future workers' system prompts, so an args["author"] override could
-    # forge a directive from ``hermes-system``. Cross-task commenting stays unrestricted —
-    # it is the handoff channel between tasks.
+    # Author comes from the worker's runtime identity (``_persisted_identity``), never
+    # caller args: comments are injected into future workers' system prompts, so an
+    # args["author"] override could forge a directive from ``hermes-system``.
+    # Cross-task commenting stays unrestricted — it is the handoff channel between tasks.
     # Comments are injected into the next worker's system prompt by ``build_worker_context`` as
     # ``**{author}** (timestamp): {body}`` — accepting an ``args["author"]`` override let a worker forge a
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
-    author = os.environ.get("HERMES_PROFILE") or "worker"
+    author = _persisted_identity()
     with _board(args.get("board")) as (kb, conn):
         cid = kb.add_comment(conn, tid, author=author, body=str(body))
         return _ok(task_id=tid, comment_id=cid)
@@ -962,7 +1105,7 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
-            created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
+            created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
@@ -986,13 +1129,10 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     chat_type = env("HERMES_SESSION_CHAT_TYPE", "") or None
     thread_id = env("HERMES_SESSION_THREAD_ID", "") or None
     message_id = env("HERMES_SESSION_MESSAGE_ID", "") or ""
-    notifier_profile = env("HERMES_SESSION_PROFILE", "") or os.environ.get("HERMES_PROFILE")
+    notifier_profile = env("HERMES_SESSION_PROFILE", "")
     if not notifier_profile:
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-            notifier_profile = get_active_profile_name() or "default"
-        except Exception:
-            notifier_profile = "default"
+        from hermes_cli.profiles import current_profile_name
+        notifier_profile = current_profile_name("default")
     delivery_metadata: dict[str, Any] = {
         k: v for k, v in (
             ("thread_id", thread_id), ("chat_type", chat_type),
@@ -1086,6 +1226,7 @@ _TOOLS = (
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
+    ("kanban_schedule", KANBAN_SCHEDULE_SCHEMA, _handle_schedule, "⏰"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),
     ("kanban_heartbeat", KANBAN_HEARTBEAT_SCHEMA, _handle_heartbeat, "💓"),

@@ -146,8 +146,8 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Optional list of absolute paths to deliverable "
                 "files you produced during this run — generated "
                 "charts, PDFs, spreadsheets, images, archives. "
-                "Examples: [\"/tmp/q3-revenue.png\", "
-                "\"/tmp/report.pdf\"]. The gateway notifier "
+                "Examples: [\"~/.hermes/cache/scratch/q3-revenue.png\", "
+                "\"~/.hermes/cache/scratch/report.pdf\"]. The gateway notifier "
                 "uploads each path as a native attachment to the "
                 "subscribed chat (images embed inline, everything "
                 "else uploads as a file) so the deliverable "
@@ -199,6 +199,26 @@ KANBAN_BLOCK_SCHEMA = _schema(
     ["reason"],
 )
 
+KANBAN_SCHEDULE_SCHEMA = _schema(
+    "kanban_schedule",
+    (
+        "Park your current task in the 'scheduled' state while it waits for "
+        "time or an external event. This ends the current run and makes the "
+        "task non-dispatchable until an orchestrator unblocks it; it does not "
+        "create a timer. Put any wake-up marker such as "
+        "``SCHEDULED_UNTIL=<ISO8601>`` in ``reason``."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "reason": _prop("string", (
+            "Optional reason or machine-readable wake-up marker recorded on "
+            "the completed run and scheduled event."
+        )),
+    },
+    [],
+)
+
+
 KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
     "kanban_request_review",
     (
@@ -237,7 +257,7 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
                 "Optional list of absolute paths to deliverable "
                 "files this handoff names — generated charts, "
                 "PDFs, spreadsheets, images, archives. Examples: "
-                "['/tmp/q3-revenue.png', '/tmp/report.pdf']. "
+                "['~/.hermes/cache/scratch/q3-revenue.png', '~/.hermes/cache/scratch/report.pdf']. "
                 "A review handoff is the last implementer "
                 "transition, so the kernel copies these into the "
                 "task's durable attachments before the reviewer's "

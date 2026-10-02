@@ -162,9 +162,14 @@ export const ja: Translations = {
     deleteSelectedConfirmMessage:
       "選択した{count}件のセッションとそのすべてのメッセージが完全に削除されます。この操作は取り消せません。",
     selectedSessionsDeleted: "{count}件のセッションを削除しました",
+    selectedSessionsSkippedActive: "{deleted}件を削除、実行中のターンがあるため{count}件を保持しました",
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
     newChat: "新しいチャット",
+    workspace: "ワークスペース",
+    workspaceDefault: "デフォルト",
+    workspaceRescan: "リポジトリを再スキャン",
+    workspaceCustom: "別のパス…",
     previousPage: "前のページ",
     nextPage: "次のページ",
     roles: {
@@ -323,6 +328,8 @@ export const ja: Translations = {
     disableRuntime: "無効化",
     enableAfterInstall: "インストール後に有効化",
     enableRuntime: "有効化",
+    toggleTakesEffectAfterRestart:
+      "保存しました — 変更を適用するにはゲートウェイを再起動してください。",
     forceReinstall: "強制再インストール (既存のフォルダを先に削除)",
     headline:
       "Hermes プラグインを発見、インストール、有効化、更新します (`hermes plugins` 相当)。",

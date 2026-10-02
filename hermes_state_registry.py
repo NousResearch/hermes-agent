@@ -398,6 +398,38 @@ def close_all_under(directory: str | Path) -> int:
     return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
 
 
+def other_generations_for_path(
+    db_path: Path, *, exclude: Optional["SessionDB"] = None
+) -> List[str]:
+    """Describe every other LIVE SessionDB generation THIS process holds for *db_path*.
+
+    The registry is path-keyed, so it can answer the in-process half of "is this store quiet?"
+    that a ``/proc`` descriptor scan structurally cannot: that scan skips our own pid, so it only
+    ever proves other PROCESSES are away.
+
+    RETIRED generations are deliberately not holders here. A generation is retired only after its
+    file was replaced, which is exactly when ``SessionDB`` fences it: every write raises
+    ``StateDbReplacedError`` and the close-time checkpoint is disabled, so it is not the live writer
+    this gate protects. It also leaves ``_retired`` only when its last holder releases, and a
+    gateway handle does not release before shutdown — counting it made ONE inode replacement
+    (recovery swap, backup restore, snapshot) skip auto-VACUUM for that path for the rest of the
+    process lifetime, turning the unbounded growth this maintenance exists to bound into a
+    permanent condition.
+    """
+    try:
+        path = Path(db_path).resolve()
+    except OSError:
+        path = Path(db_path)
+    with _lock:
+        return [
+            f"in-process live SessionDB generation (refcount {generation.refcount})"
+            for generation in _generations.values()
+            if generation.db is not exclude
+            and generation.path == path
+            and not generation.retired
+        ]
+
+
 def live_shared_session_dbs() -> List["SessionDB"]:
     """Snapshot of every live (non-retired) shared SessionDB (refcounts untouched), for
     in-process maintenance. A concurrent final release may close an instance, in which
@@ -444,19 +476,3 @@ def release_or_close(db: "SessionDB") -> None:
     plain ``db.close()``: read-only opens, CLI one-shots and test fakes fall back."""
     if not release(db):
         _close_quietly(db, "release_or_close fallback close failed")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def close_shared_session_dbs() -> int:
-    return close_all()
-
-def get_shared_session_db(db_path: Optional[Path] = None) -> "SessionDB":
-    return acquire(db_path)
-
-def release_shared_session_db(db: "SessionDB") -> bool:
-    return release(db)
-# ---- END PLUGIN-COMPAT ----

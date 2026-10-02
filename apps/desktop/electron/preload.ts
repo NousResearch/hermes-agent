@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
 import type { DesktopProfileRoute } from './desktop-profile'
+import type { HudModifierApi, HudModifierStatus } from './hud-modifier-types'
 import { customWindowControlsEnabled } from './window-controls'
 
 // Which translucency the OS can back. Asked synchronously because the renderer
@@ -13,7 +14,16 @@ import { customWindowControlsEnabled } from './window-controls'
 const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
-const launchFlags = ipcRenderer.sendSync('hermes:launch-flags')
+
+const launchFlags: { localModels?: boolean; guestOnboarding?: boolean } | undefined =
+  ipcRenderer.sendSync('hermes:feature-flags')
+
+// Local, sanitized skin payload for the first renderer theme paint. This does
+// not wait on `gateway.ready`, so an unreachable remote primary cannot force
+// the built-in palette over the skin configured on this machine.
+const localSkin = ipcRenderer.sendSync('hermes:skin:local')
+
+import { unwrapExpectedNotFound } from './api-expected-404'
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
@@ -25,10 +35,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only; the same
   // decision is stamped onto every backend the app spawns.
   guestOnboardingEnabled: launchFlags?.guestOnboarding === true,
-  // Launch-flag fact: skip the first-run film (HERMES_SKIP_INTRO=1 or
-  // --skip-intro). Rehearsal aid for the guided chat behind it.
-  skipIntro: launchFlags?.skipIntro === true,
+  localSkin: localSkin && typeof localSkin === 'object' ? localSkin : null,
   getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
+  // Loopback origin that hosts YouTube's player for the file:// renderer.
+  getEmbedHostOrigin: () => ipcRenderer.invoke('hermes:embed-host:origin'),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
@@ -46,6 +56,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
   openWindow: (options?: DesktopProfileRoute) => ipcRenderer.invoke('hermes:window:openInstance', options),
   openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
+  windowRelay: {
+    send: payload => ipcRenderer.send('hermes:window:relay', payload),
+    onMessage: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:window:relay', listener)
+
+      return () => ipcRenderer.removeListener('hermes:window:relay', listener)
+    }
+  },
   onBrowserPopoutClosed: callback => {
     const listener = (_event, tabId) => callback(tabId)
     ipcRenderer.on('hermes:browser-popout:closed', listener)
@@ -72,26 +91,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   chatOnboarding: {
     grow: request => ipcRenderer.send('hermes:chat-onboarding:grow', request),
     soloBoot: () => ipcRenderer.send('hermes:chat-onboarding:solo-boot')
-  },
-  introReveal: {
-    open: (payload?: { hideMain?: boolean }) => ipcRenderer.invoke('hermes:intro-reveal:open', payload),
-    close: (payload?: { showMain?: boolean }) => ipcRenderer.invoke('hermes:intro-reveal:close', payload),
-    skip: () => ipcRenderer.send('hermes:intro-reveal:skip'),
-    ready: () => ipcRenderer.send('hermes:intro-reveal:ready'),
-    onSkip: callback => {
-      const listener = () => callback()
-
-      ipcRenderer.on('hermes:intro-reveal:skip', listener)
-
-      return () => ipcRenderer.removeListener('hermes:intro-reveal:skip', listener)
-    },
-    onClosed: callback => {
-      const listener = () => callback()
-
-      ipcRenderer.on('hermes:intro-reveal:closed', listener)
-
-      return () => ipcRenderer.removeListener('hermes:intro-reveal:closed', listener)
-    }
   },
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
@@ -181,34 +180,51 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:hud:game-overlay', listener)
     }
   },
-  // macOS native screenshot gesture; captures require a main-issued request.
-  screenshot: process.platform === 'darwin' ? {
-    getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
-    setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
-    openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
-    capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
+  hudModifier: {
+    getSettings: () => ipcRenderer.invoke('hermes:hud-modifier:settings:get'),
+    setEnabled: enabled => ipcRenderer.invoke('hermes:hud-modifier:settings:set', enabled),
+    openPermissionSettings: () => ipcRenderer.invoke('hermes:hud-modifier:permission'),
     onStatus: callback => {
-      const listener = (_event, status) => callback(status)
-      ipcRenderer.on('hermes:screenshot:status', listener)
+      const listener = (_event: Electron.IpcRendererEvent, status: HudModifierStatus) => callback(status)
+      ipcRenderer.on('hermes:hud-modifier:status', listener)
 
-      return () => ipcRenderer.removeListener('hermes:screenshot:status', listener)
-    },
-    onRequest: callback => {
-      const channel = 'hermes:screenshot:request'
-      const listener = (_event, requestId) => callback(requestId)
-      if (ipcRenderer.listenerCount(channel) === 0) {
-        ipcRenderer.send('hermes:screenshot:subscribe', true)
-      }
-      ipcRenderer.on(channel, listener)
-
-      return () => {
-        ipcRenderer.removeListener(channel, listener)
-        if (ipcRenderer.listenerCount(channel) === 0) {
-          ipcRenderer.send('hermes:screenshot:subscribe', false)
-        }
-      }
+      return () => ipcRenderer.removeListener('hermes:hud-modifier:status', listener)
     }
-  } : undefined,
+  } satisfies HudModifierApi,
+  // macOS native screenshot gesture; captures require a main-issued request.
+  screenshot:
+    process.platform === 'darwin'
+      ? {
+          getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
+          setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
+          openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
+          capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
+          onStatus: callback => {
+            const listener = (_event, status) => callback(status)
+            ipcRenderer.on('hermes:screenshot:status', listener)
+
+            return () => ipcRenderer.removeListener('hermes:screenshot:status', listener)
+          },
+          onRequest: callback => {
+            const channel = 'hermes:screenshot:request'
+            const listener = (_event, requestId) => callback(requestId)
+
+            if (ipcRenderer.listenerCount(channel) === 0) {
+              ipcRenderer.send('hermes:screenshot:subscribe', true)
+            }
+
+            ipcRenderer.on(channel, listener)
+
+            return () => {
+              ipcRenderer.removeListener(channel, listener)
+
+              if (ipcRenderer.listenerCount(channel) === 0) {
+                ipcRenderer.send('hermes:screenshot:subscribe', false)
+              }
+            }
+          }
+        }
+      : undefined,
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
   // shortcut + the persisted preference; the quick window only captures text
   // and hands it back, and the primary renderer submits it through the normal
@@ -216,7 +232,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   quickEntry: {
     getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
     setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
-    submit: payload => ipcRenderer.send('hermes:quick-entry:submit', payload),
+    // Invoke returns the delivery result so the draft is not lost (#85590).
+    submit: payload => ipcRenderer.invoke('hermes:quick-entry:submit', payload),
+    // Main cannot invoke the primary renderer, so it receives this ack (#85590).
+    ackSubmit: (correlationId, result) => ipcRenderer.send('hermes:quick-entry:ack', { correlationId, result }),
     dismiss: () => ipcRenderer.send('hermes:quick-entry:dismiss'),
     // Primary renderer → main → quick window: gateway connection state + the
     // recent-session options the target picker offers. Main caches the latest
@@ -242,6 +261,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:quick-entry:shown', listener)
 
       return () => ipcRenderer.removeListener('hermes:quick-entry:shown', listener)
+    },
+    // Main → quick window: the outcome of a submit whose relay already timed
+    // out. Delivery is now KNOWN — reconcile the unknown state instead of
+    // leaving the user to resend a prompt that may already be delivered.
+    onLateResult: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:quick-entry:late-result', listener)
+
+      return () => ipcRenderer.removeListener('hermes:quick-entry:late-result', listener)
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
@@ -279,7 +307,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   sshConfigHosts: () => ipcRenderer.invoke('hermes:ssh-config:hosts'),
   sshResolveHost: host => ipcRenderer.invoke('hermes:ssh-config:resolve', host),
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
-  oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl),
+  // `options` lets a registry-editor draft sign in BEFORE it is saved: the
+  // main process settles the draft's connection id up front so the login
+  // window writes into the per-connection cookie jar the saved entry will
+  // read (not the legacy shared jar an unsaved URL would fall back to).
+  oauthLoginConnectionConfig: (remoteUrl, options) =>
+    ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl, options),
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
   // Hermes Cloud: one portal login powers discovery + silent per-agent sign-in
   // (cloud-auto-discovery Phase 3).
@@ -303,8 +336,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
-  api: request => ipcRenderer.invoke('hermes:api', request),
+  // The handler resolves an expected 404 with a sentinel instead of rejecting
+  // (Electron logs a stack for every rejected invoke). Turn it back into the
+  // rejection the renderer expects — see electron/api-expected-404.ts.
+  api: request => ipcRenderer.invoke('hermes:api', request).then(unwrapExpectedNotFound),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
+  claimStartupLatency: () => ipcRenderer.invoke('hermes:startup-latency:claim'),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readWindowBelow: () => ipcRenderer.invoke('hermes:window:readBelow'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
@@ -351,8 +388,27 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
+  minimizeToTray: {
+    get: () => ipcRenderer.invoke('hermes:minimize-to-tray:get'),
+    set: on => ipcRenderer.invoke('hermes:minimize-to-tray:set', on),
+    onChanged: callback => {
+      const listener = (_event, status) => callback(status)
+      ipcRenderer.on('hermes:minimize-to-tray:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:minimize-to-tray:changed', listener)
+    }
+  },
   setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
+  setF12ShortcutActive: active => ipcRenderer.send('hermes:f12ShortcutActive', Boolean(active)),
+  onF12Shortcut: callback => {
+    const listener = (_event, input) => callback(input)
+    ipcRenderer.on('hermes:f12-shortcut', listener)
+
+    return () => ipcRenderer.removeListener('hermes:f12-shortcut', listener)
+  },
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
+  setPreviewGuestHidden: (webContentsId, hidden) =>
+    ipcRenderer.send('hermes:preview-guest-hidden', { webContentsId, hidden: Boolean(hidden) }),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   mcpOauth: {
     // One-shot loopback listener for MCP OAuth against remote backends: bind
@@ -394,13 +450,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Fire-and-forget: persists a renderer error-boundary catch (with component
   // stack) to desktop.log so crashes survive the window (#79428).
   reportRendererError: report => ipcRenderer.send('hermes:logs:renderer-error', report),
+  logLine: (line: string): void => ipcRenderer.send('hermes:logs:renderer-line', line),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
   reconcileDesktopPlugins: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
-  logsRoot: () => ipcRenderer.invoke('hermes:fs:logsRoot'),
+  logsRoot: (profile?: string) => ipcRenderer.invoke('hermes:fs:logsRoot', profile),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
@@ -487,6 +544,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   signalDeepLinkReady: () => ipcRenderer.invoke('hermes:deep-link-ready'),
   probePluginRepo: payload => ipcRenderer.invoke('hermes:plugin:probe', payload),
   installDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:installDesktop', payload),
+  removeDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:removeDesktop', payload),
   onWindowStateChanged: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:window-state-changed', listener)
@@ -510,6 +568,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:notification-activate', listener)
 
     return () => ipcRenderer.removeListener('hermes:notification-activate', listener)
+  },
+  onExternalOpenFailed: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:external-open-failed', listener)
+
+    return () => ipcRenderer.removeListener('hermes:external-open-failed', listener)
   },
   onPreviewFileChanged: callback => {
     const listener = (_event, payload) => callback(payload)
@@ -566,6 +630,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // current snapshot via getBootstrapState() to recover after a devtools
   // reload mid-bootstrap.
   getBootstrapState: () => ipcRenderer.invoke('hermes:bootstrap:get'),
+  probeLocalBackend: () => ipcRenderer.invoke('hermes:local-backend:probe'),
   continueBootstrapLocal: () => ipcRenderer.invoke('hermes:bootstrap:continue-local'),
   recycleBackend: profile => ipcRenderer.invoke('hermes:backend:recycle', profile),
   resetBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:reset'),
@@ -595,7 +660,20 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:updates:progress', listener)
 
       return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
+    },
+    takePendingRun: () => ipcRenderer.invoke('hermes:updates:metric:take'),
+    ackPendingRun: sent => ipcRenderer.invoke('hermes:updates:metric:ack', sent),
+    onPendingRun: callback => {
+      const listener = () => callback()
+      ipcRenderer.on('hermes:updates:metric:pending', listener)
+
+      return () => ipcRenderer.removeListener('hermes:updates:metric:pending', listener)
     }
+  },
+  desktopMetrics: {
+    setEnabled: (on, profile) => ipcRenderer.invoke('hermes:desktop-metrics:set-enabled', on, profile),
+    takeRendererCrashes: () => ipcRenderer.invoke('hermes:desktop-metrics:crash:take'),
+    ackRendererCrashes: sent => ipcRenderer.invoke('hermes:desktop-metrics:crash:ack', sent)
   },
   themes: {
     fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),

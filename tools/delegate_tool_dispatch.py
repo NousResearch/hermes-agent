@@ -13,6 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
+from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
 from tools.async_delegation import _new_delegation_id, record_unit_child
 from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
@@ -106,6 +107,14 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
         with _quiet("Spinner update_text failed: %s"):
             spinner_ref.update_text(f"🔀 {'[' + tag + '] ' if tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining")
 
+def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bool) -> None:
+    """Detached (background) unit: durably record a child on the unit's own row the moment it finishes, so an owner
+    death before the unit's join — or anywhere before its durable completion write, the whole remaining window for a
+    one-child unit — loses only children still running, never finished work (#116000). Best-effort by construction:
+    ``record_unit_child`` never raises into the join."""
+    if not honor_parent_interrupt and batch.unit_id and isinstance(entry, dict):
+        record_unit_child(batch.unit_id, entry)
+
 def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
     completion line printed per child). Polls futures with a short ``wait()`` timeout instead of ``as_completed()``
@@ -132,20 +141,26 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         except Exception as exc:
             return _fabricated_entry(idx, "error", str(exc), _child_by_index.get(idx))
 
-    with DaemonThreadPoolExecutor(max_workers=batch.max_children) as executor:
+    executor = DaemonThreadPoolExecutor(max_workers=batch.max_children)
+    # ``with`` would join every worker on exit, so a child wedged in an
+    # uninterruptible call defeats the interrupt fast-path: the poll loop marks
+    # it interrupted and returns, then the join hangs forever. Shutdown without
+    # waiting on the interrupt path instead (same shape as moa_loop).
+    interrupted = False
+    try:
         futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
                 results.extend(_entry_of(f, futures[f]) for f in pending)
+                interrupted = True
                 break
             done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in done:
                 entry = _entry_of(future, futures[future])
                 results.append(entry)
-                if not honor_parent_interrupt and batch.unit_id:
-                    # Detached unit: a crash before the join must not lose children that already finished.
-                    record_unit_child(batch.unit_id, entry)
+                # Detached unit: a crash before the join must not lose children that already finished.
+                _record_finished_child(batch, entry, honor_parent_interrupt)
                 _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
                 if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
                         and len(results) < n_here):
@@ -157,6 +172,10 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                         _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
                         push_task_failure_notice(
                             batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
+    finally:
+        # Abandoned workers unwind on their own (daemon threads, and the
+        # child-run layer already applies the deferred-close transport drain).
+        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
     results.sort(key=lambda r: r["task_index"])  # match input order
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
@@ -168,6 +187,9 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     results: list = []
     if len(batch.children) == 1:
         results.append(batch.run_child(*batch.children[0]))
+        # A one-child unit has no join to wait on, but everything after the child returns — host-owned finalize,
+        # transcript, manifest, then the durable write — is still owner-lifetime: record before any of it (#116000).
+        _record_finished_child(batch, results[-1], honor_parent_interrupt)
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
@@ -181,6 +203,7 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
             if _idx < len(batch.live_paths):
                 entry["live_transcript"] = batch.live_paths[_idx]
     update_manifest_statuses(batch.live_deleg_id, results)
+    finish_delegation_unit(batch.task_list, results, background=not honor_parent_interrupt)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
@@ -377,6 +400,10 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
+        # Persist locators before starting workers; live_paths omits failed writers and can be compressed.
+        task_transcripts={str(i): str(unit.live_writers[i].path) for i, _, _ in unit.children
+                          if i < len(unit.live_writers) and unit.live_writers[i] is not None
+                          and unit.live_writers[i].path is not None},
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
 
@@ -440,6 +467,10 @@ def _dispatch_background(batch: _Batch) -> str:
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
+    # Every unit of this call shares task_list, so its last joined unit emits the call's one row.
+    begin_delegation_run(
+        batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
+    )
     if background:
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

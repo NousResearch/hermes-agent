@@ -225,7 +225,9 @@ def gateway_image(docker_engine: None) -> Iterator[str]:
 
 
 @contextmanager
-def _synapse_server() -> Iterator[tuple[DockerContainer, str, Network]]:
+def _synapse_server(
+    *, extra_config: str = ""
+) -> Iterator[tuple[DockerContainer, str, Network]]:
     # Start Ryuk before creating the volume so a killed worker cannot leave it behind.
     Reaper.get_instance()
     client = docker.from_env()
@@ -240,13 +242,20 @@ def _synapse_server() -> Iterator[tuple[DockerContainer, str, Network]]:
             exit_state = generator.get_wrapped_container().wait(timeout=90)
             assert exit_state["StatusCode"] == 0, generator.get_wrapped_container().logs().decode(errors="replace")
 
-        with DockerContainer(
-            SYNAPSE_IMAGE,
-            entrypoint="/bin/sh",
-        ).with_command([
-            "-c",
-            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\nrc_message:\\n  per_second: 100\\n  burst_count: 100\\n' >> /data/homeserver.yaml",
-        ]).with_volume_mapping(volume.name, "/data", "rw") as configure:
+        with (
+            DockerContainer(
+                SYNAPSE_IMAGE,
+                entrypoint="/bin/sh",
+            )
+            .with_command([
+                "-c",
+                "printf '%s' \"$1\" >> /data/homeserver.yaml",
+                "matrix-test-config",
+                "\nenable_registration: true\nenable_registration_without_verification: true\n"
+                "rc_message:\n  per_second: 100\n  burst_count: 100\n" + extra_config,
+            ])
+            .with_volume_mapping(volume.name, "/data", "rw") as configure
+        ):
             exit_state = configure.get_wrapped_container().wait(timeout=30)
             assert exit_state["StatusCode"] == 0, configure.get_wrapped_container().logs().decode(errors="replace")
 
@@ -276,7 +285,10 @@ def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network
         yield server
 
 
-async def _register(url: str, localpart: str) -> MatrixAccount:
+async def _register(url: str, localpart: str, *, unique: bool = False) -> MatrixAccount:
+    if unique:
+        localpart = f"{localpart}-{uuid.uuid4().hex}"
+
     client = AsyncClient(
         url,
         f"@{localpart}:matrix.test",
@@ -294,12 +306,16 @@ async def _register(url: str, localpart: str) -> MatrixAccount:
         await client.close()
 
 
-def _create_live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
+def _create_live_room(
+    synapse: tuple[DockerContainer, str, Network],
+    *,
+    unique_accounts: bool = False,
+) -> LiveRoom:
     _, url, _ = synapse
 
     async def create() -> LiveRoom:
-        bot = await _register(url, "hermes")
-        alice = await _register(url, "alice")
+        bot = await _register(url, "hermes", unique=unique_accounts)
+        alice = await _register(url, "alice", unique=unique_accounts)
         client = alice.client(url)
         try:
             response = await client.room_create(name="Matrix live test", invite=[bot.user_id])

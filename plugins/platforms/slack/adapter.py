@@ -1,6 +1,7 @@
 """Slack platform adapter: slack-bolt Socket Mode (messages, slash commands, threads)."""
 
 import asyncio
+import contextlib
 import contextvars
 import functools
 import inspect
@@ -236,11 +237,13 @@ def _wrap_markdown_tables(text: str) -> str:
     return "\n".join(out)
 
 
-# The reply context of the slash invocation this task is answering. It belongs to one invocation,
-# not to a channel + user, so two overlapping slashes from one sender cannot take each other's
-# ephemeral reply; the background task inherits the same dict, which send() marks consumed.
+# The private-reply owner of the native slash invocation this task is answering. It travels on the
+# invocation's own event and is re-bound for every event the adapter handles or a drain task runs,
+# so a reply reaches only the invocation it answers: never one a task inherited from the turn
+# before it (a queued message from another user), and never none (a replayed or queued slash).
 _slash_reply_context: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
     "_slash_reply_context", default=None)
+_REPLY_OWNER_KEY = "_hermes_reply_owner"
 
 
 @dataclass
@@ -1452,48 +1455,45 @@ class SlackAdapter(BasePlatformAdapter):
         return None
 
     @staticmethod
-    def _pop_slash_context(chat_id: str, team_id: str = "") -> Optional[Dict[str, Any]]:
-        """Take this task's slash reply context for a send to *chat_id* in *team_id*, once: the
-        first reply goes ephemeral. Read from the invocation's own ContextVar, so a send outside
-        a slash (unset) or to another channel/workspace takes nothing. Not time-limited: when the
-        response_url has expired, the postEphemeral fallback still keeps the reply private."""
+    def _slash_reply_owner(chat_id: str, team_id: str = "") -> Optional[Dict[str, Any]]:
+        """The bound invocation's private-reply owner when an egress targets its channel (and its
+        workspace, when the egress names one), else None. Never consumed: an acknowledgement, a
+        retry or a later message must not turn the invocation's final answer public. Not
+        time-limited: once the response_url has expired, chat.postEphemeral keeps it private."""
         ctx = _slash_reply_context.get()
-        if (not ctx or ctx["consumed"] or ctx["channel_id"] != chat_id
-                or ctx["team_id"] != str(team_id or "")):
+        if not ctx or ctx["channel_id"] != chat_id or (team_id and ctx["team_id"] != str(team_id)):
             return None
-        ctx["consumed"] = True
         return ctx
+
+    def _public_post_refused(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]], what: str) -> Optional[SendResult]:
+        """Refuse a public-only post (Block Kit prompt, file, native stream) into the channel of
+        a native slash invocation: its output is private, and only text has a private lane. The
+        caller then takes its text path, which send() keeps private. A DM is already private."""
+        if str(chat_id).startswith("D") or not self._slash_reply_owner(
+                chat_id, self._metadata_team_id(metadata)):
+            return None
+        logger.info("[Slack] Not posting %s publicly: it answers a private slash command", what)
+        return SendResult(success=False, error=f"private slash reply: {what} has no private form")
 
     def _format_chunks(self, content: str) -> List[str]:
         """mrkdwn-format ``content`` and split to ``MAX_MESSAGE_LENGTH`` (never empty)."""
         formatted = self.format_message(content)
         return self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH) or [formatted]
 
-    async def _send_slash_ephemeral(self, ctx: Dict[str, Any], content: str) -> "SendResult":
-        """Replace the ephemeral ack via ``response_url`` (``replace_original`` valid 30 min). First
-        chunk replaces the ack, the rest post as new ephemerals; Slack caps a response_url at 5
-        POSTs so overflow gets a truncation notice. ``success=False`` lets ``send()`` fall back.
+    # Slack accepts at most 5 POSTs to one response_url, over the whole invocation.
+    _SLASH_URL_POSTS = 5
 
-        Long replies are chunked: the first chunk replaces the ack, the rest are posted as additional
-        ephemeral messages. Slack allows at most 5 POSTs to a response_url, so anything beyond that is
-        closed with an explicit truncation notice instead of being silently dropped (#19688).
-        Returns ``success=False`` on delivery failure so the caller (``send()``) can fall back to normal
-        channel delivery — the reply must never be silently dropped just because the ephemeral swap failed
-        (#19688).
-        """
-        # Slack's response_url has the same ~40k char limit as chat_postMessage.
-        chunks = self._format_chunks(content)
-        # 5-POST cap per response_url: 1 replace + 4 follow-ups; announce the rest.
-        if len(chunks) > 5:
-            dropped = len(chunks) - 5
-            chunks = chunks[:5]
-            chunks[-1] = (
-                chunks[-1].rstrip() + t("platform.slack.slash.reply_truncated", count=str(dropped)))
+    async def _send_slash_ephemeral(self, ctx: Dict[str, Any], chunks: List[str]) -> Tuple[int, str]:
+        """POST ``chunks`` to the invocation's ``response_url`` (valid 30 min); the invocation's
+        first POST replaces the "Running /cmd…" ack. Stops at the first failure and returns
+        ``(chunks delivered, error)`` so the fallback sends only what the user has not seen."""
+        delivered = 0
         try:
             async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
-                for idx, chunk in enumerate(chunks):
-                    # Only the first chunk replaces the ack.
-                    payload = {"response_type": "ephemeral", "replace_original": idx == 0, "text": chunk}
+                for chunk in chunks:
+                    payload = {"response_type": "ephemeral", "replace_original": not ctx["posts"],
+                               "text": chunk}
                     async with session.post(
                         ctx["response_url"], json=payload, timeout=aiohttp.ClientTimeout(total=10)
                     ) as resp:
@@ -1502,25 +1502,23 @@ class SlackAdapter(BasePlatformAdapter):
                             logger.warning(
                                 "[Slack] response_url POST returned %s: %s", resp.status, body[:200]
                             )
-                            return SendResult(
-                                success=False, error=f"response_url POST returned {resp.status}")
-            return SendResult(success=True, message_id=None)
+                            return delivered, f"response_url POST returned {resp.status}"
+                    ctx["posts"] += 1
+                    delivered += 1
+            return delivered, ""
         except Exception as e:
             logger.warning("[Slack] response_url POST failed: %s", e)
-            return SendResult(success=False, error=str(e))
+            return delivered, str(e)
 
     async def _post_ephemeral_fallback(
-        self, chat_id: str, ctx: Dict[str, Any], content: str) -> "SendResult":
-        """Deliver a slash reply via ``chat.postEphemeral`` when ``response_url`` fails.
-        Keeps the reply private (a public channel post must never happen for an ephemeral reply).
-        Cannot ``replace_original``, so the ack stays; no 5-POST cap applies here.
-
-        See #19688.
-        """
+        self, chat_id: str, ctx: Dict[str, Any], chunks: List[str]) -> Tuple[int, str]:
+        """Deliver slash-reply ``chunks`` via ``chat.postEphemeral`` (the private lane once the
+        response_url fails or is used up; no 5-POST cap, but it cannot replace the ack). Returns
+        ``(chunks delivered, error)``. See #19688."""
         user_id = ctx.get("user_id", "")
         if not user_id:
-            return SendResult(success=False, error="no user_id in slash context for postEphemeral")
-        chunks = self._format_chunks(content)
+            return 0, "no user_id in slash context for postEphemeral"
+        delivered = 0
         try:
             client = self._get_client(chat_id)
             for chunk in chunks:
@@ -1528,10 +1526,11 @@ class SlackAdapter(BasePlatformAdapter):
                 payload = _slack_response_payload(result)
                 if not payload.get("ok"):
                     err = payload.get("error", "unknown_error") if payload else "unexpected_response"
-                    return SendResult(success=False, error=f"chat.postEphemeral failed: {err}")
-            return SendResult(success=True, message_id=None)
+                    return delivered, f"chat.postEphemeral failed: {err}"
+                delivered += 1
+            return delivered, ""
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return delivered, str(e)
 
     def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:
         """Nudge a reinstall when group-DM scopes are absent: a missing ``message.mpim`` event
@@ -2069,6 +2068,9 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         if not tasks:
             return SendResult(success=False, error="No tasks")
+        refused = self._public_post_refused(chat_id, metadata, "a task card")
+        if refused:
+            return refused
         key = self._native_task_card_key(chat_id, reply_to, metadata)
         if key is None:
             return SendResult(success=False, error="No Slack thread target")
@@ -2218,8 +2220,10 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts = None
         try:
             team_id = self._metadata_team_id(metadata)
-            slash_ctx = self._pop_slash_context(chat_id, team_id)
-            if slash_ctx:
+            slash_ctx = self._slash_reply_owner(chat_id, team_id)
+            # A DM is already private: there only the reply that replaces the ack is ephemeral, so
+            # the rest of the answer stays in the conversation history.
+            if slash_ctx and not (chat_id.startswith("D") and slash_ctx["replied"]):
                 return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
             # An active native stream that this content finalizes IS the final
             # message: seal it instead of posting a duplicate.
@@ -2297,25 +2301,42 @@ class SlackAdapter(BasePlatformAdapter):
     async def _send_slash_reply(
         self, chat_id: str, slash_ctx: Dict[str, Any], content: str,
         metadata: Optional[Dict[str, Any]]) -> SendResult:
-        """Ephemeral slash reply replacing the "Running /cmd…" ack: response_url, then
-        chat.postEphemeral, NEVER a public post (a private reply must not leak because a path
-        failed). Ephemerals don't auto-clear the Assistant status, so clear it here."""
-        ephemeral_result = await self._send_slash_ephemeral(slash_ctx, content)
-        if ephemeral_result.success:
+        """Ephemeral slash reply: response_url while its POSTs last, then chat.postEphemeral,
+        NEVER a public post (a private reply must not leak because a path failed). A failure after
+        part of the reply landed is ``partial_overflow``, so the retry wrapper never re-sends what
+        the user already sees. Ephemerals don't auto-clear the Assistant status, so clear it here."""
+        # Slack's response_url has the same ~40k char limit as chat_postMessage.
+        chunks = self._format_chunks(content)
+        budget = self._SLASH_URL_POSTS - slash_ctx["posts"]
+        if 0 < budget < len(chunks):
+            # The response_url has room for part of it: close that part with a notice instead of
+            # silently dropping the tail (#19688).
+            dropped = len(chunks) - budget
+            chunks = chunks[:budget]
+            chunks[-1] = (
+                chunks[-1].rstrip() + t("platform.slack.slash.reply_truncated", count=str(dropped)))
+        delivered, error = (
+            await self._send_slash_ephemeral(slash_ctx, chunks) if budget > 0 else (0, ""))
+        if delivered < len(chunks):
+            if error:
+                logger.warning(
+                    "[Slack] response_url slash reply failed (%s); retrying via chat.postEphemeral",
+                    error)
+            landed, error = await self._post_ephemeral_fallback(
+                chat_id, slash_ctx, chunks[delivered:])
+            delivered += landed
+        if delivered:
+            slash_ctx["replied"] = True
+        if delivered == len(chunks):
             await self._clear_thread_status_quietly(chat_id, metadata)
-            return ephemeral_result
-        logger.warning(
-            "[Slack] response_url slash reply failed (%s); retrying via chat.postEphemeral",
-            ephemeral_result.error)
-        fallback_result = await self._post_ephemeral_fallback(chat_id, slash_ctx, content)
-        if fallback_result.success:
-            await self._clear_thread_status_quietly(chat_id, metadata)
-            return fallback_result
+            return SendResult(success=True, message_id=None)
         # The user still has the ack; the error is returned so the gateway can react.
         logger.error(
             "[Slack] Ephemeral slash reply failed on both response_url and chat.postEphemeral "
-            "(%s); dropping rather than posting publicly", fallback_result.error)
-        return fallback_result
+            "(%s); dropping rather than posting publicly", error)
+        return SendResult(
+            success=False, error=error,
+            raw_response={"partial_overflow": True} if delivered else None)
 
     async def send_private_notice(
         self, chat_id: str, user_id: str, content: str, reply_to: Optional[str] = None,
@@ -2378,7 +2399,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Edit a previously sent Slack message."""
-        blocked = self._outbound_blocked(chat_id, "message edit in")
+        blocked = self._outbound_blocked(chat_id, "message edit in") or self._public_post_refused(
+            chat_id, metadata, "an edit of a channel message")
         if blocked:
             return blocked
         try:
@@ -2472,6 +2494,9 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         if self._native_stream_unsupported:
             return SendResult(success=False, error="native streaming unsupported")
+        refused = self._public_post_refused(chat_id, metadata, "a native stream")
+        if refused:
+            return refused
         text = self._strip_stream_cursor(content)
         stream_key = self._stream_key(chat_id, metadata)
         if stream_key is None:
@@ -2907,6 +2932,9 @@ class SlackAdapter(BasePlatformAdapter):
         content: Optional[bytes] = None, attempts: int = 3) -> SendResult:
         """``files_upload_v2`` of a local path (or in-memory ``content``) with up to
         ``attempts`` tries on transient errors; re-raises otherwise."""
+        refused = self._public_post_refused(chat_id, metadata, "a file")
+        if refused:
+            return refused
         source = {"file": file_path} if content is None else {"content": content}
         for attempt in range(attempts):
             try:
@@ -2963,6 +2991,9 @@ class SlackAdapter(BasePlatformAdapter):
         call, Slack cap) instead of N posts; falls back to the base per-image loop on failure."""
         if self._suppressed_ignored(chat_id, "multi-image upload in"):
             return SendResult(success=False, error="ignored_channel")
+        refused = self._public_post_refused(chat_id, metadata, "an image batch")
+        if refused:
+            return refused
         if not self._app:
             return SendResult(success=False, error="Not connected")
         if not images:
@@ -4915,6 +4946,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         chat_id = await self._dm_target(chat_id, metadata)
+        refused = self._public_post_refused(chat_id, metadata, "a Block Kit prompt")
+        if refused:
+            return refused
         try:
             text, blocks = build()
             result = await self._post_interactive_blocks(
@@ -5129,6 +5163,9 @@ class SlackAdapter(BasePlatformAdapter):
         chat_id = await self._ensure_dm_conversation(
             chat_id, team_id=self._metadata_team_id(metadata)
         )
+        refused = self._public_post_refused(chat_id, metadata, "a Block Kit prompt")
+        if refused:
+            return refused
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
 
@@ -6050,19 +6087,44 @@ class SlackAdapter(BasePlatformAdapter):
             text=text,
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),
             source=source, raw_message=command)
-        # The first reply of this invocation goes ephemeral. COMMAND events only: free-form
-        # "/hermes <question>" replies must stay public.
+        # This invocation's replies go ephemeral. COMMAND events only: free-form
+        # "/hermes <question>" replies must stay public. The owner rides on the raw payload, which
+        # rewrite copies of the event share; it is process-local and never persisted.
         response_url = command.get("response_url", "")
-        reply_ctx = None
         if response_url and user_id and channel_id and text.startswith("/"):
-            reply_ctx = {
+            command[_REPLY_OWNER_KEY] = {
                 "response_url": response_url, "user_id": user_id, "channel_id": channel_id,
-                "team_id": str(team_id or ""), "consumed": False}
-        reply_ctx_token = _slash_reply_context.set(reply_ctx)
+                "team_id": str(team_id or ""), "posts": 0, "replied": False}
+        await self.handle_message(event)
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _reply_owner_bound(event: MessageEvent):
+        raw = getattr(event, "raw_message", None)
+        token = _slash_reply_context.set(raw.get(_REPLY_OWNER_KEY) if isinstance(raw, dict) else None)
         try:
-            await self.handle_message(event)
+            yield
         finally:
-            _slash_reply_context.reset(reply_ctx_token)
+            _slash_reply_context.reset(token)
+
+    async def handle_message(self, event: MessageEvent) -> None:
+        # Covers live ingress, the runner's startup replay and inline (busy-bypass) dispatch.
+        with self._reply_owner_bound(event):
+            await super().handle_message(event)
+
+    async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
+        # A drain task inherits the previous turn's context: re-bind to the event it runs.
+        with self._reply_owner_bound(event):
+            await super()._process_message_background(event, session_key)
+
+    async def _record_delivery_obligation(self, event: MessageEvent, *args, **kwargs) -> Optional[str]:
+        # The ledger replays through the public lane (it keeps no recipient), and a prompt-rewrite
+        # command (/plan, /learn) no longer starts with "/" when its final is ledgered.
+        raw = getattr(event, "raw_message", None)
+        if (isinstance(raw, dict) and raw.get(_REPLY_OWNER_KEY)
+                and not str(event.source.chat_id).startswith("D")):
+            return None
+        return await super()._record_delivery_obligation(event, *args, **kwargs)
 
     @staticmethod
     def _slash_command_text(command: dict) -> str:

@@ -44,7 +44,7 @@ def _gateway_save(db, fmt, out):
     delivered = {}
     adapter = MagicMock()
     adapter.send_document = AsyncMock(side_effect=lambda **kw: delivered.update(
-        text=open(kw["file_path"], encoding="utf-8").read()))
+        text=open(kw["file_path"], encoding="utf-8").read()) or SimpleNamespace(success=True))
     runner.adapters, runner._profile_adapters = {Platform.TELEGRAM: adapter}, {}
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(

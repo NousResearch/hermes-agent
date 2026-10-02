@@ -10,6 +10,7 @@ We mock the slack modules at import time to avoid collection errors.
 
 import asyncio
 import contextlib
+import contextvars
 import importlib
 from importlib.machinery import PathFinder
 import os
@@ -3688,16 +3689,88 @@ class TestSlackThreadParentContext:
 # ---------------------------------------------------------------------------
 
 
+class _SlashWire:
+    """Slack's HTTP faked under the real slash ingress, base dispatch/drain/retry/ledger and
+    send(): ``out`` records the lane each output took: ``url`` (the invocation's response_url,
+    by command name), ``ephemeral`` (chat.postEphemeral) or ``public`` (postMessage / upload)."""
+
+    def __init__(self, adapter, monkeypatch, *, url_fails=(), ephemeral_errors=()):
+        self.adapter, self.out, self.replaced, self.url_posts = adapter, [], [], 0
+        self.url_fails, self.ephemeral_errors = url_fails, list(ephemeral_errors)
+        del adapter.handle_message  # the fixture's capture mock: run the real dispatch
+        wire = self
+
+        class _Resp:
+            def __init__(self, status):
+                self.status = status
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def text(self):
+                return "failed"
+
+        class _Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def post(self, url, json, timeout):
+                wire.url_posts += 1
+                if wire.url_fails == "all" or wire.url_posts in wire.url_fails:
+                    return _Resp(500)
+                wire.out.append(("url", url.rsplit("/", 1)[-1], json["text"]))
+                wire.replaced.append(json["replace_original"])
+                return _Resp(200)
+
+        monkeypatch.setattr(_slack_mod.aiohttp, "ClientSession", lambda **_kw: _Session())
+
+        async def post_ephemeral(channel, user, text):
+            error = wire.ephemeral_errors.pop(0) if wire.ephemeral_errors else None
+            if isinstance(error, Exception):
+                raise error
+            if error:
+                return {"ok": False, "error": error}
+            wire.out.append(("ephemeral", user, text))
+            return {"ok": True}
+
+        def public(**kwargs):
+            wire.out.append(("public", kwargs.get("filename") or kwargs["text"]))
+            return {"ok": True, "ts": "1.2"}
+
+        client = adapter._app.client
+        client.chat_postEphemeral = AsyncMock(side_effect=post_ephemeral)
+        client.chat_postMessage = AsyncMock(side_effect=public)
+        client.files_upload_v2 = AsyncMock(side_effect=public)
+        client.chat_update = AsyncMock(side_effect=public)
+
+    async def slash(self, command, user="U1", channel="C1"):
+        await self.adapter._handle_slash_command({
+            "command": command, "text": "", "user_id": user, "channel_id": channel,
+            "team_id": "T1", "response_url": f"https://hooks.slack.test/{command[1:]}"})
+
+    def message(self, user, text):
+        return MessageEvent(text=text, raw_message={"type": "message"}, source=self.adapter.build_source(
+            chat_id="C1", chat_type="group", user_id=user, scope_id="T1"))
+
+    async def settle(self):
+        while pending := [t for t in self.adapter._background_tasks if not t.done()]:
+            await asyncio.gather(*pending)
+
+
 class TestSlashEphemeralAck:
     """Slash commands should produce an ephemeral ack and route replies ephemerally."""
 
     @pytest.mark.asyncio
     async def test_slash_command_stashes_response_url(self, adapter):
         """_handle_slash_command hands the gateway its response_url for ephemeral routing."""
-        from plugins.platforms.slack.adapter import _slash_reply_context
+        from plugins.platforms.slack.adapter import _REPLY_OWNER_KEY
 
-        seen = []
-        adapter.handle_message = AsyncMock(side_effect=lambda _e: seen.append(_slash_reply_context.get()))
         command = {
             "command": "/q",
             "text": "follow-up question",
@@ -3707,64 +3780,129 @@ class TestSlashEphemeralAck:
         }
         await adapter._handle_slash_command(command)
 
-        assert seen[0]["response_url"] == "https://hooks.slack.com/commands/T123/456/abc"
-        assert (seen[0]["channel_id"], seen[0]["user_id"]) == ("C_SLASH", "U_SLASH")
-        assert _slash_reply_context.get() is None
+        owner = adapter.handle_message.call_args[0][0].raw_message[_REPLY_OWNER_KEY]
+        assert owner["response_url"] == "https://hooks.slack.com/commands/T123/456/abc"
+        assert (owner["channel_id"], owner["user_id"]) == ("C_SLASH", "U_SLASH")
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("schedule", [
-        ["A", "B"], ["B", "A"], ["cancel A", "B"], ["cancel B", "A"], ["late", "A", "B"]])
-    async def test_overlapping_slashes_each_reply_ephemerally_to_their_own_invocation(
-        self, adapter, monkeypatch, schedule):
-        """Two slashes from one sender in one channel, answered later by deferred tasks (the
-        gateway's background turn): each reply replaces its own ack and none is posted publicly,
-        in either completion order, when the other is cancelled, or after minutes. Only the
-        invocation's first reply to its own channel and workspace is ephemeral."""
-        import asyncio
+    @pytest.mark.parametrize("row", ["overlap", "queued-slash", "queued-other-user", "replayed"])
+    async def test_each_slash_invocation_owns_its_private_reply(self, adapter, monkeypatch, row):
+        """Through the real dispatch (an inline bypass command, the base queue's drain task, the
+        runner replaying an event it held), a reply reaches only the private lane of the
+        invocation it answers: never public, never another invocation's response_url."""
+        wire = _SlashWire(adapter, monkeypatch)
+        adapter.config.extra["group_sessions_per_user"] = row != "queued-other-user"
+        gate, held = asyncio.Event(), []
 
-        gates, tasks = {}, {}
-
-        async def deferred_handoff(event):  # the gateway answers from a task it spawns
-            gate = gates[event.text] = asyncio.Event()
-
-            async def answer():
+        async def runner(event):
+            command = event.text.split()[0]
+            if command == "/slow":
                 await gate.wait()
-                # Another channel, and the same channel id in another workspace (Slack Connect).
-                await adapter.send("C2", f"notice {event.text}", metadata={"slack_team_id": "T1"})
-                await adapter.send("C1", f"notice {event.text}", metadata={"slack_team_id": "T2"})
-                await adapter.send("C1", f"reply {event.text}", metadata={"slack_team_id": "T1"})
-                await adapter.send("C1", f"more {event.text}", metadata={"slack_team_id": "T1"})
-            tasks[event.text] = asyncio.create_task(answer())
+                return None if row == "queued-other-user" else "reply /slow"
+            if row == "replayed" and not held:
+                held.append(event)  # the startup-restore gate keeps it for later
+                return None
+            return f"reply {command}"
 
-        adapter.handle_message = deferred_handoff
-        ephemeral = []
-
-        async def record_ephemeral(ctx, content):
-            ephemeral.append((ctx["response_url"], content))
-            return _slack_mod.SendResult(success=True)
-
-        adapter._send_slash_ephemeral = record_ephemeral
-        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "1.2"})
-        for name in ("A", "B"):
-            await adapter._handle_slash_command({
-                "command": f"/{name.lower()}", "text": "", "user_id": "U1", "channel_id": "C1",
-                "team_id": "T1", "response_url": f"https://hooks.slack.test/{name}"})
-
-        clock = time.monotonic()
-        for step in schedule:
-            if step == "late":
-                clock += 600.0
-                monkeypatch.setattr(_slack_mod.time, "monotonic", lambda: clock)
-            elif step.startswith("cancel "):
-                tasks[f"/{step[-1].lower()}"].cancel()
+        adapter._message_handler = runner
+        if row == "replayed":
+            await wire.slash("/later")
+            await wire.settle()
+            await asyncio.create_task(
+                adapter.handle_message(held[0]), context=contextvars.Context())
+        else:
+            await wire.slash("/slow")
+            if row == "overlap":
+                await wire.slash("/status")  # registered: dispatched inline mid-turn
+            elif row == "queued-slash":
+                await wire.slash("/zz")  # unregistered: queued behind /slow
             else:
-                gates[f"/{step.lower()}"].set()
-                await tasks[f"/{step.lower()}"]
+                await adapter.handle_message(wire.message("U2", "hello"))
+            gate.set()
+        await wire.settle()
 
-        answered = [s.lower() for s in schedule if len(s) == 1]
-        assert ephemeral == [(f"https://hooks.slack.test/{n.upper()}", f"reply /{n}") for n in answered]
-        public = [c.kwargs["text"] for c in adapter._app.client.chat_postMessage.await_args_list]
-        assert public == [t for n in answered for t in (f"notice /{n}",) * 2 + (f"more /{n}",)]
+        assert wire.out == {
+            "overlap": [("url", "status", "reply /status"), ("url", "slow", "reply /slow")],
+            "queued-slash": [("url", "slow", "reply /slow"), ("url", "zz", "reply /zz")],
+            "queued-other-user": [("public", "reply hello")],
+            "replayed": [("url", "later", "reply /later")],
+        }[row]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("row", [
+        "ack-then-final", "retry", "plain-fallback", "chunk-2-fails", "chunk-3-fails",
+        "partial-then-retry", "ledger", "block-kit-and-file", "dm-control"])
+    async def test_every_output_of_a_slash_invocation_stays_private(
+        self, adapter, monkeypatch, tmp_path, row):
+        """Every output of one native slash invocation in a channel stays private, through the
+        real delivery path: an acknowledgement before the final, a retry or plain-text fallback
+        after a failed private send, a response_url that fails mid-reply (no chunk twice), the
+        delivery ledger's public replay, and Block Kit / file / channel-message-edit egress, which
+        has no private form and is refused. In a DM (already private) only the first reply
+        replaces the ack and the rest stays in the conversation history."""
+        import functools
+        import gateway.delivery_ledger as ledger
+        import gateway.platforms.base as _base
+
+        wire = _SlashWire(
+            adapter, monkeypatch,
+            url_fails={"retry": "all", "plain-fallback": "all", "chunk-2-fails": {2},
+                       "chunk-3-fails": {3}, "partial-then-retry": {2}}.get(row, ()),
+            ephemeral_errors={"retry": [ConnectionError("network unreachable")],
+                              "partial-then-retry": [ConnectionError("network unreachable")],
+                              "plain-fallback": ["channel_not_found"] * 9}.get(row, ()))
+        monkeypatch.setattr(adapter, "_send_with_retry", functools.partial(
+            SlackAdapter._send_with_retry, adapter, base_delay=0))
+        monkeypatch.setattr(_base.random, "uniform", lambda lo, _hi: lo)
+        monkeypatch.setattr(ledger, "ledger_enabled", lambda: True)
+        monkeypatch.setattr(ledger, "record_obligation", lambda **kw: wire.out.append(
+            ("ledger", kw["content"])))
+        monkeypatch.setattr(ledger, "mark_attempting", lambda _oid: None)
+        if row.startswith(("chunk", "partial")):
+            monkeypatch.setattr(adapter, "_format_chunks", lambda content: content.split("|"))
+        channel = "D1" if row == "dm-control" else "C1"
+        meta = {"slack_team_id": "T1"}
+        doc = tmp_path / "save.txt"
+        doc.write_text("transcript")
+        results = []
+
+        async def runner(event):
+            if row in ("ack-then-final", "dm-control"):
+                await adapter.send(channel, "ack", metadata=meta)
+            if row == "ledger":
+                event.text = "a rewritten agent prompt"  # /plan, /learn fall through like this
+            if row in ("block-kit-and-file", "dm-control"):
+                results.append((await adapter.send_slash_confirm(
+                    channel, "Title", "Body", "sk", "1", metadata=meta)).success)
+                results.append((await adapter.send_document(channel, str(doc))).success)
+            if row == "block-kit-and-file":
+                adapter._status_message_ids[("C1", "", "progress")] = "9.9"  # an earlier bubble
+                await adapter.send_or_update_status("C1", "progress", "status", metadata=meta)
+                results.append((await adapter.send_model_picker(
+                    channel, [{"slug": "p"}], "m", "p", "sk", None, metadata=meta)).success)
+            return "A|B|C" if row.startswith(("chunk", "partial")) else "final"
+
+        adapter._message_handler = runner
+        await wire.slash("/cmd", channel=channel)
+        await wire.settle()
+
+        url = [("url", "cmd", text) for text in ("A", "B", "C")]
+        assert wire.out == {
+            "ack-then-final": [("url", "cmd", "ack"), ("url", "cmd", "final")],
+            "retry": [("ephemeral", "U1", "final")],
+            "plain-fallback": [],
+            "chunk-2-fails": url[:1] + [("ephemeral", "U1", "B"), ("ephemeral", "U1", "C")],
+            "chunk-3-fails": url[:2] + [("ephemeral", "U1", "C")],
+            "partial-then-retry": url[:1],  # the retry must not resend what the user has seen
+            "ledger": [("url", "cmd", "final")],
+            "block-kit-and-file": [("url", "cmd", "status"), ("url", "cmd", "final")],
+            "dm-control": [("url", "cmd", "ack"), ("public", "Title: Body"), ("public", "save.txt"),
+                           ("public", "final")],
+        }[row]
+        assert wire.replaced[:1] == ([True] if wire.replaced else [])
+        assert not any(wire.replaced[1:])
+        assert results == {"block-kit-and-file": [False, False, False],
+                           "dm-control": [True, True]}.get(row, [])
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_fallback_on_post_failure(self, adapter):
@@ -3774,7 +3912,7 @@ class TestSlashEphemeralAck:
 
         slash_ctx = {
             "response_url": "https://hooks.slack.com/commands/bad", "user_id": "U1",
-            "channel_id": "C1", "team_id": "", "consumed": False}
+            "channel_id": "C1", "team_id": "", "posts": 0, "replied": False}
 
         mock_resp = AsyncMock()
         mock_resp.status = 500
@@ -3820,7 +3958,7 @@ class TestSlashEphemeralAck:
 
         slash_ctx = {
             "response_url": "https://hooks.slack.com/commands/bad", "user_id": "U1",
-            "channel_id": "C1", "team_id": "", "consumed": False}
+            "channel_id": "C1", "team_id": "", "posts": 0, "replied": False}
 
         mock_resp = AsyncMock()
         mock_resp.status = 500
@@ -3862,7 +4000,7 @@ class TestSlashEphemeralAck:
 
         slash_ctx = {
             "response_url": "https://hooks.slack.com/commands/timeout", "user_id": "U1",
-            "channel_id": "C1", "team_id": "", "consumed": False}
+            "channel_id": "C1", "team_id": "", "posts": 0, "replied": False}
 
         mock_session = AsyncMock()
         mock_session.post = MagicMock(side_effect=Exception("connection timeout"))
@@ -3907,10 +4045,9 @@ class TestSlashEphemeralAck:
         with patch(
             "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
         ):
-            result = await adapter._send_slash_ephemeral(
-                {"response_url": "https://hooks.slack.com/commands/long"},
-                long_content,
-            )
+            result = await adapter._send_slash_reply("C1", {
+                "response_url": "https://hooks.slack.com/commands/long", "posts": 0,
+                "replied": False}, long_content, None)
 
         assert result.success is True
         assert mock_session.post.call_count >= 2
@@ -3966,7 +4103,7 @@ class TestSlashEphemeralAck:
 
         slash_ctx = {
             "response_url": "https://hooks.slack.com/commands/oversized", "user_id": "U1",
-            "channel_id": "C1", "team_id": "", "consumed": False}
+            "channel_id": "C1", "team_id": "", "posts": 0, "replied": False}
         response = _FakeResponse(
             ("slack response_url failure " * 1000) + "tail-marker"
         )

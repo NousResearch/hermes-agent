@@ -196,10 +196,10 @@ class TestSendPaths:
             return_value=make_response({"ok": True})
         )
         adapter._get_client = lambda *_a, **_kw: client
-        result = asyncio.run(
-            adapter._post_ephemeral_fallback("C_GEN", {"user_id": "U_HUMAN"}, "hi")
+        delivered, _error = asyncio.run(
+            adapter._post_ephemeral_fallback("C_GEN", {"user_id": "U_HUMAN"}, ["hi"])
         )
-        assert result.success is True
+        assert delivered == 1
 
     @response_shape
     def test_ephemeral_error_is_surfaced(self, make_response):
@@ -209,11 +209,11 @@ class TestSendPaths:
             return_value=make_response({"ok": False, "error": "channel_not_found"})
         )
         adapter._get_client = lambda *_a, **_kw: client
-        result = asyncio.run(
-            adapter._post_ephemeral_fallback("C_GEN", {"user_id": "U_HUMAN"}, "hi")
+        delivered, error = asyncio.run(
+            adapter._post_ephemeral_fallback("C_GEN", {"user_id": "U_HUMAN"}, ["hi"])
         )
-        assert result.success is False
-        assert "channel_not_found" in result.error
+        assert delivered == 0
+        assert "channel_not_found" in error
 
     @response_shape
     def test_upload_returns_the_message_id(self, make_response, tmp_path):

@@ -2760,7 +2760,8 @@ export const frOverrides = {
     provenance: {
       agent: 'Appris',
       bundled: 'Intégrés',
-      hub: 'Hub'
+      hub: 'Hub',
+      plugin: 'Plugin'
     },
     emptyNoneFound: noun => `Aucun ${noun} trouvé`,
     emptyNothingMatches: query => `Rien ne correspond à « ${query} ».`,

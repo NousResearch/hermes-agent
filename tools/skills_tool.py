@@ -123,6 +123,16 @@ def check_skills_requirements() -> bool:
     return True  # always available: the directory is created on first use
 
 
+def _category_text(value: object) -> Optional[str]:
+    """Frontmatter ``category`` as the wire string the desktop renders (its
+    ``asText``). YAML types scalars (``2026`` int, ``2.0`` float, ``yes`` bool);
+    an unconverted value makes the row's category compare unequal to the
+    stringified section name the client sends back on toggle → dead header, 400."""
+    if isinstance(value, (str, int, float)):
+        return str(value) or None
+    return None  # lists/dicts/None: no category, path fallback applies
+
+
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
     (respects test monkeypatching), then skills.external_dirs."""
@@ -227,7 +237,8 @@ def _find_all_skills(
                 skills.append({"name": name, "description": _truncate_description(description),
                                # Frontmatter category (flat skills have no category dir to infer from);
                                # path-derived category is the fallback for skills nested by directory.
-                               "category": frontmatter.get("category") or _get_category_from_path(skill_md)})
+                               "category": _category_text(frontmatter.get("category"))
+                                           or _get_category_from_path(skill_md)})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
@@ -247,7 +258,7 @@ def _find_all_skills(
                 skills.append({
                     "name": name,
                     "description": _truncate_description(str(meta.get("description") or "")),
-                    "category": meta.get("category") or None,
+                    "category": _category_text(meta.get("category")),
                     "provenance": "plugin"})
         except Exception:
             logger.debug("Plugin skill listing failed", exc_info=True)

@@ -2743,7 +2743,8 @@ export const esOverrides = {
     provenance: {
       agent: 'Aprendido',
       bundled: 'Integrado',
-      hub: 'Hub'
+      hub: 'Hub',
+      plugin: 'Plugin'
     },
     emptyNoneFound: noun => `No se encontraron ${noun}`,
     emptyNothingMatches: query => `No hay coincidencias para “${query}”.`,

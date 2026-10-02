@@ -1,0 +1,23 @@
+name: localsend
+repo: https://github.com/tylerbrevard/hermes-localsend
+sha: 28dfd30ccdca6ca5baf30ca13326ea7f0d4c755d
+description: Peer-to-peer file transfer over the LocalSend protocol - discover the phones, laptops and
+  tablets on your LAN, send files to them, and run a headless receiver so they can send files back.
+  Ships a desktop pane, a status-bar chip and three palette commands, and speaks LocalSend's default
+  encrypted mode. Standard library only, no accounts, no cloud.
+maintainer: tylerbrevard
+tier: community
+category: desktop
+docs_url: https://github.com/tylerbrevard/hermes-localsend#readme
+version: "1.18.0"
+image: https://raw.githubusercontent.com/tylerbrevard/hermes-localsend/28dfd30ccdca6ca5baf30ca13326ea7f0d4c755d/docs/banner.png
+platforms: []
+requires_hermes: ">=0.21.3"
+capabilities:
+  provides_tools:
+  - localsend_discover
+  - localsend_send
+  - localsend_receive
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

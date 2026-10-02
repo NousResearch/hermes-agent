@@ -15,7 +15,7 @@ import os
 import time
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.fixture()
@@ -66,3 +66,15 @@ def test_missing_config_returns_empty(isolated_hermes_home):
     assert read_raw_config_readonly() == {}
 
 
+
+
+def test_raw_readers_keep_failed_read_marker_for_symlink_resolution_errors(monkeypatch):
+    from hermes_cli import config
+    from hermes_cli.config_read_errors import FailedConfigRead
+    def loop(*args, **kwargs):
+        raise RuntimeError("Symlink loop detected")
+    monkeypatch.setattr(config, "read_file_with_signature", loop)
+    for reader in (config.read_raw_config, config.read_raw_config_readonly):
+        result = reader()
+        assert isinstance(result, FailedConfigRead)
+        assert isinstance(result.read_error, RuntimeError)

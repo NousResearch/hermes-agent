@@ -11,6 +11,7 @@ import sqlite3
 import pytest
 
 from hermes_state import SessionDB
+from hermes_state_search import SessionSearchMixin
 
 _STORED = ("add OPENAI_API_KEY to the .env file, then run git push --force and rm -rf build; "
            "the `deploy` step fixed it.")
@@ -32,6 +33,24 @@ def db(tmp_path):
 def test_punctuated_query_finds_its_row(db, query):
     rows = db.search_messages(query)
     assert rows and rows[0]["session_id"] == "s1", query
+
+
+def test_sanitize_punctuation_contract():
+    """Pin the sanitizer output: the quoted retry is the safety net, not the primary path.
+
+    The end-to-end row tests above pass with step 5b removed (the retry absorbs the syntax
+    error and still finds the row), so the sanitisation itself needs a direct contract:
+    '-', '.' and '`' outside step-5 phrases become whitespace (not FTS5 syntax), and
+    operator runs collapse. Step 5's quoted phrases keep their dots/hyphens untouched.
+    """
+    s = SessionSearchMixin._sanitize_fts5_query
+    assert s(".env") == "env"
+    assert s("rm -rf").split() == ["rm", "rf"]
+    assert s("fixed it.") == "fixed it"
+    assert s("`deploy`") == "deploy"
+    assert s("push AND NOT pull") == "push NOT pull"
+    assert s("push OR OR force") == "push OR force"
+    assert s("my-app.config") == '"my-app.config"'
 
 
 def test_corruption_on_the_quoted_retry_still_fails_open(db, monkeypatch):

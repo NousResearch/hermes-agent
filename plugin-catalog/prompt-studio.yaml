@@ -1,7 +1,7 @@
 name: prompt-studio
 repo: https://github.com/bwoliveira/prompt-studio
 sha: 51bd9330d4841de13624d3315cb4bec66434b71d
-description: "Step-by-step prompt builder for Hermes Desktop (F4): option cards per step with AI suggestions, then an AI-written final prompt sent to or placed in the composer through host.composer (Hermes Desktop 0.21.5+). Tuned for Claude Opus 5.5 and GPT-6 Astra. AI calls go through its own auxiliary task (auxiliary.prompt_studio) via the dashboard plugin API; sends no temperature. No external network beyond the configured provider; preferences in ctx.storage."
+description: "Step-by-step prompt builder for Hermes Desktop (F4): option cards per step with AI suggestions, then an AI-written final prompt sent to or placed in the composer through host.composer (Hermes Desktop 0.21.5+). Tuned for Claude Opus 5.5 and GPT-6 Astra. AI calls go through its own auxiliary task (auxiliary.prompt_studio) via the dashboard plugin API; sends no temperature. No external network beyond the configured provider; preferences in ctx.storage. Disclosure — on opening in an existing chat (default on, toggle in Studio Settings) it reads the last 8 user/assistant turns of that session from state.db, redacts secrets and sends up to 8k chars to the configured auxiliary model for a short summary used in step suggestions."
 maintainer: bwoliveira
 tier: community
 category: desktop

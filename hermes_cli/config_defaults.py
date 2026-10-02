@@ -1330,6 +1330,11 @@ DEFAULT_CONFIG = {
         "backends": {},
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        # false (default): a child freezes provider:model at spawn. true: a RUNNING child
+        # re-reads delegation.provider/model before EACH provider API request and rebinds its
+        # live route in place, so a config change takes effect on that child's next request
+        # without respawning it. No effect on unpinned (pure-inherit) children.
+        "hot_reload_model": False,
         # Fallback chain for delegated children (same entry format as the top-level list).
         # For an unpinned child, null = inherit the parent chain; [] = disable fallback.
         # A child pinned by provider, endpoint, or model gets no fallback unless this

@@ -184,7 +184,7 @@ dependencies = [
   # `hermes update`), so a source install carries its renderer instead of
   # preparing a separate environment at launch. abi3 wheels for every
   # shipped platform, including Windows ARM64 and Android.
-  "resvg-py==0.4.0; python_version >= '3.14'",
+  "resvg-py>=0.4.0,<0.5; python_version >= '3.14'",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on

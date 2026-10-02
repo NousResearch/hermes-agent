@@ -42,7 +42,7 @@ def _snapshot(adapter, request, conn, *, permission='status'):
     if payload['run_owner_scope'] != room_run_scope_key(claims):
         raise ValueError('output owner scope changed')
     scope = output_scope(dispatch)
-    if row['status'] not in {'terminal', 'unknown'}:
+    if row['status'] != 'terminal':
         raise ValueError('output producer is still active')
     raw = conn.execute('SELECT value FROM state_meta WHERE key=?', (_RESULT_PREFIX + row['admission_id'],)).fetchone()
     result = json.loads(raw[0])['result'] if raw else {}

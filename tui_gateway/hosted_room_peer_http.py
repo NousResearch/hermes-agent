@@ -46,7 +46,7 @@ _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancell
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
 _RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event",
-                    "pending_controls", "execution_generation", "artifacts", "artifact_scope", "peer_output_empty")
+                    "pending_controls", "execution_generation", "artifacts", "artifact_scope", "peer_output_empty", "peer_output_unresolved")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -487,14 +487,10 @@ class PeerRunsHTTPClient:
 
     def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
         """Recover one exact admission by receipt or idempotent POST replay."""
+        accepted = self.recover_accepted_dispatch(dispatch=dispatch, grant=grant)
+        if accepted is not None:
+            return accepted
         checked = self._checked_dispatch(dispatch, grant)
-        existing = self._receipt(checked.task_id, checked.execution_generation)
-        if existing is not None:
-            if any(existing[field] != getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS):
-                raise PeerRunsHTTPError("peer run receipt conflicts with the recovered dispatch")
-            return self._accepted(
-                checked, run_id=str(existing["run_id"]), session_id=str(existing["session_id"]),
-                replayed=True)
         key, now = (checked.task_id, checked.execution_generation), self.clock()
         backoff = self._recovery_backoff.get(key)
         if backoff is not None and now < float(backoff["next_attempt_at"]):
@@ -515,6 +511,17 @@ class PeerRunsHTTPClient:
             raise
         self._recovery_backoff.pop(key, None)
         return recovered
+
+    def recover_accepted_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any] | None:
+        """Recover only an existing exact receipt; never send an admission request."""
+        checked = self._checked_dispatch(dispatch, grant)
+        existing = self._receipt(checked.task_id, checked.execution_generation)
+        if existing is None:
+            return None
+        if any(existing[field] != getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS):
+            raise PeerRunsHTTPError("peer run receipt conflicts with the recovered dispatch")
+        return self._accepted(checked, run_id=str(existing["run_id"]),
+                              session_id=str(existing["session_id"]), replayed=True)
 
     @staticmethod
     def _accepted(
@@ -639,7 +646,7 @@ class PeerRunsHTTPClient:
             cached = None  # a retired grant's refusal must not answer for its replacement
         if cached is not None:
             status = cached["status"]
-            if status.get("status") in _TERMINAL_RUN_STATES:
+            if status.get("status") in _TERMINAL_RUN_STATES and not status.get("peer_output_unresolved"):
                 return status
             if now < float(cached["next_poll_at"]):
                 error = cached.get("error")
@@ -660,7 +667,7 @@ class PeerRunsHTTPClient:
             self._status_cache = {run_id: {"status": previous, "error": exc, **entry}}
             raise
         self._status_cache = {run_id: {"status": status, **entry}}
-        if status.get("status") in _TERMINAL_RUN_STATES:
+        if status.get("status") in _TERMINAL_RUN_STATES and not status.get("peer_output_unresolved"):
             self._terminal_receipts.add(
                 (str(record["task_id"]), int(record["execution_generation"])))
         return status
@@ -673,7 +680,7 @@ class PeerRunsHTTPClient:
             return []
         status = self._poll_receipt(receipt, grant=grant)
         state = str(status.get("status") or "")
-        if state not in {"completed", "failed", "interrupted"}:
+        if status.get("peer_output_unresolved") or state not in {"completed", "failed", "interrupted"}:
             return []
         return [{
             "role": "assistant", "task_id": receipt["task_id"],
@@ -695,7 +702,7 @@ class PeerRunsHTTPClient:
         return {
             "active": status.get("status") in _ACTIVE_RUN_STATES, "task_id": receipt["task_id"],
             "execution_generation": receipt["execution_generation"],
-            "status": status.get("status"), "run_id": status.get("run_id"),
+            "status": "unknown" if status.get("peer_output_unresolved") else status.get("status"), "run_id": status.get("run_id"),
             "approval": approval or status.get("approval")}
 
     def approve_receipt(

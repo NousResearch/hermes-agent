@@ -92,6 +92,8 @@ def receipt_fields(row, result):
         dispatch = HostedMemberDispatch.from_mapping(raw)
         if row['principal_id'] != 'api' or payload.get('run_owner_scope') != room_run_scope_key(dispatch.as_mapping()):
             return {}
+        if row['status'] == 'unknown':
+            return {'peer_output_unresolved': output_scope(dispatch).as_mapping()}
         fields = terminal_output_fields(result)
         if fields and fields.get('artifact_scope', fields.get('peer_output_empty')) != output_scope(dispatch).as_mapping():
             return {}

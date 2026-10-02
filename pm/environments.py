@@ -50,6 +50,25 @@ def runtime_facts_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "facts.json"
 
 
+def _is_within_directory(path: Path, directory: Path) -> bool:
+    """Return whether *path* is in *directory*, comparing filesystem identity.
+
+    ``Path.is_relative_to`` compares spelling rather than filesystem identity.
+    That rejects paths whose case differs on a case-insensitive filesystem.
+    """
+    current = path
+    try:
+        while True:
+            if os.path.samefile(current, directory):
+                return True
+            parent = current.parent
+            if parent == current:
+                return False
+            current = parent
+    except OSError:
+        return False
+
+
 # The files that decide the dependency set. `scripts/_hermes-python` re-activates
 # when any of them differs in mtime from its stamp under activation_inputs_dir.
 ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "pm/lock.json")
@@ -200,7 +219,7 @@ def _recorded_venv(project_root: Path) -> Path | None:
         raise RuntimeError("invalid dependency environment path")
     environment = Path(value).resolve()
     generations = install_state_dir(project_root) / "environments"
-    if not environment.is_relative_to(generations.resolve()) or not (environment / "pyvenv.cfg").is_file():
+    if not _is_within_directory(environment, generations.resolve()) or not (environment / "pyvenv.cfg").is_file():
         raise RuntimeError(f"dependency environment is missing or outside this install: {environment}")
     return environment
 

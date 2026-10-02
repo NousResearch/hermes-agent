@@ -187,7 +187,7 @@ def test_resumed_sessions_keep_owner_through_tools_compression_and_finalization(
         if record.get("agent") is None:
             db = SessionDB(db_path=home / "state.db")
             agent = make_agent(sid, key, db)
-            server._attach_built_agent(record, agent)
+            server._attach_built_agent(sid, record, agent)
         else:
             agent = record["agent"]
         owners.append((home, sid, key, record, agent))

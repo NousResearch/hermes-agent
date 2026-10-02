@@ -1109,8 +1109,21 @@ def _handle_create(args: dict, **kw) -> str:
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
+        # Loud signal for the silent scratch default (additive, non-narrowing): the caller
+        # omitted ``workspace_kind``, nothing resolved a project, and the task still landed in
+        # a throwaway scratch dir. The task itself is unchanged — the create-time response
+        # just says so, instead of leaving discovery to the dispatcher's once-per-install tip
+        # at claim time. An explicit ``workspace_kind="scratch"`` is a confirmed choice
+        # (#106342 omitted-vs-explicit semantics) and is deliberately not flagged.
+        defaulted = (workspace_kind is None and landed["workspace_kind"] == "scratch"
+                     and landed["project_id"] is None)
+        loud = {"workspace_defaulted": True, "warning": (
+            "workspace_kind was omitted and no project resolved, so this task defaulted to a "
+            "fresh scratch workspace (an empty temporary dir). Pass workspace_kind='dir' with a "
+            "workspace_path, or 'worktree' with a project, if the task needs to read or write "
+            "real repo files.")} if defaulted else {}
         return _ok(task_id=new_tid, **landed, **gate,
-                   subscribed=_maybe_auto_subscribe(conn, new_tid))
+                   subscribed=_maybe_auto_subscribe(conn, new_tid), **loud)
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:

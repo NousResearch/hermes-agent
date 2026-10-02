@@ -19,6 +19,7 @@ whatever user layer the backend returns.
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol, Union, runtime_checkable
@@ -90,6 +91,10 @@ class ConfigBackend(Protocol):
 
     def protected_env_names(self) -> frozenset:
         """Env names no external secret source may supply (the plane credential, D32)."""
+        ...
+
+    def deployment_env_names(self) -> frozenset:
+        """Non-secret env names that select and address this backend (see :func:`deployment_env_names`)."""
         ...
 
     def apply_in_memory(self, home: Path, doc: dict) -> None:
@@ -211,6 +216,9 @@ class FileBackend:
     def protected_env_names(self) -> frozenset:
         return frozenset()
 
+    def deployment_env_names(self) -> frozenset:
+        return frozenset()
+
     def apply_in_memory(self, home: Path, doc: dict) -> None:
         raise NotImplementedError("the file backend persists migrations to config.yaml")
 
@@ -219,6 +227,33 @@ class FileBackend:
 
 
 _FILE_BACKEND = FileBackend()
+_BOOTSTRAP_LOCK = threading.Lock()
+_BOOTSTRAPPED = False
+
+
+def _bootstrap_names() -> frozenset:
+    from plugins.config_backends.remote.backend import POLL_ENV
+    from plugins.config_backends.remote.credentials import PLANE_CREDENTIAL_ENV_NAMES
+    return PLANE_CREDENTIAL_ENV_NAMES | {POLL_ENV}
+
+
+def _ensure_bootstrap_env() -> None:
+    """Once per process, before the first selection: the deployment that selects, addresses and
+    authenticates the backend comes from the process env, the launch home's ``.env`` and the
+    managed ``.env`` (design §4.4 steps 1-2, D26/D32) — also when the first config read comes before
+    ``load_hermes_dotenv`` (``hermes_cli.config`` reads config at import time)."""
+    global _BOOTSTRAPPED
+    if _BOOTSTRAPPED:
+        return
+    with _BOOTSTRAP_LOCK:
+        if _BOOTSTRAPPED:
+            return
+        _BOOTSTRAPPED = True
+        try:
+            from hermes_cli.env_loader import apply_config_bootstrap_env
+            apply_config_bootstrap_env(_bootstrap_names)  # names resolved only for a remote deployment
+        except ImportError:  # no usable python-dotenv (a bare installer interpreter): no .env loads either
+            return
 
 
 def get_config_backend() -> ConfigBackend:
@@ -227,6 +262,7 @@ def get_config_backend() -> ConfigBackend:
     Read from the environment on every call, before any config read, so no config value can
     select it (D11). Raises :class:`ConfigBackendUnavailable` for a backend this build lacks.
     """
+    _ensure_bootstrap_env()
     kind = os.environ.get(BACKEND_ENV, "").strip().lower() or "file"
     if kind == "file":
         return _FILE_BACKEND
@@ -336,3 +372,28 @@ def write_config_key(config_path: PathLike, key_path: str, value: Any) -> None:
     """Set one dotted key (``None`` removes it) — ``atomic_roundtrip_yaml_update`` semantics."""
     backend, home = _route(config_path)
     backend.write_changes(home, Changes(unset=(key_path,)) if value is None else Changes(set={key_path: value}))
+
+
+
+def deployment_env_names() -> frozenset:
+    """The selected backend's deployment env names (which backend, which plane, which instance).
+
+    The deployment is a property of the instance, not of a profile, but it usually arrives in the
+    launch profile's ``.env``, which a child acting for ANOTHER profile drops as launch residue
+    (``strip_launch_profile_env``). Such a child re-reads only its own profile's ``.env`` and would
+    silently select the file backend, so these names are never residue. Credentials are not part
+    of it: the child resolves its own, and fails closed without them."""
+    return get_config_backend().deployment_env_names()
+
+
+def supports_file_tooling() -> bool:
+    """Gate for tools that copy, edit or back up the config FILE itself (§4.3, §4.7)."""
+    return get_config_backend().supports_file_tooling()
+
+
+def require_file_tooling(what: str) -> None:
+    """Refuse *what* (a file-copy tool) with a clear message when the backend has no config file."""
+    if not supports_file_tooling():
+        raise ConfigBackendUnavailable(
+            f"{what} copies the local config.yaml, and the {get_config_backend().name!r} config "
+            "backend has none. It is not available with this backend.")

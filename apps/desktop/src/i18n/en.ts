@@ -1942,6 +1942,7 @@ export const en: Translations = {
       updateDetail: (next, current) =>
         `A newer llama.cpp build (${next}) is ready to install — you're on ${current}. Models keep working during the download.`,
       updateAction: 'Update engine',
+      updateToast: next => `A newer local engine version is available (${next}). Update it in Settings → Local models.`,
       updating: 'Updating engine…',
       upToDateTitle: 'Engine up to date',
       upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}).`,

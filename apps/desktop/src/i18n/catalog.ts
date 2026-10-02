@@ -4,6 +4,7 @@ import { en } from './en'
 import { es } from './es'
 import { fr } from './fr'
 import { ja } from './ja'
+import { pl } from './pl'
 import { ru } from './ru'
 import type { BundledLocale, Translations } from './types'
 import { zh } from './zh'
@@ -14,6 +15,7 @@ import { zhHant } from './zh-hant'
  *  `resolveTranslations()` in `./registry`, which layers them over these. */
 export const TRANSLATIONS: Record<BundledLocale, Translations> = {
   en,
+  pl,
   zh,
   'zh-hant': zhHant,
   ja,

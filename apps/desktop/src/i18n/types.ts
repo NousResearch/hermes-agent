@@ -9,7 +9,7 @@ import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
-export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
+export type BundledLocale = 'en' | 'pl' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
 /** Any language id the app can render: a bundled locale, or one a plugin /
  *  the backend registered at runtime (`registerAppLocale`). Lowercase
@@ -1643,6 +1643,8 @@ export interface Translations {
       updateTitle: string
       updateDetail: (next: string, current: string) => string
       updateAction: string
+      /** Toast when a newer local engine build is available. */
+      updateToast?: (next: string) => string
       updating: string
       upToDateTitle: string
       upToDateDetail: (tag: string, backend: string) => string

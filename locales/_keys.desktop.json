@@ -3343,6 +3343,7 @@
     "settings.localModels.updateAction",
     "settings.localModels.updateDetail",
     "settings.localModels.updateTitle",
+    "settings.localModels.updateToast",
     "settings.localModels.updating",
     "settings.localModels.useAction",
     "settings.localModels.vram",

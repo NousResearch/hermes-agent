@@ -1762,6 +1762,7 @@ class SessionSessionsMixin:
         recently active continuation (#115489)."""
         filters.setdefault("archived", False)
         filters["lineage_tips_only"] = True
+        filters["include_open"] = True
         rows = self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
         for row in rows:
             self.set_session_archived(row["id"], True)

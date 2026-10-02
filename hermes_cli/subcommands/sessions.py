@@ -45,6 +45,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "(e.g. openrouter, anthropic, nous)")),
         ("--user", dict(help="Only match sessions from this user ID")),
         ("--chat-id", dict(help="Only match sessions from this chat/channel ID")),
+        ("--session-id", dict(help="Only match this session ID or unique ID prefix")),
         ("--chat-type", dict(help="Only match sessions with this chat type (e.g. dm, group)")),
         ("--branch", dict(help="Only match sessions whose git branch contains this substring")),
         ("--min-tokens", dict(type=int,

@@ -4755,6 +4755,9 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
     Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
     honoured at the same precedence or every aux call 401s."""
     custom_key: Any = (custom_entry.get("api_key") or "").strip()
+    from agent.secret_scope import is_unresolved_env_template
+    if is_unresolved_env_template(custom_key):
+        custom_key = ""
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
     if not custom_key and custom_key_env:
         custom_key = _scoped_key_env(custom_key_env)
@@ -4762,6 +4765,8 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
     if custom_key_cmd:
         from agent.command_token_source import build_command_token_provider
         custom_key = build_command_token_provider(custom_key_cmd, custom_entry.get("name") or provider) or custom_key
+    if is_unresolved_env_template(custom_key):
+        custom_key = ""
     if not custom_key:
         with contextlib.suppress(Exception):
             from agent.credential_pool import custom_provider_pool_key_candidates

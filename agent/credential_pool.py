@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
-from agent.secret_scope import get_secret as _get_secret, get_secret_str
+from agent.secret_scope import get_secret as _get_secret, get_secret_str, is_unresolved_env_template
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
 from agent.credential_pool_plugin import apply_plugin_refresh_result, recover_failed_plugin_refresh
@@ -3026,6 +3026,8 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
         api_key = str(cp_config.get("api_key") or "").strip()
+        if is_unresolved_env_template(api_key):
+            api_key = ""
         name = str(cp_config.get("name") or "").strip()
         if api_key:
             seed.upsert(f"config:{name}", {
@@ -3046,6 +3048,8 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                 (v.strip() for k in ("api_key", "api") for v in (model_cfg.get(k),) if isinstance(v, str) and v.strip()),
                 "",
             )
+            if is_unresolved_env_template(model_api_key):
+                model_api_key = ""
             if model_provider == "custom" and model_base_url and model_api_key:
                 # The pool may be keyed under the durable ``providers.<key>``
                 # slug or legacy ``custom:<name>``; accept any candidate, or

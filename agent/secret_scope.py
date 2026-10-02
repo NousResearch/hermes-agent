@@ -216,6 +216,11 @@ def _environ_or(name: str, default: Optional[str]) -> Optional[str]:
     return val if val is not None else default
 
 
+def is_unresolved_env_template(value: object) -> bool:
+    """True for an unresolved dotenv-style ``${...}`` credential placeholder."""
+    return isinstance(value, str) and re.search(r"\$\{[^}]+\}", value) is not None
+
+
 def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     """Resolve a credential by env-var name, honoring the active profile scope.
 

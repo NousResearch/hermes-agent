@@ -2261,6 +2261,7 @@ cli:
   clarify:
     bell_context: "verduideliking"
     label: "Verduidelik"
+    timed_out_locked_answers: "(verduideliking se tyd het na {timeout}s verstryk — vasgestelde antwoorde teruggestuur)"
   connect:
     bell_context: "verbindingsopstelling"
     cannot_restart: "Hierdie verbinding kan nie weer begin word nie. Kanselleer en vra die agent weer."
@@ -3286,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Vlak kloon — kan nie stootstatus verifieer nie, word behou: {path}"
     next_session_deepens: "Die volgende `hermes -w`-sessie verdiep die kloon en snoei saamgevoegde werkbome outomaties."
     unpushed_keeping: "⚠ Werkboom het ongestootte commits, word behou: {path}"
+    uncommitted_keeping: "⚠ Werkboom het ongecommitte veranderinge, word behou: {path}"
     clean_up_manually: "Om met die hand op te ruim: git worktree remove --force {path}"
     cleaned_up: "✓ Werkboom opgeruim: {path}"
 display:
@@ -3672,7 +3674,7 @@ tips:
   t197: "Trajekstoor (--save-trajectories) vang volledige gereedskapsgebruik-spore vas vir modelopleiding."
   t198: "Drie plugin-tipes: algemeen (gereedskap/hooks), geheueverskaffers en konteksenjins."
   t199: "hermes plugins install owner/repo installeer plugins direk vanaf GitHub."
-  t200: "Eksterne geheueverskaffers: Honcho, OpenViking, Mem0 saamgebundel; Hindsight en meer via hermes plugins install."
+  t200: "Eksterne geheueverskaffers: OpenViking, Mem0 saamgebundel; Honcho, Hindsight en meer via hermes plugins install."
   t201: "Plugin-hooks sluit pre/post_tool_call, pre/post_llm_call en transform_terminal_output vir uitvoer-kanonisering in."
   t202: "Prompt-kasing (Anthropic) verminder koste deur gekasde stelselprompt-voorvoegsels te hergebruik."
   t203: "Die agent genereer sessietitels outomaties in 'n agtergronddraad — nul impak op vertraging."

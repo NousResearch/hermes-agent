@@ -2278,6 +2278,7 @@ cli:
   clarify:
     bell_context: "pontosítás"
     label: "Pontosítás"
+    timed_out_locked_answers: "(a pontosítás {timeout} mp után lejárt — a rögzített válaszok visszaküldve)"
   connect:
     bell_context: "kapcsolat beállítása"
     cannot_restart: "Ezt a kapcsolatot nem lehet újraindítani. Szakítsd meg, és kérd újra az ügynöktől."
@@ -3303,6 +3304,7 @@ cli:
     shallow_clone_keeping: "⚠ Sekély klón — a push állapota nem ellenőrizhető, megtartva: {path}"
     next_session_deepens: "A következő `hermes -w` munkamenet mélyíti a klónt, és automatikusan eltávolítja a beolvasztott worktree-ket."
     unpushed_keeping: "⚠ A worktree-ben feltöltetlen commitok vannak, megtartva: {path}"
+    uncommitted_keeping: "⚠ A worktree-ben nem commitolt változások vannak, megtartva: {path}"
     clean_up_manually: "Kézi takarításhoz: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree eltakarítva: {path}"
 display:
@@ -3689,7 +3691,7 @@ tips:
   t197: "A trajektóriamentés (--save-trajectories) rögzíti a teljes eszközhasználati nyomokat a modelltanításhoz."
   t198: "Három plugintípus van: általános (eszközök/hookok), memóriaszolgáltatók és kontextusmotorok."
   t199: "A hermes plugins install owner/repo közvetlenül a GitHubról telepít plugint."
-  t200: "Külső memóriaszolgáltatók: a Honcho, az OpenViking és a Mem0 beépített; a Hindsight és mások a hermes plugins install parancson keresztül."
+  t200: "Külső memóriaszolgáltatók: az OpenViking és a Mem0 beépített; a Honcho, a Hindsight és mások a hermes plugins install parancson keresztül."
   t201: "A plugin hookok közé tartozik a pre/post_tool_call, a pre/post_llm_call és a transform_terminal_output a kimenet egységesítésére."
   t202: "A prompt-gyorsítótárazás (Anthropic) a rendszerprompt gyorsítótárazott előtagjainak újrahasznosításával csökkenti a költségeket."
   t203: "Az ügynök háttérszálon generálja a munkamenetek címét – nincs hatása a késleltetésre."

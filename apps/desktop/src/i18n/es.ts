@@ -1520,8 +1520,7 @@ export const esOverrides = {
       fileReadMaxChars: 'Máximo de caracteres que Hermes puede leer en una solicitud de archivo.',
       approvals: {
         mode: 'Cómo maneja Hermes los comandos que necesitan aprobación explícita.',
-        timeout:
-          'Cuánto esperan los prompts de aprobación en plataformas de mensajería antes de vencer. La app y la terminal esperan hasta que respondas.'
+        timeout: 'Cuánto esperan los prompts de aprobación antes de vencer.'
       },
       security: {
         redactSecrets: 'Oculta secretos detectados del contenido visible para el modelo cuando sea posible.'
@@ -4049,6 +4048,8 @@ export const esOverrides = {
       reveal: 'Revelar en carpeta',
       copyPath: 'Copiar ruta',
       removeFromSidebar: 'Ocultar de la barra lateral',
+      createdInPreviousContext:
+        'El proyecto se creó en la conexión o el perfil anterior. Vuelve allí; no se escribió IDEA.md.',
       createFailed: 'No se pudo crear el proyecto',
       staleBackend:
         'Actualiza el backend de Hermes para crear proyectos: tu backend es más antiguo que esta aplicación de escritorio (Configuración → Actualizaciones → Backend).',
@@ -4288,7 +4289,7 @@ export const esOverrides = {
       '/init': 'Generar o actualizar las instrucciones de proyecto AGENTS.md a partir de un análisis del repositorio',
       '/suggestions': 'Revisar las automatizaciones sugeridas (aceptar/descartar)',
       '/blueprint': 'Configurar una automatización a partir de una plantilla',
-      '/browser': 'Gestionar la conexión CDP del navegador [connect|disconnect|status] (solo gateway local)',
+      '/browser': 'Gestionar el navegador del agente [connect|disconnect|status|use]',
       '/palette': 'Abrir la paleta de comandos aproximada (también Ctrl+P)',
       '/usage':
         'Mostrar el uso de tokens y los límites de frecuencia; `reset` canjea un restablecimiento de límite de Codex acumulado',
@@ -5240,6 +5241,8 @@ export const esOverrides = {
   },
   preview: {
     tab: 'Vista previa',
+    pin: 'Fijar al espacio de trabajo',
+    unpin: 'Desfijar del espacio de trabajo',
     closePane: 'Cerrar panel de vista previa',
     loading: 'Cargando vista previa',
     unavailable: 'Vista previa no disponible',
@@ -5268,6 +5271,7 @@ export const esOverrides = {
     editing: 'Edición',
     unsavedChanges: 'Cambios no guardados',
     saveFailed: message => `No se pudo guardar: ${message}`,
+    saveScopeChanged: 'Vuelve a la conexión y al perfil originales para guardar este borrador.',
     diskChangedTitle: 'Archivo cambiado en el disco',
     diskChangedBody:
       'Este archivo cambió desde que lo abriste. ¿Quieres sobrescribirlo con tu versión o descartar tus cambios y recargar?',
@@ -5691,7 +5695,7 @@ export const esOverrides = {
     },
     approval: {
       gatewayDisconnected:
-        'Hermes está sin conexión ahora mismo. El comando sigue esperando tu respuesta. Reconéctate y vuelve a enviarla.',
+        'Hermes está sin conexión ahora mismo. El comando sigue esperando tu respuesta (hasta que se agote el tiempo de aprobación). Reconéctate y vuelve a enviarla.',
       sendFailed: 'No se pudo enviar tu respuesta',
       reconnect: 'Reconectar',
       timedOutSystemLine:

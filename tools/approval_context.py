@@ -33,26 +33,6 @@ _approval_session_id: contextvars.ContextVar[str] = _ctx("approval_session_id")
 # it onto the non-interactive auto-approve path so a dangerous command runs without the approval callback firing
 # (GHSA-96vc-wcxf-jjff). None = unset → env fallback.
 _hermes_interactive_ctx: contextvars.ContextVar[str | None] = _ctx("hermes_interactive", None)
-# CLI, TUI and Desktop turns hold their approval and clarify prompts open until the user answers or the turn is
-# interrupted: the user is at the screen the prompt is painted on. Messaging platforms, ACP and plugin transports
-# keep ``approvals.timeout`` — a push notification can sit unseen, and their buttons expire.
-_prompts_wait_for_answer: contextvars.ContextVar[bool] = contextvars.ContextVar("prompts_wait_for_answer",
-                                                                                default=False)
-
-
-def set_prompts_wait_for_answer() -> contextvars.Token[bool]:
-    """Bind "built-in prompts wait until answered" for the current turn (CLI / TUI / Desktop)."""
-    return _prompts_wait_for_answer.set(True)
-
-
-def reset_prompts_wait_for_answer(token: contextvars.Token[bool]) -> None:
-    """Restore the prior value from :func:`set_prompts_wait_for_answer`."""
-    _prompts_wait_for_answer.reset(token)
-
-
-def prompts_wait_for_answer() -> bool:
-    """True when the current turn's built-in prompts have no deadline."""
-    return _prompts_wait_for_answer.get()
 
 
 def set_hermes_interactive_context(interactive: bool) -> contextvars.Token:
@@ -276,16 +256,6 @@ def _get_approval_timeout() -> int:
     if raw > safe_cap:
         logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", raw, safe_cap)
     return min(raw, safe_cap)
-
-
-def approval_wait_seconds() -> int:
-    """How long a built-in approval prompt stays open in this turn: until answered on CLI / TUI / Desktop
-    (the platform-safe maximum, so ``Lock.acquire`` / ``Thread.join`` bounds derived from it stay valid),
-    else ``approvals.timeout``."""
-    if prompts_wait_for_answer():
-        from agent.deadline import MAX_SAFE_TIMEOUT_S
-        return int(MAX_SAFE_TIMEOUT_S)
-    return _get_approval_timeout()
 
 
 def format_approval_window(seconds: int) -> str:

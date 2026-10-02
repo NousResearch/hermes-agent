@@ -186,26 +186,51 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
             "configured Kanban orchestrator must perform board mutations.")
 
 
-def _default_task_id(arg: Optional[str]) -> Optional[str]:
-    """``task_id`` arg or the dispatcher's env var. A delegate child or an
-    in-process cron job must never inherit the worker's task id implicitly."""
-    if arg:
-        return arg
-    if _is_delegated_child_context() or not _is_dispatcher_owned_worker():
+def _default_task_id(arg: Any) -> Optional[str]:
+    """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
+    if arg is not None:
+        val = str(arg).strip()
+        if val:
+            return val
+    if _is_delegated_child_context():
         return None
-    return os.environ.get("HERMES_KANBAN_TASK") or None
+    if not _is_dispatcher_owned_worker():
+        # A cron job fired in-process from a worker must never inherit the
+        # worker's task id as an implicit default.
+        return None
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if env_tid:
+        val = env_tid.strip()
+        if val:
+            return val
+    return None
 
 
 def _require_task_id(args: dict) -> str:
+    """Resolve the target task or reject with a message the caller can act on.
+
+    The env default only exists for a dispatcher-spawned worker; every other
+    caller must name a task, so a rejection points at ``kanban_list`` instead of
+    an env var a chat caller cannot set (#91431).
+    """
     tid = _default_task_id(args.get("task_id"))
-    _check(tid, "task_id is required (or set HERMES_KANBAN_TASK in the env)")
-    return tid
+    if tid:
+        return tid
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        # Env task present but not usable here (delegate child / cron run beside
+        # a worker): it is not this session's to default to.
+        raise _Reject(
+            "task_id is required: this session does not own the inherited "
+            "HERMES_KANBAN_TASK, so it is not a valid default. Pass an explicit "
+            "task_id.")
+    raise _Reject(
+        "task_id is required: this session has no dispatcher-assigned task to "
+        "default to. Pass an explicit task_id; discover task ids with kanban_list.")
 
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
-
 
 def _worker_run_id(task_id: str) -> Optional[int]:
     """This worker's dispatcher run id when it is scoped to task_id."""
@@ -637,7 +662,18 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
     """Full task state: row, parents, children, comments, runs, last 50 events."""
-    tid = _require_task_id(args)
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        # No dispatcher task in scope and no explicit id: the caller asked "what
+        # should I be looking at". A chat profile cannot set HERMES_KANBAN_TASK,
+        # so an error naming the env var is dead end (#91431) — answer instead.
+        return json.dumps({
+            "current_task": None,
+            "hint": (
+                "No dispatcher-assigned task in this session, so there is no "
+                "task to show by default. Call kanban_list to see task ids on "
+                "the board, then kanban_show(task_id=<id>) for full state."),
+        })
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
         return json.dumps({
@@ -915,8 +951,13 @@ def _handle_comment(args: dict, **kw) -> str:
     """Append a comment to a task's thread."""
     _reject_delegated_child_mutation("kanban_comment")
     tid = args.get("task_id")
-    _check(tid, "task_id is required (use the current task id if that's what "
-                "you mean — pulls from env but kept explicit here)")
+    if not tid:
+        # A comment writes to the board, so a bare call must stay an error — but
+        # point at kanban_list, not an env var a chat caller cannot set (#91431).
+        raise _Reject(
+            "task_id is required: comments are per-task and this session has no "
+            "dispatcher-assigned task to default to. Discover task ids with "
+            "kanban_list, or pass the task id you mean.")
     body = _redact(_require_text(args, "body"))
     # Author comes from the worker's runtime identity (``_persisted_identity``), never
     # caller args: comments are injected into future workers' system prompts, so an

@@ -417,7 +417,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 
 import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
@@ -4804,7 +4804,7 @@ class BasePlatformAdapter(ABC):
         profile is stamped on ``source.profile`` for per-profile HERMES_HOME isolation."""
         def _opt(value) -> Optional[str]:
             return str(value) if value else None
-        fields = dict(
+        fields = SessionSource(
             platform=self.platform, chat_id=str(chat_id), chat_name=chat_name, chat_type=chat_type,
             user_id=None if user_id is None or user_id == "" else str(user_id),
             user_name=user_name, thread_id=_opt(thread_id),
@@ -4820,13 +4820,13 @@ class BasePlatformAdapter(ABC):
             from gateway.profile_routing import ProfileRouteRejected
             try:
                 profile = self.gateway_runner._profile_name_for_source(
-                    SessionSource(**fields), adapter_profile=owner_profile) or owner_profile
+                    fields, adapter_profile=owner_profile) or owner_profile
             except ProfileRouteRejected:
                 profile_route_rejected = True
             except Exception:
                 logger.warning("Profile resolution failed for %s/%s, defaulting to active profile",
                                self.platform, chat_id, exc_info=True)
-        source = SessionSource(**fields, profile=profile, role_authorized=role_authorized,
+        source = replace(fields, profile=profile, role_authorized=role_authorized,
                                auto_thread_created=auto_thread_created,
                                auto_thread_initial_name=auto_thread_initial_name)
         # Transport-only, kept out of to_dict(): the receiving adapter is authoritative this turn

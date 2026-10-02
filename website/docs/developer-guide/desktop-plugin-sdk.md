@@ -56,6 +56,12 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   host shows the same "Saved" / "Download failed" toasts as the Files panel and
   stays quiet on cancel; the promise settles when the save does and never
   rejects.
+- **`host.preview(path)`** — open a backend file (absolute path or `file://`
+  URL) in the preview rail, the same tab the file browser opens: Markdown
+  renders with the source toggle, local and remote backends both read through
+  the app's file pipeline. Web URLs are refused. Resolves `false` when nothing
+  readable can be shown (missing, directory, binary), so fall back to
+  `captureGatewayFileDownload()` rather than leaving the click dead.
 - **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
   (`/api/plugins/<id>`) if you ship a `plugin_api.py`.
 - **`ui.*`** — the design language: the app's real components, theme variables,
@@ -1039,6 +1045,7 @@ ctx.os.openExternal(url)                   // OS default handler (browser, mail,
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
 host.navigate('/route')                    // hash-route navigation
+host.preview(path)                         // backend file → preview rail; false = nothing to show
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'

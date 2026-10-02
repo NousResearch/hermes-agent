@@ -201,6 +201,28 @@ def test_notifier_adds_action_contract_only_to_current_block_event(tmp_path, mon
     assert "Required action: Current decision" in adapter.sent[1]["text"]
 
 
+def test_notifier_states_when_block_needs_no_action_from_matt(tmp_path, monkeypatch):
+    db_path = tmp_path / "internal-block.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="internal recovery", assignee="systems")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.block_task(conn, tid, reason="Repair the worker lease", kind="transient")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert "No action needed from Matt" in adapter.sent[0]["text"]
+    assert "Disposition: Stale/recovery" in adapter.sent[0]["text"]
+
+
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(
     tmp_path, monkeypatch,
 ):

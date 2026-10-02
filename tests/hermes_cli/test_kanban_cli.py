@@ -124,6 +124,9 @@ def test_kanban_show_uses_verified_body_contract_on_explicit_board(kanban_home):
     assert action["action"] == "Publish the signed release manifest"
     assert action["reply_format"] == "No reply required."
 
+    text = kc.run_slash(f"--board alpha show {task_id}")
+    assert "No action needed from Matt" in text
+
 
 def test_kanban_show_marks_prior_blocked_attempt_historical(kanban_home):
     with kbc.connect_closing() as conn:

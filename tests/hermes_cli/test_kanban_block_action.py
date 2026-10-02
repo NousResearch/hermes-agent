@@ -2,7 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.kanban_block_action import build_block_action, reason_from_events
+from hermes_cli.kanban_block_action import (
+    build_block_action,
+    reason_from_events,
+    render_block_action,
+)
 
 
 def task(**overrides):
@@ -38,6 +42,22 @@ def test_capability_and_transient_are_not_labeled_as_human_actions():
     assert capability.disposition == "Internal owner action"
     assert transient.disposition == "Stale/recovery"
     assert capability.action_required is transient.action_required is False
+
+
+@pytest.mark.parametrize("kind", ["dependency", "capability", "transient"])
+def test_non_matt_dispositions_render_unambiguous_no_action_line(kind):
+    action = build_block_action(task(block_kind=kind), reason="Internal blocker")
+
+    lines = render_block_action(action, indent="")
+
+    assert lines[0] == "No action needed from Matt"
+    assert lines.count("No action needed from Matt") == 1
+
+
+def test_matt_action_does_not_render_no_action_line():
+    action = build_block_action(task(block_kind="needs_input"), reason="Choose A or B")
+
+    assert "No action needed from Matt" not in render_block_action(action, indent="")
 
 
 def test_latest_block_reason_wins():

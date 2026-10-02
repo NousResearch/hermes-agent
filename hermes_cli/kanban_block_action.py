@@ -145,7 +145,10 @@ def _verified_body_override(body: Any) -> Optional[dict[str, str]]:
 
 def render_block_action(contract: BlockActionContract, *, indent: str = "  ") -> list[str]:
     reply = contract.reply_format if contract.action_required else "No reply required."
-    return [
+    lines = []
+    if not contract.action_required:
+        lines.append(f"{indent}No action needed from Matt")
+    lines.extend([
         f"{indent}Disposition: {contract.disposition}",
         f"{indent}Owner: {contract.owner}",
         f"{indent}Required action: {contract.action}",
@@ -154,7 +157,8 @@ def render_block_action(contract: BlockActionContract, *, indent: str = "  ") ->
         f"{indent}Next action: {contract.next_action}",
         f"{indent}Retry condition: {contract.retry_condition}",
         f"{indent}Auto-resume: {'yes' if contract.auto_resume else 'no'}",
-    ]
+    ])
+    return lines
 
 
 def _defaults(disposition: str, owner: str, reason: str, assignee: Any) -> dict[str, Any]:

@@ -464,6 +464,26 @@
   word-break: break-word;
 }
 
+.hermes-kanban-block-action-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.6rem;
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+.hermes-kanban-block-action-clear {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid rgba(46, 160, 67, 0.45);
+  border-radius: var(--radius-sm, 0.25rem);
+  background: rgba(46, 160, 67, 0.12);
+  color: #2ea043;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
 .hermes-kanban-actions {
   display: flex;
   flex-wrap: wrap;

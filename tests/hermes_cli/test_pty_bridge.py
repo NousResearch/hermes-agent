@@ -306,10 +306,16 @@ class TestPtyBridgeClose:
         # The TUI gateway saves its sessions on SIGHUP within a 1 s grace. Once the group got
         # SIGHUP, close() must wait for it, not re-signal or SIGKILL it early.
         marker = tmp_path / "saved"
-        helper = f"trap 'sleep 0.8; echo ok > {marker}; exit 0' HUP; while :; do sleep 0.05; done"
-        bridge = PtyBridge.spawn(["/bin/sh", "-c", f"/bin/sh -c \"{helper}\" & echo up; exec sleep 60"])
-        _read_until(bridge, b"up", timeout=5.0)
-        time.sleep(0.2)  # let the helper install its trap
+        # The trap ignores further SIGHUPs (the kernel may re-send one when the session leader
+        # exits), so only an early SIGKILL from close() can stop the save.
+        script = tmp_path / "helper.sh"
+        script.write_text(
+            f"trap 'trap \"\" HUP; sleep 0.6; echo ok > {marker}; exit 0' HUP\n"
+            "echo armed\n"
+            "while :; do sleep 0.05; done\n"
+        )
+        bridge = PtyBridge.spawn(["/bin/sh", "-c", f"/bin/sh {script} & exec sleep 60"])
+        _read_until(bridge, b"armed", timeout=10.0)  # the helper's trap is installed
 
         bridge.close()
 

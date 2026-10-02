@@ -191,8 +191,10 @@ class PtySessionRegistry:
             if existing is not None and existing.alive:
                 return existing, False
             if existing is not None:                       # dead remnant
-                await existing.close()
+                # Close in the background: ending a dead leader's helpers can take the helper
+                # grace, and this lock serializes every new chat.
                 self._sessions.pop(key, None)
+                asyncio.create_task(existing.close())
             if len(self._sessions) >= self._max:
                 self._reap_one_idle_or_raise()
             # PTY spawn does blocking fork/exec work — keep it off the event loop.
@@ -257,9 +259,7 @@ class PtySessionRegistry:
         asyncio.create_task(oldest.close())
 
     async def close_all(self) -> None:
-        for key in list(self._sessions):
-            # Same overlap window as reap_idle: an in-flight reap may have popped
-            # a snapshot key while we awaited an earlier close().
-            session = self._sessions.pop(key, None)
-            if session is not None:
-                await session.close()
+        # Close concurrently: each close() may wait out its helpers' SIGHUP grace, and shutdown runs
+        # under the backend's SIGTERM -> SIGKILL budget (dashboard_procs._POSIX_TERM_GRACE_SECONDS).
+        sessions = [self._sessions.pop(key) for key in list(self._sessions)]
+        await asyncio.gather(*(s.close() for s in sessions), return_exceptions=True)

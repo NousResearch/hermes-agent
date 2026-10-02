@@ -61,9 +61,18 @@ class PtyUnavailableError(RuntimeError):
     """
 
 
-# Longer than the TUI gateway's own SIGHUP shutdown grace (tui_gateway/entry.py, 1.0 s by default),
-# so a helper that is saving state on SIGHUP finishes before it is SIGKILLed.
+# Longer than the TUI gateway's own SIGHUP shutdown grace, so a helper that is saving state on
+# SIGHUP finishes before it is SIGKILLed.
 _HELPER_SHUTDOWN_GRACE_S = 1.5
+
+
+def _helper_shutdown_grace() -> float:
+    # The gateway's grace is 1.0 s unless HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S raises it
+    # (tui_gateway/entry.py); the PTY child inherits that env. Read it here rather than import
+    # tui_gateway.entry, which installs signal handlers.
+    from utils import env_float
+
+    return max(_HELPER_SHUTDOWN_GRACE_S, env_float("HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S", 1.0) + 0.5)
 
 
 def _process_group_exists(pgid: int) -> bool:
@@ -74,10 +83,6 @@ def _process_group_exists(pgid: int) -> bool:
     return True
 
 
-def _wait_for_group_exit(pgid: int, timeout: float) -> None:
-    deadline = time.monotonic() + timeout
-    while _process_group_exists(pgid) and time.monotonic() < deadline:
-        time.sleep(0.02)
 
 
 class PtyBridge:
@@ -245,9 +250,27 @@ class PtyBridge:
         except OSError:
             pass
 
+    def _discard_output(self, timeout: float) -> None:
+        # Exiting children flush their pending terminal output first; on macOS a process stays in
+        # exit (and a SIGHUP save outlasts the grace) until someone drains the master. The drain
+        # task has stopped reading by now, so read and drop while waiting.
+        try:
+            readable, _, _ = select.select([self._fd], [], [], timeout)
+            if readable:
+                os.read(self._fd, 65536)
+        except OSError:
+            time.sleep(timeout)
+
+    def _wait_for_group_exit(self, pgid: int, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while _process_group_exists(pgid) and time.monotonic() < deadline:
+            self._discard_output(0.02)
+
     def close(self) -> None:
-        """Terminate the child (SIGHUP → SIGTERM → SIGKILL, 0.5s grace each), reap it so the
-        dashboard process never leaks zombies, and close fds. Idempotent.
+        """Terminate the child's process group (SIGHUP → SIGTERM → SIGKILL, 0.5s grace each while
+        the leader lives, then up to the helper grace for the rest of the group), reap the leader so
+        the dashboard never leaks zombies, and close fds. Idempotent; blocks, so call it off the
+        event loop.
         """
         if self._closed:
             return
@@ -270,22 +293,26 @@ class PtyBridge:
                 pass
             deadline = time.monotonic() + 0.5
             while self._proc.isalive() and time.monotonic() < deadline:
-                time.sleep(0.02)
+                self._discard_output(0.02)
 
         # Helpers can outlive the leader and keep the PTY slave open, so no EOF ever arrives (#76759):
         # one that ignores SIGHUP, or any helper of a leader that died first (crash, OOM kill). When
         # the group already got SIGHUP above, only wait: the TUI gateway saves its sessions on SIGHUP
         # within its shutdown grace, and a second SIGHUP or an early SIGKILL would cut that short.
+        # The group id cannot be reused while any member is alive; if the group emptied after the
+        # leader was reaped, a pid wrap inside that window could hand it to a new group (killpg
+        # then hits that group). The reaper closes a dead session within one tick, so the window is short.
         if pgid is not None:
+            grace = _helper_shutdown_grace()
             sweep = (signal.SIGKILL,) if leader_was_alive else (signal.SIGHUP, signal.SIGKILL)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
             if leader_was_alive:
-                _wait_for_group_exit(pgid, _HELPER_SHUTDOWN_GRACE_S)
+                self._wait_for_group_exit(pgid, grace)
             for sig in sweep:
                 try:
                     os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
                 except OSError:
                     break  # ESRCH: the group is empty
-                _wait_for_group_exit(pgid, _HELPER_SHUTDOWN_GRACE_S)
+                self._wait_for_group_exit(pgid, grace)
 
         try:
             self._proc.close(force=True)

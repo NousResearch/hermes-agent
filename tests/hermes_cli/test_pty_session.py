@@ -434,6 +434,25 @@ async def test_close_all_survives_key_popped_by_concurrent_reap():
 
 
 @pytest.mark.asyncio
+async def test_close_all_does_not_wait_on_one_slow_close_before_the_next():
+    """Each close() can wait out its helpers' SIGHUP grace, and the backend's teardown runs under
+    a SIGKILL budget, so sessions close concurrently rather than one after another."""
+    reg = make_registry(ttl=60.0)
+    bridges, entered, release = await _two_idle_sessions_first_close_gated(reg)
+
+    closer = asyncio.create_task(reg.close_all())
+    await entered.wait()                      # k0's close() is parked
+    for _ in range(50):
+        if bridges[1].closed:
+            break
+        await asyncio.sleep(0.01)
+    assert bridges[1].closed                  # k1 closed while k0 still waits
+    release.set()
+    await closer
+    assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
 async def test_close_other_sessions_removes_old_profile_session():
     from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
 

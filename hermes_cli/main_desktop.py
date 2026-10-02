@@ -36,6 +36,52 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
     return (desktop_dir / "dist" / "index.html").exists()
 
 
+# Mirrors apps/desktop/electron/main.ts INSTALL_STAMP_SCHEMA_VERSION.
+INSTALL_STAMP_SCHEMA_VERSION = 1
+_ALL_ZERO_COMMIT = re.compile(r"^0{7,40}$")
+_HEX_SHA = re.compile(r"^[0-9a-f]+$")
+
+
+def _packaged_resources_dir(exe: Path) -> Path:
+    """Electron resources dir next to the unpacked executable (macOS ``Resources``, else ``resources``)."""
+    return exe.parent.parent / "Resources" if sys.platform == "darwin" else exe.parent / "resources"
+
+
+def _read_installed_install_stamp(resources: Path) -> Optional[dict]:
+    try:
+        data = json.loads((resources / "install-stamp.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _git_head_sha(project_root: Path) -> Optional[str]:
+    try:
+        result = subprocess.run(["git", "-C", str(project_root), "rev-parse", "HEAD"], capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return None
+    head = (result.stdout or "").strip().lower() if result.returncode == 0 else ""
+    return head if len(head) >= 7 and _HEX_SHA.fullmatch(head) else None
+
+
+def _installed_stamp_lags_head(stamp: dict, project_root: Path) -> bool:
+    try:
+        if stamp.get("schemaVersion") != INSTALL_STAMP_SCHEMA_VERSION:
+            return False
+        commit = stamp.get("commit")
+        if not isinstance(commit, str):
+            return False
+        installed = commit.strip().lower()
+        if (len(installed) < 7 or not _HEX_SHA.fullmatch(installed)
+                or stamp.get("source") == "fallback" or _ALL_ZERO_COMMIT.fullmatch(installed)):
+            return False
+        head = _git_head_sha(project_root)
+        return bool(head and not (installed == head or installed.startswith(head) or head.startswith(installed)))
+    except Exception:
+        return False
+
+
 def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Path]:
     """The renderer ``dist`` a launch loads: ``apps/desktop/dist`` in source mode, else the
     ``app.asar.unpacked/dist`` copy (the only real directory, and the one an interrupted replace tears)."""
@@ -47,10 +93,7 @@ def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Pa
         return None
 
     # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
-    resources = (
-        executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
-    )
-    return resources / "app.asar.unpacked" / "dist"
+    return _packaged_resources_dir(executable) / "app.asar.unpacked" / "dist"
 
 
 # The module files the renderer fetches before any app code runs: Vite emits
@@ -119,6 +162,16 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     if not source_mode and dist_dir is not None and _packaged_node_pty_missing(dist_dir):
         print("  ⚠ The packaged desktop app has no node-pty native binary; rebuilding it")
         return True
+
+    if not source_mode:
+        exe = _desktop_packaged_executable(desktop_dir)
+        if exe is not None:
+            stamp = _read_installed_install_stamp(_packaged_resources_dir(exe))
+            if stamp is not None and _installed_stamp_lags_head(stamp, project_root):
+                installed = str(stamp.get("commit") or "")
+                head = _git_head_sha(project_root) or ""
+                print(f"  ⚠ Installed desktop stamp ({installed[:8]}) lags HEAD ({head[:8]}); rebuild needed")
+                return True
 
     from hermes_cli.source_build import source_product_current
 

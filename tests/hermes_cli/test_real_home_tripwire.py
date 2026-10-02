@@ -373,3 +373,38 @@ def test_library_archive_exception_is_exact_and_corroborated(tmp_path, monkeypat
                    lambda: sibling.read_text(), lambda: os.listdir(library.parent)):
         with pytest.raises(AssertionError, match="REAL hermes home"):
             action()
+
+
+def test_runtime_search_listings_never_admit_sibling_file_reads(tmp_path, monkeypatch):
+    from tests import conftest, home_io_guard
+
+    root = tmp_path / "relocated-runtime"
+    library = root / "Lib"
+    dlls = root / "DLLs"
+    library.mkdir(parents=True)
+    dlls.mkdir()
+    extension = dlls / "_sqlite3.pyd"
+    extension.write_text("extension fixture", encoding="utf-8")
+    sibling = root / "state.db"
+    sibling.write_text("private state", encoding="utf-8")
+    monkeypatch.setattr(home_io_guard.sysconfig, "get_path", lambda name: str(library))
+    monkeypatch.setattr(home_io_guard.sys, "_base_executable", str(root / "python.exe"))
+    monkeypatch.setattr(home_io_guard.sys, "path", [str(root), str(dlls), str(library)])
+    for module in (home_io_guard.shutil, home_io_guard.threading):
+        monkeypatch.setattr(module, "__file__", str(library / (module.__name__ + ".py")))
+    prefixes = home_io_guard._stdlib_prefixes()
+    assert os.path.normcase(str(dlls.resolve())) in prefixes
+    search = home_io_guard._stdlib_search_directories(prefixes)
+    assert search == (os.path.normcase(str(root.resolve())),)
+    monkeypatch.setattr(home_io_guard, "_STDLIB_PREFIX_STRS", prefixes)
+    monkeypatch.setattr(home_io_guard, "_STDLIB_SEARCH_DIR_STRS", search)
+    monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES",
+                        conftest._REAL_HERMES_ROOT_CANDIDATES + [root])
+    assert "state.db" in os.listdir(root)
+    with os.scandir(root) as entries:
+        assert "Lib" in {entry.name for entry in entries}
+    assert extension.read_text(encoding="utf-8") == "extension fixture"
+    for action in (lambda: sibling.read_text(), lambda: sibling.write_text("changed"),
+                   lambda: extension.write_text("changed"), extension.unlink):
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            action()

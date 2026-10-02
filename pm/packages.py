@@ -405,6 +405,29 @@ class Venv(StatePackage):
             h.update(b"\0listing-error")
         else:
             h.update("\0".join(modules).encode())
+        # The build snapshot also ships whole top-level packages named by
+        # ``[tool.setuptools.packages.find].include`` (``_copy_core_inputs``
+        # matches directories against those patterns), and the editable
+        # finder freezes that directory list at install time — an update that
+        # ships a new package (``hermes_platform``) stays missing until the
+        # editable is rebuilt. Track the roots at the granularity the
+        # snapshot matches them: the first ``.``-segment of each pattern, so
+        # widening ``foo`` to ``foo.sub`` (same top-level tree) demands no
+        # rebuild.
+        import tomllib
+        try:
+            metadata = tomllib.loads(
+                (self.project_root() / "pyproject.toml").read_text(encoding="utf-8-sig"))
+            patterns = (metadata.get("tool", {}).get("setuptools", {})
+                        .get("packages", {}).get("find", {}).get("include", ["*"]))
+            roots = sorted({pattern.split(".", 1)[0] for pattern in patterns})
+        except (OSError, tomllib.TOMLDecodeError):
+            # A pyproject the build could not parse must not read as the
+            # default ``["*"]`` shape — same sentinel contract as the root
+            # listing above: unreadable forces a resync, never "unchanged".
+            h.update(b"\0pyproject-unreadable")
+        else:
+            h.update("\0".join(roots).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,

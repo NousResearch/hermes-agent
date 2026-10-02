@@ -107,3 +107,59 @@ def test_directory_named_like_a_module_is_not_counted(tmp_path, monkeypatch):
     before = Venv().expected_stamp([])
     (repo / "looks_like_a_module.py").mkdir()
     assert Venv().expected_stamp([]) == before
+
+
+def _pyproject(repo, includes):
+    body = "[tool.setuptools.packages.find]\ninclude = [%s]\n" % ", ".join(
+        '"%s"' % item for item in includes)
+    (repo / "pyproject.toml").write_text(body)
+
+
+def test_newly_declared_package_root_changes_the_stamp(tmp_path, monkeypatch):
+    """``_copy_core_inputs`` ships whole top-level packages named by include,
+    and the editable finder freezes that directory list at install time — an
+    update that ships a new package (``hermes_platform``) must move the stamp."""
+    from pm.packages import Venv
+
+    repo = _repo(tmp_path, monkeypatch)
+    _pyproject(repo, ["agent", "agent.*"])
+    before = Venv().expected_stamp([])
+    _pyproject(repo, ["agent", "agent.*", "hermes_platform", "hermes_platform.*"])
+    assert Venv().expected_stamp([]) != before
+
+
+def test_subpackage_declaration_widening_keeps_the_stamp(tmp_path, monkeypatch):
+    """The snapshot matches top-level directories only, so widening ``foo`` to
+    ``foo.sub`` copies the same tree and must not demand a rebuild."""
+    from pm.packages import Venv
+
+    repo = _repo(tmp_path, monkeypatch)
+    _pyproject(repo, ["agent"])
+    before = Venv().expected_stamp([])
+    _pyproject(repo, ["agent", "agent.sub"])
+    assert Venv().expected_stamp([]) == before
+
+
+def test_undeclared_top_level_directory_does_not_change_the_stamp(tmp_path, monkeypatch):
+    """A top-level directory the include patterns do not name never enters the
+    snapshot, so creating one must not read as a build-input change."""
+    from pm.packages import Venv
+
+    repo = _repo(tmp_path, monkeypatch)
+    _pyproject(repo, ["agent", "agent.*"])
+    before = Venv().expected_stamp([])
+    (repo / "scratch_tree").mkdir()
+    assert Venv().expected_stamp([]) == before
+
+
+def test_unparseable_pyproject_forces_a_resync(tmp_path, monkeypatch):
+    """A pyproject the build could not parse must not read as the default
+    ``["*"]`` shape — the sentinel keeps it distinguishable from every parsed
+    declaration, so the owed rebuild is not skipped."""
+    from pm.packages import Venv
+
+    repo = _repo(tmp_path, monkeypatch)
+    _pyproject(repo, ["agent", "agent.*"])
+    before = Venv().expected_stamp([])
+    (repo / "pyproject.toml").write_text("[tool.setuptools.packages.find\ninclude = [")
+    assert Venv().expected_stamp([]) != before

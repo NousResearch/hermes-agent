@@ -7187,6 +7187,7 @@ def test_prompt_submit_resolves_row_id_absorbed_into_marker_merge(monkeypatch):
         ]
         assert len(server._sessions["merged-marker-sid"]["history"]) == 2
     finally:
+        _join_turn_thread(server._sessions["merged-marker-sid"])
         server._sessions.pop("merged-marker-sid", None)
 
 
@@ -7302,6 +7303,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_marker_merge(monkeypatch):
         ]
         assert len(server._sessions["marker-merge-sid"]["history"]) == 4
     finally:
+        _join_turn_thread(server._sessions["marker-merge-sid"])
         server._sessions.pop("marker-merge-sid", None)
 
 
@@ -7377,6 +7379,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch
         ]
         assert len(server._sessions["plain-merge-sid"]["history"]) == 3
     finally:
+        _join_turn_thread(server._sessions["plain-merge-sid"])
         server._sessions.pop("plain-merge-sid", None)
 
 

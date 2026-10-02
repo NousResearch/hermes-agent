@@ -3910,6 +3910,24 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
 
         discover_plugins()
         hydrate_profile_secret_sources(profile_home)
+        # Config-declared hooks (``hooks:`` shell hooks + ``hooks.outbound``) live in the owning
+        # profile's config.yaml, which this one-shot process never registered — cron sessions
+        # silently lost them the moment fires were handed here instead of running in-process in
+        # the gateway (#131764, same gap `hermes serve` had in #102504). Under the home override
+        # both loaders resolve the OWNING profile's config; consent must come from that profile's
+        # allowlist / HERMES_ACCEPT_HOOKS / hooks_auto_accept because there is no TTY here.
+        # Never raises: a broken hooks block must not take the cron execution down with it
+        # (register_from_config already skips malformed entries; this guard covers config load).
+        try:
+            from agent.shell_hooks import register_from_config as register_shell_hooks
+            from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
+            from hermes_cli.config import load_config
+
+            hooks_cfg = load_config()
+            register_shell_hooks(hooks_cfg, accept_hooks=False)
+            register_outbound_webhooks(hooks_cfg)
+        except Exception:
+            logger.warning("Cron external worker: config hook registration failed", exc_info=True)
         secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
         with use_cron_store(profile_home):
             if adopt_claimed_execution(execution_id) is None:

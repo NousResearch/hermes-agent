@@ -174,21 +174,17 @@ class GatewayStartupMixin:
             )
 
     async def _await_startup_warmup(self) -> None:
-        """Bounded wait for the boot warm-up. On timeout the gate opens anyway (availability outranks
-        prompt completeness for a WEDGED init); the warm-up continues and a late failure is logged."""
-        from gateway.run import _startup_warmup_timeout_secs
+        """Keep the inbound gate closed until first-turn machinery is fully initialized.
+
+        The warm-up mutates the same lazy initialization state used by an inbound turn. Letting a
+        turn start while the executor task is still running can leave that turn permanently waiting
+        on a partially initialized singleton, with no provider request or error. The timeout remains
+        useful for diagnostics, but it must not release the gate before this precondition completes.
+        """
         task = getattr(self, "_startup_warmup_task", None)
         if task is None or task.done():
             return
-        timeout = _startup_warmup_timeout_secs()
-        if timeout <= 0:
-            return
-        await self._wait_bounded_or_release(
-            {task}, timeout,
-            "Turn-machinery warm-up still running after %.0fs; opening inbound gate anyway — the "
-            "first turn may see lazily initialized machinery (#99373). Warm-up continues in the background.",
-            "boot turn-machinery warm-up failed after gate release", level=logging.DEBUG,
-        )
+        await task
 
     async def _wait_bounded_or_release(
         self, tasks: set, timeout: float, warn_fmt: str, late_msg: str, *,

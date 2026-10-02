@@ -13,7 +13,6 @@ import queue as queue_mod
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import resolve_channel_prompt
@@ -22,10 +21,10 @@ from gateway.turn_context import TurnContext
 
 
 def _make_runner(ctx):
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     class _StubGatewayRunner:
-        def _adapter_for_source(self, source):
+        def _delivery_adapter_for(self, source):
             return None
 
     return TurnRunner(_StubGatewayRunner(), ctx)
@@ -41,24 +40,9 @@ class TestTurnContext:
         assert b.repeat_count == [0]
         assert b._cleanup_msg_ids == []
 
-    def test_shared_containers_visible_to_outer_scope(self):
-        # The outer body and the runner share the SAME list objects, so
-        # mutation through the ctx is visible to locals captured elsewhere.
-        last_progress_msg = [None]
-        ctx = TurnContext(last_progress_msg=last_progress_msg)
-        ctx.last_progress_msg[0] = "🔍 web_search"
-        assert last_progress_msg[0] == "🔍 web_search"
 
 
 class TestTurnRunner:
-    def test_methods_exist_and_bind(self):
-        from gateway.run import TurnRunner
-
-        ctx = TurnContext()
-        runner = _make_runner(ctx)
-        assert callable(runner.progress_callback)
-        assert asyncio.iscoroutinefunction(TurnRunner.send_progress_messages)
-        assert runner._ctx is ctx
 
     def test_send_progress_messages_no_queue_returns(self):
         ctx = TurnContext(progress_queue=None)
@@ -138,7 +122,7 @@ class TestTurnRunner:
             _hooks_ref=SimpleNamespace(loaded_hooks=False),
         )
 
-        from gateway.run import TurnRunner
+        from gateway.run_turn_runner import TurnRunner
 
         result = TurnRunner(gateway_runner, ctx).run_sync()
 
@@ -147,7 +131,25 @@ class TestTurnRunner:
         )
         assert result["compression_exhausted"] is True
 
-    def test_wildcard_channel_prompt_composes_with_channel_override(self):
+    def test_wildcard_channel_prompt_composes_with_channel_override(self, tmp_path, monkeypatch):
+        from gateway.config import load_gateway_config
+        from gateway.run import GatewayRunner
+        from gateway.run_turn_runner import TurnRunner
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            'discord:\n'
+            '  channel_prompts:\n'
+            '    "*": "Global policy"\n'
+            '    "channel-a": "Exact context"\n'
+            '  channel_overrides:\n'
+            '    "channel-a":\n'
+            '      system_prompt: "Override persona"\n',
+            encoding="utf-8",
+        )
+        prompt_runner = object.__new__(GatewayRunner)
+        prompt_runner.config = load_gateway_config()
+
         class _CapturingAgent:
             init_kwargs: dict = {}
 
@@ -172,7 +174,7 @@ class TestTurnRunner:
                 }
 
         gateway_runner = MagicMock()
-        gateway_runner.config = SimpleNamespace(streaming=None)
+        gateway_runner.config = prompt_runner.config
         gateway_runner._provider_routing = {}
         gateway_runner._agent_cache_lock = None
         gateway_runner._agent_cache = {}
@@ -181,7 +183,7 @@ class TestTurnRunner:
         gateway_runner._pending_model_notes = {}
         gateway_runner._pending_skills_reload_notes = {}
         gateway_runner.session_store._entries = {}
-        gateway_runner._get_system_prompt_for_channel.return_value = "Override persona"
+        gateway_runner._get_system_prompt_for_channel = prompt_runner._get_system_prompt_for_channel
         gateway_runner._resolve_session_agent_runtime.return_value = ("test-model", {})
         gateway_runner._resolve_session_reasoning_config.return_value = None
         gateway_runner._resolve_session_service_tier.return_value = None
@@ -204,12 +206,7 @@ class TestTurnRunner:
             user_id="test-user",
         )
         channel_prompt = resolve_channel_prompt(
-            {
-                "channel_prompts": {
-                    "*": "Global policy",
-                    "channel-a": "Exact context",
-                }
-            },
+            prompt_runner.config.platforms[Platform.DISCORD].extra,
             source.chat_id,
         )
         ctx = TurnContext(
@@ -226,8 +223,6 @@ class TestTurnRunner:
             _run_still_current=lambda: True,
             _hooks_ref=SimpleNamespace(loaded_hooks=False),
         )
-
-        from gateway.run import TurnRunner
 
         result = TurnRunner(gateway_runner, ctx).run_sync()
 

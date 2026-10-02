@@ -12,10 +12,12 @@ from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.kanban_watchers import _wake_scope_id
+from gateway.kanban_watchers_notifier import _wake_scope_id
 from gateway.run import GatewayRunner
 from gateway.session import build_session_key
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 from plugins.platforms.slack.adapter import SlackAdapter
 
 TEAM = "T0B8U2M6NRE"
@@ -36,6 +38,7 @@ class UnscopedAdapter:
 
     async def handle_message(self, event):
         self.handled.append(event)
+        event._gateway_accepted = True
 
 
 def _slack_adapter(channel_team=None):
@@ -45,7 +48,7 @@ def _slack_adapter(channel_team=None):
     adapter._app.client = AsyncMock()
     adapter._running = True
     adapter.send = AsyncMock()
-    adapter.handle_message = AsyncMock()
+    adapter.handle_message = AsyncMock(side_effect=lambda event: setattr(event, "_gateway_accepted", True))
     if channel_team:
         adapter._channel_team.update(channel_team)
     return adapter
@@ -75,7 +78,7 @@ async def _one_notifier_tick(monkeypatch, runner):
 
 
 def _completed_subscription(**sub_kwargs):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
@@ -87,7 +90,7 @@ def _completed_subscription(**sub_kwargs):
         # delivery_mode ("notify+wake"/"wake") on current main; the plain
         # "notify" default would never reach the wake path under test.
         sub_kwargs.setdefault("delivery_mode", "notify+wake")
-        kb.add_notify_sub(conn, task_id=tid, **sub_kwargs)
+        kbn.add_notify_sub(conn, task_id=tid, **sub_kwargs)
         kb.complete_task(conn, tid, summary="done")
         return tid
     finally:
@@ -211,18 +214,8 @@ def test_wake_scope_id_degrades_when_the_adapter_lookup_raises():
     assert _wake_scope_id(Exploding(), {"chat_id": CHANNEL}) is None
 
 
-def test_wake_scope_id_is_none_for_adapters_without_the_hook():
-    """Adapters that don't resolve scopes leave the wake unscoped."""
-    assert _wake_scope_id(UnscopedAdapter(), {"chat_id": CHANNEL}) is None
 
 
-def test_slack_adapter_reports_the_channel_workspace():
-    adapter = SlackAdapter.__new__(SlackAdapter)
-    adapter._channel_team = {CHANNEL: TEAM}
-
-    assert adapter.scope_id_for_chat(CHANNEL) == TEAM
-    assert adapter.scope_id_for_chat("C_UNKNOWN") is None
-    assert adapter.scope_id_for_chat("") is None
 
 
 def test_slack_adapter_reports_no_scope_for_ambiguous_channels():

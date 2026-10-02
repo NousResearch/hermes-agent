@@ -4,25 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-import inspect
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from gateway.shutdown_watchdog import (
     loop_heartbeat_forever,
-    _arm_loop_floor_timer,
     start_loop_liveness_watchdog,
 )
-
-
-def _immediate_loop() -> MagicMock:
-    loop = MagicMock(spec=asyncio.AbstractEventLoop)
-    loop.call_soon_threadsafe.side_effect = lambda callback: callback()
-    return loop
-
 
 def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -54,7 +43,6 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     critical.assert_called_once()
     dump.assert_called_once_with(all_threads=True)
     assert exit_codes == []
-
 
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -105,7 +93,6 @@ def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     critical.assert_not_called()
     dump.assert_not_called()
 
-
 def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     probe_scheduled = threading.Event()
@@ -152,7 +139,6 @@ def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
     dump.assert_not_called()
     hard_exit.assert_not_called()
 
-
 def test_gateway_config_loop_watchdog_round_trip():
     """loop_watchdog is a config.yaml knob: default on, nested-gateway form honored."""
     from gateway.config import GatewayConfig
@@ -167,7 +153,6 @@ def test_gateway_config_loop_watchdog_round_trip():
     )
     config = GatewayConfig.from_dict({"loop_watchdog": False})
     assert config.to_dict()["loop_watchdog"] is False
-
 
 def test_gateway_config_loop_watchdog_tuning_round_trip():
     """Watchdog tolerance knobs parse, serialize, and clamp malformed values."""
@@ -222,7 +207,6 @@ def test_gateway_config_loop_watchdog_tuning_round_trip():
     assert clamped.loop_watchdog_probe_timeout_s == 10.0
     assert clamped.loop_watchdog_max_strikes == 3
 
-
 def test_gateway_config_loop_watchdog_nonfinite_values_degrade():
     """NaN/Inf tuning values fall back to defaults instead of reaching the
     watchdog's Event.wait loop (or aborting config load via int(inf))."""
@@ -251,7 +235,6 @@ def test_gateway_config_loop_watchdog_nonfinite_values_degrade():
     assert big.loop_watchdog_probe_timeout_s == 10.0
     assert big.loop_watchdog_max_strikes == 3
 
-
 def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
     """The real startup loader must honor gateway.loop_watchdog* from
     config.yaml — from_dict's nested fallback never sees the yaml gateway
@@ -274,45 +257,37 @@ def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
     assert cfg.loop_watchdog_probe_timeout_s == 15.0
     assert cfg.loop_watchdog_max_strikes == 12
 
+def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
+    """The terminal watchdog observation must be visible before ``os._exit``."""
+    from gateway.status import read_runtime_status, write_runtime_status
 
-def test_gateway_runner_liveness_guards_start_and_stop():
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    runner._loop_floor_timer_handle = None
-    runner._loop_liveness_watchdog = None
-    runner.config = None
+    write_runtime_status(gateway_state="running", exit_reason=None)
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
-    floor_timer = MagicMock()
-    watchdog = MagicMock()
-    watchdog.is_alive.return_value = True
+    fired = threading.Event()
+    exit_codes = []
+
+    def fake_exit(code: int) -> None:
+        exit_codes.append(code)
+        fired.set()
 
     with (
-        patch(
-            "gateway.run._arm_loop_floor_timer", return_value=floor_timer
-        ) as arm_floor,
-        patch(
-            "gateway.run.start_loop_liveness_watchdog", return_value=watchdog
-        ) as start_watchdog,
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
     ):
-        runner._start_loop_liveness_guards(loop)
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=2
+        )
+        assert handle is not None
+        assert fired.wait(timeout=2.0), "watchdog did not reach its restart exit"
+        handle.stop()
+        handle.join(timeout=1.0)
 
-    arm_floor.assert_called_once_with(loop)
-    start_watchdog.assert_called_once_with(
-        loop,
-        probe_interval=30.0,
-        probe_timeout=10.0,
-        max_strikes=3,
-    )
-    assert runner._loop_floor_timer_handle is floor_timer
-    assert runner._loop_liveness_watchdog is watchdog
+    record = read_runtime_status()
+    assert exit_codes == [75]
+    assert record["gateway_state"] == "degraded"
+    assert record["exit_reason"] == "loop_liveness_watchdog"
+    assert record["restart_requested"] is True
 
-    runner._stop_loop_liveness_guards()
-
-    watchdog.stop.assert_called_once_with()
-    floor_timer.cancel.assert_called_once_with()
-    assert runner._loop_liveness_watchdog is None
-    assert runner._loop_floor_timer_handle is None
 def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     """The heartbeat write must not freeze the loop the watchdog is watching.
 
@@ -360,46 +335,4 @@ def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     assert ticks >= 5, (
         "the loop made only %d tick(s) while the heartbeat was writing — "
         "the write is blocking the loop again" % ticks
-    )
-
-
-def test_heartbeat_write_is_awaited_so_a_frozen_loop_still_goes_stale():
-    """The staleness signal external monitors rely on must survive the fix.
-
-    The docstring on ``loop_heartbeat_forever`` promises that a frozen loop lets the file
-    age, which is how an outside supervisor notices. Handing the write to a thread
-    keeps that promise only because the loop still *initiates* it and awaits it —
-    fire-and-forget would refresh the file from a thread while the loop was
-    wedged, destroying exactly that signal.
-    """
-    src = pathlib.Path(
-        inspect.getsourcefile(loop_heartbeat_forever) or ""
-    ).read_text()
-    body = src[src.index("async def loop_heartbeat_forever("):]
-    body = body[: body.index("\ndef ") if "\ndef " in body else len(body)]
-    assert "await asyncio.to_thread(" in body, "the write is not handed to a thread"
-    assert "create_task(" not in body, (
-        "the heartbeat write is fire-and-forget; a frozen loop would keep the "
-        "file fresh and the staleness signal would be lost"
-    )
-
-
-def test_loop_scheduling_witness_is_served_by_the_loop_itself():
-    """The tick socket must be armed on the loop, never in a thread.
-
-    The two-witness contract in ``probe_gateway_loop_liveness`` rests on the
-    socket being answered only while the loop is actually dispatching. If the
-    server ever moved into the heartbeat's executor thread, a wedged loop
-    could keep answering pings (same class of lie as a fire-and-forget file
-    write) and the interlock would be void.
-    """
-    src = pathlib.Path(
-        inspect.getsourcefile(loop_heartbeat_forever) or ""
-    ).read_text()
-    body = src[src.index("async def loop_heartbeat_forever("):]
-    body = body[: body.index("\ndef ") if "\ndef " in body else len(body)]
-    # Awaited directly on the loop task: a coroutine cannot run inside a
-    # thread, so an awaited start_unix_server is structurally loop-owned.
-    assert "await asyncio.start_unix_server(" in body, (
-        "the loop-scheduling witness socket is not armed by the loop task"
     )

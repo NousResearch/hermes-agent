@@ -723,7 +723,7 @@ def _make_run_env(env: dict) -> dict:
         frozenset(),
         lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)),
     )
-    # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
+    # While this profile's Bot Desktop is running, only its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
     # on the user's own seat (#125830). published_env() is the pure read (no activity stamp — a
     # plain ``ls`` must not keep the screen alive past idle_stop_minutes), and it wins over the
@@ -736,7 +736,8 @@ def _make_run_env(env: dict) -> dict:
     except Exception:
         published = {}
     if published:
-        run_env.update(published)
+        run_env.update({key: published[key] for key in ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS")
+                        if key in published})
         run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
     return run_env
 

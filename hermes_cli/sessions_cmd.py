@@ -330,6 +330,8 @@ def _cmd_export(db, args):
             return
         # Unlike prune/archive, export includes archived sessions.
         filters["archived"] = None
+        # Export is a backup operation: do not apply prune's keep-flag exclusion.
+        filters["include_pinned"] = True
 
     def _redact(data):
         if not args.redact or data is None:

@@ -206,6 +206,11 @@ def _no_prompt_git_kwargs() -> dict:
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
+    # ``git fetch`` may hand off to automatic maintenance after a successful
+    # transfer. Keep that child owned by this update invocation: an interrupted
+    # updater must not leave a detached maintenance loop repacking the checkout
+    # indefinitely (Windows can otherwise accumulate full-history packs).
+    env["GIT_CONFIG_PARAMETERS"] = "'maintenance.auto=false'"
     # Every network git spawn (fetch/pull/shallow heal) runs under a console-less
     # desktop backend on Windows; hide the per-spawn console (#117781).
     from hermes_cli._subprocess_compat import windows_hide_flags

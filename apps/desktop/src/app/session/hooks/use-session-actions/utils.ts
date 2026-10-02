@@ -1132,7 +1132,101 @@ export function preserveLocalPendingTurnMessages(
   // #120978: a kept run whose rowIds predate the whole hydrated page belongs
   // earlier — splice it in front of the first newer row instead of appending it
   // below the newest turn (non-qualifying runs keep the trailing behavior).
-  return preserved.length ? spliceOlderPreservedRows(withReplacements, preserved) : withReplacements
+  const merged = preserved.length ? spliceOlderPreservedRows(withReplacements, preserved) : withReplacements
+
+  /* ==== 本地补丁 2026-10-02：收掉同一回合里"被完整覆盖"的重复助手行 ====
+   * 实测形态（见 04-工作台/桌面端回复重复-本地补丁-20261002.md 与 issue #129993）：
+   *   ① 本地流式行（id = assistant-stream-*，仅在已落定时才动）与库侧持久行并存；
+   *      实测：逐字相同（4666=4666），或"折叠行 ⊇ 流式行"（汇总 5665 ⊇ 本地 4933）。
+   *   ② 折叠行（本回合中间叙述 + 最终答复拼成的一条，整段不在库里）与其中一条源行并存；
+   *      实测：2634（折叠）⊇ 2436（源行 = 库 194873）。
+   * 判据（内容安全）：同一用户回合内，若本条正文被另一条**更长**的助手行正文完整包含
+   *   → 收掉本条（它的一切都在那条里，删它不丢内容）；正文完全相同时，收掉 live-tail 那条，
+   *   或收掉没有 rowId 的那条（保留库侧可寻址的那条）；两边都不是上述情形则都保留。
+   *   两侧一律要求 pending !== true —— 流式中的行绝不动。
+   * 刻意不做：不跨回合匹配（避免把"重发同一提示得到的相同答复"误合成一条）。
+   * 上游若已修（issue #129993 / PR #128169 方向），整段删除即可。
+   * ================================================================== */
+  const dropDuplicateRenderRows = (rows: ChatMessage[]): ChatMessage[] => {
+    const drop = new Set<string>()
+    const proseOf = (message: ChatMessage): string => textWithoutReferenceLines(chatMessageText(message)).trim()
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index]
+
+      if (row.role !== 'assistant' || row.hidden || row.error) continue
+      if (row.pending === true) continue
+
+      const text = proseOf(row)
+
+      if (text.length < 40) continue
+
+      const liveTailRow = isLiveTailReplyId(row.id)
+      // "同一回合" = 两者之间没有 user 行（中途插话会在同一条回复中间插入 user 行）
+      const sameTurn = (a: number, b: number): boolean => {
+        const lo = Math.min(a, b)
+        const hi = Math.max(a, b)
+
+        for (let k = lo + 1; k < hi; k += 1) {
+          if (rows[k].role === 'user') return false
+        }
+
+        return true
+      }
+
+      const coveredBy = rows.some((candidate, candidateIndex) => {
+        if (candidateIndex === index) return false
+        if (candidate.role !== 'assistant' || candidate.hidden || candidate.error) return false
+        if (candidate.pending === true) return false
+
+        const candidateText = proseOf(candidate)
+
+        if (!candidateText || candidateText.length < text.length) return false
+
+        const pairSameTurn = sameTurn(index, candidateIndex)
+
+        if (candidateText.length > text.length) {
+          // "被完整包含"证据强：live-tail 行允许跨过插话 user 行（实测用例 6：
+          // A-820 ⊇ A-807，中间隔着插话 user 行）；已落定的库行仍要求同回合，
+          // 避免把"两个回合里恰好成包含关系"的回复误合。
+          if (!pairSameTurn && !liveTailRow) return false
+
+          return candidateText.includes(text)
+        }
+
+        if (!pairSameTurn) return false
+
+        // 完全同文（库里查过：这种回合在库中只有 1 行，故必然是渲染层多的那份）：
+        // 优先保留带 rowId 的那条（库侧可寻址），其次保留非 live-tail 的那条，
+        // 都不适用就保留靠后（较新）的那条 —— 同文二者取一，内容零损失。
+        if (row.rowId === undefined && candidate.rowId !== undefined) return true
+        if (isLiveTailReplyId(row.id) && !isLiveTailReplyId(candidate.id)) return true
+
+        return candidateIndex > index
+      })
+
+      if (coveredBy) drop.add(row.id)
+    }
+
+    if (!drop.size) return rows
+
+    try {
+      const scope = globalThis as unknown as { __dupDiag?: unknown[] }
+      scope.__dupDiag = scope.__dupDiag ?? []
+      scope.__dupDiag.push({
+        t: Date.now(),
+        kind: 'droppedDuplicateRenderRow',
+        where: 'preserveLocalPendingTurnMessages',
+        ids: [...drop]
+      })
+    } catch {
+      /* diagnostics must never throw */
+    }
+
+    return rows.filter(row => !(row.role === 'assistant' && drop.has(row.id)))
+  }
+
+  return dropDuplicateRenderRows(merged)
 }
 
 /**

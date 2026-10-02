@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from gateway.input_owner import gateway_input_owner
 from gateway.run_inbound_logging import log_inbound_reply_context
-from gateway.platforms.event import MessageEvent, ProcessingOutcome, _ProcessingCompletion
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, _ProcessingCompletion
 from gateway.platforms.base_pending import reserve_pending_dispatch, release_pending_dispatch_record
 from gateway.response_filters import display_kind_for_event, reply_expected_metadata
 from gateway.run_inbound_turn_context import channel_state_metadata
@@ -345,16 +345,26 @@ class GatewayQueuedFollowupMixin:
                 release_pending_dispatch_record(adapter, turn_ctx.session_key, reservation)
 
 
-    async def _park_followup_at_recursion_cap(self: "GatewayRunner", adapter: Any, session_key: str, pending_event: Any) -> None:
-        """Put the follow-up back in the pending slot. A started message keeps one lifecycle: an event
-        that the follow-up replaces in the slot is discarded, and a follow-up merged into the event
-        already there completes with that event."""
-        if not isinstance(pending_event, MessageEvent):
-            from gateway.platforms.base_pending_merge import merge_pending_message_event
+    async def _park_followup_at_recursion_cap(
+        self: "GatewayRunner", adapter: Any, session_key: str | None, event: MessageEvent,
+    ) -> None:
+        from gateway.platforms.base_pending import _can_join_pending_event, pending_dispatch_withdrawn
 
-            merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+        if session_key is None:
             return
-        await self._complete_discarded_event(self._merge_into_pending_slot(adapter, session_key, pending_event))
+        if pending_dispatch_withdrawn(adapter, session_key, event):
+            return
+        existing = adapter._pending_messages.get(session_key)
+        media_types = {getattr(existing, "message_type", None), event.message_type}
+        if (existing is not None and not self._overflow_queue(session_key)
+                and _can_join_pending_event(existing, event)
+                and MessageType.PHOTO in media_types
+                and media_types <= {MessageType.TEXT, MessageType.PHOTO}):
+            await self._complete_discarded_event(self._merge_into_pending_slot(adapter, session_key, event))
+            event._gateway_accepted = True
+            return
+        self._restore_pending_dispatch(session_key, event, adapter)
+        self._park_event_lifecycle(event)
 
 
     async def _complete_attached_to_hookless(

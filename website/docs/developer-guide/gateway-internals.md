@@ -27,6 +27,7 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | `gateway/run_turn_execution.py` | Agent execution, proxy requests and streaming completion |
 | `gateway/platforms/base_lifecycle.py` | Shared processing hooks and outcome reactions |
 | `plugins/platforms/matrix/feedback.py` | Matrix processing feedback and read receipts |
+| `plugins/platforms/matrix/inbound_events.py` | Inbound event construction, dispatch and context admission |
 | `plugins/platforms/matrix/adapter_media.py` | Inbound Matrix media admission, download and caching |
 
 ## Architecture Overview

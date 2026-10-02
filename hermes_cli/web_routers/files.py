@@ -370,26 +370,30 @@ def _media_proxy_host_allowed(host: str) -> bool:
     )
 
 
-def _validate_media_proxy_url(url: str) -> None:
-    """Apply the CDN boundary to the initial URL and every redirect destination."""
-    parsed = urllib.parse.urlparse((url or "").strip())
+def _validate_media_proxy_url(url: str) -> str:
+    """Return a URL with an allowlisted CDN origin; DNS policy is enforced separately."""
+    url = (url or "").strip()
+    parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=400, detail="A remote image URL is required")
     if not _media_proxy_host_allowed(parsed.hostname):
         raise HTTPException(status_code=403, detail="Image host not allowed")
+    if parsed.username is not None or parsed.password is not None:
+        raise HTTPException(status_code=400, detail="Image URL must not contain credentials")
     if not parsed.path or Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
         # Generated-image CDN URLs are content-hash paths with no extension;
         # a missing extension is expected, so only reject explicit non-image
         # extensions and let content type be sniffed from the response.
         if Path(parsed.path).suffix and Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
             raise HTTPException(status_code=415, detail="Unsupported media type")
+    return url
 
 
 async def _media_proxy_request_guard(request: Any) -> None:
     from tools.url_safety import async_is_safe_url
 
     url = str(request.url)
-    _validate_media_proxy_url(url)
+    url = _validate_media_proxy_url(url)
     if not await async_is_safe_url(url):
         raise HTTPException(status_code=403, detail="Image URL targets a private or internal address")
 
@@ -398,7 +402,7 @@ async def _media_proxy_request_guard(request: Any) -> None:
 async def proxy_remote_media(url: str, request: Request):
     """Fetch an authenticated, allowlisted CDN image, guarding every hop and TCP connect."""
     _require_token(request)
-    _validate_media_proxy_url(url)
+    url = _validate_media_proxy_url(url)
     from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_async_client
 
     try:

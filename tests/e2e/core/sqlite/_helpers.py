@@ -257,26 +257,21 @@ class Chamber:
                             continue
                     except OSError:
                         continue
-                    if link.endswith(" (deleted)") and link[: -len(" (deleted)")] in targets:
-                        if not self._still_held(fd_dir, fd, link):
-                            continue
-                        with self._lock:
-                            self.deleted_hits.append((name, proc.pid, link))
-            self._monitor_stop.wait(0.02)
-
-    @staticmethod
-    def _still_held(fd_dir: str, fd: str, link: str) -> bool:
-        """A leak holds the unlinked sidecar for good; SQLite's own WAL last-close does not.
-
-        ``unixShmUnmap`` unlinks ``-shm`` and only then ``unixShmPurge`` closes its descriptor, so a
-        healthy close shows a ``(deleted)`` ``-shm`` for microseconds.  The 20ms poll occasionally
-        lands in that window on a short-lived role (the opener) and would report a phantom leak.  A
-        descriptor still pointing at the unlinked inode after a grace period is the real thing."""
-        time.sleep(0.05)
-        try:
-            return os.readlink(f"{fd_dir}/{fd}") == link
-        except OSError:
-            return False
+                    if proc.poll() is not None:
+                        continue
+                    key = (proc, proc.pid, fd, identity.st_dev, identity.st_ino, link)
+                    observed_at = time.monotonic()
+                    first_seen = pending.get(key, observed_at)
+                    still_pending[key] = first_seen
+                    if observed_at - first_seen < SHM_CLOSE_GRACE_SECONDS:
+                        continue
+                elif proc.poll() is not None:
+                    continue
+                with self._lock:
+                    self.deleted_hits.append((name, proc.pid, link))
+        # A closed/reused descriptor or exited child starts a new observation.
+        pending.clear()
+        pending.update(still_pending)
 
     def deleted_hits_mark(self) -> int:
         """Position to pass to :meth:`deleted_hits_snapshot` so an episode sees only its own hits."""

@@ -398,9 +398,7 @@ test.runIf(process.platform !== 'win32').each([0, 23])(
       }
 
       assert.match(stdout, /MANAGED_UPDATE_STARTED/)
-      assert.equal(status, '0')
       const log: string = await readFile(logPath, 'utf8')
-      assert.match(stdout, /MANAGED_UPDATE_STARTED/)
       assert.match(log, /managed-update start pid=/)
       assert.match(log, new RegExp(`managed-update exit rc=${exitCode}`))
       assert.equal(status, String(exitCode), `updater output: ${log}`)

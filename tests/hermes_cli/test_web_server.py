@@ -1115,12 +1115,26 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         for bad in (
             "https://evil.example.com/img.png",
             "https://sub.fal.media.evil.com/img.png",
+            "https://fixture-user:fixture-pass@fal.media/img.png",
+            "https://fixture-user@fal.media/img.png",
+            "https://@fal.media/img.png",
             "file:///etc/passwd",
             "not a url",
             "",
         ):
             resp = self.client.get("/api/media/proxy", params={"url": bad})
             assert resp.status_code in (400, 403), (bad, resp.status_code)
+
+    def test_media_proxy_validator_returns_only_allowlisted_origins(self):
+        from hermes_cli.web_routers.files import _validate_media_proxy_url
+
+        for url in (
+            "https://fal.media/media/hash",
+            "https://v3.fal.media/media/hash",
+            "https://sub.fal.run/generated/image.png",
+            "https://storage.googleapis.com/images/image.png",
+        ):
+            assert _validate_media_proxy_url("  " + url + "  ") == url
 
     def test_media_proxy_fetches_allowlisted_image_and_returns_data_url(self, monkeypatch):
         png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 8

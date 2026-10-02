@@ -645,6 +645,7 @@ class TestMasterCredentialStoresAreNeverMountable:
         home.mkdir()
         (home / ".env").write_text("OPENAI_API_KEY=sk-proj-REAL\n")
         (home / "auth.json").write_text('{"providers":{}}')
+        (home / "auth.json.corrupt").write_text('fixture-quarantined-auth-canary')
         (home / ".anthropic_oauth.json").write_text('{"refresh_token":"rt"}')
         (home / "webhook_subscriptions.json").write_text("{}")
         (home / "cache").mkdir()
@@ -659,6 +660,7 @@ class TestMasterCredentialStoresAreNeverMountable:
         [
             ".env",
             "auth.json",
+            "auth.json.corrupt",
             ".anthropic_oauth.json",
             "webhook_subscriptions.json",
             "cache/bws_cache.json",

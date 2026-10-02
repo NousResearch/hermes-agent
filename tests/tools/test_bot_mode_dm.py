@@ -1278,6 +1278,39 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="bot",
                  lease_id="lease", live_session_id="live")
     queued = live.deliver_to_live_owner(tmp_path, owner, "secret plaintext")
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+
+    outcomes = []
+    waiting = threading.Thread(target=lambda: outcomes.append(bot_mode_dm._wait_live_dm(
+        str(tmp_path), queued["delivery_id"], dm_file=dm_file)), daemon=True)
+    waiting.start()
+    time.sleep(0.05)
+    pending_kept = waiting.is_alive() and intent.exists() and dm_file.exists()
+    claimed = live.claim_pending_delivery(tmp_path, owner)
+    assert claimed is not None
+    live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="ok")
+    waiting.join(timeout=2)
+
+    assert pending_kept, "a pending delivery keeps its intent while the runner waits"
+    assert not waiting.is_alive()
+    assert outcomes == [0]
+    assert not intent.exists()
+    assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
+    assert json.loads(capsys.readouterr().out)["reply"] == "ok"
+
+
+def test_live_wait_retains_plaintext_until_the_durable_waiter_settles(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    dm_file = tmp_path / "dm-x.txt"
+    dm_file.write_text("secret plaintext", encoding="utf-8")
+    intent = tmp_path / "dm-x.txt.live.json"
+    intent.write_text("{}", encoding="utf-8")
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="bot",
+                 lease_id="lease", live_session_id="live")
+    queued = live.deliver_to_live_owner(tmp_path, owner, "secret plaintext")
     waits = []
 
     def settle_after_pending_wait(seconds):
@@ -1287,29 +1320,10 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
         assert live.read_delivery_result(tmp_path, queued["delivery_id"])["status"] == "queued"
         claimed = live.claim_pending_delivery(tmp_path, owner)
         live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="ok")
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="b" * 32)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
-
-    outcomes = []
-    waiting = threading.Thread(target=lambda: outcomes.append(bot_mode_dm._wait_live_dm(
-        str(tmp_path), record["delivery_id"], dm_file=dm_file)), daemon=True)
-    waiting.start()
-    time.sleep(0.05)
-    pending_kept = waiting.is_alive() and intent.exists() and dm_file.exists()
-    claimed = live.claim_pending_delivery(tmp_path, owner)
-    assert claimed is not None
-    live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="ok")
-    waiting.join(timeout=2)
 
     monkeypatch.setattr(live.time, "sleep", settle_after_pending_wait)
     assert bot_mode_dm._wait_live_dm(str(tmp_path), queued["delivery_id"], dm_file=dm_file) == 0
     assert waits == [live._POLL_SECONDS], "the durable waiter must retain notification ownership"
-    assert pending_kept, "a pending delivery keeps its intent while the runner waits"
-    assert not waiting.is_alive()
-    assert outcomes == [0]
     assert not intent.exists()
     assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
     assert json.loads(capsys.readouterr().out)["reply"] == "ok"

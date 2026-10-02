@@ -18,9 +18,11 @@ function run(root, body, { patched = true, limit = 64 } = {}) {
   fs.writeFileSync(script, body)
   const args = [...(patched ? ['--import', adapter] : []), script]
   assert.ok(limit === 64 || limit === 4096, 'only the two fixture fd limits are supported')
-  const result = spawnSync('/bin/sh', ['-c',
-    'case "$1" in 64|4096) ;; *) exit 64 ;; esac; ulimit -S -n "$1" && ulimit -H -n "$1" && shift && exec "$@"',
-    'signing-probe', String(limit), process.execPath, ...args], {
+  // Set the limits in a disposable child and execute Node by argv. The
+  // fixture paths never enter a shell command, including paths with spaces.
+  const result = spawnSync(process.env.HERMES_PYTHON || 'python3', ['-I', '-S', '-c',
+    'import os, resource, sys\nlimit = int(sys.argv[1])\nassert limit in (64, 4096)\nresource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit))\nos.execv(sys.argv[2], sys.argv[2:])',
+    String(limit), process.execPath, ...args], {
     encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', DEBUG: '' }, timeout: 30000
   })
   assert.ifError(result.error)

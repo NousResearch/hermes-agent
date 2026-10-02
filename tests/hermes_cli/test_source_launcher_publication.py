@@ -69,8 +69,12 @@ def select_generation(repo, name, value):
     return selected
 
 
-@pytest.mark.platforms("windows", "posix")
-@pytest.mark.parametrize("form", ["native", "shell"])
+@pytest.mark.parametrize("form", [
+    pytest.param("native", marks=pytest.mark.platforms("windows", "posix")),
+    # POSIX shell argv is a different ABI from MSYS calling native Python.
+    # Windows publication uses the native launcher (or its .cmd fallback).
+    pytest.param("shell", marks=pytest.mark.platforms("posix")),
+])
 def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, monkeypatch, form, real_bash):
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     out = tmp_path / "commands"

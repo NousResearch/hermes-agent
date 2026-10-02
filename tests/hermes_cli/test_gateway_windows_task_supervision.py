@@ -91,13 +91,19 @@ def _launchers(monkeypatch, tmp_path, exit_code):
 
 def _exercise_launcher(command, root, exit_code, *, supervised):
     child = None
-    wrapper = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW)
+    launcher_log = root / "launcher-probe.log"
+    output = launcher_log.open("wb")
+    wrapper = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW,
+                               stdout=output, stderr=subprocess.STDOUT)
     try:
         started = root / "started.json"
         deadline = time.monotonic() + 60
         while not started.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert started.exists(), "The generated launcher did not start its child"
+        assert started.exists(), (
+            "The generated launcher did not start its child: "
+            + launcher_log.read_text(encoding="utf-8", errors="replace")[-4000:]
+        )
         state = json.loads(started.read_text(encoding="utf-8"))
         child = psutil.Process(state["pid"])
         assert state["visible"] is False, "The launcher exposed a console window"
@@ -114,9 +120,22 @@ def _exercise_launcher(command, root, exit_code, *, supervised):
         assert state["supervisor_marker"] == ("1" if supervised else "")
     finally:
         (root / "release").touch()
-        wrapper.wait(timeout=60)
+        # Cleanup must not mask an earlier assertion or consume the whole
+        # per-file CI deadline. These are only the two processes this fixture
+        # created; every production lifetime assertion above stays in place.
+        try:
+            wrapper.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            wrapper.kill()
+            wrapper.wait(timeout=10)
         if child is not None:
-            child.wait(timeout=60)
+            try:
+                child.wait(timeout=10)
+            except psutil.TimeoutExpired:
+                if child.is_running():
+                    child.kill()
+                child.wait(timeout=10)
+        output.close()
 
 
 @pytest.mark.platforms('windows')

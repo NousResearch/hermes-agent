@@ -1,0 +1,11 @@
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: barrierModel
+    data:
+      # This return has an exact CDN-origin allowlist. The original input and
+      # generic URL-safety helpers are deliberately not modeled as barriers.
+      # request-forgery limits only FULL URL control in Python's SSRF query;
+      # partial URL flows, DNS policy opt-outs and transport behavior remain
+      # subject to analysis and the HTTP transport regressions.
+      - ['hermes_cli', 'Member[web_routers].Member[files].Member[_validate_media_proxy_url].ReturnValue', 'request-forgery']

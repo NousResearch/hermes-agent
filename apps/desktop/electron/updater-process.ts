@@ -313,7 +313,7 @@ export function wrapHandoffForDetachedConsole(
   detached: false
 } {
   const parameters: Record<string, string | boolean> = {}
-  const allowed = new Set(['InstallRoot', 'Branch', 'DesktopPid', 'RelaunchExe'])
+  const allowed = new Set(['InstallRoot', 'Branch', 'Channel', 'DesktopPid', 'RelaunchExe'])
 
   for (let index = 0; index < extraArgs.length; index += 1) {
     if (extraArgs[index] === '-NoGateway') {

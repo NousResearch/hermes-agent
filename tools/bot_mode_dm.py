@@ -523,16 +523,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
 
 def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
-    """Keep the background completion owner alive until its durable receipt settles.
-
-    A busy Bot Chat can legitimately claim and answer after the old polling
-    window, so notification ownership lasts until the durable receipt settles.
-    """
-    from tools.bot_live_delivery import await_delivery
-
-    # This process is the durable notification owner.  Use the shared receipt waiter, but
-    # do not let its old five-minute fast-poll budget orphan a legitimately busy Bot Chat.
-    record = await_delivery(home, delivery_id, None)
+    """Wait within the owner/deadline budget, retaining unsettled durable receipts."""
     from tools.bot_failure_reasons import RUNTIME_OFFLINE
     from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
 
@@ -568,7 +559,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | 
     status = record["status"] if record else "ambiguous"
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
     payload.update(status=status, delivery_id=delivery_id)
-    if status == "ambiguous":
+    if status in ("queued", "claimed", "ambiguous"):
         payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
     elif status == "settled" and dm_file is not None:
         # The intent carries the message plaintext so a retry can replay the SAME delivery id;
@@ -577,7 +568,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | 
         _unlink_dm_file(_live_intent_file(dm_file))
         _unlink_dm_file(str(dm_file))
     print(json.dumps(payload))
-    return 0 if status == "settled" else 1
+    return 0 if status in ("settled", "queued", "claimed") else 1
 
 
 def _local_delivery_home(argv: list[str]) -> Path | None:

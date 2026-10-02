@@ -420,13 +420,6 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
     from pm.paths import install_root
 
     root = Path(project_root or install_root()).resolve()
-    if _is_windows():
-        # The installer stages the user-facing commands into $HERMES_HOME\bin
-        # and registers that directory in the User PATH. An update skipped both
-        # (this used to answer "windows-installer-owned"), so a machine updated
-        # from a release predating that convention kept the old
-        # venv\Scripts entry and never converged on it. Mirror the installer.
-        return _expose_windows_user_bin(root, create=create)
     if create:
         try:
             from hermes_cli.config import load_config
@@ -436,6 +429,10 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
         cli_cfg = (load_config() or {}).get("cli", {})
         if isinstance(cli_cfg, dict) and not cli_cfg.get("expose_on_path", True):
             return {"ok": True, "skipped": "config-disabled"}
+    if _is_windows():
+        # Honor the same explicit exposure preference before creating commands
+        # or registering User PATH, including an isolated completion home.
+        return _expose_windows_user_bin(root, create=create)
     from hermes_cli.steward import read_install_stamp
 
     if _is_bundled_payload(root):

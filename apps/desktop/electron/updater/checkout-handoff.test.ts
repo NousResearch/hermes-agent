@@ -18,7 +18,7 @@ afterEach((): void => {
 })
 
 /** A checkout root with the repo hand-off script staged, plus a strategy over it. */
-function handoffFixture(remote: boolean): { root: string; deps: CheckoutStrategyDeps } {
+function handoffFixture(remote: boolean, channel?: 'canary'): { root: string; deps: CheckoutStrategyDeps } {
   const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-handoff-'))
   const home: string = path.join(root, 'profile')
   const scriptDirectory: string = path.join(root, 'scripts', 'desktop-update')
@@ -29,7 +29,7 @@ function handoffFixture(remote: boolean): { root: string; deps: CheckoutStrategy
   fs.mkdirSync(path.join(root, '.hermes', 'bin'), { recursive: true })
   fs.writeFileSync(path.join(root, '.hermes', 'bin', 'hermes.exe'), '')
 
-  const status: SourceUpdate = { supported: true, branch: 'main', targetSha: 'a'.repeat(40), updateAvailable: true }
+  const status: SourceUpdate = { supported: true, branch: 'main', ...(channel ? { channel } : {}), targetSha: 'a'.repeat(40), updateAvailable: true }
 
   const deps: CheckoutStrategyDeps = {
     readSourceUpdate: async (): Promise<SourceUpdate> => status,
@@ -58,10 +58,12 @@ function handoffFixture(remote: boolean): { root: string; deps: CheckoutStrategy
 // One gateway per host (#117529): a Desktop served by a remote gateway must
 // tell the hand-off script not to (re)start a local one, and a locally-owned
 // Desktop must keep the default so its gateway comes back after the update.
-it.each([true, false])(
-  'hand-off passes the no-gateway flag iff a remote gateway serves the app: %s',
-  async (remote: boolean): Promise<void> => {
-    const { root, deps } = handoffFixture(remote)
+it.each([
+  [true, undefined], [false, undefined], [true, 'canary'], [false, 'canary']
+] as const)(
+  'hand-off preserves the update target and remote gateway ownership: remote=%s channel=%s',
+  async (remote: boolean, channel: 'canary' | undefined): Promise<void> => {
+    const { root, deps } = handoffFixture(remote, channel)
     const spawned: string[][] = []
     const spawnOptions: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2][] = []
     vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
@@ -84,12 +86,24 @@ it.each([true, false])(
       // The Windows cmd wrapper must inherit its hidden console; the POSIX
       // script needs to outlive Electron as a detached child (#116161).
       expect(spawnOptions[0]?.detached).toBe(!IS_WINDOWS)
-      expect(args).toContain(IS_WINDOWS ? '-Branch' : '--branch')
-
-      if (remote) {
-        expect(args).toContain(NO_GATEWAY_FLAG)
+      if (IS_WINDOWS) {
+        const dispatcher: string = Buffer.from(args.at(-1)!, 'base64').toString('utf16le')
+        const encodedPayload: string | undefined = dispatcher.match(/FromBase64String\('([A-Za-z0-9+/=]+)'\)/)?.[1]
+        expect(encodedPayload).toBeDefined()
+        const payload: { Parameters: Record<string, string | boolean> } = JSON.parse(
+          Buffer.from(encodedPayload!, 'base64').toString('utf8')
+        )
+        expect(payload.Parameters[channel ? 'Channel' : 'Branch']).toBe(channel ?? 'main')
+        expect(payload.Parameters[channel ? 'Branch' : 'Channel']).toBeUndefined()
+        expect(payload.Parameters.NoGateway).toBe(remote ? true : undefined)
       } else {
-        expect(args).not.toContain(NO_GATEWAY_FLAG)
+        expect(args).toContain(channel ? '--channel' : '--branch')
+        expect(args).toContain(channel ?? 'main')
+        if (remote) {
+          expect(args).toContain(NO_GATEWAY_FLAG)
+        } else {
+          expect(args).not.toContain(NO_GATEWAY_FLAG)
+        }
       }
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
@@ -120,7 +134,7 @@ it('the Windows hand-off wrapper is spawned non-detached so the script shares it
     expect(await createCheckoutStrategy({ ...deps, isWindows: true }).apply()).toMatchObject({ ok: true })
     expect(spawned).toHaveLength(1)
     expect(spawned[0]).toMatchObject({ command: 'cmd.exe', detached: false })
-    expect(spawned[0]!.args.slice(0, 6)).toEqual(['/d', '/s', '/c', 'start', '', '/b'])
+    expect(spawned[0]!.args.slice(0, 7)).toEqual(['/d', '/v:off', '/s', '/c', 'start', '', '/b'])
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

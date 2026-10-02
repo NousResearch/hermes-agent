@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
+from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from hermes_time import safe_strftime
-
+from gateway import message_timestamps
 from gateway.message_timestamps import (
     render_user_content_with_timestamp,
 )
+from hermes_time import safe_strftime
 
 
 BERLIN = ZoneInfo("Europe/Berlin")
@@ -25,6 +26,20 @@ def test_render_numeric_timestamp_preserves_instant_in_system_timezone(epoch):
     prefix = safe_strftime(local, "%a %Y-%m-%d %H:%M:%S %Z")
 
     assert render_user_content_with_timestamp("hello", epoch) == f"[{prefix}] hello"
+
+
+@pytest.mark.platforms("windows")
+def test_system_timezone_conversion_starts_from_aware_utc(monkeypatch):
+    # Record real datetime calls: output alone also passes with the unsafe
+    # conversion when the canonical runner sets TZ=UTC. A modern epoch keeps
+    # the failure at this assertion rather than a host-dependent exception.
+    datetime_spy = Mock(wraps=datetime)
+    monkeypatch.setattr(message_timestamps, "datetime", datetime_spy)
+    epoch = 1_000_000_000.0
+
+    render_user_content_with_timestamp("hello", epoch)
+
+    datetime_spy.fromtimestamp.assert_called_once_with(epoch, tz=timezone.utc)
 
 
 def test_render_user_content_deduplicates_existing_timestamp_and_preserves_embedded_time():

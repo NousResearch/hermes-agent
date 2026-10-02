@@ -46,10 +46,15 @@ def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Pa
     if executable is None:
         return None
 
-    # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
-    resources = (
-        executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
-    )
+    # Infer the layout from the executable's own shape, not the running host:
+    # a macOS bundle is …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources,
+    # a Windows/Linux one is <release>/<…>-unpacked/Hermes(.exe) → ./resources.
+    # Branching on sys.platform misverified a Windows bundle from a macOS host
+    # (the update-verify hand-off) by inventing a release/Resources dir.
+    if executable.parent.name == "MacOS":
+        resources = executable.parent.parent / "Resources"
+    else:
+        resources = executable.parent / "resources"
     return resources / "app.asar.unpacked" / "dist"
 
 

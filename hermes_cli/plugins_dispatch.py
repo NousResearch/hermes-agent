@@ -155,19 +155,20 @@ _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
-def _hook_call_identity(kwargs: Dict[str, Any]) -> Optional[str]:
+def _hook_call_identity(kwargs: Dict[str, Any]) -> Optional[tuple[str, ...]]:
     """Identity of the call this callback fires for, or ``None`` when the event has none.
 
-    Concurrent invocations of the same tool in one session must not collapse into one
-    gate key: they are different work, and treating the second as a duplicate drops the
-    hook as if a callback had timed out (upstream #98382). The identity is already in the
-    payload; nothing new is plumbed. Deliberately not ``api_request_id`` — one API request
-    carries many tool calls, which would re-collapse the keys.
+    Provider call IDs can repeat across sessions, turns and responses. Namespace the
+    existing call identity by that context; a request alone is insufficient because
+    one request can contain several tool calls. With no call/turn identity, retain the
+    existing coarse gate. Callback-wide timeout suppression is separate and unchanged.
     """
     for field in ("tool_call_id", "turn_id"):
         value = kwargs.get(field)
         if isinstance(value, str) and value:
-            return value
+            scope = tuple(kwargs.get(name) if isinstance(kwargs.get(name), str) else ''
+                          for name in ('session_id', 'turn_id', 'api_request_id'))
+            return (*scope, field, value)
     return None
 
 

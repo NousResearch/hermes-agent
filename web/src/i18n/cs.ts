@@ -111,6 +111,13 @@ export const cs = defineLocale({
     diskElevatedBanner:
       "Disk vašeho agenta se zaplní. Zvažte vymazání starých relací nebo rozšíření úložiště.",
     dismiss: "Zavřít",
+    sharedMetricsTitle: 'Pomozte vylepšit Hermes?',
+    sharedMetricsBody: 'Sdílené metriky jsou jen omezené čítače – nikdy výzvy, soubory, cesty ani text chyb. Shromažďování zůstává na tomto počítači; odesílání do Nous je samostatná volba.',
+    sharedMetricsShare: 'Odeslat do Nous',
+    sharedMetricsLocal: 'Pouze lokálně',
+    sharedMetricsOff: 'Ne, děkuji',
+    sharedMetricsDetails: 'Podrobnosti',
+    sharedMetricsSaveFailed: 'Vaši volbu se nepodařilo uložit',
     multiplexStandaloneBanner: "Vaše brána obsluhuje jen jeden profil. Neobsluhované: {profiles}. Důvod: {reason}. Oprava: hermes gateway migrate --multiplex",
   },
 
@@ -186,6 +193,7 @@ export const cs = defineLocale({
     deleteSelectedConfirmMessage:
       "Toto trvale odstraní vybrané relace {count} a všechny jejich zprávy. Toto nelze vrátit zpět.",
     selectedSessionsDeleted: "Relace {count} byly smazány",
+    selectedSessionsSkippedActive: 'Smazáno {deleted}; {count} ponecháno, protože v nich běží kolo',
     failedToDeleteSelected: "Vybrané relace se nepodařilo smazat",
     resumeInChat: "Pokračujte v chatu",
     newChat: "Nový chat",

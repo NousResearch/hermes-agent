@@ -13,6 +13,46 @@ export const csOverrides = {
       message: 'Tento soubor neexistuje — mohl být smazán nebo přesunut, případně je na jiném počítači.'
     }
   },
+  sharedMetrics: {
+    consentTitle: 'Pomozte vylepšit Hermes?',
+    consentBody:
+      'Sdílené metriky obsahují jen omezené čítače. Nikdy prompty, soubory, cesty ani text chyb. Sběr probíhá lokálně. Jejich odesílání do Nous je samostatný souhlas.',
+    whatIsCollected: 'Co se sbírá',
+    collectedIntro: 'Pouze omezené čítače:',
+    collectedActivity: 'Aktivita, délka relace, výsledky a třídy chyb',
+    collectedModels: 'Trasy modelů a součty tokenů',
+    collectedNames: 'Názvy vestavěných nástrojů, příkazů a katalogů',
+    collectedMilestones: 'Seskupené počty nastavení',
+    collectedReliability:
+      'Výsledky a načasování aktualizací, pády, rychlost spuštění a odpovědí, stav platforem pro zasílání zpráv',
+    collectedUsage:
+      'Jak se Hermes používá: přesnost a efektivita agentů (shody úprav, smyčky, obnovení, tokeny a volání nástrojů na úlohu, přerušení cache), aktivní čas podle rozhraní a režimu Desktop, které oblasti aplikace, akce a nastavení se používají, rychle zavřené nebo vypnuté, a výsledky nastavení poskytovatelů',
+    collectedMachine:
+      'Hrubé údaje o počítači: rozsah RAM, typ GPU, stáří verze Hermes a kanál vydání, počet chybějících aktualizací, zda se používá místní server modelů',
+    installId:
+      'Odesílání nahrává každý denní balíček do telemetrické služby Nous. Balíčky nesou instalační ID tohoto profilu: stabilní náhodné UUID bez osobních údajů, které se resetuje smazáním adresáře shared-metrics.',
+    consentWindow:
+      'Odesílají se pouze balíčky, jejichž celé období sběru spadá do zaznamenaného okna souhlasu — data z doby před vaším souhlasem nebo z jakékoli mezery, kdy bylo odesílání vypnuté, zůstávají na tomto počítači. Odesílání lze kdykoli znovu vypnout.',
+    readDocs: 'Přečíst úplné podrobnosti',
+    share: 'Sbírat a odesílat do Nous',
+    local: 'Sbírat pouze lokálně',
+    off: 'Ne, děkuji',
+    changeLater: 'Toto můžete kdykoli změnit v Nastavení → Zabezpečení.',
+    saveFailed: 'Vaši volbu se nepodařilo uložit',
+    collectLabel: 'Sbírat statistiky používání',
+    collectDesc: 'Omezené čítače uložené v tomto zařízení. Nikdy prompty, soubory, cesty ani text chyb.',
+    sendLabel: 'Odesílat statistiky používání do Nous',
+    sendDesc:
+      'Nahrávat každý denní balíček do telemetrické služby Nous. Odesílají se jen data z okna souhlasu. Vyžaduje zapnutý sběr.',
+    unavailable: 'Chcete-li toto nastavení změnit, aktualizujte backend Hermes.',
+    stripBody: 'Pouze omezené čítače, nikdy prompty ani soubory.',
+    stripChoices: {
+      share: 'Odeslat do Nous',
+      local: 'Pouze lokálně',
+      off: 'Ne, děkuji'
+    },
+    stripDetails: 'Podrobnosti'
+  },
   intro: {
     custom: () => []
   },
@@ -756,6 +796,8 @@ export const csOverrides = {
       'composer.modelPicker': 'Otevřít výběr modelu',
       'composer.voice': 'Spustit nebo zastavit hlasovou konverzaci',
       'composer.dictate': 'Spustit / zastavit diktování',
+      'composer.reasoningUp': 'Zvýšit úroveň uvažování',
+      'composer.reasoningDown': 'Snížit úroveň uvažování',
       'view.toggleSidebar': 'Přepnout postranní panel relací',
       'view.cycleSidebarGrouping': 'Přepnout seskupení relací',
       'view.toggleRightSidebar': 'Přepnout prohlížeč souborů',
@@ -1163,6 +1205,9 @@ export const csOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Velikost textu chatu',
+      chatTextScaleDesc:
+        'Mění velikost textu konverzace a editoru zpráv vzhledem k měřítku rozhraní. Postranní panely a ovládací prvky zůstávají stejně velké.',
       title: 'Vzhled',
       intro: 'Pouze pro Desktop. Režim určuje jas, motiv barevnou paletu a vzhled chatu.',
       colorMode: 'Barevný režim',
@@ -1244,6 +1289,8 @@ export const csOverrides = {
       },
       introSplashTitle: 'Úvodní obrazovka',
       introSplashDesc: 'Logo a výzva zobrazené v prázdném chatu.',
+      modelPricingTitle: 'Ceny modelů',
+      modelPricingDesc: 'Zobrazovat ceny vstupu, výstupu a čtení z cache za milion tokenů ve výběru modelu.',
       reactionsTitle: 'Reakce na zprávy',
       reactionsDesc: 'Emoji reakce ve stylu iMessage — na zprávy můžete reagovat vy i Hermes.',
       tipsTitle: 'Tipy v aplikaci',
@@ -1994,6 +2041,8 @@ export const csOverrides = {
       provider: 'Poskytovatel',
       model: 'Model',
       applying: 'Používání…',
+      mainAppliedTitle: 'Hlavní model aktualizován',
+      mainAppliedMessage: model => `Nové relace budou používat ${model}.`,
       defaultsLabel: 'Výchozí',
       reasoning: 'Řetězec uvažování',
       reasoningOff: 'Vypnuto',
@@ -2005,6 +2054,7 @@ export const csOverrides = {
       restartFailed: 'Nelze restartovat backend',
       auxiliaryTitle: 'Pomocné modely',
       resetAllToMain: 'Obnovit vše na hlavní',
+      staleAuxDismiss: 'Znovu nezobrazovat',
       auxiliaryDesc:
         'Pomocné úlohy ve výchozím nastavení používají hlavní model. Jednotlivým úlohám můžete přiřadit vlastní model.',
       setToMain: 'Nastavit na hlavní',
@@ -3017,12 +3067,6 @@ export const csOverrides = {
       system: 'Systém',
       usage: 'Použití'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnostika, zálohování, kurátorská a paměťová data',
-      sessions: 'Hledat a spravovat relace',
-      system: 'Stav, záznamy a systémové akce',
-      usage: 'Vývoj počtu tokenů, nákladů a aktivity dovedností v čase'
-    },
     nav: {
       newChat: {
         title: 'Nová relace',
@@ -3074,6 +3118,7 @@ export const csOverrides = {
     hermesActiveSessions: (version, count) => `Hermes ${version} · Aktivní relace ${count}`,
     restartGateway: 'Restartovat bránu',
     openBrowser: 'Otevřít prohlížeč',
+    toggleBrowser: 'Přepnout prohlížeč',
     gatewayRestartFailed: 'Restart brány selhal.',
     sharedGatewayRestartTitle: 'Restartovat sdílenou bránu?',
     sharedGatewayRestartDescription: bots => `Znovu se připojí všichni boti na tomto zařízení: ${bots}`,
@@ -3157,6 +3202,13 @@ export const csOverrides = {
   },
   messaging: {
     search: 'Hledat platformy pro zprávy…',
+    statusFilter: {
+      all: 'Vše',
+      bad: 'Chyby',
+      good: 'Připojeno',
+      muted: 'Neaktivní',
+      warn: 'Vyžaduje pozornost'
+    },
     loading: 'Načítám platformy pro zprávy…',
     loadFailed: 'Platformy pro zprávy se nepodařilo načíst',
     states: {
@@ -3939,6 +3991,8 @@ export const csOverrides = {
       reveal: 'Odhalit ve složce',
       copyPath: 'Kopírovat cestu',
       removeFromSidebar: 'Skrýt od postranní lišty',
+      createdInPreviousContext:
+        'Projekt byl vytvořen v předchozím připojení nebo profilu. Přepněte se zpět, abyste jej našli; soubor IDEA.md nebyl zapsán.',
       createFailed: 'Nelze vytvořit projekt',
       staleBackend:
         'Aktualizujte Hermes backend a vytvořte projekty ?Váš backend je starší než tato desktopová aplikace (Nastavení → Aktualizace → backend).',
@@ -4210,6 +4264,8 @@ export const csOverrides = {
     restoredDraftNotice: 'Vaše neodeslaná zpráva byla obnovena',
     restoredDraftUndo: 'Vrátit zpět',
     queueEdit: 'Upravit',
+    queueExpand: 'Rozbalit',
+    queueCollapse: 'Sbalit',
     queueSendNext: 'Další',
     queueSteer: 'Ovlivnit — ihned změnit probíhající tah',
     queueSend: 'Odeslat',
@@ -4221,6 +4277,11 @@ export const csOverrides = {
     queueDroppedTitle: 'Zadání ve frontě bylo zahozeno',
     queueDroppedBody:
       'Tato položka fronty na pozadí byla zahozena, protože její relaci nešlo po opakovaných pokusech obnovit. Ostatní položky ve frontě zůstaly nedotčeny.',
+    terminalSelectionMissingTitle: 'Výběr terminálu není k dispozici',
+    terminalSelectionMissingBody:
+      'Před odesláním znovu vyberte řádky terminálu (Ctrl/Cmd+L) — tento štítek nemá původní text.',
+    queuedTerminalSelectionExpiredBody:
+      'Tento zařazený výběr terminálu již není k dispozici. Znovu vyberte řádky (Ctrl/Cmd+L) a zprávu znovu zařaďte do fronty.',
     previewUnavailable: 'Náhled nedostupný',
     previewLabel: label => `Náhled ${label}`,
     couldNotPreview: label => `Náhled ${label} se nepodařilo zobrazit`,
@@ -4436,6 +4497,7 @@ export const csOverrides = {
       scopeUncommitted: 'Nezadané',
       scopeBranch: 'Větev',
       scopeLastTurn: 'Poslední tah',
+      readOnlyScope: 'Zobrazení pouze pro čtení — připravit, vrátit zpět a zapsat platí pro Nezapsané změny',
       commit: 'Vyhovět',
       commitAndPush: 'Zadat & tlačit',
       commitPlaceholder: shortcut => `Zpráva (${shortcut} pro vytvoření commitu)`,
@@ -4504,6 +4566,7 @@ export const csOverrides = {
     updateNow: 'Aktualizovat nyní',
     maybeLater: 'Možná později',
     moreChanges: count => `Součástí aktualizace jsou další změny: ${count}.`,
+    copyFullLog: 'Kopírovat celý seznam změn',
     manualTitle: 'Aktualizace z vašeho terminálu',
     manualUnavailableTitle: 'Odtud aktualizovat nelze',
     manualBody:
@@ -4905,7 +4968,12 @@ export const csOverrides = {
     noAuthenticatedProviders: 'Žádné ověřené poskytovatele.',
     addProvider: 'Přidat poskytovatele...',
     addCustomModel: 'Přidat vlastní model',
-    removeCustomModel: 'Odebrat vlastní model'
+    removeCustomModel: 'Odebrat vlastní model',
+    resetToDefaults: 'Obnovit výchozí hodnoty',
+    resetConfirm: 'Obnovit viditelnost modelů na výchozí hodnoty?',
+    resetDescription:
+      'Vaše zobrazené a skryté volby modelů se vymažou a vrátí se výchozí seznam každého poskytovatele. Vlastní modely, které jste přidali, zůstanou zachovány a zobrazeny.',
+    resetAction: 'Obnovit'
   },
   shell: {
     windowControls: 'Ovládání oken',
@@ -4917,7 +4985,15 @@ export const csOverrides = {
       editModels: 'Upravit modely...',
       followDefault: 'Použít výchozí z nastavení',
       refreshModels: 'Obnovit modely',
-      fast: 'Rychle'
+      favorites: 'Oblíbené',
+      addFavorite: 'Přidat do oblíbených',
+      removeFavorite: 'Odebrat z oblíbených',
+      favoriteShortcut: '⇧ Kliknutí',
+      fast: 'Rychle',
+      free: 'zdarma',
+      cacheRead: 'čtení z cache',
+      priceTitle: (input, output, cache) =>
+        `Vstup ${input}/Mtok · Výstup ${output}/Mtok` + (cache ? ` · Čtení z cache ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'Žádné možnosti pro tento model',
@@ -5026,6 +5102,7 @@ export const csOverrides = {
       openStarmap: 'Otevřít graf paměti',
       turnRunning: 'Probíhá',
       contextUsage: 'Použití kontextu',
+      compressions: count => `Komprese: ${count}`,
       systemResources: {
         title: 'Zdroje systému',
         loading: 'Zdroje...',
@@ -5067,6 +5144,10 @@ export const csOverrides = {
     }
   },
   rightSidebar: {
+    terminalReadOnly: 'Výstup pouze pro čtení',
+    terminalReadOnlyHelp:
+      'Chcete-li odpovídat na výzvy, zastavte příkaz na pozadí a spusťte jej v novém terminálu. Nový terminál otevře samostatný shell; nepřipojuje se k tomuto procesu.',
+    terminalOpenInteractive: 'Otevřít nový terminál',
     aria: 'Pravá boční lišta',
     panelsAria: 'Panely pravého postranního panelu',
     files: 'Souborový systém',
@@ -5111,9 +5192,15 @@ export const csOverrides = {
   },
   preview: {
     tab: 'Náhled',
+    pin: 'Připnout do pracovního prostoru',
+    unpin: 'Odepnout z pracovního prostoru',
     closePane: 'Zavřít panel náhledu',
     loading: 'Načítání náhledu',
     unavailable: 'Náhled nedostupný',
+    missingTarget: 'Tato cesta v tomto počítači neexistuje',
+    missingTitle: 'Soubor již neexistuje',
+    missingBody: label =>
+      `${label} byl smazán, přesunut nebo bylo vymazáno jeho dočasné umístění. Tato karta se při dalším spuštění neobnoví.`,
     opening: 'Otevírám...',
     hide: 'Skrýt',
     openPreview: 'Otevřít náhled',
@@ -5139,6 +5226,7 @@ export const csOverrides = {
     editing: 'Úprava',
     unsavedChanges: 'Neuložené změny',
     saveFailed: message => `Uložení se nezdařilo: ${message}`,
+    saveScopeChanged: 'Chcete-li tento koncept uložit, přepněte se zpět na původní připojení a profil.',
     diskChangedTitle: 'Soubor změněn na disku',
     diskChangedBody:
       'Tento soubor se změnil od té doby, co jste ho otevřeli.Přepište jej pomocí své verze, nebo zahoďte editace a znovu načíst?',
@@ -5238,6 +5326,7 @@ export const csOverrides = {
     hideTabStrip: 'Skrýt karty',
     showStripTab: title => `Zobrazit ${title}`,
     hideStripTab: title => `Skrýt ${title}`,
+    zoneMenuLabel: title => `Možnosti zóny pro ${title}`,
     lastTabKeptTitle: 'Poslední karta zůstane',
     lastTabKeptBody:
       'Tato zóna potřebuje alespoň jednu viditelnou kartu. Nejprve zobrazit další kartu, nebo zhroutit celou postranní lištu.',
@@ -5330,6 +5419,7 @@ export const csOverrides = {
       branchNewChat: 'Odvětvit do nového chatu',
       react: 'Reagovat',
       dismissError: 'Skrýt chybu',
+      responseStopped: 'Odpověď zastavena',
       errorLayers: {
         auth: 'Problém s přihlášením',
         billing: 'Nedostatek kreditů',
@@ -5394,6 +5484,10 @@ export const csOverrides = {
         stream_drop: {
           title: 'Odpověď byla přerušena',
           body: 'Připojení se přerušilo před dokončením odpovědi. Odešlete požadavek znovu.'
+        },
+        no_reply: {
+          title: 'Odpověď se nedokončila',
+          body: 'Hermes ukončil tento tah bez odpovědi. Zkuste to znovu a odešlete ji.'
         },
         upstream_blocked: {
           title: 'Požadavek zablokoval firewall',
@@ -5571,13 +5665,11 @@ export const csOverrides = {
       placeholder: 'Napište odpověď…',
       skip: 'Přeskočit',
       skipped: 'Přeskočeno',
-      continueLabel: 'Pokračovat',
+      noAnswer: 'Žádná odpověď',
       confirmAndContinueLabel: 'Potvrdit a pokračovat',
-      answeredBadge: 'Zodpovězeno',
+      singleSelectHint: 'Vyberte jednu',
+      multiSelectHint: 'Vyberte vše, co platí',
       questionProgress: (answered, total) => `Zodpovězeno ${answered} z ${total}`,
-      lateAnswer: (question, choice) => `K otázce „${question}“ — moje odpověď: ${choice}`,
-      lateAnswerTip: 'Navrhněte tuto odpověď jako následnou zprávu',
-      lateAnswerHint: 'Tento požadavek již nečeká na odpověď. Můžete ji zařadit jako následnou zprávu.',
       notDelivered:
         'Tato otázka se do aplikace nedostala, takže na ni zde nelze odpovědět. Stiskněte Zastavit pro ukončení tahu a odpovězte v chatu.'
     },
@@ -5865,6 +5957,9 @@ export const csOverrides = {
       'Toto okno bylo pozadu za jiným zobrazením stejného chatu. Načetly se nejnovější zprávy. Pokud je chcete přesto odeslat, odešlete je znovu.',
     providerCredentialRequired: 'Před odesláním první zprávy přidejte přihlašovací údaje poskytovatele.',
     emptySlashCommand: 'prázdný lomítkový příkaz',
+    slashCommandIgnoredTitle: 'Příkaz neodeslán',
+    slashCommandIgnoredBody:
+      'Příkazy se lomítkem nelze kombinovat s přílohami. Odeberte přílohu nebo příkaz odešlete samostatně.',
     desktopCommands: 'Příkazy Desktopu',
     skillCommandsAvailable: count => `Dostupné příkazy dovedností: ${count}.`,
     warningLine: message => `varování: ${message}`,
@@ -5929,6 +6024,9 @@ export const csOverrides = {
     openImage: 'Otevřít obrázek',
     downloadImage: 'Stáhnout obrázek',
     savingImage: 'Ukládání obrázku',
+    zoomIn: 'Přiblížit',
+    zoomOut: 'Oddálit',
+    resetZoom: 'Obnovit zvětšení',
     imagePreviewFailed: 'Náhled obrázku selhal',
     imageAttach: 'Připojit obrázek',
     imageWriteFailed: 'Nepodařilo se zapsat obrázek na disk.',
@@ -6013,6 +6111,11 @@ export const csOverrides = {
   ui: {
     search: {
       clear: 'Vymazat hledání'
+    },
+    logs: {
+      bottom: 'Konec záznamu',
+      search: 'Hledat v záznamech…',
+      top: 'Začátek záznamu'
     },
     pagination: {
       label: 'stránkování',

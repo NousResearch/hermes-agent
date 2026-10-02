@@ -903,22 +903,26 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             continue
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
-        requested = _write_update_planned_stop_marker(Path(proc.path), int(pid))
-        if requested and on_request is not None:
-            on_request(int(pid))
         try:
             # Socket-first pause (#92091 step 2): ask the gateway to drain and exit itself instead of
             # relying on the marker poll + force-kill ladder. A positive ACK means the gateway is running
             # its own graceful restart path (same drain as SIGUSR1/service restarts) and will release its
             # venv handles on the way out. No answer (older gateway, no socket) → the marker watcher /
             # force-kill fallback below behaves exactly as before this verb existed.
+            # NOTE (#129947): the marker must NOT be on disk when the socket call is made —
+            # a pre-written marker makes the gateway bypass its after-turn cron drain floor.
             from gateway.control_socket import pause_gateway_for_update
             ack = pause_gateway_for_update(Path(proc.path))
             if ack and (ack.get("pausing") or ack.get("already_stopping")):
                 socket_acks.append(ack)
-                if not requested and on_request is not None:
+                if on_request is not None:
+                    on_request(int(pid))
+            else:
+                requested = _write_update_planned_stop_marker(Path(proc.path), int(pid))
+                if requested and on_request is not None:
                     on_request(int(pid))
         except Exception as exc:
+            _write_update_planned_stop_marker(Path(proc.path), int(pid))
             logger.debug("Socket pause unavailable for gateway %s: %s", pid, exc)
     return profiles, mapped_pids, socket_acks
 

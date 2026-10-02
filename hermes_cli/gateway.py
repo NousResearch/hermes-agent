@@ -3573,6 +3573,10 @@ def _get_restart_drain_timeout() -> float:
         raw = str(agent_cfg.get("restart_drain_timeout", DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT))
     return parse_restart_drain_timeout(raw)
 
+def _get_restart_after_turn_timeout() -> float:
+    from gateway.restart import parse_restart_after_turn_timeout
+    return _agent_timeout_setting(
+        "HERMES_RESTART_AFTER_TURN_TIMEOUT", "restart_after_turn_timeout", parse_restart_after_turn_timeout)
 
 def _agent_timeout_setting(env_var: str, key: str, parse) -> float:
     """``parse(env)`` when the env var is non-empty, else ``parse(agent.<key>)`` (None if unset)."""

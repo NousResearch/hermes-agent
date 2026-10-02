@@ -22,8 +22,8 @@ import requests
 from agent.secret_scope import get_secret
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_url_image, success_response
 from plugins.image_gen._common import (
-    ErrorFn, StaticImageGenProvider, collect_source_images, error_factory, load_image_gen_config, post_json,
-    prompt_required_error, resolve_static_model)
+    ErrorFn, HttpFailure, StaticImageGenProvider, collect_source_images, error_factory, load_image_gen_config,
+    post_json, prompt_required_error, resolve_static_model)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,8 @@ _MAX_LOCAL_REFERENCE_BYTES = 3 * 1024 * 1024
 _VALID_CREATIVITY = {"raw", "low", "medium", "high"}
 # Krea 2 generative sliders: integers from -100 to 100, 0 means the slider is off.
 _K2_SLIDERS = ("intensity", "complexity", "movement")
+# Submit failures that prove Krea never created a job, so a FAL retry cannot double-bill.
+_FALLBACK_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 # Polling: Krea recommends 2-5s; 2s backing off to 5s (Large ~1min); ceiling = Krea's 3 min tool timeout.
 _POLL_INITIAL_INTERVAL = 2.0
@@ -103,6 +105,17 @@ def _load_krea_config() -> dict[str, Any]:
 def _krea_section() -> dict[str, Any]:
     section = _load_krea_config().get("krea")
     return section if isinstance(section, dict) else {}
+
+
+def fallback_to_fal_enabled() -> bool:
+    """``image_gen.krea.fallback_to_fal``; on unless set to false."""
+    return _krea_section().get("fallback_to_fal") is not False
+
+
+def _fallback_eligible(failure: HttpFailure) -> bool:
+    if failure.kind in ("connection", "request"):
+        return True
+    return failure.kind == "http" and failure.status in _FALLBACK_STATUSES
 
 
 def _resolve_model(explicit: Optional[str] = None) -> tuple[str, dict[str, Any]]:
@@ -388,6 +401,9 @@ def _submit_job(
         headers=_headers(auth_token, managed=managed, json_body=True),
         payload=payload, timeout=30, label="Krea", error_message=_submit_error_message)
     if failure is not None:
+        def submit_fail(error: str, error_type: str) -> dict[str, Any]:
+            return {**fail(error, error_type), "fallback_eligible": _fallback_eligible(failure)}
+
         if failure.kind == "http":
             status, err_msg = failure.status, failure.message
             logger.error("Krea submit failed (%d): %s", status, err_msg)
@@ -398,16 +414,16 @@ def _submit_job(
                     f"Model '{model_id}' may not be enabled/priced on the Nous Portal's Krea gateway. "
                     "Set KREA_API_KEY to use Krea directly, or pick a different model via "
                     "`hermes tools` → Image Generation.")
-                return None, fail(
+                return None, submit_fail(
                     f"Nous Subscription Krea gateway rejected '{model_id}' "
                     f"(HTTP {status}): {err_msg}. {hint}",
                     "api_error")
-            return None, fail(failure.error, "api_error")
+            return None, submit_fail(failure.error, "api_error")
         if failure.kind == "timeout":
-            return None, fail("Krea submit timed out (30s)", "timeout")
+            return None, submit_fail("Krea submit timed out (30s)", "timeout")
         if failure.kind == "invalid_json":
-            return None, fail(f"Krea returned invalid JSON on submit: {failure.message}", "invalid_response")
-        return None, fail(failure.error, failure.error_type)
+            return None, submit_fail(f"Krea returned invalid JSON on submit: {failure.message}", "invalid_response")
+        return None, submit_fail(failure.error, failure.error_type)
     job_id = submit_body.get("job_id")
     if not isinstance(job_id, str) or not job_id:
         return None, fail("Krea submit response missing job_id", "invalid_response")

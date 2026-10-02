@@ -18,18 +18,104 @@ def _queue(adapter, runner, key):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario,kind", [
-    ("intervening", MessageType.TEXT), ("intervening", MessageType.PHOTO),
-    ("reply", MessageType.TEXT), ("reply", MessageType.PHOTO),
-    ("flush-control", MessageType.TEXT), ("flush-plugin", MessageType.TEXT),
-    ("buffer-control", MessageType.TEXT), ("buffer-plugin", MessageType.TEXT),
-    ("buffer-reply", MessageType.TEXT),
-    ("runnerless-control", MessageType.TEXT), ("runnerless-plugin", MessageType.TEXT),
-    ("runnerless-sender", MessageType.TEXT), ("runnerless-reply", MessageType.TEXT),
+@pytest.mark.parametrize("scenario,kind,busy_dispatches,identity", [
+    pytest.param('intervening', MessageType.TEXT, 0, "original", id="intervening-MessageType.TEXT"),
+    pytest.param('intervening', MessageType.PHOTO, 0, "original", id="intervening-MessageType.PHOTO"),
+    pytest.param('reply', MessageType.TEXT, 0, "original", id="reply-MessageType.TEXT"),
+    pytest.param('reply', MessageType.PHOTO, 0, "original", id="reply-MessageType.PHOTO"),
+    pytest.param('flush-control', MessageType.TEXT, 0, "original", id="flush-control-MessageType.TEXT"),
+    pytest.param('flush-plugin', MessageType.TEXT, 0, "original", id="flush-plugin-MessageType.TEXT"),
+    pytest.param('buffer-control', MessageType.TEXT, 0, "original", id="buffer-control-MessageType.TEXT"),
+    pytest.param('buffer-plugin', MessageType.TEXT, 0, "original", id="buffer-plugin-MessageType.TEXT"),
+    pytest.param('buffer-reply', MessageType.TEXT, 0, "original", id="buffer-reply-MessageType.TEXT"),
+    pytest.param('runnerless-control', MessageType.TEXT, 0, "original", id="runnerless-control-MessageType.TEXT"),
+    pytest.param('runnerless-plugin', MessageType.TEXT, 0, "original", id="runnerless-plugin-MessageType.TEXT"),
+    pytest.param('runnerless-sender', MessageType.TEXT, 0, "original", id="runnerless-sender-MessageType.TEXT"),
+    pytest.param('runnerless-reply', MessageType.TEXT, 0, "original", id="runnerless-reply-MessageType.TEXT"),
+    *[pytest.param("redispatch", MessageType.TEXT, count, identity, id=f"{identity}-{count}")
+      for identity in ("original", "rewrite", "idless-rewrite") for count in (1, 2)],
+    pytest.param("delivery-interrupt", MessageType.TEXT, 0, "original", id="interrupt"),
+    pytest.param("delivery-queue", MessageType.TEXT, 0, "original", id="queue"),
 ])
-async def test_pending_events_preserve_arrival_order_and_context(scenario, kind):
+async def test_pending_events_preserve_arrival_order_and_context(scenario, kind, busy_dispatches, identity):
     adapter = _make_initialized_adapter()
     runner = _QueueRunner(adapter)
+    if scenario == "redispatch":
+        adapter.gateway_runner = runner
+        events = [_make_event(text, chat_type="group", user_id=sender)
+                  for text, sender in [("first", "alice"), ("second", "bob"), ("third", "carol")]]
+        if identity == "idless-rewrite":
+            events[0].message_id = None
+        for event in events:
+            runner._queue_or_replace_pending_event("shared", event)
+        guard = asyncio.Event()
+        adapter._active_sessions["shared"] = guard
+        attempts = []
+        processed = []
+        done = asyncio.Event()
+
+        async def handler(event):
+            attempts.append(event.text)
+            if len(attempts) <= busy_dispatches:
+                queued = replace(event, text=event.text) if identity != "original" else event
+                runner._queue_or_replace_pending_event("shared", queued)
+                return None
+            processed.append(event.text)
+            if len(processed) == 3:
+                done.set()
+            return None
+
+        adapter.set_message_handler(handler)
+        await adapter._drain_pending_after_session_command("shared", guard)
+        try:
+            await asyncio.wait_for(done.wait(), 2)
+            await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks)), 2)
+            assert processed == ["first", "second", "third"]
+        finally:
+            await adapter.cancel_background_tasks()
+        return
+
+    if scenario.startswith("delivery-"):
+        busy_text_mode = scenario.removeprefix("delivery-")
+        adapter._busy_text_mode = busy_text_mode
+        adapter._busy_text_debounce_seconds = 5.0
+        adapter._busy_text_hard_cap_seconds = 10.0
+        adapter.gateway_runner = runner
+        adapter._event_session_key = lambda event: "shared"  # type: ignore[method-assign]
+        delivering, all_ran = asyncio.Event(), asyncio.Event()
+        ran: list[str] = []
+
+        async def runner_handle_message(event):
+            event, _, _ = runner._hm_rescue_orphaned_fifo(event, event.source, False, "shared")
+            ran.append(event.text)
+            while (queued := runner._promote_queued_event(
+                    "shared", adapter, adapter._pending_messages.pop("shared", None))) is not None:
+                ran.append(queued.text)
+            if event.text == "first":
+                await delivering.wait()
+            if len(ran) == 3:
+                all_ran.set()
+            return None
+
+        async def busy_handler(event, session_key):
+            if busy_text_mode == "queue":
+                return False
+            runner._queue_or_replace_pending_event(session_key, event)
+            return True
+
+        adapter.set_message_handler(runner_handle_message)
+        adapter.set_busy_session_handler(busy_handler)
+        await adapter.handle_message(_make_event("first", chat_type="group", user_id="alice"))
+        await asyncio.sleep(0)
+        for text, sender in [("from bob", "bob"), ("from carol", "carol")]:
+            await adapter.handle_message(_make_event(text, chat_type="group", user_id=sender))
+        delivering.set()
+        await asyncio.wait_for(all_ran.wait(), 2.0)
+        await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks)), 2.0)
+
+        assert ran == ["first", "from bob", "from carol"]
+        return
+
     runnerless = scenario.startswith("runnerless-")
     adapter.gateway_runner = None if runnerless else runner
     adapter._active_sessions["shared"] = asyncio.Event()
@@ -87,43 +173,3 @@ async def test_pending_events_preserve_arrival_order_and_context(scenario, kind)
         assert actual == expected
     finally:
         adapter._discard_text_debounce("shared")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("busy_dispatches", [1, 2])
-@pytest.mark.parametrize("identity", ["original", "rewrite", "idless-rewrite"])
-async def test_requeued_deferred_turn_stays_before_later_fifo_items(busy_dispatches, identity):
-    adapter = _make_initialized_adapter()
-    runner = _QueueRunner(adapter)
-    adapter.gateway_runner = runner
-    events = [_make_event(text, chat_type="group", user_id=sender)
-              for text, sender in [("first", "alice"), ("second", "bob"), ("third", "carol")]]
-    if identity == "idless-rewrite":
-        events[0].message_id = None
-    for event in events:
-        runner._queue_or_replace_pending_event("shared", event)
-    guard = asyncio.Event()
-    adapter._active_sessions["shared"] = guard
-    attempts = []
-    processed = []
-    done = asyncio.Event()
-
-    async def handler(event):
-        attempts.append(event.text)
-        if len(attempts) <= busy_dispatches:
-            queued = replace(event, text=event.text) if identity != "original" else event
-            runner._queue_or_replace_pending_event("shared", queued)
-            return None
-        processed.append(event.text)
-        if len(processed) == 3:
-            done.set()
-        return None
-
-    adapter.set_message_handler(handler)
-    await adapter._drain_pending_after_session_command("shared", guard)
-    try:
-        await asyncio.wait_for(done.wait(), 2)
-        await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks)), 2)
-        assert processed == ["first", "second", "third"]
-    finally:
-        await adapter.cancel_background_tasks()

@@ -584,7 +584,7 @@ async def test_disband_keeps_the_source_until_published_files_verify(tmp_path, m
         monkeypatch.setattr(service.runtime, "status", lambda: {"running": True, "stopping": False})
         connection = SimpleNamespace(authority=authority, actor=Principal(
             "alice", str(tmp_path), frozenset({"session:control"}), "viewer"))
-        with pytest.raises(RuntimeError, match="file cleanup is still pending"):
+        with pytest.raises(RuntimeError, match="cleanup is still pending"):
             await dispatch_group_control(connection, "groups.disband", {"room_id": "room"})
         remaining, = outbox_rows(service)
         assert remaining["acknowledged_at"] is None and remaining["cleanup_required_at"] is None

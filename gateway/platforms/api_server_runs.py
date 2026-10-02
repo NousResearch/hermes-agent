@@ -378,9 +378,8 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
     if self._room_grant_token(request):
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
-        parts = (claims[k] for k in (
-            "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
-            "member_id", "target_install_id", "target_profile"))
+        from gateway.platforms.api_server_run_scope import room_run_scope_key
+        return room_run_scope_key(claims)
     else:
         parts = (_api_server._api_request_profile.get() or "default",
                  self._expected_api_key() or "unauthenticated-test-listener")

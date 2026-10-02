@@ -40,17 +40,33 @@ def _disk_cache_path() -> Path:
     return get_hermes_home() / _PRICING_DISK_CACHE_NAME
 
 
-def _load_disk_catalog(cache_key: str) -> dict[str, dict[str, Any]] | None:
+def _load_disk_catalog(cache_key: str) -> tuple[dict[str, dict[str, Any]], float | None] | None:
     try:
         with _disk_cache_path().open(encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, ValueError, TypeError):
         return None
     cached = payload.get(cache_key) if isinstance(payload, dict) else None
-    return cached if isinstance(cached, dict) else None
+    if not isinstance(cached, dict):
+        return None
+    # Older files, and no-expiry providers, contain the catalog directly.
+    if "expires_at" not in cached:
+        return cached, None
+    catalog = cached.get("catalog")
+    expires_at = cached.get("expires_at")
+    if not isinstance(catalog, dict):
+        return None
+    if expires_at is not None and not isinstance(expires_at, (int, float)):
+        return None
+    return catalog, float(expires_at) if expires_at is not None else None
 
 
-def _save_disk_catalog(cache_key: str, result: dict[str, dict[str, Any]]) -> None:
+def _save_disk_catalog(
+    cache_key: str,
+    result: dict[str, dict[str, Any]],
+    *,
+    expires_at: float | None = None,
+) -> None:
     if not result:
         return
     path = _disk_cache_path()
@@ -64,6 +80,8 @@ def _save_disk_catalog(cache_key: str, result: dict[str, dict[str, Any]]) -> Non
         if not isinstance(payload, dict):
             payload = {}
         payload[cache_key] = result
+        if expires_at is not None:
+            payload[cache_key] = {"catalog": result, "expires_at": expires_at}
         tmp = path.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle)
@@ -77,8 +95,14 @@ def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
     cached = _pricing_cache.get(cache_key)
     if cached is None and cache_key not in _disk_cache_checked:
         _disk_cache_checked.add(cache_key)
-        cached = _load_disk_catalog(cache_key)
-        if cached is not None:
+        loaded = _load_disk_catalog(cache_key)
+        if loaded is not None:
+            cached, expires_at = loaded
+            if expires_at is not None:
+                remaining = expires_at - time.time()
+                if remaining <= 0:
+                    return None
+                _pricing_cache_retry_after[cache_key] = time.monotonic() + remaining
             _pricing_cache[cache_key] = cached
     if cached is None:
         return None
@@ -98,8 +122,9 @@ def _cache_catalog(
     """Cache a catalog result, giving an empty one an expiry. *ttl_seconds* expires a non-empty
     result too — only for a catalog whose contents depend on server-side state the client cannot
     observe (an org's model policy can change while a long-lived process holds the entry)."""
+    expires_at = time.time() + ttl_seconds if result and ttl_seconds else None
     _pricing_cache[cache_key] = result
-    _save_disk_catalog(cache_key, result)
+    _save_disk_catalog(cache_key, result, expires_at=expires_at)
     if not result:
         _pricing_cache_retry_after[cache_key] = time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
     elif ttl_seconds:

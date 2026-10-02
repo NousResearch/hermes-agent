@@ -42,7 +42,17 @@ def _stdlib_prefixes():
               if getattr(module, "__file__", None)]
     if len(loaded) == 2 and loaded[0] == loaded[1]:
         prefixes.add(loaded[0])
-    return tuple(_normcase(os.fspath(prefix)) for prefix in prefixes)
+    # Importlib probes the standard-library ZIP beside Lib even when absent.
+    # Admit only the versioned archive advertised by this interpreter, never
+    # its containing runtime directory or arbitrary sys.path entries.
+    archive_name = f"python{sys.version_info.major}{sys.version_info.minor}.zip"
+    advertised = {Path(entry).resolve() for entry in sys.path if entry}
+    archives = set()
+    for prefix in prefixes:
+        archive = (prefix.parent / archive_name).resolve()
+        if archive.name == archive_name and archive.parent == prefix.parent and archive in advertised:
+            archives.add(archive)
+    return tuple(_normcase(os.fspath(prefix)) for prefix in prefixes | archives)
 
 
 _STDLIB_PREFIX_STRS = _stdlib_prefixes()

@@ -27,7 +27,7 @@ Hermes Kanban 是一个持久化任务看板，在所有 Hermes 配置文件之�
 - **工程流水线** —— 分解 → 在并行 worktree 中实现 → 审查 → 迭代 → PR。
 - **批量任务** —— 一个专家管理 N 个对象（50 个社交账号、12 个监控服务）。
 
-完整的设计原理、与 Cline Kanban / Paperclip / NanoClaw / Google Gemini Enterprise 的对比分析，以及八种典型协作模式，请参阅仓库中的 `docs/hermes-kanban-v1-spec.pdf`。
+八种典型协作模式见下文的协作模式一节。
 
 ## Kanban 与 `delegate_task` 的对比
 
@@ -665,8 +665,6 @@ Gateway 平台有实际的消息长度限制。如果 `/kanban list`、`/kanban 
 | **P8 批量任务** | 一个配置文件，N 个对象 | 50 个社交账号 |
 | **P9 分诊规格器** | 粗略想法 → `triage` → `hermes kanban specify` 扩展正文 → `todo` | "将这个一行描述变成规格化任务" |
 
-每种模式的详细示例，请参阅 `docs/hermes-kanban-v1-spec.pdf`。
-
 ## 向后续卡片传递上下文（父任务链接）
 
 父任务链接不只是调度门槛——它是从**已完成**卡片向新卡片传递上下文的通道。当你用 `--parent <已完成卡片id>` 创建卡片时，会发生两件事：
@@ -703,7 +701,7 @@ EOF
 
 ### 调解冲突的 worker 分支
 
-在工程流水线（使用 worktree 的 P1/P2）中，两个 worker 的分支合并时可能发生冲突。不要让任一 worker 自行裁决 —— 发生冲突的 agent 缺乏对方的上下文，往往会覆盖对方的改动或放弃自己的改动。正确做法是：创建一张调解卡片，指派给**第三个中立配置文件**，并把**两张**冲突卡片都链接为其父任务：父任务链接会把双方的完成摘要带入调解者的上下文，使其同时获得双方的 diff *和*双方的意图。内置的 [`merge-reconciler` 技能](https://github.com/NousResearch/hermes-agent/blob/main/skills/autonomous-ai-agents/merge-reconciler/SKILL.md) 为该 worker 提供完整流程：对每个冲突块分类、公正地解决、验证，并在交回摘要中说明每一项决定。
+在工程流水线（使用 worktree 的 P1/P2）中，两个 worker 的分支合并时可能发生冲突。不要让任一 worker 自行裁决 —— 发生冲突的 agent 缺乏对方的上下文，往往会覆盖对方的改动或放弃自己的改动。正确做法是：创建一张调解卡片，指派给**第三个中立配置文件**，并把**两张**冲突卡片都链接为其父任务：父任务链接会把双方的完成摘要带入调解者的上下文，使其同时获得双方的 diff *和*双方的意图。内置的 [`agent-merge-conflict-arbiter` 技能](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/autonomous-ai-agents/agent-merge-conflict-arbiter/SKILL.md) 为该 worker 提供完整流程：对每个冲突块分类、公正地解决、验证，并在交回摘要中说明每一项决定。
 
 ### 并行战役中的碰撞热点（Collision hotspots）
 
@@ -713,7 +711,7 @@ EOF
 hotspot: hermes_cli/kanban_db.py — 本轮对 dispatch 循环的第三次冲突性编辑
 ```
 
-并在完成时的 `metadata` 中重复该标记。编排者（或查看看板的人类）如果看到**两条或更多 `hotspot:` 评论指向同一路径**，应在继续排入任何触碰该文件的工作**之前**，为该文件创建一张专门的重构/分解卡片 —— 拆分磁石文件比调解它未来引发的每一次冲突更便宜。对于*已经*发生的冲突，请使用上文的调解卡片模式配合 `merge-reconciler` 技能；hotspot 标记是上游修复，能避免调解者变成一条常设车道。
+并在完成时的 `metadata` 中重复该标记。编排者（或查看看板的人类）如果看到**两条或更多 `hotspot:` 评论指向同一路径**，应在继续排入任何触碰该文件的工作**之前**，为该文件创建一张专门的重构/分解卡片 —— 拆分磁石文件比调解它未来引发的每一次冲突更便宜。对于*已经*发生的冲突，请使用上文的调解卡片模式配合 `agent-merge-conflict-arbiter` 技能；hotspot 标记是上游修复，能避免调解者变成一条常设车道。
 
 ## 多租户使用
 
@@ -747,7 +745,7 @@ hermes kanban notify-unsubscribe t_abcd \
 ### 多 profile 部署：投递按 profile 归属
 
 在每个 profile 一个 gateway 的部署中（单一调度器，`writer`、`admin` 等各自
-运行独立的 gateway 进程 —— 参见[多 gateway 指南](https://github.com/NousResearch/hermes-agent/blob/main/docs/kanban/multi-gateway.md)），
+运行独立的 gateway 进程 —— 参见[多 gateway 指南](./kanban-multi-gateway.md)），
 调度与投递的归属是分开的：
 
 - **调度保持单一所有者。** 只有一个 gateway 保持
@@ -863,7 +861,3 @@ hermes kanban runs t_abcd
 ## 范围之外
 
 Kanban 是刻意单主机的。`~/.hermes/kanban.db` 是本地 SQLite 文件，调度器在同一台机器上启动 worker。不支持跨两台主机运行共享看板 —— 没有"主机 A 上的 worker X，主机 B 上的 worker Y"的协调原语，崩溃检测路径假设 PID 是主机本地的。如果你需要多主机，每台主机运行独立的看板，并使用 `delegate_task` / 消息队列来桥接它们。
-
-## 设计规范
-
-完整的设计 —— 架构、并发正确性、与其他系统的比较、实现计划、风险、开放问题 —— 存在于 `docs/hermes-kanban-v1-spec.pdf` 中。在提交任何行为变更 PR 之前请先阅读它。

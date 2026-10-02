@@ -5,7 +5,7 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, StrictInt
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
@@ -577,6 +577,7 @@ method("session.compress", params=SessionCompressParams, result=SessionCompressR
 
 class SessionInterruptParams(SessionParams):
     expected_hosted_task_id: str | None = None  # only interrupt if this hosted task is the running one
+    expected_hosted_execution_generation: StrictInt | None = None
 
 
 class InterruptStatus(WireEnum):

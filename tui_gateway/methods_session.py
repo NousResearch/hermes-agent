@@ -2230,10 +2230,14 @@ def _(rid, params: dict) -> dict:
         session, err = _sess_nowait(params, rid)
         if err:
             return err
-        if expected := _str_param(params, "expected_hosted_task_id"):
+        expected = _str_param(params, "expected_hosted_task_id")
+        expected_generation = params.get("expected_hosted_execution_generation")
+        if expected or expected_generation is not None:
             with session["history_lock"]:
                 task = session.get("_hosted_room_task")
-                if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
+                if not (expected and type(expected_generation) is int and expected_generation > 0
+                        and session.get("running") and isinstance(task, dict)
+                        and (task.get("task_id"), task.get("execution_generation")) == (expected, expected_generation)):
                     resume_wake = False
                     return _ok(rid, {"status": "not_interrupted", "interrupted": False})
         sid = str(params.get("session_id") or "")

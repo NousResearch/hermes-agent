@@ -79,7 +79,7 @@ class _FakeRPC:
     def info(self, *, profile, session_id, source):
         return {"active": False, "task_id": None}
 
-    def interrupt(self, *, profile, session_id, source, expected_task_id):
+    def interrupt(self, *, profile, session_id, source, expected_task_id, expected_execution_generation):
         return {"interrupted": True}
 
     def approve(self, **kwargs):
@@ -830,7 +830,7 @@ def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
         def info(self, *, profile, session_id, source):
             return {"active": True, "task_id": self.active_task_id}
 
-        def interrupt(self, *, profile, session_id, source, expected_task_id):
+        def interrupt(self, *, profile, session_id, source, expected_task_id, expected_execution_generation):
             return None
 
     db = tmp_path / "state.db"

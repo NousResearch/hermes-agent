@@ -15,7 +15,6 @@ from typing import Any, Callable, Dict
 
 from hermes_constants import display_hermes_home
 from utils import atomic_json_write
-from hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
@@ -126,13 +125,18 @@ def _replace_subscription(name: str, route: dict, expected: object) -> dict:
 
 
 def _get_webhook_config() -> dict:
-    """Load webhook platform config. Returns {} if not configured."""
+    """The webhook platform as the gateway resolves it (``{"enabled", "extra"}``), else {}.
+
+    Resolved through ``load_gateway_config`` — not config.yaml alone — so WEBHOOK_ENABLED /
+    WEBHOOK_PORT (what ``hermes gateway setup`` and the dashboard write to .env) enable the CLI
+    and set its URLs exactly as they enable and bind the adapter; an explicit yaml ``enabled:
+    false`` still wins, as it does for the gateway."""
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        return cfg_get(cfg, "platforms", "webhook", default={})
+        from gateway.config import Platform, load_gateway_config
+        pc = load_gateway_config().platforms.get(Platform.WEBHOOK)
     except Exception:
         return {}
+    return {"enabled": bool(pc.enabled), "extra": dict(pc.extra or {})} if pc else {}
 
 
 def _is_webhook_enabled() -> bool:

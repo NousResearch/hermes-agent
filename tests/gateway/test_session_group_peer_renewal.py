@@ -65,7 +65,7 @@ class Member(PeerRunsHTTPClient):
 
         async def call():
             self.adapter._read_json_body = AsyncMock(return_value=(body or {}, None))
-            request = Request(headers={'Authorization': f'HermesRoom {room_grant}'})
+            request = Request(headers={**(headers or {}), 'Authorization': f'HermesRoom {room_grant}'})
             return await getattr(api_server_room_grants, _HANDLERS[path])(
                 self.adapter, request, _openai_error=api_server._openai_error,
                 _api_request_profile=api_server._api_request_profile)
@@ -114,6 +114,9 @@ def renewal(tmp_path, monkeypatch):
             'authority_epoch': 1, 'member_id': 'reviewer', 'ttl_seconds': 3600,
             'status_ttl_seconds': 30 * 24 * 3600}, 'default')
         catalog = GatewayRoomCatalog.from_mapping(invitation['catalog'])
+        # This direct in-process transport knows the handler's installation,
+        # just as canonical registration pins it after its authenticated probe.
+        member.proof_install_id = catalog.installation_id
         pin = {'kind': 'peer', 'peer_id': 'member', 'installation_id': catalog.installation_id,
                'profile': 'default', 'capability_digest': catalog.catalog_digest}
         service.create_room(room_id='room', name='Renewal', members=[
@@ -294,6 +297,13 @@ def test_an_active_peer_turn_settles_once_across_its_grants_renewal(renewal, mon
     monkeypatch.setattr(r.service.runtime._wake, 'wait', tick)
     cycle(r)
     assert driver.get_task(r.service.db_path, task['identity'])['status'] == 'settled'
+    # The real capabilities handler reports that this text-only test endpoint
+    # has no output extension. Never invent output consent to publish the reply.
+    from tui_gateway.hosted_room_peer_output import proven_text_consent, stored_consent
+    consent = stored_consent(r.service.db_path, dict(room_id='room',
+        authority_gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+        member_id='reviewer', task_id=task['identity'].task_id, execution_generation=1))
+    assert proven_text_consent(consent) and consent['contract'] is None
     cycle(r)
     events = hosted_rooms.read_events(r.service.db_path, room_id='room')['events']
     visible = [e for e in events if e['kind'] == 'message.member' and e['payload']['text'] == 'Healthy peer result']

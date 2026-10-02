@@ -26,6 +26,7 @@ import agent.secret_scope as secret_scope
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.event import MessageEvent, MessageType
+from tests.gateway.restart_test_helpers import make_restart_runner
 
 
 # ---------------------------------------------------------------------------
@@ -3831,13 +3832,13 @@ class TestSlashEphemeralAck:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("row", [
         "ack-then-final", "retry", "plain-fallback", "chunk-2-fails", "chunk-3-fails",
-        "partial-then-retry", "ledger", "block-kit-and-file", "dm-control"])
+        "partial-then-retry", "ledger", "restart", "block-kit-and-file", "dm-control"])
     async def test_every_output_of_a_slash_invocation_stays_private(
         self, adapter, monkeypatch, tmp_path, row):
         """Every output of one native slash invocation in a channel stays private, through the
         real delivery path: an acknowledgement before the final, a retry or plain-text fallback
         after a failed private send, a response_url that fails mid-reply (no chunk twice), the
-        delivery ledger's public replay, and Block Kit / file / channel-message-edit egress, which
+        delivery ledger's public replay, restart auto-resume, and Block Kit / file / channel-message-edit egress, which
         has no private form and is refused. In a DM (already private) only the first reply
         replaces the ack and the rest stays in the conversation history."""
         import functools
@@ -3865,10 +3866,22 @@ class TestSlashEphemeralAck:
         doc = tmp_path / "save.txt"
         doc.write_text("transcript")
         results = []
+        gateway, _ = make_restart_runner(adapter)  # restart recovery: shutdown pre-mark + crash marker
+        gateway.adapters = {Platform.SLACK: adapter}
+        gateway._restart_requested = True
+        gateway.session_store.mark_resume_pending = lambda sk, _why: wire.out.append(("resumable", sk))
+        gateway.session_store.mark_turn_active = lambda sk: wire.out.append(("resumable", sk)) or "tok"
 
         async def runner(event):
             if row in ("ack-then-final", "dm-control"):
                 await adapter.send(channel, "ack", metadata=meta)
+            if row in ("restart", "dm-control"):  # the gateway restarts mid-turn
+                sk = adapter._event_session_key(event)
+                gateway._running_agents[sk] = MagicMock()
+                gateway._session_state(sk).turn.event = event
+                await gateway._mark_durable_active_turn(event, sk)
+                await gateway._mark_running_sessions_resume_pending("restart")
+                gateway._running_agents.clear()
             if row == "ledger":
                 event.text = "a rewritten agent prompt"  # /plan, /learn fall through like this
             if row in ("block-kit-and-file", "dm-control"):
@@ -3895,9 +3908,10 @@ class TestSlashEphemeralAck:
             "chunk-3-fails": url[:2] + [("ephemeral", "U1", "C")],
             "partial-then-retry": url[:1],  # the retry must not resend what the user has seen
             "ledger": [("url", "cmd", "final")],
+            "restart": [("url", "cmd", "final")],  # never re-run into the public lane on boot
             "block-kit-and-file": [("url", "cmd", "status"), ("url", "cmd", "final")],
-            "dm-control": [("url", "cmd", "ack"), ("public", "Title: Body"), ("public", "save.txt"),
-                           ("public", "final")],
+            "dm-control": [("url", "cmd", "ack"), *[("resumable", "agent:main:slack:dm:T1:D1")] * 2,
+                           ("public", "Title: Body"), ("public", "save.txt"), ("public", "final")],
         }[row]
         assert wire.replaced[:1] == ([True] if wire.replaced else [])
         assert not any(wire.replaced[1:])

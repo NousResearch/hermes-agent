@@ -398,6 +398,12 @@ session that was mid-turn when the drain timeout fired. Reasons:
 
 All three reasons are in `_AUTO_RESUME_REASONS` and eligible for startup auto-resume.
 
+A turn whose adapter reports `reply_is_private(event)` gets neither marker, and its final is
+not ledgered. Today that is a Slack native slash command in a channel. Its private lane (the
+command's `response_url`) does not survive the process, while the ledger sweep and auto-resume
+deliver through the public lane. Such a turn is not recovered after a restart; the user runs
+the command again.
+
 ### Auto-Resume on Next Access
 
 When `get_or_create_session()` encounters `resume_pending=True`:

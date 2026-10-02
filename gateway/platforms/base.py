@@ -4221,14 +4221,20 @@ class BasePlatformAdapter(ABC):
         record_delivery(tts_result)
         return bool(caption and getattr(tts_result, "success", False))
 
+    def reply_is_private(self, event: MessageEvent) -> bool:
+        """True when *event*'s replies reach only its sender through a lane this process holds
+        (Slack's native slash response_url). The delivery ledger and restart auto-resume deliver
+        through the public lane, so both skip such a turn. Default: never."""
+        return False
+
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
         delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
         next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
         or None."""
-        if is_ephemeral_response or str(event.text or "").lstrip().startswith(
-            ("/", self.typed_command_prefix or "!")):
+        if is_ephemeral_response or self.reply_is_private(event) or str(
+                event.text or "").lstrip().startswith(("/", self.typed_command_prefix or "!")):
             return None
         try:
             from gateway.delivery_ledger import (

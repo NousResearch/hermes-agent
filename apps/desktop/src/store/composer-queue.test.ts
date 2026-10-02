@@ -116,6 +116,57 @@ describe('composer queue store', () => {
     expect(revokeObjectURL).not.toHaveBeenCalledWith(newUrl)
   })
 
+  it('captures one immutable send envelope at local enqueue and preserves it through edits and migration', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_790_594_548_125)
+
+    const queued = enqueueQueuedPrompt('rt-old', { attachments: [], text: 'queued identity probe' })
+
+    expect(queued?.envelope).toEqual({
+      clientMessageId: expect.any(String),
+      submittedAt: 1_790_594_548.125
+    })
+    expect(Object.isFrozen(queued?.envelope)).toBe(true)
+
+    const envelope = queued!.envelope
+    updateQueuedPromptText('rt-old', queued!.id, 'edited identity probe')
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    // The queue re-reads persisted state, so identity cannot survive; the value must.
+    expect(getQueuedPrompts('rt-new')[0]?.envelope).toEqual(envelope)
+  })
+
+  it('migrates legacy persisted entries with queuedAt as authored time, saves the envelope and drains it', async () => {
+    const entries = [
+      { id: 'legacy-head', text: 'first', attachments: [], queuedAt: 1_790_594_548_125 },
+      { id: 'legacy-next', text: 'second', attachments: [], queuedAt: 1_790_594_549_250 }
+    ]
+
+    window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({ 'legacy-session': entries }))
+    vi.resetModules()
+
+    const reloaded = await import('./composer-queue')
+    const [head, next] = reloaded.getQueuedPrompts('legacy-session')
+
+    const readPersisted = () =>
+      JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!) as Record<
+        string,
+        Array<{ envelope?: { clientMessageId: string; submittedAt: number } }>
+      >
+
+    expect(head?.envelope).toEqual({
+      clientMessageId: expect.any(String),
+      submittedAt: entries[0].queuedAt / 1000
+    })
+    expect(readPersisted()['legacy-session']?.map(entry => entry.envelope)).toEqual([head?.envelope, next?.envelope])
+
+    // The drain hands out the identity the reload minted, not a fresh one.
+    expect(reloaded.dequeueQueuedPrompt('legacy-session')?.envelope).toEqual(head?.envelope)
+    expect(readPersisted()['legacy-session']?.[0]?.envelope).toEqual({
+      clientMessageId: next?.envelope?.clientMessageId,
+      submittedAt: entries[1].queuedAt / 1000
+    })
+  })
+
   it('queues prompts in FIFO order', () => {
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })

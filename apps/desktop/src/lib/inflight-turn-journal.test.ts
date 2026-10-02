@@ -151,6 +151,27 @@ describe('persistInFlightTurnState', () => {
     expect(tail?.parts).toEqual([{ type: 'text', text: 'partial answer grew' }])
   })
 
+  it('preserves client identity so repeated prose is not reconciled to the wrong user row', () => {
+    const pendingUser = user('user-new', 'same repeated prompt')
+    pendingUser.clientMessageId = 'client-new'
+    persistInFlightTurnState(
+      journalState({
+        messages: [pendingUser, assistant('assistant-stream-1', 'partial', { pending: true })]
+      })
+    )
+    vi.advanceTimersByTime(400)
+
+    const earlier = user('user-old', 'same repeated prompt')
+    earlier.clientMessageId = 'client-old'
+    const result = recoverInFlightTurnJournal('stored-1', [earlier])
+
+    expect(result.messages.map(message => [message.id, message.clientMessageId])).toEqual([
+      ['user-old', 'client-old'],
+      ['user-new', 'client-new'],
+      ['assistant-stream-1', undefined]
+    ])
+  })
+
   it('preserves a long user prompt exactly so recovery still matches its transcript row', () => {
     const prompt = 'prompt '.repeat(8_000)
 
@@ -545,6 +566,31 @@ describe('recoverInFlightTurnJournal', () => {
     expect(result.applied).toBe(true)
     expect(result.messages.map(m => m.id)).toEqual(['u0', 'a0', 'u1', 'assistant-stream-1'])
     expect(result.streamId).toBe('assistant-stream-1')
+  })
+
+  // Client id decides across a queued accept-row replacement (row ids differ); the
+  // durable row id decides when neither side carries a client id.
+  it.each<{ durableIdentity: Partial<ChatMessage>; journaledIdentity: Partial<ChatMessage>; via: string }>([
+    {
+      durableIdentity: { clientMessageId: 'client-queued-replaced', rowId: 57 },
+      journaledIdentity: { clientMessageId: 'client-queued-replaced', rowId: 41 },
+      via: 'client id, accept row replaced'
+    },
+    { durableIdentity: { rowId: 41 }, journaledIdentity: { rowId: 41 }, via: 'row id, prose rewritten' }
+  ])('identity beats prose ($via)', ({ durableIdentity, journaledIdentity }) => {
+    journalEntry([
+      { ...user('user-live', 'see /tmp/upload-abc/report.pdf'), ...journaledIdentity },
+      assistant('assistant-stream-1', 'partial', { pending: true })
+    ])
+
+    const base = [
+      { ...user('db-u1', 'see report.pdf'), ...durableIdentity },
+      { ...user('db-u2', 'a newer turn'), rowId: 59 }
+    ]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
+
+    expect(result.messages.map(message => message.id)).toEqual(['db-u1', 'assistant-stream-1', 'db-u2'])
   })
 
   it('appends only the assistant tail when the user row was persisted', () => {

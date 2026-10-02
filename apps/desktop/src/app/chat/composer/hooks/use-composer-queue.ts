@@ -348,6 +348,7 @@ export function useComposerQueue({
               ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
               ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
               fromQueue: true,
+              ...(entry.envelope ? { sendEnvelope: entry.envelope } : {}),
               sessionId: drainRuntimeSessionId,
               storedSessionId: drainQueueSessionKey
             })

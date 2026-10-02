@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, sameClientIdentity } from '@/lib/chat-messages'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 
 /** A hydrated bubble can contain several source rows, including the final reply. */
@@ -10,10 +10,20 @@ export function transcriptRowIds(message: ChatMessage): number[] {
 
 /** Unknown identity is not a match, but remains eligible for legacy live projection. */
 export function conflictingTranscriptIdentity(local: ChatMessage, authoritative: ChatMessage): boolean {
+  const sameClient = sameClientIdentity(local, authoritative)
+
+  if (sameClient) {
+    return false
+  }
+
   const localIds = transcriptRowIds(local)
   const authoritativeIds = transcriptRowIds(authoritative)
 
-  return Boolean(localIds.length && authoritativeIds.length && !localIds.some(id => authoritativeIds.includes(id)))
+  if (localIds.length && authoritativeIds.length) {
+    return !localIds.some(id => authoritativeIds.includes(id))
+  }
+
+  return sameClient === false
 }
 
 export function persistedTurnsEquivalent(a: ChatMessage['persistedTurn'], b: ChatMessage['persistedTurn']): boolean {
@@ -35,10 +45,15 @@ export function persistedTurnsEquivalent(a: ChatMessage['persistedTurn'], b: Cha
 export function acknowledgedTranscriptBoundary(next: ChatMessage[], previous: ChatMessage[]) {
   const byId = new Map(next.map((message, index) => [message.id, index]))
   const byRow = new Map<number, number>()
+  const byClientMessageId = new Map<string, number>()
 
   next.forEach((message, index) => {
     for (const id of transcriptRowIds(message)) {
       byRow.set(id, index)
+    }
+
+    if (message.clientMessageId) {
+      byClientMessageId.set(message.clientMessageId, index)
     }
   })
 
@@ -56,7 +71,11 @@ export function acknowledgedTranscriptBoundary(next: ChatMessage[], previous: Ch
     }
 
     const finalRowId = local.persistedTurn?.final_assistant_row_id ?? local.rowId
-    const storedIndex = finalRowId !== undefined ? byRow.get(finalRowId) : byId.get(local.id)
+
+    const storedIndex =
+      (finalRowId !== undefined ? byRow.get(finalRowId) : undefined) ??
+      (local.clientMessageId ? byClientMessageId.get(local.clientMessageId) : undefined) ??
+      byId.get(local.id)
 
     if (storedIndex === undefined) {
       continue

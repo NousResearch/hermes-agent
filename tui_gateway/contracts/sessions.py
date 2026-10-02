@@ -33,6 +33,8 @@ class InflightTurn(Result):
     assistant: str = ""
     streaming: bool = False
     user: str = ""
+    client_message_id: str | None = None
+    user_timestamp: float | None = None
     display_kind: str | None = None
     display_metadata: dict[str, JsonValue] | None = None
     corrections: list[str] | None = None
@@ -45,6 +47,8 @@ class InflightTurn(Result):
 
 class QueuedPrompt(Result):
     user: str
+    client_message_id: str | None = None
+    user_timestamp: float | None = None
 
 
 class TodoState(Result):

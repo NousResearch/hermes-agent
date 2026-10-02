@@ -74,6 +74,11 @@ const RUNTIME_SESSION_ID = 'rt-abc123'
 // Every typed command also fires this (fire-and-forget); these tests assert the command's own traffic.
 const SLASH_METRIC = 'shared_metrics.slash_command'
 
+// tui_gateway/contracts/registry.py::validate_params prose for an unknown key, sent by rpc_dispatch as code 4000.
+const STRICT_CONTRACT_REJECTION =
+  'invalid params for prompt.submit: submitted_at: Extra inputs are not permitted — the client and the ' +
+  'Hermes backend are out of sync (different versions); run `hermes update` and restart both'
+
 function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
     ended_at: null,
@@ -103,6 +108,24 @@ async function actRender(ui: React.ReactElement) {
   })
 
   return result!
+}
+
+function legacyPromptParams(method: string, params?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (method !== 'prompt.submit' || !params) {
+    return params
+  }
+
+  const { client_message_id: _clientMessageId, submitted_at: _submittedAt, ...legacyParams } = params
+
+  return legacyParams
+}
+
+function expectedPromptParams(params: Record<string, unknown>) {
+  return expect.objectContaining({
+    ...params,
+    client_message_id: expect.any(String),
+    submitted_at: expect.any(Number)
+  })
 }
 
 interface HarnessHandle {
@@ -352,7 +375,7 @@ describe('usePromptActions /stop', () => {
         return {} as never
       }
 
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.interrupt') {
         return { status: 'interrupted' } as never
@@ -488,7 +511,7 @@ describe('usePromptActions slash session targeting', () => {
         return {} as never
       }
 
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         boundRuntimeId = RECOVERED_SESSION_ID
@@ -1419,7 +1442,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
         return {} as never
       }
 
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'slash.exec') {
         return {
@@ -1551,7 +1574,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
         return {} as never
       }
 
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'slash.exec') {
         return {
@@ -1940,7 +1963,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
         return {} as never
       }
 
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'slash.exec') {
         return { type: 'send', message: 'Write a Python script\nthat prints Hello World' } as never
@@ -2091,7 +2114,7 @@ describe('usePromptActions desktop slash pickers', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'handoff.state') {
         return { state: 'pending' } as never
@@ -2150,7 +2173,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(await handle!.submitText('continue remotely')).toBe(true)
     expect(ambientRequest).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: 'runtime-remote', text: 'continue remotely' },
+      expectedPromptParams({ session_id: 'runtime-remote', text: 'continue remotely' }),
       1_800_000
     )
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
@@ -2179,12 +2202,175 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(seeds.every(s => s.interrupted === false)).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         session_id: RUNTIME_SESSION_ID,
         text: 'hello after a stop'
-      },
+      }),
       1_800_000
     )
+  })
+
+  it('carries the optimistic send timestamp into prompt.submit', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_790_594_548_125)
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('timestamp identity probe')
+
+    const optimistic = (
+      seeds[0].messages as Array<{ clientMessageId?: string; role: string; timestamp?: number }>
+    ).find(message => message.role === 'user')
+
+    expect(optimistic?.timestamp).toBe(1_790_594_548.125)
+    expect(optimistic?.clientMessageId).toEqual(expect.any(String))
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({
+        client_message_id: optimistic?.clientMessageId,
+        session_id: RUNTIME_SESSION_ID,
+        submitted_at: 1_790_594_548.125,
+        text: 'timestamp identity probe'
+      }),
+      1_800_000
+    )
+  })
+
+  it('retries once without optional envelope fields against an older strict gateway', async () => {
+    const promptCalls: Array<Record<string, unknown>> = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        promptCalls.push(params ?? {})
+
+        if ('submitted_at' in (params ?? {})) {
+          throw new JsonRpcGatewayError(STRICT_CONTRACT_REJECTION, { code: 4000 })
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('legacy gateway probe')).toBe(true)
+    expect(promptCalls).toHaveLength(2)
+    expect(promptCalls[0]).toMatchObject({
+      client_message_id: expect.any(String),
+      submitted_at: expect.any(Number)
+    })
+    expect(promptCalls[1]).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      text: 'legacy gateway probe'
+    })
+  })
+
+  it('does not strip the envelope for a non-4000 error, even one carrying the contract-rejection prose', async () => {
+    const promptCalls: Array<Record<string, unknown>> = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        promptCalls.push(params ?? {})
+        // Only the dispatcher's pre-handler 4000 proves nothing ran; a handler error
+        // may follow an accepted turn, so an identity-less retry could duplicate it.
+        throw new JsonRpcGatewayError(STRICT_CONTRACT_REJECTION, { code: 5071 })
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('handler failure probe')).toBe(false)
+    expect(promptCalls).toHaveLength(1)
+    expect(promptCalls[0]).toMatchObject({ client_message_id: expect.any(String) })
+  })
+
+  it('patches the acknowledged optimistic occurrence in place without reordering', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_790_594_548_125)
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(
+      async (method: string, params?: Record<string, unknown>) =>
+        (method === 'prompt.submit'
+          ? {
+              client_message_id: params?.client_message_id,
+              user_row_id: 77,
+              user_timestamp: 1_790_594_550
+            }
+          : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[{ id: 'before', parts: [textPart('before')], role: 'assistant', timestamp: 100 }]}
+      />
+    )
+
+    await handle!.submitText('ack identity probe')
+
+    const messages = seeds.at(-1)?.messages as Array<{
+      clientMessageId?: string
+      id: string
+      rowId?: number
+      timestamp?: number
+    }>
+
+    const submittedParams = requestGateway.mock.calls.find(([method]) => method === 'prompt.submit')?.[1]
+
+    expect(messages.map(message => message.id)).toEqual(['before', `user-${submittedParams?.client_message_id}`])
+    expect(messages[1]).toMatchObject({
+      clientMessageId: submittedParams?.client_message_id,
+      rowId: 77,
+      timestamp: 1_790_594_550
+    })
+  })
+
+  it('treats a null acknowledged client identity as legacy absence', async () => {
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(
+      async (method: string) =>
+        (method === 'prompt.submit'
+          ? { client_message_id: null, user_row_id: 78, user_timestamp: 1_790_594_551 }
+          : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('legacy null ack probe')
+
+    const optimistic = (seeds.at(-1)?.messages as Array<{ rowId?: number; timestamp?: number }>).at(-1)
+
+    expect(optimistic).toMatchObject({ rowId: 78, timestamp: 1_790_594_551 })
   })
 
   it('arms turnStartedAt at submit time instead of waiting for message.start', async () => {
@@ -2255,21 +2441,21 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // The latch is one-shot: the flag rides this submit, the next is clean.
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         session_id: RUNTIME_SESSION_ID,
         text: 'stop! rude interruption',
         interrupted: true
-      },
+      }),
       1_800_000
     )
 
     await handle!.submitText('follow-up without a barge')
     expect(requestGateway).toHaveBeenLastCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         session_id: RUNTIME_SESSION_ID,
         text: 'follow-up without a barge'
-      },
+      }),
       1_800_000
     )
   })
@@ -2295,11 +2481,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(accepted).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         queued: true,
         session_id: RUNTIME_SESSION_ID,
         text: 'queued message'
-      },
+      }),
       1_800_000
     )
   })
@@ -2332,11 +2518,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(accepted).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         queued: true,
         session_id: 'rt-session-a',
         text: 'queued for background session'
-      },
+      }),
       1_800_000
     )
     expect(requestGateway).not.toHaveBeenCalledWith('session.resume', expect.anything())
@@ -2387,11 +2573,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         queued: true,
         session_id: 'rt-session-b',
         text: 'queued for B mid-switch'
-      },
+      }),
       1_800_000
     )
     // The invariant: the stale foreground runtime never receives the prompt.
@@ -2522,11 +2708,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(accepted).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         queued: true,
         session_id: 'rt-session-b-live',
         text: 'queued for B, B already re-bound'
-      },
+      }),
       1_800_000
     )
     expect(requestGateway).not.toHaveBeenCalledWith('session.resume', expect.anything())
@@ -2565,10 +2751,10 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(accepted).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         session_id: 'rt-tab',
         text: 'kickoff for the tab'
-      },
+      }),
       1_800_000
     )
   })
@@ -2616,11 +2802,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // The prompt must land in the resumed session, NOT the foreground.
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         queued: true,
         session_id: 'rt-session-a-rebound',
         text: 'queued for background session'
-      },
+      }),
       1_800_000
     )
     // The invariant: the foreground runtime never receives the prompt.
@@ -2667,11 +2853,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(second).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         queued: true,
         session_id: RUNTIME_SESSION_ID,
         text: 'please send me'
-      },
+      }),
       1_800_000
     )
   })
@@ -2682,9 +2868,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // gateway accepts, never a red "session busy" bubble.
     let attempt = 0
     const seeds: Record<string, unknown>[] = []
+    const promptParams: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string) => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
+        promptParams.push(params ?? {})
         attempt += 1
 
         if (attempt === 1) {
@@ -2707,6 +2895,10 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     expect(await handle!.submitText('sent while settling')).toBe(true)
     expect(attempt).toBe(2) // rode past the busy on the second try
+    expect(promptParams.map(params => [params.client_message_id, params.submitted_at])).toEqual([
+      [promptParams[0].client_message_id, promptParams[0].submitted_at],
+      [promptParams[0].client_message_id, promptParams[0].submitted_at]
+    ])
     // No assistant-error message was appended for the transient busy.
     expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
       false
@@ -2963,7 +3155,7 @@ describe('usePromptActions redirectPrompt', () => {
     let redirectAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.redirect') {
         redirectAttempts += 1
@@ -3265,7 +3457,7 @@ describe('usePromptActions file attachment sync', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'file.attach') {
         return {
@@ -3318,7 +3510,7 @@ describe('usePromptActions file attachment sync', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'file.attach') {
         return {
@@ -3605,7 +3797,7 @@ describe('usePromptActions file attachment sync', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'file.attach') {
         return {
@@ -3668,7 +3860,7 @@ describe('usePromptActions file attachment sync', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       return {} as never
     })
@@ -3705,7 +3897,7 @@ describe('usePromptActions file attachment sync', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'file.attach') {
         return { attached: true, ref_text: '@file:data/report.txt', uploaded: false } as never
@@ -3812,12 +4004,14 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // durable stored id (which survives gateway restarts), gets a fresh live id,
     // and retries the send transparently.
     const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const promptParams: Record<string, unknown>[] = []
     let submitAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'prompt.submit') {
+        promptParams.push(params ?? {})
         submitAttempts += 1
 
         if (submitAttempts === 1) {
@@ -3851,6 +4045,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+    expect(promptParams.map(params => [params.client_message_id, params.submitted_at])).toEqual([
+      [promptParams[0].client_message_id, promptParams[0].submitted_at],
+      [promptParams[0].client_message_id, promptParams[0].submitted_at]
+    ])
   })
 
   it('publishes the recovered runtime binding before retrying through the remote owner router', async () => {
@@ -3859,7 +4057,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let submitAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'prompt.submit') {
         submitAttempts += 1
@@ -3923,7 +4121,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let submitAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'prompt.submit') {
         submitAttempts += 1
@@ -3972,7 +4170,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let submitAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'prompt.submit') {
         submitAttempts += 1
@@ -4024,7 +4222,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let submitAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'prompt.submit') {
         submitAttempts += 1
@@ -4070,7 +4268,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let submitAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'prompt.submit') {
         submitAttempts += 1
@@ -4138,7 +4336,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let interruptAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.interrupt') {
         interruptAttempts += 1
@@ -4275,7 +4473,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let submitAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'prompt.submit') {
         submitAttempts += 1
@@ -4329,7 +4527,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         return { session_id: RECOVERED_SESSION_ID } as never
@@ -4436,7 +4634,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'follow-up while the profile route is rebinding' },
+      expectedPromptParams({
+        session_id: RECOVERED_SESSION_ID,
+        text: 'follow-up while the profile route is rebinding'
+      }),
       1_800_000
     )
   })
@@ -4474,7 +4675,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session' },
+      expectedPromptParams({ session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session' }),
       1_800_000
     )
   })
@@ -4506,7 +4707,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(resumeStoredSession).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' },
+      expectedPromptParams({ session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' }),
       1_800_000
     )
   })
@@ -4563,7 +4764,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(await handle!.submitText('retry after recovery')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' },
+      expectedPromptParams({ session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' }),
       1_800_000
     )
   })
@@ -4633,7 +4834,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         await new Promise<void>(resolve => {
@@ -4692,7 +4893,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       return {} as never
     })
@@ -4725,7 +4926,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       return {} as never
     })
@@ -4750,7 +4951,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       return {} as never
     })
@@ -4780,7 +4981,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_A }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'prompt.submit') {
         submitAttempts += 1
@@ -4841,7 +5042,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     let routeToken = '/'
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       return {} as never
     })
@@ -4940,7 +5141,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     let routeToken = '/'
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       return {} as never
     })
@@ -5009,7 +5210,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       return {} as never
     })
@@ -5094,10 +5295,10 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     expect(await handle!.submitText('hello')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      {
+      expectedPromptParams({
         session_id: NEW_RUNTIME_ID,
         text: 'hello'
-      },
+      }),
       1_800_000
     )
   })
@@ -5126,7 +5327,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'file.attach') {
         await new Promise<void>(resolve => {
@@ -5213,7 +5414,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'file.attach') {
         // Block here so the user can switch sessions mid-sync.
@@ -5293,7 +5494,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     let routeToken = `/${STORED_ID}::`
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         await new Promise<void>(resolve => {
@@ -5354,7 +5555,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     const resumeStoredSession = vi.fn(async () => undefined)
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         return { session_id: RESUMED_RUNTIME_ID } as never
@@ -5423,7 +5624,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     })
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         expect(params?.session_id).toBe(QUEUED_STORED_ID)
@@ -5492,7 +5693,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     let routeToken = `/${STORED_ID}::`
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         await new Promise<void>(resolve => {
@@ -5555,7 +5756,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
     }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         return { session_id: RUNTIME_SESSION_B_RESUMED } as never
@@ -5610,7 +5811,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
     }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         return { session_id: RUNTIME_SESSION_B_RESUMED } as never
@@ -5659,7 +5860,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
     }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       return {} as never
     })
@@ -5692,7 +5893,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = { current: new Map() }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+      calls.push({ method, params: legacyPromptParams(method, params) })
 
       if (method === 'session.resume') {
         return { session_id: RUNTIME_SESSION_B_RESUMED } as never
@@ -6295,7 +6496,7 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     expect(await handle!.submitText('fresh enough')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'fresh enough' },
+      expectedPromptParams({ session_id: RUNTIME_SESSION_ID, text: 'fresh enough' }),
       1_800_000
     )
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
@@ -6343,7 +6544,7 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     expect(await handle!.submitText('follow-up after tools')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'follow-up after tools' },
+      expectedPromptParams({ session_id: RUNTIME_SESSION_ID, text: 'follow-up after tools' }),
       1_800_000
     )
   })
@@ -6366,7 +6567,7 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     expect(await handle!.submitText('send anyway')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'send anyway' },
+      expectedPromptParams({ session_id: RUNTIME_SESSION_ID, text: 'send anyway' }),
       1_800_000
     )
   })

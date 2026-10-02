@@ -236,6 +236,12 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
   )
 }
 
+export function clientMessageIdFromMetadata(metadata: SessionMessage['display_metadata']): string | undefined {
+  const value = parseDisplayMetadata(metadata)?.client_message_id
+
+  return typeof value === 'string' && value ? value : undefined
+}
+
 // Only parse producer-owned boundaries, never render the model's task preamble.
 // Older backends can persist an unwrapped result rather than an envelope.
 function asyncResultBody(content: string): string | undefined {
@@ -593,6 +599,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const reactions = messageReactions(message.display_metadata)
+
+    const hydratedClientMessageId =
+      displayRole === 'user' ? clientMessageIdFromMetadata(message.display_metadata) : undefined
+
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
@@ -608,6 +618,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(isMachineNotice(message.display_kind) ? { systemNotice: true } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
+      ...(hydratedClientMessageId ? { clientMessageId: hydratedClientMessageId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),

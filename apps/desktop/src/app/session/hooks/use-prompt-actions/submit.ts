@@ -1,4 +1,4 @@
-import type { PromptSubmitResult } from '@hermes/shared'
+import { JsonRpcGatewayError, type PromptSubmitResult } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -7,6 +7,7 @@ import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/c
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { createSendEnvelope } from '@/lib/send-envelope'
 import { profileScopeForSessionOwner, transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
 import {
   isVoicePlaybackActive,
@@ -109,6 +110,13 @@ const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
   setBusy,
   setMessages
 }
+
+// 4000 is the dispatcher's unknown-key contract rejection
+// (tui_gateway/contracts/registry.py::validate_params); its message names the key.
+const promptEnvelopeFieldsUnsupported = (error: unknown): boolean =>
+  error instanceof JsonRpcGatewayError &&
+  error.code === 4000 &&
+  /\b(submitted_at|client_message_id)\b/.test(error.message)
 
 export interface ResumedRuntimeBindingDeps {
   activeSessionIdRef: MutableRefObject<string | null>
@@ -456,7 +464,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
-      const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      // Redirect/steer and history-rewrite submits deliberately bypass this
+      // ordinary-send path: they do not create a standalone durable user row.
+      const sendEnvelope = options?.sendEnvelope ?? createSendEnvelope()
+      const optimisticId = `user-${sendEnvelope.clientMessageId}`
 
       // What the bubble shows. A `/skill` send carries the whole expanded
       // skill body as its text — model-facing scaffolding — so the dispatcher
@@ -465,12 +476,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const bubbleText = bubbleOverride ?? visibleText
       // Keep the user-send boundary stable when later ref resolution rewrites
       // the optimistic bubble in place.
-      const submittedAt = Date.now() / 1000
+      const submittedAt = sendEnvelope.submittedAt
 
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
         role: 'user',
         parts: [textPart(bubbleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
+        clientMessageId: sendEnvelope.clientMessageId,
         timestamp: submittedAt,
         attachmentRefs
       })
@@ -955,6 +967,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
+          client_message_id: sendEnvelope.clientMessageId,
+          submitted_at: submittedAt,
           ...(interrupted && { interrupted }),
           // Off-screen widget intent: the gateway types the persisted user
           // row display_kind=hidden so no client renders it as a bubble.
@@ -976,6 +990,24 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           ...(titlePreview && { title_preview: titlePreview })
         })
 
+        const requestSubmit = async (targetId: string): Promise<PromptSubmitResult> => {
+          const params = submitParams(targetId)
+
+          try {
+            return await requestGateway<PromptSubmitResult>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+          } catch (error) {
+            if (!promptEnvelopeFieldsUnsupported(error)) {
+              throw error
+            }
+
+            // A strict older contract rejects unknown keys before its handler,
+            // so this compatibility retry cannot duplicate an accepted turn.
+            const { client_message_id: _clientMessageId, submitted_at: _submittedAt, ...legacyParams } = params
+
+            return requestGateway<PromptSubmitResult>('prompt.submit', legacyParams, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+          }
+        }
+
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. The shared
         // resolver re-registers the stored session and retries once; every
@@ -996,14 +1028,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           const submitted = await withSessionNotFoundResume(
             sessionId,
             recoverStoredSessionId,
-            liveId =>
-              withSessionBusyRetry(() =>
-                requestGateway<PromptSubmitResult>(
-                  'prompt.submit',
-                  submitParams(liveId),
-                  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-                )
-              ),
+            liveId => withSessionBusyRetry(() => requestSubmit(liveId)),
             {
               requestGateway,
               driftReason: sessionDriftReason,
@@ -1033,21 +1058,47 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           )
 
           const rowId = submitted.result?.user_row_id
+          const userTimestamp = submitted.result?.user_timestamp
+          const acknowledgedClientMessageId = submitted.result?.client_message_id
 
-          if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
-            // The worker may finish before this acknowledgement arrives. Bind
-            // only this send's optimistic occurrence; never reset live state or
-            // assume the newest user row still belongs to this RPC.
+          const validRowId = typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0
+
+          const validTimestamp =
+            typeof userTimestamp === 'number' && Number.isFinite(userTimestamp) && userTimestamp > 0
+
+          const matchingClientIdentity =
+            acknowledgedClientMessageId == null || acknowledgedClientMessageId === sendEnvelope.clientMessageId
+
+          if ((validRowId || validTimestamp) && matchingClientIdentity) {
+            // The worker may finish before this acknowledgement arrives. Patch
+            // only this send's optimistic occurrence and preserve array order.
             updateSessionState(submitted.sessionId, state => {
-              const index = state.messages.findIndex(message => message.id === optimisticId && message.role === 'user')
+              const index = state.messages.findIndex(
+                message =>
+                  message.id === optimisticId &&
+                  message.role === 'user' &&
+                  message.clientMessageId === sendEnvelope.clientMessageId
+              )
 
-              if (index < 0 || state.messages[index].rowId === rowId) {
+              if (index < 0) {
+                return state
+              }
+
+              const current = state.messages[index]
+
+              const acknowledged = {
+                ...current,
+                ...(validRowId ? { rowId } : {}),
+                ...(validTimestamp ? { timestamp: userTimestamp } : {})
+              }
+
+              if (acknowledged.rowId === current.rowId && acknowledged.timestamp === current.timestamp) {
                 return state
               }
 
               return {
                 ...state,
-                messages: state.messages.map((message, i) => (i === index ? { ...message, rowId } : message))
+                messages: state.messages.map((message, i) => (i === index ? acknowledged : message))
               }
             })
           }

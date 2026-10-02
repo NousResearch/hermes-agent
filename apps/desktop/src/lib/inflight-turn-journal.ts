@@ -2,7 +2,8 @@ import {
   type ChatMessage,
   type ChatMessagePart,
   chatMessageText,
-  normalizeWs as normalizedText
+  normalizeWs as normalizedText,
+  sameClientIdentity
 } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
@@ -167,6 +168,7 @@ function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
         (message.durableComplete === undefined || typeof message.durableComplete === 'boolean') &&
         (message.attachmentRefs === undefined ||
           (Array.isArray(message.attachmentRefs) && message.attachmentRefs.every(ref => typeof ref === 'string'))) &&
+        (message.clientMessageId === undefined || typeof message.clientMessageId === 'string') &&
         (message.rowId === undefined || (typeof message.rowId === 'number' && Number.isFinite(message.rowId)))
     ) &&
     (snapshot.streamId === null || typeof snapshot.streamId === 'string') &&
@@ -367,6 +369,9 @@ function boundedMessages(messages: ChatMessage[]): ChatMessage[] | null {
     role: message.role,
     parts: message.parts.map(boundedPart).filter((part): part is ChatMessagePart => part !== null),
     ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
+    ...(message.clientMessageId === undefined
+      ? {}
+      : { clientMessageId: boundedString(message.clientMessageId, MAX_METADATA_CHARS) }),
     ...(message.pending === undefined ? {} : { pending: message.pending }),
     ...(message.error === undefined ? {} : { error: boundedString(message.error, MAX_METADATA_CHARS) }),
     ...(message.branchGroupId === undefined
@@ -535,10 +540,23 @@ function attachmentSignature(message: ChatMessage): string {
 }
 
 function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
+  if (left.role !== 'user' || right.role !== 'user') {
+    return false
+  }
+
+  // Identity decides when both sides carry it: hydration may rewrite a durable
+  // prompt's text or attachment paths. Only unidentified rows compare content.
+  const sameClient = sameClientIdentity(left, right)
+
+  if (sameClient !== undefined) {
+    return sameClient
+  }
+
+  if (left.rowId !== undefined && right.rowId !== undefined) {
+    return left.rowId === right.rowId
+  }
+
   return (
-    left.role === 'user' &&
-    right.role === 'user' &&
-    (left.rowId === undefined || right.rowId === undefined || left.rowId === right.rowId) &&
     normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right)) &&
     attachmentSignature(left) === attachmentSignature(right)
   )

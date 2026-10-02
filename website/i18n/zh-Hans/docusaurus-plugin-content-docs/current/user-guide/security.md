@@ -372,6 +372,13 @@ hermes sandbox run --pr 123 --setup 'pip install --user -e .' --setup-network op
 
 内置 `github` 技能的 PR 审查流程就是这样运行测试的。选项与细节见 [`hermes sandbox`](../reference/cli-commands.md#hermes-sandbox)。需要 Docker 或 Podman。
 
+**审查之外试用代码。** 内置的 [`sandboxed-prototyping`](skills/bundled/software-development/software-development-sandboxed-prototyping.md) 技能让 agent 以同样的方式运行任何不是它自己写的代码：正在试用的软件包、你粘贴的代码片段、你指给它的仓库。与所有技能一样，agent 只在任务看起来相关时才加载它，并非每次都会加载；单次运行（`hermes chat -q`）加载技能也比聊天会话更保守。若要让它在每个会话中都生效，可以将它[固定加载](configuration.md)，这会把该技能（约 2,000 个 token）加入系统提示词：
+
+```yaml
+skills:
+  auto_load: [sandboxed-prototyping]
+```
+
 **没有容器运行时，或没有容器运行时的托管部署。** 没有 Docker 或 Podman 时，`hermes sandbox run` 以 69 退出且不运行任何内容。此时 Hermes 只通过阅读（diff 和源码）来审查不受信任的代码，并说明测试未运行；它不会退回到在宿主机上运行代码。将来可能支持其他隔离运行时，例如远程终端后端或 bubblewrap 后端。
 
 **整个 profile：锁定的 docker 后端。** 如果某个 profile 专门用于处理不受信任的代码，可让每条命令都运行在临时、断网的容器中：

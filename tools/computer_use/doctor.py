@@ -415,7 +415,7 @@ def _print_text_report(report: Report, color: bool, *, identity: Optional[Report
     if environment:
         lines += [f"  {dim}environment: current CLI process{reset}",
                   f"  {dim}gateway environment was not checked; active gateway computer_use sessions use that process environment{reset}"]
-        if environment.get("native_wayland") is False:
+        if report.get("platform") == "linux" and environment.get("native_wayland") is False:
             lines.append(f"  {dim}Wayland detected: native-Wayland-only windows are not visible to the default X11 backend; set `computer_use.native_wayland: true` and restart the gateway{reset}")
     if identity.get("version_mismatch"):
         lines += [f"  {yellow}⚠️ version mismatch: health_report says {report_v!r} but binary --version is {cli_v!r}{reset}",

@@ -417,3 +417,18 @@ def test_failed_tcc_row_from_health_report_names_the_stale_row_reset_for_that_se
     assert "tccutil reset ScreenCapture com.trycua.driver" in checks["tcc_screen_recording"]["hint"]
     assert "reset Accessibility" not in checks["tcc_screen_recording"]["hint"]
     assert "tccutil" not in checks["tcc_accessibility"].get("hint", "")
+
+
+def test_wayland_advisory_uses_report_platform_not_host(monkeypatch):
+    from tools.computer_use import doctor
+
+    report = _ok_report()
+    with patch("sys.stdout", new_callable=StringIO) as out:
+        doctor._print_text_report(report, color=False, environment={"native_wayland": False})
+    assert "Wayland detected" not in out.getvalue()
+
+    report["platform"] = "linux"
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    with patch("sys.stdout", new_callable=StringIO) as out:
+        doctor._print_text_report(report, color=False, environment={"native_wayland": False})
+    assert "Wayland detected" in out.getvalue()

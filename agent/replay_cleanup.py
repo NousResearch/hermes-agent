@@ -13,6 +13,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+from agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants, tool_result_id_variants
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
 from agent.turn_context import drop_stale_api_content
@@ -63,10 +64,6 @@ def _call_name(call: Dict[str, Any]) -> str:
     return str((call.get("function") or {}).get("name") or "")
 
 
-def _call_id(call: Dict[str, Any]) -> str:
-    return str(call.get("id") or call.get("call_id") or "")
-
-
 def _any_side_effecting(calls: List[Dict[str, Any]]) -> bool:
     return any(tool_may_have_side_effect(_call_name(call)) for call in calls)
 
@@ -96,11 +93,13 @@ def strip_interrupted_tool_tails(agent_history: List[Dict[str, Any]]) -> List[Di
             if any(is_interrupted_tool_result(m.get("content", "")) for m in tool_results):
                 calls = msg.get("tool_calls") or []
                 if _any_side_effecting(calls):
-                    call_names = {_call_id(call): _call_name(call) for call in calls}
+                    # Same pairing rule as the request sanitizer: any id spelling of the call matches.
+                    call_names = {v: _call_name(call) for call in calls for v in tool_call_id_variants(call)}
                     cleaned.append(msg)
                     for tool_result in tool_results:
                         if is_interrupted_tool_result(tool_result.get("content", "")):
-                            name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
+                            name = next((call_names[v] for v in tool_result_id_variants(tool_result.get("tool_call_id"))
+                                         if v in call_names), "")
                             disposition, content = _orphan_recovery(name, _INTERRUPTED_NOTICES)
                             tool_result = {**tool_result, "effect_disposition": disposition, "content": content}
                         cleaned.append(tool_result)
@@ -150,7 +149,8 @@ def unanswered_call_results(calls: List[Dict[str, Any]]) -> Optional[List[Dict[s
     for call in calls:
         name = _call_name(call) or "unknown"
         disposition, content = _orphan_recovery(name, _DANGLING_NOTICES)
-        results.append(make_tool_result_message(name, content, _call_id(call), effect_disposition=disposition))
+        # ``call_id`` (not the Responses item ``id``) is what the provider pairs the output with.
+        results.append(make_tool_result_message(name, content, coalesce_tool_call_id(call), effect_disposition=disposition))
     return results
 
 

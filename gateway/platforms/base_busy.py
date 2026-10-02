@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from agent.i18n import t
 from gateway.platforms.base_pending_merge import merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.base_pending import pending_dispatch_scope, reserve_pending_dispatch, release_pending_dispatch_record
+from gateway.platforms.base_pending import can_join_pending_event, pending_dispatch_scope, reserve_pending_dispatch, release_pending_dispatch_record
 
 if TYPE_CHECKING:
     from gateway.platforms.base import BasePlatformAdapter
@@ -37,6 +37,18 @@ class BaseBusyMixin:
         _send_with_retry = BasePlatformAdapter._send_with_retry
         _stage_next_queued_event = BasePlatformAdapter._stage_next_queued_event
         _start_session_processing = BasePlatformAdapter._start_session_processing
+        _text_debounce_store = BasePlatformAdapter._text_debounce_store
+
+    async def _notify_busy_queue_refusal(self, event: MessageEvent) -> None:
+        from gateway.platforms.base import _thread_metadata_for_event
+
+        notify = getattr(self.gateway_runner, "_send_pending_queue_refusal", None)
+        if callable(notify):
+            await notify(event, self)
+            return
+        await self._send_with_retry(
+            chat_id=event.source.chat_id, content=t("gateway.queue.full"),
+            reply_to=event.message_id, metadata=_thread_metadata_for_event(event))
 
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
@@ -48,8 +60,6 @@ class BaseBusyMixin:
         # races with the running task (split-brain, see PR #4926).
         # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
         # runner. Without this, they are queued as pending messages and either: See #4926.
-        from gateway.platforms.base import _thread_metadata_for_event
-
         self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
@@ -139,6 +149,19 @@ class BaseBusyMixin:
                 # (or collapse distinct wakes into one turn). Its caller can retry admission.
                 if event.internal and session_key in self._pending_messages:
                     return
+                existing = self._pending_messages.get(session_key)
+                if self._text_debounce_store().get(session_key) is not None or (
+                    existing is not None and not can_join_pending_event(existing, event)
+                ):
+                    enqueue = getattr(self.gateway_runner, "_queue_or_replace_pending_event", None)
+                    event._gateway_accepted = (
+                        await self._queue_text_debounce(session_key, event)
+                        if self._text_debounce_store().get(session_key) is not None or not callable(enqueue)
+                        else enqueue(session_key, event)
+                    )
+                    if not event._gateway_accepted:
+                        await self._notify_busy_queue_refusal(event)
+                    return
                 # Photo bursts/albums: queue without interrupting; they run after the current task.
                 if event.message_type == MessageType.PHOTO:
                     logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
@@ -151,13 +174,7 @@ class BaseBusyMixin:
                                  session_key, self._busy_text_debounce_seconds)
                     event._gateway_accepted = await self._queue_text_debounce(session_key, event)
                     if not event._gateway_accepted:
-                        notify = getattr(self.gateway_runner, "_send_pending_queue_refusal", None)
-                        if callable(notify):
-                            await notify(event, self)
-                        else:
-                            await self._send_with_retry(
-                                chat_id=event.source.chat_id, content=t("gateway.queue.full"),
-                                reply_to=event.message_id, metadata=_thread_metadata_for_event(event))
+                        await self._notify_busy_queue_refusal(event)
                 else:
                     logger.debug("[%s] New message while session %s is active — queuing follow-up "
                                  "(no interrupt, will cascade after current turn)", self.name, session_key)

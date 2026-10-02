@@ -292,3 +292,52 @@ async def test_existing_pending_turn_keeps_a_conflicting_reply_separate(route, m
         assert [(event.text, event.reply_to_message_id, event.reply_to_text) for event in events] == expected
     finally:
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_kind", ["telegram", "raft"])
+@pytest.mark.parametrize("kind", [MessageType.TEXT, MessageType.PHOTO])
+@pytest.mark.parametrize("withdraw", [False, True])
+async def test_standalone_busy_inputs_keep_each_reply_target(adapter_kind, kind, withdraw):
+    from gateway.platforms.base_pending import pending_part
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from plugins.platforms.raft.adapter import RaftAdapter
+
+    adapter_type = TelegramAdapter if adapter_kind == "telegram" else RaftAdapter
+    adapter = adapter_type(PlatformConfig(enabled=True, token="1234:dummy"))
+    adapter._busy_text_mode = "interrupt"
+    adapter._busy_text_debounce_seconds = 0
+    source = SessionSource(platform=adapter.platform, chat_id="chat", chat_type="dm", user_id="sender")
+    events = [MessageEvent(text=text, source=source, message_id=f"m-{text}", message_type=kind,
+                           reply_to_message_id=f"q-{text}", reply_to_text=f"quoted {text}",
+                           reply_to_author_id="author", reply_to_author_name="Quoted author",
+                           reply_to_is_own_message=False, reply_to_author_authorized=True,
+                           media_urls=[text + ".png"] if kind == MessageType.PHOTO else [],
+                           media_types=["image/png"] if kind == MessageType.PHOTO else [])
+              for text in (("one", "two", "three", "four") if withdraw else ("one", "two", "three"))]
+    expected = [pending_part(event) for event in events]
+    entered, release = asyncio.Event(), asyncio.Event()
+    consumed = []
+
+    async def model(event):
+        consumed.append(pending_part(event))
+        if event.message_id == "m-one":
+            entered.set()
+            await release.wait()
+
+    adapter.set_message_handler(model)
+    try:
+        await adapter.handle_message(events[0])
+        await asyncio.wait_for(entered.wait(), 2)
+        for event in events[1:]:
+            await adapter.handle_message(event)
+        if withdraw:
+            assert adapter.withdraw_pending_message("m-three", chat_id="chat", sender_id="sender")
+            expected.pop(2)
+        release.set()
+        while tasks := list(adapter._background_tasks):
+            await asyncio.wait_for(asyncio.gather(*tasks), 5)
+        assert consumed == expected
+    finally:
+        release.set()
+        await adapter.cancel_background_tasks()

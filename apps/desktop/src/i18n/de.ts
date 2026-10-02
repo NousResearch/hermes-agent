@@ -1133,6 +1133,9 @@ export const deOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Chat-Textgröße',
+      chatTextScaleDesc:
+        'Skaliert Unterhaltungstext und Nachrichteneingabe relativ zur UI-Skalierung. Seitenleisten und Bedienelemente behalten ihre Größe.',
       title: 'Darstellung',
       intro: 'Nur für Desktop. Modus ist die Helligkeit; Theme ist Farbpalette und Chat-Design.',
       colorMode: 'Farbmodus',
@@ -4050,6 +4053,8 @@ export const deOverrides = {
       reveal: 'Im Ordner anzeigen',
       copyPath: 'Pfad kopieren',
       removeFromSidebar: 'Aus der Sidebar ausblenden',
+      createdInPreviousContext:
+        'Das Projekt wurde auf der vorherigen Verbindung oder im vorherigen Profil erstellt. Wechsle zurück; IDEA.md wurde nicht geschrieben.',
       createFailed: 'Projekt konnte nicht erstellt werden',
       staleBackend:
         'Aktualisieren Sie das Hermes-Backend, um Projekte zu erstellen – Ihr Backend ist älter als diese Desktop-App (Einstellungen → Updates → Backend).',
@@ -5041,6 +5046,10 @@ export const deOverrides = {
       editModels: 'Modelle bearbeiten…',
       followDefault: 'Standard aus den Einstellungen verwenden',
       refreshModels: 'Modelle aktualisieren',
+      favorites: 'Favoriten',
+      addFavorite: 'Zu Favoriten hinzufügen',
+      removeFavorite: 'Aus Favoriten entfernen',
+      favoriteShortcut: '⇧ Klick',
       fast: 'Schnell',
       free: 'kostenlos',
       cacheRead: 'Cache-Lesung',
@@ -5266,6 +5275,8 @@ export const deOverrides = {
     editing: 'Wird bearbeitet',
     unsavedChanges: 'Nicht gespeicherte Änderungen',
     saveFailed: message => `Speichern fehlgeschlagen: ${message}`,
+    saveScopeChanged:
+      'Wechsle zur ursprünglichen Verbindung und zum ursprünglichen Profil zurück, um diesen Entwurf zu speichern.',
     diskChangedTitle: 'Datei auf der Festplatte geändert',
     diskChangedBody:
       'Diese Datei wurde geändert, seit Sie sie geöffnet haben. Mit Ihrer Version überschreiben oder Ihre Änderungen verwerfen und neu laden?',
@@ -5457,6 +5468,7 @@ export const deOverrides = {
       branchNewChat: 'In neuem Chat abzweigen',
       react: 'Reagieren',
       dismissError: 'Fehler schließen',
+      responseStopped: 'Antwort gestoppt',
       errorLayers: {
         auth: 'Authentifizierungsfehler',
         billing: 'Keine Credits mehr',
@@ -5526,6 +5538,10 @@ export const deOverrides = {
           title: 'Der KI-Dienst ist nicht erreichbar',
           body: provider =>
             `${provider} war nicht erreichbar oder hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.`
+        },
+        no_reply: {
+          title: 'Die Antwort wurde nicht fertig',
+          body: 'Hermes hat diesen Durchlauf ohne Antwort beendet. Versuchen Sie es erneut, um sie noch einmal zu senden.'
         },
         stream_drop: {
           title: 'Die Antwort wurde abgebrochen',
@@ -5709,14 +5725,11 @@ export const deOverrides = {
       placeholder: 'Geben Sie Ihre Antwort ein…',
       skip: 'Überspringen',
       skipped: 'Übersprungen',
-      continueLabel: 'Weiter',
+      noAnswer: 'Keine Antwort',
       confirmAndContinueLabel: 'Bestätigen und fortfahren',
-      answeredBadge: 'Beantwortet',
+      singleSelectHint: 'Eines auswählen',
+      multiSelectHint: 'Alle Treffer auswählen',
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
-      lateAnswer: (question, choice) => `Re: „${question}“ — meine Antwort: ${choice}`,
-      lateAnswerTip: 'Diese Antwort als Folgenachricht entwerfen',
-      lateAnswerHint:
-        'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.',
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
     },

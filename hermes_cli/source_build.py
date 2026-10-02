@@ -114,20 +114,42 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     workspaces = frontends + (("apps/desktop",) if desktop else ())
     publish_stage("Updating Node dependencies")
     prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
+    # An update that changed no TUI/web input reuses the receipted output, as the
+    # launch path already does; recompiling it produces the same bytes. Desktop has
+    # no such skip: its baked install stamp carries the commit, so every update
+    # that moves HEAD changes a desktop input anyway.
     if "ui-tui" in frontends:
-        publish_stage("Building the TUI")
-        build_source_tui(project_root, env=env)
+        if source_product_current(project_root, "tui", project_root / "ui-tui/dist"):
+            print("  ✓ TUI is up to date")
+        else:
+            publish_stage("Building the TUI")
+            build_source_tui(project_root, env=env)
     if "web" in frontends:
-        publish_stage("Building the web UI")
-        build_source_web(project_root, env=env)
+        if source_product_current(project_root, "web", project_root / "hermes_cli/web_dist"):
+            print("  ✓ Web UI is up to date")
+        else:
+            publish_stage("Building the web UI")
+            build_source_web(project_root, env=env)
     if desktop:
         from hermes_cli.main_desktop import _refresh_installed_desktop_apps, build_prepared_desktop
 
         publish_stage("Building the desktop app")
-        build_prepared_desktop(
-            project_root / "apps/desktop", source_mode=False,
-            npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
-        )
+        # The desktop build mutates checkout-scoped node_modules and
+        # apps/desktop/release; serialize it against a concurrent manual
+        # `hermes desktop` (#93940). The update path waits rather than exits:
+        # the in-flight build it queues behind produces the same fresh tree
+        # this update needs.
+        from hermes_cli.desktop_build_lock import DesktopBuildLock
+
+        build_lock = DesktopBuildLock(project_root)
+        build_lock.acquire(wait=True)
+        try:
+            build_prepared_desktop(
+                project_root / "apps/desktop", source_mode=False,
+                npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
+            )
+        finally:
+            build_lock.release()
         # A current release/ can still sit beside a stale installed copy (an earlier
         # update rebuilt but never installed); healing must not wait for the next build.
         _refresh_installed_desktop_apps(project_root / "apps/desktop")

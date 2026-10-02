@@ -402,7 +402,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `WHATSAPP_CLOUD_ALLOWED_USERS` | Comma-separated `wa_id`s (phone numbers with country code, no `+`) allowed to message the bot |
 | `WHATSAPP_CLOUD_ALLOW_ALL_USERS` | Allow all WhatsApp Cloud senders without an allowlist (`true`/`false`) |
 | `WHATSAPP_CLOUD_APP_ID` | Optional Meta App ID (for future analytics integration) |
-| `WHATSAPP_CLOUD_WABA_ID` | Optional WhatsApp Business Account ID (for future analytics integration) |
+| `WHATSAPP_CLOUD_WABA_ID` | Optional WhatsApp Business Account ID; when set, inbound webhooks must match it |
 | `WHATSAPP_CLOUD_WEBHOOK_HOST` | Interface the inbound webhook server binds to (default `0.0.0.0`) |
 | `WHATSAPP_CLOUD_WEBHOOK_PORT` | Port the inbound webhook server binds to (default `8090`) |
 | `WHATSAPP_CLOUD_WEBHOOK_PATH` | URL path Meta posts inbound messages to (default `/whatsapp/webhook`) |
@@ -809,7 +809,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_NEMO_RELAY_PLUGINS_TOML` | Explicit path to the standard NeMo Relay `plugins.toml` loaded process-wide by Hermes core. When unset, Hermes does not initialize Relay middleware, dynamic plugins, or exporters. The removed `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables are ignored (a `.env` that still carries them exports nothing); `hermes update` / `hermes migrate relay` converts them into `<hermes home>/relay-plugins.toml` and sets this variable — see the [migration note and full example](../user-guide/features/built-in-plugins.md#nemo-relay-native-integration-migration-note). See [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about). |
+| `HERMES_NEMO_RELAY_PLUGINS_TOML` | Optional explicit path to a standard NeMo Relay `plugins.toml` loaded process-wide by Hermes core. When unset, Relay uses its normal user configuration followed by the higher-precedence machine-wide system configuration. When set, this file replaces the user configuration while the system configuration still applies above it. The removed `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables are ignored; `hermes update` / `hermes migrate relay` converts them into `<hermes home>/relay-plugins.toml` and sets this variable — see the [migration note and full example](../user-guide/features/built-in-plugins.md#nemo-relay-native-integration-migration-note). See [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about). |
 
 ## Agent Behavior
 

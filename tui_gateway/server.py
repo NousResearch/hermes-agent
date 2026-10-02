@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -29,6 +30,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
+from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
 from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
@@ -100,6 +102,12 @@ _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run un
 _cfg_cache: dict | None = None
 _cfg_sig: tuple | None = None
 _cfg_path = None
+
+# Idempotency registry for session.create: maps client-supplied key → sid so a
+# retried create (e.g. response lost in transit) returns the same session
+# instead of spawning a duplicate child. Entries expire with the session.
+_idempotency_keys: dict[str, tuple[str, float]] = {}
+_IDEMPOTENCY_KEY_TTL = 300.0  # 5 min: longer than any realistic retry window
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
 
@@ -298,6 +306,12 @@ class _SlashWorker:
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
     def run(self, command: str) -> str:
+        """Run one command; return its output text.
+
+        A command like /prompt may also have parked a next-turn prompt (a "seed")
+        on the worker CLI; it rides back on the reply's ``seed`` field and is
+        retrieved separately via ``pop_seed()``.
+        """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
         with self._lock:
@@ -316,9 +330,15 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
+                self._last_seed = str(msg.get("seed", "") or "")
                 return str(msg.get("output", "")).rstrip()
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
+
+    def pop_seed(self) -> str:
+        """Return and clear the seed from the last ``run()`` (empty when none)."""
+        seed, self._last_seed = getattr(self, "_last_seed", ""), ""
+        return seed
 
     def close(self):
         if getattr(self, "_closed", False):
@@ -1159,8 +1179,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
             notify_registered = _wire_session_agent(sid, key, agent)
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
+            from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": agent_init_failed_message(e)})
+            # A client can route "no provider is set up" to its setup flow instead of a dead-end
+            # error toast — but only if it can tell. The sentence is for the reader, the code is
+            # for the client; older clients keep matching the text.
+            _emit("error", sid, {
+                "message": agent_init_failed_message(e),
+                **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -1278,9 +1304,9 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from hermes_cli.config import atomic_config_write
+    from hermes_cli.config import atomic_config_replace
     path = _active_config_path()
-    atomic_config_write(path, cfg)
+    atomic_config_replace(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
@@ -1361,24 +1387,16 @@ def _clarify_timeout_seconds() -> float | None:
     return 300
 
 
-def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
-    """Bridge the clarify tool callback onto a ``clarify`` server request. Single question: the response is
-    ``{"answer"}`` ("" = skip). Batch: one request with only the wire fields (tool-side entries carry
-    result-assembly keys too); answers lock one at a time through ``clarify.lock`` and the tool gets
-    ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
+def _clarify_block(sid: str, questions: list[dict]) -> dict:
+    """Bridge the clarify tool callback onto one ``clarify`` server request carrying only the wire fields
+    (tool-side entries carry result-assembly keys too). Answers lock one at a time through ``clarify.lock``
+    (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it."""
     from tui_gateway import server_requests
-    if questions:
-        wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
-                for e in questions]
-        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                                      qids=[e["qid"] for e in questions])
-        if not result or "answers" not in result:
-            return ""
-        return json.dumps(result, ensure_ascii=False)
-    params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
-    answer = (result or {}).get("answer", "")
-    return answer if isinstance(answer, str) else ""
+    wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
+            for e in questions]
+    result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+                                  qids=[e["qid"] for e in questions])
+    return result or {"answers": {}, "outcome": "undelivered"}
 
 
 # A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
@@ -1419,6 +1437,70 @@ def _tour_request(sid: str, payload: dict) -> str:
     elif state != "answered":
         session["tour_bridge"] = "unanswered"
     return answer or _TOUR_BRIDGE_UNAVAILABLE
+
+
+_PREVIEW_ACTION_TIMEOUT_S = 45
+# Until a session's client has proven it answers preview.act at all, hold it to a
+# deadline a working renderer cannot miss (same ladder as the tour probe).
+_PREVIEW_ACTION_PROBE_TIMEOUT_S = 10
+# An unanswered probe condemns the bridge only until the cooldown expires: the
+# renderer may attach late (app launched after the turn started). One caller at
+# a time re-probes; concurrent siblings fail fast instead of stacking waits.
+_PREVIEW_ACTION_REPROBE_COOLDOWN_S = 30
+
+_PREVIEW_ACTION_BRIDGE_UNAVAILABLE = json.dumps({
+    "success": False,
+    "error": ("No Hermes Desktop window answered the preview action request. The drive_preview / "
+              "annotate_preview bridge is served by the desktop app's renderer, which updates "
+              "separately from this backend, so an app build older than the tool has nothing "
+              "listening. Update the Hermes Desktop app, open a page with open_preview, and try "
+              "again in this session after a short cooldown.")})
+
+# One in-flight cooldown-expiry reprobe per session: concurrent callers fail fast.
+_preview_action_reprobe: dict[str, object] = {}
+_preview_action_reprobe_lock = threading.Lock()
+
+
+def _preview_action_request(sid: str, payload: dict) -> str:
+    """Bridge the drive_preview / annotate_preview callback onto a ``preview.act`` server request
+    without paying for a client that cannot answer: against an older app (or a session no window
+    hosts, #94272 / #119333) nobody answers ``preview.act`` and each action would block the full
+    deadline, stacking per turn exactly like the tour timeouts (#89620). First action per session
+    gets the short probe deadline; unanswered → bridge marked unavailable for that session with a
+    cooldown-gated reprobe; once answered, the full deadline. The verdict lives on the session
+    record, so a new session re-probes. Interrupt ≠ timeout: a cancelled wait (Stop, session close)
+    returns without poisoning the state, because ``send()``'s None conflates the two and only the
+    cooldown-reprobe token distinguishes an in-flight probe — so state flips only through it.
+    """
+    with _sessions_lock:
+        session = _sessions.get(sid)
+        if session is None:
+            # detached caller: throwaway record, plain bridge, unprobed ({} is falsy but a REAL record)
+            session = {}
+        state = session.get("preview_action_bridge")
+        now = time.monotonic()
+        if state == "unanswered" and now < session.get("preview_action_bridge_retry_at", 0):
+            return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
+        if state == "unanswered":
+            with _preview_action_reprobe_lock:
+                if _preview_action_reprobe.get(sid) is not None:
+                    return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
+                _preview_action_reprobe[sid] = object()
+                session["preview_action_bridge_retry_at"] = now + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+    try:
+        answer = _ask("preview.act", sid, dict(payload),
+                      timeout=_PREVIEW_ACTION_TIMEOUT_S if state == "answered" else _PREVIEW_ACTION_PROBE_TIMEOUT_S)
+    finally:
+        if state == "unanswered":
+            with _preview_action_reprobe_lock:
+                _preview_action_reprobe.pop(sid, None)
+    with _sessions_lock:
+        if answer:
+            session["preview_action_bridge"] = "answered"
+        elif session.get("preview_action_bridge") != "answered":
+            session["preview_action_bridge"] = "unanswered"
+            session["preview_action_bridge_retry_at"] = time.monotonic() + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+    return answer or _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -1740,13 +1822,24 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
                 from agent.context_compressor import _DB_PERSISTED_MARKER
+                # Same stale-key hazard as the submit row: this durable pivot must land in the session the
+                # live agent writes to, or a model switch between turns on a rotated session files the notice
+                # under a parent the conversation no longer reads from (#123545).
+                target = _submit_row_target_key(session)
+                # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
+                # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
+                db.deactivate_messages_by_display_kind(target, "model_switch")
                 from agent.message_metadata import stamp_message_uid
                 entry["_row_id"] = db.append_message(
-                    session_id=session_key, role="user", content=marker, display_kind="model_switch",
+                    session_id=target, role="user", content=marker, display_kind="model_switch",
                     message_uid=stamp_message_uid(entry))
                 entry[_DB_PERSISTED_MARKER] = True
     except Exception:
-        logger.debug("failed to persist model switch marker", exc_info=True)
+        # warning, not debug: filing the pivot in the LIVE session (#123545) means this write can now hit
+        # CompressionSessionClosedError on a closed parent, which the old session_key target could not.
+        # Swallowed at debug, a model switch silently loses its durable notice — the next resume replays
+        # without it and nothing lands in errors.log. Matches _persist_live_session_system_prompt above.
+        logger.warning("failed to persist model switch marker", exc_info=True)
 
 
 def _write_config_key(key_path: str, value):
@@ -1814,12 +1907,10 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-_SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
-
-
 def _load_service_tier() -> str | None:
-    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
-    return _SERVICE_TIER_ALIASES.get(raw)
+    from agent.fast_mode import parse_service_tier
+
+    return parse_service_tier((_load_cfg().get("agent") or {}).get("service_tier", ""))
 
 
 def _load_provider_routing() -> dict:
@@ -2206,7 +2297,7 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     return str(model), str(provider or "")
 
 
-def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -> bool:
+def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, tier: str | None = None) -> bool:
     """Whether a priority tier reaches this session's route. Every request builder asks the same gate, so a
     profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
     report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
@@ -2218,7 +2309,7 @@ def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -
             base_url = getattr(agent, "_anthropic_base_url", None)
         base_url = base_url or getattr(agent, "base_url", None)
     try:
-        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url) is not None
+        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url, tier=tier) is not None
     except Exception:
         return False
 
@@ -2269,8 +2360,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
         "service_tier": service_tier,
-        "fast": service_tier == "priority" and _fast_tier_applies(agent, model, pending_provider or provider,
-                                                                  route_known=not pending_provider),
+        "fast": service_tier in STATIC_TIERS and _fast_tier_applies(agent, model, pending_provider or provider,
+                                                                    route_known=not pending_provider, tier=service_tier),
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
@@ -2588,7 +2679,7 @@ def _make_agent(
 
 
 def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None) -> None:
-    """Adopt the stored row's cwd, or persist the fresh session's cwd (+ schedule git meta) when the row has none."""
+    """Adopt the stored row's cwd and fill missing Git metadata, or persist a fresh cwd."""
     owns_db, db = False, session_db
     if db is None and not profile_home:
         db = _get_db()
@@ -2613,6 +2704,16 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                         _sessions[sid]["cwd"] = row["cwd"]
                         if remote:
                             _sessions[sid]["explicit_cwd"] = True
+                # Lazy desktop rows already carry their explicitly chosen cwd, so they never reach the fresh-cwd
+                # branch below. Claim a generation before probing to keep an older probe from overwriting a later
+                # workspace move; complete rows do not need another probe on every resume.
+                if (not row.get("git_branch") or not row.get("git_repo_root")) and hasattr(
+                    db, "update_session_cwd"
+                ):
+                    try:
+                        _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row["cwd"], db=db)
+                    except Exception:
+                        logger.debug("failed to enrich resumed session git metadata", exc_info=True)
             elif hasattr(db, "update_session_cwd"):
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
@@ -2656,6 +2757,34 @@ def _init_session(
 
 def _new_session_key() -> str:
     return new_session_id()
+
+
+# Server-minted session keys are ``%Y%m%d_%H%M%S_`` + 6 hex chars (see
+# ``_new_session_key``). session.resume uses this shape as the fail-closed gate
+# for materializing a row for a minted-but-never-persisted key: only keys the
+# server itself could have produced qualify — arbitrary strings and 8-hex
+# runtime session ids (``uuid4().hex[:8]``) are rejected.
+_MINTED_SESSION_KEY_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{6}$")
+
+
+def _is_server_minted_key(value: str | None) -> bool:
+    return bool(value and _MINTED_SESSION_KEY_RE.fullmatch(value))
+
+
+def _any_live_session_claims_key(target: str) -> bool:
+    """True if any live registry record claims this stored key (any profile).
+
+    Fail-closed gate for minted-key materialization: a key claimed by a live
+    session — even one scoped to a different profile — is owned, so an
+    unscoped resume must not mint a phantom row in the launch store (#93296
+    cross-profile rule: routing guesses are forbidden).
+    """
+    for record in list(_sessions.values()):
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("session_key") or "") == target:
+            return True
+    return False
 
 
 def _with_checkpoints(session, fn):

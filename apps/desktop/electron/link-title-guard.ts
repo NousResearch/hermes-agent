@@ -284,9 +284,9 @@ export type TitleHostLookup = (host: string) => Promise<{ address: string; famil
 /**
  * The env proxy the curl tier hands `url` to, or '' for a direct dial. The
  * curl tier passes the answer to curl explicitly (`--proxy`/`--noproxy`), so
- * the DNS step is skipped exactly when curl really does not dial the name
- * itself — curl's own env rules (lowercase-only `http_proxy`, `NO_PROXY`)
- * can no longer disagree with the guard.
+ * curl's own env rules (lowercase-only `http_proxy`, `NO_PROXY`) can no longer
+ * disagree with the guard about who dials the name. Either way the name's DNS
+ * answers are vetted first; only the pin (`--resolve`) is direct-dial only.
  */
 export function titleProxyFor(url: URL, env: NodeJS.ProcessEnv = process.env): string {
   const names =
@@ -311,7 +311,7 @@ async function defaultLookup(host: string): Promise<{ address: string; family: n
 
 /** A title/metadata destination that passed admission. */
 export interface TitleFetchTarget {
-  /** Every DNS answer for `hostname`, all vetted; [] for a literal IP or a proxied dial. */
+  /** Every DNS answer for `hostname`, all vetted (also for a proxied dial, which cannot pin them); [] for a literal IP. */
   addresses: string[]
   hostname: string
   port: string
@@ -369,14 +369,16 @@ export async function resolveTitleFetchTarget(
   const port = url.port || (url.protocol === 'https:' ? '443' : '80')
   const proxy = options.honorProxyEnv === false ? '' : titleProxyFor(url)
 
-  if (proxy) {
+  // A public literal cannot rebind; there is nothing to resolve or pin.
+  if (parseLooseIpv4(hostname) || parseIpv6(hostname) !== null) {
     return { addresses: [], hostname, port, proxy }
   }
 
-  // A public literal cannot rebind; there is nothing to resolve or pin.
-  if (parseLooseIpv4(hostname) || parseIpv6(hostname) !== null) {
-    return { addresses: [], hostname, port, proxy: '' }
-  }
+  // A name is resolved and vetted here even when a proxy will dial it. The
+  // proxy resolves it again and could still reach a private address on its own
+  // network, but `evil.example.com -> 169.254.169.254` must not be admitted just
+  // because this host did not look: "admitted" means "looked, and every answer
+  // is public". A name this host cannot resolve is refused like a direct one.
 
   let answers: { address: string; family: number }[]
 
@@ -393,13 +395,12 @@ export async function resolveTitleFetchTarget(
     return null
   }
 
-  return { addresses: answers.map(entry => entry.address), hostname, port, proxy: '' }
+  return { addresses: answers.map(entry => entry.address), hostname, port, proxy }
 }
 
 /**
  * Full admission for one title-fetch target: scheme, credential-bearing query,
- * literal/special hostname, and — without a proxy, where this host dials the
- * name itself — every DNS answer. False means "no title", fail closed: a name
+ * literal/special hostname, and every DNS answer (with or without a proxy). False means "no title", fail closed: a name
  * that fails to resolve, or resolves into any blocked range, never reaches
  * curl or the hidden title window.
  */

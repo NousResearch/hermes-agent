@@ -98,26 +98,38 @@ describe('resolveTitleFetchTarget', () => {
     )
   })
 
-  test('skips DNS only for the scheme whose proxy curl will be handed', async () => {
+  test('vets DNS answers for a proxied dial too, and hands the proxy only to its scheme', async () => {
     process.env.HTTPS_PROXY = 'http://proxy.corp:3128'
     let lookups = 0
+    let answer = '93.184.216.34'
 
     const lookup = async () => {
       lookups += 1
 
-      return [{ address: '93.184.216.34', family: 4 }]
+      return [{ address: answer, family: 4 }]
     }
 
-    assert.equal((await resolveTitleFetchTarget('https://example.test/', { lookup }))?.proxy, 'http://proxy.corp:3128')
-    assert.equal(lookups, 0)
+    assert.deepEqual(await resolveTitleFetchTarget('https://example.test/', { lookup }), {
+      addresses: ['93.184.216.34'],
+      hostname: 'example.test',
+      port: '443',
+      proxy: 'http://proxy.corp:3128'
+    })
+    assert.equal(lookups, 1)
 
     // http:// has no proxy here, so curl dials it directly: resolve and pin.
     assert.deepEqual((await resolveTitleFetchTarget('http://example.test/', { lookup }))?.addresses, ['93.184.216.34'])
-    assert.equal(lookups, 1)
+    assert.equal(lookups, 2)
 
     // Chromium-stack callers never route through the env proxy.
     assert.equal((await resolveTitleFetchTarget('https://example.test/', { honorProxyEnv: false, lookup }))?.proxy, '')
-    assert.equal(lookups, 2)
+    assert.equal(lookups, 3)
+
+    // The #129647 review probe: same name and answer, only the env proxy differing.
+    answer = '169.254.169.254'
+    assert.equal(await resolveTitleFetchTarget('https://evil.example.com/', { lookup }), null)
+    assert.equal(await resolveTitleFetchTarget('https://evil.example.com/', { honorProxyEnv: false, lookup }), null)
+    assert.equal(lookups, 5)
   })
 
   test('titleProxyFor mirrors the per-scheme env lookup', () => {

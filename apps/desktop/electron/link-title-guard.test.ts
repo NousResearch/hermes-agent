@@ -165,24 +165,19 @@ describe('isSafeTitleFetchTarget', () => {
     assert.equal(await isSafeTitleFetchTarget('https://empty.test/', fakeLookup([])), false)
   })
 
-  test('skips the DNS step when a proxy owns the dial, keeping literal checks', async () => {
+  test('still resolves and vets a name when a proxy owns the dial', async () => {
     process.env.HTTPS_PROXY = 'http://127.0.0.1:7890'
+    process.env.HTTP_PROXY = 'http://127.0.0.1:7890'
 
-    let lookupRan = false
-
-    const tracking = async (host: string) => {
-      lookupRan = true
-
-      return [{ address: '93.184.216.34', family: 4 }]
-    }
-
-    assert.equal(await isSafeTitleFetchTarget('https://example.com/', tracking), true)
-    assert.equal(lookupRan, false)
-    assert.equal(await isSafeTitleFetchTarget('https://192.168.0.10/', tracking), false)
-    // The loopback hostname needs no DNS to classify, so a proxy cannot
-    // re-open what would dial the proxy host's own localhost.
-    assert.equal(await isSafeTitleFetchTarget('http://localhost:8080/', tracking), false)
-    assert.equal(await isSafeTitleFetchTarget('http://nas.lan/', tracking), true)
+    assert.equal(await isSafeTitleFetchTarget('https://example.com/', fakeLookup(['93.184.216.34'])), true)
+    // A public-looking name whose answer is cloud metadata or the LAN: the proxy
+    // would resolve it the same way, so it is refused before the proxy sees it.
+    assert.equal(await isSafeTitleFetchTarget('https://evil.example.com/', fakeLookup(['169.254.169.254'])), false)
+    assert.equal(await isSafeTitleFetchTarget('http://nas.lan/', fakeLookup(['192.168.1.20'])), false)
+    assert.equal(await isSafeTitleFetchTarget('https://nx.test/', fakeLookup(new Error('ENOTFOUND'))), false)
+    // Literal checks need no DNS.
+    assert.equal(await isSafeTitleFetchTarget('https://192.168.0.10/', fakeLookup(['93.184.216.34'])), false)
+    assert.equal(await isSafeTitleFetchTarget('http://localhost:8080/', fakeLookup(['93.184.216.34'])), false)
   })
 
   test('refuses non-http schemes and credential-bearing queries', async () => {

@@ -277,7 +277,9 @@ def policy_for_source(runner, source):
     from gateway.config import Platform
     if source.platform != Platform.LOCAL:
         return None
-    adapter = runner._delivery_adapter_for(source)
+    # LOCAL launch policy belongs to its registered runtime profile, not the
+    # receiving transport used to deliver a routed native reply.
+    adapter = runner._adapters_for_profile(source.profile).get(Platform.LOCAL)
     if isinstance(adapter, LocalSessionAdapter) and adapter.authorize_source(source):
         policy = adapter.policies.get(source.chat_id)
         if policy is None:

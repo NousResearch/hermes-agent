@@ -9,13 +9,14 @@ statistics aggregated across all batches. See ``main`` (fire CLI) for usage.
 # hermes_bootstrap must be the very first import — UTF-8 stdio on Windows, no-op on POSIX.
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    # Partial ``hermes update`` (git reset landed, ``uv pip install -e .`` did not):
-    # only Windows UTF-8 stdio setup is skipped.
-    pass
+except ModuleNotFoundError as exc:
+    # Partial ``hermes update`` (git reset landed, ``uv pip install -e .`` did not).
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import json
 import logging
+import contextlib
 import os
 import time
 import traceback
@@ -51,13 +52,16 @@ _RUNNER_FIELDS = (
     "batch_size", "run_name", "distribution", "max_iterations", "base_url", "api_key", "model",
     "num_workers", "verbose", "ephemeral_system_prompt", "log_prefix_chars", "providers_allowed",
     "providers_ignored", "providers_order", "provider_sort", "openrouter_min_coding_score",
-    "max_tokens", "reasoning_config", "prefill_messages", "max_samples",
+    "reasoning_config", "prefill_messages", "max_samples",
 )
 # BatchRunner attributes forwarded verbatim to every AIAgent in the worker config.
 _AGENT_PASSTHROUGH = (
     "base_url", "api_key", "ephemeral_system_prompt", "providers_allowed", "providers_ignored",
-    "providers_order", "provider_sort", "openrouter_min_coding_score", "max_tokens",
+    "providers_order", "provider_sort", "openrouter_min_coding_score",
     "reasoning_config", "prefill_messages",
+    # Without this, every batch task run is attributed to the "unknown" execution
+    # surface in shared metrics even though "batch" is a first-class surface.
+    "platform",
 )
 
 
@@ -251,16 +255,26 @@ def _process_single_prompt(
             log_prefix=f"[B{batch_num}:P{prompt_index}]",
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
             skip_memory=True,  # Don't use persistent memory in batch runs
-            **{key: config.get(key) for key in _AGENT_PASSTHROUGH},
+            **{key: config.get(key) for key in _AGENT_PASSTHROUGH if key != "platform"},
+            # Batch is a first-class execution surface. Defaulting here (rather than
+            # relying on the caller's config dict) keeps task-run telemetry attributable
+            # even for callers that build a config without it.
+            platform=config.get("platform") or "batch",
         )
+        try:
+            # task_id ensures each task gets its own isolated VM
+            result = agent.run_conversation(prompt, task_id=task_id)
 
-        # task_id ensures each task gets its own isolated VM
-        result = agent.run_conversation(prompt, task_id=task_id)
-
-        # Stats before conversion — keep the original evaluation order.
-        tool_stats = _extract_tool_stats(result["messages"])
-        reasoning_stats = _extract_reasoning_stats(result["messages"])
-        trajectory = agent._convert_to_trajectory_format(result["messages"], prompt, result["completed"])
+            # Stats before conversion — keep the original evaluation order.
+            tool_stats = _extract_tool_stats(result["messages"])
+            reasoning_stats = _extract_reasoning_stats(result["messages"])
+            trajectory = agent._convert_to_trajectory_format(result["messages"], prompt, result["completed"])
+        finally:
+            # One agent per prompt, N prompts per batch process: an unclosed
+            # agent per prompt leaks terminals/VMs/httpx clients for the
+            # batch's whole run (#50197).
+            with contextlib.suppress(Exception):
+                agent.close()
 
         return {
             "success": True,
@@ -427,7 +441,7 @@ class BatchRunner:
         providers_order: List[str] = None,
         provider_sort: str = None,
         openrouter_min_coding_score: Optional[float] = None,
-        max_tokens: int = None,
+
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         max_samples: int = None,
@@ -442,6 +456,9 @@ class BatchRunner:
         self.dataset_file = Path(dataset_file)
         for name in _RUNNER_FIELDS:
             setattr(self, name, params[name])
+        # Batch runs are their own execution surface; declaring it here keeps every
+        # worker's task-run telemetry attributable instead of falling back to "unknown".
+        self.platform = "batch"
 
         if not validate_distribution(distribution):
             raise ValueError(f"Unknown distribution: {distribution}. Available: {list(list_distributions().keys())}")
@@ -480,13 +497,13 @@ class BatchRunner:
 
                 try:
                     entry = json.loads(line)
-                    if 'prompt' not in entry:
-                        print(f"⚠️  Warning: Line {line_num} missing 'prompt' field, skipping")
-                        continue
-                    dataset.append(entry)
                 except json.JSONDecodeError as e:
                     print(f"⚠️  Warning: Invalid JSON on line {line_num}: {e}")
                     continue
+                if not isinstance(entry, dict) or 'prompt' not in entry:
+                    print(f"⚠️  Warning: Line {line_num} missing 'prompt' field, skipping")
+                    continue
+                dataset.append(entry)
 
         if not dataset:
             raise ValueError(f"No valid entries found in dataset file: {self.dataset_file}")
@@ -542,7 +559,7 @@ class BatchRunner:
                     for line in f:
                         try:
                             entry = json.loads(line.strip())
-                            if entry.get("failed", False):
+                            if not isinstance(entry, dict) or entry.get("failed", False):
                                 continue
                             prompt_text = _entry_prompt_text(entry)
                             if prompt_text:
@@ -712,6 +729,9 @@ class BatchRunner:
                         try:
                             data = json.loads(line)
 
+                            if not isinstance(data, dict):
+                                filtered_entries += 1
+                                continue
                             if data.get("discarded"):
                                 tombstone_entries += 1
                                 continue
@@ -861,7 +881,7 @@ def main(
     providers_ignored: str = None,
     providers_order: str = None,
     provider_sort: str = None,
-    max_tokens: int = None,
+
     reasoning_effort: str = None,
     reasoning_disabled: bool = False,
     prefill_messages_file: str = None,
@@ -889,7 +909,7 @@ def main(
         providers_ignored (str): Comma-separated list of OpenRouter providers to ignore (e.g. "together,deepinfra")
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
-        max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+
         reasoning_effort (str): Reasoning effort: "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
@@ -905,9 +925,9 @@ def main(
         # Use specific distribution
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
         
-        # With disabled reasoning and max tokens
+        # With disabled reasoning
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
-                               --reasoning_disabled --max_tokens=128000
+                               --reasoning_disabled
         
         # With prefill messages from file
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
@@ -981,7 +1001,7 @@ def main(
             providers_ignored=_split_csv(providers_ignored),
             providers_order=_split_csv(providers_order),
             provider_sort=provider_sort,
-            max_tokens=max_tokens,
+
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
             max_samples=max_samples,

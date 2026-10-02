@@ -1,0 +1,17 @@
+name: prompt-enhance
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: b1d5ea1363d4f830967da4ae4748d006b07fee0e
+subdir: public/prompt-enhance
+description: "Rewrite a composer draft outside the chat and put the finished prompt back in the field. A prompt library keeps saved prompts, and a one-call model pick does not change the session."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/prompt-enhance
+version: "1.1.0"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/b1d5ea1363d4f830967da4ae4748d006b07fee0e/public/prompt-enhance/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

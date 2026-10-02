@@ -8,14 +8,16 @@ Windows would need a separate ConPTY/``pywinpty`` implementation).
 
 from __future__ import annotations
 
+import asyncio
 import errno
-import fcntl
+import fcntl  # windows-footgun: ok — POSIX-only module by design (see docstring)
+import math
 import os
 import select
 import signal
 import struct
 import sys
-import termios
+import termios  # windows-footgun: ok — POSIX-only module by design (see docstring)
 import time
 from typing import Optional, Sequence
 
@@ -27,7 +29,12 @@ except ImportError:  # pragma: no cover - dev env without ptyprocess
     _PTY_AVAILABLE = False
 
 
-__all__ = ["PtyBridge", "PtyUnavailableError"]
+__all__ = ["PTY_HOST_DASHBOARD", "PTY_HOST_ENV", "PtyBridge", "PtyUnavailableError"]
+
+# Set on the spawned TUI so Ink knows which emulator is hosting it. Mirrored in
+# ui-tui/packages/hermes-ink/src/ink/termio/host.ts — keep the two in sync.
+PTY_HOST_ENV = "HERMES_PTY_HOST"
+PTY_HOST_DASHBOARD = "dashboard"
 
 
 # ``struct winsize`` packs rows/cols as unsigned short; we clamp well below that ceiling because a
@@ -55,15 +62,52 @@ class PtyUnavailableError(RuntimeError):
     """
 
 
+# Longer than the TUI gateway's own SIGHUP shutdown grace, so a helper that is saving state on
+# SIGHUP finishes before it is SIGKILLed.
+_HELPER_SHUTDOWN_GRACE_S = 1.5
+# Upper bound: PTY_REGISTRY.close_all() runs inside the backend's SIGTERM -> SIGKILL budget
+# (dashboard_procs._POSIX_TERM_GRACE_SECONDS), so a raised gateway grace cannot stretch it.
+_MAX_HELPER_SHUTDOWN_GRACE_S = 2.0
+
+
+def _helper_shutdown_grace() -> float:
+    # The gateway's grace is 1.0 s unless HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S raises it
+    # (tui_gateway/entry.py); the PTY child inherits that env. Read it here rather than import
+    # tui_gateway.entry, which installs signal handlers.
+    from utils import env_float
+
+    gateway = env_float("HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S", 1.0)
+    if not math.isfinite(gateway) or gateway <= 0:
+        gateway = 1.0
+    return min(max(_HELPER_SHUTDOWN_GRACE_S, gateway + 0.5), _MAX_HELPER_SHUTDOWN_GRACE_S)
+
+
+def _process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+    except OSError:
+        return False
+    return True
+
+
 class PtyBridge:
     """Thin wrapper around ``ptyprocess.PtyProcess`` for byte streaming. Not thread-safe: owned by
-    the WebSocket handler that spawned it; reads run in an executor thread, writes on the loop.
+    the WebSocket handler that spawned it; reads run in an executor thread, writes are awaited on
+    the loop. The master fd is non-blocking so input backpressure suspends only the owning
+    WebSocket task, never the dashboard event loop.
     """
 
     def __init__(self, proc: "ptyprocess.PtyProcess"):  # type: ignore[name-defined]
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
+        # Recorded at spawn: once the leader is reaped getpgid() can no longer find its group,
+        # but the helpers it started still belong to it.
+        try:
+            self._pgid: Optional[int] = os.getpgid(proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        except OSError:
+            self._pgid = None
+        os.set_blocking(self._fd, False)
 
     @classmethod
     def is_available(cls) -> bool:
@@ -80,7 +124,7 @@ class PtyBridge:
                 raise PtyUnavailableError("Pseudo-terminals are unavailable on this platform. "
                                           "Hermes Agent supports Windows only via WSL.")
             raise PtyUnavailableError("The `ptyprocess` package is missing. "  # only other way _PTY_AVAILABLE is False
-                                      "Install with: pip install ptyprocess (or pip install -e '.[pty]').")
+                                      "Run hermes pm repair, then restart Hermes.")
         # env=None: callers own env policy (process_registry already sanitizes), so inherit via the
         # factory with exact preservation. Backfill TERM when missing/blank — CI often lacks it and
         # probes like `tput cols` then fail before winsize reads; explicit overrides are kept.
@@ -88,6 +132,11 @@ class PtyBridge:
         spawn_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False) if env is None else env.copy()
         if not spawn_env.get("TERM"):
             spawn_env["TERM"] = "xterm-256color"
+        # Tell the child TUI it is hosted by the dashboard's xterm.js. Ink uses this to skip the
+        # focus-in erase+repaint it does for native emulators that coalesce hidden-tab output
+        # (xterm.js never drops frames, so under the dashboard that repaint was a visible flash on
+        # every OS app-switch).
+        spawn_env[PTY_HOST_ENV] = PTY_HOST_DASHBOARD
         proc = ptyprocess.PtyProcess.spawn(list(argv), cwd=cwd, env=spawn_env, dimensions=(rows, cols))  # type: ignore[union-attr]
         return cls(proc)
 
@@ -120,25 +169,75 @@ class PtyBridge:
             # EIO on Linux = slave side closed.  EBADF = already closed.
             if exc.errno in {errno.EIO, errno.EBADF}:
                 return None
+            # The fd is deliberately non-blocking. Readiness can disappear
+            # between select() and os.read() when close/output races occur.
+            if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                return b""
             raise
         return data or None
 
-    def write(self, data: bytes) -> None:
-        """Write raw bytes to the PTY master (i.e. the child's stdin)."""
-        if self._closed or not data:
-            return
-        # os.write can return a short write under load; loop until drained.
+    async def _wait_writable(self, timeout: float) -> bool:
+        """Wait without blocking the event loop until the master accepts input."""
+        if self._closed or timeout <= 0:
+            return False
+        loop = asyncio.get_running_loop()
+        ready = loop.create_future()
+
+        def _mark_ready() -> None:
+            if not ready.done():
+                ready.set_result(None)
+
+        try:
+            loop.add_writer(self._fd, _mark_ready)
+            await asyncio.wait_for(ready, timeout=timeout)
+            return not self._closed
+        except (asyncio.TimeoutError, OSError, ValueError):
+            return False
+        finally:
+            try:
+                loop.remove_writer(self._fd)
+            except (OSError, ValueError):
+                pass
+
+    async def write(self, data: bytes, *, timeout: float = 10.0) -> bool:
+        """Write all raw bytes without ever blocking the dashboard event loop.
+
+        Returns ``False`` when the bridge closes or the child leaves its input
+        buffer full for ``timeout`` seconds. Callers can then recycle only the
+        affected terminal session while the rest of the dashboard stays live.
+        """
+        if self._closed:
+            return False
+        if not data:
+            return True
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
         view = memoryview(data)
         while view:
+            if self._closed:
+                return False
             try:
                 n = os.write(self._fd, view)
             except OSError as exc:
                 if exc.errno in {errno.EIO, errno.EBADF, errno.EPIPE}:
-                    return
-                raise
-            if n <= 0:
-                return
-            view = view[n:]
+                    return False
+                if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                    n = 0
+                else:
+                    raise
+            if n > 0:
+                view = view[n:]
+                # A very large paste can otherwise monopolize the loop while
+                # the child drains quickly enough to keep the fd writable.
+                if view:
+                    await asyncio.sleep(0)
+                continue
+
+            remaining = deadline - loop.time()
+            if not await self._wait_writable(remaining):
+                return False
+        return True
 
     def resize(self, cols: int, rows: int) -> None:
         """Forward a terminal resize to the child via ``TIOCSWINSZ``.
@@ -156,18 +255,35 @@ class PtyBridge:
         except OSError:
             pass
 
+    def _discard_output(self, timeout: float) -> None:
+        # Exiting children flush their pending terminal output first; on macOS a process stays in
+        # exit (and a SIGHUP save outlasts the grace) until someone drains the master. The drain
+        # task no longer consumes the output, so read and drop while waiting.
+        try:
+            readable, _, _ = select.select([self._fd], [], [], timeout)
+            if readable and os.read(self._fd, 65536):
+                return
+        except (OSError, ValueError):
+            pass
+        time.sleep(timeout)  # nothing read, EOF (b"") or EIO: don't spin on a readable dead fd
+
+    def _wait_for_group_exit(self, pgid: int, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while _process_group_exists(pgid) and time.monotonic() < deadline:
+            self._discard_output(0.02)
+
     def close(self) -> None:
-        """Terminate the child (SIGHUP → SIGTERM → SIGKILL, 0.5s grace each), reap it so the
-        dashboard process never leaks zombies, and close fds. Idempotent.
+        """Terminate the child's process group (SIGHUP → SIGTERM → SIGKILL, 0.5s grace each while
+        the leader lives, then up to the helper grace for the rest of the group), reap the leader so
+        the dashboard never leaks zombies, and close fds. Idempotent; blocks, so call it off the
+        event loop.
         """
         if self._closed:
             return
         self._closed = True
 
-        try:
-            pgid = os.getpgid(self._proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
-        except Exception:
-            pgid = None
+        pgid = self._pgid
+        leader_was_alive = self._proc.isalive()
 
         # Signal the whole process group, not just the PTY leader: the dashboard TUI starts helper
         # children (e.g. the Python slash worker) and killing only the leader strands them.
@@ -183,7 +299,26 @@ class PtyBridge:
                 pass
             deadline = time.monotonic() + 0.5
             while self._proc.isalive() and time.monotonic() < deadline:
-                time.sleep(0.02)
+                self._discard_output(0.02)
+
+        # Helpers can outlive the leader and keep the PTY slave open, so no EOF ever arrives (#76759):
+        # one that ignores SIGHUP, or any helper of a leader that died first (crash, OOM kill). When
+        # the group already got SIGHUP above, only wait: the TUI gateway saves its sessions on SIGHUP
+        # within its shutdown grace, and a second SIGHUP or an early SIGKILL would cut that short.
+        # The group id cannot be reused while any member is alive; if the group emptied after the
+        # leader was reaped, a pid wrap inside that window could hand it to a new group (killpg
+        # then hits that group). The reaper closes a dead session within one tick, so the window is short.
+        if pgid is not None:
+            grace = _helper_shutdown_grace()
+            sweep = (signal.SIGKILL,) if leader_was_alive else (signal.SIGHUP, signal.SIGKILL)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+            if leader_was_alive:
+                self._wait_for_group_exit(pgid, grace)
+            for sig in sweep:
+                try:
+                    os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                except OSError:
+                    break  # ESRCH: the group is empty
+                self._wait_for_group_exit(pgid, grace if sig == signal.SIGHUP else 0.5)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
 
         try:
             self._proc.close(force=True)

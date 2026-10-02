@@ -17,9 +17,10 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from hermes_cli.local_runtime.context_policy import (
-    FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, ub_logits_bytes)
-from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
+    FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
+from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal
 from hermes_cli.local_runtime.gguf import model_id_from_stem
+from hermes_platform.host.products import is_nvidia_n1x_pci_id
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,12 @@ class CatalogEntry:
             n_ctx_train=self.n_ctx_train, layers=layers, swa_window=self.swa_window, moe=self.moe,
             n_vocab=self.n_vocab, kv_scale=1.2 if self.mtp else 1.0)
 
+    def launch_plan(self, variant: QuantVariant, budget: HardwareBudget) -> LaunchPlan:
+        # Optional external drafts may use spare memory after download, never reduce this grant.
+        return plan_launch(self.profile(variant), budget, mtp_capable=self.mtp,
+                           fixed_overhead=RUNTIME_OVERHEAD_BYTES
+                           + (self.mmproj.size_bytes if self.mmproj else 0))
+
     def download_files(self, variant: QuantVariant) -> tuple:
         """Everything a download job fetches for this variant, in order."""
         extras = tuple(a for a in (self.mmproj, self.draft) if a is not None)
@@ -141,22 +148,14 @@ def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice
     "best-large-window": zero-spill at TARGET_WINDOW; "best-fits": zero-spill at the 64K floor;
     "smallest-fits-spilled": weights spill to host RAM, priced honestly; None: physics refuses.
     """
-    overhead = (RUNTIME_OVERHEAD_BYTES
-                + (entry.mmproj.size_bytes if entry.mmproj else 0)
-                + ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
-    native = entry.n_ctx_train or FLOOR
     variant = entry.variants[-1]
-    profile = entry.profile(variant)
-    need = variant.weights_bytes + overhead
-    vram = budget.usable_vram_bytes
-    if need + ctx_bytes(profile, min(TARGET_WINDOW, native)) <= vram:
-        return VariantChoice(variant, zero_spill=True, reason_key="best-large-window")
-    floor_kv = ctx_bytes(profile, min(FLOOR, native))
-    if need + floor_kv <= vram:
-        return VariantChoice(variant, zero_spill=True, reason_key="best-fits")
-    if need + floor_kv <= vram + budget.ram_available_bytes:
+    decision = entry.launch_plan(variant, budget).decision
+    if isinstance(decision, PhysicsRefusal):
+        return None
+    if decision.spilled:
         return VariantChoice(variant, zero_spill=False, reason_key="smallest-fits-spilled")
-    return None
+    reason = "best-large-window" if decision.window >= min(TARGET_WINDOW, entry.n_ctx_train or FLOOR) else "best-fits"
+    return VariantChoice(variant, zero_spill=True, reason_key=reason)
 
 
 # ── recommendation: best quality that fits and isn't miserably slow ──
@@ -177,10 +176,29 @@ _HOST_BANDWIDTH_GB_S = 80.0         # spilled weights stream over host DRAM
 # compress floor, which marks unusable, not unpleasant.
 PLEASANT_FLOOR_TOK_S = 20.0
 
+# Shipped short-context reference rates, not benchmarks run during recommendation.
+# Windows N1X / b10964 CUDA: MTP2 measured 21.76–21.96 tok/s over four 512-token
+# prose probes; a four-slot smoke measured 21.89. At 32K input the reference was
+# 18.82 tok/s: this is a baseline estimate, not a context-independent guarantee.
+# Unmatched hardware, backend, quant or draft depth retains the bandwidth estimate.
+_MEASURED_DECODE_TOK_S = {
+    ("win32", "cuda", "NVIDIA RTX Spark N1X",
+     "qwen3.8-27b", "UD-Q4_K_M", 2): 21.9,
+}
+
 
 def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: HardwareBudget, *,
-                           spilled: bool = False) -> float:
-    """Memory-bound decode prediction for ordering and floor-gating."""
+                           spilled: bool = False, backend: str = "auto") -> float:
+    """Shipped measured baseline where matched, otherwise the memory-bound estimate."""
+    # Drivers may append a parenthesized description to the stable device name.
+    gpu_name = budget.gpu_name.partition(" (")[0]
+    # Resolve PCI identity to the existing reference key; names only backfill missing IDs.
+    if budget.gpu_pci_id is not None:
+        gpu_name = "NVIDIA RTX Spark N1X" if is_nvidia_n1x_pci_id(budget.gpu_pci_id) else ""
+    effective_backend = "cuda" if backend == "auto" and gpu_name else backend
+    key = (budget.platform, effective_backend, gpu_name, entry.id, variant.quant, entry.mtp_draft_depth)
+    if budget.uma and entry.mtp and not spilled and (measured := _MEASURED_DECODE_TOK_S.get(key)) is not None:
+        return measured
     bandwidth = (_HOST_BANDWIDTH_GB_S if spilled
                  else _UMA_BANDWIDTH_GB_S if budget.uma
                  else _DISCRETE_BANDWIDTH_GB_S)
@@ -189,15 +207,15 @@ def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: H
 
 
 def recommended_entry(budget: HardwareBudget,
-                      entries: "tuple[CatalogEntry, ...] | None" = None
+                      entries: "tuple[CatalogEntry, ...] | None" = None, *, backend: str = "auto"
                       ) -> "tuple[CatalogEntry, str] | None":
     """The catalog's default pick for THIS machine, with its reason key.
 
     Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
     (engine too old). Reasons: best-quality-resident (quality won among resident entries clearing
     the pleasant floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality
-    candidate); fastest-resident (nothing resident clears the floor); least-painful-spilled
-    (nothing runs resident; fastest from host memory — MoE by construction).
+    candidate); fastest-resident (nothing resident clears the floor). Returns None when no
+    eligible entry runs resident; spilled models remain available for explicit selection.
     """
     pool = CATALOG if entries is None else entries
     fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
@@ -205,7 +223,7 @@ def recommended_entry(budget: HardwareBudget,
         return None
 
     def speed(t, spilled=False):
-        return predicted_decode_tok_s(t[0], t[1].variant, budget, spilled=spilled)
+        return predicted_decode_tok_s(t[0], t[1].variant, budget, spilled=spilled, backend=backend)
 
     resident = [(e, c) for e, c in fitting if c.zero_spill]
     pleasant = [t for t in resident if speed(t) >= PLEASANT_FLOOR_TOK_S]
@@ -215,7 +233,9 @@ def recommended_entry(budget: HardwareBudget,
         return (pick, "speed-gated-quality" if floor_gated else "best-quality-resident")
     if resident:
         return (max(resident, key=speed)[0], "fastest-resident")
-    return (max(fitting, key=lambda t: speed(t, spilled=True))[0], "least-painful-spilled")
+    # A spilled model may be usable, but it is not a recommendation. Keep it
+    # discoverable through Browse so the user can opt in with the degradation visible.
+    return None
 
 
 # ── catalog data: packaged JSON, refreshed from GitHub in memory ─
@@ -275,7 +295,7 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
 def _packaged_catalog() -> "tuple[CatalogEntry, ...]":
     from importlib.resources import files
 
-    raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(encoding="utf-8")
+    raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(encoding="utf-8-sig")
     return _load_catalog(json.loads(raw))
 
 
@@ -330,22 +350,3 @@ def find_entry_for_model(model_id: str) -> "tuple[CatalogEntry, QuantVariant] | 
 def entry_for_model(model_id: str) -> "CatalogEntry | None":
     hit = find_entry_for_model(model_id)
     return hit[0] if hit is not None else None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-
-def find_variant(entry_id: str, model_id: str) -> QuantVariant | None:
-    entry = catalog_by_id().get(entry_id)
-    if entry is None:
-        return None
-    return next((v for v in entry.variants if v.model_id == model_id), None)
-
-def recommended_id(budget: HardwareBudget,
-                   entries: "tuple[CatalogEntry, ...] | None" = None) -> str | None:
-    picked = recommended_entry(budget, entries)
-    return picked[0].id if picked is not None else None
-# ---- END PLUGIN-COMPAT ----

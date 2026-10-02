@@ -5238,6 +5238,8 @@ export const esOverrides = {
   },
   preview: {
     tab: 'Vista previa',
+    pin: 'Fijar al espacio de trabajo',
+    unpin: 'Desfijar del espacio de trabajo',
     closePane: 'Cerrar panel de vista previa',
     loading: 'Cargando vista previa',
     unavailable: 'Vista previa no disponible',

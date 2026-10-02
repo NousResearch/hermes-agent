@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.conversation_compression import finalize_context_engine_compression_notification
 from agent.conversation_compression_manual import compress_now, parse_compress_args
 
 
@@ -104,3 +105,42 @@ def test_manual_compress_between_turns_rewinds_every_carried_original(session):
     assert carried
     display = [m["content"] for m in display_history if isinstance(m.get("content"), str)]
     assert [display.count(content) for content in carried] == [1] * len(carried)
+
+
+@pytest.mark.parametrize("keep", [1, 2])
+def test_compress_here_n_rewinds_every_row_behind_a_merged_kept_exchange(session, monkeypatch, keep):
+    """A prompt that never got its reply is merged with the next one on reload. Kept by ``/compress here N``,
+    that one dict stands for two durable rows, and the rewind must take both as carried originals."""
+    db, agent = session
+    cli = SimpleNamespace(conversation_history=[])
+    for n in range(1, 9):
+        _turn(db, agent, cli, "gateway", n, 5_000)
+    db.append_message("sid", "user", "U9x this prompt never got a reply")
+    for n in range(9, 9 + keep):
+        _turn(db, agent, cli, "gateway", n, 5_000)
+    history = db.get_resume_conversations("sid")[0]  # --resume, the TUI and Desktop hold row ids
+
+    # The second pass runs on the list the CLI installs: the kept copies still list the ids the first archived.
+    for attempt in range(2):
+        def _numbered_summary(**kwargs):
+            response = _aux_llm(**kwargs)
+            response.choices[0].message.content += f" Pass {attempt}."
+            return response
+
+        monkeypatch.setattr("agent.context_compressor.call_llm", _numbered_summary)
+        result = compress_now(agent, history, parse_compress_args(f"here {keep}"), system_message="")
+        assert result.status == "compressed"
+        finalize_context_engine_compression_notification(agent, committed=True)  # the caller's step
+        history = result.after_messages
+
+        live = [m["content"] for m in db.get_messages_as_conversation("sid") if isinstance(m.get("content"), str)]
+        carried = live[next(i for i, c in enumerate(live) if "Numbered steps" in c) + 1:]
+        recalled = [row["content"] for row in db._conn.execute(
+            "SELECT content FROM messages WHERE session_id = 'sid' AND (active = 1 OR compacted = 1)").fetchall()]
+        assert [recalled.count(content) for content in carried] == [1] * len(carried)
+        assert [c for c in recalled if "U9x" in c or c.startswith("U9 ")] == [
+            "U9x this prompt never got a reply\n\nU9 please continue with the next step"]
+        # A row the rewind hides from search is a carried original: its text is still in a live row.
+        superseded = [row["content"] for row in db._conn.execute(
+            "SELECT content FROM messages WHERE session_id = 'sid' AND active = 0 AND compacted = 0").fetchall()]
+        assert [c for c in superseded if isinstance(c, str) and not any(c in held for held in live)] == []

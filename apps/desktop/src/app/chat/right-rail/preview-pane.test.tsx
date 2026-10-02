@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { setTreePaneParked } from '@/components/pane-shell/tree/parked-panes'
 import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
@@ -942,6 +943,45 @@ describe('PreviewPane off-screen guest', () => {
       rendered.rerender(pane(true))
     })
     expect(setPreviewGuestHidden).toHaveBeenLastCalledWith(41, false)
+  })
+
+  // A hidden session's kept page keeps running, but is not heard from the chat
+  // the user switched to; it comes back with the sound it had.
+  async function renderAudibleGuest(tabId: string, mutedBefore: boolean) {
+    desktopWindow.hermesDesktop = {} as unknown as Window['hermesDesktop']
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(<PreviewPane tabId={tabId} target={target} />)
+    })
+
+    let muted = mutedBefore
+    const setAudioMuted = vi.fn((next: boolean) => (muted = next))
+
+    Object.assign(rendered.container.querySelector('webview')!, { isAudioMuted: () => muted, setAudioMuted })
+
+    return { isMuted: () => muted, setAudioMuted }
+  }
+
+  it("mutes a hidden session's page and restores its sound on return", async () => {
+    const { isMuted, setAudioMuted } = await renderAudibleGuest('url:audible', false)
+
+    act(() => setTreePaneParked('preview-tile:url:audible', true))
+    expect(isMuted()).toBe(true)
+
+    act(() => setTreePaneParked('preview-tile:url:audible', false))
+    expect(isMuted()).toBe(false)
+    expect(setAudioMuted.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('never unmutes a page that was already muted before its session left', async () => {
+    const { isMuted, setAudioMuted } = await renderAudibleGuest('url:muted', true)
+
+    act(() => setTreePaneParked('preview-tile:url:muted', true))
+    act(() => setTreePaneParked('preview-tile:url:muted', false))
+
+    expect(isMuted()).toBe(true)
+    expect(setAudioMuted).not.toHaveBeenCalled()
   })
 })
 

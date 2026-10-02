@@ -121,7 +121,21 @@ class _KeylessFirecrawlClient:
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731
-    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats})  # noqa: E731
+
+    def scrape(
+        self,
+        *,
+        url: str,
+        formats: List[str],
+        waitFor: Optional[int] = None,
+        wait_for: Optional[int] = None,
+        **_kwargs: Any,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"url": url, "formats": formats}
+        wait_ms = _resolve_extract_wait_ms(waitFor if waitFor is not None else wait_for)
+        if wait_ms > 0:
+            payload["waitFor"] = wait_ms
+        return self._post("/v2/scrape", payload)
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -247,6 +261,31 @@ def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, bl
 
 _SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead."
 _UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
+_DEFAULT_EXTRACT_WAIT_MS = 3000
+
+
+def _resolve_extract_wait_ms(explicit: Optional[int] = None) -> int:
+    """Firecrawl scrape ``waitFor`` in ms. ``<=0`` means omit; missing/unreadable config → 3000."""
+    if explicit is not None:
+        try:
+            return max(int(explicit), 0)
+        except (TypeError, ValueError):
+            pass
+    try:
+        from tools.web_tools import _load_web_config
+        raw = _load_web_config().get("extract_wait_ms", _DEFAULT_EXTRACT_WAIT_MS)
+    except Exception:  # noqa: BLE001
+        raw = _DEFAULT_EXTRACT_WAIT_MS
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return _DEFAULT_EXTRACT_WAIT_MS
+
+
+def _scrape_wait_kwargs() -> Dict[str, int]:
+    """SDK scrape uses ``wait_for``; keyless REST maps it to body ``waitFor``."""
+    wait_ms = _resolve_extract_wait_ms()
+    return {"wait_for": wait_ms} if wait_ms > 0 else {}
 
 
 async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Dict[str, Any]:
@@ -258,7 +297,10 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
     try:
         logger.info("Firecrawl scraping: %s", url)
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            scrape_result = await asyncio.wait_for(
+                asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats, **_scrape_wait_kwargs()),
+                timeout=60,
+            )
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)
@@ -332,3 +374,28 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
             "Full search + extract; supports keyless cloud, direct API, and Nous tool-gateway routing.",
             "FIRECRAWL_API_KEY", "Firecrawl API key (optional; blank = keyless cloud or self-hosted)", "https://docs.firecrawl.dev/introduction",
         )
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import NoReturn  # noqa: F401,E402
+from typing import TYPE_CHECKING  # noqa: F401,E402
+import os  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'WebSearchProvider': ('agent.web_search_provider', 'WebSearchProvider'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

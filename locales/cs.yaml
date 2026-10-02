@@ -3676,7 +3676,7 @@ tips:
   t197: "Ukládání trajektorií (--save-trajectories) zachytí kompletní stopy použití nástrojů pro trénování modelu."
   t198: "Tři typy pluginů: obecné (nástroje/hooky), poskytovatelé paměti a kontextové enginy."
   t199: "hermes plugins install owner/repo nainstaluje pluginy přímo z GitHubu."
-  t200: "Externí poskytovatelé paměti: Honcho, OpenViking, Mem0 součástí; Hindsight a další přes hermes plugins install."
+  t200: "Externí poskytovatelé paměti: OpenViking, Mem0 součástí; Honcho, Hindsight a další přes hermes plugins install."
   t201: "Hooky pluginů zahrnují pre/post_tool_call, pre/post_llm_call a transform_terminal_output pro kanonizaci výstupu."
   t202: "Prompt caching (Anthropic) snižuje náklady opětovným použitím uložených prefixů systémového promptu."
   t203: "Agent automaticky generuje názvy relací ve vlákně na pozadí — nulový dopad na latenci."

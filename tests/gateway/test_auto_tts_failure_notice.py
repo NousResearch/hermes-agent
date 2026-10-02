@@ -75,6 +75,7 @@ async def test_reconnected_transport_receives_failure_notice():
     event = _make_voice_event(Platform.TELEGRAM)
     stale.gateway_runner = SimpleNamespace(_delivery_adapter_for=lambda source: live)
     await stale._notify_auto_tts_failure(event, build_session_key(event.source), {})
+    await live._notify_auto_tts_failure(event, build_session_key(event.source), {})
     assert not stale.sent
     assert len(live.sent) == 1
 

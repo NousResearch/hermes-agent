@@ -4208,7 +4208,9 @@ class BasePlatformAdapter(ABC):
         """Explain a text-only fallback without exposing provider errors or sealing a stream."""
         from gateway.platforms.helpers import bounded_put
 
-        if session_key in self._auto_tts_failure_notices:
+        delivery_adapter = self._final_delivery_adapter(event.source)
+        notices = delivery_adapter._auto_tts_failure_notices
+        if session_key in notices:
             return
         warning_metadata = {**metadata, "_interim_send": True}
         try:
@@ -4216,19 +4218,19 @@ class BasePlatformAdapter(ABC):
                 if not self.warning_notifications_enabled(
                         chat_id=event.source.chat_id, metadata=warning_metadata):
                     return
-            bounded_put(self._auto_tts_failure_notices, session_key, True, 2000)
-            result = await self._final_delivery_adapter(event.source).send(
+            bounded_put(notices, session_key, True, 2000)
+            result = await delivery_adapter.send(
                 event.source.chat_id,
                 "Voice reply unavailable; falling back to text. "
                 "Ask the operator to check the configured TTS provider and its dependencies.",
                 reply_to=event.message_id, metadata=warning_metadata)
             if result is None or not result.success:
-                self._auto_tts_failure_notices.pop(session_key, None)
+                notices.pop(session_key, None)
         except asyncio.CancelledError:
-            self._auto_tts_failure_notices.pop(session_key, None)
+            notices.pop(session_key, None)
             raise
         except Exception:
-            self._auto_tts_failure_notices.pop(session_key, None)
+            notices.pop(session_key, None)
             logger.debug("[%s] Could not send auto-TTS failure notice", self.name, exc_info=True)
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
@@ -4617,7 +4619,8 @@ class BasePlatformAdapter(ABC):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
                     _auto_tts_failed = not _tts_paths
                     if _tts_paths:
-                        self._auto_tts_failure_notices.pop(session_key, None)
+                        self._final_delivery_adapter(event.source)._auto_tts_failure_notices.pop(
+                            session_key, None)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):

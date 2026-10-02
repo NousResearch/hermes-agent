@@ -216,7 +216,7 @@ _IMAGE_CORRUPT_PATTERNS = (
 # ChatCompletionRequestToolMessageContent", which is the same list-type tool
 # content that every other wording here describes (#111231).
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
-    "text is not set", "tool message content must be a string", "tool content must be a string",
+    "text is not set", "`text` is not set", "tool message content must be a string", "tool content must be a string",
     "tool message must be a string", "expected string, got list", "expected string, got array",
     # Console Go / pydantic-v2 relays behind opencode-go (422, param ``messages.N.tool.content.str``, #104731).
     "tool_call.content must be string", "tool.content.str", "input should be a valid string",

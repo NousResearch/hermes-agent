@@ -75,12 +75,12 @@ describe('VersionDetails', () => {
         source: 'local',
         installedByScript: true
       },
-      visible: ['Source (install script) + IVX-Agency'],
+      visible: ['Source (install script) + hermes desktop'],
       absent: ['Desktop app (installer)']
     },
     {
       version: { distribution: 'desktop-app', updateMechanism: 'self', payload: 'bootstrap', source: 'local' },
-      visible: ['Source + IVX-Agency'],
+      visible: ['Source + hermes desktop'],
       absent: ['Desktop app (installer)']
     },
     // install.sh / install.ps1 checkout (receipt present) vs a manual git

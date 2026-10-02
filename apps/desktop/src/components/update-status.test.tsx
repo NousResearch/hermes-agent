@@ -59,25 +59,18 @@ describe('deriveUpdateStatus', () => {
     expect(view.supported).toBe(false)
   })
 
-  it('check error shows a short client line and hides the command', () => {
-    const view = derive({
-      supported: true,
-      error: 'check-failed',
-      message: 'Command failed: C:\\WINDOWS\\system32\\cmd.exe hermes: no dependency environment is committed'
-    })
+  it('check error shows one plain line and keeps the transport message with the error', () => {
+    const view = derive({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
 
     expect(view.tone).toBe('error')
-    expect(view.line).toBe(en.updates.checkFailedTitle)
-    expect(view.error).toBe(en.updates.checkFailedBody)
-    expect(view.error).not.toContain('cmd.exe')
-    expect(view.updateAvailable).toBe(false)
+    expect(view.line).toBe(en.updates.cantReach)
+    expect(view.error).toBe('ECONNREFUSED\ncheck-failed')
   })
 
-  it.each([undefined, ''])('keeps a short line when the transport message is %s', message => {
+  it.each([undefined, ''])('keeps the error when the transport message is %s', message => {
     const view = derive({ supported: true, error: 'check-failed', message })
 
-    expect(view.error).toBe(en.updates.checkFailedBody)
-    expect(view.line).toBe(en.updates.checkFailedTitle)
+    expect(view.error).toBe('check-failed')
   })
 
   it('applying beats available so the card cannot offer a second install', () => {

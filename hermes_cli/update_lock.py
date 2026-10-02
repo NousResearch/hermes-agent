@@ -86,7 +86,8 @@ def _pid_create_time(pid: int) -> float | None:
         import psutil
         return float(psutil.Process(pid).create_time())
     except Exception:
-        return None
+        # Takeover children use -I -S before third-party packages are available.
+        return _stdlib_pid_create_time(pid)
 
 
 def _handoff_pid() -> int | None:

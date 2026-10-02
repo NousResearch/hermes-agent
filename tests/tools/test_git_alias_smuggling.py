@@ -79,6 +79,56 @@ def test_different_subcommand_invoked_stays_clean():
     assert detect_dangerous_command(cmd)[0] is False
 
 
+# -------------------------------------------------------------------------
+# Red-team findings on the first cut (t_a54c7f3f): same-vector zero-cost
+# bypass shapes that must be covered for the fix to hold.
+# -------------------------------------------------------------------------
+
+def test_hardline_bang_alias_case_insensitive_key_is_blocked():
+    # Git config keys are case-insensitive: alias.B IS alias.b, and `git b`
+    # runs it. The definition/lookup must fold the key.
+    cmd = "git -c alias.B='!shutdown now' b"
+    is_hardline, description = detect_hardline_command(cmd)
+    assert is_hardline, f"case-varied alias key must hit the hardline floor, got {description!r}"
+
+
+def test_hardline_bang_alias_after_separated_global_option_is_blocked():
+    # -C consumes the next token; the alias invocation after it still sits at
+    # the subcommand position and must be found.
+    cmd = "git -C /tmp -c alias.b='!shutdown now' b"
+    is_hardline, description = detect_hardline_command(cmd)
+    assert is_hardline, f"alias after separated -C must hit the hardline floor, got {description!r}"
+
+
+def test_hardline_bang_alias_before_separated_global_option_is_blocked():
+    cmd = "git -c alias.b='!shutdown now' -C /tmp b"
+    is_hardline, description = detect_hardline_command(cmd)
+    assert is_hardline, f"alias before separated -C must hit the hardline floor, got {description!r}"
+
+
+def test_hardline_chained_bang_alias_is_blocked():
+    # Git re-expands aliases until a bang value; the detector must resolve
+    # the chain instead of stopping at the first plain hop.
+    cmd = "git -c alias.a=b -c alias.b='!shutdown now' a"
+    is_hardline, description = detect_hardline_command(cmd)
+    assert is_hardline, f"chained alias must hit the hardline floor, got {description!r}"
+
+
+def test_dangerous_chained_plain_alias_is_flagged():
+    # a -> p -> push: the real `git push --force` spelling must reach the
+    # dangerous layer.
+    cmd = "git -c alias.a=p -c alias.p=push a --force origin main"
+    is_dangerous, key, _ = detect_dangerous_command(cmd)
+    assert is_dangerous and key == "git force push (rewrites remote history)"
+
+
+def test_cyclic_alias_invocation_stays_clean():
+    # Git itself refuses cyclic alias expansion, so nothing runs.
+    cmd = "git -c alias.a=b -c alias.b=a a --force"
+    assert detect_hardline_command(cmd)[0] is False
+    assert detect_dangerous_command(cmd)[0] is False
+
+
 def test_non_alias_config_value_stays_clean():
     cmd = "git -c color.ui=auto status"
     assert detect_hardline_command(cmd)[0] is False

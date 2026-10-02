@@ -1362,6 +1362,13 @@ def _env_split_payload(tokens: list[str]) -> str | None:
 
 _GIT_ALIAS_DEF_RE = re.compile(r"^alias\.([^\s=]+)=(.*)$", re.DOTALL)
 
+# Git global options that consume the NEXT token (separated form). Their joined
+# --opt=value spelling never reaches this set: it carries "=" and scans as a
+# single token. Red-team follow-up on #131563 (t_a54c7f3f): the wrapper-option
+# table has no "git" entry, so every separated global option ended the option
+# scan early and hid the alias invocation behind it.
+_GIT_OPTIONS_WITH_ARG = {"-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+
 
 def _git_alias_payloads(tokens: list[str]) -> list[str]:
     """Project what an invoked ``git -c alias.NAME=VALUE`` alias would run.
@@ -1389,19 +1396,38 @@ def _git_alias_payloads(tokens: list[str]) -> list[str]:
             index += 2
             match = _GIT_ALIAS_DEF_RE.match(candidate)
             if match:
-                definitions[match.group(1)] = match.group(2)
+                # Git config keys are case-insensitive: alias.B IS alias.b.
+                definitions[match.group(1).lower()] = match.group(2)
             continue
-        index += 1 if "=" in token else 2 if token in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get("git", set()) else 1
+        # Git's global options take their argument EITHER joined (--git-dir=/x)
+        # or as the next token (-C /x). The wrapper-option table only carries
+        # the separated shape for `env` and has no `git` entry, so every
+        # separated global option made the scan treat its argument as the
+        # subcommand and stop. Match git's real grammar.
+        index += 2 if token in _GIT_OPTIONS_WITH_ARG else 1
     if not definitions or index >= len(tokens):
         return []
     name = tokens[index]
-    value = definitions.get(name)
-    if value is None:
-        return []
+    # Git re-expands aliases until a bang value; resolve the chain to the
+    # terminal payload so a plain hop does not stop the projection. Each hop
+    # must hit a NEW definition from this same command line (the seen-set), so
+    # the loop is bounded by the number of definitions. Cycles never run in
+    # git, so a revisit simply terminates the projection.
+    seen: set[str] = set()
+    value = None
+    while name.lower() not in seen:
+        seen.add(name.lower())
+        value = definitions.get(name.lower())
+        if value is None:
+            return []
+        if value.startswith("!"):
+            payload = value[1:]
+            return [payload] if len(payload) <= 4096 else []
+        head = value.split()[0] if value.split() else ""
+        if head not in definitions:
+            break
+        name = head
     rest = tokens[index + 1:]
-    if value.startswith("!"):
-        payload = value[1:]
-        return [payload] if len(payload) <= 4096 else []
     expanded = " ".join(["git", value] + rest)
     return [expanded] if len(expanded) <= 4096 else []
 

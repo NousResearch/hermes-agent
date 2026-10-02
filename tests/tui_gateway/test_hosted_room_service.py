@@ -873,8 +873,9 @@ def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
     assert stopping["cancel_id"] == "stop-1"
 
 
+@pytest.mark.parametrize("offered", [["once", "always", "deny"], ["always", "session"], []])
 def test_local_pending_approval_requires_exact_task_generation_and_request(
-    tmp_path: Path,
+    tmp_path: Path, offered,
 ):
     class ApprovalRPC(_FakeRPC):
         def __init__(self) -> None:
@@ -929,13 +930,20 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
         info={
             "pending_approval": {
                 "request_id": "approval-1",
-                "choices": ["once", "always", "deny"],
+                "choices": offered,
             }
         },
     )
 
     action = service.status("room-1")["pending_actions"][0]
     assert action["member_id"] == "ops"
+    if "once" not in offered:
+        assert action["approval"]["choices"] == []
+        with pytest.raises(RuntimeError):
+            service.approve_room_task("room-1", member_id="ops", task_id=task["identity"].task_id,
+                execution_generation=1, choice="once", request_id="approval-1")
+        assert rpc.approvals == []
+        return
     assert action["approval"]["choices"] == ["once", "deny"]
     with pytest.raises(RuntimeError, match="no longer pending"):
         service.approve_room_task(

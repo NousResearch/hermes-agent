@@ -257,6 +257,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { preReadyDockLaunchSteps } from './dock-launch-order'
+import { embedHostOrigin } from './embed-host'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps, reportPreOpenStatFailure } from './external-open'
@@ -1197,6 +1198,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
 }
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
+ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
 
 // Keep the renderer's PROCESS priority normal while its windows are hidden —
 // a deprioritized renderer streams a live answer visibly slower once the

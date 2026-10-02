@@ -1270,7 +1270,16 @@ class SessionMessagesMixin:
             (session_id, _scrub_surrogates(display_kind)))
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
-        """Historical display identity, including normalized live content from user handoff carriers."""
+        """Historical display identity, including normalized live content from user handoff carriers.
+
+        Tool-payload rows are keyed on their STABLE tool identity, not the payload bytes: a
+        carried-forward row whose result content was summarized or whose call arguments were
+        truncated by a prune is the same logical event (#117750) and must still collapse with
+        its durable original — payload bytes would split it, re-projecting the archived
+        original after the rewritten copy. A tool row names its call (``tool_call_id``); an
+        assistant row's calls each carry an id. Rows without a stable tool identity keep the
+        full content key, so unrelated same-content turns never merge.
+        """
         dedupe_content = row["content"]
         if row["role"] == "user":
             handoff, live_view = split_user_originated_turn({
@@ -1279,6 +1288,21 @@ class SessionMessagesMixin:
                 "display_metadata": self._decode_display_metadata(row["display_metadata"])})
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))
+        if row["role"] == "tool":
+            if row["tool_call_id"]:
+                return (row["role"], None, row["timestamp"],
+                        row["tool_call_id"], row["tool_calls"], row["tool_name"])
+            return (row["role"], dedupe_content, row["timestamp"],
+                    row["tool_call_id"], row["tool_calls"], row["tool_name"])
+        if row["role"] == "assistant" and row["tool_calls"]:
+            try:
+                calls = _parse_tool_calls(row["tool_calls"])
+            except Exception:
+                calls = None
+            call_ids = tuple(coalesce_tool_call_id(tc) for tc in calls or ())
+            if calls and all(call_ids):
+                return (row["role"], None, row["timestamp"],
+                        row["tool_call_id"], call_ids, row["tool_name"])
         return (row["role"], dedupe_content, row["timestamp"],
                 row["tool_call_id"], row["tool_calls"], row["tool_name"])
 

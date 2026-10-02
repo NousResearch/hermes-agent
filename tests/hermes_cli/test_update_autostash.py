@@ -643,3 +643,33 @@ def test_untracked_file_the_update_does_not_track_is_never_reported_replaced(tmp
 
     assert (tmp_path / "mod.py").read_text(encoding="utf-8") == "X = 2\n"
     assert "The update added" not in capsys.readouterr().out
+
+
+def test_unrequested_park_is_never_reported_as_update_complete(monkeypatch, tmp_path):
+    """A restore that conflicts leaves the patch parked: the completion line must say so (#122557);
+    a park the user asked for (--keep-stash) stays a normal completion."""
+    import hermes_cli.update_cmd_stash as stash_mod
+
+    monkeypatch.setattr(stash_mod, "_pending_autostash", None)
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    source = tmp_path / "notes.txt"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    source.write_text("VALUE = 3\n", encoding="utf-8")
+    git("commit", "-qam", "pulled change")
+
+    assert hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False) is False
+    notice = stash_mod._unrestored_autostash_notice()
+    assert notice and not notice.startswith("\u2713") and stash_ref in notice
+
+    stash_mod._park_stashed_changes(stash_ref)
+    assert stash_mod._unrestored_autostash_notice() is None

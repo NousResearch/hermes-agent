@@ -352,6 +352,21 @@ def _interpolate_env_vars(value):
     return value
 
 
+def _require_rendered_remote(server_name: str, config: dict) -> dict:
+    """*config* back, unless it is a remote server whose ``url`` / ``headers`` still carry a literal
+    ``${VAR}`` after rendering: sending that is a guaranteed 401 that reads as a bad credential
+    (#119092), so fail closed naming the variable instead."""
+    if "url" not in config:
+        return config
+    values = [config.get("url") or "", *(config.get("headers") or {}).values()]
+    unresolved = sorted({m.group(1) for value in values for m in _ENV_VAR_PATTERN.finditer(str(value))})
+    if unresolved:
+        refs = ", ".join(f"${{{ref}}}" for ref in unresolved)
+        raise ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
+                         ".env or secret source")
+    return config
+
+
 # (server_name, dotted key path) pairs already warned about: config loads repeat per discovery pass.
 _whitespace_warned: Set[Tuple[str, str]] = set()
 

@@ -969,6 +969,19 @@ class LocalEnvironment(BaseEnvironment):
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
 
+    def _before_execute(self) -> None:
+        """Recover a deleted cwd BEFORE the wrapper script is built.
+
+        ``execute`` reads ``self.cwd`` to compute ``effective_cwd`` and embeds it in
+        the wrapper's ``builtin cd -- <cwd>``, then calls ``_run_bash``. Recovering
+        only inside ``_run_bash`` (where Popen needs a real directory) fixes the spawn
+        but leaves the script ``cd``-ing into the directory that no longer exists, so
+        the command exits 126 having never run — while the log claims the cwd was
+        repaired. Recovering here means both the spawn and the script see the same
+        usable directory.
+        """
+        self._recover_cwd()
+
     def _recover_cwd(self) -> None:
         """Swap ``self.cwd`` for a usable directory if it vanished or is inaccessible
         (e.g. a command ``rm -rf``'d its own cwd) — otherwise Popen raises before bash

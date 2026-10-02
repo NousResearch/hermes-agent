@@ -637,6 +637,20 @@ def _session_pending_kind(sid: str) -> str:
     return server_requests.pending_kind(sid)
 
 
+def _session_reply_running(session: dict) -> bool:
+    """Reply liveness includes a watched child owned by its parent's run loop.
+
+    A lazy watch never claims ``running`` itself. Reading that flag alone tells
+    the silence watchdog the child ended while it is still inside a long tool.
+    Keep the ownership flag untouched: admission/teardown must not treat the
+    watch as a second agent run.
+    """
+    return bool(session.get("running") or (
+        session.get("lazy") and session.get("agent") is None
+        and _child_run_active(str(session.get("session_key") or ""), session.get("profile_home") or None)
+    ))
+
+
 def _session_live_status(sid: str, session: dict) -> str:
     if _session_pending_kind(sid):
         return "waiting"
@@ -644,7 +658,7 @@ def _session_live_status(sid: str, session: dict) -> str:
     # Unset + build never started = a lazy watch session idling, not one stuck mid-construction.
     if ready is not None and not ready.is_set() and session.get("agent_build_started"):
         return "starting"
-    return "working" if session.get("running") else "idle"
+    return "working" if _session_reply_running(session) else "idle"
 
 
 def _session_live_title(session: dict, key: str) -> str:
@@ -709,6 +723,7 @@ def _fallback_session_info(session: dict) -> dict:
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
         **_lazy_info_route(session, {}), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "running": _session_reply_running(session),
     }
 
 
@@ -793,7 +808,7 @@ def _live_session_payload(
             session["last_active"] = time.time()
         in_memory_history = list(session.get("display_history_prefix") or []) + list(session.get("history") or [])
         inflight, queued = _inflight_snapshot(session), _queued_prompt_snapshot(session)
-        running, turn_started_at = bool(session.get("running")), _turn_started_at(session)
+        running, turn_started_at = _session_reply_running(session), _turn_started_at(session)
     # Persisted display lineage via the session's profile-aware DB (not the launch ``_get_db()``), read
     # outside the history lock (the DB has its own). ``omit_messages`` skips the read (fast path).
     if omit_messages:

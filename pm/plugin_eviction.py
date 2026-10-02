@@ -21,6 +21,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,8 @@ from pm.environment import BuildFailure, ResolutionConflict
 from pm.environments import install_state_dir, runtime_facts_path
 from pm.filesystem import durable_write_bytes, file_digest, read_bytes_or_none
 from pm.package import InstallError
+
+logger = logging.getLogger(__name__)
 
 Entry = tuple[Path, str, Path]  # (home plugins dir, selection key, plugin dir)
 
@@ -80,7 +83,10 @@ def _spellings(name: str) -> set[str]:
         from hermes_cli.plugins_cmd import _plugin_aliases
 
         return _plugin_aliases(name)
-    except Exception:  # alias discovery must never fail an update
+    except (ImportError, OSError) as exc:
+        # Discovery only adds manifest-name aliases; the key and its bare leaf are always known.
+        # Anything else is a real bug in the plugin tree and should surface, not be hidden.
+        logger.warning("Could not discover aliases of plugin '%s': %s", name, exc)
         return {name, name.split("/")[-1]}
 
 

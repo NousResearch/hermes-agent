@@ -9,8 +9,12 @@ from pathlib import Path
 import pytest
 
 import hermes_yaml as yaml
+import hermes_cli.plugins_cmd as _plugins_cmd
 import pm.publication as publication
 from pm.plugin_eviction import PluginEviction, _discard_aliases
+
+
+_REAL_ALIASES = _plugins_cmd._plugin_aliases
 
 
 @pytest.fixture(autouse=True)
@@ -150,3 +154,41 @@ def test_discard_aliases_keeps_other_entries_in_order():
     names = ["a", "x", "b", "x"]
     _discard_aliases(names, {"x"})
     assert names == ["a", "b"]
+
+
+def test_alias_discovery_failure_from_io_falls_back_and_is_logged(tmp_path, monkeypatch, caplog):
+    import hermes_cli.plugins_cmd as plugins_cmd
+
+    def unreadable(key, entries=None):
+        raise OSError("tree unreadable")
+
+    monkeypatch.setattr(plugins_cmd, "_plugin_aliases", unreadable)
+    with caplog.at_level("WARNING", logger="pm.plugin_eviction"):
+        cfg, _ = _evict(tmp_path, ["web/firecrawl"], "plugins:\n  enabled: [web/firecrawl, firecrawl, keep]\n")
+    assert cfg["plugins"]["enabled"] == ["keep"]
+    assert "tree unreadable" in caplog.text
+
+
+def test_unexpected_alias_discovery_error_is_not_swallowed(tmp_path, monkeypatch):
+    import hermes_cli.plugins_cmd as plugins_cmd
+
+    def broken(key, entries=None):
+        raise RuntimeError("half-broken plugin tree")
+
+    monkeypatch.setattr(plugins_cmd, "_plugin_aliases", broken)
+    with pytest.raises(RuntimeError, match="half-broken plugin tree"):
+        _evict(tmp_path, ["plug-a"], "plugins:\n  enabled: [plug-a]\n")
+
+
+def test_real_alias_discovery_skips_a_malformed_manifest_and_still_removes_aliases(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_plugins_cmd, "_plugin_aliases", _REAL_ALIASES)
+    good = tmp_path / "plugins" / "web" / "firecrawl"
+    good.mkdir(parents=True)
+    (good / "plugin.yaml").write_text("name: web-firecrawl\n", encoding="utf-8")
+    bad = tmp_path / "plugins" / "broken"
+    bad.mkdir(parents=True)
+    (bad / "plugin.yaml").write_text("name: [unterminated\n", encoding="utf-8")
+    cfg, _ = _evict(tmp_path, ["web/firecrawl"],
+                    "plugins:\n  enabled: [web/firecrawl, web-firecrawl, firecrawl, keep]\n")
+    assert cfg["plugins"]["enabled"] == ["keep"]

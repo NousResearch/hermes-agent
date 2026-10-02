@@ -126,6 +126,69 @@ describe('decideLinuxGpuLaunch', () => {
   })
 })
 
+// #131055: the GPU marker is written by the same pre-lock launch block as the
+// sandbox one, so a burst of second-instance launches promoted it to
+// `fallback/gpu-launch-failure` on a host that never failed. The writer half is
+// covered in launch-marker-writer.test.ts; here the marker must also stop
+// outliving the build that promoted it on a source install.
+describe('linux GPU marker build identity (#131055)', () => {
+  const buildA = '0.0.0+g357f51c49106@2026-09-28T10:11:12Z'
+  const buildB = '0.0.0+gaabbccddeeff@2026-10-02T00:00:00Z'
+  const promoted = {
+    state: 'fallback' as const,
+    reason: 'gpu-launch-failure' as const,
+    version: '0.0.0',
+    build: buildA
+  }
+
+  it('stays sticky within one source build', () => {
+    const decision = decideLinuxGpuLaunch({ ...LINUX, marker: promoted, appVersion: '0.0.0', buildIdentity: buildA })
+
+    expect(decision.enable).toBe(true)
+    expect(decision.reason).toContain('sticky')
+  })
+
+  it('re-probes on the next source build even though the version is still 0.0.0', () => {
+    const decision = decideLinuxGpuLaunch({ ...LINUX, marker: promoted, appVersion: '0.0.0', buildIdentity: buildB })
+
+    expect(decision.enable).toBe(false)
+    expect(decision.nextMarker).toEqual({ state: 'booting', reprobe: true, bootAborts: 0 })
+  })
+
+  it('round-trips the build identity through the marker', () => {
+    expect(
+      parseLinuxGpuMarker({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.0.0', build: buildA })
+    ).toEqual({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.0.0', build: buildA })
+  })
+
+  it('records the build identity when a marker enters fallback', () => {
+    expect(linuxGpuFallbackMarker('boot-loop', '0.0.0', buildA)).toEqual({
+      state: 'fallback',
+      reason: 'boot-loop',
+      version: '0.0.0',
+      build: buildA
+    })
+
+    // A real release version is the whole identity — no redundant build field.
+    expect(linuxGpuFallbackMarker('boot-loop', '0.21.5', '0.21.5')).toEqual({
+      state: 'fallback',
+      reason: 'boot-loop',
+      version: '0.21.5'
+    })
+  })
+
+  it('keeps the build identity on a sticky marker written by an older build', () => {
+    const decision = decideLinuxGpuLaunch({
+      ...LINUX,
+      marker: { state: 'fallback', reason: 'gpu-launch-failure', version: '0.21.5' },
+      appVersion: '0.21.5',
+      buildIdentity: '0.21.5'
+    })
+
+    expect(decision.nextMarker.build).toBeUndefined()
+  })
+})
+
 describe('shouldRelaunchForLinuxGpuCrash', () => {
   it('relaunches once on a GPU launch failure (error_code=1002 class)', () => {
     expect(

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
+import { EDIT_COMPOSER_ROOT, requestComposerInsert } from '@/app/chat/composer/focus'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
@@ -18,6 +19,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
@@ -132,6 +134,66 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
   ]
 }
 
+/** Insert plain text into a form field the way the user's own paste would: a range
+ *  replacement plus the `input` event React listens for. `execCommand('insertText')`
+ *  is deliberately avoided here — composer/undo-history.ts documents why. */
+function insertIntoFormField(field: HTMLInputElement | HTMLTextAreaElement, text: string) {
+  const start = field.selectionStart ?? field.value.length
+  const end = field.selectionEnd ?? start
+
+  field.setRangeText(text, start, end, 'end')
+  field.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertFromPaste' }))
+}
+
+/** Same for a contenteditable host: replace the current range, leave the caret
+ *  after the inserted text, then announce the edit. */
+function insertIntoContentEditable(host: HTMLElement, text: string) {
+  const selection = window.getSelection()
+
+  if (!selection || selection.rangeCount === 0) {
+    host.append(document.createTextNode(text))
+  } else {
+    const range = selection.getRangeAt(0)
+    const node = document.createTextNode(text)
+
+    range.deleteContents()
+    range.insertNode(node)
+    range.setStartAfter(node)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
+
+  host.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertFromPaste' }))
+}
+
+function deleteFormFieldSelection(field: HTMLInputElement | HTMLTextAreaElement) {
+  const start = field.selectionStart ?? 0
+  const end = field.selectionEnd ?? start
+
+  field.setRangeText('', start, end, 'end')
+  field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteByCut' }))
+}
+
+function deleteContentEditableSelection(host: HTMLElement) {
+  window.getSelection()?.deleteFromDocument()
+  host.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteByCut' }))
+}
+
+/** The text the edit verbs act on. A form field carries its selection on the
+ *  element — Chrome never reflects it into `window.getSelection()` — while
+ *  everything else uses the document selection the resolver captured. */
+function selectedTextOf(editable: HTMLElement | null): string {
+  if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+    const start = editable.selectionStart ?? 0
+    const end = editable.selectionEnd ?? 0
+
+    return start === end ? '' : editable.value.slice(start, end)
+  }
+
+  return window.getSelection()?.toString() ?? ''
+}
+
 function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Translations): ReactNode[][] {
   const copy = t.contextMenu
   const { spellcheck, target } = open
@@ -142,24 +204,154 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   const openInApp = !hudForcesNativeLinks()
   const showResolvedCopy = linkIsWeb && isRemoteGateway() && isLoopbackUrl(linkUrl)
 
-  // The edit verbs and spell-check actions act on the sender's FOCUSED
-  // element in main. Focus cannot be restored while the menu is open: the
-  // radix content is a focus trap, so a focus() here is immediately stolen
-  // back, the command then runs against `body`, and select-all grabs the
-  // WHOLE transcript instead of the field. Close the menu first, then focus
-  // and dispatch on the next frame — after the trap is unmounted.
-  const withEditableFocus = (action: () => void) => {
+  // Focus cannot be restored while the menu is open: the radix content is a focus
+  // trap, so a focus() here is immediately stolen back and the action runs against
+  // `body`. Close the menu first, then focus and run on the next frame — after the
+  // trap is unmounted.
+  // The gesture's selection, captured before the menu steals focus. Radix hands
+  // focus back to its trigger when the menu closes, and focus() on a
+  // contenteditable collapses whatever was highlighted to a caret — so a verb
+  // that read the live selection afterwards (Cut/Copy/Select all) saw nothing.
+  // Both shapes are kept: a document Range for contenteditable, and the field's
+  // own start/end for input/textarea (Chrome never reflects those into
+  // window.getSelection()).
+  const gestureRange = (): Range | null => {
     const editable = target.editable
 
-    closeContextMenu()
-    requestAnimationFrame(() => {
-      editable?.focus()
-      action()
-    })
+    if (!editable || editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+      return null
+    }
+
+    // Prefer the pre-gesture snapshot: by verb time the right-click has already
+    // collapsed the live selection.
+    const snapshot = freshMenuSelection()
+
+    if (snapshot?.range) {
+      return snapshot.range
+    }
+
+    const selection = window.getSelection()
+
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      return null
+    }
+
+    const range = selection.getRangeAt(0)
+
+    if (!editable.contains(range.startContainer)) {
+      return null
+    }
+
+    const cloned = document.createRange()
+
+    cloned.selectNodeContents(editable)
+    cloned.setStart(range.startContainer, range.startOffset)
+    cloned.setEnd(range.endContainer, range.endOffset)
+
+    return cloned
   }
 
+  const gestureFieldSelection = (): { end: number; start: number } | null => {
+    const editable = target.editable
+
+    if (!(editable instanceof HTMLInputElement) && !(editable instanceof HTMLTextAreaElement)) {
+      return null
+    }
+
+    const start = editable.selectionStart ?? 0
+    const end = editable.selectionEnd ?? 0
+
+    return start === end ? null : { end, start }
+  }
+
+  const withEditableFocus = (action: () => void) => {
+    const editable = target.editable
+    const range = gestureRange()
+    const fieldSelection = gestureFieldSelection()
+
+    closeContextMenu()
+    // Two frames: the first lets the menu's close/unmount land (radix restores
+    // focus to its trigger here), the second restores our selection on top of it.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (editable) {
+          editable.focus()
+
+          if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+            if (fieldSelection) {
+              editable.setSelectionRange(fieldSelection.start, fieldSelection.end)
+            }
+          } else if (range) {
+            const selection = window.getSelection()
+
+            selection?.removeAllRanges()
+            selection?.addRange(range)
+          }
+        }
+
+        action()
+      })
+    )
+  }
+
+  // Every edit verb runs in the renderer, scoped to the field the menu was opened
+  // on. Main's copy/cut/paste act on whatever IT considers focused, and the radix
+  // content is a focus trap: by the time the command landed, focus could be back on
+  // the menu (or the whole transcript, for select all) and the verb did nothing.
+  // selectAll already runs this way; cut/copy/paste join it. The clipboard itself
+  // still goes through main (`readClipboard`/`writeClipboard`), which has no focus
+  // gate — the same pair the terminal paste uses — and the text is inserted through
+  // the target's own path, so the composer keeps its sanitize/chip pipeline.
+  const composerRoot = target.editable?.closest(EDIT_COMPOSER_ROOT) ?? null
+
   const editableCommand = (command: 'copy' | 'cut' | 'paste') => {
-    withEditableFocus(() => void window.hermesDesktop?.contextMenuEdit?.(command))
+    withEditableFocus(() => {
+      const editable = target.editable
+
+      if (command === 'paste') {
+        void window.hermesDesktop?.readClipboard?.().then(text => {
+          const pasted = sanitizeComposerInput((text ?? '').trim())
+
+          if (!pasted) {
+            return
+          }
+
+          if (composerRoot) {
+            requestComposerInsert(pasted, { mode: 'inline' })
+
+            return
+          }
+
+          if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+            insertIntoFormField(editable, pasted)
+
+            return
+          }
+
+          if (editable) {
+            insertIntoContentEditable(editable, pasted)
+          }
+        })
+
+        return
+      }
+
+      const text = selectedTextOf(editable) || freshMenuSelection()?.text || target.selectionText
+
+      if (!text) {
+        return
+      }
+
+      void writeClipboardText(text)
+
+      if (command === 'cut') {
+        if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+          deleteFormFieldSelection(editable)
+        } else if (editable) {
+          deleteContentEditableSelection(editable)
+        }
+      }
+    })
   }
 
   // Select all runs entirely in the renderer, scoped to the editable itself.
@@ -323,9 +515,12 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
 
     const hasFieldText = fieldText.length > 0
 
+    // `freshMenuSelection` covers the short-lived case the live DOM no longer
+    // reports: Chromium collapses the highlight on the right-click itself.
     const canCutCopy = formField
-      ? (formField.selectionStart ?? 0) !== (formField.selectionEnd ?? 0)
-      : target.selectionText.length > 0
+      ? (formField.selectionStart ?? 0) !== (formField.selectionEnd ?? 0) ||
+        Boolean(freshMenuSelection()?.text)
+      : target.selectionText.length > 0 || Boolean(freshMenuSelection()?.text)
 
     sections.push([
       <Item
@@ -358,13 +553,15 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         shortcut={EDIT_SHORTCUTS.selectAll}
       />
     ])
-  } else if (target.selectionText) {
+  } else if (target.selectionText || freshTextSelection()) {
+    const selected = target.selectionText || freshTextSelection()
+
     sections.push([
       <Item
         icon="copy"
         key="selection-copy"
         label={t.common.copy}
-        onSelect={() => void writeClipboardText(target.selectionText)}
+        onSelect={() => void writeClipboardText(selected)}
       />
     ])
   }
@@ -612,6 +809,93 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
  * both the native Electron menu and the shell fallback wrapper, so labels
  * come from the locale files like every other surface.
  */
+/** The selection as it was BEFORE a pointer gesture began.
+ *
+ *  Chromium collapses a contenteditable highlight on the right-click that opens
+ *  this menu, so reading `window.getSelection()` inside the contextmenu handler
+ *  reports nothing and the edit verbs look (and are) unavailable. The selection
+ *  is still intact on pointer down — one event earlier — so snapshot it there.
+ *  Only the freshest gesture may use it, hence the timestamp. */
+interface MenuSelectionSnapshot {
+  range: Range | null
+  text: string
+  at: number
+}
+
+const MENU_SELECTION_TTL_MS = 2000
+
+let menuSelection: MenuSelectionSnapshot | null = null
+
+/** Text selected outside an editable (transcript / reply text), captured one
+ *  gesture before the right-click collapses it. */
+let menuTextSelection: { at: number; text: string } | null = null
+
+/** The pre-gesture snapshot, when it belongs to the gesture that opened the
+ *  menu. A stale entry (an earlier right-click, a keyboard-open menu) is
+ *  discarded so the verbs never act on someone else's selection. */
+function freshMenuSelection(): MenuSelectionSnapshot | null {
+  if (!menuSelection) {
+    return null
+  }
+
+  return Date.now() - menuSelection.at <= MENU_SELECTION_TTL_MS ? menuSelection : null
+}
+
+function freshTextSelection(): string {
+  if (!menuTextSelection) {
+    return ''
+  }
+
+  return Date.now() - menuTextSelection.at <= MENU_SELECTION_TTL_MS ? menuTextSelection.text : ''
+}
+
+/** Take the selection off `editable` as it stands right now, rooted in the
+ *  editor so a later mutation cannot drag the range somewhere else. */
+function captureMenuSelection(editable: HTMLElement | null): MenuSelectionSnapshot {
+  const selection = window.getSelection()
+
+  if (!editable || !selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return { at: Date.now(), range: null, text: '' }
+  }
+
+  const live = selection.getRangeAt(0)
+
+  if (!editable.contains(live.startContainer)) {
+    return { at: Date.now(), range: null, text: '' }
+  }
+
+  const range = document.createRange()
+
+  range.selectNodeContents(editable)
+  range.setStart(live.startContainer, live.startOffset)
+  range.setEnd(live.endContainer, live.endOffset)
+
+  return { at: Date.now(), range, text: live.toString() }
+}
+
+/** Is `element` part of the current text selection?
+ *
+ *  `Selection.containsNode` is the tidy spelling but not universally present
+ *  (jsdom), and the whole yield decision hangs off this answer, so resolve it
+ *  from the range instead. A collapsed caret is not a selection. */
+function selectionCoversElement(element: Element | null): boolean {
+  if (!element) {
+    return false
+  }
+
+  const selection = window.getSelection()
+
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return false
+  }
+
+  const range = selection.getRangeAt(0)
+  const container = range.commonAncestorContainer
+  const host = container.nodeType === Node.TEXT_NODE ? container.parentElement : (container as Element | null)
+
+  return Boolean(host && (element === host || element.contains(host) || host.contains(element)))
+}
+
 export function AppContextMenu() {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -625,13 +909,31 @@ export function AppContextMenu() {
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
 
+      // Snapshot the selection first: the right-click may collapse it before we
+      // look again. Scoped to selections that live INSIDE the clicked element —
+      // a highlight elsewhere in the window must not claim this gesture (that is
+      // the yield rule the zone menu relies on).
+      const liveText = window.getSelection()?.toString() ?? ''
+
+      if (liveText && selectionCoversElement(element)) {
+        menuTextSelection = { at: Date.now(), text: liveText }
+      } else {
+        menuTextSelection = null
+      }
+
       // Surfaces with their own Radix context menu keep the whole gesture.
       // Guard the dedicated marker first: Radix `asChild` Slot merges
       // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
       // (status bar footer is `data-slot="statusbar"`). The marker is stamped
       // after `{...props}` on ContextMenuTrigger and is not overwritten.
       if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
-        return
+        // A zone body carries selectable transcript text. Keep the app menu for
+        // that gesture so Copy stays available instead of the zone menu eating
+        // it (#127313). The selection may already be collapsed by the
+        // right-click itself, so the pre-gesture snapshot counts too.
+        if (!selectionCoversElement(element) && !freshTextSelection()) {
+          return
+        }
       }
 
       // The Star Map owns node hits, but empty canvas space still reaches the
@@ -667,9 +969,33 @@ export function AppContextMenu() {
       openDomContextMenu(event.clientX, event.clientY, target)
     }
 
+    // Pointer down runs one gesture earlier than contextmenu, while Chromium
+    // still holds the user's highlight (the right-click itself collapses it).
+    const onPointerDown = (event: MouseEvent) => {
+      const element = event.target instanceof Element ? event.target : null
+      const editable =
+        element?.closest('[data-slot="composer-rich-input"]') ??
+        element?.closest<HTMLElement>('[contenteditable]')
+
+      if (editable instanceof HTMLElement && editable.isContentEditable) {
+        menuSelection = captureMenuSelection(editable)
+      }
+
+      // Transcript text is not editable, so it has no editor to root a range in —
+      // but it is exactly the selection the zone menu used to swallow. Keep the
+      // text and let the app menu serve it (see the yield check below).
+      const textSelection = window.getSelection()?.toString() ?? ''
+
+      menuTextSelection = textSelection ? { at: Date.now(), text: textSelection } : null
+    }
+
+    window.addEventListener('pointerdown', onPointerDown, true)
     window.addEventListener('contextmenu', onContextMenu, true)
 
-    return () => window.removeEventListener('contextmenu', onContextMenu, true)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('contextmenu', onContextMenu, true)
+    }
   }, [])
 
   // Spell-check facts arrive from main after the menu opens (Chromium reports

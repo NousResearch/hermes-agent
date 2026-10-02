@@ -63,6 +63,23 @@ def test_cron_tick_homes_include_active_named_host(tmp_path, monkeypatch):
     assert cron_by_name["host"] == default_home / "profiles" / "host"
 
 
+def test_cron_tick_homes_remain_multiplexed_with_lock_dir_override(tmp_path, monkeypatch):
+    """The lock-dir override relocates rendezvous locks; it must not shrink the served profile set."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    for name in ("host", "worker"):
+        (default_home / "profiles" / name).mkdir(parents=True)
+        (default_home / "profiles" / name / "config.yaml").write_text("{}\n")
+    monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "host"))
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
+
+    import gateway.run as gateway_run
+
+    homes = gateway_run._cron_tick_profile_homes(GatewayConfig(multiplex_profiles=True))
+
+    assert [name for name, _home in homes] == ["default", "host", "worker"]
+
+
 class TestNamedProfileMultiplexerGuard:
     """_guard_named_profile_under_multiplexer is inert unless all conditions hold."""
 

@@ -256,6 +256,7 @@ export function ModelVisibilityDialog({
                     key={`custom:${provider.slug}`}
                     onClick={() => {
                       addCustomModel(provider.slug, customSlug, provider)
+                      setSelectedProvider(provider.slug)
                       setSearch('')
                     }}
                   >

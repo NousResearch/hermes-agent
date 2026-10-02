@@ -109,6 +109,8 @@ describe('provider focus', () => {
       provider: 'qwen',
       model: 'acme/new-model'
     })
+    expect(screen.getByText('New Model')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Qwen/ }).getAttribute('aria-pressed')).toBe('true')
   })
 
   it('shows only the selected provider models without changing visibility', async () => {

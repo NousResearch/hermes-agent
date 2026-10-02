@@ -705,7 +705,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("model", "model"), ("provider", "model_provider"), ("pinned", "pinned"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
-                   ("interpreter", "interpreter"))
+                   ("interpreter", "interpreter"), ("max_tokens", "max_tokens"))
 
 
 def _job_api_kwargs(args) -> Dict[str, Any]:

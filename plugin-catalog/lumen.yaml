@@ -1,0 +1,28 @@
+name: lumen
+repo: https://github.com/moonlight-lupin/agent-skills
+sha: 1f7f2e407177b46cf58f4d3fe9d882653715d421
+subdir: plugins/lumen
+description: >-
+  Standalone LLM wiki plugin: turns an agent's conversation history and memory
+  into a maintained markdown knowledge base. The curator ingests records from a
+  read-only memory-source adapter layer (default: the Hermes conversation
+  history read directly from state.db via read-only SQLite; also Mnemosyne CLI
+  export and plain JSON files) and writes conservative, source-attributed wiki
+  pages (daily logs, entity pages) with a per-run write cap, pre-batch backups,
+  and YAML-frontmatter-preserving updates. Lint/validate checks frontmatter,
+  broken wikilinks, duplicates, orphans and staleness. Read + write on wiki
+  files and HERMES_HOME/state.db (read-only SQLite connection); no network
+  except the optional `hermes` CLI export; never deletes pages; never touches
+  other stores. Python 3.11+, PyYAML.
+maintainer: moonlight-lupin
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+version: "0.2.0"
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

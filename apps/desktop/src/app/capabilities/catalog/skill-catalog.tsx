@@ -27,6 +27,35 @@ interface SkillCatalogProps {
   renderInstalledAction?: (skill: SkillInfo) => ReactNode
 }
 
+export interface SkillCatalogInstallIndex {
+  skillsById: Map<string, SkillInfo>
+  matchInstalled: (entry: CatalogEntry) => CatalogEntry | undefined
+  officialFor: (entry: CatalogEntry) => CatalogEntry | undefined
+  installedIdentifiers: Set<string>
+}
+
+/** Single owner of skills installed-state. Identity is the entry identifier,
+ * never the bare display name: the public feed routinely carries same-name
+ * skills from other sources, and name-matching turns those rows into ON +
+ * greyed-out ghosts (see #126991).
+ * ponytail: no per-provenance name fallback; add one only if a local-only
+ * skill ever needs feed-row merging. */
+export function isSkillEntryInstalled(entry: CatalogEntry, index: SkillCatalogInstallIndex): boolean {
+  if (index.skillsById.has(entry.id)) {
+    return true
+  }
+
+  const matched = index.matchInstalled(entry)
+
+  if (matched && index.skillsById.has(matched.id)) {
+    return true
+  }
+
+  const optional = index.officialFor(entry)
+
+  return index.installedIdentifiers.has(optional?.identifier ?? entry.installIdentifier ?? entry.identifier)
+}
+
 /** Public discovery and the profile's local skills share one browser. Management
  * stays in SkillsTab; catalog install actions have exactly one owner here. */
 export function SkillCatalog(props: SkillCatalogProps) {
@@ -203,25 +232,9 @@ function ScopedSkillCatalog({
     return { entries, skillsById, skillsByName, installedIdentifiers, matchInstalled, officialFor }
   }, [skills, hubData, officialData])
 
-  // Skills install by name, so a same-named entry can never be added beside the installed one.
-  const isInstalled = useCallback(
-    (entry: CatalogEntry) => {
-      if (catalog.skillsById.has(entry.id) || catalog.skillsByName.has(entry.name)) {
-        return true
-      }
-
-      const matched = catalog.matchInstalled(entry)
-
-      if (matched && catalog.skillsById.has(matched.id)) {
-        return true
-      }
-
-      const optional = catalog.officialFor(entry)
-
-      return catalog.installedIdentifiers.has(optional?.identifier ?? entry.installIdentifier ?? entry.identifier)
-    },
-    [catalog]
-  )
+  // Identity lives in isSkillEntryInstalled; every switch, filter, and
+  // detail view routes through this one callback.
+  const isInstalled = useCallback((entry: CatalogEntry) => isSkillEntryInstalled(entry, catalog), [catalog])
 
   // The name guarantee above only holds for first-party namespaces, where a
   // shared name is the same skill. Community feeds carry distinct skills that

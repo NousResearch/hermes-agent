@@ -450,6 +450,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         # Set by _ProfileRoutingFileHandler: a vanished logs/ dir means the profile was deleted,
         # so skip the write (the router re-routes the record) instead of a FileNotFoundError traceback.
         self._skip_write_when_dir_missing = False
+        self.skipped_missing_dir = False
         super().__init__(*args, **kwargs)
         self._record_stream_stat()
 
@@ -503,12 +504,18 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             self._reopen_stream(st)
 
     def emit(self, record: logging.LogRecord) -> None:
+        self.skipped_missing_dir = False
+        had_stream = self.stream is not None
         # The kernel caches inode metadata, so this stat is sub-microsecond on a hot file.
-        if self.stream is not None or os.path.exists(self.baseFilename):
+        file_exists = had_stream or os.path.exists(self.baseFilename)
+        if file_exists:
             self._reopen_if_externally_rotated()
-        # Only reached with no stream (reopen failed), so a healthy emit pays no extra stat.
-        if (self.stream is None and self._skip_write_when_dir_missing
+        # Only when the file is gone (or its reopen just failed), so a healthy emit pays no extra
+        # stat. ``stream is None`` alone is not a signal: on Windows concurrent-log-handler closes
+        # the stream after every write.
+        if (self.stream is None and (had_stream or not file_exists) and self._skip_write_when_dir_missing
                 and not os.path.isdir(os.path.dirname(self.baseFilename))):
+            self.skipped_missing_dir = True
             return
         super().emit(record)
         # A record actually reached the file: only now has the destination recovered. Resetting
@@ -681,9 +688,9 @@ class _ProfileRoutingFileHandler(logging.Handler):
                 handler.handle(record)
             finally:
                 reset_hermes_home_override(token)
-            # The write lost its stream (an rmtree inside the liveness interval skips it, see
-            # _ManagedRotatingFileHandler.emit): re-check now so this record is not dropped.
-            if handler.stream is None and self._release_if_deleted(home):
+            # The write was skipped because logs/ is gone (an rmtree inside the liveness interval,
+            # see _ManagedRotatingFileHandler.emit): re-check now so this record is not dropped.
+            if handler.skipped_missing_dir and self._release_if_deleted(home):
                 self._handler_for_home(self._default_home).handle(record)
         except Exception:
             self.handleError(record)

@@ -71,10 +71,10 @@ def liveness_clock(monkeypatch):
     """Drive the router's liveness-check clock so tests can cross the recheck interval
     without sleeping. Returns ``advance()``, which jumps past the interval."""
     now = [1000.0]
-    monkeypatch.setattr(hermes_logging, "_monotonic", lambda: now[0], raising=False)
+    monkeypatch.setattr(hermes_logging, "_monotonic", lambda: now[0])
 
     def advance():
-        now[0] += getattr(hermes_logging, "_PROFILE_LIVENESS_RECHECK_S", 2.0)
+        now[0] += hermes_logging._PROFILE_LIVENESS_RECHECK_S
 
     return advance
 
@@ -395,9 +395,27 @@ class TestSetupLogging:
         profile_log = profile_home / "logs" / "agent.log"
         assert not profile_log.exists() or "after delete" not in profile_log.read_text(encoding="utf-8-sig")
 
-    def test_live_profile_liveness_checked_at_most_once_per_interval(self, hermes_home, liveness_clock):
-        """A live routed profile must not pay the delete check (two stats) on every record."""
+    @pytest.mark.parametrize("stream_closed_after_write", [False, True], ids=["kept-open", "closed-per-write"])
+    def test_live_profile_liveness_checked_at_most_once_per_interval(
+        self, hermes_home, liveness_clock, monkeypatch, stream_closed_after_write
+    ):
+        """A live routed profile must not pay the delete check (two stats) on every record.
+
+        ``closed-per-write`` is how concurrent-log-handler behaves on Windows: the stream is
+        closed after every write, which must not read as a skipped write.
+        """
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        if stream_closed_after_write:
+            real_emit = hermes_logging._ManagedRotatingFileHandler.emit
+
+            def emit_then_close(handler, record):
+                real_emit(handler, record)
+                if handler.stream is not None:
+                    handler.stream.close()
+                    handler.stream = None
+
+            monkeypatch.setattr(hermes_logging._ManagedRotatingFileHandler, "emit", emit_then_close)
 
         profile_home = (hermes_home / "profiles" / "worker").resolve()
         profile_home.mkdir(parents=True)

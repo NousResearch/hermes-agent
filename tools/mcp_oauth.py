@@ -465,7 +465,10 @@ class PoolAuthority:
         pool = Path(self.pool_path)
         if _pool_sidecar(pool, ".removed").exists():
             return "the server was removed by the pool's owner", True
-        if read_pool_epoch(pool) != self.epoch:
+        epoch = read_pool_epoch(pool)
+        if epoch == "unreadable":
+            return "the pool epoch is unreadable, so authority cannot be proved", False
+        if epoch != self.epoch:
             return "the pool's owner revoked the grant this provider was built with", True
         home = Path(self.hermes_home)
         homes = [home]
@@ -490,8 +493,8 @@ def _pool_sidecar(pool: Path, suffix: str) -> Path:
 
 
 def read_pool_epoch(pool: Path) -> str | None:
-    """The pool's revocation epoch, or None before its first revocation. An unreadable epoch reads
-    as a value no provider holds, so it fails closed."""
+    """The revocation epoch, None before first revocation, or "unreadable" on invalid state.
+    Callers must reject the latter even when it was already unreadable at capture time."""
     path = _pool_sidecar(pool, ".epoch")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -499,7 +502,8 @@ def read_pool_epoch(pool: Path) -> str | None:
         return None
     except (OSError, ValueError):
         return "unreadable"
-    return str(data.get("epoch")) if isinstance(data, dict) else "unreadable"
+    epoch = data.get("epoch") if isinstance(data, dict) else None
+    return epoch if isinstance(epoch, str) and epoch else "unreadable"
 
 
 def advance_pool_epoch(pool: Path) -> None:
@@ -703,6 +707,14 @@ def _write_json(path: Path, data: dict) -> None:
 def _model_json(model: Any) -> dict:
     """The on-disk JSON shape of an SDK pydantic model."""
     return model.model_dump(mode="json", exclude_none=True)
+
+
+class _TokenSnapshot(dict[str, bytes]):
+    """Rollback bytes retain their revocation generation without making it a restorable file."""
+
+    def __init__(self, epoch: str | None):
+        super().__init__()
+        self.epoch = epoch
 
 
 class HermesTokenStorage:
@@ -935,33 +947,47 @@ class HermesTokenStorage:
             advance_pool_epoch(self._tokens_path())
         self._removed_path().unlink(missing_ok=True)
 
-    def snapshot(self) -> dict[str, bytes]:
+    def snapshot(self, *, fence_held: bool = False) -> dict[str, bytes]:
         """filename -> bytes of the existing state files (tokens, client, metadata, CIMD marker);
         ``restore()`` it to undo a ``remove()`` after a failed re-auth so a valid token survives."""
-        snap: dict[str, bytes] = {}
-        for p in (*self._state_paths(), self._cimd_rejected_path()):
-            with contextlib.suppress(OSError):
-                snap[p.name] = p.read_bytes()
-        return snap
+        fence = contextlib.nullcontext() if fence_held else hold_refresh_fence(self._tokens_path())
+        with fence:
+            snap = _TokenSnapshot(read_pool_epoch(self._tokens_path()))
+            for p in (*self._state_paths(), self._cimd_rejected_path()):
+                with contextlib.suppress(OSError):
+                    snap[p.name] = p.read_bytes()
+            return snap
 
-    def restore(self, snapshot: dict[str, bytes], *, only_if_absent: bool = False) -> None:
-        """Revert to a snapshot without overwriting a concurrent successful write. Only a token file
-        proves a newer authorization succeeded: a failed attempt routinely leaves client/metadata
-        files behind, and those must not suppress restoring the previous valid grant."""
-        if only_if_absent and self._tokens_path().exists():
-            logger.info("Skipping OAuth rollback for %s because a newer token exists", self._server_name)
-            return
-        self.remove()
-        if not snapshot:
-            return
-        from hermes_constants import mkdir_under_hermes_home
+    def restore(self, snapshot: dict[str, bytes], *, only_if_absent: bool = False,
+                fence_held: bool = False) -> None:
+        """Roll back within the snapshot's revocation generation, serialized with refresh/revoke.
 
-        mkdir_under_hermes_home(self._token_dir)
-        for fname, data in snapshot.items():
-            try:
-                atomic_write_bytes(self._token_dir / fname, data, mode=0o600)
-            except OSError as exc:
-                logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
+        Device login already holds the fence while committing its files. Other rollback callers
+        must take it here so checking the generation and restoring bytes cannot race deletion.
+        Only a token file proves a newer authorization succeeded; failed client/metadata writes
+        must not suppress restoring the previous valid grant.
+        """
+        fence = contextlib.nullcontext() if fence_held else hold_refresh_fence(self._tokens_path())
+        with fence:
+            epoch = read_pool_epoch(self._tokens_path())
+            if (self.rebuild_blocked() or epoch == "unreadable"
+                    or isinstance(snapshot, _TokenSnapshot) and snapshot.epoch != epoch):
+                logger.info("Skipping OAuth rollback for %s because pool authority changed", self._server_name)
+                return
+            if only_if_absent and self._tokens_path().exists():
+                logger.info("Skipping OAuth rollback for %s because a newer token exists", self._server_name)
+                return
+            self.remove()
+            if not snapshot:
+                return
+            from hermes_constants import mkdir_under_hermes_home
+
+            mkdir_under_hermes_home(self._token_dir)
+            for fname, data in snapshot.items():
+                try:
+                    atomic_write_bytes(self._token_dir / fname, data, mode=0o600)
+                except OSError as exc:
+                    logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
 
     def poison_client_registration(self) -> bool:
         """Discard a dead DCR client (``invalid_client`` at the token endpoint) plus stale ``meta.json``

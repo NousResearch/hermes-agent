@@ -437,6 +437,9 @@ class MCPOAuthManager:
             if block_rebuild:
                 storage.write_removal_tombstone()
             with hold_refresh_fence(Path(target)):
+                # Close the generation after taking the fence too: a snapshot captured after
+                # early withdrawal but before deletion must not label old bytes as current.
+                advance_pool_epoch(Path(target))
                 storage.remove(permanent=block_rebuild)
         else:
             storage.remove(permanent=block_rebuild)

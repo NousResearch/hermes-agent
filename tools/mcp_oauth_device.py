@@ -238,13 +238,13 @@ async def login_device(name, server_url, oauth_config):
         verdict = authority.revocation()
         if verdict is not None:
             raise OAuthStorageDetachedError(f"MCP OAuth '{name}': {verdict[0]}; nothing was saved")
-        previous = storage.snapshot()
+        previous = storage.snapshot(fence_held=True)
         try:
             await storage.set_client_info(provider.context.client_info)
             storage.save_oauth_metadata(provider.context.oauth_metadata)
             await storage.set_tokens(tokens)
         except OSError:
-            storage.restore(previous)
+            storage.restore(previous, fence_held=True)
             raise
     finally:
         release_refresh_fence(fence)

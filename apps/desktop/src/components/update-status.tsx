@@ -25,7 +25,7 @@ import {
 } from '@/store/updates'
 
 const RELEASE_NOTES_URL = 'https://github.com/intelli-verse-x/IVX-desktop/releases'
-const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
+const INSTALLER_URL = 'https://github.com/intelli-verse-x/IVX-desktop/releases'
 
 export type UpdateStatusTone = 'idle' | 'available' | 'error' | 'unsupported'
 
@@ -95,13 +95,15 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
   }
 
   if (status?.error) {
+    // The check's raw message is a command line and local paths. Clients only
+    // see the short line; the full text stays in the desktop log.
     return {
       applying,
-      error: [status.message, status.error].filter(l => !!l).join('\n'),
-      line: u.cantReach,
+      error: u.checkFailedBody,
+      line: u.checkFailedTitle,
       supported,
       tone: 'error',
-      updateAvailable
+      updateAvailable: false
     }
   }
 

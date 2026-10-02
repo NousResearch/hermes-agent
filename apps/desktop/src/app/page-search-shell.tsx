@@ -31,6 +31,8 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   /** Right-aligned control in the header's trailing cell (e.g. a refresh button)
    *  so mouse users get a visible affordance for the refresh hotkey. */
   searchTrailingAction?: ReactNode
+  /** Left-aligned control, kept visible even when search is hidden. */
+  leading?: ReactNode
 }
 
 function ShellTabs({
@@ -65,6 +67,7 @@ export function PageSearchShell({
   searchValue,
   searchHidden = false,
   searchTrailingAction,
+  leading,
   ...props
 }: PageSearchShellProps) {
   const hasTabs = (tabs?.length ?? 0) > 0
@@ -92,7 +95,8 @@ export function PageSearchShell({
       <div className="shrink-0">
         {(hasTabs || !searchHidden) && (
           <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]">
-            <div className="flex min-w-0 items-center justify-start">
+            <div className="flex min-w-0 items-center justify-start gap-2">
+              {leading}
               {!searchHidden && (
                 <SearchField
                   containerClassName="max-w-[45vw]"

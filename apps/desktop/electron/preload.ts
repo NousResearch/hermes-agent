@@ -549,6 +549,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:window-state-changed', listener)
   },
+  // Pull counterpart (#127647): the change push above cannot seed a renderer
+  // whose window started hidden (a minimized session window gets no event), so
+  // ask for the current snapshot of THIS window instead.
+  getWindowState: () => ipcRenderer.invoke('hermes:get-window-state'),
   onFocusSession: callback => {
     const listener = (_event, sessionId) => callback(sessionId)
     ipcRenderer.on('hermes:focus-session', listener)

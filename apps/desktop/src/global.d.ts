@@ -583,6 +583,10 @@ declare global {
        *  Electron re-checks containment and refuses unified-package halves. */
       removeDesktopPlugin?: (payload: { name: string }) => Promise<{ ok: boolean; path?: string; error?: string }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
+      /** Pull counterpart to `onWindowStateChanged` — the current snapshot for
+       *  the asking window. Seeds pause controllers in windows that started
+       *  hidden, which never receive a change push (#127647). */
+      getWindowState?: () => Promise<HermesWindowState>
       onFocusSession?: (callback: (sessionId: string) => void) => () => void
       onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void
       /** Plugin (and other session-less) notification body/action activation. */

@@ -6812,6 +6812,17 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
   webContents.send('hermes:window-state-changed', state)
 }
 
+// Pull counterpart to the push above (#127647): the push only reports changes,
+// and only the main window gets a seed push after load. A session window
+// created (or restored) already minimized therefore never receives one, and
+// its renderer cannot seed the pause state that keeps hidden animations from
+// running. Answer with the asking window's live snapshot.
+ipcMain.handle('hermes:get-window-state', event => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+
+  return getWindowState(window && !window.isDestroyed() ? window : null)
+})
+
 function buildApplicationMenu() {
   const template: MenuItemConstructorOptions[] = []
 

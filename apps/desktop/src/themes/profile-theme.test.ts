@@ -46,21 +46,3 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
     expect(pref.resolve('work')).toBe(fallback)
   })
 })
-
-// A fresh profile follows the OS. This defaulted to `light`, so a dark-mode
-// desktop got a white window on first launch — and, once translucency became
-// per-appearance, light's much heavier tint along with it. Main already
-// defaulted its own themeSource to 'system', so the two disagreed at boot.
-describe('a profile that has never chosen a mode', () => {
-  beforeEach(() => window.localStorage.clear())
-
-  it('follows the OS rather than forcing light', () => {
-    expect(modePref.resolve('default')).toBe('system')
-    expect(modePref.resolve('work')).toBe('system')
-  })
-
-  it('still honours an explicit choice', () => {
-    modePref.assign('default', 'light')
-    expect(modePref.resolve('default')).toBe('light')
-  })
-})

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from abc import ABC, abstractmethod
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Mapping
@@ -24,8 +25,31 @@ from agent.phase2_errors import AuthorityError
 from agent.phase2_sqlite import _DB_LOCK
 
 
-class Phase2BudgetMixin:
+class Phase2BudgetMixin(ABC):
     """Budget methods; the concrete store supplies connection and gate hooks."""
+
+    @abstractmethod
+    def _connect(self) -> sqlite3.Connection:
+        """Open the concrete authority store."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _load_live_authority(
+        self, conn: sqlite3.Connection, envelope: Mapping[str, Any],
+        current: datetime, *, action: str,
+    ) -> tuple[str, str, int, dict[str, Any]]:
+        """Validate live authority inside the caller's transaction."""
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def _append_event(
+        conn: sqlite3.Connection, *, kind: str, graph_id: str,
+        node_id: str | None, attempt_id: str | None, fence: int | None,
+        payload: Mapping[str, Any], now: datetime, event_id: str | None = None,
+    ) -> str:
+        """Append an event inside the caller's transaction."""
+        raise NotImplementedError
 
     @staticmethod
     def _budget_state(

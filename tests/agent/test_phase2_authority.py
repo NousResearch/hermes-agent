@@ -479,7 +479,7 @@ def test_bind_current_node_sources_authoritative_fence_from_durable_store(tmp_pa
             dict(current_sealed_envelope() or {})["attempt_id"]
             == envelope["attempt_id"]
         )
-        assert current_sealed_envelope()["permissions"]["read"] == ("/tmp",)
+        assert (current_sealed_envelope() or {})["permissions"]["read"] == ("/tmp",)
         assert current_authoritative_fence() == 1
 
     assert current_sealed_envelope() is None
@@ -489,15 +489,17 @@ def test_bind_current_node_sources_authoritative_fence_from_durable_store(tmp_pa
 def test_bind_current_never_pairs_stale_envelope_with_newer_fence(tmp_path):
     now = datetime(2026, 7, 30, tzinfo=timezone.utc)
 
-    class InterleavingStore(Phase2AuthorityStore):
-        interleaved = False
+    interleaved = False
 
-        def _validate_current_snapshot(self, conn, candidate, current):
-            result = super()._validate_current_snapshot(conn, candidate, current)
-            if not self.interleaved:
-                self.interleaved = True
-                writer = Phase2AuthorityStore(self.db_path)
-                writer.revoke_node(candidate, now=current + timedelta(seconds=1))
+    class InterleavingStore(Phase2AuthorityStore):
+        @staticmethod
+        def _validate_current_snapshot(conn, envelope, current):
+            nonlocal interleaved
+            result = Phase2AuthorityStore._validate_current_snapshot(conn, envelope, current)
+            if not interleaved:
+                interleaved = True
+                writer = Phase2AuthorityStore(tmp_path / "authority.db")
+                writer.revoke_node(envelope, now=current + timedelta(seconds=1))
                 writer.grant_node(
                     "g-authority",
                     "n-tool",
@@ -520,7 +522,7 @@ def test_bind_current_never_pairs_stale_envelope_with_newer_fence(tmp_path):
     )
 
     with store.bind_current(envelope, now=now):
-        assert current_sealed_envelope()["attempt_id"] == "at-1"
+        assert (current_sealed_envelope() or {})["attempt_id"] == "at-1"
         assert current_authoritative_fence() == 1
         assert store.current_fence("g-authority", "n-tool") == 2
 
@@ -532,15 +534,16 @@ def test_bind_current_publishes_the_exact_validated_envelope_snapshot(tmp_path):
     now = datetime(2026, 7, 30, tzinfo=timezone.utc)
 
     class MutatingStore(Phase2AuthorityStore):
-        def _validate_current_snapshot(self, conn, candidate, current):
-            result = super()._validate_current_snapshot(conn, candidate, current)
-            envelope["attempt_id"] = "mutated-after-validation"
-            envelope["permissions"]["read"].append("/stolen")
+        @staticmethod
+        def _validate_current_snapshot(conn, envelope, current):
+            result = Phase2AuthorityStore._validate_current_snapshot(conn, envelope, current)
+            original_envelope["attempt_id"] = "mutated-after-validation"
+            original_envelope["permissions"]["read"].append("/stolen")
             return result
 
     store = MutatingStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    envelope = store.grant_node(
+    original_envelope = store.grant_node(
         "g-authority",
         "n-tool",
         holder="hermes:one",
@@ -549,9 +552,9 @@ def test_bind_current_publishes_the_exact_validated_envelope_snapshot(tmp_path):
         now=now,
     )
 
-    with store.bind_current(envelope, now=now):
-        assert current_sealed_envelope()["attempt_id"] == "at-1"
-        assert current_sealed_envelope()["permissions"]["read"] == ("/tmp",)
+    with store.bind_current(original_envelope, now=now):
+        assert (current_sealed_envelope() or {})["attempt_id"] == "at-1"
+        assert (current_sealed_envelope() or {})["permissions"]["read"] == ("/tmp",)
         assert current_authoritative_fence() == 1
 
 
@@ -1100,8 +1103,10 @@ def test_migration_report_is_read_only_and_describes_violations(tmp_path):
         attempt_id="at-1",
         now=now,
     )
+    authority = store.current_authority("g-authority", "n-tool")
+    assert authority is not None
     store.complete_node(
-        store.current_authority("g-authority", "n-tool")["envelope"],
+        authority["envelope"],
         result_hash="a" * 64,
         now=now,
     )

@@ -3,6 +3,11 @@
 A mutating tool call is keyed by the idempotency key from the sealed task
 envelope. The first writer atomically claims it; every subsequent attempt
 with the same key loses without side effects. Raw arguments are never stored.
+This module is the stable mutation-claim API, separate from the authority
+ledger facade. A successful claim is idempotency evidence, never authorization:
+it does not consult live authority. Runtime integrations must revalidate live
+authority and resource fencing immediately before an effect; initial binding
+or a claim in this separate store cannot substitute for that gate.
 The persisted deterministic SHA-256 hash still permits offline confirmation
 of guessed arguments; it is an audit identity, not a confidentiality boundary.
 """

@@ -215,11 +215,11 @@ def test_nested_binding_is_scoped_to_innermost_context():
     outer = _envelope(node_id="n-outer", fence=1)
     inner = _envelope(node_id="n-inner", fence=2)
     with bind_sealed_envelope(outer, current_fence=1):
-        assert current_sealed_envelope()["node_id"] == "n-outer"
+        assert (current_sealed_envelope() or {})["node_id"] == "n-outer"
         assert current_authoritative_fence() == 1
         with bind_sealed_envelope(inner, current_fence=2):
-            assert current_sealed_envelope()["node_id"] == "n-inner"
+            assert (current_sealed_envelope() or {})["node_id"] == "n-inner"
             assert current_authoritative_fence() == 2
-        assert current_sealed_envelope()["node_id"] == "n-outer"
+        assert (current_sealed_envelope() or {})["node_id"] == "n-outer"
         assert current_authoritative_fence() == 1
     assert current_sealed_envelope() is None

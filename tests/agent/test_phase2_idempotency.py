@@ -165,7 +165,7 @@ def test_invalid_tool_and_args_are_rejected_typed(tmp_path):
     with pytest.raises(MutationClaimError, match="canonically JSON serializable"):
         store.try_claim(envelope, tool_name="write_file", args={"bad": float("nan")})
     with pytest.raises(MutationClaimError, match="canonically JSON serializable"):
-        store.try_claim(envelope, tool_name="write_file", args={1: "ambiguous"})
+        store.try_claim(envelope, tool_name="write_file", args={1: "ambiguous"})  # type: ignore[arg-type]
 
 
 def test_non_key_integrity_error_is_not_misclassified_as_duplicate(tmp_path):

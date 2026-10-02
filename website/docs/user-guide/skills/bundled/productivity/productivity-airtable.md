@@ -15,7 +15,7 @@ Airtable REST API via curl. Records CRUD, filters, upserts.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\airtable` |
+| Path | `skills/productivity/airtable` |
 | Version | `1.1.0` |
 | Author | community |
 | License | MIT |

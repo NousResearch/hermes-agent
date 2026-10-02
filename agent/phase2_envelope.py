@@ -441,6 +441,7 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
         errors.append("retry_policy.mutation")
     if (
         valid_max_attempts
+        and isinstance(max_attempts, int)
         and max_attempts > 1
         and envelope.get("execution_surface") not in _STATELESS_SURFACES
     ):
@@ -524,6 +525,10 @@ def bind_sealed_envelope(
     envelope: Mapping[str, Any], *, current_fence: int | None = None
 ) -> Iterator[None]:
     """Bind a defensive immutable copy to the current execution context.
+
+    This low-level binder does not validate durable authority or authorize an
+    effect. Runtime consumers must use ``Phase2AuthorityStore.bind_current``
+    and revalidate live authority immediately before each effect.
 
     The bound envelope and fence are scoped to the calling async task or thread
     via ``ContextVar``; they reset unconditionally on exit, even on exception.

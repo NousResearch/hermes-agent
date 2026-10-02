@@ -10,7 +10,11 @@ Stable public facade.  The implementation lives in bounded modules:
 - ``agent.phase2_ledger``   — append-only plan/event ledger and lease/fence
   lifecycle (concrete ``Phase2AuthorityStore``)
 
-Import from this module; downstream code must not depend on the split.
+Import authority ledger and envelope APIs from this module. Mutation claims
+have a separate stable API in ``agent.phase2_idempotency``. Neither raw context
+binding nor an idempotency claim authorizes an effect. These are primitives;
+runtime wiring requires a composed effect-time live-authority and claim gate,
+including revocation-between-bind-and-effect coverage.
 """
 
 from __future__ import annotations

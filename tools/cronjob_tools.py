@@ -366,7 +366,8 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
                 from cron.scheduler_preflight import (
                     SharedRouteAdapters, _primary_profile_routes_for_current_home)
 
-                adapters = SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+                adapters = SharedRouteAdapters(
+                    adapters, _primary_profile_routes_for_current_home(), getattr(runner, "_profile_adapters", None))
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the

@@ -7,6 +7,10 @@ Any backend may hand a request to the ring via ``search_with_failover(name, ...)
 ``extract_with_failover(name, ...)``; *name* is the entering backend. Only a ring vendor can be
 pinned — by ``web.backend`` / ``search_backend`` / ``extract_backend`` naming it or by
 ``web.provider_tier.<vendor>: free`` — every other name round-robins from the shared cursor.
+The cursor is process-global and advances on EVERY unpinned walk, rescue or not: a rescue-heavy
+workload therefore also rotates the entry order of unrelated unpinned keyless requests (and a
+non-ring name pinned ``paid`` advances it once, since the paid ring itself is filtered out after
+the walk start is drawn). Pin a vendor to keep its order stable.
 """
 
 from __future__ import annotations

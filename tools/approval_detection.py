@@ -1521,16 +1521,51 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+def _is_atomic_create_only_git_push(command: str) -> bool:
+    """An empty expected lease rejects even a branch created after an absence check.
+
+    Recognize only a complete literal command, so shell expansions, extra options,
+    and other pushes cannot inherit this exception.
+    """
+    if "--force-with-lease=" not in command or re.search(r"[\\$`\n\r;&|<>()*?{}\[\]!%]", command):
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if len(tokens) != 5 or tokens[:2] != ["git", "push"]:
+        return False
+    lease, remote, refspec = tokens[2:]
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", remote):
+        return False
+    match = re.fullmatch(r"--force-with-lease=(refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*):", lease)
+    if match is None:
+        return False
+    destination = match.group(1)
+    if any(part.startswith(".") or part.endswith((".", ".lock")) or not part
+           for part in destination.split("/")) or ".." in destination:
+        return False
+    return re.fullmatch(
+        r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64}):" + re.escape(destination), refspec
+    ) is not None
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
+    create_only_push = _is_atomic_create_only_git_push(command)
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if create_only_push and description in {
+                "git force push (rewrites remote history)",
+                "git force push short flag (rewrites remote history)",
+            }:
+                continue
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
                     masked_lower = _lower_preserving_flags(

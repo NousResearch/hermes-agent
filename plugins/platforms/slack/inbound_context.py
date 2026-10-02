@@ -5,9 +5,12 @@ from __future__ import annotations
 from gateway.platforms.event import attributed_context
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource
+from plugins.platforms.slack.pending_thread_context import SlackThreadContext
 
 if TYPE_CHECKING:
     from plugins.platforms.slack.adapter import SlackAdapter
@@ -37,12 +40,15 @@ class SlackInboundContextMixin:
 
     async def _prepare_slack_message(
         self: SlackAdapter, event: dict, dedup_team_id: str, channel_id: str, payload: Optional[dict] = None,
+        *, cached: MessageEvent | None = None, replay_thread_context: SlackThreadContext | None = None, authorize: Callable[[SessionSource], bool] | None = None,
     ) -> MessageEvent | None:
         """Prepare accepted input under the current workspace and channel policy."""
         from plugins.platforms.slack.adapter import (
             _rewrite_known_bang_command,
             _slack_mention_detection_text,
         )
+        if self._is_ignored_channel(channel_id):
+            return None
         original_text = event.get("text", "")
         # Slack rejects slash commands inside threads, so a leading ``!`` is rewritten to ``/``
         # — only for known gateway commands, so "!nice work" passes through.
@@ -116,23 +122,41 @@ class SlackInboundContextMixin:
         # ts, so only the `_processed_message_ts` guard stops a duplicate turn, and it must be set
         # before the slow enrichment awaits. Claiming before the filters would let an ignored
         # original block a later "@bot" edit from summoning the bot.
+        if authorize is not None:
+            current_source = self.build_source(
+                chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
+                thread_id=thread_ts, scope_id=team_id or None, message_id=ts,
+                is_bot=self._event_declares_bot_sender(event))
+            if self._canonicalize(current_source) is None or not authorize(current_source):
+                return None
         _claim_ts = str(event.get("ts") or "")
-        if _claim_ts:
+        if _claim_ts and cached is None:
             self._remember_processed_message_ts(_claim_ts)
         if is_mentioned:
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                 text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
                 team_id)
         # Thread history stays out of ``text``: prepending would push a command off char zero.
-        (
-            channel_context, thread_root_media_urls, thread_root_media_types,
-        ) = await self._hydrate_thread_context(
-            channel_id=channel_id, event_thread_ts=event_thread_ts, ts=ts, user_id=user_id,
-            team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned,
-            is_dm=is_dm)
+        thread_snapshot = replay_thread_context
+        if cached is None:
+            (
+                channel_context, thread_root_media_urls, thread_root_media_types, thread_snapshot,
+            ) = await self._hydrate_thread_context(
+                channel_id=channel_id, event_thread_ts=event_thread_ts, ts=ts, user_id=user_id,
+                team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned, is_dm=is_dm)
+        else:
+            channel_context = thread_snapshot.text if thread_snapshot is not None else None
+            thread_root_media_urls, thread_root_media_types = [], []
         # Thread-root media is delivered ahead of the trigger message's own files.
-        media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
-            event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
+        if cached is None:
+            media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
+                event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
+        else:
+            if thread_root_media_urls:
+                return None
+            media_urls = list(cached.media_urls)
+            media_types = list(cached.media_types)
+            media_text_inlined = list(cached.media_text_inlined)
         msg_event = await self._build_message_event(
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
@@ -140,12 +164,13 @@ class SlackInboundContextMixin:
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
-                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
+                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process),
+            restored=cached is not None)
         if shared_sections:
             msg_event.add_channel_context(attributed_context("Shared links and messages", "\n\n".join(shared_sections)))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
-        if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
+        if cached is None and (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
             self._track_reacting_message(team_id, ts)
         # App-context is per-turn UI state: in the user message, not SessionSource (would rebuild
         # the agent per view switch and leak stale context). Inert label, never a channel body.
@@ -154,8 +179,10 @@ class SlackInboundContextMixin:
             msg_event.text = (
                 f"[Slack app context: user is viewing channel {context_channel_id}]\n\n"
                 f"{msg_event.text}")
-        if ts:
+        if ts and cached is None:
             self._remember_processed_message_ts(ts)
+        if cached is None:
+            msg_event._pending_native_input = self.pending_native_input(msg_event, thread_context=thread_snapshot)
         return msg_event
 
 
@@ -163,7 +190,8 @@ class SlackInboundContextMixin:
         self: SlackAdapter, event: dict, *, text: str, original_text: str, command_probe_text: str,
         is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
         thread_ts: Optional[str], is_dm: bool, media_urls: list[str], media_types: list[str],
-        media_text_inlined: list[bool], channel_context: Optional[str], reply_expected: Optional[bool] = None) -> MessageEvent:
+        media_text_inlined: Sequence[bool | None], channel_context: Optional[str], reply_expected: Optional[bool] = None,
+        restored: bool = False) -> MessageEvent:
         """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
         from canonical input: the parser needs the token at char zero and enrichment (blocks,
         unfurls, file text, history) must never mutate arguments."""
@@ -173,7 +201,7 @@ class SlackInboundContextMixin:
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
         channel_name = await self._resolve_channel_name(channel_id, team_id=team_id)
         # Best-effort: title the DM thread from the prompt for Slack's AI Agent Messages tab.
-        if is_dm and thread_ts and msg_type != MessageType.COMMAND:
+        if not restored and is_dm and thread_ts and msg_type != MessageType.COMMAND:
             await self._set_assistant_thread_title(
                 channel_id, thread_ts, original_text or text, team_id=team_id)
         source = self.build_source(
@@ -200,7 +228,7 @@ class SlackInboundContextMixin:
             message_id=ts,
             media_urls=media_urls,
             media_types=media_types,
-            media_text_inlined=media_text_inlined,
+            media_text_inlined=list(media_text_inlined),
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             channel_context=channel_context,
@@ -404,7 +432,7 @@ class SlackInboundContextMixin:
     async def _hydrate_thread_context(
         self: SlackAdapter, *, channel_id: str, event_thread_ts, ts: str, user_id: str, team_id: str,
         is_thread_reply: bool, is_mentioned: bool, is_dm: bool,
-    ) -> tuple[Optional[str], list[str], list[str]]:
+    ) -> tuple[Optional[str], list[str], list[str], SlackThreadContext | None]:
         """``(channel_context, root_media_urls, root_media_types)`` for a thread reply. No session:
         full thread + root images once, set watermark. Session + @mention: delta past watermark
         (cache bypassed). Session, first plain reply this process: restart rehydration; later
@@ -416,6 +444,7 @@ class SlackInboundContextMixin:
         #   command away from character zero, so downstream command routing can misclassify it as
         #   conversational text. ``channel_context`` is prepended only after command dispatch.
         channel_context = None
+        context_messages: list[dict] = []
         # Thread-root images recovered on the cold-start hydrate: when the bot is mentioned mid-thread for
         # the first time, the thread root is very often the artifact the mention is about ("@bot what's in
         # this chart?" replying under an image post) — deliver its images with this first turn. One-time by
@@ -424,18 +453,22 @@ class SlackInboundContextMixin:
         thread_root_media_urls: list[str] = []
         thread_root_media_types: list[str] = []
         if not is_thread_reply:
-            return channel_context, thread_root_media_urls, thread_root_media_types
+            return channel_context, thread_root_media_urls, thread_root_media_types, None
         has_active_thread_session = self._has_active_session_for_thread(
             channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
             chat_type="dm" if is_dm else "group")
 
         async def _fetch(**kw) -> None:
-            nonlocal channel_context
+            nonlocal channel_context, context_messages
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id, thread_ts=event_thread_ts, current_ts=ts, team_id=team_id,
                 **kw)
             if thread_context:
                 channel_context = thread_context
+                cached_context = self._thread_context_cache.get(self._thread_cache_key(channel_id, event_thread_ts, team_id))
+                after_ts = kw.get("after_ts", "")
+                context_messages = [message for message in cached_context.messages
+                                    if message.get("ts") != ts and (not after_ts or message.get("ts", "") > after_ts)] if cached_context else []
 
         watermark_args = dict(
             channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id)
@@ -458,13 +491,17 @@ class SlackInboundContextMixin:
                 channel_id, event_thread_ts, user_id, team_id)
             if rehydration_key in self._thread_rehydration_checked:
                 self._set_thread_watermark(watermark_ts=ts, **watermark_args)
-                return channel_context, thread_root_media_urls, thread_root_media_types
+                return channel_context, thread_root_media_urls, thread_root_media_types, SlackThreadContext(None, (), ())
             watermark_ts = self._get_thread_watermark(**watermark_args)
             if watermark_ts:
                 await _fetch(after_ts=watermark_ts, force_refresh=True)
         self._set_thread_watermark(watermark_ts=ts, **watermark_args)
         self._mark_thread_rehydration_checked(channel_id, event_thread_ts, user_id, team_id)
-        return channel_context, thread_root_media_urls, thread_root_media_types
+        try:
+            snapshot = SlackThreadContext.capture(channel_context, context_messages, thread_root_media_urls, event_thread_ts)
+        except (ValueError, KeyError, TypeError):
+            snapshot = None
+        return channel_context, thread_root_media_urls, thread_root_media_types, snapshot
 
 def _is_shared_slack_attachment(att: dict) -> bool:
     """Whether an attachment shows someone else's content: a link preview or a shared message.

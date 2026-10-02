@@ -456,7 +456,10 @@ async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_re
 
     before_prompt, before_resolve = await react("$before", "$reaction-before")
     assert before_prompt.resolved is True
-    before_resolve.assert_called_once_with("session-$before", "once")
+    # #124974: the reaction path now forwards the card's approval_request_id;
+    # a legacy prompt carries none, so this resolves via the FIFO fallback
+    # (request_id=None) exactly as before.
+    before_resolve.assert_called_once_with("session-$before", "once", request_id=None)
 
     assert store.revoke("matrix", user_id) is True
     assert store.is_approved("matrix", user_id) is False

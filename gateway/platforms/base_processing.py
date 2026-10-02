@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 from gateway.config import Platform
 from gateway.platforms.base_pending import (
     _PendingDispatchReservation, pending_dispatch_scope, release_pending_dispatch,
-    pending_dispatch_records, reserve_pending_dispatch, release_pending_dispatch_record,
+    pending_dispatch_records, reserve_pending_dispatch, release_pending_dispatch_record, ingress_order,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
@@ -93,6 +93,7 @@ class BaseProcessingMixin:
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
+        ingress_order(event)
         event._gateway_accepted = False
         if not self._message_handler:
             # No handler = every inbound silently discarded on an adapter that still polls and sends;

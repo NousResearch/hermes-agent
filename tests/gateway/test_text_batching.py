@@ -282,7 +282,9 @@ async def test_entry_batch_keeps_each_reply_target(route, relation):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stage", ["buffered", "preparing", "telegram-photo", "telegram-album"])
+@pytest.mark.parametrize("stage", ["buffered", "preparing", "telegram-photo", "telegram-album",
+                                   "mixed-pending-text", "mixed-pending-photo", "mixed-ingress-reservation",
+                                   "mixed-reservation-ingress", "mixed-pending-reservation", "mixed-fifo-ingress"])
 @pytest.mark.parametrize("write_fails", [False, True])
 async def test_ingress_shutdown_preserves_split_inputs_before_consumption(tmp_path, monkeypatch, stage, write_fails):
     import json
@@ -294,7 +296,7 @@ async def test_ingress_shutdown_preserves_split_inputs_before_consumption(tmp_pa
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = (TelegramAdapter(PlatformConfig(enabled=True, token="1234:dummy"))
-               if stage.startswith("telegram") else MatrixAdapter(PlatformConfig(enabled=True)))
+               if stage.startswith("telegram") or stage == "mixed-pending-photo" else MatrixAdapter(PlatformConfig(enabled=True)))
     adapter._text_batch_delay_seconds = 0 if stage == "preparing" else 60
     adapter._media_batch_delay_seconds = adapter.MEDIA_GROUP_WAIT_SECONDS = 60
     adapter._drop_delayed_deliveries = False
@@ -303,7 +305,7 @@ async def test_ingress_shutdown_preserves_split_inputs_before_consumption(tmp_pa
                            reply_to_message_id=f"q-{text}", reply_to_text=f"quoted {text}",
                            reply_to_author_id="author", reply_to_author_name="Quoted author",
                            reply_to_is_own_message=False, reply_to_author_authorized=True)
-              for text in ("one", "two")]
+              for text in (("one", "two", "three") if stage == "mixed-fifo-ingress" else ("one", "two"))]
     entered = asyncio.Event()
     consumed = []
 
@@ -313,14 +315,54 @@ async def test_ingress_shutdown_preserves_split_inputs_before_consumption(tmp_pa
         consumed.append(event)
 
     adapter.handle_message = prepare
+    adapter.set_message_handler(prepare)
+    adapter._busy_text_mode = "interrupt"
+    key = adapter._event_session_key(events[0])
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.base_pending import reserve_pending_dispatch
+    from gateway.run import GatewayRunner
+    from gateway.config import GatewayConfig
+
+    async def park(event):
+        adapter._active_sessions[key] = asyncio.Event()
+        await BasePlatformAdapter.handle_message(adapter, event)
+
+    async def reserve(event):
+        reserve_pending_dispatch(adapter, key, event, accepted=False)
+
+    async def text(event):
+        adapter._enqueue_text_event(event)
+
+    async def photo(event):
+        event.message_type = MessageType.PHOTO
+        event.media_urls, event.media_types, event.media_text_inlined = [event.text + ".png"], ["image/png"], [False]
+        adapter._enqueue_photo_event("lane", event)
+
+    async def fifo(event):
+        assert runner._enqueue_fifo(key, event, adapter)
+
+    mixed = {
+        "mixed-pending-text": (park, text),
+        "mixed-pending-photo": (park, photo),
+        "mixed-ingress-reservation": (text, reserve),
+        "mixed-reservation-ingress": (reserve, text),
+        "mixed-pending-reservation": (park, reserve),
+        "mixed-fifo-ingress": (fifo, fifo, text),
+    }
+    runner = GatewayRunner(config=GatewayConfig())
+    if stage == "mixed-fifo-ingress":
+        adapter.gateway_runner = runner
+        runner.adapters[adapter.platform] = adapter
     from gateway.shutdown_flush import _write_payload
     if write_fails:
         def fail(directory, payload):
             raise OSError("controlled full disk")
         monkeypatch.setattr("gateway.shutdown_flush._write_payload", fail)
     try:
-        for event in events:
-            if stage.startswith("telegram"):
+        for index, event in enumerate(events):
+            if stage in mixed:
+                await mixed[stage][index](event)
+            elif stage.startswith("telegram"):
                 event.message_type = MessageType.PHOTO
                 event.media_urls, event.media_types, event.media_text_inlined = [event.text + ".png"], ["image/png"], [False]
                 if stage == "telegram-photo":

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.base_pending import _can_join_pending_event, merge_recorded
+from gateway.platforms.base_pending import _can_join_pending_event, ingress_order, merge_recorded
 from gateway.platforms import base_pending_merge
 
 if TYPE_CHECKING:
@@ -71,6 +71,7 @@ class BaseTextDebounceMixin:
 
     async def _queue_text_debounce(self: BasePlatformAdapter, session_key: str, event: MessageEvent) -> bool:
         """Buffer a busy burst and schedule a bounded flush."""
+        ingress_order(event)
         store = self._text_debounce_store()
         state = store.get(session_key)
         if state is None or not self._can_merge_text_debounce_events(state.event, event):

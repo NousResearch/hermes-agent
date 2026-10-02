@@ -170,6 +170,7 @@ def pending_dispatch_record(adapter: object, session_key: str,
 
 def reserve_pending_dispatch(adapter: object, session_key: str, event: MessageEvent, *,
                              accepted: bool = True) -> _PendingDispatchReservation:
+    ingress_order(event)
     for record in pending_dispatch_records(adapter, session_key):
         if record.includes(event):
             record.accepted = record.accepted or accepted

@@ -19,7 +19,7 @@ from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.base_pending import Withdraw
+from gateway.platforms.base_pending import Withdraw, ingress_order
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch, release_pending_dispatch, pending_dispatch_records, pending_dispatch_withdrawn
 from gateway.session import SessionSource
@@ -131,6 +131,7 @@ class GatewayBusySessionMixin:
 
     def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> bool:
         """Admit a new FIFO event without replacing earlier queued input."""
+        ingress_order(queued_event)
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if not isinstance(pending_slot, dict):
             return False

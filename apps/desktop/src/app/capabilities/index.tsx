@@ -1,8 +1,10 @@
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
@@ -12,11 +14,13 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { $brandSession, capabilitiesUnlocked } from '@/store/brand-session'
 import { $gateway } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { $selectedStoredSessionId } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PanelEmpty } from '../overlays/panel'
 import { PageSearchShell } from '../page-search-shell'
+import { NEW_CHAT_ROUTE, sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
@@ -34,6 +38,28 @@ import { ToolsetsTab } from './toolsets/toolsets-tab'
 const CAPABILITY_MODES = ['skills', 'toolsets', 'connectors', 'plugins'] as const
 
 type CapabilityMode = (typeof CAPABILITY_MODES)[number]
+
+function ReturnToChatButton() {
+  const navigate = useNavigate()
+  const { t } = useI18n()
+
+  return (
+    <Button
+      className="shrink-0"
+      onClick={() => {
+        const sessionId = $selectedStoredSessionId.get()
+
+        navigate(sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE)
+      }}
+      size="sm"
+      type="button"
+      variant="ghost"
+    >
+      <Codicon name="arrow-left" size="0.85rem" />
+      {t.titlebar.backToChat}
+    </Button>
+  )
+}
 
 interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -191,6 +217,7 @@ export function CapabilitiesView({
             : t.skills.searchToolsets
       }
       searchValue={query}
+      leading={embedded ? undefined : <ReturnToChatButton />}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },

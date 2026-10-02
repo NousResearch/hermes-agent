@@ -118,7 +118,7 @@ test('nonstable runtime pins userData before the app name can change', async ():
 })
 
 test.each([
-  [undefined, 'Hermes', 'hermes', 'latest', 'canary'],
+  [undefined, 'IVX-Agency', 'hermes', 'latest', 'canary'],
   ['bundled', 'Hermes Agent', 'hermes', 'latest', 'canary'],
   ['light', 'Hermes Light', 'hermes-light', 'light', 'light-canary']
 ] as const)(

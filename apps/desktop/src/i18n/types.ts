@@ -771,6 +771,7 @@ export interface Translations {
     showSidebar: string
     search: string
     searchTitle: string
+    backToChat: string
     swapSidebarSides: string
     hideRightSidebar: string
     showRightSidebar: string
@@ -3592,6 +3593,7 @@ export interface Translations {
     stages: Record<string, string>
     checking: string
     checkFailedTitle: string
+    checkFailedBody: string
     tryAgain: string
     notAvailableTitle: string
     unsupportedMessage: string

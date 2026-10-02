@@ -168,12 +168,12 @@ describe('speaker labels', () => {
       'builder'
     )
 
-    expect(line).toBe('Hermes: hello room')
+    expect(line).toBe('IVX-Agency: hello room')
 
     // Other members keep their profile name; the (you) suffix survives.
     expect(
       formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hi' } as GroupMessage, 'default')
-    ).toBe('Hermes (you): hi')
+    ).toBe('IVX-Agency (you): hi')
     expect(
       formatGroupChatLine({ from: { kind: 'member', name: 'builder' }, text: 'yo' } as GroupMessage, 'research')
     ).toBe('builder: yo')
@@ -209,7 +209,7 @@ describe('speaker labels', () => {
     // Untitled rows keep today's behavior: default → Hermes, others verbatim.
     data.$botMeta.set({})
 
-    expect(chat.groupSpeakerLabel('default')).toBe('Hermes')
+    expect(chat.groupSpeakerLabel('default')).toBe('IVX-Agency')
     expect(chat.groupSpeakerLabel('builder')).toBe('builder')
   })
 
@@ -285,7 +285,7 @@ describe('speaker labels', () => {
     data.$lastRoster.set([])
 
     expect(chat.groupSpeakerLabel('local::reviewer')).toBe('reviewer')
-    expect(chat.groupSpeakerLabel('spark::default')).toBe('Hermes')
+    expect(chat.groupSpeakerLabel('spark::default')).toBe('IVX-Agency')
 
     data.$botMeta.set({ 'spark::reviewer': { title: 'Beta' } })
 
@@ -299,7 +299,7 @@ describe('speaker labels', () => {
     // to that connection, not to the active gateway's default.
     data.$lastRoster.set([{ display_name: 'HomelabBot', name: 'default', remoteSource: true }])
 
-    expect(chat.groupSpeakerLabel('default')).toBe('Hermes')
+    expect(chat.groupSpeakerLabel('default')).toBe('IVX-Agency')
   })
 })
 

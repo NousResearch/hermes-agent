@@ -48,7 +48,7 @@ vi.mock('@/i18n', () => ({
           gatewayUnreachable: (gateway: string) => `${gateway} · unreachable`,
           installDeviceConfirm: 'Install locally',
           installDeviceDesc:
-            'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
+            'This will install IVX-Agency locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
           installDeviceTitle: 'Switch to This device?',
           localDevice: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)',
           onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
@@ -126,7 +126,7 @@ vi.mock('./use-profile-rail-refresh-on-active', () => ({
 }))
 
 vi.mock('@/components/remote-setup/first-run', () => ({
-  FirstRunRemoteSetup: () => 'Connect to existing Hermes'
+  FirstRunRemoteSetup: () => 'Connect to existing IVX-Agency'
 }))
 
 vi.mock('@/hermes', () => ({
@@ -569,14 +569,14 @@ describe('ProfileRail fleet mode', () => {
     expect(selectConnection).not.toHaveBeenCalled()
     expect(
       await screen.findByText(
-        'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.'
+        'This will install IVX-Agency locally, then open a fresh session on this computer. Nothing is installed until you confirm.'
       )
     ).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Connect to existing instead' }))
 
     expect(selectConnection).not.toHaveBeenCalled()
-    expect(await screen.findByText('Connect to existing Hermes')).toBeTruthy()
+    expect(await screen.findByText('Connect to existing IVX-Agency')).toBeTruthy()
   })
 
   it('does not switch when the fresh-session cue is cancelled', async () => {

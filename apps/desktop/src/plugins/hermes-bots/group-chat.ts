@@ -1479,7 +1479,7 @@ export function groupSpeakerLabel(name?: null | string, group?: null | string) {
     const connection = trimmed.slice(0, boundary)
     const profile = trimmed.slice(boundary + 2)
     const title = String(meta?.[trimmed]?.title || meta?.[profile]?.title || '').trim()
-    const label = title || (profile.toLowerCase() === 'default' ? 'Hermes' : profile)
+    const label = title || (profile.toLowerCase() === 'default' ? 'IVX-Agency' : profile)
 
     // Another connection still exposes this name: keep them tellable apart.
     return rows.some(bot => bot.name === profile) ? `${label} · ${connection}` : label
@@ -1509,7 +1509,7 @@ export function groupSpeakerLabel(name?: null | string, group?: null | string) {
     return renamed
   }
 
-  return isDefault ? 'Hermes' : trimmed
+  return isDefault ? 'IVX-Agency' : trimmed
 }
 
 /** Trim a room log + its watermarks to the retained window, keeping

@@ -78,7 +78,10 @@ def test_snapshot_reconstructs_withdrawable_voice_parts_and_echo_receipts(tmp_pa
         )
 
 
-@pytest.mark.parametrize("change", ["unknown-operation", "field-type", "changed-file", "missing-file"])
+@pytest.mark.parametrize("change", [
+    "unknown-operation", "field-type", "changed-file", "missing-file",
+    "voice-reference-outside", "voice-reference-empty", "voice-reference-label",
+])
 def test_reconstruction_rejects_invalid_records_and_stale_voice_cache(tmp_path, monkeypatch, change):
     from gateway.shutdown_pending_codec import decode_pending_event
 
@@ -96,6 +99,19 @@ def test_reconstruction_rejects_invalid_records_and_stale_voice_cache(tmp_path, 
     setattr(first, "_gateway_pending_stt_clips", (VoiceClipTranscript(str(path), "voice"),))
     setattr(first, "_gateway_pending_stt_echoed_paths", {str(path)})
     record, = PendingQueueSnapshot.capture("key", [first]).events
+    invalid_references = {
+        "voice-reference-outside": {"path": str(tmp_path / "unrelated.ogg"), "rendered_path": "generated"},
+        "voice-reference-empty": {"path": str(failed_path), "rendered_path": ""},
+        "voice-reference-label": {"path": str(failed_path), "rendered_path": "absent"},
+    }
+    if change in invalid_references:
+        record["voice"]["parts"] = [{
+            "text": "generated", "clip_path": None,
+            "attachment": invalid_references[change],
+        }]
+        with pytest.raises(ValueError):
+            decode_pending_event(record)
+        return
     if change == "unknown-operation":
         record["attribution"][1]["operation"] = "arbitrary.module.call"
     elif change == "field-type":

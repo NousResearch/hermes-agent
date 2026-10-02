@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import hermes_yaml as yaml
 
 from gateway.platforms.base_pending_merge import merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
@@ -75,8 +76,9 @@ async def test_withdrawal_and_later_merge_echo_each_successful_voice_once(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("withdrawn", ["first", "last"])
+@pytest.mark.parametrize("launch_backend,routed_backend", [("local", "docker"), ("docker", "local")])
 async def test_routed_voice_snapshot_preserves_echo_receipts_a_b_a(
-    two_homes, monkeypatch, withdrawn
+    two_homes, monkeypatch, withdrawn, launch_backend, routed_backend
 ):
     from gateway.run import _profile_runtime_scope
     from gateway.run_inbound_media import rehome_inbound_media
@@ -84,6 +86,8 @@ async def test_routed_voice_snapshot_preserves_echo_receipts_a_b_a(
     from gateway.shutdown_pending_codec import decode_pending_event
 
     launch, routed = two_homes
+    for home, backend in ((launch, launch_backend), (routed, routed_backend)):
+        (home / "config.yaml").write_text(yaml.safe_dump({"terminal": {"backend": backend}}), encoding="utf-8")
     turns = []
     expected = []
     for index, home in enumerate((launch, routed, launch)):
@@ -118,7 +122,8 @@ async def test_routed_voice_snapshot_preserves_echo_receipts_a_b_a(
             transcribed.append(word)
             if word == "failed":
                 return {"success": False, "error": "inaudible"}
-            return {"success": True, "transcript": word}
+            speech = f"literal /root/.hermes/cache/audio/{index}-failed.ogg" if word == "first" else word
+            return {"success": True, "transcript": speech}
 
         monkeypatch.setattr("tools.transcription_tools.transcribe_audio", transcribe)
         monkeypatch.setattr(
@@ -132,6 +137,11 @@ async def test_routed_voice_snapshot_preserves_echo_receipts_a_b_a(
         with _profile_runtime_scope(home):
             rehome_inbound_media(pending)
             (record,) = PendingQueueSnapshot.capture(key, [pending]).events
+            from tools.credential_files import to_agent_visible_cache_path
+
+            failed_path = str(home / "cache" / "audio" / f"{index}-failed.ogg")
+            generated_note = runner._untranscribed_audio_note(failed_path)
+            rendered_path = to_agent_visible_cache_path(failed_path)
             restored = decode_pending_event(json.loads(json.dumps(record)))
             adapter._pending_messages[key] = restored
             await runner._transcribe_and_echo_pending_voice(
@@ -171,18 +181,26 @@ async def test_routed_voice_snapshot_preserves_echo_receipts_a_b_a(
             "transcribed_before_withdrawal": transcription_before_withdrawal,
             "snapshot_echoes": record["voice"]["echoed_paths"],
             "snapshot_clips": [clip["path"] for clip in record["voice"]["clips"]],
+            "snapshot_parts": record["voice"]["parts"],
             "retained_echoes": sorted(
                 getattr(survivor, "_gateway_pending_stt_echoed_paths", ())
             ),
             "attachments": [Path(path).read_bytes() for path in survivor.media_urls],
         })
+        literal = f"literal /root/.hermes/cache/audio/{index}-failed.ogg"
         expected.append({
             "echoes": [
-                (source.chat_id, f'🎙️ "{word}"', {}) for word in ("first", "last", "new")
+                (source.chat_id, f'🎙️ "{word}"', {}) for word in (literal, "last", "new")
             ],
             "transcribed_before_withdrawal": ["first", "failed", "failed", "last"],
             "snapshot_echoes": sorted(paths),
             "snapshot_clips": paths,
+            "snapshot_parts": [
+                {"text": f'"{literal}"', "clip_path": paths[0]},
+                {"text": generated_note, "clip_path": None,
+                 "attachment": {"path": failed_path, "rendered_path": rendered_path}},
+                {"text": '"last"', "clip_path": paths[1]},
+            ],
             "retained_echoes": sorted(
                 [
                     clip_path

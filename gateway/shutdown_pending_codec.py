@@ -84,7 +84,9 @@ def capture_pending_provenance(event: MessageEvent) -> dict[str, Any]:
         }
         if transcription is not None:
             recorded["voice"]["parts"] = [
-                {"text": part.text, "clip_path": part.clip.path if part.clip is not None else None}
+                {"text": part.text, "clip_path": part.clip.path if part.clip is not None else None,
+                 **({"attachment": {"path": part.attachment.path, "rendered_path": part.attachment.rendered_path}}
+                    if part.attachment is not None else {})}
                 for part in transcription.parts
             ]
     return recorded
@@ -170,7 +172,7 @@ def decode_pending_event(record: dict[str, Any], *, adapter: Any = None) -> Mess
 
 
 def _restore_voice(event: MessageEvent, voice: dict[str, Any]) -> None:
-    from gateway.run_inbound_voice import VoiceClipTranscript, VoiceTranscription, VoiceTranscriptPart
+    from gateway.run_inbound_voice import VoiceClipTranscript, VoiceFileReference, VoiceTranscription, VoiceTranscriptPart
 
     if not isinstance(voice, dict) or not isinstance(voice.get("clips"), list):
         raise ValueError("pending voice receipts must be an object with clips")
@@ -218,5 +220,14 @@ def _restore_voice(event: MessageEvent, voice: dict[str, Any]) -> None:
             path = record.get("clip_path")
             if path is not None and path not in by_path:
                 raise ValueError("pending voice part has no successful clip receipt")
-            parts.append(VoiceTranscriptPart(record["text"], by_path.get(path)))
+            attachment = record.get("attachment")
+            reference = None
+            if attachment is not None:
+                if (not isinstance(attachment, dict) or not isinstance(attachment.get("path"), str)
+                        or not isinstance(attachment.get("rendered_path"), str) or not attachment["rendered_path"]
+                        or attachment["rendered_path"] not in record["text"]
+                        or attachment["path"] not in event.media_urls or path is not None):
+                    raise ValueError("pending voice file reference is invalid")
+                reference = VoiceFileReference(attachment["path"], attachment["rendered_path"])
+            parts.append(VoiceTranscriptPart(record["text"], by_path.get(path), reference))
         setattr(event, "_gateway_pending_stt_input", VoiceTranscription(text, tuple(clips), tuple(parts)))

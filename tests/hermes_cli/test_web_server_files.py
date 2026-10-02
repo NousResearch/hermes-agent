@@ -1,12 +1,13 @@
 """Tests for the dashboard-managed file browser API."""
 
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
+from hermes_cli import web_server, web_server_files
 import hermes_cli.web_routers.files as _rt_files
 
 
@@ -458,3 +459,34 @@ def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch
     monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
 
     assert _rt_files._fs_git_branch(str(tmp_path)) == branch
+
+
+class TestFsPathTranslatesWslUnc:
+    """#129308: a Windows desktop client addressing a gateway that runs inside its own WSL
+    distro sends ``\\\\wsl.localhost\\<distro>\\...`` UNCs; ``Path()`` alone keeps the
+    backslashes as literal filename characters, so every read 404s while listing
+    (server-generated POSIX paths) still works."""
+
+    def test_translates_unc_to_posix_when_gateway_runs_in_wsl(self, monkeypatch):
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        expected = Path("/home/alex/notes.txt").resolve(strict=False)
+        assert (
+            web_server_files._fs_path(r"\\wsl.localhost\Ubuntu\home\alex\notes.txt")
+            == expected
+        )
+        # The legacy \\wsl$ spelling and forward-slash UNCs translate the same way.
+        assert (
+            web_server_files._fs_path("//wsl$/Ubuntu/home/alex/notes.txt")
+            == expected
+        )
+
+    def test_leaves_unc_alone_when_not_in_wsl(self, monkeypatch):
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: False)
+        resolved = web_server_files._fs_path(r"\\wsl.localhost\Ubuntu\home\alex\notes.txt")
+        # Off WSL the UNC stays whatever Path() made of it before — no translation.
+        assert "\\wsl.localhost" in str(resolved)
+        assert resolved != Path("/home/alex/notes.txt")

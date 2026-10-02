@@ -28,6 +28,16 @@ def _fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
     if "\0" in raw:
         raise HTTPException(status_code=400, detail="Invalid path")
     try:
+        from hermes_constants import is_wsl, wsl_unc_path_to_posix
+
+        if is_wsl():
+            # A Windows desktop client addressing this gateway's own distro sends
+            # \\wsl.localhost\<distro>\... UNCs; Path() would keep the backslashes
+            # as literal filename characters and every read would 404 (#129308).
+            # Off WSL the UNC stays a native path, exactly as before.
+            posix = wsl_unc_path_to_posix(raw)
+            if posix is not None:
+                raw = posix
         if raw.lower().startswith("file:"):
             parsed = urllib.parse.urlparse(raw)
             uri_path = parsed.path

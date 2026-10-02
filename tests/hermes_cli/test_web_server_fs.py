@@ -304,3 +304,20 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+def test_fs_read_text_translates_wsl_unc_when_gateway_runs_in_wsl(client, monkeypatch, tmp_path):
+    """#129308: the Windows desktop client addresses files inside the gateway's own distro as
+    ``\\\\wsl.localhost\\<distro>\\...`` UNCs; without translation Path() keeps the backslashes
+    as literal filename characters and every read 404s."""
+    import hermes_constants
+
+    target = tmp_path / "hello.txt"
+    target.write_text("hello wsl bridge")
+    unc = "\\\\wsl.localhost\\Ubuntu" + str(target).replace("/", "\\")
+    monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+
+    response = client.get("/api/fs/read-text", params={"path": unc})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["text"] == "hello wsl bridge"

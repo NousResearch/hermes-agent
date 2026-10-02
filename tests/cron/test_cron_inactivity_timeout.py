@@ -119,3 +119,59 @@ class TestHostSleep:
         assert fired is True
         awake_idle = clock.mono - start_mono
         assert 600.0 <= awake_idle < 605.0
+
+
+def test_sleep_before_watchdog_thread_starts(monkeypatch):
+    """The worker can record activity before the watchdog gets its first timeslice."""
+    from agent import activity_tracking, session_activity
+    from cron import scheduler
+
+    clock = SimpleNamespace(wall=1000.0, mono=1000.0)
+    timer = SimpleNamespace(time=lambda: clock.wall, monotonic=lambda: clock.mono)
+    started, finish = threading.Event(), threading.Event()
+    interrupted_at = []
+
+    class Agent(activity_tracking.ActivityTrackingMixin):
+        def run_conversation(self, *args, **kwargs):
+            self._touch_activity("starting new turn")
+            started.set()
+            finish.wait(20)
+            return {"final_response": "finished"}
+
+        def get_activity_summary(self):
+            return session_activity.build_activity_snapshot(
+                last_activity_at=self._last_activity_ts,
+                last_activity_description=self._last_activity_desc)
+
+        def interrupt(self, message, **kwargs):
+            interrupted_at.append(clock.mono - 1000.0)
+            finish.set()
+
+    original_start, original_wait = threading.Thread.start, threading.Event.wait
+
+    def start(thread):
+        if thread.name.startswith("cron-inactivity-"):
+            assert started.wait(5), "worker did not start"
+            clock.wall += 900
+        return original_start(thread)
+
+    def wait(event, timeout=None):
+        if threading.current_thread().name.startswith("cron-inactivity-") and timeout == 5.0:
+            clock.wall += timeout
+            clock.mono += timeout
+            return event.is_set()
+        return original_wait(event, timeout)
+
+    for module in (activity_tracking, session_activity, scheduler):
+        monkeypatch.setattr(module, "time", timer)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(threading.Event, "wait", wait)
+    monkeypatch.setattr(scheduler, "_cron_inactivity_seconds", lambda: 600.0)
+    try:
+        with pytest.raises(TimeoutError):
+            scheduler._run_agent_with_watchdog(
+                Agent(), "probe", {"schedule": {"kind": "every"}},
+                "probe", "probe", "probe", None)
+    finally:
+        finish.set()
+    assert interrupted_at and min(interrupted_at) >= 600.0

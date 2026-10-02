@@ -13,6 +13,7 @@ import {
   DELEGATE_CARD_PARENT_DONE,
   DELEGATE_CARD_TRIGGERS,
   DELEGATE_CARD_TURNS,
+  MOCK_REPLY,
   restartMockServer,
 } from '../../../tests-js/scripts/mock-server'
 import { expect, type Page, test } from './test'
@@ -279,6 +280,12 @@ test.describe('delegate card identity', () => {
     })
     expect(fixture.mock.receivedRequestSummaries).toEqual([])
     await waitForAppReady(fixture, 120_000)
+    // Exercise first-contact onboarding in an ordinary session before the
+    // exact delegate protocol. This scenario tests existing-session history.
+    await send(fixture.page, 'E2E ordinary session before delegate identity checks.')
+    await awaitParentDone(fixture.page, MOCK_REPLY)
+    await openFreshSession(fixture.page)
+    await expect(transcript(fixture.page)).not.toContainText(MOCK_REPLY)
   })
 
   test.afterEach(async () => {

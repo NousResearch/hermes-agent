@@ -1809,6 +1809,11 @@ DEFAULT_CONFIG = {
         # cron.model > model.default (the main agent model). An unpinned job follows the main
         # model on every run; cron.model decouples the whole fleet from chat. "" = fall through.
         "model": "",
+        # Per-turn output cap for cron agent runs, applied to every job that sets no cap of its
+        # own. A job-level ``max_tokens`` (cron create/edit --max-tokens) wins. Positive int, or
+        # 0/"" = unset. The effective value is clamped to the provider route's own default, so
+        # this can only tighten a request, never raise it past what the route already sends.
+        "max_tokens_default": 0,
         # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
         # from global config.
         "model_provider": "",

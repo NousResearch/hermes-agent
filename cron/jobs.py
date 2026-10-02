@@ -1742,6 +1742,26 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return text
 
 
+def _normalize_max_tokens(value: Any) -> Optional[int]:
+    """Per-job output cap: a positive int, or None for unset. Non-positive, fractional, boolean
+    and non-numeric values are rejected at create/edit time rather than silently reaching the wire
+    (a bool reaching ``max_tokens`` is a mis-set flag that would become ``True`` == 1 token).
+    An empty string clears the override, matching the other optional job fields."""
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid max_tokens {value!r}: expected a positive integer.")
+    try:
+        ivalue = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid max_tokens {value!r}: expected a positive integer.") from None
+    if ivalue <= 0:
+        raise ValueError(f"Invalid max_tokens {value!r}: expected a positive integer.")
+    return ivalue
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
@@ -1764,6 +1784,7 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "monitor_url": _normalize_job_optional_text,
     "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "max_tokens": _normalize_max_tokens,
 }
 
 
@@ -1830,6 +1851,7 @@ def create_job(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    max_tokens: Optional[Any] = None,
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
@@ -1844,6 +1866,9 @@ def create_job(
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    max_tokens: per-turn output cap for this job's agent runs; a positive int, clamped at fire time
+    to the provider route's own default (a cap can only tighten the request). None = follow
+    ``cron.max_tokens_default`` and then the transport's default.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation)."""
     if not isinstance(paused, bool):
@@ -1869,6 +1894,7 @@ def create_job(
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
+    normalized_max_tokens = _normalize_max_tokens(max_tokens)
 
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
     prompt_text = _coerce_job_text(prompt).strip()
@@ -1930,6 +1956,7 @@ def create_job(
     # jobs.
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
+        ("max_tokens", normalized_max_tokens),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
     ):
         if value is not None:

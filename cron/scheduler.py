@@ -513,6 +513,63 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
         ) from exc
 
 
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    """A positive int, or None. Booleans are not numbers here: True is a mis-set flag, not a cap."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ivalue if ivalue > 0 else None
+
+
+def _provider_default_max_tokens(runtime: dict, model: str) -> Optional[int]:
+    """The cap this route already sends when the job sets none, or None when it sends nothing.
+
+    A per-job cap may only TIGHTEN the request, so the ceiling has to be the provider profile's own
+    static default — the value ``_apply_max_tokens`` would have put on the wire anyway. Reading the
+    context window here instead would be wrong: ``DEFAULT_CONTEXT_LENGTHS`` sizes the compressor's
+    threshold, never the outgoing cap."""
+    try:
+        from providers import get_provider_profile
+
+        provider = str((runtime or {}).get("provider") or "").strip()
+        profile = get_provider_profile(provider) if provider else None
+        if profile is None:
+            return None
+        return _positive_int_or_none(profile.get_max_tokens(model))
+    except Exception:
+        return None
+
+
+def _resolve_job_max_tokens(job: dict, cfg: dict, runtime: dict, model: str) -> Optional[int]:
+    """Effective per-turn output cap for a cron run.
+
+    Precedence: the job's own ``max_tokens`` pin, then ``cron.max_tokens_default``. The result is
+    clamped to the provider profile's default so a cap can only lower what the route sends, never
+    raise it above a limit the route already respects. None leaves the transport's own default
+    untouched, which is the pre-feature behaviour for every job that sets no cap."""
+    job_id = job.get("id", "?")
+    requested = _positive_int_or_none(job.get("max_tokens"))
+    if requested is None and job.get("max_tokens") is not None:
+        logger.warning(
+            "Job '%s': ignoring invalid stored max_tokens %r — expected a positive integer. "
+            "Fix with `hermes cron edit %s --max-tokens <N>`.", job_id, job.get("max_tokens"), job_id)
+    if requested is None:
+        requested = _positive_int_or_none((cfg.get("cron") or {}).get("max_tokens_default"))
+    if requested is None:
+        return None
+
+    ceiling = _provider_default_max_tokens(runtime, model)
+    if ceiling is not None and requested > ceiling:
+        logger.info(
+            "Job '%s': max_tokens %d exceeds the %s default of %d for this route — clamping to %d.",
+            job_id, requested, runtime.get("provider") or "provider", ceiling, ceiling)
+        return ceiling
+    return requested
+
+
 def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
     """Effective reasoning config for a cron run. A per-job ``reasoning_effort`` pin beats global
     and per-model config and is model-independent by design (also governs an auth-fallback swap);
@@ -2434,6 +2491,7 @@ class _CronAgentSetup:
     runtime: dict = None
     prefill_messages: Any = None
     max_iterations: Any = None
+    max_tokens: Any = None
     reasoning_config: Any = None
     fallback_model: Any = None
     credential_pool: Any = None
@@ -2464,6 +2522,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 
     setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
     setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
+    setup.max_tokens = _resolve_job_max_tokens(job, _cfg if isinstance(_cfg, dict) else {}, setup.runtime, setup.model)
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
@@ -2496,6 +2555,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         max_iterations=setup.max_iterations,
+        max_tokens=setup.max_tokens,
         reasoning_config=setup.reasoning_config,
         prefill_messages=setup.prefill_messages,
         fallback_model=setup.fallback_model,

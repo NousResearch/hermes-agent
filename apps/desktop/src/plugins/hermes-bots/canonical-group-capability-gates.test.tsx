@@ -139,7 +139,7 @@ it.each(refused)('classifies %j as unavailable on both surfaces: no legacy rende
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
   expect(screen.getByText(unavailable)).toBeTruthy()
   expect(screen.queryByRole('textbox')).toBeNull()
-  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) as HTMLButtonElement).disabled).toBe(true)
   cleanup()
 
   const { onCreated, onClose } = await submitDialog()
@@ -209,7 +209,7 @@ it('keeps a mixed-connection classic composer on a canonical surface without off
   const composer = screen.getByRole('textbox')
   fireEvent.change(composer, { target: { value: 'Keep working across machines' } })
   expect((composer as HTMLTextAreaElement).value).toBe('Keep working across machines')
-  expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
+  expect(screen.queryByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })).toBeNull()
   expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities'])
 })
 
@@ -246,7 +246,7 @@ it('shows a generic create refusal without guessing a profile setup failure or c
   expect($canonicalGroupBindings.get()).toEqual({})
   cleanup()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })) })
   expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.createRefused)
   expect(screen.queryByRole('link')).toBeNull()
   expect(screen.getByRole('textbox')).toBeTruthy()
@@ -280,7 +280,7 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('dialog: a cre
 it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: a capability read before the %s moved neither creates nor opens a room', async kind => {
   const pending = pendingCreation()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  const button = screen.getByRole('button', { name: 'Start gateway group' })
+  const button = screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })
   expect((button as HTMLButtonElement).disabled).toBe(false)
   // Click after the source moved but before React re-renders: the stale capability must not create.
   await act(async () => { moveSource(kind); fireEvent.click(button) })
@@ -303,7 +303,7 @@ it('keeps the existing classic transcript and composer when explicitly starting 
   fireEvent.change(composer, { target: { value: 'Continue classic draft' } })
   expect(composer.disabled).toBe(false)
   await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' }))
+    fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }))
   })
   expect($groupChats.get().Existing.log).toEqual(log)
   expect(composer.value).toBe('Continue classic draft')

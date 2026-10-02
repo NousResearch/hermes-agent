@@ -95,13 +95,13 @@ class CLIInitMixin:
         self._last_input_mode_recovery = self._last_termios_drift_check = None  # None = never; monotonic epoch is arbitrary
         self._input_mode_recovery_notice_shown = self._termios_drift_notice_shown = False
 
-    def _init_model_routing(self, model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, checkpoints, pass_session_id, ignore_rules):
+    def _init_model_routing(self, model, toolsets, provider, reasoning, fast, api_key, base_url, max_turns, run_budget, checkpoints, pass_session_id, ignore_rules):
         """Resolve model/provider/base_url, turn limits, toolsets, checkpoints, prompt/personality, reasoning + routing config."""
         self._init_model_and_provider(model, provider, api_key, base_url)
         self._init_turn_limits(max_turns, run_budget)
         self._init_toolsets(toolsets)
         self._init_checkpoints_and_rules(checkpoints, pass_session_id, ignore_rules)
-        self._init_prompt_and_reasoning(reasoning)
+        self._init_prompt_and_reasoning(reasoning, fast)
 
     def _init_model_and_provider(self, model, provider, api_key, base_url):
         """Priority: CLI args > env vars > config file."""
@@ -246,9 +246,10 @@ class CLIInitMixin:
         # --ignore-rules: AIAgent skips context files (AGENTS.md/SOUL.md/...) and memory.
         self.ignore_rules = ignore_rules or is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
 
-    def _init_prompt_and_reasoning(self, reasoning):
+    def _init_prompt_and_reasoning(self, reasoning, fast=None):
         """Ephemeral system prompt/prefill, reasoning + service tier, OpenRouter routing knobs, fallback chain."""
         from cli import CLI_CONFIG, _load_prefill_messages, _parse_reasoning_config, _parse_service_tier_config, _resolve_prefill_messages_file
+        from hermes_cli.cli_config_load import _UNKNOWN_TIER, _parse_cli_service_tier
         # Env var wins, then hermes_cli.personality (single owner of overlay resolution).
         from hermes_cli.personality import available_personalities, resolve_ephemeral_system_prompt
 
@@ -272,6 +273,16 @@ class CLIInitMixin:
                 self.reasoning_config = _cli_reasoning
                 self._explicit_reasoning_config = _cli_reasoning
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        # --fast wins for this launch only (never persisted), like --reasoning. It is the only
+        # way to pick a tier in -q mode, where the /fast slash command is not reachable.
+        self._explicit_service_tier = None
+        if fast is not None and str(fast).strip():
+            _cli_tier = _parse_cli_service_tier(fast)
+            if _cli_tier is _UNKNOWN_TIER:
+                logger.warning("Unknown --fast '%s', keeping the configured tier", fast)
+            else:
+                self.service_tier = _cli_tier
+                self._explicit_service_tier = _cli_tier
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
         self._provider_sort = pr.get("sort")

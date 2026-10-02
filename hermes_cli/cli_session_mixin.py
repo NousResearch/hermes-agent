@@ -539,6 +539,10 @@ class CLISessionMixin:
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        # A launch-level --fast is not a session-scoped toggle: it was asked for on the command
+        # line of this process, so /new must not silently drop it back to the config tier.
+        if getattr(self, "_explicit_service_tier", None) is not None:
+            self.service_tier = self._explicit_service_tier
         _reset_model_to_config_default(self, silent)
         # After the model reset: the effort belongs to the model the fresh session lands on (a /reasoning
         # session override is dropped, the default model's per-model override is kept).

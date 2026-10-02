@@ -215,35 +215,6 @@ async def test_send_image_reports_thumbnail_preparation_failure(tmp_path, monkey
     adapter._send_items.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_send_uploads_only_paths_the_delivery_filter_accepts(tmp_path, monkeypatch):
-    """send() gets text whose refused MEDIA tags were left in on purpose; it must not upload them."""
-    import os
-    from gateway.platforms.base import SendResult
-
-    home = tmp_path / "hermes"
-    (home / "auth").mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    env_file, auth_file, oauth_file = home / ".env", home / "auth.json", home / "auth" / "google_oauth.json"
-    env_file.write_text("FAKE_KEY=synthetic")
-    auth_file.write_text('{"token": "synthetic"}')
-    oauth_file.write_text('{"token": "synthetic"}')
-    report = tmp_path / "report.pdf"
-    report.write_bytes(b"%PDF-1.4 synthetic")
-
-    adapter = _adapter_with_ws()
-    adapter.send_document = AsyncMock(return_value=SendResult(success=True))
-    adapter.send_voice = AsyncMock(return_value=SendResult(success=True))
-    text = (f"here MEDIA:{env_file}\nMEDIA:{auth_file}\nMEDIA:{report}\n"
-            f"example:\n```\nMEDIA:{oauth_file}\n```\n")
-
-    result = await adapter.send("contact-42", text)
-
-    assert result.success is True
-    uploaded = [c.args[1] for c in adapter.send_document.await_args_list + adapter.send_voice.await_args_list]
-    assert [os.path.realpath(p) for p in uploaded] == [os.path.realpath(report)]
-
-
 # ---------------------------------------------------------------------------
 # 7b. Channel directory enumeration (list_channels)
 # ---------------------------------------------------------------------------

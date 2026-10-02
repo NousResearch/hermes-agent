@@ -128,9 +128,18 @@ def test_every_written_secret_store_is_refused_by_file_tools_delivery_and_dashbo
     assert not any(refused_by(plain).values())
 
 
-def test_a_credential_store_inside_an_allowlisted_root_is_not_delivered(monkeypatch):
-    from gateway.platforms.base import validate_media_delivery_path
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consumer", ["delivery filter", "simplex send"])
+async def test_a_credential_store_inside_an_allowlisted_root_is_not_delivered(consumer, monkeypatch):
+    """Credential denies beat an operator allow root, at the shared filter and at a direct-send
+    consumer: SimpleX ``send()`` gets text whose refused ``MEDIA:`` tags were left in on purpose,
+    so re-parsing it with a local regex would upload exactly what the filter refused."""
+    from unittest.mock import AsyncMock
+
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import SendResult, validate_media_delivery_path
     from hermes_constants import get_hermes_home
+    from plugins.platforms.simplex.adapter import SimplexAdapter
 
     home = get_hermes_home()
     # An operator allow root that contains the stores (here: the whole Hermes home).
@@ -139,11 +148,27 @@ def test_a_credential_store_inside_an_allowlisted_root_is_not_delivered(monkeypa
     session = home / "platforms" / "whatsapp" / "session"
     session.mkdir(parents=True)
     (session / "creds.json").write_text('{"token": "FAKE-secret-value"}')
-    artifact = home / "exports" / "chart.png"
+    (home / "auth.json").write_text('{"token": "FAKE-secret-value"}')
+    artifact = home / "exports" / "report.pdf"
     artifact.parent.mkdir()
-    artifact.write_bytes(b"\x89PNG")
+    artifact.write_bytes(b"%PDF-1.4 ordinary")
+    offered = (home / ".env", session / "creds.json", home / "auth.json", artifact)
+
+    async def delivered() -> list[str]:
+        if consumer == "delivery filter":
+            return [kept for p in offered if (kept := validate_media_delivery_path(str(p)))]
+        adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"}))
+        adapter._ws = AsyncMock()
+        adapter.send_document = AsyncMock(return_value=SendResult(success=True))
+        adapter.send_voice = AsyncMock(return_value=SendResult(success=True))
+        # A fenced tag is an example, never an attachment, even for an ordinary file.
+        text = "".join(f"MEDIA:{p}\n" for p in offered) + f"example:\n```\nMEDIA:{artifact}\n```\n"
+        assert (await adapter.send("contact-42", text)).success is True
+        calls = adapter.send_document.await_args_list + adapter.send_voice.await_args_list
+        return [str(Path(call.args[1]).resolve()) for call in calls]
+
     kept = {}
     for strict in ("0", "1"):
         monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", strict)
-        kept[strict] = [validate_media_delivery_path(str(p)) for p in (home / ".env", session / "creds.json", artifact)]
-    assert kept == {s: [None, None, str(artifact.resolve())] for s in ("0", "1")}
+        kept[strict] = await delivered()
+    assert kept == {s: [str(artifact.resolve())] for s in ("0", "1")}

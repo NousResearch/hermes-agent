@@ -64,19 +64,18 @@ def _committed_checkout(tmp_path, monkeypatch):
     """
     from hermes_cli import _launchers
 
+    from hermes_cli.source_stamp import write_source_stamp
+
     root = tmp_path / "checkout"
     root.mkdir()
     (root / "pyproject.toml").write_text("[project]\nname='example'\n")
+    (root / ".gitignore").write_text("install-stamp.json\n")
     for args in (["init"], ["config", "user.email", "test@example.com"],
                   ["config", "user.name", "test"], ["add", "-A"],
                   ["commit", "-m", "init"]):
         subprocess.run(["git", *args], cwd=root, check=True,
                          capture_output=True, timeout=30)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True,
-                            capture_output=True, text=True, timeout=30).stdout.strip()
-    assert head
-    (root / "install-stamp.json").write_text(
-        json.dumps({"updateMechanism": "self", "commit": head}))
+    assert write_source_stamp(root)["dirty"] is False
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
@@ -84,34 +83,41 @@ def _committed_checkout(tmp_path, monkeypatch):
     return root
 
 
-def test_completed_tree_with_stale_pending_marker_skips_tail(tmp_path, monkeypatch, completion_tail):
-    """Fresh install under a preserved home (#123314): the stamp names HEAD, so a
-    leftover source-completion-pending marker owes no rebuild against the same SHA."""
+@pytest.mark.parametrize("marker_age, owed", [(-60, False), (60, True)])
+def test_completed_tree_discharges_only_a_marker_older_than_its_stamp(
+        tmp_path, monkeypatch, completion_tail, marker_age, owed):
+    """Fresh install under a preserved home (#123314): a marker armed before the stamp
+    owes no rebuild of the same SHA. One armed after it (a same-commit `hermes update`
+    that failed or was killed) is newer debt and the launch still finishes it."""
     import pm
 
     root = _committed_checkout(tmp_path, monkeypatch)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    pending = venv_sync.completion_pending_path(root)
-    pending.parent.mkdir(parents=True, exist_ok=True)
-    pending.write_text("owed\n")
+    pending = venv_sync.arm_completion(root)
+    stamped = (root / "install-stamp.json").stat().st_mtime
+    os.utime(pending, (stamped + marker_age, stamped + marker_age))
     assert venv_sync.prepare_launch(root, []) is None
-    assert completion_tail == []
+    assert len(completion_tail) == (1 if owed else 0)
     assert not pending.exists()
 
 
-def test_pristine_home_provisions_dependencies_without_rebuild(tmp_path, monkeypatch, completion_tail):
+@pytest.mark.parametrize("edited", [False, True])
+def test_pristine_home_provisions_dependencies_without_rebuild(tmp_path, monkeypatch, completion_tail, edited):
     """Pristine HERMES_HOME on a freshly installed tree (#123314): with no facts the venv
-    needs provisioning, but the stamp names HEAD so no product rebuild or update is owed."""
+    needs provisioning, but the stamp names a clean HEAD so no product rebuild is owed.
+    Local edits since the stamp void that proof: the tail runs as before."""
     import pm
 
     root = _committed_checkout(tmp_path, monkeypatch)
+    if edited:
+        (root / "pyproject.toml").write_text("[project]\nname='edited'\n")
     assert not venv_sync.completion_pending_path(root).exists()
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     syncs = []
     monkeypatch.setattr(pm, "sync_venv", lambda *args, **kwargs: syncs.append((args, kwargs)))
     assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
     assert len(syncs) == 1
-    assert completion_tail == []
+    assert len(completion_tail) == (1 if edited else 0)
     assert not venv_sync.completion_pending_path(root).exists()
 
 

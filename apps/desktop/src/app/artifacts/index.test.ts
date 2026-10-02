@@ -100,7 +100,7 @@ describe('collectArtifactsForSession', () => {
         : offset === 1
           ? [{ content: concrete, role: 'assistant' as const }]
           : [],
-      pagination: { limit: 1, offset, total: 2 }
+      pagination: { limit: 1, offset, returned: offset < 2 ? 1 : 0 }
     }))
     const result = await loadArtifactsForSessions([session], loadPage)
 

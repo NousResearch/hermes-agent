@@ -204,11 +204,15 @@ class HostedRoomAuthorityRPC:
         return result
 
     async def _interrupt(self, params):
+        generation = params.get('expected_execution_generation')
+        if type(generation) is not int or generation < 1:
+            raise RuntimeStoreError('invalid_params')
         rows = self._rows()
-        current = next(((row, task) for row, task, _ in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
-        if current is None or current[1].task_id != params['expected_task_id']:
+        current = next(((row, task, hosted_generation) for row, task, hosted_generation in rows
+                        if row['status'] in {'started', 'unknown', 'queued'}), None)
+        if current is None or (current[1].task_id, current[2]) != (params['expected_task_id'], generation):
             raise RuntimeStoreError('stale_generation')
-        row, _ = current
+        row, _, _ = current
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
@@ -218,8 +222,9 @@ class HostedRoomAuthorityRPC:
                 if exc.reason != 'stale_generation':
                     raise
                 # The claim won the queued CAS: interrupt only this exact, now started row.
-                matches = [fresh for fresh, task, _ in self._rows()
-                           if fresh['admission_id'] == row['admission_id'] and task == current[1]]
+                matches = [fresh for fresh, task, hosted_generation in self._rows()
+                           if fresh['admission_id'] == row['admission_id'] and task == current[1]
+                           and hosted_generation == generation]
                 if len(matches) != 1 or any(matches[0][key] != row[key] for key in (
                         'request_id', 'principal_id', 'target_session_id', 'owner_epoch', 'payload', 'intent')):
                     raise RuntimeStoreError('stale_generation') from None
@@ -318,8 +323,9 @@ class HostedRoomAuthorityRPC:
     def info(self, *, profile, session_id, source):
         return self._call('info', profile=profile, session_id=session_id, source=source)
 
-    def interrupt(self, *, profile, session_id, source, expected_task_id):
-        return self._call('interrupt', profile=profile, session_id=session_id, source=source, expected_task_id=expected_task_id)
+    def interrupt(self, *, profile, session_id, source, expected_task_id, expected_execution_generation):
+        return self._call('interrupt', profile=profile, session_id=session_id, source=source,
+                          expected_task_id=expected_task_id, expected_execution_generation=expected_execution_generation)
 
     def discard(self, *, profile, session_id, source, expected_task_id, execution_generation):
         return self._call('discard', profile=profile, session_id=session_id, source=source,

@@ -157,9 +157,11 @@ class HostedRoomServerRPC:
             "expected_hosted_execution_generation": expected_execution_generation})
 
     def interrupt(
-        self, *, profile: str, session_id: str, source: str, expected_task_id: str
+        self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_execution_generation: int,
     ) -> Mapping[str, Any] | None:
         del source
         return self._call("session.interrupt", {
             "profile": profile, "session_id": session_id,
-            "expected_hosted_task_id": expected_task_id})
+            "expected_hosted_task_id": expected_task_id,
+            "expected_hosted_execution_generation": expected_execution_generation})

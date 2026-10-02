@@ -247,15 +247,18 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         return self.client.status(**self._scoped(profile=profile, session_id=session_id))
 
     def interrupt(
-        self, *, profile: str, session_id: str, source: str, expected_task_id: str
+        self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_execution_generation: int,
     ) -> Mapping[str, Any] | None:
         self._validate_coordinates(profile=profile, source=source)
+        if type(expected_execution_generation) is not int or expected_execution_generation < 1:
+            return None
         dispatch = self._dispatch
         if dispatch is not None:
-            if dispatch.task_id != expected_task_id:
+            if (dispatch.task_id, dispatch.execution_generation) != (expected_task_id, expected_execution_generation):
                 return None
             return self.client.stop(dispatch=dispatch.as_mapping(), grant=self.route.grant)
-        if (self.task_id != expected_task_id or not self.execution_generation
+        if (self.task_id != expected_task_id or self.execution_generation != expected_execution_generation
                 or not hasattr(self.client, "stop_receipt")):
             return None
         return self.client.stop_receipt(

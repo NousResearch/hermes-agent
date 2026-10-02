@@ -34,7 +34,7 @@ class InternalSessionRPC(Protocol):
     """Normalized in-process session operations required by the room driver.
 
     ``submit`` durably reports one fenced turn's terminal result via ``on_terminal``;
-    ``interrupt`` acts only while the current turn still matches ``expected_task_id``.
+    ``interrupt`` acts only while the current turn still matches the expected task and generation.
     """
 
     def resolve_exact(
@@ -50,6 +50,7 @@ class InternalSessionRPC(Protocol):
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
     def interrupt(
         self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_execution_generation: int,
     ) -> Mapping[str, Any] | None: ...
 
 
@@ -392,10 +393,13 @@ class HostedRoomRuntime:
                 info.get("status") in _STOP_ACK_STATUSES
                 and info.get("task_id") == task["identity"].task_id
                 and info.get("execution_generation") == task["execution_generation"])
-        if not _info_is_active_for(info, task["identity"], require_exact=True):
+        if (not _info_is_active_for(info, task["identity"], require_exact=True)
+                or type(info.get("execution_generation")) is not int
+                or info["execution_generation"] != task["execution_generation"]):
             return False
         result = transport.interrupt(
-            **_session_kw(profile, session_id), expected_task_id=task["identity"].task_id)
+            **_session_kw(profile, session_id), expected_task_id=task["identity"].task_id,
+            expected_execution_generation=int(task["execution_generation"]))
         return result is not None and (
             result.get("interrupted") is True
             or str(result.get("status") or "") in _STOP_ACK_STATUSES)

@@ -154,6 +154,7 @@ import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
+import { NavCount } from './nav-count'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
@@ -430,7 +431,9 @@ export function ChatSidebar({
             label: data.label,
             icon: (props: { className?: string }) => <Codicon name={codicon} {...props} />,
             route: data.path,
-            tier: data.tier
+            tier: data.tier,
+            count: data.count,
+            countLabel: data.countLabel
           }
         ]
       }),
@@ -1695,6 +1698,7 @@ export function ChatSidebar({
                         size="sm"
                       />
                     )}
+                    {item.count && <NavCount count={item.count} countLabel={item.countLabel} />}
                   </SidebarMenuButton>
                 )
 

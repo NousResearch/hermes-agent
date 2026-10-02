@@ -642,6 +642,8 @@ def drive_search(args):
                 "q": query,
                 "pageSize": args.max,
                 "fields": "files(id, name, mimeType, modifiedTime, webViewLink)",
+                "supportsAllDrives": True,
+                "includeItemsFromAllDrives": True,
             },
         )
         print(json.dumps(results.get("files", []), indent=2, ensure_ascii=False))
@@ -650,6 +652,7 @@ def drive_search(args):
     service = build_service("drive", "v3")
     results = service.files().list(
         q=query, pageSize=args.max, fields="files(id, name, mimeType, modifiedTime, webViewLink)",
+        supportsAllDrives=True, includeItemsFromAllDrives=True,
     ).execute()
     files = results.get("files", [])
     print(json.dumps(files, indent=2, ensure_ascii=False))
@@ -661,13 +664,13 @@ def drive_get(args):
     if _gws_binary():
         result = _run_gws(
             ["drive", "files", "get"],
-            params={"fileId": args.file_id, "fields": fields},
+            params={"fileId": args.file_id, "fields": fields, "supportsAllDrives": True},
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
     service = build_service("drive", "v3")
-    result = service.files().get(fileId=args.file_id, fields=fields).execute()
+    result = service.files().get(fileId=args.file_id, fields=fields, supportsAllDrives=True).execute()
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
@@ -693,6 +696,7 @@ def drive_upload(args):
         body=metadata,
         media_body=media,
         fields="id, name, mimeType, webViewLink",
+        supportsAllDrives=True,
     ).execute()
     print(json.dumps({
         "status": "uploaded",
@@ -712,7 +716,9 @@ def drive_download(args):
     service = build_service("drive", "v3")
 
     # Look up the file to decide download vs export.
-    meta = service.files().get(fileId=args.file_id, fields="id, name, mimeType").execute()
+    meta = service.files().get(
+        fileId=args.file_id, fields="id, name, mimeType", supportsAllDrives=True,
+    ).execute()
     mime = meta.get("mimeType", "")
     name = meta.get("name", args.file_id)
 
@@ -733,7 +739,7 @@ def drive_download(args):
             out_path = out_path.with_suffix(default_ext)
         request = service.files().export_media(fileId=args.file_id, mimeType=export_mime)
     else:
-        request = service.files().get_media(fileId=args.file_id)
+        request = service.files().get_media(fileId=args.file_id, supportsAllDrives=True)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fh = io.FileIO(str(out_path), "wb")
@@ -763,7 +769,7 @@ def drive_create_folder(args):
     if _gws_binary():
         result = _run_gws(
             ["drive", "files", "create"],
-            params={"fields": "id, name, webViewLink"},
+            params={"fields": "id, name, webViewLink", "supportsAllDrives": True},
             body=body,
         )
         print(json.dumps({
@@ -775,7 +781,9 @@ def drive_create_folder(args):
         return
 
     service = build_service("drive", "v3")
-    result = service.files().create(body=body, fields="id, name, webViewLink").execute()
+    result = service.files().create(
+        body=body, fields="id, name, webViewLink", supportsAllDrives=True,
+    ).execute()
     print(json.dumps({
         "status": "created",
         "id": result["id"],
@@ -838,11 +846,14 @@ def drive_delete(args):
     """Trash or permanently delete a Drive file. Defaults to trash (reversible)."""
     if args.permanent:
         if _gws_binary():
-            _run_gws(["drive", "files", "delete"], params={"fileId": args.file_id})
+            _run_gws(
+                ["drive", "files", "delete"],
+                params={"fileId": args.file_id, "supportsAllDrives": True},
+            )
             print(json.dumps({"status": "deleted", "fileId": args.file_id, "permanent": True}))
             return
         service = build_service("drive", "v3")
-        service.files().delete(fileId=args.file_id).execute()
+        service.files().delete(fileId=args.file_id, supportsAllDrives=True).execute()
         print(json.dumps({"status": "deleted", "fileId": args.file_id, "permanent": True}))
         return
 
@@ -851,14 +862,14 @@ def drive_delete(args):
     if _gws_binary():
         _run_gws(
             ["drive", "files", "update"],
-            params={"fileId": args.file_id},
+            params={"fileId": args.file_id, "supportsAllDrives": True},
             body=body,
         )
         print(json.dumps({"status": "trashed", "fileId": args.file_id, "permanent": False}))
         return
 
     service = build_service("drive", "v3")
-    service.files().update(fileId=args.file_id, body=body).execute()
+    service.files().update(fileId=args.file_id, body=body, supportsAllDrives=True).execute()
     print(json.dumps({"status": "trashed", "fileId": args.file_id, "permanent": False}))
 
 

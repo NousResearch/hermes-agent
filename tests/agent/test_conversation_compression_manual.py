@@ -331,3 +331,69 @@ def test_in_place_compress_keeps_foreign_rows_above_an_unpersisted_turn(session_
         assert any(content in (m.get("content") or "") for m in model_history)
         assert _flags(session_db, content) == [(0, 0), (1, 0)]
     assert session_db.search_messages("vault 7741")
+
+
+def test_in_place_compress_of_a_branch_does_not_clone_parent_rows(session_db):
+    """A branch can keep the parent's row ids while its durable copies have child ids.
+
+    Exact coverage must fall back instead of treating the child's copied rows as unseen concurrent
+    appends and cloning them after the summary.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    history = _exchanges(10)
+    session_db.create_session("parent", "cli", model="test/model")
+    for message in history:
+        session_db.append_message("parent", message["role"], message["content"])
+    held = session_db.get_resume_conversations("parent")[0]
+
+    agent, _ = _stored_agent(session_db, history)
+    own_id = session_db.append_message("sid", "user", "first question on the branch")
+    held.append({
+        "role": "user",
+        "content": "first question on the branch",
+        "_row_id": own_id,
+        _DB_PERSISTED_MARKER: True,
+    })
+
+    assert _compress(agent, held, "").status == "compressed"
+
+    for message in history:
+        assert _flags(session_db, message["content"]).count((1, 0)) <= 1
+    durable = [m["content"] for m in session_db.get_messages_as_conversation("sid")]
+    assert len(durable) == len(set(durable))
+
+
+def test_exact_coverage_refuses_inactive_ids_from_an_older_same_session_generation(session_db):
+    """An active newest id cannot make archived ids from the same session exact again.
+
+    This is the case a session-membership-only guard misses: another compaction replaced
+    the old generation, then the stale surface persisted one fresh row. Falling back to
+    the watermark would overwrite the winner; the transactional proof must refuse instead.
+    """
+    from agent.context_compressor import StaleHeldHistory
+
+    history = _exchanges(3)
+    session_db.create_session("sid", "cli", model="test/model")
+    old_ids = [
+        session_db.append_message("sid", message["role"], message["content"])
+        for message in history
+    ]
+
+    winner = [{"role": "assistant", "content": "winning compacted generation"}]
+    session_db.archive_and_compact(
+        "sid", winner, watermark=session_db.get_active_message_watermark("sid")
+    )
+    fresh_id = session_db.append_message("sid", "user", "continued from the stale surface")
+    before = _live(session_db.get_messages_as_conversation("sid"))
+
+    with pytest.raises(StaleHeldHistory):
+        session_db.archive_and_compact(
+            "sid",
+            [{"role": "assistant", "content": "stale summary must not publish"}],
+            watermark=session_db.get_active_message_watermark("sid"),
+            covered_ids=[*old_ids, fresh_id],
+            unresolved_held=[],
+        )
+
+    assert _live(session_db.get_messages_as_conversation("sid")) == before

@@ -1011,6 +1011,32 @@ class SessionMessagesMixin:
         from agent.context_compressor import _DB_PERSISTED_MARKER
 
         proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
+        if proved:
+            ids = list(dict.fromkeys(proved))
+            owned: dict[int, bool] = {}
+            # Keep below SQLite's bound-variable ceiling (session_id consumes one slot).
+            for start in range(0, len(ids), 900):
+                chunk = ids[start:start + 900]
+                for row in conn.execute(
+                    f"SELECT id, active FROM messages WHERE session_id = ? "
+                    f"AND id IN ({_placeholders(chunk)})",
+                    [session_id, *chunk],
+                ).fetchall():
+                    owned[int(row["id"])] = bool(row["active"])
+            inactive = [row_id for row_id, active in owned.items() if not active]
+            if inactive:
+                # Same-session ids are different: if they are no longer active, another
+                # compaction/rewind already replaced the generation this caller summarized.
+                # Falling back to the watermark would publish stale history over that winner.
+                from agent.context_compressor import StaleHeldHistory
+                raise StaleHeldHistory(
+                    f"held row(s) {inactive[:8]} of session {session_id} are no longer active"
+                )
+            if len(owned) != len(ids):
+                # A /branch copy can retain row ids from its parent. They do not name the
+                # child's durable copies, so exact coverage is unavailable; the watermark
+                # path archives the copied rows the compressor actually saw.
+                return None
         for message in unresolved_held or ():
             if not isinstance(message, dict):
                 continue

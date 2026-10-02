@@ -709,33 +709,27 @@ def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> li
                 rows.append(row)
     rows.reverse()
     return rows[:limit] if limit is not None and limit >= 0 else rows
-    """Read the ledger, newest first. Malformed lines are skipped."""
-    raw = _read_ledger("listing empty", quiet_missing=True)  # missing/unreadable/undecodable == empty
-    if raw is None:
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in raw.decode("utf-8").splitlines():
-        with suppress(json.JSONDecodeError):
-            row = json.loads(line) if line.strip() else None
-            if isinstance(row, dict) and (not skill or row.get("skill") == skill):
-                rows.append(row)
-    rows.reverse()
-    return rows[:limit] if limit is not None and limit >= 0 else rows
-
 
 def get_entry(entry_id: str) -> Optional[dict[str, Any]]:
     return next((r for r in list_entries() if r.get("id") == entry_id), None) if entry_id else None
 
 
 def _validate_entry_paths(entry: dict[str, Any]) -> Optional[str]:
-    """Every entry path must be under HERMES_HOME — a hand-edited ledger must not
-    become a write-anywhere primitive."""
+    """Every entry path must be under HERMES_HOME or a classifiable skills root — the
+    classifier ledgers exactly that universe (active profile, default root, sibling
+    profiles), so rollback must cover it, while a hand-edited ledger still cannot become
+    a write-anywhere primitive (#129222 review: under a named profile HERMES_HOME is
+    ``<root>/profiles/<active>`` and sibling trees sit OUTSIDE it, which made
+    sibling-tree entries — deletes included — unrecoverable)."""
     home = get_hermes_home()
+    roots = [home]
+    with suppress(Exception):
+        roots.extend(_skills_roots_for_classification())
     for section in ("before", "after"):
         for item in entry.get(section) or []:
             p = Path(str(item.get("path", "")))
-            if not _is_within(home, p):
-                return f"entry references a path outside {home}: {p}"
+            if not any(_is_within(root, p) for root in roots):
+                return f"entry references a path outside {home} and every skills root: {p}"
     return None
 
 

@@ -2084,6 +2084,8 @@ export interface Translations {
 
   skills: {
     tabSkills: string
+    relatedSkills: string
+    missingRelatedSkills: string
     tabToolsets: string
     configuringProfile: string
     all: string

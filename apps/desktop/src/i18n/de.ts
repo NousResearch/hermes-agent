@@ -2763,6 +2763,8 @@ export const deOverrides = {
   },
   skills: {
     tabSkills: 'Skills',
+    relatedSkills: 'Verwandte Skills',
+    missingRelatedSkills: 'Fehlende verwandte Skills',
     tabToolsets: 'Tools',
     configuringProfile: 'Konfiguriert:',
     all: 'Alle',

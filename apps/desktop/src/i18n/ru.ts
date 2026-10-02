@@ -1731,6 +1731,8 @@ export const ru = defineLocale({
       pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
     },
     tabSkills: 'Навыки',
+    relatedSkills: 'Связанные навыки',
+    missingRelatedSkills: 'Отсутствующие связанные навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',
     all: 'Все',

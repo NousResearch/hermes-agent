@@ -16,6 +16,8 @@ export const zhHantCapabilities = {
       pickerHint: '按下任一技能的「+ Add to this Agent」，即可安裝並顯示在上方清單中。'
     },
     tabSkills: '技能',
+    relatedSkills: '相關技能',
+    missingRelatedSkills: '未安裝的相關技能',
     tabToolsets: '工具集',
     all: '全部',
     searchSkills: '搜尋技能...',

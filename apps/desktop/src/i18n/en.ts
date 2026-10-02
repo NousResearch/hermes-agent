@@ -2462,6 +2462,8 @@ export const en: Translations = {
 
   skills: {
     tabSkills: 'Skills',
+    relatedSkills: 'Related skills',
+    missingRelatedSkills: 'Missing related skills',
     tabToolsets: 'Tools',
     configuringProfile: 'Configuring:',
     all: 'All',

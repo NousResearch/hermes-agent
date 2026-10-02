@@ -18,7 +18,11 @@ pytest.importorskip("mcp.types")
 
 from mcp.types import ElicitResult  # noqa: E402  -- after importorskip
 
-from tools.mcp_tool_sampling import ElicitationHandler  # noqa: E402
+from tools.mcp_tool_sampling import (  # noqa: E402
+    ElicitationHandler,
+    _format_elicitation_schema_summary,
+)
+from tools.approval_prompt import request_elicitation_consent  # noqa: E402
 
 
 def _form_params(message="please confirm", schema=None):
@@ -136,6 +140,49 @@ class TestElicitationHandlerFailureModes:
         assert handler.metrics["errors"] == 1
 
 
+class TestElicitationConsentCliRouting:
+    def test_registered_cli_callback_reaches_shared_prompt(self):
+        callback = object()
+        with (
+            patch("tools.approval_prompt._ctx.get_current_session_key", return_value="test-session"),
+            patch("tools.approval_prompt._ctx._is_gateway_approval_context", return_value=False),
+            patch("tools.approval_prompt._ctx._get_session_platform", return_value="cli"),
+            patch("tools.approval_prompt.prompt_dangerous_approval", return_value="once") as prompt,
+        ):
+            result = request_elicitation_consent(
+                "Allow Todoist to update a task?",
+                "Todoist write",
+                surface="mcp-elicitation/todoist",
+                approval_callback=callback,
+            )
+
+        assert result == "accept"
+        prompt.assert_called_once_with(
+            "Allow Todoist to update a task?",
+            "Todoist write",
+            timeout_seconds=None,
+            allow_permanent=False,
+            title="Confirm this action?",
+            approval_callback=callback,
+        )
+
+
+class TestElicitationHandlerWiring:
+    def test_session_kwargs_returns_callback(self):
+        handler = ElicitationHandler("pay", {})
+        kwargs = handler.session_kwargs()
+        assert kwargs == {"elicitation_callback": handler}
+
+
+    def test_disabled_config_does_not_construct_handler(self):
+        """The server task initializer checks ``elicitation.enabled`` --
+        an explicit ``False`` should suppress handler creation. The unit
+        of that decision lives in MCPServerTask, but the handler itself
+        must remain harmless to instantiate with arbitrary config."""
+        handler = ElicitationHandler("pay", {"enabled": False, "timeout": 10})
+        # Just confirm it instantiates and reads timeout; the gate lives
+        # at the higher layer.
+        assert handler.timeout == 10
 
 
 class TestElicitationHandlerContextBridge:

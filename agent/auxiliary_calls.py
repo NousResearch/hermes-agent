@@ -246,12 +246,12 @@ def _stamp_latency_once(latency_info: Optional[Dict[str, int]], key: str, starte
 
 
 def call_llm(
-    task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
-    api_key: str = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
-    temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
-    timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
-    extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
-    stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    task: str | None = None, *, provider: str | None = None, model: str | None = None, base_url: str | None = None,
+    api_key: str | None = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: int | None = None, tools: list | None = None,
+    timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
+    extra_headers: Optional[Dict[str, str]] = None, api_mode: str | None = None, stream: bool = False,
+    stream_options: dict | None = None, route_info: Optional[Dict[str, str]] = None,
     latency_info: Optional[Dict[str, int]] = None,
     allow_provider_fallback: bool = True,
 ) -> Any:
@@ -402,12 +402,12 @@ def _start_recovery_ladder(
 
 
 def _call_llm_impl(
-    task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
-    api_key: str = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
-    temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
-    timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
-    extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
-    stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    task: str | None = None, *, provider: str | None = None, model: str | None = None, base_url: str | None = None,
+    api_key: str | None = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: int | None = None, tools: list | None = None,
+    timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
+    extra_headers: Optional[Dict[str, str]] = None, api_mode: str | None = None, stream: bool = False,
+    stream_options: dict | None = None, route_info: Optional[Dict[str, str]] = None,
     allow_provider_fallback: bool = True,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
@@ -515,10 +515,10 @@ def _call_llm_impl(
 
 
 async def async_call_llm(
-    task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
-    api_key: str = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
-    temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
-    timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
+    task: str | None = None, *, provider: str | None = None, model: str | None = None, base_url: str | None = None,
+    api_key: str | None = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: int | None = None, tools: list | None = None,
+    timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[Dict[str, str]] = None,
     allow_provider_fallback: bool = True,
 ) -> Any:
@@ -546,10 +546,10 @@ async def async_call_llm(
 
 
 async def _async_call_llm_impl(
-    task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
-    api_key: str = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
-    temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
-    timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
+    task: str | None = None, *, provider: str | None = None, model: str | None = None, base_url: str | None = None,
+    api_key: str | None = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: int | None = None, tools: list | None = None,
+    timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[Dict[str, str]] = None,
     allow_provider_fallback: bool = True,
 ) -> Any:

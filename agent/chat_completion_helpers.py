@@ -3816,6 +3816,8 @@ class _StreamingCall(StreamingWaitMonitor):
         try:
             while _stream_attempt < _max_stream_retries + self._compat_retries:
                 _stream_attempt += 1
+                if _stream_attempt:
+                    self._readmit_retry()
                 stream_attempt_id = self._start_stream_attempt()
                 # Otherwise /stop closes the connection and the retry opens a
                 # FRESH one, blocking up to a full read timeout per attempt.
@@ -3842,6 +3844,14 @@ class _StreamingCall(StreamingWaitMonitor):
             # Reuse only after a clean stream; otherwise really close (fresh pool next).
             self.clients.close_once(
                 "stream_request_complete" if self.result["response"] is not None else "stream_error_cleanup")
+
+    def _readmit_retry(self) -> None:
+        """A retry is a new physical request: take its admission before the attempt, and do
+        not count the queueing as the stream's silence."""
+        from agent.llm_concurrency import readmit_prepaid
+
+        readmit_prepaid(self.agent.provider, cancelled=lambda: bool(self.agent._interrupt_requested))
+        self.last_chunk_time["t"] = time.time()
 
     # ── poll-loop monitor (heartbeat / stale kill / interrupt) ──────────
 
@@ -4076,11 +4086,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     streaming codex runner; cron turns and delegated children run inline."""
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
-    from agent.llm_concurrency import provider_slot
+    from agent.llm_concurrency import prepaid_provider_slot
 
     # Admitted before the stale-stream monitor starts: queueing for a provider slot is not a
-    # stalled stream. The Relay stream opened inside (worker thread included) re-enters it.
-    with provider_slot(agent.provider, cancelled=lambda: bool(agent._interrupt_requested)):
+    # stalled stream. The first Relay stream inside (worker thread included) claims this
+    # permit; every retry after it is admitted afresh.
+    with prepaid_provider_slot(agent.provider, cancelled=lambda: bool(agent._interrupt_requested)):
         if agent.api_mode == "codex_responses":
             return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
         if agent.api_mode == "bedrock_converse":

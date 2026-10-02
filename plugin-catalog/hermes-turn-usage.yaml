@@ -1,6 +1,6 @@
 name: hermes-turn-usage
 repo: https://github.com/tpte/hermes-turn-usage
-sha: 8e4ff82aaf6d0da40ee851b21a1bd627c663099d
+sha: 728cea2b267af6f4bbc59707fb886d7df10a39e4
 description: Usage and cost footer appended to every reply — tokens, cache hit rate, cost and
   context occupancy, plus a per-tool time breakdown showing which tool actually consumed the
   wall clock. Waiting time (a blocking user prompt) is reported separately and excluded from
@@ -8,7 +8,7 @@ description: Usage and cost footer appended to every reply — tokens, cache hit
   reply untouched.
 maintainer: tpte
 tier: community
-category: desktop
+category: general
 docs_url: https://github.com/tpte/hermes-turn-usage#readme
 platforms: []
 capabilities:

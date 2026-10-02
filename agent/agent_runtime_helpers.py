@@ -27,7 +27,7 @@ from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
-    credential_pool_matches_provider, resolve_runtime_pool_key,
+    credential_pool_matches_provider,
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
@@ -1352,9 +1352,8 @@ def restore_primary_runtime(agent) -> bool:
 
     def _load_primary_pool():
         """Load the primary provider's pool; None when absent or provider-mismatched."""
-        from agent.credential_pool import load_pool
-        key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
-        loaded = load_pool(key) if key else None
+        from agent.credential_pool import load_runtime_pool
+        loaded = load_runtime_pool(primary_provider, primary_runtime_base_url)
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
         agent._rate_limited_until = 0
@@ -2227,8 +2226,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
         agent._credential_pool = None
         agent._credential_pool_entry_id = None
         try:
-            from agent.credential_pool import load_pool
-            agent._credential_pool = load_pool(new_provider)
+            from agent.credential_pool import load_runtime_pool
+            agent._credential_pool = load_runtime_pool(new_provider, agent.base_url)
         except Exception as _pool_exc:  # noqa: BLE001
             logger.warning(
                 "switch_model: credential pool reload failed for %s (%s); "

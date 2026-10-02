@@ -734,26 +734,48 @@ def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -
     provider_norm = str(provider or "").strip().lower()
     if not provider_norm:
         return ""
+    candidates = _runtime_pool_key_candidates(provider_norm, base_url)
+    return candidates[0] if candidates else provider_norm
 
+
+def _runtime_pool_key_candidates(provider_norm: str, base_url: Optional[str]) -> List[str]:
+    """Every scoped pool key the boundary accepts for this runtime, preferred first."""
     def _accepts(candidate: str) -> bool:
         return credential_pool_matches_provider(candidate, provider_norm, base_url=base_url)
 
+    keys: List[str] = []
     try:
         if provider_norm == "custom":
-            candidate = get_custom_provider_pool_key(base_url)
-            if candidate and _accepts(candidate):
-                return str(candidate).strip().lower()
+            raw = [get_custom_provider_pool_key(base_url), *custom_provider_pool_key_candidates(base_url)]
         else:
             # Named/exact custom runtimes are keyed by identity: search the
             # configured candidates by identity before endpoint so a sibling
             # sharing the URL cannot lend its pool.
-            for normalized_name, entry in _iter_custom_providers():
-                for candidate in _pool_keys_for_custom_entry(normalized_name, entry):
-                    if _accepts(candidate):
-                        return candidate
+            raw = [key for name, entry in _iter_custom_providers() for key in _pool_keys_for_custom_entry(name, entry)]
+        for candidate in raw:
+            candidate = str(candidate or "").strip().lower()
+            if candidate and candidate not in keys and _accepts(candidate):
+                keys.append(candidate)
     except Exception:
         pass
-    return provider_norm
+    return keys
+
+
+def load_runtime_pool(provider: Optional[str], base_url: Optional[str]) -> Optional["CredentialPool"]:
+    """The pool a runtime identity runs on. A configured custom provider may keep its rows under
+    the ``providers.<key>`` slug OR the legacy ``custom:<name>`` key; the preferred key can exist
+    while empty, so take the first scoped candidate that holds credentials, as startup resolution
+    (``runtime_provider_custom``) does, else the preferred key's pool."""
+    provider_norm = str(provider or "").strip().lower()
+    if not provider_norm:
+        return None
+    preferred = None
+    for key in _runtime_pool_key_candidates(provider_norm, base_url) or [provider_norm]:
+        pool = load_pool(key)
+        if pool is not None and pool.has_credentials():
+            return pool
+        preferred = pool if preferred is None else preferred
+    return preferred
 
 
 DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1

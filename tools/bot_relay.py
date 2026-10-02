@@ -44,6 +44,7 @@ DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 
 # Per-attempt turn timeout and attempt ceiling for bot_relay.deliver (tui_gateway/methods_bot_relay.py).
 TURN_ATTEMPT_TIMEOUT_SECONDS = 600
 TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
+DELIVERY_PATH_ENV = "HERMES_BOT_DELIVERY_PATH"
 # Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay-budget.ts; both test suites pin it.
 DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
 DESKTOP_DELIVER_TIMEOUT_SECONDS = (
@@ -609,6 +610,29 @@ def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = Non
     if author:
         env.update(turn_author_env(author))
     return env
+
+
+def extend_delivery_path(env: dict[str, str], profile: str) -> dict[str, str]:
+    """Advertise the profiles held by this delivery's ancestry to its child turn."""
+    try:
+        path = json.loads(env.get(DELIVERY_PATH_ENV, "[]"))
+    except (TypeError, ValueError):
+        path = []
+    if not isinstance(path, list) or not all(isinstance(item, str) for item in path):
+        path = []
+    if profile not in path:
+        path.append(profile)
+    env[DELIVERY_PATH_ENV] = json.dumps(path, separators=(",", ":"))
+    return env
+
+
+def delivery_path() -> tuple[str, ...]:
+    """Return the profile ancestry inherited by the current Bot Chat turn."""
+    try:
+        path = json.loads(os.environ.get(DELIVERY_PATH_ENV, "[]"))
+    except (TypeError, ValueError):
+        return ()
+    return tuple(item for item in path if isinstance(item, str)) if isinstance(path, list) else ()
 
 
 # Two deliveries into the SAME profile must never run Bot Chat turns concurrently.

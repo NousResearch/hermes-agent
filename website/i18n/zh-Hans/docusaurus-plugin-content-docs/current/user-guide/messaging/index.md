@@ -508,7 +508,7 @@ gateway:
 
 ### 正在输入指示器
 
-当 agent 正在处理消息时，网关会在支持的平台上显示实时的输入状态——Telegram/Discord/Signal 上的"正在输入……"气泡，或 Slack 上的"is thinking…"助手状态。这由 `gateway-config.yaml` 中每个平台的 `typing_indicator` 标志控制，默认为 `true`：
+当 agent 正在处理消息时，网关会在支持的平台上显示实时的输入状态——Telegram/Discord/Signal 上的"正在输入……"气泡，或 Slack 上的"is thinking…"助手状态。这由 `config.yaml` 中每个平台的 `typing_indicator` 标志控制，默认为 `true`：
 
 ```yaml
 gateway:

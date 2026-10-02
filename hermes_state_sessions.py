@@ -530,7 +530,7 @@ class SessionSessionsMixin:
             # message because scheduler ownership is no longer visible.
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
-                "WHERE id = ? AND end_reason != 'cron_complete'", (session_id,),
+                "WHERE id = ? AND COALESCE(source, '') != 'cron'", (session_id,),
             )
             # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
             self._unarchive_auto_archived_lineage(conn, session_id)

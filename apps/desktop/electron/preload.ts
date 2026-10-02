@@ -407,6 +407,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:f12-shortcut', listener)
   },
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
+  setPreviewGuestHidden: (webContentsId, hidden) =>
+    ipcRenderer.send('hermes:preview-guest-hidden', { webContentsId, hidden: Boolean(hidden) }),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   mcpOauth: {
     // One-shot loopback listener for MCP OAuth against remote backends: bind

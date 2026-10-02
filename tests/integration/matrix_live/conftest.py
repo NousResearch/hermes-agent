@@ -224,8 +224,8 @@ def gateway_image(docker_engine: None) -> Iterator[str]:
         client.close()
 
 
-@pytest.fixture
-def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
+@contextmanager
+def _synapse_server() -> Iterator[tuple[DockerContainer, str, Network]]:
     # Start Ryuk before creating the volume so a killed worker cannot leave it behind.
     Reaper.get_instance()
     client = docker.from_env()
@@ -270,6 +270,12 @@ def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network
         client.close()
 
 
+@pytest.fixture
+def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
+    with _synapse_server() as server:
+        yield server
+
+
 async def _register(url: str, localpart: str) -> MatrixAccount:
     client = AsyncClient(
         url,
@@ -288,8 +294,7 @@ async def _register(url: str, localpart: str) -> MatrixAccount:
         await client.close()
 
 
-@pytest.fixture
-def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
+def _create_live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
     _, url, _ = synapse
 
     async def create() -> LiveRoom:
@@ -304,6 +309,11 @@ def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
             await client.close()
 
     return asyncio.run(create())
+
+
+@pytest.fixture
+def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
+    return _create_live_room(synapse)
 
 
 @pytest.fixture

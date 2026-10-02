@@ -1141,11 +1141,27 @@ export function setPreviewTabPinned(tabId: string, pinned: boolean): void {
 }
 
 /** Drop the tabs a deleted session opened. Pinned tabs survive — they belong
- *  to the workspace, not the session that opened them. */
+ *  to the workspace, not the session that opened them. Every profile bucket,
+ *  not just the view: a session can be deleted while another profile's chat
+ *  is on screen, and its tabs live in its own profile's bucket. */
 export function prunePreviewTabsForSession(sessionId: string): void {
   const doomed = currentSessionId(sessionId)
+  const keep = (tab: PreviewTab) => tab.pinned || currentSessionId(tab.sessionId) !== doomed
+  let backgroundChanged = false
 
-  $previewTabs.set($previewTabs.get().filter(tab => tab.pinned || currentSessionId(tab.sessionId) !== doomed))
+  for (const [key, tabs] of Object.entries(tabsByProfile)) {
+    if (key !== viewKey && !tabs.every(keep)) {
+      tabsByProfile[key] = tabs.filter(keep)
+      backgroundChanged = true
+    }
+  }
+
+  if (backgroundChanged) {
+    persistTabs()
+    forgetGonePendingTabs()
+  }
+
+  $previewTabs.set($previewTabs.get().filter(keep))
 }
 
 export function closeRightRailTab(tabId: string) {

@@ -485,6 +485,35 @@ describe('preview session scoping (#73890)', () => {
     expect(paths($previewTabs.get())).toEqual(['/work/a.html'])
   })
 
+  it("prunes a deleted session's tabs from its own profile while another profile is on screen", () => {
+    try {
+      setPreviewScope('prof-del-x')
+      openPreview(fileTarget('/work/x-pinned.html'), 'stored-del-x')
+      setPreviewTabPinned($previewTabs.get()[0]!.id, true)
+      openPreview(urlTarget('https://x.example'), 'stored-del-x')
+      openPreview(fileTarget('/work/x-other.html'), 'stored-del-other')
+      setPreviewScope('prof-del-y')
+      openPreview(fileTarget('/work/y.html'), 'stored-del-y')
+
+      prunePreviewTabsForSession('stored-del-x')
+
+      const stored = JSON.parse(window.localStorage.getItem('hermes.desktop.previewTabs.v2') ?? '{}') as Record<
+        string,
+        { target: PreviewTarget }[]
+      >
+
+      expect(paths(stored['prof-del-x'] ?? [])).toEqual(['/work/x-pinned.html', '/work/x-other.html'])
+      expect(paths(stored['prof-del-y'] ?? [])).toEqual(['/work/y.html'])
+
+      setPreviewScope('prof-del-x')
+      expect(paths($previewTabs.get())).toEqual(['/work/x-pinned.html', '/work/x-other.html'])
+    } finally {
+      setPreviewScope('default')
+      dropPreviewTabsForProfile('prof-del-x')
+      dropPreviewTabsForProfile('prof-del-y')
+    }
+  })
+
   it('keeps a draft tabs in the draft until that draft itself gets its stored id', () => {
     openPreview(fileTarget('/work/draft.html'))
     newBrowserTab()

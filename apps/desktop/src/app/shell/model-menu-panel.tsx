@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
@@ -17,16 +18,13 @@ import { type ModelMenuHostProps, useModelMenuController } from './use-model-men
 export { ModelMenuCloseContext } from './model-catalog-menu'
 export type { ModelSelection } from './use-model-menu-controller'
 
-interface ModelMenuPanelProps extends ModelMenuHostProps {
-  /** Drop the sticky composer pick so new chats follow Settings → Model. */
-  onFollowDefaultModel?: () => void
-}
+type ModelMenuPanelProps = ModelMenuHostProps
 
 /**
  * The composer's model menu: `ModelCatalogMenu` (the shared renderer) plus the
  * controller that gives a selection its meaning HERE (`useModelMenuController`).
  */
-export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPanelProps) {
+export function ModelMenuPanel(props: ModelMenuPanelProps) {
   const { gateway, ownerConnectionId, profile = 'default', requestGateway } = props
   const { t } = useI18n()
   const copy = t.shell.modelMenu
@@ -35,6 +33,13 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
   const view = useSessionView()
   const modelSource = useStore($currentModelSource)
   const { activeSessionId, controller } = useModelMenuController(props)
+  const { unpinToProfileDefault } = useModelControls({
+    cacheOwnerConnectionId: ownerConnectionId,
+    cacheProfile: profile,
+    queryClient,
+    requestGateway
+  })
+  const showUnpin = view.kind === 'primary' && modelSource === 'manual'
   // Same condition as the pill's pin dot: a draft whose next session.create
   // ships the manual pick instead of the Settings default (#107410).
   const pinnedDraft = view.kind === 'primary' && !activeSessionId && modelSource === 'manual'
@@ -78,10 +83,13 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
       controller={controller}
       footer={
         <>
-          {pinnedDraft && onFollowDefaultModel && (
+          {showUnpin && (
             <DropdownMenuItem
               className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-              onSelect={onFollowDefaultModel}
+              data-testid="composer-use-profile-default"
+              onSelect={() => {
+                void unpinToProfileDefault()
+              }}
             >
               <Codicon name="discard" size="0.75rem" />
               {copy.followDefault}

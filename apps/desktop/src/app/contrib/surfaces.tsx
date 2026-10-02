@@ -132,7 +132,6 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       gatewayState === 'open' ? (
         <ModelMenuPanel
           gateway={gateway || undefined}
-          onFollowDefaultModel={actions.followDefaultModel}
           onSelectModel={actions.selectModel}
           ownerConnectionId={activeConnectionId || undefined}
           profile={activeGatewayProfile}

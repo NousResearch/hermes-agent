@@ -24,7 +24,8 @@ import {
   markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  unpinComposerSelection
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 
@@ -232,6 +233,15 @@ export function useModelControls({
     void refreshCurrentModel()
   }, [refreshCurrentModel])
 
+  // Clear the local sticky selection. An active session keeps its painted model;
+  // only a fresh primary draft immediately reseeds from Settings → Model.
+  const unpinToProfileDefault = useCallback(async () => {
+    unpinComposerSelection()
+    if (!$activeSessionId.get()) {
+      await refreshCurrentModel(true)
+    }
+  }, [refreshCurrentModel])
+
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
   // for the next turn). `false` means NOT applied — either pending
@@ -405,5 +415,5 @@ export function useModelControls({
     [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
-  return { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel }
+  return { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel, unpinToProfileDefault }
 }

@@ -13,10 +13,12 @@ const validRoute = (route: SetupRoute) => route && typeof route.connectionId ===
 /** Setup only. The gateway remains the sole owner of execution and history. */
 export function roomSetupCoordinator(options: {
   store: ReturnType<typeof roomSetupStore>; connect: (route: SetupRoute) => Promise<Client>
+  beforeOperation?: () => void
 }) {
   let serial = Promise.resolve()
   const exclusive = <T>(work: () => Promise<T>) => {
-    const result = serial.then(work, work)
+    const guarded = () => {options.beforeOperation?.(); return work()}
+    const result = serial.then(guarded, guarded)
     serial = result.then(() => undefined, () => undefined)
     return result
   }

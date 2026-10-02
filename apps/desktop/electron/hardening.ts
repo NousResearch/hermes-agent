@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { randomUUID } from 'node:crypto'
 
 // Relative, not `@hermes/shared`: the electron bundle is built by esbuild with
 // no tsconfig path resolution (see scripts/bundle-electron-main.mjs), so a bare
@@ -55,6 +56,8 @@ interface SecretFileFs {
 }
 
 interface SecretFileOptions {
+  /** Own a fresh stage without touching another writer's preexisting .tmp. */
+  uniqueStage?: boolean
   /** Verify the bytes actually written before publishing, and flush before ACK.
    * Windows supports file flushing; directory flushing follows the existing
    * desktop-boot-preference POSIX boundary (Node cannot open Windows directories). */
@@ -140,11 +143,20 @@ function tightenSecretFileMode(filePath, options: SecretFileOptions = {}) {
  */
 function writeSecretFileAtomic(targetPath, data, options: SecretFileOptions = {}) {
   const fsImpl = options.fs || fs
-  const tmp = targetPath + '.tmp'
+  const tmp = options.uniqueStage ? `${targetPath}.${randomUUID()}.tmp` : targetPath + '.tmp'
+  let ownsStage = !options.uniqueStage
 
   try {
-    fsImpl.rmSync(tmp, { force: true })
-    fsImpl.writeFileSync(tmp, data, { encoding: options.encoding, mode: SECRET_FILE_MODE })
+    if (options.uniqueStage) {
+      if (!fsImpl.openSync || !fsImpl.closeSync) {throw new Error('Unique secret writes require file handles')}
+      const handle = fsImpl.openSync(tmp, 'wx', SECRET_FILE_MODE)
+      ownsStage = true
+      try {fsImpl.writeFileSync(handle, data, { encoding: options.encoding })}
+      finally {fsImpl.closeSync(handle)}
+    } else {
+      fsImpl.rmSync(tmp, { force: true })
+      fsImpl.writeFileSync(tmp, data, { encoding: options.encoding, mode: SECRET_FILE_MODE })
+    }
     tightenSecretFileMode(tmp, options)
     if (options.durable) {
       if (!fsImpl.openSync || !fsImpl.readFileSync || !fsImpl.fsyncSync || !fsImpl.closeSync) {
@@ -163,7 +175,9 @@ function writeSecretFileAtomic(targetPath, data, options: SecretFileOptions = {}
     }
   } finally {
     // A failed verification leaves the previous authoritative file intact.
-    if (options.durable) {try {fsImpl.rmSync(tmp, { force: true })} catch { /* preserve the original failure */ }}
+    if ((options.durable || options.uniqueStage) && ownsStage) {
+      try {fsImpl.rmSync(tmp, { force: true })} catch { /* preserve the original failure */ }
+    }
   }
 }
 

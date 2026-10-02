@@ -8,6 +8,7 @@ import logging
 import time
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import AsyncMock
 
 import pytest
 from telegram.error import RetryAfter
@@ -18,7 +19,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionSource
+from gateway.session import AsyncSessionStore, SessionSource
 from gateway.title_compose import MAX_TITLE_LENGTH, compose_group_title
 from gateway.turn_context import TurnContext
 from hermes_constants import get_hermes_home
@@ -865,3 +866,222 @@ async def test_readback_noop_does_not_burn_budget():
         assert _rename_counts(runner, source, "session-noop") == 1
     finally:
         db.close()
+
+
+# ── T5: live recompose on /model and /reasoning (spec §3.3, criteria 2-4) ──────────────────
+
+
+class _StoreDouble:
+    """The sync ``SessionStore`` surface the recompose needs: one session id per chat.
+
+    Installed through the REAL :class:`AsyncSessionStore` so the facade the runner hands out is
+    the production one (its ``async_session_store`` property rebuilds the facade unless
+    ``facade._store is runner.session_store``, so a bare namespace double is silently discarded).
+    """
+
+    def __init__(self, session_id=None, error=None):
+        self._session_id = session_id
+        self._error = error
+
+    def get_or_create_session(self, source, **_kwargs):
+        if self._error is not None:
+            raise self._error
+        return SimpleNamespace(session_id=self._session_id)
+
+
+def _install_store(runner, session_id=None, error=None):
+    """Wire ``runner``'s session store the way ``_init_session_store`` does."""
+    store = _StoreDouble(session_id=session_id, error=error)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    return store
+
+
+def _switch_runner(adapter):
+    """Runner for the slash-side appliers: the real ``_apply_reasoning_selection`` /
+    ``_commit_model_switch_locked`` run, with the session store answering for the source and the
+    rename lane stubbed at its scheduler seam so these tests assert the NOTICE (which switch paths
+    recompose), not the transport — the lane itself is covered by the tests above.
+
+    ``runner.notices`` records ``(source, session_key)`` per notify call.
+    """
+    runner = _wired_runner(adapter)
+    runner._show_reasoning = True
+    runner._agent_cache = {}
+    runner._sessions = {}
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra={})})
+    runner.config_path = None
+    runner.notices = []
+    _install_store(runner, session_id="session-switch")
+
+    def _record(source, session_key):
+        runner.notices.append((source, session_key))
+
+    runner._notify_telegram_group_title_of_switch = _record
+    # The applier's own dependencies, minimal and real enough to reach the notify calls.
+    runner._evict_cached_agent = lambda session_key: None
+    runner._load_reasoning_config = lambda *_a, **_k: {"enabled": True, "effort": "medium"}
+    runner._save_gateway_config_key = lambda *_a, **_k: True
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_reasoning_switch_recomposes_the_group_title():
+    """A resolvable effort recomposes once, carrying the source and the applier's session key
+    (criteria 2-3): the switch is applied and then announced, not announced speculatively."""
+    adapter = _adapter()
+    runner = _switch_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+
+    reply = runner._apply_reasoning_selection("agent:main:telegram:group:-101", "telegram", "high",
+                                             source=source)
+
+    assert runner.notices == [(source, "agent:main:telegram:group:-101")]
+    assert reply  # the switch still answers the user
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["show", "on", "hide", "off", "not-a-level", ""])
+async def test_reasoning_paths_that_change_nothing_leave_the_title_alone(value):
+    """Only a real state change recomposes (criteria 3-4). The display toggle and an unresolvable
+    effort both leave the reasoning state exactly as it was, so a title rewrite would publish a name
+    that describes no switch. ``reset`` IS a change (it clears the override), so it has its own case
+    below rather than sitting in this list."""
+    adapter = _adapter()
+    runner = _switch_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+
+    runner._apply_reasoning_selection("agent:main:telegram:group:-101", "telegram", value, source=source)
+
+    assert runner.notices == []
+
+
+@pytest.mark.asyncio
+async def test_reasoning_reset_recomposes():
+    """``/reasoning reset`` clears a session override, so the ``r<N>`` tag must go with it."""
+    adapter = _adapter()
+    runner = _switch_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    session_key = "agent:main:telegram:group:-101"
+    runner._apply_reasoning_selection(session_key, "telegram", "high", source=source)
+    runner.notices.clear()
+
+    runner._apply_reasoning_selection(session_key, "telegram", "reset", source=source)
+
+    assert runner.notices == [(source, session_key)]
+
+
+@pytest.mark.asyncio
+async def test_model_switch_recomposes_the_group_title():
+    """``/model X`` recomposes once with the switch context's session key (criterion 2). The
+    commit point is shared by the typed, picker and cost-confirm paths, so this is the one place
+    that has to know."""
+    from types import SimpleNamespace as NS
+
+    from gateway.slash_commands_model import _ModelSwitchContext
+
+    adapter = _adapter()
+    runner = _switch_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    runner._switch_cached_agent_model = lambda *_a, **_k: None
+    runner._record_model_switch = AsyncMock(return_value=None)
+    runner._record_switch_metrics = lambda *_a, **_k: None
+    runner._model_switch_confirmation = AsyncMock(return_value="switched")
+    ctx = _ModelSwitchContext(session_key="agent:main:telegram:group:-101", source=source,
+                              config_path=None, persist_global=False)
+
+    reply = await runner._commit_model_switch(
+        NS(new_model="provider/team/model-x", target_provider="nous"), ctx, source=source)
+
+    assert runner.notices == [(source, "agent:main:telegram:group:-101")]
+    assert reply == "switched"
+
+
+@pytest.mark.asyncio
+async def test_switch_recompose_carries_the_new_model_and_effort():
+    """End to end through the real notify -> recompose -> schedule -> lane path: the title the
+    transport receives is composed from the store AFTER the switch, not from a string cached at the
+    first rename. Reads the expected value back out of the store so the assertion tracks the
+    relationship, not a literal.
+
+    This is also the proof that T5 added no second rename path — the recompose lands in the same
+    lane, so the kill-switch and the budget apply to it unchanged.
+    """
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra={})})
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-switch", title="Fix login", model="openrouter/gpt-x",
+                       started_at=time.time())
+        # The opening rename publishes the pre-switch name.
+        await _fire(adapter, runner, source, "session-switch", "Fix login")
+        assert [text for _c, text, _h in adapter._bot.renames] == [
+            compose_group_title("Fix login", "openrouter/gpt-x", None)]
+
+        # A /model switch lands in the store; the recompose must notice it without a restart.
+        db._write_sql("UPDATE sessions SET model = ? WHERE id = ?",
+                      ("openrouter/gpt-y", "session-switch"))
+        _install_store(runner, session_id="session-switch")
+        runner._notify_telegram_group_title_of_switch(source, "agent:main:telegram:group:-101")
+        await _await_renames(adapter._bot, 2)
+
+        assert adapter._bot.renames[-1][1] == compose_group_title(
+            "Fix login", db.get_session("session-switch")["model"], None)
+        assert "gpt-y" in adapter._bot.renames[-1][1]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_switch_recompose_respects_the_kill_switch():
+    """The recompose rides the existing scheduler, so the operator knob stops it with no second
+    guard to keep in sync (criterion 11)."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    runner.config = SimpleNamespace(platforms={
+        Platform.TELEGRAM: SimpleNamespace(extra={"disable_group_auto_rename": True})})
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-killed", title="Fix login", model="openrouter/gpt-x",
+                       started_at=time.time())
+        _install_store(runner, session_id="session-killed")
+        runner._notify_telegram_group_title_of_switch(source, "agent:main:telegram:group:-101")
+        await asyncio.sleep(0.05)
+        assert adapter._bot.renames == []
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_recompose_swallows_store_failure():
+    """A store read that raises must not reach the slash-command caller: the reply is already
+    being built, so a recompose can only ever be best-effort."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra={})})
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    _install_store(runner, error=RuntimeError("store down"))
+
+    runner._notify_telegram_group_title_of_switch(source, "agent:main:telegram:group:-101")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert adapter._bot.renames == []
+
+
+def test_notify_without_a_loop_is_silent():
+    """A sync caller with no running loop (shutdown, an off-loop test double) must get a no-op,
+    not a RuntimeError: ``/reasoning`` still has to return its reply."""
+    adapter = _adapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+
+    # No running loop in a plain sync test: the door returns before touching the transport.
+    with pytest.raises(RuntimeError):
+        asyncio.get_running_loop()
+    runner._notify_telegram_group_title_of_switch(source, "agent:main:telegram:group:-101")
+    assert adapter._bot.renames == []

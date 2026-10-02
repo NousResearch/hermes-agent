@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
     _SUMMARY_END_MARKER,
+    _strip_leading_one_shot_note,
     SUMMARY_PREFIX,
     ContextCompressor,
 )
@@ -360,3 +361,132 @@ def test_flagged_scaffolding_row_is_never_the_inflight_task():
     found = ContextCompressor._find_inflight_user_task(msgs)
     assert found is not None
     assert JOB_SENTINEL in str(found.get("content"))
+
+
+SWITCH_NOTE = (
+    "[Note: model was just switched from gpt-6-sol to claude-fable-5-1 "
+    "via Nous Portal. Adjust your self-identification accordingly.]"
+)
+
+
+def _noted_transcript() -> List[Dict[str, Any]]:
+    """A session that switched models before its first prompt: the CLI's
+    one-shot note rides in the in-memory first user row (the persisted and
+    displayed value is clean) so the cached prompt prefix stays stable."""
+    return [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": f"{SWITCH_NOTE}\n\n{JOB_SENTINEL}"},
+        *_tool_pairs(40),
+    ]
+
+
+def test_switch_note_is_not_restated_after_the_handoff():
+    """Regression for #124170: the one-shot /model note was written for the
+    turn it was prepended to. Restating the in-flight task after a compaction
+    re-delivered it verbatim — reading as if the switch had just happened
+    again. The replay must carry the user's text only."""
+    compressed = _compress(_noted_transcript())
+
+    idx = _handoff_idx(compressed)
+    assert idx >= 0, "expected a compaction handoff in the compressed transcript"
+    after = compressed[idx + 1:]
+    carrier_tail = _text(compressed[idx]).split(_SUMMARY_END_MARKER)[-1]
+
+    replayed = [
+        _text(m) for m in _actionable_user_rows(after) if JOB_SENTINEL in _text(m)
+    ]
+    if JOB_SENTINEL in carrier_tail and not replayed:
+        replayed = [carrier_tail]
+    assert replayed, "expected the in-flight task to be restated after the handoff"
+    for text in replayed:
+        assert "model was just switched" not in text, text
+
+
+def test_repeated_compactions_never_nest_the_switch_note():
+    """The note must not survive into any restated request, and must not nest
+    inside the replay header across repeated compactions."""
+    out: List[Dict[str, Any]] = _noted_transcript()
+    for cycle in (1, 2, 3):
+        extra = _tool_pairs(40, start=100 * cycle) if cycle > 1 else []
+        out = _compress_with(2, cycle, out + extra)
+        for m in out:
+            if m.get("role") == "user":
+                assert "model was just switched" not in str(m.get("content")), cycle
+        assert _job_copies(out) == 1, cycle
+
+
+SKILLS_NOTE_DESC_BRACKET = (
+    "[USER INITIATED SKILLS RELOAD:\n"
+    "Added Skills: 1\n"
+    "    - pdf: Returns a list [str] of rows\n"
+    "Use skills_list to see the updated catalog.]"
+)
+
+
+def test_skills_reload_note_with_bracketed_description_strips_cleanly():
+    """The skills-reload note embeds user-supplied skill descriptions; a `]` inside one
+    (an ordinary type hint) must not cut the strip mid-note — the restated task keeps
+    its first line and no note fragment survives."""
+    text = f"{SKILLS_NOTE_DESC_BRACKET}\n\n{JOB_SENTINEL} first line matters"
+    stripped = _strip_leading_one_shot_note(text)
+    assert stripped == f"{JOB_SENTINEL} first line matters"
+
+    # Well-formed note through the trailer the producer emits.
+    text2 = f"{SKILLS_NOTE_DESC_BRACKET}\n\n{JOB_SENTINEL}"
+    assert _strip_leading_one_shot_note(text2) == JOB_SENTINEL
+
+    # Unknown text is returned unchanged.
+    assert _strip_leading_one_shot_note(JOB_SENTINEL) == JOB_SENTINEL
+
+
+def test_model_switch_note_with_bracketed_model_name_strips_cleanly():
+    """The model-switch note interpolates the model name and provider label
+    verbatim (format_model_for_display returns non-opaque names unchanged);
+    a `]` inside one must not cut the strip mid-note — no truncated fragment
+    of the note survives into the restated task."""
+    text = (
+        "[Note: model was just switched from gpt-5.5 to qwen/qwen3.6-35b[2b] "
+        "via openrouter. Adjust your self-identification accordingly.]"
+        f"\n\n{JOB_SENTINEL} first line matters"
+    )
+    stripped = _strip_leading_one_shot_note(text)
+    assert stripped == f"{JOB_SENTINEL} first line matters"
+
+    # A bracketed provider label hits the same first-"]" cut.
+    text2 = (
+        "[Note: model was just switched from gpt-5.5 to claude-opus-4 "
+        "via my.provider[v2] (via relay). Adjust your self-identification accordingly.]"
+        f"\n\n{JOB_SENTINEL}"
+    )
+    assert _strip_leading_one_shot_note(text2) == JOB_SENTINEL
+
+    # The one-turn variant keeps the same trailer.
+    text3 = (
+        "[Note: model was just switched from gpt-5.5 to qwen/qwen3.6-35b[2b] "
+        "via openrouter. This override applies to the next turn only. "
+        f"Adjust your self-identification accordingly.]\n\n{JOB_SENTINEL}"
+    )
+    assert _strip_leading_one_shot_note(text3) == JOB_SENTINEL
+
+    # Unknown text is returned unchanged.
+    assert _strip_leading_one_shot_note(JOB_SENTINEL) == JOB_SENTINEL
+
+
+MODEL_NOTE_BRACKETED = (
+    "[Note: model was just switched from gpt-5.5 to qwen/qwen3.6-35b[2b] "
+    "via openrouter. Adjust your self-identification accordingly.]"
+)
+
+
+def test_stacked_notes_are_stripped_until_the_task():
+    """One turn can carry several one-shot notes: the gateway drains both pending
+    stores (model note, then the skills note) and the CLI adds the speech note on
+    top — each prepended as ``note + blank line + rest``. The strip must keep
+    going until the text no longer starts with a note, or the inner notes survive
+    into the restated task."""
+    text = f"{SKILLS_NOTE_DESC_BRACKET}\n\n{MODEL_NOTE_BRACKETED}\n\n{JOB_SENTINEL} first line matters"
+    assert _strip_leading_one_shot_note(text) == f"{JOB_SENTINEL} first line matters"
+
+    speech = "[Note: the user interrupted your previous spoken reply before it finished.]"
+    text3 = f"{speech}\n\n{SKILLS_NOTE_DESC_BRACKET}\n\n{MODEL_NOTE_BRACKETED}\n\n{JOB_SENTINEL}"
+    assert _strip_leading_one_shot_note(text3) == JOB_SENTINEL

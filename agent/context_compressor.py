@@ -541,6 +541,72 @@ _INFLIGHT_TASK_REPLAY_HEADER = (
     "start over.]"
 )
 
+# One-shot notes the CLI prepends to a turn's API copy (model switch, skills
+# reload, speech interruption) ride along in the in-memory history — removing
+# them later would break the cached prompt prefix. But a compaction replay
+# re-delivers the task in a fresh context, where the note reads as if the
+# switch had just happened again, and it nests inside the replay header on
+# every later compaction (#124170). Strip a leading known note before
+# restating: the turn it was written for already consumed it.
+_INFLIGHT_NOTE_LEADS = (
+    "[Note: model was just switched from ",
+    "[Note: the user interrupted your previous spoken reply",
+    "[USER INITIATED SKILLS RELOAD:",
+)
+
+# The model-switch and skills-reload notes embed config/user-supplied strings (model
+# names, provider labels, skill names/descriptions), so a "]" inside one would make a
+# first-"]" cut mid-note, destroying the restated task. Anchor each on the fixed
+# trailer its producer emits (hermes_cli/cli_model_switch_mixin.py, gateway/
+# slash_commands.py); if i18n changed it, fall back to the LAST "]" before the blank
+# line that separates the note from the task. The speech note is one fixed literal,
+# so its first "]" is the real end.
+_MODEL_SWITCH_TRAILER = "Adjust your self-identification accordingly.]"
+_SKILLS_RELOAD_TRAILER = "Use skills_list to see the updated catalog.]"
+_INFLIGHT_NOTE_TRAILERS = {
+    _INFLIGHT_NOTE_LEADS[0]: _MODEL_SWITCH_TRAILER,
+    _INFLIGHT_NOTE_LEADS[2]: _SKILLS_RELOAD_TRAILER,
+}
+
+
+def _strip_leading_one_shot_note(text: str) -> str:
+    """Drop leading one-shot CLI notes (through their closing brackets) from an
+    in-flight task text; unknown text is returned unchanged.
+
+    The producers can stack several notes onto one turn — the gateway drains both
+    pending stores (model note, then the skills note) and the CLI adds the speech
+    note on top, each prepended as ``note + blank line + rest`` — so keep
+    stripping while the text starts with a note. Every successful strip consumes
+    the lead, so the loop terminates."""
+    while True:
+        stripped = _strip_one_leading_note(text)
+        if stripped is None:
+            return text
+        text = stripped
+
+
+def _strip_one_leading_note(text: str):
+    """Strip ONE leading one-shot note, or None when the text does not start with
+    a known note (or its shape cannot be matched) — unknown text is never touched."""
+    for lead in _INFLIGHT_NOTE_LEADS:
+        if text.startswith(lead):
+            trailer = _INFLIGHT_NOTE_TRAILERS.get(lead)
+            if trailer is not None:
+                end = text.find(trailer)
+                if end != -1:
+                    return text[end + len(trailer):].lstrip()
+                block_end = text.find("\n\n")  # note body, then the restated task
+                if block_end != -1:
+                    last = text.rfind("]", 0, block_end)
+                    if last != -1:
+                        return text[last + 1:].lstrip()
+                return None  # unknown note shape: leave the text alone
+            end = text.find("]")
+            if end != -1:
+                return text[end + 1:].lstrip()
+            return None  # no closing bracket: leave the text alone
+    return None
+
 _SALVAGE_SUMMARY_MAX_CHARS = 8_000
 _SALVAGE_KEEP_RECENT_TOOLS = 2
 
@@ -4875,6 +4941,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # task that survives >1 cycle never stacks headers or drags the
             # old summary along.
             task_text = task_text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
+        task_text = _strip_leading_one_shot_note(task_text)
         if not task_text:
             return compressed
 

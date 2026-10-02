@@ -1368,7 +1368,7 @@ class TestPlannedStopMarker:
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms('linux')
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         import psutil
 

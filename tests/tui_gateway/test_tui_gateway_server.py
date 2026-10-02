@@ -23385,7 +23385,7 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("replacement", [
     "atomic",
-    pytest.param("in_place", marks=pytest.mark.linux_only),
+    pytest.param("in_place", marks=pytest.mark.platforms('linux')),
 ])
 def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, tmp_path, replacement):
     """#111105: the raw-config cache must not serve (and later write back) a stale document after a

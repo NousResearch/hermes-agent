@@ -29,7 +29,7 @@ def test_windows_file_uri_uses_mount_path_inside_wsl(monkeypatch):
     assert acp_content._path_from_file_uri(r"C:\Users\alice\notes.md") == Path("/mnt/c/Users/alice/notes.md")
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_acp_resource_link_inlines_native_windows_file_uri(tmp_path):
     attached = tmp_path / "native-windows.md"
     attached.write_text("Native Windows ACP resource", encoding="utf-8")

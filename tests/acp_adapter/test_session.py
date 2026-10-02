@@ -343,7 +343,7 @@ class TestSymlinkAliasNormalization:
             "/mnt/c/Users/alice/project"
         )
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms('linux')
     def test_missing_path_keeps_lexical_normalization(self):
         # realpath(strict=False) is lexical for nonexistent paths, so cwds
         # that don't exist on this host (e.g. WSL-translated drives) behave

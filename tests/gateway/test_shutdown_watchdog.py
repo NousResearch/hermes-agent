@@ -72,7 +72,7 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
 
 @pytest.mark.asyncio
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 async def test_loop_tick_witness_skips_non_posix_without_warning(
     tmp_path, caplog, monkeypatch
 ):

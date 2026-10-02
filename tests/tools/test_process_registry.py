@@ -623,11 +623,11 @@ class TestStdinHelpers:
         proc.stdin.close.assert_called_once()
         assert result["status"] == "ok"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms('linux')
     def test_close_stdin_allows_eof_driven_process_to_finish_linux(self, registry, tmp_path):
         self._assert_pty_eof_finishes(registry, tmp_path)
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms('macos')
     def test_close_stdin_allows_eof_driven_process_to_finish_macos(self, registry, tmp_path):
         self._assert_pty_eof_finishes(registry, tmp_path)
 
@@ -1728,12 +1728,12 @@ class _TerminateHostPidPosixCases:
         assert kill_calls == [(12345, signal.SIGTERM)]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms('linux')
 class TestTerminateHostPidLinux(_TerminateHostPidPosixCases):
     pass
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms('macos')
 class TestTerminateHostPidMacOS(_TerminateHostPidPosixCases):
     pass
 

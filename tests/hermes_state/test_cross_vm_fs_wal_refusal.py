@@ -52,13 +52,13 @@ class TestDetectCrossVmFs:
 
         assert _mountinfo_fstype("/mnt/共有 share/db", mountinfo_path=mi) == "virtiofs"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms('linux')
     @pytest.mark.parametrize("path", ["/data/agent", "/mnt/host/db", "/mnt/my share/db"])
     def test_linux_guard_flags_cross_vm_mounts(self, tmp_path, path):
         mi = _mountinfo(tmp_path, [ROOT_EXT4, BIND_VIRTIOFS, BIND_9P, SPACE_VIRTIOFS])
         assert _detect_cross_vm_fs(path, mountinfo_path=mi) is True
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms('linux')
     @pytest.mark.parametrize("fstype", [
         "ext4", "xfs", "btrfs", "zfs", "tmpfs", "overlay", "nfs", "nfs4", "cifs", "fuse.sshfs", "apfs", "f2fs",
     ])
@@ -67,7 +67,7 @@ class TestDetectCrossVmFs:
         mi = _mountinfo(tmp_path, [f"25 1 8:1 / / rw,relatime shared:1 - {fstype} /dev/sda1 rw"])
         assert _detect_cross_vm_fs("/home/user/.hermes", mountinfo_path=mi) is False
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms('linux')
     def test_missing_mountinfo_conservative_false(self, tmp_path):
         assert _detect_cross_vm_fs("/data", mountinfo_path=str(tmp_path / "nope")) is False
 

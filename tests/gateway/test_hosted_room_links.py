@@ -58,8 +58,8 @@ def test_room_link_store_is_transactional_and_upserted(tmp_path):
 @pytest.mark.parametrize(
     "_platform",
     [
-        pytest.param("linux", marks=pytest.mark.linux_only),
-        pytest.param("macos", marks=pytest.mark.macos_only),
+        pytest.param("linux", marks=pytest.mark.platforms('linux')),
+        pytest.param("macos", marks=pytest.mark.platforms('macos')),
     ],
 )
 def test_room_link_store_has_private_posix_mode(tmp_path, _platform):

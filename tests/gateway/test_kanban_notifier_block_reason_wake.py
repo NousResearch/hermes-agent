@@ -52,7 +52,7 @@ def _wake_texts(tmp_path, monkeypatch, make):
     make()
     posts = []
 
-    async def fake_self_post(adapter, *, text, session_id):
+    async def fake_self_post(adapter, *, text, session_id, notification_category="result", profile=None):
         posts.append(text)
 
     import gateway.wake as wake_mod
@@ -103,3 +103,30 @@ def test_blocked_without_reason_adds_no_line(tmp_path, monkeypatch):
     posts = _wake_texts(tmp_path, monkeypatch, lambda: _blocked_sub(None))
     assert len(posts) == 1
     assert "Block reason:" not in posts[0]
+
+
+def _gave_up_sub(error, failures=3):
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="retry budget exhausted", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="api_server", chat_id="bot-chat")
+        # Simulate the dispatcher breaker: mark the task blocked, then emit the
+        # single `gave_up` event that carries `error` and `failures` (no
+        # separate `blocked` event follows to fill the wake detail slot).
+        from hermes_cli import kanban_db_dispatch as kbd
+        assert kbd._record_task_failure(
+            conn, tid, error,
+            outcome="gave_up", force_trip=True, release_claim=True, end_run=True,
+        )
+        return tid
+    finally:
+        conn.close()
+
+
+def test_gave_up_wake_carries_error_as_block_reason(tmp_path, monkeypatch):
+    posts = _wake_texts(
+        tmp_path, monkeypatch,
+        lambda: _gave_up_sub("spawn failed: ENOENT hermes", failures=3),
+    )
+    assert len(posts) == 1
+    assert "Block reason: spawn failed: ENOENT hermes" in posts[0]

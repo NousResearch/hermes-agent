@@ -416,11 +416,11 @@ def _fmt_changes_requested(ev, n) -> tuple:
 
 
 def _fmt_blocked(ev, n) -> tuple:
-    # The push ping keeps its historical unredacted 160-char clip. The wake synth gets the
-    # redacted reason: non-push (api_server) wakes deliver ONLY the synth, so without it the
-    # woken session never learns why the task stopped.
+    # The wake synth gets the redacted reason: non-push (api_server) wakes deliver ONLY the synth, so
+    # without it the woken session never learns why the task stopped. The push ping keeps main's
+    # localized ``gateway.kanban.ping.blocked`` text (unredacted 160-char clip), byte-identical.
     n.wake_block_detail = _safe_review_reason(_payload(ev, "reason")) or n.wake_block_detail
-    return f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None
+    return t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)), None, None
 
 
 def _fmt_block_loop_detected(ev, n) -> tuple:
@@ -452,6 +452,12 @@ def _fmt_gave_up(ev, n) -> tuple:
     count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
              else t("gateway.kanban.ping.kept_failing"))
     last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
+    # The breaker emits exactly ONE event: `gave_up` (carrying `error` +
+    # `failures`). No `blocked` event follows, so non-push (api_server) wakes
+    # would otherwise report "gave up (retries exhausted)" with no cause —
+    # carry the error into the wake synth's block-detail slot. The push ping
+    # text stays byte-identical.
+    n.wake_block_detail = _safe_review_reason(_payload(ev, "error")) or n.wake_block_detail
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
@@ -468,6 +474,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": _fmt_blocked,
+    "gave_up": _fmt_gave_up,
     "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head), None, None),
     "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
@@ -591,7 +598,7 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
-        if self.wake_block_detail and self.wake_kinds & {"blocked", "block_loop_detected"}:
+        if self.wake_block_detail and self.wake_kinds & {"blocked", "block_loop_detected", "gave_up"}:
             synth += "\n" + t("gateway.kanban.wake.block_detail", reason=self.wake_block_detail)
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
 

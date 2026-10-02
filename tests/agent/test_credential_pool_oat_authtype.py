@@ -53,7 +53,7 @@ def test_load_heals_legacy_row_and_exposes_it_to_resolver(tmp_path, monkeypatch)
         },
     }))
 
-    from agent.anthropic_adapter import resolve_anthropic_token
+    from agent.anthropic_credentials import resolve_anthropic_token
     from agent.credential_pool import load_pool
 
     entry = load_pool("anthropic").entries()[0]

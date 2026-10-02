@@ -37,8 +37,11 @@ def _build_app(use_https: bool = True, prefix: str = ""):
     @app.get("/set-pkce")
     def set_pkce():
         r = Response("ok")
-        set_pkce_cookie(r, payload="provider=stub;state=s;verifier=v",
-                        use_https=use_https, prefix=prefix)
+        set_pkce_cookie(
+            r,
+            payload={"provider": "stub", "state": "s", "verifier": "v"},
+            use_https=use_https, prefix=prefix,
+        )
         return r
 
     @app.get("/clear")
@@ -134,37 +137,40 @@ def test_read_session_cookies_from_request_secure_prefix():
 
 
 # ---------------------------------------------------------------------------
-# PKCE cookie: regression for #83832 (field case: Traefik+Authentik chain)
+# PKCE cookie codec: base64url(JSON) wire format
 # ---------------------------------------------------------------------------
 #
-# The PKCE payload is a flat ``key=value;key=value`` string. A raw ``;``
-# is a cookie-attribute terminator, so Python's http.cookies emits the
-# value in RFC 6265 quoted form with each ``;`` escaped as the
-# backslash-octal ``\073``. Mainstream browsers echo that form back
-# verbatim and Python decodes it — but ``"`` and ``\`` are outside the
-# plain cookie-octet set, and cookie-aware proxy hops that parse and
-# re-emit the Cookie header (verified for Go's net/http, common in
-# Go-based proxy/IDP middleware) reject the value and drop the cookie
-# entirely. The callback
-# then 400s with "Missing PKCE state cookie" even though the browser
-# sent the cookie. The fix URL-encodes the payload in the setter so the
-# wire value contains only cookie-octets, and every reader decodes via
-# cookies.parse_pkce_payload(). These tests pin the wire shape and the
-# round trip.
+# History (three serialization fixes at this exact spot): the payload was
+# originally a flat ``key=value;key=value`` string. A raw ``;`` is a
+# cookie-attribute terminator, so Python's http.cookies emitted the value
+# in RFC 6265 quoted form with each ``;`` escaped as ``\073`` — a form
+# strict cookie-aware proxy hops (verified for Go's net/http) reject,
+# dropping the cookie entirely (#83832, Traefik+Authentik field case).
+# #99176 URL-encoded the whole flat payload to stay inside the
+# cookie-octet set. The current codec removes the delimiter problem at
+# the root: the payload is a dict, serialised as base64url(JSON) — the
+# urlsafe alphabet is a strict subset of the cookie-octets, and JSON
+# means no segment value can ever collide with a delimiter. Readers keep
+# a compatibility ladder for both legacy wire forms (10-minute TTL,
+# rolling upgrades). These tests pin the wire shape, the round trip, and
+# every ladder rung.
 
 
-def test_set_pkce_cookie_url_encodes_payload_to_avoid_rfc6265_split():
+def test_set_pkce_cookie_wire_value_is_cookie_octet_base64url_json():
     """The wire-level cookie value must contain only plain RFC 6265
     cookie-octets: no raw ``;`` (attribute terminator), no ``"`` and no
     ``\\`` (the http.cookies quoted form that strict cookie-aware proxy
     parsers — verified for Go's net/http — reject, dropping the whole
-    cookie).
+    cookie). With base64url(JSON) the value is drawn from the urlsafe
+    base64 alphabet, a strict subset of the cookie-octet set.
 
-    Regression for #83832 / the Traefik+Authentik support case: the
-    callback failed with "Missing PKCE state cookie" because a proxy
-    hop dropped the quoted ``\\073`` form.
+    Regression lineage: #83832 / the Traefik+Authentik support case —
+    the callback failed with "Missing PKCE state cookie" because a
+    proxy hop dropped the quoted ``\\073`` form.
     """
-    from urllib.parse import unquote
+    import base64
+    import json
+
     client = TestClient(_build_app(use_https=True, prefix=""))
     r = client.get("/set-pkce")
     pkce_set = next(
@@ -174,9 +180,7 @@ def test_set_pkce_cookie_url_encodes_payload_to_avoid_rfc6265_split():
     # Take just the cookie name=value pair, ignore the attributes.
     pkce_value = pkce_set.split(";", 1)[0]
     wire = pkce_value.split("=", 1)[1]
-    # No unquoted literal ``;`` in the value (attribute terminator). The
-    # payload ``provider=stub;state=s;verifier=v`` is encoded as
-    # ``provider%3Dstub%3Bstate%3Ds%3Bverifier%3Dv``.
+    # No unquoted literal ``;`` in the value (attribute terminator).
     assert ";" not in wire, (
         f"unquoted ; leaked into the cookie value: {pkce_value!r}"
     )
@@ -194,22 +198,54 @@ def test_set_pkce_cookie_url_encodes_payload_to_avoid_rfc6265_split():
     assert all(ch in cookie_octets for ch in wire), (
         f"non-cookie-octet chars in the wire value: {wire!r}"
     )
-    # Round-trip the URL-encoding back to the original payload.
-    decoded = unquote(wire)
-    assert decoded == "provider=stub;state=s;verifier=v", (
-        f"URL-encoded payload didn't round-trip to the original: "
-        f"got {decoded!r}"
+    # And tighter than cookie-octets: pure urlsafe base64 (padding is
+    # stripped by the encoder — ``=`` is outside http.cookies' legal
+    # unquoted set and would trigger the quoted form).
+    b64url = (
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        "0123456789-_"
+    )
+    assert all(ch in b64url for ch in wire), (
+        f"non-base64url chars in the wire value: {wire!r}"
+    )
+    # Round-trip the codec back to the original segment dict.
+    decoded = json.loads(
+        base64.urlsafe_b64decode(wire + "=" * (-len(wire) % 4))
+    )
+    assert decoded == {"provider": "stub", "state": "s", "verifier": "v"}, (
+        f"base64url(JSON) payload didn't round-trip: got {decoded!r}"
     )
 
 
+def test_encode_parse_pkce_payload_round_trips_hostile_values():
+    """The codec must round-trip segment values containing every char
+    that broke the two previous formats — ``;`` ``=`` ``"`` ``\\`` ``%``
+    — byte-for-byte. This is the bug class the JSON codec kills: with
+    delimiter-based formats, these bytes collide with the framing.
+    """
+    from hermes_cli.dashboard_auth.cookies import (
+        encode_pkce_payload,
+        parse_pkce_payload,
+    )
+
+    payload = {
+        "provider": "stub",
+        "state": 's;t="a\\te"',
+        "verifier": "v=1%3B;x",
+        "next": "/sessions?x=a;b&project=foo%25",
+    }
+    assert parse_pkce_payload(encode_pkce_payload(payload)) == payload
+
+
 def test_parse_pkce_payload_old_format_cookie_survives_rolling_upgrade():
-    """Mixed-version window (10-minute PKCE TTL): a cookie minted by a
-    pre-encoding server arrives at the new reader — after starlette's
-    cookie-header unquoting — as the FLAT form with raw ``;`` between
-    segments and a single-encoded ``next``. The reader must split it
-    as-is, NOT payload-decode it first: decoding early would turn an
-    old ``next`` value containing ``%3B`` into a bogus delimiter and
-    truncate the post-login target.
+    """Compat ladder rung 2 — oldest flat form (pre-#99176). Mixed-version
+    window (10-minute PKCE TTL): a cookie minted by a pre-encoding server
+    arrives at the new reader — after starlette's cookie-header
+    unquoting — as the FLAT form with raw ``;`` between segments and a
+    single-encoded ``next``. The reader must split it as-is, NOT
+    payload-decode it first: decoding early would turn an old ``next``
+    value containing ``%3B`` into a bogus delimiter and truncate the
+    post-login target.
     """
     from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
 
@@ -228,9 +264,13 @@ def test_parse_pkce_payload_old_format_cookie_survives_rolling_upgrade():
     }, f"old-format cookie mis-parsed: {parts!r}"
 
 
-def test_parse_pkce_payload_new_format_round_trips_setter_encoding():
-    """The new encoded wire form (no raw ``;`` possible — it is %3B)
-    decodes back to the exact original payload segments."""
+def test_parse_pkce_payload_99176_url_encoded_format_survives_upgrade():
+    """Compat ladder rung 3 — the #99176 URL-encoded flat form
+    (``quote(payload, safe='')`` over the whole flat string; no raw
+    ``;`` possible — it is %3B). A cookie minted by a #99176-era server
+    during the 10-minute mixed-version window must decode to the exact
+    original segments: unquote once, then split.
+    """
     from urllib.parse import quote
 
     from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
@@ -244,7 +284,7 @@ def test_parse_pkce_payload_new_format_round_trips_setter_encoding():
         "state": "s123",
         "verifier": "v456",
         "next": "%2Fsessions",
-    }, f"new-format wire value mis-parsed: {parts!r}"
+    }, f"#99176-format wire value mis-parsed: {parts!r}"
 
 
 def test_pkce_cookie_round_trip_preserves_all_segments():
@@ -261,7 +301,7 @@ def test_pkce_cookie_round_trip_preserves_all_segments():
     from conftest_dashboard_auth import StubAuthProvider  # type: ignore
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth import clear_providers, register_provider
-    from urllib.parse import unquote
+    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
 
     clear_providers()
     register_provider(StubAuthProvider())
@@ -289,14 +329,14 @@ def test_pkce_cookie_round_trip_preserves_all_segments():
         # Pull just the name=value portion so we can echo it back as
         # a Cookie header.
         pkce_kv = pkce_set.split(";", 1)[0]
-        # Confirm the setter URL-encoded the value.
+        # Decode through the real reader inverse: base64url(JSON).
         encoded_value = pkce_kv.split("=", 1)[1]
-        decoded_value = unquote(encoded_value)
+        parts = parse_pkce_payload(encoded_value)
         # The login handler packs provider, state, and verifier
         # into the payload. All three must survive intact.
-        assert "provider=stub" in decoded_value
-        assert "state=" in decoded_value
-        assert "verifier=" in decoded_value
+        assert parts.get("provider") == "stub"
+        assert parts.get("state")
+        assert parts.get("verifier")
         # And the encoded wire value must NOT have a literal, unquoted ``;``
         # between segments.
         assert ";" not in encoded_value, (

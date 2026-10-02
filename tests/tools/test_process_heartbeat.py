@@ -70,6 +70,11 @@ def test_a_tick_with_no_new_output_queues_nothing():
     registry = ProcessRegistry()
     session = pr.ProcessSession(id="proc_quiet", command="sleep 600", notify_on_complete=True)
     session._heartbeat_last = 0.0
+    # #120334: _emit_heartbeat now re-validates registry membership before it
+    # queues anything, so a session the registry does not track is never
+    # heartbeated. Register the synthetic session so this exercises the live
+    # path it is actually about (quiet tick vs. output-bearing tick).
+    registry._running[session.id] = session
 
     registry._emit_heartbeat(session, now=100.0)
     registry._emit_heartbeat(session, now=200.0)

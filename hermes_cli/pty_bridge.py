@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import fcntl  # windows-footgun: ok — POSIX-only module by design (see docstring)
+import math
 import os
 import select
 import signal
@@ -64,6 +65,9 @@ class PtyUnavailableError(RuntimeError):
 # Longer than the TUI gateway's own SIGHUP shutdown grace, so a helper that is saving state on
 # SIGHUP finishes before it is SIGKILLed.
 _HELPER_SHUTDOWN_GRACE_S = 1.5
+# Upper bound: PTY_REGISTRY.close_all() runs inside the backend's SIGTERM -> SIGKILL budget
+# (dashboard_procs._POSIX_TERM_GRACE_SECONDS), so a raised gateway grace cannot stretch it.
+_MAX_HELPER_SHUTDOWN_GRACE_S = 2.0
 
 
 def _helper_shutdown_grace() -> float:
@@ -72,7 +76,10 @@ def _helper_shutdown_grace() -> float:
     # tui_gateway.entry, which installs signal handlers.
     from utils import env_float
 
-    return max(_HELPER_SHUTDOWN_GRACE_S, env_float("HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S", 1.0) + 0.5)
+    gateway = env_float("HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S", 1.0)
+    if not math.isfinite(gateway) or gateway <= 0:
+        gateway = 1.0
+    return min(max(_HELPER_SHUTDOWN_GRACE_S, gateway + 0.5), _MAX_HELPER_SHUTDOWN_GRACE_S)
 
 
 def _process_group_exists(pgid: int) -> bool:
@@ -81,8 +88,6 @@ def _process_group_exists(pgid: int) -> bool:
     except OSError:
         return False
     return True
-
-
 
 
 class PtyBridge:
@@ -253,13 +258,14 @@ class PtyBridge:
     def _discard_output(self, timeout: float) -> None:
         # Exiting children flush their pending terminal output first; on macOS a process stays in
         # exit (and a SIGHUP save outlasts the grace) until someone drains the master. The drain
-        # task has stopped reading by now, so read and drop while waiting.
+        # task no longer consumes the output, so read and drop while waiting.
         try:
             readable, _, _ = select.select([self._fd], [], [], timeout)
-            if readable:
-                os.read(self._fd, 65536)
-        except OSError:
-            time.sleep(timeout)
+            if readable and os.read(self._fd, 65536):
+                return
+        except (OSError, ValueError):
+            pass
+        time.sleep(timeout)  # nothing read, EOF (b"") or EIO: don't spin on a readable dead fd
 
     def _wait_for_group_exit(self, pgid: int, timeout: float) -> None:
         deadline = time.monotonic() + timeout
@@ -312,7 +318,7 @@ class PtyBridge:
                     os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
                 except OSError:
                     break  # ESRCH: the group is empty
-                self._wait_for_group_exit(pgid, grace)
+                self._wait_for_group_exit(pgid, grace if sig == signal.SIGHUP else 0.5)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
 
         try:
             self._proc.close(force=True)

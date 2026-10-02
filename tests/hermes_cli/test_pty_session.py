@@ -453,6 +453,23 @@ async def test_close_all_does_not_wait_on_one_slow_close_before_the_next():
 
 
 @pytest.mark.asyncio
+async def test_close_all_waits_for_closes_already_running_in_the_background():
+    """A dead remnant or evicted session leaves the registry before its close() finishes; the
+    backend's teardown must still wait for it, or its helpers outlive the backend."""
+    reg = make_registry(ttl=60.0)
+    bridges, entered, release = await _two_idle_sessions_first_close_gated(reg)
+    reg._close_in_background(reg._sessions.pop("k0"))
+    await entered.wait()                      # k0 is closing outside the registry
+
+    closer = asyncio.create_task(reg.close_all())
+    await asyncio.sleep(0.05)
+    assert not closer.done()                  # still waiting on k0
+    release.set()
+    await closer
+    assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
 async def test_close_other_sessions_removes_old_profile_session():
     from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
 

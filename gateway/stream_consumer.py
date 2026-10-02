@@ -170,6 +170,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._use_draft_streaming = False
         self._draft_id: Optional[int] = None
         self._draft_failures = 0
+        self._draft_activity_interval = 0.0
+        self._last_draft_activity: Optional[float] = None
         # TERMINAL authorization refusal for THIS RUN (see _send_draft_frame).
         # Per-run state, constructed fresh each turn, so a refusal can never
         # mute a healthy destination on a later turn.
@@ -467,6 +469,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _bump_draft_id(self) -> None:
         type(self)._draft_id_counter += 1
         self._draft_id = type(self)._draft_id_counter
+        self._last_draft_activity = None
 
     async def _handle_approval_boundary(self, boundary_future, cancelled_flag=None) -> None:
         """Serially process an interaction boundary dequeued by run().  The stream is never
@@ -571,6 +574,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         await self._suppress_silence_marker()
                         return
 
+                if not tick.got_done and not tick.got_segment_break:
+                    await self._refresh_draft_activity()
+
                 if self._should_edit(tick) and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)
                 ):
@@ -647,6 +653,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # the next one.
         if self._use_draft_streaming:
             self._bump_draft_id()
+            # A running gateway can retain an older adapter across a source update.
+            activity_probe = getattr(self.adapter, "draft_activity_interval", None)
+            if activity_probe is not None:
+                try:
+                    self._draft_activity_interval = activity_probe(
+                        chat_type=self.cfg.chat_type or None, metadata=self.metadata)
+                except Exception:
+                    logger.debug("draft_activity_interval probe raised", exc_info=True)
             logger.debug("Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                          self.chat_id, self._draft_id)
 

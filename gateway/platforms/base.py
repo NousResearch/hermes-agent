@@ -2076,6 +2076,16 @@ class BasePlatformAdapter(ABC):
         fall back to ``send`` + ``edit_message`` when False or ``send_draft`` raises."""
         return False
 
+    def draft_activity_interval(
+        self, chat_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """Refresh interval for an empty draft showing activity before visible text.
+
+        Zero disables it. Opt-in adapters must accept empty ``send_draft`` frames;
+        the consumer reuses the answer's draft id and stops refreshing once text arrives.
+        """
+        return 0.0
+
     def prefers_fresh_final_streaming(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Whether the stream consumer should finalize with a *fresh* final message (best-effort
         deleting the preview) instead of final-editing it (Telegram: keeps rich rendering)."""

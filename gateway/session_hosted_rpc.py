@@ -210,9 +210,12 @@ class HostedRoomAuthorityRPC:
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
             await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
-        else:
-            await self.authority.interrupt(self.principal, self.ref, row['generation'])
-        return {'interrupted': True, 'status': 'interrupted'}
+            # Queued input never ran; cancellation is already its terminal.
+            return {'interrupted': True, 'status': 'interrupted'}
+        await self.authority.interrupt(self.principal, self.ref, row['generation'])
+        # Interrupt requests can outlive their delivery. Keep the hosted task
+        # stopping until the producer commits an actual terminal outcome.
+        return {'interrupted': False, 'status': 'running'}
 
     async def _discard(self, params):
         generation = params['execution_generation']

@@ -4,8 +4,19 @@ on:
     branches:
       - cursor/fix-pyjwt-vulnerability-974b
     paths:
-      - "uv.lock.part00"
-      - "uv.lock.part01"
+      - "uv.lock.gz.b64.part00"
+      - "uv.lock.gz.b64.part01"
+      - "uv.lock.gz.b64.part02"
+      - "uv.lock.gz.b64.part03"
+      - "uv.lock.gz.b64.part04"
+      - "uv.lock.gz.b64.part05"
+      - "uv.lock.gz.b64.part06"
+      - "uv.lock.gz.b64.part07"
+      - "uv.lock.gz.b64.part08"
+      - "uv.lock.gz.b64.part09"
+      - "uv.lock.gz.b64.part10"
+      - "uv.lock.gz.b64.part11"
+      - "uv.lock.gz.b64.part12"
       - ".github/workflows/assemble-uvlock.yml"
 permissions:
   contents: write
@@ -14,20 +25,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Assemble and commit uv.lock
+      - name: Decode, gunzip, commit uv.lock
         run: |
           set -euo pipefail
-          test -f uv.lock.part00
-          test -f uv.lock.part01
-          cat uv.lock.part00 uv.lock.part01 > uv.lock
+          cat uv.lock.gz.b64.part00 uv.lock.gz.b64.part01 uv.lock.gz.b64.part02 uv.lock.gz.b64.part03 uv.lock.gz.b64.part04 uv.lock.gz.b64.part05 uv.lock.gz.b64.part06 uv.lock.gz.b64.part07 uv.lock.gz.b64.part08 uv.lock.gz.b64.part09 uv.lock.gz.b64.part10 uv.lock.gz.b64.part11 uv.lock.gz.b64.part12 > uv.lock.gz.b64
+          base64 -d uv.lock.gz.b64 | gunzip > uv.lock
           test "$(wc -c < uv.lock)" -gt 1000000
           grep -q 'name = "pyjwt"' uv.lock
           grep -q 'version = "2.15.1"' uv.lock
-          rm -f uv.lock.part00 uv.lock.part01
+          rm -f uv.lock.gz.b64 uv.lock.gz.b64.part00 uv.lock.gz.b64.part01 uv.lock.gz.b64.part02 uv.lock.gz.b64.part03 uv.lock.gz.b64.part04 uv.lock.gz.b64.part05 uv.lock.gz.b64.part06 uv.lock.gz.b64.part07 uv.lock.gz.b64.part08 uv.lock.gz.b64.part09 uv.lock.gz.b64.part10 uv.lock.gz.b64.part11 uv.lock.gz.b64.part12
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add uv.lock
-          git add -u || true
+          git add -u
           git rm -f .github/workflows/assemble-uvlock.yml || true
           git rm -f .hermes-pyjwt-fix-marker || true
           git commit -m "security: restore complete uv.lock for PyJWT 2.15.1"

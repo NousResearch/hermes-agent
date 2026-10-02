@@ -45,7 +45,6 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
 from html import escape as _html_escape
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Collection, Dict, Optional, Set
 
@@ -103,7 +102,8 @@ from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.platforms.helpers import ThreadParticipationTracker
 from gateway.session import SessionSource
-from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
+from plugins.platforms.matrix.room_context import MatrixRoomIdentity, MatrixRoomState, format_room_notes
+from plugins.platforms.matrix.context_mixin import MatrixContextMixin
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -260,90 +260,8 @@ def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
     return isinstance(status, int) and status in (401, 403)
 
 
-class _MatrixHtmlSanitizer(HTMLParser):
-    """Allowlist sanitizer for Matrix-compatible formatted HTML."""
-
-    _ALLOWED_TAGS = {
-        "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol",
-        "p", "pre", "s", "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"}
-    _VOID_TAGS = {"br", "hr"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=False)
-        self._parts: list[str] = []
-        self._skip_depth = 0
-
-    @staticmethod
-    def _safe_url(value: str) -> str:
-        stripped = re.sub(r"[\x00-\x1f\x7f]+", "", value or "").strip()
-        match = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):", stripped)
-        scheme = match.group(1).lower() if match else ""
-        if scheme and scheme not in {"http", "https", "matrix", "mailto"}:
-            return ""
-        return stripped
-
-    def _safe_attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
-        safe: list[str] = []
-        for key, value in attrs:
-            attr = str(key or "").lower()
-            raw_value = "" if value is None else str(value)
-            if tag == "a" and attr == "href":
-                href = self._safe_url(raw_value)
-                if href:
-                    safe.append(f' href="{_html_escape(href, quote=True)}"')
-            elif tag == "code" and attr == "class" and re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
-                safe.append(f' class="{_html_escape(raw_value, quote=True)}"')
-        return "".join(safe)
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style"}:
-            self._skip_depth += 1
-        elif not self._skip_depth and tag in self._ALLOWED_TAGS:
-            self._parts.append(f"<{tag}>" if tag in self._VOID_TAGS else f"<{tag}{self._safe_attrs(tag, attrs)}>")
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style"} and self._skip_depth:
-            self._skip_depth -= 1
-            return
-        if self._skip_depth or tag not in self._ALLOWED_TAGS or tag in self._VOID_TAGS:
-            return
-        self._parts.append(f"</{tag}>")
-
-    def _emit(self, text: str) -> None:
-        if not self._skip_depth:
-            self._parts.append(text)
-
-    def handle_data(self, data: str) -> None:
-        self._emit(_html_escape(data))
-
-    def handle_entityref(self, name: str) -> None:
-        self._emit(f"&{name};")
-
-    def handle_charref(self, name: str) -> None:
-        self._emit(f"&#{name};")
-
-    def get_html(self) -> str:
-        return "".join(self._parts)
 
 
-@dataclass(frozen=True)
-class MatrixRoomIdentity:
-    """Resolved Matrix room identity for routing and prompt context."""
-    room_id: str
-    room_name: str | None
-    room_topic: str | None
-    canonical_alias: str | None
-    server_name: str | None
-    joined_member_count: int | None
-    # None when any state or member read failed. A turn then reports nothing and keeps the saved baseline.
-    room_state: MatrixRoomState | None
-    is_direct_account_data: bool
-    display_name: str
-    has_explicit_name: bool
-    chat_type: str
-    conflict: bool = False
 
 
 @dataclass
@@ -417,8 +335,6 @@ def _resolve_max_message_length(config) -> int:
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
-_ROOM_STATE_READ_TIMEOUT_SECONDS = 10.0
-_ROOM_NAME_STATE_KEYS = {"m.room.name": "name", "m.room.topic": "topic", "m.room.canonical_alias": "alias"}
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
@@ -645,58 +561,11 @@ def _scoped_recovery_key() -> str:
 # markup after sanitization. Tokens are plain printable text with no special
 # HTML/Markdown meaning, so both the Markdown converter and the sanitizer
 # pass them through verbatim.
-_TEX_TOKEN_RE = re.compile(r"HERMESTEX(?:DISPLAY|INLINE)(\d+)HERMESTEXEND")
-_TEX_DISPLAY_TOKEN = "HERMESTEXDISPLAY%dHERMESTEXEND"
-_TEX_INLINE_TOKEN = "HERMESTEXINLINE%dHERMESTEXEND"
 
 
-def _latex_to_tokens(text: str) -> tuple[str, list[tuple[str, str]]]:
-    """Replace ``$$...$$``/``$...$`` with sentinel tokens.
-
-    Returns the tokenized text plus an ordered ``(tag, tex)`` store, where tag
-    is ``div`` for display math and ``span`` for inline math. Dollars that do
-    not form a pair (prices, literals) are left untouched.
-    """
-    if not text or "$" not in text:
-        return text, []
-    store: list[tuple[str, str]] = []
-
-    def _sub_display(match: re.Match[str]) -> str:
-        store.append(("div", match.group(1).strip()))
-        return _TEX_DISPLAY_TOKEN % (len(store) - 1)
-
-    def _sub_inline(match: re.Match[str]) -> str:
-        store.append(("span", match.group(1).strip()))
-        return _TEX_INLINE_TOKEN % (len(store) - 1)
-
-    text = re.sub(r"\$\$([^\n$]+?)\$\$", _sub_display, text)
-    text = re.sub(r"(?<![\\$\w])\$([^\n$]+?)\$(?!\w)", _sub_inline, text)
-    return text, store
 
 
-def _tokens_to_mx_maths(html: str, store: list[tuple[str, str]]) -> str:
-    """Expand sentinel tokens into ``data-mx-maths`` markup (TeX HTML-escaped)."""
 
-    def _expand(match: re.Match[str]) -> str:
-        idx = int(match.group(1))
-        if idx >= len(store):
-            # Not one of our tokens (user-typed text that collides with the
-            # sentinel format) — leave it verbatim.
-            return match.group(0)
-        tag, tex = store[idx]
-        escaped = _html_escape(tex, quote=True)
-        return f'<{tag} data-mx-maths="{escaped}">{escaped}</{tag}>'
-
-    return _TEX_TOKEN_RE.sub(_expand, html)
-
-def _sanitize_matrix_html(html: str) -> str:
-    sanitizer = _MatrixHtmlSanitizer()
-    try:
-        sanitizer.feed(html or "")
-        sanitizer.close()
-        return sanitizer.get_html()
-    except Exception:
-        return _html_escape(html or "")
 
 
 def _redact_url_for_log(url: str) -> str:
@@ -710,13 +579,6 @@ def _redact_url_for_log(url: str) -> str:
         return "<url>"
 
 
-def _pre_sanitize_matrix_markdown(text: str) -> str:
-    """Remove unsafe raw HTML before Markdown conversion can escape it."""
-    result = re.sub(r"(?is)<\s*(script|style)\b[^>]*>.*?<\s*/\s*\1\s*>", "", text or "")
-    result = re.sub(r"""(?is)\s+on[a-z0-9_-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", "", result)
-    return re.sub(
-        r"""(?is)\s+(href|src)\s*=\s*("[^"]*(?:javascript|data|vbscript):[^"]*"|'[^']*(?:javascript|data|vbscript):[^']*'|[^\s>]*(?:javascript|data|vbscript):[^\s>]*)""",
-        "", result)
 
 
 def matrix_deps_present() -> bool:
@@ -796,7 +658,7 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -2013,22 +1875,7 @@ class MatrixAdapter(BasePlatformAdapter):
         localpart = (sender or "").strip().lstrip("@").partition(":")[0]
         return not localpart or localpart.startswith("_")
 
-    def _is_allowed_matrix_room(self, room_id: str, chat_type: str = "group") -> bool:
-        return (
-            not self._allowed_room_ids
-            or room_id in self._allowed_room_ids
-            or chat_type == "dm"
-        )
 
-    async def _is_allowed_matrix_room_event(self, room_id: str) -> bool:
-        """MATRIX_ALLOWED_ROOMS gate; DMs are exempt so personal chats survive a project allowlist."""
-        if self._is_allowed_matrix_room(room_id):
-            return True
-        try:
-            return await self._is_dm_room(room_id)
-        except Exception as exc:
-            logger.debug("Matrix: could not resolve room identity for allowlist check in %s: %s", room_id, exc)
-            return False
 
     def _reset_clock_skew_detector(self) -> None:
         """State for _note_late_grace_drop: consecutive-drop count, their skew, and the once-only warning."""
@@ -2909,218 +2756,15 @@ class MatrixAdapter(BasePlatformAdapter):
             lambda: self._client.set_presence(presence=presence_map[state], status=status_msg or None),
             ("Matrix: presence set to %s", state), "Matrix: set_presence failed: %s", level="debug")
 
-    @staticmethod
-    def _state_event_value(event: Any, key: str) -> Optional[str]:
-        """Extract a simple value from a Matrix state event object or dict (top-level, then .content)."""
-        if event is None:
-            return None
-        for obj in (event, event.get("content") if isinstance(event, dict) else getattr(event, "content", None)):
-            value = obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
-            if value:
-                return str(value)
-        return None
 
-    async def _get_room_members(self, room_id: str) -> Optional[set[str]]:
-        """Read the complete joined member list from the store or homeserver."""
-        client = getattr(self, "_client", None)
-        if client is None:
-            return None
 
-        state_store = getattr(client, "state_store", None)
-        if state_store is not None:
-            with suppress(Exception):
-                if await state_store.has_full_member_list(RoomID(room_id)):
-                    members = await state_store.get_members(
-                        RoomID(room_id), memberships=(Membership.JOIN,)
-                    )
-                    if members is not None:
-                        return {str(member) for member in members}
 
-        with suppress(Exception):
-            members = await asyncio.wait_for(client.get_joined_members(RoomID(room_id)), timeout=10)
-            if isinstance(members, dict):
-                return {str(member) for member in members}
-        return None
 
-    async def _get_room_member_profiles(self, room_id: str) -> Optional[Dict[Any, Any]]:
-        state_store = getattr(self._client, "state_store", None) if self._client else None
-        if state_store:
-            with suppress(Exception):
-                profiles = await state_store.get_member_profiles(
-                    RoomID(room_id), memberships=(Membership.JOIN,)
-                )
-                if profiles:
-                    return dict(profiles)
 
-        client = getattr(self, "_client", None)
-        if client is not None and hasattr(client, "get_joined_members"):
-            with suppress(Exception):
-                profiles = await asyncio.wait_for(
-                    client.get_joined_members(RoomID(room_id)), _ROOM_STATE_READ_TIMEOUT_SECONDS,
-                )
-                if profiles:
-                    return dict(profiles)
-        return None
 
-    def _compute_room_display_name(self, profiles: Optional[Dict[Any, Any]]) -> Optional[str]:
-        if not profiles:
-            return None
 
-        own_user_id = (self._user_id or "").strip().lower()
-        names = []
-        for user_id, member in profiles.items():
-            if str(user_id).strip().lower() == own_user_id:
-                continue
-            display_name = getattr(member, "displayname", None)
-            if display_name and display_name.strip():
-                names.append(display_name.strip())
-            elif str(user_id).startswith("@") and ":" in str(user_id):
-                names.append(str(user_id)[1:].split(":", 1)[0])
-            else:
-                names.append(str(user_id))
 
-        if not names:
-            return None
 
-        names.sort()
-        if len(names) == 1:
-            return names[0]
-        if len(names) <= 3:
-            return f"{', '.join(names[:-1])} and {names[-1]}"
-        remaining = len(names) - 3
-        noun = "other" if remaining == 1 else "others"
-        return f"{', '.join(names[:3])} and {remaining} {noun}"
-
-    async def _read_room_state_event(self, room_id: str, event_type: str) -> Any:
-        """The content of a room state event, or None when the room has no such event (``M_NOT_FOUND``).
-        Any other failure, including the read deadline, raises."""
-        if not self._client or not hasattr(self._client, "get_state_event"):
-            return None
-        try:
-            return await asyncio.wait_for(
-                self._client.get_state_event(RoomID(room_id), event_type), _ROOM_STATE_READ_TIMEOUT_SECONDS,
-            )
-        except Exception as exc:
-            if isinstance(exc, MNotFound) or getattr(exc, "errcode", None) == "M_NOT_FOUND":
-                return None
-            raise
-
-    async def _read_room_member_profiles(self, room_id: str) -> tuple[Optional[set[str]], Optional[Dict[Any, Any]]]:
-        members = await self._get_room_members(room_id)
-        profiles = await self._get_room_member_profiles(room_id) if members is not None else None
-        return members, profiles
-
-    def _remember_room_names(
-        self, room_id: str, reads: Dict[str, Any], profiles: Optional[Dict[Any, Any]],
-    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-        """The room's name, topic, canonical alias and member-derived name. *reads* maps each event type
-        in ``_ROOM_NAME_STATE_KEYS`` to its content or to the exception that its read raised, and
-        *profiles* is None when the member read failed. A failed read gives the last value read for the
-        room, so a timeout does not rename the room; a successful read replaces that value, so a removed
-        name or topic applies."""
-        values = self._room_state_values.pop(room_id, {})
-        for event_type, key in _ROOM_NAME_STATE_KEYS.items():
-            event = reads[event_type]
-            if not isinstance(event, Exception):
-                values[event_type] = (self._state_event_value(event, key) or "").strip() or None
-        if profiles is not None:
-            values["m.room.member"] = self._compute_room_display_name(profiles)
-        if len(self._room_state_values) >= self._room_identity_cache_max:
-            del self._room_state_values[next(iter(self._room_state_values))]
-        self._room_state_values[room_id] = values
-        return (
-            values.get("m.room.name"), values.get("m.room.topic"), values.get("m.room.canonical_alias"),
-            values.get("m.room.member"),
-        )
-
-    def _invalidate_room_identities(self, room_id: str | None = None) -> None:
-        """Drop one cached room identity (or all when *room_id* is None)."""
-        if room_id is None:
-            self._room_identities.clear()
-            self._room_identity_cached_at.clear()
-        else:
-            self._room_identities.pop(room_id, None)
-            self._room_identity_cached_at.pop(room_id, None)
-
-    async def _resolve_room_identity(self, room_id: str, *, force_refresh: bool = False) -> MatrixRoomIdentity:
-        """Resolve room identity from joined membership and room metadata."""
-        cached = self._room_identities.get(room_id)
-        ttl = self._room_identity_ttl_seconds
-        cache_fresh = ttl <= 0 or time.monotonic() - self._room_identity_cached_at.get(room_id, 0.0) <= ttl
-        if cached is not None and cache_fresh and not force_refresh:
-            return cached
-        (
-            name_event, topic_event, alias_event, join_rules_event, history_event, encryption_event,
-            tombstone_event, member_read,
-        ) = reads = await asyncio.gather(
-            *(
-                self._read_room_state_event(room_id, event_type) for event_type in (
-                    "m.room.name", "m.room.topic", "m.room.canonical_alias", "m.room.join_rules",
-                    "m.room.history_visibility", "m.room.encryption", "m.room.tombstone",
-                )
-            ),
-            self._read_room_member_profiles(room_id),
-            return_exceptions=True,
-        )
-        for result in reads:
-            if isinstance(result, BaseException) and not isinstance(result, Exception):
-                raise result
-        failed_reads = [result for result in reads if isinstance(result, Exception)]
-        members, profiles = (
-            (None, None) if isinstance(member_read, BaseException) else member_read
-        )
-        if failed_reads:
-            logger.debug("Matrix: room state read failed for %s: %r", room_id, failed_reads[0])
-
-        def state_value(event: Any, key: str) -> Optional[str]:
-            if isinstance(event, Exception):
-                return None
-            return (self._state_event_value(event, key) or "").strip() or None
-
-        room_name, room_topic, canonical_alias, member_name = self._remember_room_names(
-            room_id, dict(zip(_ROOM_NAME_STATE_KEYS, (name_event, topic_event, alias_event))), profiles,
-        )
-        member_count = len(members) if members is not None else None
-        members_digest = None
-        if members is not None and profiles is not None:
-            profile_names = {
-                str(user_id): str(getattr(profile, "displayname", None) or "")
-                for user_id, profile in profiles.items()
-            }
-            member_rows = [(user_id, profile_names.get(user_id, "")) for user_id in sorted(members)]
-            members_digest = hashlib.sha256(
-                json.dumps(member_rows, ensure_ascii=False).encode("utf-8")
-            ).hexdigest()
-        has_explicit_name = bool(room_name)
-        is_direct = bool(self._dm_rooms.get(room_id, False))
-        is_likely_dm = bool(members is not None and len(members) == 2 and self._user_id in members)
-        display_name = room_name or canonical_alias or member_name or room_id
-        room_state = (
-            None if failed_reads or members_digest is None
-            else MatrixRoomState(
-                display_name, room_topic, members_digest,
-                join_rule=state_value(join_rules_event, "join_rule"),
-                history_visibility=state_value(history_event, "history_visibility"),
-                encrypted=encryption_event is not None, tombstoned=tombstone_event is not None,
-            )
-        )
-        identity = MatrixRoomIdentity(
-            room_id=room_id, room_name=room_name, room_topic=room_topic, canonical_alias=canonical_alias,
-            server_name=(room_id.rsplit(":", 1)[-1].strip() or None) if ":" in room_id else None,
-            joined_member_count=member_count, room_state=room_state,
-            is_direct_account_data=is_direct, display_name=display_name,
-            has_explicit_name=has_explicit_name, chat_type="dm" if is_likely_dm else "room",
-            conflict=bool(is_direct and not is_likely_dm))
-        if len(self._room_identities) >= self._room_identity_cache_max:
-            oldest = min(self._room_identity_cached_at, key=self._room_identity_cached_at.get, default=None)
-            if oldest:
-                self._invalidate_room_identities(oldest)
-        self._room_identities[room_id] = identity
-        self._room_identity_cached_at[room_id] = time.monotonic()
-        return identity
-
-    async def _is_dm_room(self, room_id: str) -> bool:
-        return (await self._resolve_room_identity(room_id)).chat_type == "dm"
 
     async def read_matrix_context(
         self,
@@ -3372,6 +3016,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _markdown_to_html(self, text: str) -> str:
         """Markdown → org.matrix.custom.html via ``markdown`` when installed, else the regex fallback."""
+        from plugins.platforms.matrix.rendering import (
+            _pre_sanitize_matrix_markdown, _latex_to_tokens,
+            _sanitize_matrix_html, _tokens_to_mx_maths,
+        )
         text = _pre_sanitize_matrix_markdown(text)
         text, tex_store = _latex_to_tokens(text)
         with suppress(ImportError):
@@ -3513,6 +3161,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 def _standalone_payloads(message: str) -> list[dict[str, Any]]:
     """One m.room.message content per chunk. The caller chunks on characters, and a chunk of
     non-Latin text can still exceed the homeserver's byte cap, so re-chunk on UTF-8 bytes."""
+    from plugins.platforms.matrix.rendering import _latex_to_tokens, _tokens_to_mx_maths
     _md = None
     with suppress(ImportError):
         import markdown as _md

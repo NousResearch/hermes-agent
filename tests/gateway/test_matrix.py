@@ -968,9 +968,9 @@ async def test_room_baseline_survives_compaction_of_every_saved_snapshot(tmp_pat
 
 @pytest.mark.asyncio
 async def test_room_state_reads_overlap_and_stop_at_the_deadline(tmp_path, monkeypatch):
-    from plugins.platforms.matrix import adapter as matrix_adapter
+    from plugins.platforms.matrix import context_mixin as matrix_context
 
-    monkeypatch.setattr(matrix_adapter, "_ROOM_STATE_READ_TIMEOUT_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(matrix_context, "_ROOM_STATE_READ_TIMEOUT_SECONDS", 0.05)
     store, source = _room_session(tmp_path)
     adapter = _room_context_adapter(_OPS_STATE)
     topic_started = asyncio.Event()

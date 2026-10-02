@@ -222,20 +222,25 @@ test('an array store file loads as signed out instead of throwing', () => {
   assert.deepEqual(disk.logs, [])
 })
 
-test('an array store file is replaced by a real map rather than swallowing the write', () => {
-  const disk = createFakeDisk('[]')
-
-  persistNativeTokenSet(GATEWAY, TOKENS, disk.io)
-
-  const written = JSON.parse(disk.fileText()!)
-
-  // Assigning store[baseUrl] on an array sets a non-index property, which
-  // JSON.stringify drops — the write would report success and the tokens would
-  // be gone on the next launch.
-  assert.equal(Array.isArray(written), false)
-  assert.ok(written[GATEWAY], 'the gateway entry must survive serialization')
-  // And it really does come back after a restart.
-  assert.deepEqual(loadNativeTokenSet(GATEWAY, createFakeDisk(disk.fileText()).io), TOKENS)
+test('unreadable native stores refuse save and clear without erasing other gateways', () => {
+  for (const bad of ['[]', 'null', '17', '{broken credential', 'unreadable-file']) {
+    let encryptions = 0, writes = 0
+    const disk = createFakeDisk(bad)
+    const io = { ...disk.io,
+      readStoreText: () => {
+        if (bad === 'unreadable-file') {throw Object.assign(new Error('no access'), { code: 'EACCES' })}
+        return bad
+      },
+      encrypt: (text: string) => {encryptions++; return disk.io.encrypt(text)},
+      writeStoreText: (text: string) => {writes++; disk.io.writeStoreText(text)}
+    }
+    for (const tokens of [TOKENS, null]) {
+      assert.throws(() => persistNativeTokenSet(GATEWAY, tokens, io), /refusing to replace/)
+    }
+    assert.equal(encryptions, 0)
+    assert.equal(writes, 0)
+    assert.equal(disk.fileText(), bad)
+  }
 })
 
 test('a corrupt decrypted blob is reported and loads as signed out', () => {
@@ -256,14 +261,21 @@ test('a decrypted blob missing accessToken is rejected, not half-restored', () =
   assert.match(disk.logs[0], /missing accessToken/i)
 })
 
-test('an unwritable store file is logged rather than thrown', () => {
+test('an unwritable store refuses both save and clear before cache publication', () => {
   const disk = createFakeDisk(null, {
     writeStoreText: () => {
       throw new Error('EACCES: permission denied')
     }
   })
 
-  assert.doesNotThrow(() => persistNativeTokenSet(GATEWAY, TOKENS, disk.io))
+  const cache = new Map<string, NativeTokenSet>([[GATEWAY, TOKENS]])
+  for (const next of [{ ...TOKENS, accessToken: 'replacement' }, null]) {
+    assert.throws(() => {
+      persistNativeTokenSet(GATEWAY, next, disk.io)
+      if (next) {cache.set(GATEWAY, next)} else {cache.delete(GATEWAY)}
+    }, /EACCES/)
+    assert.deepEqual(cache.get(GATEWAY), TOKENS)
+  }
   assert.match(disk.logs[0], /failed to persist tokens: EACCES/)
 })
 

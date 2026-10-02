@@ -49,21 +49,30 @@ export interface NativeTokenStoreIo {
 
 /**
  * baseUrl → encrypted payload. A missing, unreadable, or hand-mangled store
- * reads as empty rather than throwing: a failed *read* falls to the next rung.
+ * reads as empty for observation. Mutations may start empty only for ENOENT;
+ * unreadable existing bytes must never be replaced with another gateway's map.
  *
  * Arrays are rejected alongside every other non-object shape: assigning
  * store[baseUrl] on an array would set a non-index property, which
  * JSON.stringify drops on the way back out — the write would look like it
  * succeeded and the tokens would be gone on the next launch.
  */
-function readStore(io: NativeTokenStoreIo): Record<string, any> {
+function readStore(io: NativeTokenStoreIo, mutation = false): Record<string, any> {
+  let text: string
   try {
-    const parsed = JSON.parse(io.readStoreText())
-
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  } catch {
-    return {}
+    text = io.readStoreText()
+  } catch (error) {
+    if (!mutation || (error as NodeJS.ErrnoException).code === 'ENOENT') {return {}}
+    throw new Error('Stored native tokens could not be read; refusing to replace them.')
   }
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {return parsed}
+  } catch {
+    // Do not include a JSON parser's credential-bearing excerpt in the error.
+  }
+  if (mutation) {throw new Error('Stored native tokens are unreadable; refusing to replace them.')}
+  return {}
 }
 
 /**
@@ -96,7 +105,7 @@ function redactGatewayUrl(baseUrl: string): string {
  * into whatever other gateways are already stored.
  */
 export function persistNativeTokenSet(baseUrl: string, tokens: NativeTokenSet | null, io: NativeTokenStoreIo): void {
-  const store = readStore(io)
+  const store = readStore(io, true)
 
   if (tokens) {
     // Encrypt the whole set as one blob so the refresh token never lands in
@@ -124,6 +133,7 @@ export function persistNativeTokenSet(baseUrl: string, tokens: NativeTokenSet | 
     const detail = error instanceof Error ? error.message : String(error)
 
     io.rememberLog?.(`[native-oauth] failed to persist tokens: ${detail}`)
+    throw error
   }
 }
 

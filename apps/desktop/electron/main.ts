@@ -483,6 +483,7 @@ import {
   type SecretStoragePolicy,
   writeSecretStoragePolicy
 } from './secret-storage-policy'
+import { changeSecretStorageEncryption, recoverSecretStorageTransition, recoverSecretStorageAtStartup } from './secret-storage-transition'
 import { selectPathsDialogProperties } from './select-paths-dialog'
 import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
 import {
@@ -7750,13 +7751,16 @@ function _nativeTokenStorePath() {
 // userData file. native-token-store.ts owns the serialization/parse round trip
 // so it can be tested without an Electron runtime.
 function _nativeTokenStoreIo(): NativeTokenStoreIo {
+  recoverSecretStorageBeforeUse()
   return {
     encrypt: encryptDesktopSecret,
     decrypt: decryptDesktopSecret,
     readStoreText: () => fs.readFileSync(_nativeTokenStorePath(), 'utf8'),
     writeStoreText: (text: string) => {
       fs.mkdirSync(path.dirname(_nativeTokenStorePath()), { recursive: true })
-      fs.writeFileSync(_nativeTokenStorePath(), text, { mode: 0o600 })
+      writeSecretFileAtomic(_nativeTokenStorePath(), text, { encoding: 'utf8', uniqueStage: true, durable: {
+        verify: bytes => {if (bytes.toString('utf8') !== text) {throw new Error('Native token write verification failed.')}}
+      } })
     },
     rememberLog
   }
@@ -7767,6 +7771,7 @@ function _persistNativeTokens(baseUrl: string, tokens: NativeTokenSet | null) {
 }
 
 function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
+  recoverSecretStorageBeforeUse()
   baseUrl = normalizeRemoteBaseUrl(baseUrl)
   const cached = _nativeTokens.get(baseUrl)
 
@@ -7789,8 +7794,8 @@ function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
 }
 
 function _clearNativeTokens(baseUrl: string) {
-  _nativeTokens.delete(baseUrl)
   _persistNativeTokens(baseUrl, null)
+  _nativeTokens.delete(baseUrl)
 }
 
 // True when we hold native bearer tokens for this gateway (the native-flow
@@ -8255,12 +8260,30 @@ const SECRET_STORAGE_POLICY_PATH = path.join(app.getPath('userData'), SECRET_STO
 
 const _secretStoragePolicyIo = {
   readText: () => fs.readFileSync(SECRET_STORAGE_POLICY_PATH, 'utf8'),
-  writeText: (text: string) => writeSecretFileAtomic(SECRET_STORAGE_POLICY_PATH, text, { encoding: 'utf8' })
+  writeText: (text: string) => writeSecretFileAtomic(SECRET_STORAGE_POLICY_PATH, text, { encoding: 'utf8', uniqueStage: true,
+    durable: { verify: bytes => {if (bytes.toString('utf8') !== text) {throw new Error('Storage policy write verification failed.')}} } })
 }
 
 let _secretStoragePolicy: SecretStoragePolicy | null = null
+let _secretStorageRecoveryChecked = false
+
+function invalidateSecretStorageCaches() {
+  _secretStoragePolicy = null
+  connectionConfigCache = connectionRegistryCache = null
+  connectionConfigCacheMtime = connectionRegistryCacheMtime = null
+  remoteHeaderSourcesCache = null
+  _nativeTokens.clear()
+}
+
+function recoverSecretStorageBeforeUse() {
+  if (!_secretStorageRecoveryChecked) {
+    if (recoverSecretStorageTransition(app.getPath('userData'))) {invalidateSecretStorageCaches()}
+    _secretStorageRecoveryChecked = true
+  }
+}
 
 function secretStoragePolicy(): SecretStoragePolicy {
+  recoverSecretStorageBeforeUse()
   if (!_secretStoragePolicy) {
     _secretStoragePolicy = readSecretStoragePolicy(_secretStoragePolicyIo)
   }
@@ -8269,8 +8292,9 @@ function secretStoragePolicy(): SecretStoragePolicy {
 }
 
 function setSecretStoragePolicy(next: SecretStoragePolicy) {
-  _secretStoragePolicy = { on: next.on === true, migrated: next.migrated === true }
-  writeSecretStoragePolicy(_secretStoragePolicy, _secretStoragePolicyIo)
+  const normalized = { on: next.on === true, migrated: next.migrated === true }
+  writeSecretStoragePolicy(normalized, _secretStoragePolicyIo)
+  _secretStoragePolicy = normalized
 }
 
 /**
@@ -8295,8 +8319,8 @@ function probeSecureTokenStorage(): boolean {
 /**
  * Rewrite every stored desktop secret (v1 connection.json token/headers +
  * per-profile overrides, v2 registry connections, native OAuth token store)
- * through `reencode`. Returns true when any store was rewritten. Shared by
- * the one-shot legacy migration and the Settings encryption toggle.
+ * through `reencode` for the one-shot legacy migration. Explicit Settings
+ * transitions instead use the recoverable multi-store transaction.
  */
 function rewriteAllStoredSecrets(shouldRewrite: (secret: any) => boolean, reencode: (secret: any) => any): boolean {
   let touched = false
@@ -8450,64 +8474,26 @@ function migrateLegacyEncryptedSecretsOnce() {
  * expected and acceptable.
  */
 function applySecretStorageEncryption(on: boolean) {
-  const enable = on === true
-
-  if (secretStoragePolicy().on === enable) {
-    return { on: enable }
+  const policy = secretStoragePolicy()
+  try {
+    const next = changeSecretStorageEncryption({
+      directory: app.getPath('userData'), policy, on: on === true,
+      available: () => {
+        requireRoomSetupEncryption({ on: true, migrated: true }, () =>
+          process.platform === 'linux' ? safeStorage.getSelectedStorageBackend() : undefined)
+        try {return Boolean(safeStorage.isEncryptionAvailable())} catch {return false}
+      },
+      encrypt: value => encryptDesktopSecretStrict(value, safeStorage),
+      // This callback belongs only to the user's explicit transition. Normal
+      // OFF reads retain their no-keychain rule; rollback only restores bytes.
+      decrypt: secret => secret.encoding === SAFE_STORAGE_ENCODING
+        ? safeStorage.decryptString(Buffer.from(String(secret.value), 'base64')) : String(secret.value || '')
+    })
+    return { on: next.on }
+  } finally {
+    invalidateSecretStorageCaches()
+    _secretStorageRecoveryChecked = false
   }
-
-  if (enable) {
-    const needsEncrypt = (secret: any) => secret?.encoding === 'plain' && Boolean(secret.value)
-
-    // Probe FIRST so an unusable keychain fails before any store is touched.
-    if (
-      !(() => {
-        try {
-          return Boolean(safeStorage.isEncryptionAvailable())
-        } catch {
-          return false
-        }
-      })()
-    ) {
-      throw new Error(
-        'OS keychain encryption is unavailable on this machine, so stored gateway secrets cannot be encrypted.'
-      )
-    }
-
-    setSecretStoragePolicy({ on: true, migrated: true })
-
-    try {
-      rewriteAllStoredSecrets(needsEncrypt, secret =>
-        needsEncrypt(secret) ? encryptDesktopSecretStrict(String(secret.value), safeStorage) : secret
-      )
-    } catch (error) {
-      // Encryption failed midway: revert the policy so reads keep working
-      // against whatever encodings are on disk (mixed stores read fine —
-      // decryptDesktopSecret handles both encodings under either policy).
-      setSecretStoragePolicy({ on: false, migrated: true })
-      throw error
-    }
-
-    return { on: true }
-  }
-
-  // Turning OFF: decrypt everything back to plain while the keychain is
-  // still readable, then flip the policy.
-  const needsDecrypt = (secret: any) => secret?.encoding === SAFE_STORAGE_ENCODING
-
-  rewriteAllStoredSecrets(needsDecrypt, (secret: any) => {
-    if (!needsDecrypt(secret)) {
-      return secret
-    }
-
-    const plaintext = decryptDesktopSecret(secret)
-
-    return plaintext ? { encoding: 'plain', value: plaintext } : secret
-  })
-
-  setSecretStoragePolicy({ on: false, migrated: true })
-
-  return { on: false }
 }
 
 function encryptDesktopSecret(value, options = {}) {
@@ -8532,6 +8518,7 @@ function encryptRoomSetupSecret(value: string) {
 }
 
 function decryptDesktopSecret(secret) {
+  recoverSecretStorageBeforeUse()
   if (!secret || typeof secret !== 'object') {
     return ''
   }
@@ -8813,6 +8800,7 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 }
 
 function readDesktopConnectionConfig() {
+  recoverSecretStorageBeforeUse()
   // Check if file changed on disk since last read (e.g. modified by another
   // process or an external tool).  Our own writes update the cache inline
   // via writeDesktopConnectionConfig, but external changes would be missed.
@@ -8884,6 +8872,7 @@ function readDesktopConnectionConfig() {
 }
 
 function writeDesktopConnectionConfig(config) {
+  recoverSecretStorageBeforeUse()
   fs.mkdirSync(path.dirname(DESKTOP_CONNECTION_CONFIG_PATH), { recursive: true })
   // Owner-only, not writeFileAtomic: this is the single choke point for every
   // connection.json write (the IPC save/apply handlers and
@@ -8911,6 +8900,7 @@ function writeDesktopConnectionConfig(config) {
  * and until that heals, every launch re-homes them onto a local backend.
  */
 function readDesktopConnectionsRegistry() {
+  recoverSecretStorageBeforeUse()
   let mtime = null
 
   try {
@@ -9021,6 +9011,7 @@ function preserveCorruptRegistrySidecar() {
 }
 
 function writeDesktopConnectionsRegistry(registry) {
+  recoverSecretStorageBeforeUse()
   fs.mkdirSync(path.dirname(DESKTOP_CONNECTIONS_REGISTRY_PATH), { recursive: true })
   // Owner-only for the same reason as connection.json: entries carry
   // safeStorage-encrypted tokens plus URLs and SSH host/user/keyPath.
@@ -14458,6 +14449,9 @@ registerPreparedSubmissions()
 
 // Grants never cross this bridge. Both commands share one trusted document gate.
 const nativeRoomSetup = roomSetupCoordinator({
+  beforeOperation: () => {
+    try {recoverSecretStorageBeforeUse()} catch {throw new RoomSetupError('setup_journal_unreadable')}
+  },
   store: roomSetupStore({
     directory: path.join(app.getPath('userData'), 'room-setup'),
     // Follow the existing explicit native storage policy. OFF deliberately uses
@@ -17792,7 +17786,7 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Post-update relaunch detection (App Installer arm): when the previous
   // version wrote the one-shot pending-relaunch marker before quitting into
   // an OS package swap, consume it here — the renderer toasts "Hermes
@@ -17819,6 +17813,16 @@ app.whenReady().then(() => {
   } else if (systemCa.error) {
     rememberLog(`[tls] could not load OS system CA certificates: ${systemCa.error}`)
   }
+
+  if (!await recoverSecretStorageAtStartup(recoverSecretStorageBeforeUse, async () => {
+    const result = await dialog.showMessageBox({
+      type: 'error', title: 'Saved credentials need recovery',
+      message: 'Hermes could not finish recovering its saved credentials.',
+      detail: 'Check that the Desktop data folder is accessible and the disk has free space, then try again. Your saved files have been kept.',
+      buttons: ['Try again', 'Quit'], defaultId: 0, cancelId: 1, noLink: true
+    })
+    return result.response === 0
+  })) {app.quit(); return}
 
   // Keyring-less Linux `--password-store=basic` support. This must run before
   // createWindow() and anything that could touch safeStorage; the narrow

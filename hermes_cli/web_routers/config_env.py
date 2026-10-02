@@ -838,6 +838,29 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     headers = {"Accept": "application/json"}
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+    else:
+        # The field is blank: a fresh entry has no credential, but a saved
+        # entry carries its key in .env behind key_env (see #129800). Resolve
+        # the stored credential so Test works on a saved endpoint without the
+        # user re-typing the key (#129800). Older entries may still carry a
+        # plaintext api_key directly.
+        entry = dict(read_raw_config().get("providers") or {})
+        for stored_key, row in entry.items():
+            if not isinstance(row, dict):
+                continue
+            if row.get("base_url", "").strip().rstrip("/") != base_url:
+                continue
+            api_key = None
+            if str(row.get("api_key") or "").strip():
+                api_key = str(row.get("api_key") or "").strip()
+            else:
+                key_env = str(row.get("key_env") or "")
+                if key_env:
+                    from hermes_cli.config import get_env_value
+                    api_key = get_env_value(key_env) or ""
+            if api_key and api_key.strip():
+                headers["Authorization"] = f"Bearer {api_key.strip()}"
+                break
 
     resolved, resp = await _probe_openai_compatible_models(base_url, headers)
     if resp is None:

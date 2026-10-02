@@ -143,3 +143,61 @@ def test_bare_root_probe_reports_the_v1_key_rejection_not_the_root_404(route, mo
         data = asyncio.run(mod.validate_custom_endpoint(body))
     assert data["ok"] is False and data["reachable"] is True
     assert "404" not in data["message"]
+
+
+@pytest.mark.parametrize("route", ["/api/providers/validate", "/api/providers/custom-endpoints/validate"])
+def test_saved_key_env_used_when_field_blank(route, monkeypatch):
+    """When the Test button is pressed with a blank key field on a SAVED endpoint
+    (issue #129800), the probe must inject the key from the entry's key_env so the
+    server sees the stored credential instead of an unauthenticated request.
+    """
+    import hermes_cli.web_routers.config_env as mod
+    from hermes_cli.web_models import CustomEndpointUpdate, EnvVarUpdate
+
+    sent_headers = {}
+
+    class _Resp:
+        status_code = 200
+        is_success = True
+
+        def json(self):
+            return {"data": [{"id": "local-model"}]}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, *a, **k):
+            sent_headers["models"] = dict(k.get("headers", {}))
+            return _Resp()
+
+        async def post(self, url, *a, **k):
+            sent_headers["route"] = dict(k.get("headers", {}))
+            return _Resp()
+
+    entry = {
+        "provider-1": {
+            "base_url": "http://127.0.0.1:39080",
+            "model": "local-model",
+            "name": "local",
+            "key_env": "HERMES_CUSTOM_PROVIDER_1_API_KEY",
+        }
+    }
+
+    def fake_read_raw_config():
+        return {"providers": entry}
+
+    monkeypatch.setattr(mod, "read_raw_config", fake_read_raw_config)
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "saved-secret-123" if key == "HERMES_CUSTOM_PROVIDER_1_API_KEY" else None)
+    monkeypatch.setattr(mod, "_endpoint_probe_client", lambda url, timeout: _Client())
+    monkeypatch.setattr(mod, "_require_token", lambda request: None)
+
+    body = CustomEndpointUpdate(id="", name="local", base_url="http://127.0.0.1:39080", api_key="", model="local-model")
+    data = asyncio.run(mod.validate_custom_endpoint(body))
+
+    assert data["ok"] is True
+    assert data["models"] == ["local-model"]
+    assert "Bearer saved-secret-123" in sent_headers["models"].get("Authorization", "")

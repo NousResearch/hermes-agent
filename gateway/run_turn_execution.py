@@ -1576,6 +1576,10 @@ class GatewayTurnExecutionMixin:
                 # Persist the coherent context+channel pair before execution: a crash during the
                 # human turn may be followed by an internal startup-resume on the next process.
                 await self._persist_prompt_pins(session_key, _run_start_session_id)
+            from gateway.pending_execution import pending_execution_current
+
+            if not pending_execution_current(self, event, session_key):
+                return None
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -1658,5 +1662,8 @@ class GatewayTurnExecutionMixin:
         except Exception as e:
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
         finally:
+            from gateway.pending_execution import consume_pending_execution
+
+            consume_pending_execution(self, event)
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)

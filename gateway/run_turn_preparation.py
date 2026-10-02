@@ -39,6 +39,10 @@ class GatewayTurnPreparationMixin:
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
         from tools.approval_yolo import restore_session_yolo
+        from gateway.pending_execution import pending_execution_current
+
+        if not pending_execution_current(self, event, session_key):
+            return None, {}
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_session_yolo(session_key, session_entry.yolo is True)  # a restarted gateway's set starts empty
         context = build_session_context(source, self.config, session_entry)
@@ -75,6 +79,10 @@ class GatewayTurnPreparationMixin:
             self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
 
         await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
+
+        if not pending_execution_current(self, event, session_key):
+            self._clear_session_env(_session_env_tokens)
+            return None, _session_env_tokens
 
         # A turn becomes durable recovery work only after it owns the per-session lease; marking
         # earlier would falsely recover a message that never began processing.

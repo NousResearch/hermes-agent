@@ -141,7 +141,9 @@ def finish_text_response(
     agent._thinking_prefill_retries = 0
     # Surface the one-shot fallback switch notice before dropping the retry buffer so a
     # provider/model switch stays visible on success.
-    agent._emit_pending_fallback_notice()
+    # Version-skew guard (#62914): the notice is cosmetic; a live object without the method
+    # (long-running process across an update) must not hard-fail an otherwise-recovered turn.
+    getattr(agent, "_emit_pending_fallback_notice", lambda: None)()
     agent._clear_status_buffer()
 
     # Defensive: repair malformed role-alternation before API call. Catches cases where the history got

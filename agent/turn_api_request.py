@@ -127,8 +127,9 @@ def build_api_request(
     sanitize_outbound_kwargs(agent, api_kwargs)
     if agent.api_mode == "codex_responses":
         api_kwargs = agent._get_transport().preflight_kwargs(
-            api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
-            sanitize_harmony_tokens=agent._is_codex_backend(),
+            api_kwargs, allow_stream=False,
+            is_github_responses=getattr(agent, "_is_copilot_url", lambda: False)(),
+            sanitize_harmony_tokens=getattr(agent, "_is_codex_backend", lambda: False)(),
         )
     # OpenRouter caching replays identical responses, even empty ones; an empty-response
     # retry must bypass the cache.
@@ -136,7 +137,8 @@ def build_api_request(
         _set_extra_header(api_kwargs, "X-OpenRouter-Cache", "false")
     # Copilot x-initiator: first call of a user turn is "user" (billed premium);
     # tool-loop follow-ups keep the default "agent".
-    if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
+    if getattr(agent, "_is_user_initiated_turn", False) and \
+            getattr(agent, "_is_copilot_url", lambda: False)():
         _set_extra_header(api_kwargs, "x-initiator", "user")
         agent._is_user_initiated_turn = False
     try:

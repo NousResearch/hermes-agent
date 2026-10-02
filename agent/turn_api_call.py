@@ -89,8 +89,9 @@ def perform_api_call(
     def _perform_api_call(next_api_kwargs):
         if agent.api_mode == "codex_responses":
             next_api_kwargs = agent._get_transport().preflight_kwargs(
-                next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
-                sanitize_harmony_tokens=agent._is_codex_backend(),
+                next_api_kwargs, allow_stream=False,
+                is_github_responses=getattr(agent, "_is_copilot_url", lambda: False)(),
+                sanitize_harmony_tokens=getattr(agent, "_is_codex_backend", lambda: False)(),
             )
         if _use_streaming:
             return agent._interruptible_streaming_api_call(

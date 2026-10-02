@@ -60,6 +60,8 @@ UNRESOLVED_PROFILE_HOME = _UnresolvedProfileHome()
 class GatewayAdapterLifecycleMixin:
     """Adapter lifecycle: connect/teardown, fatal recovery, reconnect watcher, multiplex profiles."""
 
+    _register_config_hooks: Callable[..., None]
+
     @staticmethod
     async def _wait_or_detach(task: "asyncio.Future", timeout: float) -> bool:
         """Wait up to ``timeout`` for ``task``; on deadline (or our own cancellation) detach it. Not

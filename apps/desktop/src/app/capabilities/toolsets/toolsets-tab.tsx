@@ -9,6 +9,7 @@ import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { $brandSession, capabilitiesUnlocked } from '@/store/brand-session'
 import { notify, notifyError } from '@/store/notifications'
 import type { ToolsetInfo } from '@/types/hermes'
 
@@ -22,6 +23,7 @@ import {
   MasterDetail
 } from '../../master-detail'
 import { asText, toolNames, toolsetDisplayLabel } from '../../settings/helpers'
+import { FREE_LOCK_MESSAGE, freeListAllowed } from '../free-tier'
 import { CapabilityEmpty, SortButton } from '../primitives'
 
 import { useToolCalls } from './tool-calls'
@@ -82,7 +84,14 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
   // Single toggles are optimistic and silent on success (the row repaints
   // immediately — a toast per flip would spam rapid customization). Errors
   // revert and notify.
+  const unlocked = capabilitiesUnlocked(useStore($brandSession))
+
   async function handleToggleToolset(toolset: ToolsetInfo, enabled: boolean) {
+    if (enabled && !freeListAllowed(toolsets.map(row => row.name), toolset.name, unlocked)) {
+      notify({ kind: 'info', title: 'Locked', message: FREE_LOCK_MESSAGE })
+      return
+    }
+
     setToolsets(
       current =>
         current?.map(row => (row.name === toolset.name ? { ...row, enabled, available: enabled } : row)) ?? current

@@ -974,6 +974,7 @@ export interface DesktopBrandSession {
   appIds: string[]
   activeAppId: string
   isSuper: boolean
+  desktopUnlocked: boolean
 }
 
 export interface HermesConnection {

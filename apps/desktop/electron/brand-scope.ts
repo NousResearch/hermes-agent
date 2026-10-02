@@ -66,6 +66,8 @@ export interface BrandSession {
   appIds: string[]
   activeAppId: string
   isSuper: boolean
+  /** Paid Capabilities. Super admin is always unlocked. Unsigned local use is unlocked. */
+  desktopUnlocked: boolean
 }
 
 export const signedOutBrand = (): BrandSession => ({
@@ -73,7 +75,8 @@ export const signedOutBrand = (): BrandSession => ({
   email: '',
   appIds: [],
   activeAppId: '',
-  isSuper: false
+  isSuper: false,
+  desktopUnlocked: false
 })
 
 export function parsePinValue(raw: string, now = Date.now()): { appIds: string[] } | null {
@@ -159,7 +162,8 @@ export function brandSessionFromCookies(cookies: PortalCookie[], now = Date.now(
       email,
       appIds: pin.appIds,
       activeAppId: pin.appIds[0] ?? '',
-      isSuper: false
+      isSuper: false,
+      desktopUnlocked: false
     }
   }
 
@@ -174,7 +178,8 @@ export function brandSessionFromCookies(cookies: PortalCookie[], now = Date.now(
     email,
     appIds: [],
     activeAppId: '',
-    isSuper: true
+    isSuper: true,
+    desktopUnlocked: true
   }
 }
 

@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
@@ -9,10 +10,12 @@ import { editLearningNode, getLearningNode, type ProfileScope, profileScopeKey, 
 import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { $brandSession, capabilitiesUnlocked } from '@/store/brand-session'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo } from '@/types/hermes'
 
 import { DetailPane, ListStripMenu, type ListStripMenuToggle } from '../../master-detail'
+import { FREE_LOCK_MESSAGE, freeListAllowed } from '../free-tier'
 import { CatalogAlert } from '../catalog/catalog-alert'
 import { SkillCatalog } from '../catalog/skill-catalog'
 import { UpdateSkillsButton } from '../catalog/update-skills-button'
@@ -48,6 +51,7 @@ function ScopedSkillsTab({
   installedError
 }: SkillsTabProps) {
   const { t } = useI18n()
+  const unlocked = capabilitiesUnlocked(useStore($brandSession))
   const mounted = useRef(true)
   const mutationBusy = useRef(false)
   const editorRequest = useRef(0)
@@ -77,7 +81,14 @@ function ScopedSkillsTab({
   // The backend saves one disabled-list config value: serialize individual and
   // bulk changes together, not merely the members of a bulk action.
   async function applyEnabled(targets: SkillInfo[], enabled: boolean, bulk = false) {
-    if (mutationBusy.current || installedPending || installedError || targets.length === 0) {
+    const names = skills.map(skill => skill.name)
+    const allowed = enabled ? targets.filter(row => freeListAllowed(names, row.name, unlocked)) : targets
+
+    if (enabled && allowed.length < targets.length) {
+      notify({ kind: 'info', title: 'Locked', message: FREE_LOCK_MESSAGE })
+    }
+
+    if (mutationBusy.current || installedPending || installedError || allowed.length === 0) {
       return
     }
 
@@ -88,7 +99,7 @@ function ScopedSkillsTab({
     try {
       await queryClient.cancelQueries({ queryKey: skillsQueryKey(profile), exact: true })
 
-      for (const row of targets) {
+      for (const row of allowed) {
         if (!mounted.current) {
           break
         }

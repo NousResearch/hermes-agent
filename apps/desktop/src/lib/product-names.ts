@@ -17,11 +17,11 @@ const PRODUCTS: ProductName[] = [
   { token: 'mailstudio', product: 'Mail Studio' },
   { token: 'fonoster', product: 'Voice Studio' },
   { token: 'voicestudio', product: 'Voice Studio' },
-  { token: 'firecrawl', product: 'Web research' },
+  { token: 'firecrawl', product: 'Firecrawl' },
   { token: 'gojiberry', product: 'Outreach' },
   { token: 'postiz', product: 'Social media' },
   { token: 'telnyx', product: 'SMS' },
-  { token: 'n8n', product: 'Automation Studio' },
+  { token: 'n8n', product: 'n8n' },
   { token: 'automationstudio', product: 'Automation Studio' },
   { token: 'twenty', product: 'CRM' }
 ]
@@ -89,11 +89,10 @@ const PROSE: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bchatwoot(?:[_-][a-z0-9_-]+)?\b/gi, 'Inbox Studio'],
   [/\bnotifuse(?:[_-][a-z0-9_-]+)?\b/gi, 'Mail Studio'],
   [/\bfonoster(?:[_-][a-z0-9_-]+)?\b/gi, 'Voice Studio'],
-  [/\bfirecrawl(?:[_-][a-z0-9_-]+)?\b/gi, 'Web research'],
+  [/\bfirecrawl(?:[_-][a-z0-9_-]+)?\b/gi, 'Firecrawl'],
   [/\bgojiberry(?:[_-][a-z0-9_-]+)?\b/gi, 'Outreach'],
   [/\bpostiz(?:[_-][a-z0-9_-]+)?\b/gi, 'Social media'],
   [/\btelnyx(?:[_-][a-z0-9_-]+)?\b/gi, 'SMS'],
-  [/\bn8n\b/gi, 'Automation Studio'],
   [/\btwenty[_-][a-z0-9_-]+\b/gi, 'CRM']
 ]
 

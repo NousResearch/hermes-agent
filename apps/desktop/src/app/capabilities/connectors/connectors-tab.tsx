@@ -6,9 +6,11 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { FREE_LOCK_MESSAGE, freeConnectorAllowed } from '../free-tier'
+import { $brandSession, capabilitiesUnlocked } from '@/store/brand-session'
 import { $freeTierStatus } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
-import { notifyError, readableError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 
 import { installBundledEntry } from '../mcp/install-catalog-entry'
 import { useMcpServers } from '../mcp/use-mcp-servers'
@@ -251,6 +253,13 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         }}
         onRetryHosted={hosted.refetch}
         onServerToggle={(card, next) => {
+          const unlocked = capabilitiesUnlocked($brandSession.get())
+
+          if (next && !freeConnectorAllowed(card.slug, unlocked)) {
+            notify({ kind: 'info', title: 'Locked', message: FREE_LOCK_MESSAGE })
+            return
+          }
+
           if (card.plugin === undefined) {
             void mcp.setServerEnabled(localServerName(card), next)
           }

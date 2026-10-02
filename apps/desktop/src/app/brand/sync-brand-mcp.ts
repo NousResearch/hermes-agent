@@ -1,7 +1,9 @@
+import { freeConnectorAllowed } from '@/app/capabilities/free-tier'
 import { profileScoped } from '@/api/client'
 import { addMcpServer, listMcpServers, setMcpServerEnabled } from '@/api/mcp'
 import { setMcpBearerToken } from '@/app/capabilities/connectors/data/rpc'
 import type { DesktopBrandConnector } from '@/global'
+import { $brandSession, capabilitiesUnlocked } from '@/store/brand-session'
 
 /** The shared test server. A signed-in brand does not use this key. */
 const SHARED_TEST_MCP_SERVER = 'firecrawl'
@@ -68,8 +70,14 @@ async function applyBrandMcp(connectors: DesktopBrandConnector[]): Promise<void>
 
   const wanted = new Set<string>()
 
+  const unlocked = capabilitiesUnlocked($brandSession.get())
+
   for (const row of connectors) {
     if (!row.hermesName || !row.mcpUrl || !row.credential) {
+      continue
+    }
+
+    if (!freeConnectorAllowed(row.connectorId, unlocked)) {
       continue
     }
 

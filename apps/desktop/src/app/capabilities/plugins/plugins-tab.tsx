@@ -34,9 +34,11 @@ import {
   updateAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
+import { $brandSession, capabilitiesUnlocked } from '@/store/brand-session'
 import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { FREE_LOCK_MESSAGE, freeListAllowed } from '../free-tier'
 import { $connection } from '@/store/session'
 
 import { Pill } from '../../settings/primitives'
@@ -703,6 +705,14 @@ export const PluginsTab = memo(function PluginsTab({
     const { agent, desktop } = pkg
 
     const setEnabled = (enable: boolean) => {
+      const unlocked = capabilitiesUnlocked($brandSession.get())
+      const names = packages.map(row => row.name)
+
+      if (enable && !freeListAllowed(names, pkg.name, unlocked)) {
+        notify({ kind: 'info', title: 'Locked', message: FREE_LOCK_MESSAGE })
+        return
+      }
+
       if (agent?.key) {
         void toggleAgentPlugin(requestGateway, agent.key, enable, p.toggleFailed(agent.name), scope)
       }

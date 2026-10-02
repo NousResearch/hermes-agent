@@ -1,0 +1,31 @@
+# Fleet hosts inventory — copy to ~/.hermes/fleet/hosts.yaml and edit.
+#
+# Required fields per host:
+#   name  — short identifier used in reports
+#   host  — IP address or hostname
+#   user  — SSH login user
+#
+# Optional fields:
+#   port  — SSH port (default: 22)
+#   tags  — list of arbitrary labels for grouping
+
+hosts:
+  - name: node0
+    host: 10.0.0.1
+    user: admin
+
+  - name: node1
+    host: 10.0.0.2
+    user: admin
+
+  - name: node2
+    host: 10.0.0.3
+    user: deploy
+    port: 2222
+    tags: [gpu, mining]
+
+  # Example: cloud instance
+  # - name: cloud-01
+  #   host: 203.0.113.10
+  #   user: ubuntu
+  #   tags: [cloud, prod]

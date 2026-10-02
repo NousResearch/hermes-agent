@@ -22769,6 +22769,12 @@ def _join_turn_thread(sess, timeout=10.0):
     stops changing."""
     deadline = time.monotonic() + timeout
     while isinstance(run_thread := sess.get("_run_thread"), threading.Thread):
+        started = getattr(run_thread, "_started", None)
+        assert isinstance(started, threading.Event)
+        # The worker handle is published before Thread.start() makes it joinable.
+        assert started.wait(max(0.0, deadline - time.monotonic())), (
+            "prompt.submit turn thread did not start"
+        )
         run_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         assert not run_thread.is_alive(), "prompt.submit turn thread did not finish"
         if sess.get("_run_thread") is run_thread:

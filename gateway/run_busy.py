@@ -1333,7 +1333,7 @@ class GatewayBusySessionMixin:
         persisted = False
         if choice == "always":
             try:
-                from cli import save_config_value
+                from hermes_cli.config_values import save_config_value
                 # save_config_value swallows its own errors and reports the outcome in the return
                 # value, so the try block alone says nothing about whether the write landed.
                 persisted = bool(save_config_value("approvals.destructive_slash_confirm", False))

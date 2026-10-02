@@ -65,7 +65,7 @@ def fake_cli(monkeypatch):
     """Install a stub `cli` module whose save_config_value outcome is settable."""
     calls = []
 
-    module = types.ModuleType("cli")
+    module = types.ModuleType('hermes_cli.config_values')
 
     def save_config_value(key_path, value):
         calls.append((key_path, value))
@@ -73,7 +73,7 @@ def fake_cli(monkeypatch):
 
     module.save_config_value = save_config_value
     module._outcome = True
-    monkeypatch.setitem(sys.modules, "cli", module)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.config_values', module)
     module.calls = calls
     return module
 

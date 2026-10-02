@@ -101,7 +101,7 @@ class CLIStatusBarMixin:
     def _handle_battery_command(self, cmd_original: str) -> None:
         """``/battery`` toggles, ``/battery on|off`` sets, ``/battery status`` reports the
         setting plus a live reading. Persisted to ``display.battery``."""
-        from cli import save_config_value
+        from hermes_cli.config_values import save_config_value
         parts = (cmd_original or "").split()
         arg = parts[1].strip().lower() if len(parts) > 1 else ""
 

@@ -133,7 +133,7 @@ class TestHiddenCounterAccumulation:
 class TestFocusCommandHandler:
     def test_on_stashes_the_verbose_mode_and_snaps_to_off(self):
         host = _FocusHost(enabled=False, saved=None, tool_progress="verbose")
-        with patch("cli.save_config_value", return_value=True) as saver, \
+        with patch("hermes_cli.config_values.save_config_value", return_value=True) as saver, \
              patch("cli._cprint"):
             host._handle_focus_command("/focus on")
 
@@ -148,7 +148,7 @@ class TestFocusCommandHandler:
 
     def test_idempotent_on_does_not_reclobber_the_stash(self):
         host = _FocusHost(enabled=True, saved="verbose", tool_progress="off")
-        with patch("cli.save_config_value") as saver, patch("cli._cprint"):
+        with patch("hermes_cli.config_values.save_config_value") as saver, patch("cli._cprint"):
             host._handle_focus_command("/focus on")
         saver.assert_not_called()
         # The stash still points at the real pre-focus mode, not "off".
@@ -157,7 +157,7 @@ class TestFocusCommandHandler:
     def test_live_agent_mode_is_synced(self):
         host = _FocusHost(enabled=False, saved=None, tool_progress="all")
         host.agent = SimpleNamespace(tool_progress_mode="all")
-        with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
+        with patch("hermes_cli.config_values.save_config_value", return_value=True), patch("cli._cprint"):
             host._handle_focus_command("/focus on")
         # tool_executor gates on the AGENT copy — syncing it is what makes the
         # suppression take effect this turn instead of after an agent rebuild.
@@ -330,7 +330,7 @@ class TestModelFacingMessagesUnchanged:
         host.conversation_history = history
         snapshot = json.dumps(history)
 
-        with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
+        with patch("hermes_cli.config_values.save_config_value", return_value=True), patch("cli._cprint"):
             host._handle_focus_command("/focus on")
             host._note_focus_hidden_line("terminal")
             host._emit_focus_recovery_line()
@@ -359,7 +359,7 @@ class TestCommandRegistration:
         host._focus_last_counted_tool = "terminal"
         host.agent = None
 
-        with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
+        with patch("hermes_cli.config_values.save_config_value", return_value=True), patch("cli._cprint"):
             HermesCLI._toggle_verbose(host)
 
         assert host._focus_view_enabled is False

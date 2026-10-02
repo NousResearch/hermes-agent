@@ -4,7 +4,7 @@ dragged/pasted absolute paths from being mistaken for slash commands."""
 
 import pytest
 
-from cli import _detect_file_drop
+from hermes_cli.attachment_paths import _detect_file_drop
 
 
 # ---------------------------------------------------------------------------

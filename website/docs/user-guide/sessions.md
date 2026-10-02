@@ -491,6 +491,13 @@ Pinning sets a durable "keep" flag: pinned sessions are exempt from the
 same flag the Desktop sidebar's Pinned section uses — pin from either surface
 and both see it.
 
+Restoring a session export (the dashboard import, or a profile adopting a
+stranded session) keeps the pinned, archived and hidden flags, and whether an
+archive came from the `sessions.auto_archive` sweep. A restored pinned session
+stays exempt from retention cleanup, an adopted Bot Mode chat stays hidden, and
+a restored sweep archive still comes back when you resume it. Exports that
+predate these flags restore as ordinary, unpinned, visible sessions.
+
 ```bash
 # Pin one or more sessions (unique ID prefixes work)
 hermes sessions pin 20250305_091523_a1b2c3d4

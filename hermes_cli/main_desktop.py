@@ -125,6 +125,30 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     return dist_dir is None or not source_product_current(project_root, "desktop", dist_dir)
 
 
+def _packaged_desktop_current_for_head(desktop_dir: Path, project_root: Path) -> bool:
+    """True when the packaged app was built from HEAD and none of its inputs changed since.
+
+    Freshness alone cannot answer this for an update: the baked ``install-stamp.json`` is a
+    desktop input that only the build itself rewrites, so after a pull that touched no other
+    desktop input the receipt still reads current while the app names the previous commit.
+    The commit the packaged app actually ships is the missing half; anything unreadable
+    means "build".
+    """
+    dist_dir = _renderer_bundle_dir(desktop_dir, source_mode=False)
+    if dist_dir is None:
+        return False
+    try:
+        stamp = json.loads((dist_dir.parent.parent / "install-stamp.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    from hermes_cli.version_info import _run_git
+
+    commit = stamp.get("commit") if isinstance(stamp, dict) else None
+    if not isinstance(commit, str) or commit != _run_git(project_root, "rev-parse", "HEAD"):
+        return False
+    return not _desktop_build_needed(desktop_dir, project_root, source_mode=False)
+
+
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
     return _desktop_packaged_executable_in(desktop_dir / "release")

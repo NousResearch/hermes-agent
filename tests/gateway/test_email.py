@@ -232,6 +232,15 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(len(captured_events), 1)
         self.assertIn("[Subject: Help with Python]", captured_events[0].text)
         self.assertIn("How do I use lists?", captured_events[0].text)
+        self.assertEqual(captured_events[0].metadata["email_transport"], {
+            "message_id": "<msg2@test.com>",
+            "sender": "user@test.com",
+            "subject": "Help with Python",
+            "thread_id": captured_events[0].source.thread_id,
+            "provider_timestamp": "",
+            "sender_authenticated": True,
+        })
+        self.assertTrue(captured_events[0].source.thread_id.startswith("email-"))
 
     def test_dispatch_exposes_exact_email_transport_evidence(self):
         """The model sidecar can record the current message without a second mailbox lookup."""
@@ -259,7 +268,9 @@ class TestDispatchMessage(unittest.TestCase):
 
         self.assertEqual(len(captured_events), 1)
         event = captured_events[0]
-        self.assertEqual(event.metadata, {
+        self.assertEqual({key: event.metadata[key] for key in (
+            "email_sender", "email_subject", "email_occurred_at"
+        )}, {
             "email_sender": "user@test.com",
             "email_subject": 'Cleaning "request"',
             "email_occurred_at": "2026-09-24T18:41:23-07:00",
@@ -284,6 +295,7 @@ class TestDispatchMessage(unittest.TestCase):
             "subject": "Re: Help with Python",
             "message_id": "<msg3@test.com>",
             "in_reply_to": "<msg2@test.com>",
+            "references": "<msg2@test.com> <business-reply@test.com>",
             "body": "Thanks for the help!",
             "attachments": [],
             "date": "",
@@ -294,6 +306,42 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(len(captured_events), 1)
         self.assertNotIn("[Subject:", captured_events[0].text)
         self.assertEqual(captured_events[0].text, "Thanks for the help!")
+
+    def test_email_sessions_are_scoped_to_thread_not_sender(self):
+        """A sender may start fresh threads without inheriting every prior email session."""
+        import asyncio
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        base = {
+            "uid": b"10", "sender_addr": "user@test.com", "sender_name": "User",
+            "subject": "First request", "message_id": "<root-a@test.com>", "in_reply_to": "",
+            "references": "", "body": "First message", "attachments": [], "date": "",
+        }
+        asyncio.run(adapter._dispatch_message(dict(base)))
+        asyncio.run(adapter._dispatch_message({
+            **base, "uid": b"11", "subject": "Re: First request", "message_id": "<reply-a@test.com>",
+            "in_reply_to": "<business-a@test.com>",
+            "references": "<root-a@test.com> <business-a@test.com>", "body": "Same thread",
+        }))
+        asyncio.run(adapter._dispatch_message({
+            **base, "uid": b"12", "subject": "Second request", "message_id": "<root-b@test.com>",
+            "body": "New thread",
+        }))
+
+        first, reply, second = (event.source.thread_id for event in captured_events)
+        self.assertEqual(first, reply)
+        self.assertNotEqual(first, second)
+        # Even after the second subject arrives, a delayed response to the first inbound
+        # Message-ID must retain the first subject rather than using sender-global state.
+        delayed, _, subject = adapter._new_reply(
+            "user@test.com", "Delayed response", reply_to_msg_id="<root-a@test.com>")
+        self.assertEqual(subject, "Re: First request")
+        self.assertEqual(delayed["In-Reply-To"], "<root-a@test.com>")
 
 
     def test_image_attachment_sets_photo_type(self):

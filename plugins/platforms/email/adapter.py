@@ -3,6 +3,7 @@ receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in 
 
 import asyncio
 import email as email_lib
+import hashlib
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 import imaplib
@@ -80,6 +81,7 @@ _DROP_HINTS = {
     "platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
     _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
 }
+_MESSAGE_ID_RE = re.compile(r"<[^<>\s]+>")
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
@@ -498,6 +500,10 @@ class EmailAdapter(BasePlatformAdapter):
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
         self._thread_context: Dict[str, Dict[str, str]] = {}
+        # Inbound Message-ID -> its exact thread context. A sender can have multiple concurrent
+        # subjects; outbound replies carry the triggering Message-ID and must not borrow whichever
+        # sender-wide context happened to arrive most recently.
+        self._message_context: Dict[str, Dict[str, str]] = {}
         logger.info("[Email] Adapter initialized for %s", self._address)
 
     def _trim_seen_uids(self) -> None:
@@ -742,6 +748,7 @@ class EmailAdapter(BasePlatformAdapter):
         sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id)
         return {"uid": uid, "sender_addr": sender_addr, "sender_name": sender_name, "subject": subject,
                 "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
+                "references": msg.get("References", ""),
                 "date": msg.get("Date", ""), "sender_authenticated": sender_authenticated, "auth_reason": auth_reason}
 
     def _parse_fetched_headers(self, uid: bytes, raw_headers: "bytes | bytearray") -> Optional[Dict[str, Any]]:
@@ -829,17 +836,49 @@ class EmailAdapter(BasePlatformAdapter):
         # DOCUMENT wins over PHOTO for mixed attachments: run.py keys image handling off the per-path mime type regardless
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.
         kinds = {att["type"] for att in attachments}
-        self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
+        references = _MESSAGE_ID_RE.findall(str(msg_data.get("references") or ""))
+        in_reply_to = str(msg_data.get("in_reply_to") or "").strip()
+        previous = self._thread_context.get(sender_addr, {})
+        # Email sessions are conversations, not sender-wide mailboxes. References carries the
+        # root Message-ID across standards-compliant replies. The in-process mapping covers a
+        # reply to our immediately preceding SMTP message when a client omits References.
+        if references:
+            thread_root = references[0]
+        elif in_reply_to and in_reply_to == previous.get("outbound_message_id"):
+            thread_root = previous.get("thread_root") or in_reply_to
+        else:
+            thread_root = in_reply_to or str(msg_data.get("message_id") or "").strip()
+        # Bound untrusted header material before it enters the gateway session key.
+        thread_id = "email-" + hashlib.sha256(thread_root.encode("utf-8", "replace")).hexdigest()[:24]
+        context = {
+            "subject": subject, "message_id": msg_data["message_id"], "thread_root": thread_root,
+        }
+        self._thread_context[sender_addr] = context
+        if msg_data["message_id"]:
+            self._message_context[msg_data["message_id"]] = context
+            if len(self._message_context) > 2048:
+                self._message_context.pop(next(iter(self._message_context)))
         name = msg_data["sender_name"] or sender_addr
         occurred_at = _provider_timestamp(msg_data.get("date", ""))
-        transport_metadata = {"email_sender": sender_addr, "email_subject": subject}
+        transport_metadata = {
+            "email_sender": sender_addr,
+            "email_subject": subject,
+            "email_transport": {
+                "message_id": msg_data["message_id"],
+                "sender": sender_addr,
+                "subject": subject,
+                "thread_id": thread_id,
+                "provider_timestamp": msg_data.get("date", ""),
+                "sender_authenticated": bool(msg_data.get("sender_authenticated")),
+            },
+        }
         if occurred_at is not None:
             transport_metadata["email_occurred_at"] = occurred_at.isoformat()
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
             source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name,
-                                     message_id=msg_data["message_id"]),
+                                     thread_id=thread_id, message_id=msg_data["message_id"]),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None,
             metadata=transport_metadata)
@@ -867,7 +906,8 @@ class EmailAdapter(BasePlatformAdapter):
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
                    attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
-        msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
+        msg = MIMEMultipart()
+        ctx = self._message_context.get(reply_to_msg_id or "") or self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -877,6 +917,8 @@ class EmailAdapter(BasePlatformAdapter):
         for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
+        if ctx:
+            ctx["outbound_message_id"] = msg_id
         if body or attach_empty_body:
             msg.attach(MIMEText(body, "plain", "utf-8"))
         return msg, msg_id, subject

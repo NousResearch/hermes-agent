@@ -93,7 +93,7 @@ def test_full_uninstall_sweeps_macos_caches_and_dashboard_launchd(monkeypatch, t
     monkeypatch.setattr(uninstall, "remove_path_from_shell_configs", lambda: [])
     monkeypatch.setattr(uninstall, "remove_wrapper_script", lambda: [])
     monkeypatch.setattr(uninstall, "remove_node_symlinks", lambda home: [])
-    monkeypatch.setattr(uninstall, "remove_legacy_runtime_trees", lambda home: [])
+    monkeypatch.setattr(uninstall, "remove_legacy_runtime_trees", lambda home, **kw: [])
     monkeypatch.setattr(uninstall, "_rmtree_step",
                         lambda path, **kw: None if path in (project_root, hermes_home)
                         else (_ for _ in ()).throw(AssertionError(f"unexpected rmtree {path}")))

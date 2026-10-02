@@ -71,7 +71,7 @@ hermes              # start chatting!
 
 #### Windows Defender or antivirus flags `uv.exe` as malware
 
-If your antivirus (Bitdefender, Windows Defender, etc.) quarantines `uv.exe` from the Hermes `bin` folder (`%LOCALAPPDATA%\hermes\bin\uv.exe`), this is a **false positive**. The file is Astral's `uv` — the Rust Python package manager Hermes bundles to manage its Python environment. ML-based antivirus engines commonly flag unsigned Rust binaries that download and install packages.
+If your antivirus (Bitdefender, Windows Defender, etc.) quarantines `uv.exe` from the Hermes tools store (`%LOCALAPPDATA%\hermes\tools\uv-<version>-win32-<arch>\uv.exe`; installs made before the package manager migration left it in `%LOCALAPPDATA%\hermes\bin\` instead), this is a **false positive**. The file is Astral's `uv` — the Rust Python package manager Hermes bundles to manage its Python environment. ML-based antivirus engines commonly flag unsigned Rust binaries that download and install packages.
 
 **To verify your copy is authentic:**
 
@@ -83,11 +83,17 @@ winget install --id GitHub.cli
 gh auth login
 
 # Run verification
-$uv = "$env:LOCALAPPDATA\hermes\bin\uv.exe"
+$uv = (Get-ChildItem "$env:LOCALAPPDATA\hermes\tools\uv-*-*\uv.exe" -ErrorAction SilentlyContinue |
+    Select-Object -First 1).FullName
+if (-not $uv) { $uv = "$env:LOCALAPPDATA\hermes\bin\uv.exe" }  # pre-package-manager layout
 $ver = (& $uv --version).Split(' ')[1]
+# The machine's real arch, not the (possibly x64-emulated) interpreter's —
+# hashing the wrong build would report a false "tampered".
+$machArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).PROCESSOR_ARCHITECTURE
+$arch = if ($machArch -eq 'ARM64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $zip = "$env:TEMP\uv.zip"
-Invoke-WebRequest "https://github.com/astral-sh/uv/releases/download/$ver/uv-x86_64-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
+Invoke-WebRequest "https://github.com/astral-sh/uv/releases/download/$ver/uv-$arch-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
 gh attestation verify $zip --repo astral-sh/uv
 Expand-Archive $zip "$env:TEMP\uv_x" -Force
 (Get-FileHash "$env:TEMP\uv_x\uv.exe").Hash -eq (Get-FileHash $uv).Hash
@@ -96,7 +102,7 @@ Expand-Archive $zip "$env:TEMP\uv_x" -Force
 If attestation says "Verification succeeded" and the last line prints `True`, you're good.
 
 **To whitelist Hermes:**
-- **Windows Defender:** Run PowerShell as Admin → `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\hermes\bin"`
+- **Windows Defender:** Run PowerShell as Admin → `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\hermes\tools"` (add `%LOCALAPPDATA%\hermes\bin` too if an older install still keeps `uv.exe` there)
 - **Bitdefender:** Add an exception in the Bitdefender console (Protection > Antivirus > Settings > Manage Exceptions)
 - Whitelist the **folder**, not the file hash — Hermes updates `uv` and the hash changes every version
 

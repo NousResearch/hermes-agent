@@ -79,6 +79,177 @@ done
 INSTALL_DIR="${INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
 export HERMES_HOME
 
+# The MACHINE-scoped bootstrap root: HERMES_HOME is the PROFILE home, but the
+# store is shared by every profile, so this fold mirrors
+# get_default_hermes_root() (<root>/profiles/<name> and anything under the
+# platform default fold back to the root). Self-contained on purpose — under
+# `curl | bash` no sibling exists to source — and byte-identical to the twin
+# in setup-hermes.sh (the mirror-body test compares both with pm's answer). A
+# stamped ``runtimeDir`` is not yet readable here (no Python yet); a sealed
+# payload's writable store folds to this same root, so one branch covers both.
+# HERMES_RUNTIME_DIR remains the explicit override.
+# --- BEGIN store-root resolver (mirrored in setup-hermes.sh) ---
+_hermes_expand() {
+    # os.path.expandvars+expanduser without eval: $VAR/${VAR} ride along, an
+    # UNSET (or empty) name stays literal, and a leading ~ becomes the home.
+    # printenv reads the exported table os.environ sees - ${!name} would also
+    # resolve shell-internal names ($0/$1/IFS) that expandvars leaves literal.
+    # No ``--`` guard: BSD/BusyBox printenv reads it as a variable name.
+    local _s="$1" _out="" _name _v
+    while [ -n "$_s" ]; do
+        case "$_s" in
+            '$'*)
+                _s="${_s#\$}"
+                case "$_s" in
+                    \{*)
+                        _name="${_s%%\}*}"
+                        _name="${_name#\{}"
+                        _s="${_s#*\}}"
+                        ;;
+                    *)
+                        _name="${_s%%[!A-Za-z0-9_]*}"
+                        _s="${_s#"$_name"}"
+                        ;;
+                esac
+                if [ -z "$_name" ]; then
+                    _out="$_out\$"
+                elif _v="$(printenv "$_name")"; then
+                    _out="$_out$_v"
+                else
+                    _out="$_out\$$_name"
+                fi
+                ;;
+            *)
+                _out="$_out${_s%%\$*}"
+                _s="${_s#"${_s%%\$*}"}"
+                ;;
+        esac
+    done
+    case "$_out" in
+        "~") [ -n "${HOME:-}" ] && _out="$HOME" ;;
+        "~/"*) [ -n "${HOME:-}" ] && _out="$HOME${_out#"~"}" ;;
+    esac
+    printf '%s' "$_out"
+}
+_hermes_norm() {
+    # Lexical normalization: collapse repeated separators and drop "." segments
+    # the way Path does. Exactly TWO leading separators are kept (POSIX
+    # defines that form); ".." is kept VERBATIM -- the containment decision
+    # runs on the RESOLVED path below, and the non-fold answer keeps ".."
+    # exactly like get_default_hermes_root()'s lexical return.
+    local _rest="$1" _out="" _comp
+    case "$_rest" in
+        "//"[!/]*) _out="//" ;;
+        /*)        _out="/" ;;
+    esac
+    _rest="${_rest#/}"
+    case "$_rest" in
+        "//"*) _rest="${_rest#//}" ;;
+    esac
+    while [ -n "$_rest" ]; do
+        _comp="${_rest%%/*}"
+        case "$_rest" in
+            */*) _rest="${_rest#*/}" ;;
+            *)   _rest="" ;;
+        esac
+        [ -z "$_comp" ] && continue
+        [ "$_comp" = "." ] && continue
+        if [ -z "$_out" ]; then _out="$_comp"
+        elif [ "$_out" = "/" ] || [ "$_out" = "//" ]; then _out="$_out$_comp"
+        else _out="$_out/$_comp"; fi
+    done
+    printf '%s' "$_out"
+}
+_hermes_resolve() {
+    # What Path.resolve(strict=False) yields: the realpath of the longest
+    # EXISTING directory prefix (symlinks followed -- a link that leaves the
+    # default home can never pass the containment check), with the remaining
+    # components applied lexically and ".." popping the resolved parent.
+    # Relative input is joined to the process cwd first, like Path does.
+    local _p="$1"
+    case "$_p" in
+        /*) ;;
+        *) _p="$PWD/$_p" ;;
+    esac
+    local _dir="$_p" _names="" _comp
+    while :; do
+        [ -d "$_dir" ] && break
+        case "$_dir" in
+            "" | "/") _dir="/"; break ;;
+        esac
+        _comp="${_dir##*/}"
+        _dir="${_dir%/*}"
+        if [ -z "$_names" ]; then _names="$_comp"; else _names="$_comp/$_names"; fi
+    done
+    local _base="/"
+    { CDPATH= cd -P -- "$_dir" >/dev/null 2>&1 && _base="$(pwd -P)"; } || _base="/"
+    local _base_comps="${_base#/}" _rest="$_names" _out="" _c
+    while [ -n "$_rest" ]; do
+        _c="${_rest%%/*}"
+        case "$_rest" in
+            */*) _rest="${_rest#*/}" ;;
+            *)   _rest="" ;;
+        esac
+        [ -z "$_c" ] && continue
+        [ "$_c" = "." ] && continue
+        if [ "$_c" = ".." ]; then
+            # A pop on a one-component chain empties it ("%/*" alone would keep
+            # the component) — a short pop misjudges the containment fold below.
+            if [ -n "$_out" ]; then
+                case "$_out" in
+                    */*) _out="${_out%/*}" ;;
+                    *)   _out="" ;;
+                esac
+            elif [ -n "$_base_comps" ]; then
+                case "$_base_comps" in
+                    */*) _base_comps="${_base_comps%/*}" ;;
+                    *)   _base_comps="" ;;
+                esac
+            fi
+            # ".." at the physical root stays there, like Path("/..")
+        else
+            if [ -z "$_out" ]; then _out="$_c"; else _out="$_out/$_c"; fi
+        fi
+    done
+    if [ -n "$_out" ]; then
+        if [ -n "$_base_comps" ]; then printf '/%s/%s' "$_base_comps" "$_out"
+        else printf '/%s' "$_out"; fi
+    else
+        printf '/%s' "$_base_comps"
+    fi
+}
+hermes_root_of() {
+    # get_default_hermes_root() decides containment on RESOLVED paths (so a
+    # ".." or a symlink leaving the default home cannot pass a prefix check)
+    # but folds and RETURNS the lexical form -- its non-fold answer keeps ".."
+    # components verbatim. The default home is returned lexical as well.
+    local _suffix="${HERMES_DATA_DIR_SUFFIX:-}"
+    local _default_lex _default_res _lex _res
+    _default_lex="$(_hermes_norm "$(_hermes_expand "\$HOME/.hermes$_suffix")")"
+    _default_res="$(_hermes_resolve "$_default_lex")"
+    _lex="$(_hermes_norm "$(_hermes_expand "${HERMES_HOME:-\$HOME/.hermes$_suffix}")")"
+    _res="$(_hermes_resolve "$_lex")"
+    case "$_res/" in
+        "$_default_res"/*) _lex="$_default_lex" ;;
+        *)
+            local _parent="${_lex%/*}"
+            if [ "${_parent##*/}" = profiles ] && [ "$_parent" != "$_lex" ]; then
+                if [ "$_parent" = profiles ]; then _lex=".";
+                elif [ "$_parent" = /profiles ]; then _lex=/;
+                else _lex="${_parent%/profiles}"; fi
+            fi
+            ;;
+    esac
+    # "." / "./" normalize to nothing; answer "." like Path(".") — an empty
+    # root would make "${HERMES_ROOT}/tools" the filesystem root.
+    [ -z "$_lex" ] && _lex="."
+    printf '%s' "$_lex"
+}
+# --- END store-root resolver ---
+
+
+HERMES_ROOT="$(hermes_root_of)"
+
 INSTALL_LOG="$HERMES_HOME/logs/install.log"
 
 # Same glyphs as the pre-pm installer. Colour only on a terminal, so CI
@@ -256,10 +427,10 @@ uv_bootstrap_target() {
 }
 
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
-# the EXACT artifact pm itself uses into the same store slot
-# (<store>/uv-<version>-<target>/, the store pm's store_root() resolves),
-# sha256-verified, so the byte authority is pm/lock.json - no astral-latest,
-# no curl|sh.
+# the EXACT artifact PM expects (same version, target, and sha256) into the
+# bootstrap store selected above. The bootstrap resolver intentionally does not
+# implement stamped ``runtimeDir`` selection; a sealed payload folds to the same
+# root via pm.paths.writable_store_root(). No astral-latest, no curl|sh.
 UV_CMD=""
 ensure_uv() {
     [ -n "$UV_CMD" ] && return 0
@@ -272,7 +443,7 @@ ensure_uv() {
     if ! uv_bootstrap_pin "$_target"; then
         fail "no pinned uv artifact for $_target; Hermes does not support this host"
     fi
-    local _store="${HERMES_RUNTIME_DIR:-$HERMES_HOME/tools}"
+    local _store="${HERMES_RUNTIME_DIR:-$HERMES_ROOT/tools}"
     local _entry="$_store/uv-$UV_PIN_VERSION-$_target"
     UV_CMD="$_entry/uv"
     if [ ! -x "$UV_CMD" ]; then
@@ -613,6 +784,15 @@ stage_venv() {
 # The application dependency graph is never installed in this interpreter.
 bootstrap_python() {
     ensure_uv
+    # uv's default state (~/.cache/uv, ~/.local/share/uv) belongs to the USER's
+    # uv (#101269); pin both to the Hermes root. The cache keeps its OWN slot -
+    # pm seeds <root>/cache/uv once, skipping entries that already exist, so
+    # bootstrap bytes there first would mark a partial seed done - while
+    # nothing seeds the python dir the `find` below reads back.
+    # --system still finds a host interpreter, so a machine with one downloads
+    # nothing either way.
+    export UV_CACHE_DIR="$HERMES_ROOT/cache/uv-bootstrap"
+    export UV_PYTHON_INSTALL_DIR="$HERMES_ROOT/cache/uv-python"
     local _py
     # Read packages.python.version by following object names and braces, not
     # indentation — same pre-Python reader contract as setup-hermes.sh's pin().

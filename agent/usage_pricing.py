@@ -171,6 +171,7 @@ _BEDROCK_URL = "https://aws.amazon.com/bedrock/pricing/"
 _ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
 _GOOGLE_URL = "https://ai.google.dev/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
+_OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00")
 _SONNET = ("3.00", "15.00", "0.30", "3.75")
 _SONNET_5 = ("2.00", "10.00", "0.20", "2.50")
 _OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00")
@@ -203,7 +204,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
         "claude-sonnet-5": _SONNET_5,
     }),
-    # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x).
+    # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x). _OPUS_5_5
+    # is shared with the Bedrock row below so the two cannot drift (#104126
+    # re-review gap: Bedrock Opus 5.5 resolved to ``unknown``).
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {
         "claude-opus-5": _OPUS,
         "claude-opus-5-5": _OPUS_5_5,
@@ -270,6 +273,7 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {
         "anthropic.claude-sonnet-5": _SONNET_5,
         "anthropic.claude-fable-5": ("10.00", "50.00", "1.00", "12.50"),
+        "anthropic.claude-opus-5-5": _OPUS_5_5,
     }),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-04", {
         ("anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-5"): _SONNET,

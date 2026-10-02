@@ -72,6 +72,26 @@ class _StubAdapter(BasePlatformAdapter):
 
 
 class TestBaseDefaultLoop:
+    def test_partial_failure_is_reported_while_success_remains_true(self, monkeypatch):
+        from gateway.platforms.base import SendResult
+
+        adapter = _StubAdapter()
+        calls = 0
+
+        async def send_image_file(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                return SendResult(success=False, error="upload failed")
+            return SendResult(success=True)
+
+        monkeypatch.setattr(adapter, "send_image_file", send_image_file)
+        result = _run(adapter.send_multiple_images(
+            "chat1", [("file:///tmp/a.png", ""), ("file:///tmp/b.png", "")]))
+
+        assert result.success is True
+        assert result.error == "1 image(s) failed to send: upload failed"
+
     def test_loops_per_image_by_default(self, tmp_path):
         local = tmp_path / "foo.png"
         a = _StubAdapter()

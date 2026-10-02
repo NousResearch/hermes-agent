@@ -3010,6 +3010,8 @@ class BasePlatformAdapter(ABC):
         the turn-level delivery tracker records; every override must return the same
         aggregate, or a media-only turn on that platform reports FAILURE (#106153)."""
         delivered = False
+        failed = 0
+        first_error: Optional[str] = None
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -3026,16 +3028,26 @@ class BasePlatformAdapter(ABC):
                 img_result = await sender(
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
+                    failed += 1
+                    if first_error is None:
+                        first_error = img_result.error or "unknown error"
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                 else:
                     delivered = True
             except Exception as img_err:
+                failed += 1
+                if first_error is None:
+                    first_error = str(img_err) or "unknown error"
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
         if not images:
             return SendResult(success=False, error="no images to send")
-        return SendResult(
-            success=delivered,
-            error=None if delivered else "all images failed to send")
+        if delivered and failed:
+            error = f"{failed} image(s) failed to send"
+            if first_error:
+                error += f": {first_error}"
+        else:
+            error = None if delivered else "all images failed to send"
+        return SendResult(success=delivered, error=error)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,

@@ -125,6 +125,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
     if scope_id:
         metadata["slack_team_id"] = str(scope_id)
+    if reply_to_message_id is not None:
+        metadata["reply_to_message_id"] = str(reply_to_message_id)
+        user_id = getattr(source, "user_id", None)
+        if user_id:
+            metadata["user_id"] = str(user_id)
     if not metadata:
         return None
     if platform == "telegram" and getattr(source, "chat_type", None) == "dm":

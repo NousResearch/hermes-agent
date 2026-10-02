@@ -701,6 +701,7 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?:
+    | null
     | 'async_delegation_complete'
     | 'auto_continue'
     | 'failed_turn'

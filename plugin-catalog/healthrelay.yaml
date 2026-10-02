@@ -1,11 +1,7 @@
 name: healthrelay
 repo: https://github.com/mwdearing/hermes-healthrelay
 sha: fa8c31d67c01e28223b047191b26866faafb4a43
-description: Read-only access to your own Apple Health data through a self-hosted HealthRelay receiver.
-  Portable Agent Plugins v1 package with one stdio MCP server (nine read-only tools, no raw SQL, no write
-  tools) and three skills for setup, review and troubleshooting. Requires your own HealthRelay receiver
-  (health-bridge) and an iPhone app you sign yourself; the plugin ships neither. Disclosure - it exposes
-  sensitive health data to whichever model you run, so use a local model or one you trust with that data.
+description: Read-only access to your own Apple Health data through a self-hosted HealthRelay receiver. Portable Agent Plugins v1 package with one stdio MCP server (nine read-only tools, no raw SQL, no write tools) and three skills for setup, review and troubleshooting. Requires your own HealthRelay receiver (health-bridge) and an iPhone app you sign yourself; the plugin ships neither. Disclosure — exposes your Apple Health data, read-only, from your own receiver database to whichever model you run, so use a local model or one you trust with health data; runs the separately installed health-bridge binary from PATH.
 maintainer: mwdearing
 tier: community
 category: tools

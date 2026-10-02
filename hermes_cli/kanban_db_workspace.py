@@ -50,13 +50,23 @@ _WORKSPACE_ROW_SQL = "SELECT workspace_kind, workspace_path, branch_name FROM ta
 
 
 def _git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
-    """``git -C repo_root args``; never raises on a non-zero exit."""
+    """``git -C repo_root args``; never raises on a non-zero exit.
+
+    :func:`noninteractive_repo_git_env` (GHSA-7x36-8jrh-v4pw): the dispatcher runs ``worktree add``
+    unattended, which executes the repo's hooks, ``core.fsmonitor`` and smudge filters.
+    """
+    from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
+    env = noninteractive_repo_git_env(repo_root)
+    if env is None:
+        return subprocess.CompletedProcess(["git", "-C", str(repo_root), *args], 1, "", FILTER_DISCOVERY_FAILED)
     return subprocess.run(
         ["git", "-C", str(repo_root), *args],
         capture_output=True,
         text=True, encoding='utf-8', errors='replace',
         timeout=timeout,
         check=False,
+        stdin=subprocess.DEVNULL,
+        env=env,
     )
 
 
@@ -255,7 +265,7 @@ def _cleanup_worktree_workspace(
         repo_root = common.parent
         if _path_key(wp.resolve(strict=False)) == _path_key(repo_root.resolve(strict=False)):
             return  # never remove the main checkout
-        if _worktree_is_dirty(str(wp)) or _worktree_has_unpushed_commits(str(wp)):
+        if _worktree_is_dirty(str(wp), str(repo_root)) or _worktree_has_unpushed_commits(str(wp)):
             _kb._log.info(
                 "Preserving worktree for task %s: dirty or unpushed work at %s",
                 task_id, wp,

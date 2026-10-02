@@ -136,6 +136,17 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
 
 
 
+def test_custom_install_records_an_anonymous_extension_install_and_reinstall_none(world, monkeypatch):
+    import hermes_cli.observability.shared_metrics_events as events
+
+    calls = []
+    monkeypatch.setattr(events, "record_extension_install", lambda **kw: calls.append(kw))
+    assert pc.dashboard_install_plugin(world["repo"].as_uri(), force=False, enable=False)["ok"]
+    assert pc.dashboard_install_plugin("", force=True, enable=False, catalog_name="cat-plugin")["ok"]
+
+    assert calls == [{"kind": "plugin", "source": "local", "name": None, "outcome": "success"}]
+
+
 def test_owner_repo_hash_subdir_shorthand_resolves_like_the_catalog_spelling():
     from hermes_cli.plugins_cmd import _resolve_git_url
     assert _resolve_git_url("plastic-labs/honcho#hermes-plugin-honcho") == (
@@ -370,3 +381,28 @@ def test_repin_that_widens_the_plugin_requires_consent_on_every_surface(world, m
     # Consent given → applied.
     assert pc.dashboard_update_user_plugin("cat-plugin", accept_capabilities=True)["unchanged"] is False
     assert _head(target) == wide
+
+
+def test_catalog_rows_maps_resolves_the_live_catalog_once(monkeypatch):
+    """``_plugin_rows`` needs pins, versions and titles together; taking them via the three single-map
+    helpers pays the whole ``load_catalog_live()`` pass — git probe, ~300 catalog YAMLs, prefer-in-tree
+    merges — three times per inventory request (#125683). ``catalog_rows_maps`` must resolve once and
+    stay best effort like the per-map helpers: an empty triple on failure."""
+    calls = []
+
+    def fake_live():
+        calls.append(1)
+        return [pc_cat.PluginCatalogEntry(name="a", repo="https://github.com/o/r", sha="a" * 40,
+                                          description="d", maintainer="t", version="1.2.3", title="Alpha"),
+                pc_cat.PluginCatalogEntry(name="b", repo="https://github.com/o/r2", sha="b" * 40,
+                                          description="d", maintainer="t")]
+
+    monkeypatch.setattr(cat, "load_catalog_live", fake_live)
+    assert cat.catalog_rows_maps() == ({"a": "a" * 40, "b": "b" * 40}, {"a": "1.2.3"}, {"a": "Alpha"})
+    assert len(calls) == 1
+
+    def boom():
+        raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(cat, "load_catalog_live", boom)
+    assert cat.catalog_rows_maps() == ({}, {}, {})

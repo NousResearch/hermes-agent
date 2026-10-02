@@ -21,6 +21,7 @@ from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes, cache_image_from_bytes,
@@ -414,6 +415,8 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
 
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
+    # One email carries the whole body, so cron delivery hands over the full payload untruncated.
+    splits_long_messages = True
 
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
@@ -850,7 +853,7 @@ class EmailAdapter(BasePlatformAdapter):
             if alt_text:
                 body_parts.append(alt_text)
             if not image_url.startswith("file://"):
-                body_parts.append(f"Image: {image_url}")  # parity with send_image
+                body_parts.append(t("platform.email.image_line", url=image_url))  # parity with send_image
             elif Path(local_path := _unquote(image_url[7:])).exists():
                 local_paths.append(local_path)
             else:
@@ -899,7 +902,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        for key, value in (("From", address), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

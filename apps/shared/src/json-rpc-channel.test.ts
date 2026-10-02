@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { JsonRpcGatewayError, JsonRpcRequestChannel, type JsonRpcTransport } from './json-rpc-channel.js'
+import { JSON_RPC_SESSION_NOT_SHOWN, JsonRpcGatewayError, JsonRpcRequestChannel, type JsonRpcTransport } from './json-rpc-channel.js'
 
 const spyTransport = () => {
   const sent: string[] = []
@@ -191,6 +191,38 @@ describe('JsonRpcRequestChannel', () => {
     // An older backend answers -32601: nothing rejects out of the channel.
     channel.handleFrame(JSON.stringify({ error: { code: -32601, message: 'unknown method' }, id: last().id, jsonrpc: '2.0' }))
     expect(sent).toHaveLength(1)
+  })
+
+  it('sends a not-shown decline only to a backend that advertised counting it', async () => {
+    // An older backend settles a request on the first error frame, so a bystander window's decline
+    // would beat the owner's answer (#113348): there `decline` must stay silent.
+    const channel = new JsonRpcRequestChannel({ requestIdPrefix: 'c' })
+    const { sent, transport, last } = spyTransport()
+
+    const ready = () =>
+      channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
+
+    const ask = (id: string) =>
+      channel.handleFrame(JSON.stringify({ id, jsonrpc: '2.0', method: 'preview.read', params: { session_id: 's1' } }))
+
+    channel.attach(transport)
+    channel.onRequest(req => void req.decline?.('not here'))
+
+    ready()
+    channel.handleFrame(JSON.stringify({ id: last().id, jsonrpc: '2.0', result: { server_requests: ['preview.read'] } }))
+    await Promise.resolve()
+    ask('srq-old')
+    expect(sent).toHaveLength(1)
+
+    ready()
+    channel.handleFrame(JSON.stringify({ id: last().id, jsonrpc: '2.0', result: { declines_not_shown: true, server_requests: [] } }))
+    await Promise.resolve()
+    ask('srq-new')
+    expect(JSON.parse(sent.at(-1)!)).toEqual({
+      error: { code: JSON_RPC_SESSION_NOT_SHOWN, message: 'not here' },
+      id: 'srq-new',
+      jsonrpc: '2.0'
+    })
   })
 
   it('routes a server request to the first accepting handler and answers -32601 when nobody accepts', () => {

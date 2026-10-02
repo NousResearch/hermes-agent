@@ -348,6 +348,24 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     }
   }, [bot])
 
+  // The pending default-image switch: both answers pin an image server-side, so the card
+  // disappears after either; approve leaves the container to be recreated on next terminal use.
+  const decideImageSwitch = useCallback(
+    async (approve: boolean) => {
+      setBusy(true)
+
+      try {
+        const next = await displayRequest<DisplayStatus>(bot, 'display.switchSandboxImage', { approve })
+        setScreenStatus(bot, next)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [bot]
+  )
+
   const takeOver = useCallback(async () => {
     // The button is disabled without a viewer; the guard keeps a keyboard-activated
     // stale closure from sending an empty viewer_id the server rejects.
@@ -410,6 +428,31 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     return <ScreenInstallCard bot={bot} onInstalled={next => setScreenStatus(bot, next)} status={status} />
   }
 
+  if (status && !status.running && status.image_switch) {
+    const sw = status.image_switch
+
+    return (
+      <div className="grid min-h-48 place-items-center p-6 text-center">
+        <div className="flex max-w-md flex-col items-center gap-2">
+          <div className="text-sm font-medium">{t.screen.imageSwitchTitle}</div>
+          <div className="text-xs text-muted-foreground">
+            {t.screen.imageSwitchBody(sw.current_image, sw.target_image)}
+          </div>
+          <div className="flex gap-2">
+            <Button disabled={busy} onClick={() => void decideImageSwitch(true)} size="sm">
+              {busy ? <GlyphSpinner /> : <Codicon name="arrow-swap" />}
+              {t.screen.imageSwitchApprove}
+            </Button>
+            <Button disabled={busy} onClick={() => void decideImageSwitch(false)} size="sm" variant="ghost">
+              {t.screen.imageSwitchKeep}
+            </Button>
+          </div>
+          {error ? <div className="text-xs text-red-500">{error}</div> : null}
+        </div>
+      </div>
+    )
+  }
+
   if (status && !status.running) {
     return (
       <div className="grid min-h-48 place-items-center p-6 text-center">
@@ -436,6 +479,13 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         {status?.display ? (
           <span className="text-muted-foreground">
             {status.display} · {status.geometry}
+          </span>
+        ) : null}
+        {status?.placement?.startsWith('terminal:') ? (
+          // Where the desktop lives matters for what a takeover can reach: inside the terminal's sandbox,
+          // not on the gateway host.
+          <span className="rounded bg-(--ui-bg-tertiary) px-1.5 py-0.5 text-muted-foreground">
+            {t.screen.placementSandbox(status.placement.slice('terminal:'.length))}
           </span>
         ) : null}
         <span className="grow" />

@@ -80,7 +80,7 @@ You can also set or auto-generate the description later with `hermes profile des
 hermes profile create work --clone
 ```
 
-Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the curated memory files `memories/MEMORY.md` and `memories/USER.md` into the new profile — memory is treated as part of the agent's identity, like `SOUL.md`. If `config.yaml` selects an external memory provider (`memory.provider`), that provider's own config travels too — its `<provider>/` directory or `<provider>.json` under the profile home, e.g. `hindsight/config.json` — so the clone's memory is available instead of silently off; a cloned `local_embedded` hindsight config still shares the source's embedded daemon and bank until you give the clone its own hindsight `profile`/`bank_id` ([#81815](https://github.com/NousResearch/hermes-agent/issues/81815)). Sessions, `state.db`, cron jobs and everything else start empty. For a blank memory as well, create the profile without `--clone` or delete the two files afterwards; the agent never falls back to another profile's memory when they are absent. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
+Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the curated memory files `memories/MEMORY.md` and `memories/USER.md` into the new profile — memory is treated as part of the agent's identity, like `SOUL.md`. If `config.yaml` selects an external memory provider (`memory.provider`), that provider's own config travels too — its `<provider>/` directory or `<provider>.json` under the profile home, e.g. `hindsight/config.json` — so the clone's memory is available instead of silently off; a cloned `local_embedded` hindsight config still shares the source's embedded daemon and bank until you give the clone its own hindsight `profile`/`bank_id` ([#81815](https://github.com/NousResearch/hermes-agent/issues/81815)). Installed plugins travel too: `plugins/` (catalog, Git and hand-installed plugins, plus their install records) is copied, so a memory provider installed from the plugin catalog keeps working in the clone at the same revision and keeps its catalog install record. Plugin Python dependencies live in the shared environment and are not reinstalled. Sessions, `state.db`, cron jobs and everything else start empty. For a blank memory as well, create the profile without `--clone` or delete the two files afterwards; the agent never falls back to another profile's memory when they are absent. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
 
 #### Keep a clone's imported agent setups synced (`--sync-imports`)
 
@@ -211,6 +211,12 @@ hermes profile use default    # switch back
 
 Sets a default so plain `hermes` commands target that profile. Like `kubectl config use-context`.
 
+If the sticky profile's directory is deleted by hand, Hermes refuses to run ordinary commands
+in the default profile instead, since they would read or write the wrong profile's state. Only
+the ways out still run, with a warning: `hermes profile list`, `hermes profile use default`, and
+`hermes uninstall` without `--data` or `--full` (those two stay refused; the interactive
+uninstall menu still offers a full wipe of the default profile behind its confirmation prompts).
+
 ### Knowing where you are
 
 The CLI always shows which profile is active:
@@ -339,7 +345,7 @@ fails that step for the whole install — see
 ```bash
 hermes profile list           # show all profiles with status
 hermes profile show coder     # detailed info for one profile
-hermes profile rename coder dev-bot   # rename (updates alias + service)
+hermes profile rename coder dev-bot   # rename (updates alias; removes the old name's gateway service)
 hermes profile migrate-identity coder dev-bot   # retry a rename's identity migration
 hermes profile purge-identity dev-bot   # retry a delete's identity purge
 hermes profile export coder   # pack into coder.tar.gz (shareable; keys stripped)

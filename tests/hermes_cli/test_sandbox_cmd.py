@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from hermes_cli.sandbox_cmd import (
-    NO_RUNTIME_EXIT, cmd_sandbox_run, export_path, export_ref, sandbox_run_argv, sandbox_settings, sandbox_steps,
+    NO_RUNTIME_EXIT, export_path, export_ref, sandbox_run_argv, sandbox_settings, sandbox_steps,
 )
 from hermes_cli.subcommands.sandbox import build_sandbox_parser
 
@@ -69,7 +69,7 @@ def test_run_argv_is_locked_whatever_the_options(monkeypatch, setup_flags, limit
     monkeypatch.setattr(docker_env, "find_docker", lambda: None)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: spawned.append(a))
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a))
-    assert cmd_sandbox_run(args) == NO_RUNTIME_EXIT != 0 and spawned == []
+    assert args.func(args) == NO_RUNTIME_EXIT != 0 and spawned == []
 
 
 def _git(repo, *args):

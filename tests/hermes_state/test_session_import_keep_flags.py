@@ -3,7 +3,8 @@
 ``import_sessions`` (the dashboard import of a ``hermes sessions export`` backup, and stranded-session
 adoption) restored ``archived`` but not ``pinned`` or ``hidden``. Pinned is the "keep" flag the startup
 prune and the stale-archive sweep both exempt, so an old pinned session came back unpinned and the next
-startup deleted it; an adopted Bot Mode chat came back visible and no longer canonical.
+startup deleted it; an adopted Bot Mode chat came back visible and no longer canonical; and without
+auto_archived a chat the idle sweep archived came back as a manual archive that resume never undoes.
 """
 
 from __future__ import annotations
@@ -16,26 +17,34 @@ from hermes_state import SessionDB
 SESSION_ID = "20260301_120000_abc123"
 
 
-def test_restored_pinned_session_survives_the_startup_prune(tmp_path):
+def test_restored_sessions_keep_the_pin_and_the_sweeps_archive_provenance(tmp_path):
+    """A pinned session survives the startup prune; a chat the idle sweep archived still comes
+    back on resume, which only a sweep archive (not the user's own) does."""
     source = SessionDB(db_path=tmp_path / "source.db")
     target = SessionDB(db_path=tmp_path / "target.db")
+    swept = "20260301_130000_def456"
     try:
-        source.create_session(SESSION_ID, source="cli")
-        source.append_message(SESSION_ID, "user", "keep this one")
-        source.end_session(SESSION_ID, "user_exit")
-        old = time.time() - 200 * 86400
-        source._conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?", (old, old, SESSION_ID))
-        source._conn.execute("UPDATE messages SET timestamp = ? WHERE session_id = ?", (old, SESSION_ID))
+        for sid, age_days in ((SESSION_ID, 200), (swept, 30)):
+            source.create_session(sid, source="cli")
+            source.append_message(sid, "user", "keep this one")
+            source.end_session(sid, "user_exit")
+            old = time.time() - age_days * 86400
+            source._conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?", (old, old, sid))
+            source._conn.execute("UPDATE messages SET timestamp = ? WHERE session_id = ?", (old, sid))
         source._conn.commit()
         source.set_session_pinned(SESSION_ID, True)
+        assert source.archive_stale_sessions(7) == 1
         payload = json.loads(json.dumps(source.export_all(include_inactive=True)))
 
-        assert target.import_sessions(payload)["imported"] == 1
+        assert target.import_sessions(payload)["imported"] == 2
         target.maybe_auto_prune_and_vacuum(retention_days=90, vacuum=False)
 
         restored = target.get_session(SESSION_ID)
         assert restored is not None, "the startup prune deleted a session the user pinned to keep"
         assert restored["pinned"]
+        assert target.get_session(swept)["archived"]
+        target.reopen_session(swept)
+        assert not target.get_session(swept)["archived"], "a restored sweep archive became a manual one"
     finally:
         source.close()
         target.close()

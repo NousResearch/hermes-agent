@@ -48,6 +48,35 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it.each([
+    'Template: `https://clawhub.ai/{owner}/skills/{slug}`。',
+    '[Template](https://example.com/{owner}/report.html)',
+    '![Template](https://example.com/{name}.png)',
+    JSON.stringify({ output: 'Example: https://example.com/{owner}/report.html' })
+  ])('excludes unexpanded URL path templates from heuristic artifacts: %s', content => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      { content, role: 'assistant', timestamp: 2000 },
+      { content, role: 'tool', tool_name: 'terminal', timestamp: 2001 }
+    ])
+
+    expect(artifacts).toEqual([])
+  })
+
+  it('preserves concrete URLs and explicitly delivered brace-containing URLs', () => {
+    const values = [
+      'https://example.com/alice/report.html',
+      'https://example.com/%7Bowner%7D/report.html',
+      'https://example.com/search?q={owner}'
+    ]
+    const explicit = 'https://example.com/{literal}/report.html'
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      { content: values.join('\n'), role: 'assistant', timestamp: 2000 },
+      { content: `MEDIA:${explicit}`, role: 'assistant', timestamp: 2001 }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([...values, explicit])
+  })
+
   it('strips Markdown code delimiters from discovered link artifacts', () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       {

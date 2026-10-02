@@ -3,6 +3,7 @@ import hashlib
 import copy
 import json
 import os
+import plistlib
 import shlex
 import shutil
 import subprocess
@@ -25,6 +26,45 @@ SMOKE_RESULTS = {name: {'result': 'success'} for name in (
     'smoke-darwin-arm64', 'smoke-darwin-x64', 'smoke-win32-arm64', 'smoke-win32-x64')}
 RELEASE_EPOCH = 1_787_965_323
 WINDOWS_VERSION = '2026.5761.123.0'
+
+
+def test_macos_channel_request_records_without_cli_tag(tmp_path, monkeypatch):
+    request = {
+        'commit': 'a' * 40,
+        'sourceVersion': '1.2.3',
+        'version': '1.2.3',
+        'identity': {'appId': 'com.example.Hermes'},
+    }
+    root = tmp_path / 'release'
+    root.mkdir()
+    package = root / 'HermesBundled-channel-mac-arm64.zip'
+    app = root / 'mac-arm64' / 'Hermes.app'
+    app.mkdir(parents=True)
+    with zipfile.ZipFile(package, 'w') as archive:
+        archive.writestr('Hermes.app/Contents/Info.plist', plistlib.dumps({
+            'CFBundleIdentifier': 'com.example.Hermes',
+            'CFBundleShortVersionString': '1.2.3',
+        }))
+        archive.writestr('Hermes.app/Contents/Resources/install-stamp.json', json.dumps({
+            'source': 'channel-build',
+            'channelBuild': request,
+            'commit': request['commit'],
+            'tag': None,
+        }))
+
+    def fake_run(command, **kwargs):
+        if command[1] == '-dv':
+            return subprocess.CompletedProcess(command, 0, stderr='TeamIdentifier=ABCDEFGHIJ\n')
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(artifacts.subprocess, 'run', fake_run)
+    out = root / 'metadata-macos-arm64.json'
+    record('macos', 'arm64', root, None, request['commit'], out, channel_request=request)
+    metadata = json.loads(out.read_text(encoding='utf-8'))
+    assert metadata['tag'] is None
+    assert metadata['baseVersion'] == '1.2.3'
+    assert metadata['version'] == '1.2.3'
+    assert metadata['identity'] == 'com.example.Hermes'
 
 
 def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_path):
